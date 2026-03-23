@@ -1,5 +1,7 @@
 /// <reference path="./baml-runtime.d.ts" />
 
+type StructuredReply = import("./baml-runtime").StructuredReply;
+
 declare function RequirementsPhase(args: { user_message: string }): Promise<unknown>;
 declare function ProduceSpec(args: { requirements_summary: string }): Promise<unknown>;
 declare function ChooseClaudeDevAction(args: {
@@ -11,30 +13,7 @@ declare function ChooseClaudeDevAction(args: {
 }): Promise<unknown>;
 declare function SummarizeDevWorkInPersonality(args: {
   session_report: string;
-}): Promise<string>;
-declare function openA2aExecutionSession(token: string): Promise<{
-  submitIntent: (intent: {
-    intentId: string;
-    description: string;
-    derivedFromMessageIds: string[];
-  }) => Promise<{
-    submitPlan: (plan: {
-      intentId: string;
-      planId: string;
-      steps: Array<{
-        stepId: string;
-        description: string;
-        order: number;
-        dependsOn: string[];
-      }>;
-    }) => Promise<{
-      startStep?: (stepId: string, evidenceText: string) => Promise<unknown>;
-      completeStep?: (stepId: string, evidenceText: string) => Promise<unknown>;
-      finish: () => Promise<unknown>;
-      abort?: (reason: string) => Promise<unknown>;
-    }>;
-  }>;
-}>;
+}): Promise<StructuredReply>;
 
 // --- BAML return types and guards ---
 type NeedMoreInput = { question: string };
@@ -196,8 +175,8 @@ function formatLastToolOutputFromExecutorRun(rawRun: unknown): string {
 __chat_register({
   run: async (ctx) => {
     let executionExecutable: {
-      startStep?: (stepId: string, evidenceText: string) => Promise<unknown>;
-      completeStep?: (stepId: string, evidenceText: string) => Promise<unknown>;
+      startStep?: (stepId: string) => Promise<unknown>;
+      completeStep?: (stepId: string) => Promise<unknown>;
       finish: () => Promise<unknown>;
       abort?: (reason: string) => Promise<unknown>;
     } | null = null;
@@ -239,7 +218,6 @@ __chat_register({
         ? await executionSession.submitIntent({
             intentId: "intent-claude-dev-workflow",
             description: intentDescription,
-            derivedFromMessageIds: [messageId],
           })
         : null;
 
@@ -290,22 +268,10 @@ __chat_register({
       }
 
       if (executionExecutable != null) {
-        await executionExecutable.startStep?.(
-          "step-requirements",
-          "Requirements synthesis started.",
-        );
-        await executionExecutable.completeStep?.(
-          "step-requirements",
-          "Requirements captured and validated.",
-        );
-        await executionExecutable.startStep?.(
-          "step-specification",
-          "Specification drafting started from validated requirements.",
-        );
-        await executionExecutable.completeStep?.(
-          "step-specification",
-          "Specification and validation criteria produced.",
-        );
+        await executionExecutable.startStep?.("step-requirements");
+        await executionExecutable.completeStep?.("step-requirements");
+        await executionExecutable.startStep?.("step-specification");
+        await executionExecutable.completeStep?.("step-specification");
       }
 
       // Send the plan to the user in one message (so the client cannot show only the follow-up line).
@@ -335,10 +301,7 @@ __chat_register({
       const messageParts = (ctx.message as { parts?: unknown })?.parts;
       let userApprovalIntent = userApprovalIntentFromParts(messageParts);
       if (executionExecutable != null) {
-        await executionExecutable.startStep?.(
-          "step-development",
-          "Development session delegation started.",
-        );
+        await executionExecutable.startStep?.("step-development");
       }
 
       for (let operatorRound = 0; operatorRound < MAX_DEV_ACTIONS; operatorRound++) {
@@ -356,10 +319,7 @@ __chat_register({
         const result = isObject(run) ? (run as { last?: unknown }).last : run;
         if (isClaudeDevReport(result)) {
           if (executionExecutable != null) {
-            await executionExecutable.completeStep?.(
-              "step-development",
-              "Delegated development completed with final report.",
-            );
+            await executionExecutable.completeStep?.("step-development");
             await executionExecutable.finish();
           }
           const summary = await SummarizeDevWorkInPersonality({

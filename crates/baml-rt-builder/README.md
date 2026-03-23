@@ -10,11 +10,12 @@ Agent build pipeline and packaging utilities.
 - **Runtime type generation**: typed `baml-runtime.d.ts` from BAML runtime IR (no BAML source parsing).
 - Agent packaging into distributable archives.
 
-## Generated BAML Interfaces
+## Generated BAML prelude (`_baml_runtime.baml`)
 
-The builder emits `generated_tools.baml`, which includes `ToolSessionPlan`
-and `ToolSessionStep` definitions used by BAML to describe host tool session
-execution steps.
+Single file, analogous to `baml-runtime.d.ts`: shared types, tool interfaces, optional session coordination,
+polymorphic session unions, and per-phase executors. Section markers: `// ── builder: …`.
+
+`regen_fixtures` syncs it into each agent `baml_src/` and removes legacy split files (`generated_tools.baml`, …).
 
 ## Generated TypeScript Declarations (`baml-runtime.d.ts`)
 
@@ -36,6 +37,4 @@ Agent code uses `__chat_register({ run: async (ctx) => { ... } })` or `session(m
   cargo run -p baml-rt-builder --bin regen_fixtures
   ```
 
-## Known limitations
-
-- **Nested types**: The runtime type generator only emits TypeScript interfaces for types that appear as top-level function parameters or return types. Types that are referenced only as fields of other generated types (e.g. a BAML class used only inside another class’s array field) are not emitted. The generated `.d.ts` may therefore reference a type name (e.g. `PlanStep`) that is never declared, causing TS errors. **Workaround**: duplicate the missing interface in your agent code (e.g. in `index.ts`) so that `plan.steps` and similar are correctly typed, and keep it in sync with the BAML class definition until the generator is updated to emit nested types.
+  Also refreshes checked-in `_baml_runtime.baml` where applicable.

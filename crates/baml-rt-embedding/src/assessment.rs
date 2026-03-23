@@ -588,8 +588,14 @@ mod tests {
             vec![0.0; 2],
         );
         let citations = vec![(1u32, true, false, "Can you analyse Q4 accounts".to_string())];
-        let result = score_citation_drift("Query Q4 accounts with status=at-risk", &citations, 1, 1, &provider)
-            .expect("single citation scores");
+        let result = score_citation_drift(
+            "Query Q4 accounts with status=at-risk",
+            &citations,
+            1,
+            1,
+            &provider,
+        )
+        .expect("single citation scores");
         assert_eq!(result.per_citation.len(), 1);
         assert!(!result.per_citation[0].negated);
         assert!(result.per_citation[0].similarity > 0.8);
@@ -610,14 +616,28 @@ mod tests {
         );
         let citations = vec![
             (1u32, true, false, "Can you analyse Q4 accounts".to_string()),
-            (2u32, false, true, "Send email marketing campaign Q3".to_string()),
+            (
+                2u32,
+                false,
+                true,
+                "Send email marketing campaign Q3".to_string(),
+            ),
         ];
-        let result = score_citation_drift("Query Q4 accounts with status=at-risk", &citations, 1, 1, &provider)
-            .expect("mixed positive/negated");
+        let result = score_citation_drift(
+            "Query Q4 accounts with status=at-risk",
+            &citations,
+            1,
+            1,
+            &provider,
+        )
+        .expect("mixed positive/negated");
         assert_eq!(result.per_citation.len(), 2);
         assert!(!result.per_citation[0].negated);
         assert!(result.per_citation[1].negated);
         // mean_similarity should only average the positive citation
-        assert!(result.mean_similarity > 0.8, "mean ignores negated citation");
+        assert!(
+            result.mean_similarity > 0.8,
+            "mean ignores negated citation"
+        );
     }
 }

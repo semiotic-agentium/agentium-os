@@ -441,13 +441,13 @@ async fn test_generated_a2a_shim_emits_planning_effects() {
     let scope = RuntimeScope::task_scope(context_id, agent_id, message_id, task_id);
     let invoke_scope = InvocationScope::new(scope.clone());
 
-    let js = r#"
+    let js = r##"
       (async function() {
         const session = await openA2aExecutionSession("tok-generated-shim");
         await session.submitIntent({
           intentId: "intent-shim-1",
           description: "Generated shim planning intent",
-          derivedFromMessageIds: ["msg-shim-1"]
+          citations: ["#1"]
         });
         await session.submitPlan({
           intentId: "intent-shim-1",
@@ -456,11 +456,11 @@ async fn test_generated_a2a_shim_emits_planning_effects() {
             { stepId: "step-shim-1", description: "Execute generated step", order: 0, dependsOn: [] }
           ]
         });
-        await session.startStep("step-shim-1", "begin generated step execution");
-        await session.completeStep("step-shim-1", "generated step finished successfully");
+        await session.startStep("step-shim-1", ["#1"]);
+        await session.completeStep("step-shim-1", ["#1", "@2"]);
         return { ok: true };
       })()
-    "#;
+    "##;
 
     let result = context::with_scope(scope, async {
         bridge
@@ -593,7 +593,7 @@ async fn test_generated_a2a_shim_aborts_planning_on_run_failure() {
     let scope = RuntimeScope::task_scope(context_id, agent_id, message_id, task_id);
     let invoke_scope = InvocationScope::new(scope.clone());
 
-    let js = r#"
+    let js = r##"
       (async function() {
         __chat_register({
           run: async function(ctx) {
@@ -601,7 +601,7 @@ async fn test_generated_a2a_shim_aborts_planning_on_run_failure() {
             const intent = await session.submitIntent({
               intentId: "intent-shim-fail",
               description: "Generated shim failure path",
-              derivedFromMessageIds: ["msg-shim-fail-1"]
+              citations: ["#1"]
             });
             const executable = await intent.submitPlan({
               intentId: "intent-shim-fail",
@@ -610,7 +610,7 @@ async fn test_generated_a2a_shim_aborts_planning_on_run_failure() {
                 { stepId: "step-shim-fail-1", description: "Run then fail", order: 0, dependsOn: [] }
               ]
             });
-            await executable.startStep("step-shim-fail-1", "step started before failure");
+            await executable.startStep("step-shim-fail-1", ["#1"]);
             throw new Error("forced failure for generated shim abort path");
           }
         });
@@ -621,7 +621,7 @@ async fn test_generated_a2a_shim_aborts_planning_on_run_failure() {
         });
         return { ok: true };
       })()
-    "#;
+    "##;
 
     let result = context::with_scope(scope, async {
         bridge

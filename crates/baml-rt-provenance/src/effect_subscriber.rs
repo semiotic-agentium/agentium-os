@@ -9,14 +9,25 @@ use baml_rt_core::{
 };
 use baml_rt_embedding::{
     DriftConfig, DriftMode, EmbeddingProvider, FastEmbedProvider, PlanDriftConfig, PlanDriftInputs,
-    PlanStepAnchor, RerankProvider, TaskDriftTracker, score_drift, score_plan_drift,
+    PlanStepAnchor, RerankProvider, TaskDriftTracker, score_citation_drift, score_drift,
+    score_plan_drift,
+};
+use baml_rt_tools::{
+    ToolRegistry,
+    archive_refs::RefTable,
+    citations::{CitationKind, ParsedCitation, ResolvedCitation},
+    prompt_projection::project_prompt_context,
 };
 use dashmap::DashMap;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::{
-    events::{CallScope, LlmDriftInfo, LlmPlanDriftInfo, LlmUsage, PlanStepSpec, ProvEvent},
+    conversation_projection::provenance_item_to_projection_item,
+    events::{
+        CallScope, LlmCitationDriftInfo, LlmCitationSimilarity, LlmDriftInfo, LlmPlanDriftInfo,
+        LlmUsage, PlanStepSpec, ProvEvent,
+    },
     store::ProvenanceWriter,
 };
 
@@ -34,6 +45,30 @@ impl ProvenanceEventType {
             ProvenanceEventType::LlmCall => "LLM call",
         }
     }
+}
+
+/// Extract `citations: string[]` from a BAML LLM result (top-level or under `step`).
+fn extract_citation_strings_from_llm_result(payload: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(arr) = payload.get("citations").and_then(Value::as_array) {
+        for v in arr {
+            if let Some(s) = v.as_str() {
+                out.push(s.to_string());
+            }
+        }
+    }
+    if let Some(step) = payload.get("step").and_then(Value::as_object)
+        && let Some(arr) = step.get("citations").and_then(Value::as_array)
+    {
+        for v in arr {
+            if let Some(s) = v.as_str() {
+                out.push(s.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Helper to build provenance events with task/global branching
@@ -530,7 +565,7 @@ impl TrackerPhase {
 /// payload. First argument is an optional tool name hint from the LLM effect
 /// metadata; second is the BAML-parsed result payload. Wired from the
 /// agent's `ToolRegistry` via `describe_invocation_with_hint`.
-pub type ActionDescriber = dyn Fn(Option<&str>, &serde_json::Value) -> String + Send + Sync;
+pub type ActionDescriber = dyn Fn(Option<&str>, &serde_json::Value) -> Option<String> + Send + Sync;
 
 pub struct ProvenanceEffectSubscriber {
     writer: Arc<dyn ProvenanceWriter>,
@@ -547,6 +582,8 @@ pub struct ProvenanceEffectSubscriber {
     /// Typed tool-action describer, producing natural language from BAML-parsed
     /// result payloads. Set by the transport layer from the agent's ToolRegistry.
     action_describer: Option<Arc<ActionDescriber>>,
+    /// Same registry as the runtime — used to rebuild [`RefTable`] for citation resolution.
+    tool_registry: Option<Arc<ToolRegistry>>,
 }
 
 impl ProvenanceEffectSubscriber {
@@ -559,6 +596,7 @@ impl ProvenanceEffectSubscriber {
             rerank_provider: RwLock::new(None),
             plan_trackers: DashMap::new(),
             action_describer: None,
+            tool_registry: None,
         }
     }
 
@@ -575,6 +613,7 @@ impl ProvenanceEffectSubscriber {
             rerank_provider: RwLock::new(None),
             plan_trackers: DashMap::new(),
             action_describer: None,
+            tool_registry: None,
         }
     }
 
@@ -582,6 +621,12 @@ impl ProvenanceEffectSubscriber {
     /// agent's `ToolRegistry` via `ToolHandler::describe_invocation`.
     pub fn set_action_describer(&mut self, describer: Arc<ActionDescriber>) {
         self.action_describer = Some(describer);
+    }
+
+    /// Wire the agent tool registry so citation-grounded drift can rebuild the same
+    /// `#N` / `@N` table as prompt projection.
+    pub fn set_tool_registry(&mut self, registry: Arc<ToolRegistry>) {
+        self.tool_registry = Some(registry);
     }
 
     pub fn new_with_plan_drift(
@@ -598,6 +643,7 @@ impl ProvenanceEffectSubscriber {
             rerank_provider: RwLock::new(None),
             plan_trackers: DashMap::new(),
             action_describer: None,
+            tool_registry: None,
         }
     }
 
@@ -616,6 +662,7 @@ impl ProvenanceEffectSubscriber {
             rerank_provider: RwLock::new(Some(rerank_provider)),
             plan_trackers: DashMap::new(),
             action_describer: None,
+            tool_registry: None,
         }
     }
 
@@ -698,6 +745,7 @@ impl ProvenanceEffectSubscriber {
         outcome: baml_rt_core::Outcome,
         task_id: Option<&TaskId>,
         context_id: &ContextId,
+        citation_strings: &[String],
     ) -> Option<LlmDriftInfo> {
         if !bool::from(outcome) || !self.drift_config.should_monitor(function_name) {
             return None;
@@ -731,32 +779,46 @@ impl ProvenanceEffectSubscriber {
         let response_text = self
             .action_describer
             .as_ref()
-            .map(|d| d(tool_name, result_payload))
-            .filter(|s| !s.is_empty())
+            .and_then(|d| d(tool_name, result_payload))
             .unwrap_or_else(|| {
                 baml_rt_embedding::extraction::extract_response_text(result_payload)
             });
-        // Finish/Abort/Read ops return empty string from extraction — skip plan drift scoring.
-        if response_text.trim().is_empty() {
-            return None;
-        }
-        let plan_drift_result = self
-            .compute_plan_drift(task_id, context_id, &response_text, provider.as_ref())
-            .await;
+        let plan_drift_result = if response_text.trim().is_empty() {
+            None
+        } else {
+            self.compute_plan_drift(task_id, context_id, &response_text, provider.as_ref())
+                .await
+        };
         let (plan_drift, plan_intent_desc, plan_step_desc) = match plan_drift_result {
             Some((info, intent, step)) => (Some(info), intent, step),
             None => (None, String::new(), String::new()),
         };
 
-        // Return if either scorer produced a result.
-        if tactical.is_none() && plan_drift.is_none() {
+        let decision_text = if !response_text.trim().is_empty() {
+            response_text.clone()
+        } else {
+            serde_json::to_string(result_payload).unwrap_or_default()
+        };
+        let citation_drift = self
+            .compute_citation_drift_section(
+                context_id,
+                decision_text.trim(),
+                citation_strings,
+                provider.as_ref(),
+            )
+            .await;
+
+        if tactical.is_none() && plan_drift.is_none() && citation_drift.is_none() {
             return None;
         }
 
-        // Prefer the trait-derived semantic description for the response preview —
-        // it is always more meaningful than the raw HTTP extraction.
+        let preview_source = if !response_text.trim().is_empty() {
+            response_text.as_str()
+        } else {
+            decision_text.trim()
+        };
         let semantic_preview = baml_rt_embedding::preview_text(
-            &response_text,
+            preview_source,
             baml_rt_embedding::DEFAULT_TEXT_PREVIEW_CHARS,
         );
 
@@ -769,7 +831,6 @@ impl ProvenanceEffectSubscriber {
                     a.warn_min_score,
                     a.block_min_score,
                     a.intent_text_preview.clone(),
-                    // Override tactical's raw preview with semantic trait description.
                     semantic_preview,
                 ),
                 None => (
@@ -796,6 +857,107 @@ impl ProvenanceEffectSubscriber {
             response_text_preview: response_preview,
             step_text_preview: plan_step_desc,
             plan_drift,
+            citation_drift,
+        })
+    }
+
+    /// Cosine similarity between the decision text and each resolved citation body.
+    async fn compute_citation_drift_section(
+        &self,
+        context_id: &ContextId,
+        decision_text: &str,
+        citation_strings: &[String],
+        embed_provider: &dyn EmbeddingProvider,
+    ) -> Option<LlmCitationDriftInfo> {
+        if citation_strings.is_empty() || decision_text.is_empty() {
+            return None;
+        }
+        let registry = self.tool_registry.as_ref()?;
+        let items = self
+            .writer
+            .conversation_context(context_id, Some(320))
+            .await
+            .ok()?;
+        let projection_items: Vec<_> = items
+            .into_iter()
+            .filter_map(provenance_item_to_projection_item)
+            .collect();
+        let ref_table = RefTable::new();
+        let _history =
+            project_prompt_context(projection_items, registry.as_ref(), &ref_table, None);
+        // Parse each raw string and keep it paired so we can store it with the result.
+        let raw_and_parsed: Vec<(&String, ParsedCitation)> = citation_strings
+            .iter()
+            .filter_map(|s| ParsedCitation::parse(s).ok().map(|c| (s, c)))
+            .collect();
+        if raw_and_parsed.is_empty() {
+            return None;
+        }
+
+        // Resolve each parsed citation to its full content + stable anchor.
+        struct Resolved {
+            n: u32,
+            is_history: bool,
+            negated: bool,
+            content: String,
+            raw: String,
+            activity_anchor: String,
+        }
+        let mut resolved: Vec<Resolved> = Vec::new();
+        for (raw_str, c) in &raw_and_parsed {
+            if let Some(r) = ResolvedCitation::resolve(c, &ref_table) {
+                let is_history = matches!(r.kind, CitationKind::History);
+                resolved.push(Resolved {
+                    n: r.n,
+                    is_history,
+                    negated: r.negated,
+                    content: r.content.clone(),
+                    raw: (*raw_str).clone(),
+                    activity_anchor: r.activity_anchor.clone(),
+                });
+            }
+        }
+        if resolved.is_empty() {
+            return None;
+        }
+
+        // Score citation drift (embedding similarity between decision and each cited content).
+        let scoring_input: Vec<(u32, bool, bool, String)> = resolved
+            .iter()
+            .map(|r| (r.n, r.is_history, r.negated, r.content.clone()))
+            .collect();
+        let assessment = score_citation_drift(decision_text, &scoring_input, 1, 1, embed_provider)?;
+
+        // Zip assessment results with resolved metadata. `score_citation_drift` preserves
+        // input order, so index alignment is guaranteed.
+        let per_citation = assessment
+            .per_citation
+            .iter()
+            .zip(resolved.iter())
+            .map(|(scored, res)| {
+                let content_preview = if res.content.len() > 400 {
+                    format!("{}…", &res.content[..400])
+                } else {
+                    res.content.clone()
+                };
+                LlmCitationSimilarity {
+                    n: scored.n,
+                    is_history: scored.is_history,
+                    negated: scored.negated,
+                    similarity: scored.similarity,
+                    raw: res.raw.clone(),
+                    activity_anchor: res.activity_anchor.clone(),
+                    content_preview,
+                }
+            })
+            .collect();
+
+        Some(LlmCitationDriftInfo {
+            per_citation,
+            mean_similarity: assessment.mean_similarity,
+            coverage: assessment.coverage,
+            total_decisions: assessment.total_decisions,
+            cited_decisions: assessment.cited_decisions,
         })
     }
 
@@ -1252,6 +1414,10 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 let prov_usage_clone = prov_usage.clone();
                 let prompt = normalized_prompt(&metadata.prompt);
                 let task_id = task_id_from_metadata(&metadata.metadata);
+                let citation_strings = result_payload
+                    .as_ref()
+                    .map(extract_citation_strings_from_llm_result)
+                    .unwrap_or_default();
                 let drift = self
                     .compute_drift(
                         &metadata.function_name,
@@ -1261,6 +1427,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                         *outcome,
                         task_id.as_ref(),
                         context_id,
+                        &citation_strings,
                     )
                     .await
                     .map(Box::new);
@@ -1291,6 +1458,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             *duration_ms,
                             *outcome,
                             drift.clone(),
+                            citation_strings.clone(),
                         )
                     },
                     |ctx_id, msg_id| {
@@ -1306,6 +1474,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             *duration_ms,
                             *outcome,
                             drift.clone(),
+                            citation_strings.clone(),
                         )
                     },
                 ) else {
@@ -1358,7 +1527,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 task_id,
                 intent_id,
                 description,
-                derived_from_message_ids,
+                citations,
                 supersession,
                 epoch: _,
             } => {
@@ -1367,16 +1536,12 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     .on_intent_resolved(task_id, description, is_supersession)
                     .await;
 
-                let message_ids = derived_from_message_ids
-                    .iter()
-                    .map(|id| MessageId::from_external(ExternalId::new(id.clone())))
-                    .collect::<Vec<_>>();
                 ProvEvent::intent_resolved(
                     context_id.clone(),
                     task_id.clone(),
                     intent_id.clone(),
                     description.clone(),
-                    message_ids,
+                    citations.clone(),
                     *supersession,
                     revision_intent_drift,
                 )
@@ -1417,7 +1582,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 step_id,
                 old_status,
                 new_status,
-                evidence_text,
+                citations,
                 epoch: _,
             } => {
                 self.on_step_status_changed(task_id, &step_id.to_string(), new_status);
@@ -1430,7 +1595,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     step_id.clone(),
                     old_status.clone(),
                     new_status.clone(),
-                    evidence_text.clone(),
+                    citations.clone(),
                 )
             }
             // Tool stream chunks are relay-only; tools are already recorded via the tool interceptor
@@ -1535,7 +1700,7 @@ mod tests {
 
     use async_trait::async_trait;
     use baml_rt_core::{
-        Outcome,
+        Citation, Outcome,
         bus::{EffectEvent, LlmEffectMetadata},
     };
     use baml_rt_embedding::provider::EmbeddingError;
@@ -1714,7 +1879,7 @@ mod tests {
             task_id: task_id.clone(),
             intent_id: baml_rt_core::ids::IntentId::from("intent-1".to_string()),
             description: "Create quarterly report".to_string(),
-            derived_from_message_ids: vec!["msg-1".to_string()],
+            citations: vec![Citation::try_new("#1").unwrap()],
             supersession: None,
             epoch: Some(1),
         };
@@ -1750,7 +1915,7 @@ mod tests {
             step_id: baml_rt_core::ids::PlanStepId::from("step-extract".to_string()),
             old_status: Some("pending".to_string()),
             new_status: "in_progress".to_string(),
-            evidence_text: "Starting extraction".to_string(),
+            citations: vec![Citation::try_new("#1").unwrap()],
             epoch: Some(3),
         };
         subscriber
@@ -2056,7 +2221,7 @@ mod tests {
             task_id: task_id.clone(),
             intent_id: baml_rt_core::ids::IntentId::from("intent-q3".to_string()),
             description: "Extract Q3 revenue data from CRM".to_string(),
-            derived_from_message_ids: vec!["msg-lc-1".to_string()],
+            citations: vec![Citation::try_new("#1").unwrap()],
             supersession: None,
             epoch: Some(1),
         };
@@ -2085,7 +2250,7 @@ mod tests {
             step_id: baml_rt_core::ids::PlanStepId::from("step-extract".to_string()),
             old_status: Some("pending".to_string()),
             new_status: "in_progress".to_string(),
-            evidence_text: "Starting extraction".to_string(),
+            citations: vec![Citation::try_new("#1").unwrap()],
             epoch: Some(3),
         };
         subscriber.on_effect(&step_event).await.expect("step");

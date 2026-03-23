@@ -3,7 +3,7 @@
 //! This module executes BAML functions using the compiled IL (Intermediate Language)
 //! from the BAML compiler.
 
-use std::{collections::HashMap, path::Path, str::FromStr, sync::Arc, time::Instant};
+use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -11,8 +11,7 @@ use baml_rt_core::{
 };
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use baml_runtime::{
-    BamlRuntime, FunctionResultStream, RuntimeContextManager,
-    client_registry::{ClientProperty, ClientProvider, ClientRegistry},
+    BamlRuntime, FunctionResultStream, RuntimeContextManager, client_registry::ClientRegistry,
 };
 use baml_types::{BamlMap, BamlValue};
 use serde_json::Value;
@@ -23,7 +22,7 @@ use tokio::{
 
 use crate::{
     baml_collector::{BamlLLMCollector, LLMCompletionHandle},
-    baml_pre_execution::{extract_context_from_http_request, intercept_llm_call_pre_execution},
+    baml_pre_execution::intercept_llm_call_pre_execution,
     llm_client_registry::{LlmSecretResolver, build_llm_client_registry},
 };
 
@@ -55,15 +54,25 @@ fn planner_state_telemetry(args: &Value) -> Option<(usize, bool, usize, Option<S
         .get("status_token")
         .and_then(Value::as_str)
         .unwrap_or("");
+    let allowed_ops_len = context
+        .get("allowed_ops")
+        .and_then(Value::as_array)
+        .map_or(0usize, std::vec::Vec::len);
     let payload_bytes = serde_json::to_vec(context).map_or(0, |v| v.len());
     let token = if status_token.is_empty() {
         None
     } else {
         Some(status_token.to_string())
     };
-    Some((args_bytes, session_open, payload_bytes, token))
+    Some((
+        args_bytes,
+        session_open,
+        payload_bytes.saturating_add(allowed_ops_len),
+        token,
+    ))
 }
 
+#[allow(dead_code)] // Reserved for URL normalization when wiring multi-endpoint clients.
 fn derive_base_url(url: &str) -> Option<String> {
     for suffix in [
         "/chat/completions",
@@ -78,86 +87,39 @@ fn derive_base_url(url: &str) -> Option<String> {
     None
 }
 
+/// Build a session-FSM-aware `ClientRegistry` for step-executor calls.
+///
+/// These calls inject `session_context` into the BAML args, which is not a
+/// declared function parameter — so calling `build_request` with those args
+/// fails parameter validation.  Instead we resolve the API key directly via the
+/// `LlmSecretResolver` (config/secret store) and delegate to
+/// `build_llm_client_registry` which already knows how to walk the IR clients.
+///
+/// Returns `Ok(None)` when no resolver is configured or when it cannot resolve
+/// any API key — in that case the caller falls back to the normal BAML client
+/// resolution path (which may use env vars if they are present in the process,
+/// though that path is deprecated: API keys should always come from the store).
 #[allow(clippy::too_many_arguments)]
 async fn build_session_fsm_client_registry(
     runtime: &BamlRuntime,
-    scope: &context::RuntimeScope,
-    function_name: &str,
+    _scope: &context::RuntimeScope,
+    _function_name: &str,
     args: &Value,
-    params: &BamlMap<String, BamlValue>,
-    ctx_manager: &RuntimeContextManager,
+    _params: &BamlMap<String, BamlValue>,
+    _ctx_manager: &RuntimeContextManager,
     llm_secret_resolver: Option<&dyn LlmSecretResolver>,
-    planning_step: Option<(&str, &str)>,
+    _planning_step: Option<(&str, &str)>,
 ) -> Result<Option<ClientRegistry>> {
     if planner_state_telemetry(args).is_none() {
         return Ok(None);
     }
-
-    let request = runtime
-        .build_request(
-            function_name.to_string(),
-            params,
-            ctx_manager,
-            None,
-            None,
-            HashMap::new(),
-            false,
-        )
-        .await
-        .map_err(|e| BamlRtError::RequestBuildFailed { source: e.into() })?;
-    let context = extract_context_from_http_request(scope, &request, function_name, planning_step)?;
-    let Some(url) = context
-        .metadata
-        .get("url")
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-    else {
-        return Ok(None);
-    };
-
-    let provider = if url.contains("openrouter.ai") {
-        "openai-generic"
-    } else {
-        "openai"
-    };
-    let scope_id = scope.agent_id().as_str();
-    let api_key = if provider == "openai-generic" {
-        llm_secret_resolver.and_then(|r| {
-            r.resolve_llm_api_key(scope_id, "OPENROUTER_API_KEY")
-                .map(|(v, _)| v)
-        })
-    } else {
-        llm_secret_resolver.and_then(|r| {
-            r.resolve_llm_api_key(scope_id, "OPENAI_API_KEY")
-                .map(|(v, _)| v)
-        })
-    };
-
-    let mut options = BamlMap::new();
-    options.insert("model".to_string(), BamlValue::String(context.model));
-    let mut reasoning_options = BamlMap::new();
-    reasoning_options.insert("enabled".to_string(), BamlValue::Bool(false));
-    options.insert("reasoning".to_string(), BamlValue::Map(reasoning_options));
-    if let Some(base_url) = derive_base_url(&url) {
-        options.insert("base_url".to_string(), BamlValue::String(base_url));
-    }
-    if let Some(key) = api_key {
-        options.insert("api_key".to_string(), BamlValue::String(key));
-    }
-
-    let client_name = "__session_fsm_runtime_client";
-    let client_provider = ClientProvider::from_str(provider).map_err(|e| {
-        BamlRtError::InvalidArgument(format!(
-            "unsupported runtime session client provider '{provider}': {e}"
-        ))
-    })?;
-    let client_property =
-        ClientProperty::new(client_name.to_string(), client_provider, None, options);
-
-    let mut registry = ClientRegistry::new();
-    registry.add_client(client_property);
-    registry.set_primary(client_name.to_string());
-    Ok(Some(registry))
+    // Only override the client when the secret resolver has a key — otherwise
+    // fall through to the normal BAML env-var resolution path.
+    Ok(
+        build_llm_client_registry(runtime, llm_secret_resolver, "default")
+            .map_err(|e| BamlRtError::ClientRegistryBuild { source: e })?
+            .into_registry(),
+    )
 }
 
 /// Bundles a BAML streaming invocation: stream, context manager, client registry, and env vars.
@@ -343,11 +305,18 @@ impl BamlExecutor {
         )
         .await?;
         if let Some(ref registry) = interceptor_registry {
+            // `session_context` is a runtime-injected arg for step-executor functions.
+            // The BAML template for phase functions uses `{{ session_context.allowed_ops }}`
+            // which must be renderable during the build_request probe inside
+            // intercept_llm_call_pre_execution.  Pass the full params including
+            // session_context so the template renders; the actual call_function also
+            // receives the full params with the real allowed_ops populated.
+            let interceptor_params = params.clone();
             match intercept_llm_call_pre_execution(
                 &self.runtime,
                 scope,
                 function_name,
-                &params,
+                &interceptor_params,
                 &ctx_manager,
                 registry,
                 env_vars.clone(),

@@ -351,8 +351,8 @@ impl ConversationReadModel {
     /// Typed parameterised message query.
     pub fn message_query_storage_safe_params(context: &str) -> (String, serde_json::Value) {
         let query = "MATCH (m:Message) WHERE m.a2a_context_id = $context \
-             RETURN m.a2a_event_id, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content \
-             ORDER BY m.a2a_event_id";
+             RETURN m.a2a_activity_anchor, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content \
+             ORDER BY m.a2a_activity_anchor";
         (query.to_string(), serde_json::json!({ "context": context }))
     }
 
@@ -360,16 +360,16 @@ impl ConversationReadModel {
     pub fn tool_query_storage_safe_params(context: &str) -> (String, serde_json::Value) {
         let query = "MATCH (t:ToolCall) WHERE t.a2a_context_id = $context \
              MATCH (t)-[used:WAS_USED_BY]->(args:ToolArgs) \
-             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_activity_outcome \
-             ORDER BY t.a2a_event_id";
+             RETURN DISTINCT t.a2a_activity_anchor, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_activity_outcome \
+             ORDER BY t.a2a_activity_anchor";
         (query.to_string(), serde_json::json!({ "context": context }))
     }
 
     /// Session-step query: individual Open/SendDone/Read events within sessions.
     pub fn session_step_query_params(context: &str) -> (String, serde_json::Value) {
         let query = "MATCH (s:SessionStep) WHERE s.a2a_context_id = $context \
-             RETURN s.a2a_event_id, s.a2a_tool_name, s.op_kind, s.header, s.archive_ref, s.grep \
-             ORDER BY s.a2a_event_id";
+             RETURN s.a2a_activity_anchor, s.a2a_tool_name, s.op_kind, s.header, s.archive_ref, s.grep \
+             ORDER BY s.a2a_activity_anchor";
         (query.to_string(), serde_json::json!({ "context": context }))
     }
 }

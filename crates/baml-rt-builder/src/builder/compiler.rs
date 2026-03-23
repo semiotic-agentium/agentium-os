@@ -15,7 +15,10 @@ use tokio::task;
 
 use crate::builder::{
     a2a_shim_gen::render_a2a_shim,
-    baml_gen::{render_baml_tool_interfaces, render_generated_session_baml_from_ir},
+    baml_gen::{
+        GENERATED_BAML_PRELUDE_FILE, purge_managed_generated_baml_files,
+        render_baml_tool_interfaces, render_generated_session_baml_from_ir,
+    },
     baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
     error::{BamlBuilderError, Result},
     traits::{TypeGenerator, TypeScriptCompiler},
@@ -291,21 +294,28 @@ impl TypeGenerator for RuntimeTypeGenerator {
             if !baml_src_build.exists() {
                 copy_dir_all_impl(&baml_src, &baml_src_build)?;
             }
-            let tool_names = load_manifest_tools(&baml_src)?;
-            if !tool_names.is_empty() {
-                let baml_interfaces = render_baml_tool_interfaces(&tool_names)?;
-                let baml_output_path = baml_src_build.join("generated_tools.baml");
-                if let Some(parent) = baml_output_path.parent() {
-                    fs::create_dir_all(parent).map_err(BamlBuilderError::Io)?;
-                }
-                atomic_write(&baml_output_path, baml_interfaces.as_bytes())?;
+            // Agent trees may still contain legacy `generated_tools.baml` etc.; remove so the new
+            // single prelude is the only copy (avoids duplicate `StandardAgentPlanStep` / FSM types).
+            purge_managed_generated_baml_files(&baml_src_build).map_err(BamlBuilderError::Io)?;
 
-                // Emit session coordination BAML from tool crates that registered a provider (e.g. claude/dev).
-                if let Some(coord_baml) = get_session_coordination_baml_for_tools(&tool_names)? {
-                    let coord_path = baml_src_build.join("generated_session_coordination.baml");
-                    atomic_write(&coord_path, coord_baml.as_bytes())?;
-                }
+            let tool_names = load_manifest_tools(&baml_src)?;
+            // Single `_baml_runtime.baml` prelude (mirrors `baml-runtime.d.ts`): tools + coordination + IR sections.
+            let mut generated_baml = render_baml_tool_interfaces(&tool_names)?;
+            if !tool_names.is_empty()
+                && let Some(coord_baml) = get_session_coordination_baml_for_tools(&tool_names)?
+            {
+                generated_baml
+                    .push_str("\n\n// ── builder: session coordination (tool crates) ──\n\n");
+                generated_baml.push_str(&coord_baml);
             }
+
+
+            let prelude_path = baml_src_build.join(GENERATED_BAML_PRELUDE_FILE);
+            if let Some(parent) = prelude_path.parent() {
+                fs::create_dir_all(parent).map_err(BamlBuilderError::Io)?;
+            }
+            atomic_write(&prelude_path, generated_baml.as_bytes())?;
+
 
             // Resolve tool metadata once — used by both polymorphic type generation
             // and per-phase function generation.
@@ -335,12 +345,14 @@ impl TypeGenerator for RuntimeTypeGenerator {
                     render_generated_session_baml_from_ir(&runtime, &tool_metadata)?;
 
                 if !poly_baml.is_empty() {
-                    let poly_path = baml_src_build.join("generated_polymorphic_sessions.baml");
-                    atomic_write(&poly_path, poly_baml.as_bytes())?;
+                    generated_baml
+                        .push_str("\n\n// ── builder: polymorphic session unions (from IR) ──\n\n");
+                    generated_baml.push_str(&poly_baml);
                 }
                 if !phase_baml.is_empty() {
-                    let phase_path = baml_src_build.join("generated_phase_functions.baml");
-                    atomic_write(&phase_path, phase_baml.as_bytes())?;
+                    generated_baml
+                        .push_str("\n\n// ── builder: per-phase step executors (from IR) ──\n\n");
+                    generated_baml.push_str(&phase_baml);
 
                     // Register phase functions for all session functions (single- and multi-tool).
                     let poly_entries: Vec<(String, Vec<baml_rt_tools::SessionPlanTypeName>)> =
@@ -376,8 +388,9 @@ impl TypeGenerator for RuntimeTypeGenerator {
                     }
                 }
 
-                // Second compile to include the generated types and phase functions.
+                // Second compile to include polymorphic unions and phase functions in the prelude.
                 if !poly_baml.is_empty() || !phase_baml.is_empty() {
+                    atomic_write(&prelude_path, generated_baml.as_bytes())?;
                     let env_vars2: HashMap<String, String> = HashMap::new();
                     let feature_flags2 = internal_baml_core::feature_flags::FeatureFlags::default();
                     let _runtime2 =

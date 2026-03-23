@@ -20,7 +20,7 @@ pub use context_metrics::{
 };
 pub use mermaid::{MermaidError, MermaidService};
 pub use planning::{
-    ContextPlanningResponse, DriftedCallDetail, PlanningError, PlanningService,
+    CitationDetail, ContextPlanningResponse, DriftedCallDetail, PlanningError, PlanningService,
     PlanningStepSummary, TaskPlanDriftSummary, TaskPlanningSnapshot,
 };
 pub use provenance_ops::{ProvenanceOpsError, ProvenanceOpsService};

@@ -9,15 +9,15 @@ pub const CLAUDE_DEV_TOOL_ID: &str = "claude/dev";
 
 /// Renders the full session coordination BAML for claude/dev: classes ClaudeDevAskUser,
 /// ClaudeDevReport, function ChooseClaudeDevAction, and the coordination prompt.
-/// ClaudeDevSessionPlan is defined in generated_tools.baml.
+/// ClaudeDevSessionPlan is defined in `_baml_runtime.baml` (builder prelude).
 pub fn render_claude_dev_session_coordination() -> Result<String> {
     let mut out = String::new();
 
     out.push_str("// Auto-generated session coordination — do not edit manually\n");
     out.push_str("// Coordinates the claude/dev session tool (Open/Send/Next/Finish/Abort).\n");
-    out.push_str("// ClaudeDevSessionPlan is defined in generated_tools.baml.\n\n");
+    out.push_str("// ClaudeDevSessionPlan is defined in _baml_runtime.baml (builder prelude).\n\n");
 
-    // SessionContext is defined in generated_tools.baml (shared FSM host type).
+    // SessionContext is defined in _baml_runtime.baml (shared FSM host type).
     out.push_str("class ClaudeDevAskUser {\n");
     out.push_str("  action string @description(\"Always 'AskUser'.\")\n");
     out.push_str("  prompt string @description(\"When you need the end user to supply information you do not have, state clearly what to provide; the user's reply will be sent to the Claude session as the next Send prompt.\")\n");

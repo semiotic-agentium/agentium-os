@@ -227,6 +227,7 @@ export interface IntentSubmission {
     intentId: string;
     description: string;
     derivedFromMessageIds?: string[];
+    citations?: string[];
     supersession?: string;
 }
 export interface PlanStepSubmission {

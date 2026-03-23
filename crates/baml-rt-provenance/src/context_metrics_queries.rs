@@ -159,7 +159,7 @@ pub async fn turn_totals_by_context(
             .and_then(Value::as_i64)
             .unwrap_or(0);
         let eid = props
-            .get("a2a_event_id")
+            .get("a2a_activity_anchor")
             .and_then(Value::as_str)
             .unwrap_or_default();
         if entry.5.is_empty() || eid < entry.5.as_str() {
@@ -177,7 +177,7 @@ pub async fn turn_totals_by_context(
             row.insert("tokens_total".into(), serde_json::json!(tt));
             row.insert("llm_call_count".into(), serde_json::json!(cc));
             row.insert("llm_duration_ms_total".into(), serde_json::json!(dur));
-            row.insert("first_event_id".into(), Value::String(feid.clone()));
+            row.insert("first_activity_anchor".into(), Value::String(feid.clone()));
             (feid, row)
         })
         .collect();

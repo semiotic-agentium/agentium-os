@@ -14,7 +14,7 @@ and A2A-derived relations for storage in the provenance graph (SurrealDB).
 Identifiers are constructed to match the semantics of the thing they model:
 
 - **Derived IDs**: deterministic from domain identifiers (e.g. `task:<task_id>`,
-  `message_processing:<message_id>`, `llm_call:<event_id>`).
+  `message_processing:<message_id>`, `llm_call:<activity_anchor>`).
 - **Runtime IDs**: agent runtime identity is `AgentId` (UUID) and anchors
   `agent:<agent_id>`, `agent_instance:<agent_id>`, `agent_boot:<agent_id>`.
 - **Archive IDs**: `archive:<package_identity>` derives from package identity
@@ -30,7 +30,7 @@ For explicit mappings and intent, see:
 All nodes created from a `ProvEvent` include:
 
 - `a2a:context_id` (string)
-- `a2a:event_id` (string)
+- `a2a:activity_anchor` (string)
 - `a2a:task_id` (string, when available)
 
 ## Edge Properties
@@ -39,7 +39,7 @@ The graph backend supports relationship properties. We currently set:
 
 - **PROV edges** (`USED`, `WAS_GENERATED_BY`, `WAS_ASSOCIATED_WITH`, `WAS_DERIVED_FROM`):
   only PROV fields (`prov:role`, `prov:time`, `prov:activity`, `prov:type` as applicable).
-- **A2A-derived edges**: carry event metadata (`a2a:context_id`, `a2a:event_id`, `a2a:task_id`)
+- **A2A-derived edges**: carry activity metadata (`a2a:context_id`, `a2a:activity_anchor`, `a2a:task_id`)
   plus any relation-specific attributes (e.g. `a2a:direction`, `a2a:relation`).
 
 ## Relation Naming Rule

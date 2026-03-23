@@ -216,12 +216,16 @@ pub enum EffectEvent {
         duration_ms: u64,
         outcome: Outcome,
     },
+    /// Intent committed for a task. **Citations** are ref-table strings (`#N` history, `@N` archive, …),
+    /// not opaque “evidence” prose — they tie the intent to **citable conversation history** as well as
+    /// archives so provenance and drift checks can validate grounding (see `docs/citable-history-and-checked-citations.md`).
     IntentResolved {
         context_id: ContextId,
         task_id: TaskId,
         intent_id: IntentId,
         description: String,
-        derived_from_message_ids: Vec<String>,
+        /// Ref-table citations co-emitted with the intent; validated at construction (`Citation`).
+        citations: Vec<crate::Citation>,
         supersession: Option<PlanningSupersessionKind>,
         /// Lineage epoch when intent was resolved; for provenance and consistency checks.
         epoch: Option<u64>,
@@ -236,6 +240,8 @@ pub enum EffectEvent {
         /// Lineage epoch when plan was generated; for provenance and consistency checks.
         epoch: Option<u64>,
     },
+    /// Plan step lifecycle transition. **Citations** ground the transition in the same ref-table vocabulary
+    /// as LLM outputs (`#N` / `@N`), enabling checked provenance rather than uninterpreted evidence strings.
     PlanStepStatusChanged {
         context_id: ContextId,
         task_id: TaskId,
@@ -244,7 +250,8 @@ pub enum EffectEvent {
         step_id: PlanStepId,
         old_status: Option<String>,
         new_status: String,
-        evidence_text: String,
+        /// Ref-table citations for this transition; stored on PlanStep provenance for audit/drift.
+        citations: Vec<crate::Citation>,
         /// Lineage epoch when step status changed; for provenance and consistency checks.
         epoch: Option<u64>,
     },

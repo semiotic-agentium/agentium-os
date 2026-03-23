@@ -1572,6 +1572,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "baml-rt-citation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "baml-rt-config"
 version = "0.1.0"
 dependencies = [
@@ -1595,6 +1603,7 @@ dependencies = [
  "async-channel 2.5.0",
  "async-stream",
  "async-trait",
+ "baml-rt-citation",
  "baml-rt-id",
  "futures-util",
  "proptest",
@@ -1779,6 +1788,7 @@ dependencies = [
  "baml-derive 0.1.0",
  "baml-derive-core",
  "baml-rt",
+ "baml-rt-citation",
  "baml-rt-core",
  "baml-tool-derive",
  "baml-tools-calculator",

@@ -535,24 +535,6 @@ impl AgentRunner {
     /// Uses scope derived from the request's context_id so coordinator and delegated flow
     /// share one context. Avoids synthetic_message which generates a fresh context_id and
     /// would cause the initial user message to land in a different context than the agent's.
-    pub(crate) async fn handle_dispatch_by_key(
-        &self,
-        key: &AgentRouteKey,
-        request: baml_rt_core::AgentDispatchRequest,
-    ) -> Result<baml_rt_core::AgentDispatchAck> {
-        let routed_agent = {
-            let routed_agents = self.routed_agents.read().expect("RwLock poison");
-            routed_agents.get(key).cloned().ok_or_else(|| {
-                BamlRtError::AgentNotFound(format!(
-                    "Agent {agent_package}/{agent_instance_id} not found",
-                    agent_package = key.agent_package.as_str(),
-                    agent_instance_id = key.agent_instance_id.as_str()
-                ))
-            })?
-        };
-        routed_agent.handle_dispatch(request).await
-    }
-
     pub(crate) async fn handle_a2a_by_key(
         &self,
         key: &AgentRouteKey,
@@ -573,6 +555,24 @@ impl AgentRunner {
             routed_agent.handle_a2a_stream(request).await
         })
         .await
+    }
+
+    pub(crate) async fn handle_dispatch_by_key(
+        &self,
+        key: &AgentRouteKey,
+        request: baml_rt_core::AgentDispatchRequest,
+    ) -> Result<baml_rt_core::AgentDispatchAck> {
+        let routed_agent = {
+            let routed_agents = self.routed_agents.read().expect("RwLock poison");
+            routed_agents.get(key).cloned().ok_or_else(|| {
+                BamlRtError::AgentNotFound(format!(
+                    "Agent {agent_package}/{agent_instance_id} not found",
+                    agent_package = key.agent_package.as_str(),
+                    agent_instance_id = key.agent_instance_id.as_str()
+                ))
+            })?
+        };
+        routed_agent.handle_dispatch(request).await
     }
 
     /// Run the A2A JSON-RPC loop over the given reader/writer (one JSON-RPC request per line).
@@ -1689,6 +1689,47 @@ impl PlanningServiceImpl {
                 _ => {}
             }
 
+            // Deserialize resolved citations from drift.citation.perCitation.
+            // Each entry carries the full evidence text stored at scoring time.
+            let citations: Vec<baml_rt_api::CitationDetail> = drift_obj
+                .get("citation")
+                .and_then(|c| c.get("perCitation"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|item| {
+                            Some(baml_rt_api::CitationDetail {
+                                raw: item.get("raw")?.as_str()?.to_string(),
+                                n: item.get("n")?.as_u64()? as u32,
+                                is_history: item
+                                    .get("isHistory")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(true),
+                                negated: item
+                                    .get("negated")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false),
+                                similarity: item
+                                    .get("similarity")
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(0.0)
+                                    as f32,
+                                activity_anchor: item
+                                    .get("activityAnchor")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                content_preview: item
+                                    .get("contentPreview")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
             drifted_calls.push(baml_rt_api::DriftedCallDetail {
                 function_name: row
                     .get("baml_prompt")
@@ -1702,6 +1743,7 @@ impl PlanningServiceImpl {
                 intent_text_preview: str_field(drift_obj, "intentTextPreview"),
                 response_text_preview: str_field(drift_obj, "responseTextPreview"),
                 step_text_preview: str_field(drift_obj, "stepTextPreview"),
+                citations,
             });
         }
 
@@ -2084,6 +2126,7 @@ mod tests {
     use baml_rt::baml::BamlRuntimeManager;
     use baml_rt_api::PlanningService;
     use baml_rt_core::{
+        Citation,
         bus::{BusWithEffects, PlanningSupersessionKind},
         ids::{IntentId, MessageId, PlanId, PlanStepId, UuidId},
         route_key_from_request,
@@ -2248,7 +2291,7 @@ globalThis.onChatMessage = async function(_message) {
                 task_id.clone(),
                 IntentId::from("intent-v1".to_string()),
                 "seed intent".to_string(),
-                vec![msg.clone()],
+                vec![Citation::try_new("#1").expect("citation")],
                 None,
                 None,
             ))
@@ -2277,7 +2320,7 @@ globalThis.onChatMessage = async function(_message) {
                 task_id.clone(),
                 IntentId::from("intent-v2".to_string()),
                 "refined intent".to_string(),
-                vec![msg.clone()],
+                vec![Citation::try_new("#1").expect("citation")],
                 Some(PlanningSupersessionKind::RefinedBy),
                 None,
             ))
@@ -2306,7 +2349,7 @@ globalThis.onChatMessage = async function(_message) {
                 task_id.clone(),
                 IntentId::from("intent-v3".to_string()),
                 "replacement intent".to_string(),
-                vec![msg],
+                vec![Citation::try_new("#1").expect("citation")],
                 Some(PlanningSupersessionKind::ReplacedBy),
                 None,
             ))
@@ -2337,7 +2380,7 @@ globalThis.onChatMessage = async function(_message) {
                 PlanStepId::from("step-v3".to_string()),
                 Some("ready".to_string()),
                 "in_progress".to_string(),
-                "evidence".to_string(),
+                vec![Citation::try_new("#1").expect("citation")],
             ))
             .await
             .expect("step status");

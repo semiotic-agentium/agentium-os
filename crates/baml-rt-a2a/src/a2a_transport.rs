@@ -2,10 +2,7 @@
 
 use std::{
     collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -16,6 +13,7 @@ use baml_rt_core::{
     bus::{BusStream, EffectEmitter},
     context::{self, InvocationScope, OutcomeInvocationContext, RequestScope},
     correlation,
+    dispatch::invocation_scope_for_agent_dispatch,
     ids::{AgentId, ContextId, ExternalId, MessageId, TaskId},
     stream_completion::StreamCompletion,
 };
@@ -23,7 +21,6 @@ use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{
     A2aGraphStore, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
     ProvenanceConversationContextItem, ProvenanceEffectSubscriber, ProvenanceWriter,
-    store::{ConversationItemContent, SessionStepOp, ToolOutcome},
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, BridgeHandle, QuickJSBridge, QuickJSConfig,
@@ -32,10 +29,7 @@ use baml_rt_quickjs::{
 };
 use baml_rt_tools::{
     ToolFailure, ToolHandler, ToolName, ToolRegistry, ToolSession, ToolSessionError, ToolTypeSpec,
-    prompt_projection::{
-        PromptProjectionContent, PromptProjectionItem, SessionStepProjection,
-        project_prompt_context,
-    },
+    prompt_projection::{PromptProjectionItem, project_prompt_context},
     tools::{ToolFunctionMetadata, ToolSessionContext},
 };
 use baml_tools_system::A2aSessionBundle;
@@ -46,9 +40,9 @@ use tracing::Span;
 use crate::{
     a2a,
     a2a_store::{
-        ConversationContextSource, ProvenanceTaskStore, TaskChunkApplier, TaskEventRecorder,
-        TaskRepository, TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue, message_role_string,
-        metadata_string_map, validated_message_content,
+        ConversationContextSource, ProvenanceTaskStore, ProvenanceWriterConversationSource,
+        TaskChunkApplier, TaskEventRecorder, TaskRepository, TaskStoreBackend, TaskUpdateEvent,
+        TaskUpdateQueue, message_role_string, metadata_string_map, validated_message_content,
     },
     a2a_types::{
         JSONRPCId, Message, ROLE_USER, StreamChunkView, TaskArtifactUpdateEvent,
@@ -258,22 +252,6 @@ impl TaskChunkApplier for SurrealRuntimeStore {
 }
 
 #[async_trait]
-impl ConversationContextSource for SurrealRuntimeStore {
-    async fn conversation_context(
-        &self,
-        context_id: &baml_rt_core::ids::ContextId,
-        limit: Option<usize>,
-    ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.provenance
-            .conversation_context(context_id, limit)
-            .await
-            .map_err(|e| BamlRtError::ProvenanceContextRead {
-                source: Box::new(e),
-            })
-    }
-}
-
-#[async_trait]
 impl ProvenanceContextReader for SurrealRuntimeStore {
     async fn context_messages(
         &self,
@@ -308,23 +286,24 @@ impl ProvenanceWriter for SurrealRuntimeStore {
     }
 }
 
-/// Conversation context from the unified task store (single source of truth).
-/// No separate provenance read path; store view and provenance write are one concept.
-struct TaskStoreConversationContextProvider {
-    store: Arc<dyn ConversationContextSource>,
+/// Projects [`ProvenanceConversationContextItem`] rows into BAML `conversation_history` JSON.
+///
+/// The `source` is always [`ProvenanceWriterConversationSource`] (graph-backed).
+struct ProjectingConversationContextProvider {
+    source: Arc<dyn ConversationContextSource>,
     tool_registry: Arc<ToolRegistry>,
     /// Archive tables for re-deriving cat-n Read output in history.
     archive_ref_tables: Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>,
 }
 
-impl TaskStoreConversationContextProvider {
+impl ProjectingConversationContextProvider {
     fn new(
-        store: Arc<dyn ConversationContextSource>,
+        source: Arc<dyn ConversationContextSource>,
         tool_registry: Arc<ToolRegistry>,
         archive_ref_tables: Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>,
     ) -> Self {
         Self {
-            store,
+            source,
             tool_registry,
             archive_ref_tables,
         }
@@ -332,30 +311,28 @@ impl TaskStoreConversationContextProvider {
 }
 
 #[async_trait]
-impl ConversationContextProvider for TaskStoreConversationContextProvider {
+impl ConversationContextProvider for ProjectingConversationContextProvider {
     async fn conversation_history_json(
         &self,
         scope: &context::RuntimeScope,
     ) -> Result<Option<Value>> {
         let context_id = scope.context_id();
         let items = self
-            .store
+            .source
             .conversation_context(context_id, Some(40))
             .await?;
         tracing::debug!(
             context_id = %context_id,
             item_count = items.len(),
-            sources = ?items.iter().map(|i| i.source_name()).collect::<Vec<_>>(),
-            "conversation_history_json: store returned items"
+            "conversation_history_json: context source returned items"
         );
         if items.is_empty() {
             return Ok(None);
         }
 
-        let registry = self.tool_registry.as_ref();
         let projection_items = items
             .into_iter()
-            .filter_map(|item| to_projection_item(item, registry))
+            .filter_map(to_projection_item)
             .collect::<Vec<_>>();
         if projection_items.is_empty() {
             return Ok(None);
@@ -390,105 +367,49 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
                             None      => format!("cat -n {archive_ref_str}"),
                         };
                         if page.lines.is_empty() {
-                            return Some(format!("{cmd}\n(no matches)"));
+                            return Some(format!("{cmd}\n# no matches"));
                         }
                         let first = page.lines.first().map(|l| l.original_line_number).unwrap_or(1);
                         let last  = page.lines.last().map(|l| l.original_line_number).unwrap_or(1);
-                        let footer = if page.has_more {
-                            let n_more = page.total_matched.saturating_sub(page.next_offset);
+                        let range_comment = if page.has_more {
                             format!(
-                                "\n({n_more} more lines — Read {archive_ref_str} offset={} to continue)",
+                                "  # lines {first}-{last} of {} ({} more — offset={} for next page)",
+                                page.total_matched,
+                                page.total_matched - page.next_offset,
                                 page.next_offset,
                             )
-                        } else if first > 1 {
-                            format!("\n(end — lines {first}-{last} of {})", page.total_matched)
-                        } else {
+                        } else if first == 1 && last == page.total_matched {
                             String::new()
+                        } else {
+                            format!("  # lines {first}-{last} of {}", page.total_matched)
                         };
-                        Some(format!("{cmd}\n{formatted}{footer}"))
+                        Some(format!("{cmd}{range_comment}\n{formatted}"))
                     });
                 boxed
             });
 
-        let rendered = project_prompt_context(
+        // Get or create the ref table for this context so #N refs can be allocated
+        // for messages and tool-call descriptions during projection.
+        let ref_table_arc = self
+            .archive_ref_tables
+            .as_deref()
+            .map(|t| baml_rt_tools::archive_refs::get_or_create_ref_table(t, &context_id_str))
+            .unwrap_or_else(|| std::sync::Arc::new(baml_rt_tools::archive_refs::RefTable::new()));
+
+        Ok(Some(project_prompt_context(
             projection_items,
             self.tool_registry.as_ref(),
+            &ref_table_arc,
             reader.as_deref(),
-        );
-        if tracing::enabled!(tracing::Level::TRACE) {
-            tracing::trace!(
-                context_id = %context_id,
-                history = %rendered,
-                "conversation_history_json: rendered history"
-            );
-        }
-        Ok(Some(rendered))
+        )))
     }
 }
 
 /// Convert a provenance conversation item to a projection item.
-/// The registry is used here — the single parse point — to resolve `ToolCall` descriptions
-/// from `Value` args into `String`. Nothing above this function sees `Value` for tool calls.
-/// Returns `None` for `StatusOnly` tool results and for ops that add no LLM value (Read/Finish/Abort).
 pub(crate) fn to_projection_item(
     item: ProvenanceConversationContextItem,
-    registry: &baml_rt_tools::ToolRegistry,
 ) -> Option<PromptProjectionItem> {
-    let content = match item.content {
-        ConversationItemContent::Message(text) => PromptProjectionContent::Message(text),
-        ConversationItemContent::ToolCall(tc) => {
-            let desc =
-                registry.describe_invocation_with_hint(Some(tc.tool_name.as_str()), &tc.args);
-            if desc.is_empty() {
-                return None;
-            }
-            PromptProjectionContent::ToolCall(desc)
-        }
-        ConversationItemContent::ToolResult(tr) => match tr.outcome {
-            ToolOutcome::Result(value) => PromptProjectionContent::ToolResult {
-                tool_name: tr.tool_name,
-                result: value,
-            },
-            ToolOutcome::Error(value) => PromptProjectionContent::ToolError {
-                tool_name: tr.tool_name,
-                error: value,
-            },
-            ToolOutcome::StatusOnly => return None,
-        },
-        ConversationItemContent::SessionStep(step) => {
-            let projection_op = match step.op {
-                SessionStepOp::Open => SessionStepProjection::Open,
-                SessionStepOp::SendDone {
-                    archive_ref,
-                    header,
-                } => SessionStepProjection::SendDone {
-                    archive_ref,
-                    header,
-                },
-                SessionStepOp::Read {
-                    archive_ref,
-                    grep,
-                    offset,
-                    limit,
-                } => SessionStepProjection::Read {
-                    archive_ref,
-                    grep,
-                    offset,
-                    limit,
-                },
-            };
-            PromptProjectionContent::SessionStep {
-                tool_name: step.tool_name,
-                op: projection_op,
-            }
-        }
-    };
-    Some(PromptProjectionItem {
-        timestamp_ms: item.timestamp_ms,
-        event_id: item.event_id.as_str().to_string(),
-        role: item.role,
-        content,
-    })
+    baml_rt_provenance::provenance_item_to_projection_item(item)
 }
 
 /// Top-level agent type that owns runtime, JS bridge, and A2A comms.
@@ -521,28 +442,6 @@ impl A2aAgent {
     /// Get the agent ID (generated during build)
     pub fn agent_id(&self) -> &baml_rt_core::ids::AgentId {
         &self.agent_id
-    }
-
-    /// Invoke the JS `onDispatch` handler registered by `__chat_register({ onDispatch })`.
-    ///
-    /// Returns `FunctionNotFound("onDispatch")` when the agent did not register a handler.
-    pub async fn handle_dispatch(&self, request: AgentDispatchRequest) -> Result<AgentDispatchAck> {
-        let scope = scope_from_dispatch_request(&request, self.agent_id.clone());
-        let args = serde_json::to_value(&request).map_err(BamlRtError::Json)?;
-        let response = invoke_optional_js_function_handover(
-            self.bridge_handle.as_ref(),
-            scope,
-            "onDispatch",
-            args,
-        )
-        .await?
-        .ok_or_else(|| BamlRtError::FunctionNotFound("onDispatch".to_string()))?;
-
-        serde_json::from_value(response).map_err(|source| BamlRtError::InvalidArgumentWithSource {
-            message: "dispatch handler must return { accepted: boolean, detail?: string }"
-                .to_string(),
-            source: Box::new(source),
-        })
     }
 
     /// Access the underlying runtime manager.
@@ -622,12 +521,12 @@ impl A2aAgent {
             access: None,
             tags: Vec::new(),
             secret_requests: Vec::new(),
+            event_sources: Vec::new(),
             config: None,
             config_bundle: None,
             origin: baml_rt_tools::ToolOrigin::Guest,
             projection_semantics: None,
             session_policy: baml_rt_tools::SessionPolicy::default(),
-            event_sources: Vec::new(),
         };
 
         let handler: Arc<dyn ToolHandler> = Arc::new(JsToolHandler {
@@ -667,6 +566,27 @@ impl A2aAgent {
         };
         registry.register_bundle(bundle)?;
         Ok(())
+    }
+
+    /// Deliver a deterministic host dispatch to the agent's optional `onDispatch` handler.
+    ///
+    /// Uses the bridge handover lane so this future is [`Send`] (required by `async_trait` HTTP
+    /// registries); see [`baml_rt_quickjs::invoke_optional_js_function_handover`].
+    pub async fn handle_dispatch(&self, request: AgentDispatchRequest) -> Result<AgentDispatchAck> {
+        let scope = invocation_scope_for_agent_dispatch(self.agent_id().clone(), &request);
+        let js_payload = serde_json::to_value(&request).map_err(BamlRtError::Json)?;
+
+        let result = invoke_optional_js_function_handover(
+            self.bridge_handle().as_ref(),
+            scope,
+            "onDispatch",
+            js_payload,
+        )
+        .await?;
+        let Some(value) = result else {
+            return Err(BamlRtError::FunctionNotFound("onDispatch".into()));
+        };
+        serde_json::from_value(value).map_err(BamlRtError::Json)
     }
 }
 
@@ -716,11 +636,12 @@ enum TaskStoreConfig {
     Default,
 }
 
-/// Provenance writer configuration: either provided, default (InMemory), or SurrealDB (task + provenance in same DB).
+/// Provenance graph configuration. A writer is **always** mounted at build time.
 enum ProvenanceWriterConfig {
     Provided(Arc<dyn ProvenanceWriter>),
-    /// Task state and provenance in the same SurrealDB store; build() creates [ProvenanceTaskStore] over SurrealRuntimeStore.
+    /// Task state and provenance in the same SurrealDB store (ProvenanceTaskStore over SurrealRuntimeStore).
     Surreal(Arc<baml_rt_provenance::SurrealProvenanceStore>),
+    /// Opens a dedicated **in-memory** SurrealDB graph (tests and local defaults). Not optional: no agent without a database.
     Default,
 }
 
@@ -769,8 +690,7 @@ impl A2aAgentBuilder {
     /// - `quickjs_config`: `QuickJSConfig::default()`
     /// - `register_baml_functions`: `true`
     /// - `init_js`: Empty vec
-    /// - `task_store`: `ProvenanceTaskStore` (no provenance writer)
-    /// - `provenance_writer`: None
+    /// - `task_store` / `provenance_writer`: default pair mounts an **in-memory Surreal** graph
     /// - `agent_id`: Auto-generated UUID
     ///
     /// **REQUIRED**: Call `with_effect_emitter()` before `build()`.
@@ -1105,42 +1025,37 @@ impl A2aAgentBuilderWithEffectEmitter {
         // live_result_pipeline, and request_router (create-stream writes and tasks.subscribe reads
         // see the same backend instance).
         let (task_store, provenance_writer) = match (self.task_store, self.provenance_writer) {
+            (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Default) => {
+                return Err(BamlRtError::InvalidArgument(
+                    "A2aAgentBuilder: a provenance graph is required. \
+                     With a custom task store you must call .with_provenance_writer(...) or .with_surreal_store(...); \
+                     you cannot combine with_task_store_backend alone with the default writer."
+                        .into(),
+                ));
+            }
             (TaskStoreConfig::Provided(task_store), ProvenanceWriterConfig::Provided(writer)) => {
                 (task_store, Some(writer))
             }
-            (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Default) => {
-                return Err(BamlRtError::InvalidArgument(
-                    "A2aAgentBuilder: a custom task-store backend requires an explicit provenance \
-                     writer. Call .with_provenance_writer(...) or .with_surreal_store(...) alongside \
-                     .with_task_store_backend(...).".to_string(),
-                ));
-            }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Provided(writer)) => {
-                let store: Arc<dyn TaskStoreBackend> = Arc::new(ProvenanceTaskStore::new(
-                    Some(writer.clone()),
-                    agent_id.clone(),
-                ));
+                let store: Arc<dyn TaskStoreBackend> =
+                    Arc::new(ProvenanceTaskStore::new(writer.clone(), agent_id.clone()));
                 (store, Some(writer))
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Default) => {
-                // No explicit store provided: spin up an isolated in-memory SurrealDB graph so
-                // every agent has full provenance capabilities (evidence gating, step tracking,
-                // conversation context queries) even without explicit configuration.
-                let isolated = baml_rt_provenance::SurrealStoreBuilder::in_memory_isolated()
+                let prov = baml_rt_provenance::SurrealStoreBuilder::in_memory_isolated()
                     .build()
                     .await
-                    .map_err(|e| BamlRtError::InvalidArgument(format!(
-                        "A2aAgentBuilder: failed to create default isolated provenance store: {e}"
-                    )))?;
-                let runtime_store = SurrealRuntimeStore::new(isolated, agent_id.clone());
-                let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store.clone();
-                let task_store: Arc<dyn TaskStoreBackend> =
-                    Arc::new(ProvenanceTaskStore::with_backend(
-                        runtime_store,
-                        Some(provenance_writer.clone()),
-                        agent_id.clone(),
-                    ));
-                (task_store, Some(provenance_writer))
+                    .map_err(|e| {
+                        BamlRtError::InvalidArgument(format!(
+                            "A2aAgentBuilder: failed to open default in-memory provenance store: {e}"
+                        ))
+                    })?;
+                let runtime_store = SurrealRuntimeStore::new(prov, agent_id.clone());
+                let w: Arc<dyn ProvenanceWriter> = runtime_store.clone();
+                let task_store: Arc<dyn TaskStoreBackend> = Arc::new(
+                    ProvenanceTaskStore::with_backend(runtime_store, w.clone(), agent_id.clone()),
+                );
+                (task_store, Some(w))
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Surreal(store))
             | (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Surreal(store)) => {
@@ -1151,12 +1066,14 @@ impl A2aAgentBuilderWithEffectEmitter {
                 let task_store: Arc<dyn TaskStoreBackend> =
                     Arc::new(ProvenanceTaskStore::with_backend(
                         runtime_store,
-                        Some(provenance_writer.clone()),
+                        provenance_writer.clone(),
                         agent_id.clone(),
                     ));
                 (task_store, Some(provenance_writer))
             }
         };
+
+        let writer = provenance_writer.expect("build always mounts a ProvenanceWriter");
 
         let emitter: Arc<dyn EventEmitter> =
             Arc::new(BroadcastEventEmitter::new(update_tx.clone()));
@@ -1197,14 +1114,17 @@ impl A2aAgentBuilderWithEffectEmitter {
         // Provenance: effect bus is the source of truth for LLM/tool completion (including deferred
         // plan failures). Interceptors only see trace-based completion; when execute_tool_from_baml_result
         // fails (e.g. empty steps), handle.complete(Failure) emits via effect bus.
-        if let Some(ref writer) = provenance_writer {
+        {
             let mut subscriber = ProvenanceEffectSubscriber::new(writer.clone());
             // Wire tool-action describer so drift scoring produces natural language
             // ("searching Notion for 'squigs'") instead of raw JSON for tool-call payloads.
             let registry = runtime.lock().await.tool_registry();
+            let registry_for_citations = registry.clone();
+            subscriber.set_tool_registry(registry_for_citations);
             subscriber.set_action_describer(Arc::new(
                 move |tool_name: Option<&str>, content: &serde_json::Value| {
-                    registry.describe_invocation_with_hint(tool_name, content)
+                    let s = registry.describe_invocation_with_hint(tool_name, content);
+                    if s.is_empty() { None } else { Some(s) }
                 },
             ));
             effect_emitter
@@ -1232,18 +1152,18 @@ impl A2aAgentBuilderWithEffectEmitter {
                 })?;
             let tool_registry = runtime_guard.tool_registry();
             let archive_ref_tables = Some(runtime_guard.archive_ref_tables());
+            let conversation_source: Arc<dyn ConversationContextSource> =
+                Arc::new(ProvenanceWriterConversationSource::new(writer.clone()));
             runtime_guard.set_conversation_context_provider(Arc::new(
-                TaskStoreConversationContextProvider::new(
-                    task_store.clone(),
+                ProjectingConversationContextProvider::new(
+                    conversation_source,
                     tool_registry,
                     archive_ref_tables,
                 ),
             ));
-            if provenance_writer.is_some() {
-                tracing::debug!(
-                    "A2aAgentBuilder::build: provenance lifecycle uses effect subscriber only"
-                );
-            }
+            tracing::debug!(
+                "A2aAgentBuilder::build: conversation context wired to provenance graph"
+            );
         }
         tracing::debug!("A2aAgentBuilder::build: runtime context/interceptors wired");
         // live_result_pipeline uses the same task_store as repository (inner_pipeline wraps task_store).
@@ -1254,7 +1174,7 @@ impl A2aAgentBuilderWithEffectEmitter {
             task_store,
             result_pipeline,
             live_result_pipeline: inner_pipeline,
-            provenance_writer,
+            provenance_writer: Some(writer),
             response_formatter,
             request_router,
             error_classifier,
@@ -1333,39 +1253,6 @@ fn build_stream_sessions_and_relay(
 /// synthesize a deterministic live-session task id derived from (context_id, message_id).
 /// This keeps MessageReceived attributed to the receiver's (agent_id, task_id) without collapsing
 /// task_id to context_id.
-static DISPATCH_MSG_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-/// Build an invocation scope from a dispatch request, threading context/task/message IDs
-/// from the inbound event so tracing and provenance link to the dispatch origin.
-fn scope_from_dispatch_request(
-    request: &AgentDispatchRequest,
-    agent_id: AgentId,
-) -> InvocationScope {
-    let Some(context_id) = request.context_id.clone() else {
-        return InvocationScope::synthetic_message(agent_id);
-    };
-
-    let message_id = request
-        .message_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| MessageId::from_external(ExternalId::new(value.to_string())))
-        .unwrap_or_else(|| {
-            let seq = DISPATCH_MSG_COUNTER.fetch_add(1, Ordering::Relaxed);
-            MessageId::from_external(ExternalId::new(format!("dispatch-msg-{seq}")))
-        });
-
-    match request.task_id.clone() {
-        Some(task_id) => InvocationScope::new(context::RuntimeScope::task_scope(
-            context_id, agent_id, message_id, task_id,
-        )),
-        None => InvocationScope::new(context::RuntimeScope::message_scope(
-            context_id, agent_id, message_id,
-        )),
-    }
-}
-
 fn synthesized_live_task_id(context_id: &ContextId, message_id: &MessageId) -> TaskId {
     TaskId::from_external(ExternalId::new(format!(
         "live-task:{}:{}",
@@ -2416,7 +2303,7 @@ mod tests {
     /// → to_projection_item → project_prompt_context → rendered JSON.
     ///
     /// This exercises the exact path used by `ctx.tags.conversation_history` in BAML
-    /// prompts: the same call sequence as `TaskStoreConversationContextProvider::conversation_history_json`.
+    /// prompts: the same call sequence as `ProjectingConversationContextProvider::conversation_history_json`.
     #[tokio::test]
     async fn session_history_renders_correctly_through_full_pipeline() {
         use baml_rt_core::ids::{AgentId, ExternalId, MessageId, UuidId};
@@ -2484,6 +2371,8 @@ mod tests {
             render_to_lines(&result_payload),
             tool_name.clone(),
             "found 2 agents".into(),
+            String::new(),
+            "tool_result".to_string(),
         );
         let header = entry.display_header(short_ref);
         store
@@ -2523,27 +2412,34 @@ mod tests {
             .await
             .expect("conversation_context");
 
-        let registry = ToolRegistry::new();
         let projection_items: Vec<_> = raw_items
             .into_iter()
-            .filter_map(|item| super::to_projection_item(item, &registry))
+            .filter_map(super::to_projection_item)
             .collect();
-        // No archive reader in test context — Read step renders as fallback "Read @1".
-        let history = project_prompt_context(projection_items, &registry, None);
+
+        let registry = ToolRegistry::new();
+        let ref_table = baml_rt_tools::archive_refs::RefTable::new();
+        // No archive reader — Read step shows the grep/cat analogue (`grep -n '…' @1`), pud-squashed.
+        let history = project_prompt_context(projection_items, &registry, &ref_table, None);
         let items = history.as_array().expect("array");
 
         // 4 items: user message + Open + SendDone + Read
-        // (no ToolCall/ToolResult noise — session steps are the sole history source)
+        // (no ToolCall/ToolResult — only the user line plus three session steps)
         assert_eq!(items.len(), 4, "expected 4 history items, got: {history}");
 
         // Roles come from the graph in canonical form (ROLE_USER / assistant).
-        // [0] user message
+        // [0] user message — citation-aware projection allocates `#1` for the first history line
+        // (see `prompt_projection::render_content` Message branch).
         let user_role = items[0]["role"].as_str().unwrap();
         assert!(
             user_role.contains("USER") || user_role == "user",
             "expected user role, got: {user_role}"
         );
-        assert_eq!(items[0]["content"], "what can you do");
+        assert_eq!(
+            items[0]["content"].as_str().unwrap(),
+            "#1 what can you do",
+            "user content should be history-ref prefixed for drift/citation resolution"
+        );
 
         // [1] Open: describes the session being opened
         assert_eq!(items[1]["role"], "assistant");
@@ -2566,16 +2462,12 @@ mod tests {
             "SendDone must start with archive ref, got: {send_content}"
         );
 
-        // [3] Read: rendered as "grep -n 'pattern' @1" when archive_reader is None (fallback)
+        // [3] Read: grep/cat analogue (pud-squashed); with reader would be paginated output only.
         assert_eq!(items[3]["role"], "assistant");
         let read_content = items[3]["content"].as_str().unwrap();
-        assert!(
-            read_content.contains("@1"),
-            "Read content must reference archive '@1', got: {read_content}"
-        );
-        assert!(
-            read_content.contains("name description"),
-            "Read must contain grep pattern, got: {read_content}"
+        assert_eq!(
+            read_content, "grep -n 'name description' @1",
+            "Read without archive_reader must show grep command line"
         );
     }
 }

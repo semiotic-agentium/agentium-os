@@ -119,7 +119,9 @@ function PlanClickUpWork(intent: string, operation_kind: string) -> ClickUpPlan 
 /// Step executor: called repeatedly by runGeneratedStepExecutor for ONE plan step at a time.
 /// Prior results are threaded forward so execute steps can use IDs found in navigate steps.
 class FinalResponse {
-  message string @description("Final answer or summary when this step is complete.")
+  message string @description("Final answer or summary when this step is complete. For the 'format' step, prefer GitHub-flavored Markdown; navigate/execute completions may stay brief plain text.")
+  structured_json string? @description("Optional strict JSON for UI/tools (e.g. task ids, list ids); omit when not needed.")
+  citations string[] @description("URLs or stable refs from tool results; use [] if none.")
 }
 
 function ChooseClickUpAction(
@@ -160,7 +162,7 @@ function ChooseClickUpAction(
       When you have the IDs this step needs, emit { "message": "<what was found>" }.
     - For an "execute" step: use IDs from prior_results to perform the target operation.
       When the operation is complete, emit { "message": "<what was done>" }.
-    - For a "format" step: emit { "message": "<concise human-readable summary of all results>" }.
+    - For a "format" step: emit FinalResponse with message as the user-visible summary (prefer GitHub-flavored Markdown). Optionally set structured_json to a compact JSON string of key entities (task ids, urls) and citations to URLs/refs from prior_results.
     - Always extract IDs from prior_results — never guess or use null for required IDs.
 
     RESPONSE GATE:

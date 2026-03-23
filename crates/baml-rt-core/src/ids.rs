@@ -61,8 +61,11 @@ define_id_type!(
     ArtifactId
 );
 define_id_type!(
-    /// Event identifier for provenance events.
-    EventId
+    /// Correlation key for a **provenance activity emission** in the append-only stream.
+    ///
+    /// Same string as Surreal property `a2a_activity_anchor` and colon-key `a2a:activity_anchor`
+    /// on stored nodes (message handling, tool invocation, LLM call, …).
+    ActivityAnchorId
 );
 define_id_type!(
     /// Agent runtime instance identifier.
@@ -142,19 +145,19 @@ impl ArtifactId {
     }
 }
 
-impl EventId {
+impl ActivityAnchorId {
     pub fn from_counter(counter: u64) -> Self {
         Self(MonotonicId::new("prov", counter).into_string())
     }
 }
 
-impl From<String> for EventId {
+impl From<String> for ActivityAnchorId {
     fn from(s: String) -> Self {
         Self(s)
     }
 }
 
-impl From<&str> for EventId {
+impl From<&str> for ActivityAnchorId {
     fn from(s: &str) -> Self {
         Self(s.to_string())
     }
@@ -225,7 +228,7 @@ impl From<&str> for ContextId {
 impl TemporalConstructible for ContextId {}
 impl TemporalConstructible for CorrelationId {}
 impl ExternalConstructible for ArtifactId {}
-impl MonotonicConstructible for EventId {}
+impl MonotonicConstructible for ActivityAnchorId {}
 impl UuidConstructible for AgentId {}
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { RunContext, SessionResult } from "./baml-runtime";
+import type { RunContext, SessionResult, StructuredReply } from "./baml-runtime";
 
 const MAX_REACT_STEPS = 8;
 const MAX_CLARIFY = 2;
@@ -9,7 +9,11 @@ type NotRelevant = { reason: string };
 type ClickUpIntent = { intent: string; operation_kind: "read" | "write" | "delete" };
 type ClickUpPlanStep = { id: string; description: string; kind: "navigate" | "execute" | "format" };
 type ClickUpPlan = { goal: string; steps: ClickUpPlanStep[] };
-type FinalResponse = { message: string };
+type FinalResponse = {
+  message: string;
+  structured_json?: string | null;
+  citations?: string[];
+};
 type ClickUpTask = { id?: string; name?: string; status?: string; url?: string };
 type ClickUpItem = { id: string; name: string; kind: string };
 type ClickUpOutput = { tasks?: ClickUpTask[]; items?: ClickUpItem[]; message?: string };
@@ -79,6 +83,19 @@ function collectStepResultsJson(steps: unknown[]): string {
   }
 }
 
+function finalResponseToStructured(fr: FinalResponse): StructuredReply {
+  const msg = fr.message.trim() || "Done.";
+  const parts: StructuredReply["parts"] = [{ type: "text", text: msg }];
+  const sj = typeof fr.structured_json === "string" ? fr.structured_json.trim() : "";
+  if (sj) {
+    parts.push({ type: "data", data: sj, media_type: "application/json" });
+  }
+  const citations = Array.isArray(fr.citations)
+    ? fr.citations.filter((c): c is string => typeof c === "string")
+    : [];
+  return { parts, citations };
+}
+
 function formatOutput(output: ClickUpOutput): string {
   let response = output.message || "Done.";
   if (output.items && output.items.length > 0) {
@@ -92,9 +109,9 @@ function formatOutput(output: ClickUpOutput): string {
   return response;
 }
 
-function extractFinalMessage(steps: unknown[]): string {
+function extractFinalMessage(steps: unknown[]): string | StructuredReply {
   for (const step of [...steps].reverse()) {
-    if (isFinalResponse(step)) return step.message;
+    if (isFinalResponse(step)) return finalResponseToStructured(step);
     const out = extractToolOutput(step);
     if (out) return formatOutput(out);
     if (isObject(step) && typeof step.message === "string") return step.message;
@@ -118,7 +135,6 @@ async function runClickUpPlan(
     ? await executionSession.submitIntent({
         intentId,
         description: goal,
-        derivedFromMessageIds: [executionMessageId(ctx.message)],
       })
     : null;
   const executable = intentPhase
@@ -143,7 +159,7 @@ async function runClickUpPlan(
   try {
     for (const toolStep of toolSteps) {
       if (executable) {
-        await executable.startStep?.(toolStep.id, `Starting ${toolStep.kind}: ${toolStep.description}`);
+        await executable.startStep?.(toolStep.id);
       }
 
       const run = await runGeneratedStepExecutor("ChooseClickUpAction", {
@@ -157,26 +173,25 @@ async function runClickUpPlan(
       priorResultsJson = collectStepResultsJson(run.steps);
 
       if (executable) {
-        await executable.completeStep?.(
-          toolStep.id,
-          `Completed ${toolStep.kind}: ${run.steps.length} result(s).`,
-        );
+        await executable.completeStep?.(toolStep.id);
       }
     }
 
     // Format step: extract final message from all accumulated step outputs.
     if (formatStep && executable) {
-      await executable.startStep?.(formatStep.id, `Formatting response for: ${goal}`);
+      await executable.startStep?.(formatStep.id);
     }
 
-    const finalMessage = extractFinalMessage(allStepOutputs.flat());
+    const finalMessage: string | StructuredReply = extractFinalMessage(allStepOutputs.flat());
 
     if (formatStep && executable) {
-      await executable.completeStep?.(formatStep.id, "Response formatted and returned to user.");
+      await executable.completeStep?.(formatStep.id);
     }
     if (executable) await executable.finish?.();
 
-    return { message: finalMessage };
+    return typeof finalMessage === "string"
+      ? { message: finalMessage }
+      : { message: finalMessage };
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
     try { if (executable) await executable.abort?.(errMsg); } catch (_) { /* best-effort */ }

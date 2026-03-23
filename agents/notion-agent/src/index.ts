@@ -1,5 +1,9 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { RunContext, SessionResult } from "./baml-runtime";
+import type {
+  RunContext,
+  SessionResult,
+  StructuredReply,
+} from "./baml-runtime";
 
 const MAX_REACT_STEPS = 8;
 const MAX_CLARIFY = 2;
@@ -198,7 +202,6 @@ async function runNotionPlan(
     ? await executionSession.submitIntent({
         intentId,
         description: goal,
-        derivedFromMessageIds: [messageId],
       })
     : null;
   const executable = intentPhase
@@ -223,10 +226,7 @@ async function runNotionPlan(
   try {
     for (const toolStep of toolSteps) {
       if (executable) {
-        await executable.startStep?.(
-          toolStep.id,
-          `Starting ${toolStep.kind}: ${toolStep.description}`,
-        );
+        await executable.startStep?.(toolStep.id);
       }
 
       await runGeneratedStepExecutor("ChooseNotionAction", {
@@ -235,33 +235,28 @@ async function runNotionPlan(
       }, { max_steps: MAX_REACT_STEPS });
 
       if (executable) {
-        await executable.completeStep?.(
-          toolStep.id,
-          `Completed ${toolStep.kind}.`,
-        );
+        await executable.completeStep?.(toolStep.id);
       }
     }
 
     // ── Synthesize from conversation history ────────────────────────────
     // History contains Read results from all ChooseNotionAction runs above.
     if (synthesizeStep && executable) {
-      await executable.startStep?.(synthesizeStep.id, `Synthesizing answer: ${goal}`);
+      await executable.startStep?.(synthesizeStep.id);
     }
 
-    let finalMessage: string;
+    let finalMessage: string | StructuredReply;
     try {
-      const reaction = await ReactToNotionResults({
+      finalMessage = (await ReactToNotionResults({
         goal,
         user_message: userText,
-      });
-      finalMessage = typeof reaction === "string" ? reaction.trim() : "";
-      if (!finalMessage) throw new Error("empty reaction");
+      })) as StructuredReply;
     } catch (_) {
       finalMessage = "Notion returned no usable content for this request.";
     }
 
     if (synthesizeStep && executable) {
-      await executable.completeStep?.(synthesizeStep.id, "Answer synthesized and returned to user.");
+      await executable.completeStep?.(synthesizeStep.id);
     }
     if (executable) await executable.finish?.();
 

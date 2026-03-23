@@ -49,136 +49,16 @@
 //! `tests/fixtures/drift/12_synthesis_citations.toml`:
 //! - line-scoped: cite_mean = 0.78
 //! - full-blob (15 records, 12 irrelevant): cite_mean = 0.67
+//!
+//! ## Crate split
+//!
+//! [`Citation`], [`ParsedCitation`], [`CitationKind`], and [`parse_citations`] live in
+//! **`baml-rt-citation`** (no dependency on `RefTable`). This module re-exports them and
+//! adds resolution / validation helpers that need the tool runtime.
 
-use std::ops::RangeInclusive;
-
-/// A citation parsed from a string in a `citations` field on a BAML wrapper type.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParsedCitation {
-    /// `#N` or `!#N` — refers to a message or tool-call description entry in the `RefTable`.
-    History {
-        n: u32,
-        /// `true` when the `!` prefix is present: this entry *contradicts* the decision.
-        negated: bool,
-    },
-    /// `@N`, `@N:L`, `@N:L1-L2` (and their `!`-prefixed negation forms).
-    Archive {
-        n: u32,
-        /// Line range (1-based, inclusive). `None` = entire archive content.
-        lines: Option<RangeInclusive<usize>>,
-        /// `true` when the `!` prefix is present: this archive entry *contradicts* the decision.
-        negated: bool,
-    },
-}
-
-impl ParsedCitation {
-    /// Parse a citation string. Returns `Err` with a message on invalid format.
-    ///
-    /// Accepted formats:
-    /// - `#N` → `History { n, negated: false }`
-    /// - `!#N` → `History { n, negated: true }`
-    /// - `@N` → `Archive { n, lines: None, negated: false }`
-    /// - `!@N` → `Archive { n, lines: None, negated: true }`
-    /// - `@N:L` / `!@N:L` → single line (negated if `!` prefix)
-    /// - `@N:L1-L2` / `!@N:L1-L2` → line range (negated if `!` prefix)
-    pub fn parse(s: &str) -> Result<Self, String> {
-        let (negated, body) = if let Some(inner) = s.strip_prefix('!') {
-            (true, inner)
-        } else {
-            (false, s)
-        };
-
-        if let Some(rest) = body.strip_prefix('#') {
-            let n = rest.parse::<u32>().map_err(|_| format!("invalid history ref: '{s}'"))?;
-            return Ok(Self::History { n, negated });
-        }
-
-        if let Some(rest) = body.strip_prefix('@') {
-            // Split on ':' to detect line specifier.
-            if let Some((ref_part, line_part)) = rest.split_once(':') {
-                let n = ref_part
-                    .parse::<u32>()
-                    .map_err(|_| format!("invalid archive ref number in: '{s}'"))?;
-                let lines = parse_line_range(line_part)
-                    .map_err(|e| format!("invalid line range in '{s}': {e}"))?;
-                return Ok(Self::Archive { n, lines: Some(lines), negated });
-            }
-            let n = rest
-                .parse::<u32>()
-                .map_err(|_| format!("invalid archive ref: '{s}'"))?;
-            return Ok(Self::Archive { n, lines: None, negated });
-        }
-
-        Err(format!(
-            "citation must start with '#' or '!#' (history) or '@' or '!@' (archive); got: '{s}'"
-        ))
-    }
-
-    /// The raw ref number (the `N` in `#N` or `@N`).
-    pub fn n(&self) -> u32 {
-        match self {
-            Self::History { n, .. } | Self::Archive { n, .. } => *n,
-        }
-    }
-
-    /// Whether this citation refers to the history map (`#N`) rather than the archive map (`@N`).
-    pub fn is_history(&self) -> bool {
-        matches!(self, Self::History { .. })
-    }
-
-    /// Whether this is a counter-evidence citation (`!#N` or `!@N`).
-    ///
-    /// When `true`, a high similarity score against this citation is *expected*
-    /// and should not contribute to drift warnings; the LLM is explicitly
-    /// acknowledging the contradicting evidence.
-    pub fn is_negated(&self) -> bool {
-        match self {
-            Self::History { negated, .. } | Self::Archive { negated, .. } => *negated,
-        }
-    }
-}
-
-/// Parse `"L"` or `"L1-L2"` into a 1-based inclusive range.
-fn parse_line_range(s: &str) -> Result<RangeInclusive<usize>, String> {
-    if let Some((l1, l2)) = s.split_once('-') {
-        let start = l1.parse::<usize>().map_err(|_| format!("bad start line: '{l1}'"))?;
-        let end = l2.parse::<usize>().map_err(|_| format!("bad end line: '{l2}'"))?;
-        if start == 0 || end == 0 {
-            return Err("line numbers are 1-based; 0 is not valid".to_string());
-        }
-        if start > end {
-            return Err(format!("start line {start} > end line {end}"));
-        }
-        Ok(start..=end)
-    } else {
-        let l = s.parse::<usize>().map_err(|_| format!("bad line number: '{s}'"))?;
-        if l == 0 {
-            return Err("line numbers are 1-based; 0 is not valid".to_string());
-        }
-        Ok(l..=l)
-    }
-}
-
-/// Parse a slice of raw citation strings, collecting successes and failures separately.
-/// Invalid strings are returned in the `errors` vec rather than aborting.
-pub fn parse_citations(raw: &[String]) -> (Vec<ParsedCitation>, Vec<String>) {
-    let mut ok = Vec::with_capacity(raw.len());
-    let mut errors = Vec::new();
-    for s in raw {
-        match ParsedCitation::parse(s) {
-            Ok(c) => ok.push(c),
-            Err(e) => errors.push(e),
-        }
-    }
-    (ok, errors)
-}
-
-/// Whether a citation points to a history entry (`#N`) or archive entry (`@N`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CitationKind {
-    History,
-    Archive,
-}
+pub use baml_rt_citation::{
+    Citation, CitationKind, CitationParseError, ParsedCitation, parse_citations, parsed_citations,
+};
 
 /// A citation resolved to its full content from a `RefTable`.
 ///
@@ -202,7 +82,7 @@ pub struct ResolvedCitation {
     pub kind: CitationKind,
     /// `true` when the original citation had the `!` prefix (counter-evidence).
     pub negated: bool,
-    /// Stable event ID — matches `a2a_event_id` in the provenance graph and
+    /// Stable activity anchor — matches `a2a_activity_anchor` in the provenance graph and
     /// `ActivityAnchorId` in the core runtime. Use for cross-reference lookups.
     pub activity_anchor: String,
     /// Source type: `"message"`, `"tool_call"`, or `"tool_result"`.
@@ -227,7 +107,7 @@ impl ResolvedCitation {
         citation: &ParsedCitation,
         ref_table: &crate::archive_refs::RefTable,
     ) -> Option<Self> {
-                use crate::archive_read::{HistoryRef, ShortRef};
+        use crate::archive_read::{HistoryRef, ShortRef};
 
         match citation {
             ParsedCitation::History { n, negated } => {
@@ -281,20 +161,14 @@ impl ResolvedCitation {
 ///
 /// Mirrors [`DriftMode`] semantics: `Audit` is the safe default for rollout;
 /// `Enforce` blocks/rejects when citations are absent or invalid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CitationMode {
     /// Log parse/validation failures via `tracing`, never reject.
+    #[default]
     Audit,
     /// Log and reject when citations are missing or unresolvable.
     Enforce,
-}
-
-impl Default for CitationMode {
-    fn default() -> Self {
-        Self::Audit
-    }
 }
 
 /// Configuration for citation enforcement.
@@ -344,7 +218,11 @@ pub fn validate_citations(
     let (parsed, format_errors) = parse_citations(raw);
     let missing_citations = config.require_at_least_one && raw.is_empty();
 
-    let validation = CitationValidation { parsed, format_errors, missing_citations };
+    let validation = CitationValidation {
+        parsed,
+        format_errors,
+        missing_citations,
+    };
 
     match config.mode {
         CitationMode::Audit => {
@@ -364,7 +242,10 @@ pub fn validate_citations(
                     parts.push("citations required but none provided".to_string());
                 }
                 if !validation.format_errors.is_empty() {
-                    parts.push(format!("format errors: {}", validation.format_errors.join("; ")));
+                    parts.push(format!(
+                        "format errors: {}",
+                        validation.format_errors.join("; ")
+                    ));
                 }
                 return Err(parts.join("; "));
             }
@@ -381,11 +262,17 @@ mod tests {
     fn parse_history_ref() {
         assert_eq!(
             ParsedCitation::parse("#1").unwrap(),
-            ParsedCitation::History { n: 1, negated: false }
+            ParsedCitation::History {
+                n: 1,
+                negated: false
+            }
         );
         assert_eq!(
             ParsedCitation::parse("#42").unwrap(),
-            ParsedCitation::History { n: 42, negated: false }
+            ParsedCitation::History {
+                n: 42,
+                negated: false
+            }
         );
     }
 
@@ -393,7 +280,10 @@ mod tests {
     fn parse_negated_history_ref() {
         assert_eq!(
             ParsedCitation::parse("!#3").unwrap(),
-            ParsedCitation::History { n: 3, negated: true }
+            ParsedCitation::History {
+                n: 3,
+                negated: true
+            }
         );
         assert!(ParsedCitation::parse("!#3").unwrap().is_negated());
         assert!(!ParsedCitation::parse("#3").unwrap().is_negated());
@@ -403,7 +293,11 @@ mod tests {
     fn parse_archive_ref_bare() {
         assert_eq!(
             ParsedCitation::parse("@3").unwrap(),
-            ParsedCitation::Archive { n: 3, lines: None, negated: false }
+            ParsedCitation::Archive {
+                n: 3,
+                lines: None,
+                negated: false
+            }
         );
     }
 
@@ -411,7 +305,11 @@ mod tests {
     fn parse_negated_archive_ref_bare() {
         assert_eq!(
             ParsedCitation::parse("!@2").unwrap(),
-            ParsedCitation::Archive { n: 2, lines: None, negated: true }
+            ParsedCitation::Archive {
+                n: 2,
+                lines: None,
+                negated: true
+            }
         );
     }
 
@@ -419,7 +317,11 @@ mod tests {
     fn parse_archive_ref_single_line() {
         assert_eq!(
             ParsedCitation::parse("@4:2").unwrap(),
-            ParsedCitation::Archive { n: 4, lines: Some(2..=2), negated: false }
+            ParsedCitation::Archive {
+                n: 4,
+                lines: Some(2..=2),
+                negated: false
+            }
         );
     }
 
@@ -427,7 +329,11 @@ mod tests {
     fn parse_negated_archive_ref_line_range() {
         assert_eq!(
             ParsedCitation::parse("!@4:2-5").unwrap(),
-            ParsedCitation::Archive { n: 4, lines: Some(2..=5), negated: true }
+            ParsedCitation::Archive {
+                n: 4,
+                lines: Some(2..=5),
+                negated: true
+            }
         );
     }
 
@@ -435,7 +341,11 @@ mod tests {
     fn parse_archive_ref_line_range() {
         assert_eq!(
             ParsedCitation::parse("@4:2-5").unwrap(),
-            ParsedCitation::Archive { n: 4, lines: Some(2..=5), negated: false }
+            ParsedCitation::Archive {
+                n: 4,
+                lines: Some(2..=5),
+                negated: false
+            }
         );
     }
 
@@ -485,7 +395,10 @@ mod tests {
 
     #[test]
     fn validate_audit_accepts_all() {
-        let cfg = CitationConfig { mode: CitationMode::Audit, ..Default::default() };
+        let cfg = CitationConfig {
+            mode: CitationMode::Audit,
+            ..Default::default()
+        };
         let raw = vec!["bad".to_string()];
         let v = validate_citations(&raw, &cfg).expect("audit must not error");
         assert!(!v.is_ok());
@@ -494,20 +407,29 @@ mod tests {
 
     #[test]
     fn validate_enforce_rejects_format_error() {
-        let cfg = CitationConfig { mode: CitationMode::Enforce, require_at_least_one: false };
+        let cfg = CitationConfig {
+            mode: CitationMode::Enforce,
+            require_at_least_one: false,
+        };
         let raw = vec!["not-a-citation".to_string()];
         assert!(validate_citations(&raw, &cfg).is_err());
     }
 
     #[test]
     fn validate_enforce_rejects_missing() {
-        let cfg = CitationConfig { mode: CitationMode::Enforce, require_at_least_one: true };
+        let cfg = CitationConfig {
+            mode: CitationMode::Enforce,
+            require_at_least_one: true,
+        };
         assert!(validate_citations(&[], &cfg).is_err());
     }
 
     #[test]
     fn validate_enforce_accepts_valid() {
-        let cfg = CitationConfig { mode: CitationMode::Enforce, require_at_least_one: true };
+        let cfg = CitationConfig {
+            mode: CitationMode::Enforce,
+            require_at_least_one: true,
+        };
         let raw = vec!["#1".to_string(), "@4:2-5".to_string()];
         let v = validate_citations(&raw, &cfg).expect("valid citations should pass");
         assert!(v.is_ok());
@@ -535,8 +457,10 @@ mod tests {
 
     #[test]
     fn resolved_citation_archive_ref_line_range() {
-        use crate::archive_read::render_to_lines;
-        use crate::archive_refs::{ArchiveEntry, RefTable};
+        use crate::{
+            archive_read::render_to_lines,
+            archive_refs::{ArchiveEntry, RefTable},
+        };
 
         let table = RefTable::new();
         let content = render_to_lines(&serde_json::json!([
@@ -571,7 +495,10 @@ mod tests {
         let citation = ParsedCitation::parse("!#1").unwrap();
         let resolved = ResolvedCitation::resolve(&citation, &table).expect("must resolve");
         assert_eq!(resolved.kind, CitationKind::History);
-        assert!(resolved.negated, "negated flag must propagate through resolve");
+        assert!(
+            resolved.negated,
+            "negated flag must propagate through resolve"
+        );
     }
 
     #[test]

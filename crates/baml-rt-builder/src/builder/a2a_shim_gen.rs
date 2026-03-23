@@ -30,7 +30,7 @@ pub fn render_a2a_shim() -> Result<String> {
 /**
  * A2A runtime shim (library code). Prepended to agent dist/index.js.
  * Public surface: session(message) and __chat_register. Host sets __chat_yield for stream requests.
- * Session lifecycle: run(fn) executes fn(); { message } -> emit message + completed; { error } or throw -> emit failed.
+ * Session lifecycle: run(fn) executes fn(); { message: string | StructuredReply | wire parts } -> emit message + completed; { error } or throw -> emit failed.
  * Await-input rail: emit.awaitInput(prompt) emits INPUT_REQUIRED, suspends, and resumes on next message with same task/context.
  * Defaults: missing text part yields ""; rejected promise is treated as { error: err.message }.
  */
@@ -43,12 +43,61 @@ pub fn render_a2a_shim() -> Result<String> {
     __chat_yield_host(chunk);
   };
 
-  function newMessage(text) {
-    return { parts: [{ text: text }] };
+  function newMessage(content) {
+    if (content !== null && typeof content === 'object' && Array.isArray(content.parts)) {
+      return content;
+    }
+    return { parts: [{ text: String(content) }] };
   }
 
-  function emitMessage(text) {
-    var msg = newMessage(text);
+  function isStructuredReplyPayload(content) {
+    if (content == null || typeof content !== 'object') return false;
+    if (!Array.isArray(content.parts) || content.parts.length === 0) return false;
+    for (var i = 0; i < content.parts.length; i++) {
+      var p = content.parts[i];
+      if (p == null || typeof p !== 'object') return false;
+      if (p.type !== 'text' && p.type !== 'data') return false;
+    }
+    return true;
+  }
+
+  function structuredReplyToWireMessage(sr) {
+    var parts = [];
+    for (var i = 0; i < sr.parts.length; i++) {
+      var p = sr.parts[i];
+      if (p.type === 'text') {
+        parts.push({ text: String(p.text != null ? p.text : '') });
+      } else if (p.type === 'data') {
+        var raw = String(p.data != null ? p.data : '');
+        var wirePart = { media_type: p.media_type || 'application/json' };
+        try {
+          wirePart.data = JSON.parse(raw);
+        } catch (e) {
+          wirePart.data = raw;
+        }
+        parts.push(wirePart);
+      }
+    }
+    var msg = { parts: parts };
+    var meta = {};
+    if (Array.isArray(sr.citations) && sr.citations.length > 0) {
+      meta.citations = sr.citations;
+    }
+    if (Object.keys(meta).length > 0) {
+      msg.metadata = meta;
+    }
+    return msg;
+  }
+
+  function normalizeEmitPayload(content) {
+    if (isStructuredReplyPayload(content)) {
+      return structuredReplyToWireMessage(content);
+    }
+    return content;
+  }
+
+  function emitMessage(content) {
+    var msg = newMessage(normalizeEmitPayload(content));
     globalThis.__chat_yield({ message: msg, task: { status: { state: "TASK_STATE_WORKING", message: msg } } });
   }
 
@@ -148,13 +197,44 @@ pub fn render_a2a_shim() -> Result<String> {
         };
         var work = (typeof fn.length === 'number' && fn.length >= 1) ? function () { return fn(emit); } : fn;
         return Promise.resolve().then(work).then(function (out) {
-          if (out != null && typeof out === 'object' && 'message' in out && typeof out.message === 'string') {
-            if (typeof onCompletedCb === 'function') onCompletedCb(out.message);
-            emitMessage(out.message);
-            emitCompleted();
+          if (out != null && typeof out === 'object' && 'error' in out) {
+            var errEarly = String(out.error);
+            if (typeof onFailedCb === 'function') {
+              return Promise.resolve(onFailedCb(errEarly)).catch(function () {}).then(function () {
+                emitFailed(errEarly, false);
+              });
+            }
+            emitFailed(errEarly, false);
             return;
           }
-          var err = (out != null && typeof out === 'object' && 'error' in out) ? String(out.error) : 'Unknown error';
+          if (out != null && typeof out === 'object' && 'message' in out) {
+            var m = out.message;
+            if (typeof m === 'string') {
+              if (typeof onCompletedCb === 'function') onCompletedCb(m);
+              emitMessage(m);
+              emitCompleted();
+              return;
+            }
+            if (m != null && typeof m === 'object') {
+              if (isStructuredReplyPayload(m)) {
+                var wire = structuredReplyToWireMessage(m);
+                if (typeof onCompletedCb === 'function') {
+                  var summary = messageText(wire);
+                  onCompletedCb(summary.length > 0 ? summary : JSON.stringify(m.parts));
+                }
+                emitMessage(wire);
+                emitCompleted();
+                return;
+              }
+              if (Array.isArray(m.parts)) {
+                if (typeof onCompletedCb === 'function') onCompletedCb(messageText(m) || '');
+                emitMessage(m);
+                emitCompleted();
+                return;
+              }
+            }
+          }
+          var err = 'session.run() must return { message: string | StructuredReply | wire message } or { error: string }';
           if (typeof onFailedCb === 'function') {
             return Promise.resolve(onFailedCb(err)).catch(function () {}).then(function () {
               emitFailed(err, false);
@@ -248,20 +328,20 @@ pub fn render_a2a_shim() -> Result<String> {
         });
         return this;
       },
-      startStep: async function(stepId, evidenceText) {
+      startStep: async function(stepId, citations) {
         await invokeExecutionSession({
           action: "start_step",
           session_id: sessionId,
           step_id: stepId,
-          evidence_text: evidenceText
+          citations: Array.isArray(citations) ? citations : []
         });
       },
-      completeStep: async function(stepId, evidenceText) {
+      completeStep: async function(stepId, citations) {
         await invokeExecutionSession({
           action: "complete_step",
           session_id: sessionId,
           step_id: stepId,
-          evidence_text: evidenceText
+          citations: Array.isArray(citations) ? citations : []
         });
       },
       finish: async function() {

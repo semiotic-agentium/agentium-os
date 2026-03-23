@@ -4,7 +4,10 @@
 
 use std::fs;
 
-use baml_rt_builder::builder::bootstrap::{run_bootstrap, slug_from_name};
+use baml_rt_builder::builder::{
+    baml_gen::GENERATED_BAML_PRELUDE_FILE,
+    bootstrap::{run_bootstrap, slug_from_name},
+};
 use tempfile::TempDir;
 
 fn collect_artifacts(root_path: &std::path::Path) -> String {
@@ -26,7 +29,7 @@ fn collect_artifacts(root_path: &std::path::Path) -> String {
     let tsconfig_path = root_path.join("tsconfig.json");
     let tsconfig = fs::read_to_string(&tsconfig_path).unwrap_or_else(|_| "<missing>".into());
 
-    let gen_path = baml_src.join("generated_tools.baml");
+    let gen_path = baml_src.join(GENERATED_BAML_PRELUDE_FILE);
     let generated_tools = if gen_path.exists() {
         fs::read_to_string(&gen_path).unwrap()
     } else {
@@ -49,10 +52,11 @@ fn collect_artifacts(root_path: &std::path::Path) -> String {
 === tsconfig.json ===
 {tsconfig}
 
-=== baml_src/generated_tools.baml ===
+=== baml_src/{gen_tools_name} ===
 {generated_tools}
 "#,
         prompt_name,
+        gen_tools_name = GENERATED_BAML_PRELUDE_FILE,
     )
 }
 
@@ -153,10 +157,11 @@ async fn bootstrap_with_tools_creates_generated_tools_and_manifest_tools() {
     assert_eq!(tools_arr.len(), 1);
     assert_eq!(tools_arr[0], "support/calculate");
 
-    let gen_path = root_path.join("baml_src").join("generated_tools.baml");
+    let gen_path = root_path.join("baml_src").join(GENERATED_BAML_PRELUDE_FILE);
     assert!(
         gen_path.exists(),
-        "generated_tools.baml should exist when tools selected"
+        "{} should exist when tools selected",
+        GENERATED_BAML_PRELUDE_FILE
     );
     let gen_content = fs::read_to_string(&gen_path).unwrap();
     assert!(gen_content.contains("SupportCalculate"));

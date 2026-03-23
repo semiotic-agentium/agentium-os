@@ -10,6 +10,7 @@
 //! run. Execute with: `cargo test -p baml-rt-embedding -- drift_fixture --ignored`
 
 #[cfg(test)]
+#[allow(dead_code, clippy::collapsible_if)]
 mod tests {
     use std::path::PathBuf;
 
@@ -22,7 +23,6 @@ mod tests {
             PlanDriftAssessment, PlanDriftConfig, PlanDriftInputs, score_plan_drift,
         },
         provider::{EmbeddingProvider, FastEmbedProvider},
-        similarity::cosine_similarity,
         trajectory::TaskDriftTracker,
     };
 
@@ -94,7 +94,9 @@ mod tests {
         content: String,
     }
 
-    fn default_true() -> bool { true }
+    fn default_true() -> bool {
+        true
+    }
 
     /// Assertions on the `CitationDriftAssessment` produced from `citations`.
     ///
@@ -309,18 +311,12 @@ mod tests {
                 }
                 if let Some(min) = ce.coverage_min {
                     if ca.coverage < min {
-                        errors.push(format!(
-                            "coverage {:.3} < min {min}",
-                            ca.coverage
-                        ));
+                        errors.push(format!("coverage {:.3} < min {min}", ca.coverage));
                     }
                 }
                 if let Some(max) = ce.coverage_max {
                     if ca.coverage > max {
-                        errors.push(format!(
-                            "coverage {:.3} > max {max}",
-                            ca.coverage
-                        ));
+                        errors.push(format!("coverage {:.3} > max {max}", ca.coverage));
                     }
                 }
                 if let Some(expect_negated) = ce.has_negated {
@@ -423,17 +419,27 @@ mod tests {
 
             let bipia_str = if let Some(ca) = &citation_assessment {
                 let step_align = result.step_alignment().unwrap_or(1.0);
-                let tau1 = scenario.citation_expected.as_ref()
+                let tau1 = scenario
+                    .citation_expected
+                    .as_ref()
                     .and_then(|ce| ce.bipia_step_threshold)
                     .unwrap_or(BIPIA_STEP_ALIGN_THRESHOLD);
-                let tau2 = scenario.citation_expected.as_ref()
+                let tau2 = scenario
+                    .citation_expected
+                    .as_ref()
                     .and_then(|ce| ce.bipia_cite_threshold)
                     .unwrap_or(BIPIA_CITE_MEAN_THRESHOLD);
                 let sig = score_bipia_signal(step_align, ca, Some(tau1), Some(tau2));
                 if sig.flagged {
-                    format!(" [BIPIA🚨 step={:.2}<{tau1} cite={:.2}>{tau2}]", sig.step_alignment, sig.cite_mean)
+                    format!(
+                        " [BIPIA🚨 step={:.2}<{tau1} cite={:.2}>{tau2}]",
+                        sig.step_alignment, sig.cite_mean
+                    )
                 } else {
-                    format!(" [bipia_ok step={:.2} cite={:.2}]", sig.step_alignment, sig.cite_mean)
+                    format!(
+                        " [bipia_ok step={:.2} cite={:.2}]",
+                        sig.step_alignment, sig.cite_mean
+                    )
                 }
             } else {
                 String::new()

@@ -1,14 +1,23 @@
 //! Planning domain types and resolver.
 //!
-//! **Naming:** Shapes deserialized from `__execution_session_invoke` live in
-//! [`crate::execution_session_types`] with a `*Wire` suffix (JSON DTOs). Types in *this* module
-//! are what the [`PlanningResolver`] validates before provenance effects—same field semantics, but
-//! host bookkeeping (e.g. parsed `PlanningSupersessionKind`, merged message ids) already applied
-//! where applicable. There is no separate “canonical” family; contrast is **wire vs resolved**.
+//! **Wire vs resolved:** Shapes deserialized from `__execution_session_invoke` live in
+//! [`crate::execution_session_types`] with a `*Wire` suffix (JSON DTOs). Types in *this* module are
+//! what [`PlanningResolver`] validates before provenance effects—host bookkeeping (e.g. parsed
+//! `PlanningSupersessionKind`, merged message ids) is applied before calling into the resolver.
+//!
+//! ## Citations vs opaque “evidence”
+//!
+//! Submissions carry **`citations: Vec<Citation>`** ([`baml_rt_core::Citation`]): validated ref-table
+//! strings (`#N` session history, `@N` / `@N:L` archives). They ground intent and step transitions for
+//! provenance and drift checks. **`derived_from_message_ids`** retains execution-session **message UUID
+//! lineage** when the client omits explicit citations; the host fills at least one id from the active
+//! scope. Provenance `IntentResolved` effects carry **citations** only (see `baml_rt_core::bus`).
+//!
+//! See **`docs/citable-history-and-checked-citations.md`**.
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    BamlRtError, Result,
+    BamlRtError, Citation, Result,
     bus::PlanningSupersessionKind,
     context,
     ids::{IntentId, PlanId, PlanStepId},
@@ -28,6 +37,8 @@ pub struct PlanningDynamicContext {
 pub struct IntentSubmission {
     pub intent_id: IntentId,
     pub description: String,
+    pub citations: Vec<Citation>,
+    /// Host-filled message UUIDs when the client omitted explicit citations (execution-session lineage).
     pub derived_from_message_ids: Vec<String>,
     pub supersession: Option<PlanningSupersessionKind>,
 }
@@ -47,7 +58,7 @@ pub struct PlanStepStatusChange {
     pub step_id: PlanStepId,
     pub old_status: Option<String>,
     pub new_status: String,
-    pub evidence_text: String,
+    pub citations: Vec<Citation>,
 }
 
 #[async_trait]
@@ -88,9 +99,17 @@ impl PlanningResolver for DefaultPlanningResolver {
                 "intent description must be non-empty".to_string(),
             ));
         }
-        if submission.derived_from_message_ids.is_empty() {
+        if submission.citations.is_empty() {
+            tracing::warn!(
+                intent_id = %submission.intent_id.as_str(),
+                "submitIntent: no citations provided — intent has no checked ref-table trail. \
+                 Add a citations field to the BAML planning function return type."
+            );
+        }
+        if submission.citations.is_empty() && submission.derived_from_message_ids.is_empty() {
             return Err(BamlRtError::InvalidArgument(
-                "intent must derive from at least one message".to_string(),
+                "intent must include citations and/or derived_from_message_ids (host fills message id when omitted)"
+                    .to_string(),
             ));
         }
         Ok(submission)
@@ -133,7 +152,6 @@ impl PlanningResolver for DefaultPlanningResolver {
             || submission.plan_id.as_str().trim().is_empty()
             || submission.step_id.as_str().trim().is_empty()
             || submission.new_status.trim().is_empty()
-            || submission.evidence_text.trim().is_empty()
         {
             return Err(BamlRtError::InvalidArgument(
                 "plan step status change fields must be non-empty".to_string(),

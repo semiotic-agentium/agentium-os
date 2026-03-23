@@ -21,30 +21,7 @@ declare function SummarizeExtrospectionReport(args: {
   agents: unknown[];
   primary_payload_json: string;
   secondary_payload_json: string;
-}): Promise<string>;
-declare function openA2aExecutionSession(token: string): Promise<{
-  submitIntent: (intent: {
-    intentId: string;
-    description: string;
-    derivedFromMessageIds: string[];
-  }) => Promise<{
-    submitPlan: (plan: {
-      intentId: string;
-      planId: string;
-      steps: Array<{
-        stepId: string;
-        description: string;
-        order: number;
-        dependsOn: string[];
-      }>;
-    }) => Promise<{
-      startStep: (stepId: string, evidenceText: string) => Promise<unknown>;
-      completeStep: (stepId: string, evidenceText: string) => Promise<unknown>;
-      finish: () => Promise<unknown>;
-      abort: (reason: string) => Promise<unknown>;
-    }>;
-  }>;
-}>;
+}): Promise<import("./baml-runtime").StructuredReply>;
 
 type NeedClarification = { question: string };
 // QueryIntent is declared in baml-runtime.d.ts; the local alias just re-exports it
@@ -61,8 +38,6 @@ type ExtrospectionOutput = {
   payload_json?: string;
   done?: boolean;
 };
-const RESPONSE_CHAR_LIMIT = 1800;
-
 function executionMessageId(message: unknown): string {
   if (isObject(message)) {
     if (typeof message.messageId === "string" && message.messageId.trim().length > 0) return message.messageId;
@@ -114,11 +89,6 @@ function extractPayloadJson(raw: unknown): string {
     if (typeof nested.payload_json === "string") return nested.payload_json;
   }
   return "{}";
-}
-
-function clampResponse(message: string): string {
-  if (message.length <= RESPONSE_CHAR_LIMIT) return message;
-  return message.slice(0, RESPONSE_CHAR_LIMIT) + "…";
 }
 
 function parseDiscoverAgentsOutput(raw: unknown): DiscoverAgentsOutput {
@@ -233,8 +203,8 @@ __chat_register({
       : null;
     const messageId = executionMessageId(ctx.message);
     let executable: {
-      startStep?: (stepId: string, evidenceText: string) => Promise<unknown>;
-      completeStep?: (stepId: string, evidenceText: string) => Promise<unknown>;
+      startStep?: (stepId: string) => Promise<unknown>;
+      completeStep?: (stepId: string) => Promise<unknown>;
       finish?: () => Promise<unknown>;
       abort?: (reason: string) => Promise<unknown>;
     } | null = null;
@@ -247,7 +217,6 @@ __chat_register({
         ? await executionSession.submitIntent({
             intentId,
             description: intentDescription,
-            derivedFromMessageIds: [messageId],
           })
         : null;
 
@@ -279,10 +248,7 @@ __chat_register({
           })
         : null;
       if (executable != null) {
-        await executable.startStep?.(
-          "step-extrospection-query",
-          "Starting telemetry query pass over extrospection data.",
-        );
+        await executable.startStep?.("step-extrospection-query");
       }
 
       const extrospectionRun = await runGeneratedStepExecutor(
@@ -303,14 +269,8 @@ __chat_register({
       const primaryPayloadJson = payloads[0] ?? "{}";
       const secondaryPayloadJson = payloads[1] ?? primaryPayloadJson;
       if (executable != null) {
-        await executable.completeStep?.(
-          "step-extrospection-query",
-          "Telemetry query payload extracted and normalized.",
-        );
-        await executable.startStep?.(
-          "step-extrospection-summarize",
-          "Starting synthesis of extrospection findings into user response.",
-        );
+        await executable.completeStep?.("step-extrospection-query");
+        await executable.startStep?.("step-extrospection-summarize");
       }
 
       const responseRaw = await SummarizeExtrospectionReport({
@@ -321,15 +281,11 @@ __chat_register({
         primary_payload_json: primaryPayloadJson,
         secondary_payload_json: secondaryPayloadJson,
       });
-      const response = clampResponse(String(responseRaw));
       if (executable != null) {
-        await executable.completeStep?.(
-          "step-extrospection-summarize",
-          "Final extrospection summary generated for operator output.",
-        );
+        await executable.completeStep?.("step-extrospection-summarize");
         await executable.finish?.();
       }
-      return { message: response };
+      return { message: responseRaw };
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       if (executable != null) {

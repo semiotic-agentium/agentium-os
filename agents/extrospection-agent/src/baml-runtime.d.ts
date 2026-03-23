@@ -28,6 +28,11 @@ limit: number | null;
 grep: string | null;
  }
 
+export interface DataPart { type: "data";
+data: string;
+media_type: ReplyMediaType;
+ }
+
 export interface DiscoverAgentsOpenInput { reason: string | null;
  }
 
@@ -76,6 +81,8 @@ export type QueryOutcome = "Both" | "Failed_only" | "Successful_only";
 
 export type QueryResource = "Auto" | "Llm_calls" | "Tool_calls" | "Messages";
 
+export type ReplyMediaType = "TextPlain" | "TextMarkdown" | "ApplicationJson" | "TextCsv";
+
 export interface SelectedAgent { agent_package: string;
 agent_instance_id: string;
 name: string;
@@ -90,6 +97,10 @@ budgetHint: number | null;
  }
 
 export type SessionReadMode = "RetrieveRef";
+
+export interface StructuredReply { parts: TextPart | DataPart[];
+citations: string[];
+ }
 
 export interface SystemDiscover_agentsAbortStep { op: "Abort";
  }
@@ -108,9 +119,11 @@ input: ArchiveReadInput;
 
 export interface SystemDiscover_agentsSendStep { op: "Send";
 input: DiscoverAgentsSendInput;
+citations: string[];
  }
 
 export interface SystemDiscover_agentsSessionPlan { step: SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep;
+citations: string[];
  }
 
 export interface SystemExtrospectionAbortStep { op: "Abort";
@@ -130,9 +143,15 @@ input: ArchiveReadInput;
 
 export interface SystemExtrospectionSendStep { op: "Send";
 input: ProvenanceQuerySendInput;
+citations: string[];
  }
 
 export interface SystemExtrospectionSessionPlan { step: SystemExtrospectionOpenStep | SystemExtrospectionSendStep | SystemExtrospectionReadStep | SystemExtrospectionFinishStep | SystemExtrospectionAbortStep;
+citations: string[];
+ }
+
+export interface TextPart { type: "text";
+text: string;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
@@ -141,25 +160,13 @@ declare global {
 
 declare function BuildExtrospectionPlan(args: { intent: QueryIntent; selected_agent: SelectedAgent | null } & { __baml_invocation_token?: string }): Promise<SystemExtrospectionSessionPlan>;
 
-declare function BuildExtrospectionPlan__act__system_extrospection(args: { intent: QueryIntent; selected_agent: SelectedAgent | null } & { __baml_invocation_token?: string }): Promise<SystemExtrospectionSendStep>;
-
-declare function BuildExtrospectionPlan__continue__system_extrospection(args: { intent: QueryIntent; selected_agent: SelectedAgent | null } & { __baml_invocation_token?: string }): Promise<SystemExtrospectionSendStep | SystemExtrospectionReadStep | SystemExtrospectionFinishStep>;
-
-declare function BuildExtrospectionPlan__select(args: { intent: QueryIntent; selected_agent: SelectedAgent | null } & { __baml_invocation_token?: string }): Promise<SystemExtrospectionOpenStep>;
-
 declare function DetermineExtrospectionIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedClarification | QueryIntent>;
 
 declare function GetDiscoverAgentsPlan(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSessionPlan>;
 
-declare function GetDiscoverAgentsPlan__act__system_discover_agents(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSendStep>;
-
-declare function GetDiscoverAgentsPlan__continue__system_discover_agents(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep>;
-
-declare function GetDiscoverAgentsPlan__select(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsOpenStep>;
-
 declare function SelectAgentFocus(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<SelectedAgent | null>;
 
-declare function SummarizeExtrospectionReport(args: { user_message: string; intent: QueryIntent; selected_agent: SelectedAgent | null; agents: AgentCardDto[]; primary_payload_json: string; secondary_payload_json: string } & { __baml_invocation_token?: string }): Promise<string>;
+declare function SummarizeExtrospectionReport(args: { user_message: string; intent: QueryIntent; selected_agent: SelectedAgent | null; agents: AgentCardDto[]; primary_payload_json: string; secondary_payload_json: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
 
 }
 
@@ -268,7 +275,10 @@ export interface A2aSessionClosed {
 export interface IntentSubmission {
     intentId: string;
     description: string;
+    /** Message UUID lineage; omit to let the host merge the active message id. */
     derivedFromMessageIds?: string[];
+    /** Citation refs (`#N` history, `@N` archive) from the BAML planning return — preferred for checked provenance/drift. */
+    citations?: string[];
     supersession?: string;
 }
 export interface PlanStepSubmission {
@@ -296,8 +306,9 @@ export interface A2aExecutionSessionAwaitPlan {
 }
 export interface A2aExecutionSessionExecutable {
     sessionId: string;
-    startStep(stepId: string, evidenceText: string): Promise<void>;
-    completeStep(stepId: string, evidenceText: string): Promise<void>;
+    /** citations are optional — LLM-produced citations are captured automatically by the provenance system from BAML return types. Only pass explicitly if the agent has out-of-band provenance to record. */
+    startStep(stepId: string, citations?: string[]): Promise<void>;
+    completeStep(stepId: string, citations?: string[]): Promise<void>;
     finish(): Promise<A2aSessionClosed>;
     abort(reason?: string): Promise<A2aSessionClosed>;
 }
@@ -312,18 +323,34 @@ export interface Message {
   text?(): string;
 }
 export type ChatMessage = Message;
+/** Media type for a structured reply data part. */
+export type ReplyMediaType = "text/plain" | "text/markdown" | "application/json" | "text/csv";
+/** A prose text part of a structured reply. */
+export interface TextPart { type: "text"; text: string; }
+/** A structured data part of a structured reply (e.g. JSON, CSV). */
+export interface DataPart { type: "data"; data: string; media_type: ReplyMediaType; }
+/** One part of a structured reply: text or typed data. */
+export type ReplyPart = TextPart | DataPart;
+/**
+ * Structured reply from a synthesis function.
+ * Contains ordered reply parts and citations referencing the history entries (#N, @N) this reply was derived from.
+ */
+export interface StructuredReply {
+  parts: ReplyPart[];
+  citations: string[];
+}
 /**
  * Result shape for session.run() callback. Return { message } on success (runtime emits message and completed);
  * return { error } on failure (runtime emits failed with that error). No need to call emit helpers yourself.
  */
-export type SessionResult = { message: string } | { error: string };
+export type SessionResult = { message: string } | { message: StructuredReply } | { error: string };
 /**
  * Emitter passed into run(emit => ...) for intermediate emissions (working message, artifact, status).
  * Use when you need to stream artifacts or status before returning the final SessionResult.
  */
 export interface SessionEmitter {
-  /** Emit a working message (task state remains WORKING). */
-  message(text: string): void;
+  /** Emit a working message (task state remains WORKING). Accepts plain string or StructuredReply. */
+  message(content: string | StructuredReply): void;
   /** Emit an artifact chunk (append/lastChunk optional). */
   artifact(artifact: JsonValue, append?: boolean, lastChunk?: boolean): void;
   /** Emit a status transition (e.g. TASK_STATE_WORKING). */

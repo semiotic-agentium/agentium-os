@@ -6,7 +6,9 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use baml_rt_builder::builder::{
-    AgentDir, BuildDir, RuntimeTypeGenerator, TypeGenerator, compiler::write_canonical_tsconfig,
+    AgentDir, BuildDir, RuntimeTypeGenerator, TypeGenerator,
+    baml_gen::{GENERATED_BAML_PRELUDE_FILE, is_managed_generated_baml_filename},
+    compiler::write_canonical_tsconfig,
 };
 use baml_rt_tools_claude as _; // Force link so claude tool metadata is in inventory
 #[cfg(feature = "security-eval")]
@@ -66,7 +68,7 @@ fn sync_generated_baml_files(build_dir: &BuildDir, dest_baml_src: &Path) -> Resu
         let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !file_name.starts_with("generated_") || !file_name.ends_with(".baml") {
+        if file_name != GENERATED_BAML_PRELUDE_FILE {
             continue;
         }
 
@@ -87,10 +89,7 @@ fn sync_generated_baml_files(build_dir: &BuildDir, dest_baml_src: &Path) -> Resu
         let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if file_name.starts_with("generated_")
-            && file_name.ends_with(".baml")
-            && !generated_names.contains(file_name)
-        {
+        if is_managed_generated_baml_filename(file_name) && !generated_names.contains(file_name) {
             std::fs::remove_file(path)?;
         }
     }
@@ -107,7 +106,7 @@ async fn regen_fixture(root: &Path) -> Result<()> {
     let generator = RuntimeTypeGenerator::new();
     // generate() writes src/baml-runtime.d.ts directly into the agent's source tree.
     generator.generate(&agent_dir, &build_dir).await?;
-    // Sync generated_*.baml tool interfaces back into the agent's baml_src.
+    // Sync single `_baml_runtime.baml` prelude into baml_src; strip legacy split generated files.
     sync_generated_baml_files(&build_dir, &agent_dir.baml_src())?;
     Ok(())
 }
@@ -131,7 +130,13 @@ async fn main() -> Result<()> {
         for entry in &entries {
             let name = entry.file_name();
             eprintln!("{label}: {}", name.to_string_lossy());
-            regen_fixture(&entry.path()).await?;
+            if let Err(e) = regen_fixture(&entry.path()).await {
+                eprintln!(
+                    "{label}: WARN: skipping {} — {:#}",
+                    name.to_string_lossy(),
+                    e
+                );
+            }
         }
     }
     Ok(())

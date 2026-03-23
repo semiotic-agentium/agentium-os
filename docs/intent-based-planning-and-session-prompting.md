@@ -11,8 +11,11 @@ It focuses on:
 
 ## Core Principles
 
+- **Citations, not evidence strings:** planning intents and step transitions carry **ref-table `citations`**
+  (`#N` history, `@N` archive) so the system has **citable history** and **checked citations** in
+  provenance/drift — see `docs/citable-history-and-checked-citations.md`.
 - Keep planning intent-focused, not FSM-mechanics-focused.
-- Let runtime + generated session schemas enforce step shape and FSM mechanics.
+- Let runtime + generated session schemas enforce step shape and allowed operations.
 - Use an append-only event log for session continuation context.
 - Minimize prompt volatility before the model reaches the dynamic parts.
 - Keep one reasoning locus: per-step `reason` only (avoid duplicated top-level reasoning fields).
@@ -41,7 +44,7 @@ Why this works:
 
 - State the business goal in plain terms (for example: identify agents that satisfy intent).
 - Provide stable output contract via `{{ ctx.output_format }}`.
-- Provide compact dynamic inputs (`inferred_intent`, `session_context.session_open`, latest event log).
+- Provide compact dynamic inputs (`inferred_intent`, `allowed_ops`, latest event log).
 - Avoid instructing internal runtime mechanics that are already enforced by schema/FSM.
 
 ### What prompts should not do
@@ -57,7 +60,7 @@ For Step Executor prompts, prefer this ordering:
 
 1. **Static goal block** (least volatile).
 2. **`{{ ctx.output_format }}`** (stable contract text; high prefix reuse).
-3. **Small dynamic control fields** (for example `inferred_intent`, `session_context.session_open`).
+3. **Small dynamic control fields** (for example `inferred_intent`, `allowed_ops`).
 4. **Event log tail** (most volatile, appended near the end).
 
 Canonical skeleton:
@@ -67,7 +70,7 @@ prompt #"
   Goal: <business outcome, no FSM lecture>
   {{ ctx.output_format }}
   Inferred intent: {{ inferred_intent }}
-  Session open: {{ session_context.session_open }}
+  Allowed ops: {{ session_context.allowed_ops }}
   {% if ctx.tags.event_log %}
   Event log (most recent context):
   {% for event in ctx.tags.event_log %}
@@ -79,7 +82,7 @@ prompt #"
 
 Notes:
 
-- Step choice is enforced by the **phase-specific** Step Executor function (narrow return type), not by extra serialized control fields in `session_context`.
+- `allowed_ops` must be present for step choice.
 - Event log should be bounded/compacted upstream; only include most relevant recent context.
 - Do not inject persona chat history into internal Step Executor prompts.
 
@@ -119,7 +122,7 @@ prompt #"
   Goal: {{ goal_text }}
   {{ ctx.output_format }}
   Inferred intent: {{ inferred_intent }}
-  Session open: {{ session_context.session_open }}
+  Allowed ops: {{ session_context.allowed_ops }}
   {% if ctx.tags.event_log %}
   Event log (most recent context):
   {% for event in ctx.tags.event_log %}
@@ -136,7 +139,7 @@ Design note: if `goal_text` varies too much and hurts cache prefix reuse, keep a
 Generated step schema descriptions should communicate:
 
 - Emit exactly one FSM step.
-- Emit only the fragment shape required by the current phase function's return type.
+- Choose operation from `allowed_ops`.
 - After `Send`, prefer `Read` before more `Send`/`Finish` so tool output is consumed.
 
 This belongs in generated output descriptions, not duplicated in every user-authored goal paragraph.
@@ -201,7 +204,7 @@ Stop/failure criteria:
 Why this is "iterative" but stable:
 
 - Iteration is over committed plan steps, not ad hoc replanning on every hop.
-- Execution hops remain local tactical decisions (`Open`/`Send`/`Read`/`Finish`), guided by phase-narrowed schemas and the event log.
+- Execution hops remain local tactical decisions (`Open`/`Send`/`Read`/`Finish`), guided by `allowed_ops` and event log.
 - Strategic intent and step ordering remain fixed for cache stability and auditability.
 
 ### TS do/don't
@@ -249,8 +252,8 @@ If your tool participates in session planning context, implement these pieces:
    - Use identity/summary/detail semantics for read paths where applicable.
    - Ensure summary mode stays token-cheap and detail mode is explicit/opt-in.
 
-4. **Keep event records source-tagged and ordered**
-   - Preserve `event_id`, timestamp, role, and source.
+4. **Keep activity records source-tagged and ordered**
+   - Preserve provenance `activity_anchor` (and any envelope `event_id` where that is the wire id), timestamp, role, and source.
    - Emit deterministic references instead of raw archive dumps when possible.
 
 Minimal shape:
@@ -279,7 +282,7 @@ struct MyNextOutput {
 
 - Goal text describes user/business outcome, not FSM machinery.
 - `ctx.output_format` appears before highly volatile fields.
-- Session prompt includes `session_context.session_open` and event log tail.
+- Session prompt includes `allowed_ops` and event log tail.
 - No `status_token`/legacy aliases in prompt inputs.
 - No duplicated top-level and step-level reason fields.
 - TS orchestration commits intent + Plan Artifact before execution.

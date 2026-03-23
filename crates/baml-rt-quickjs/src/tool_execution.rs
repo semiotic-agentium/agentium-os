@@ -94,6 +94,7 @@ pub(crate) struct ToolExecutionContext {
     pub interceptor_registry: Arc<TokioMutex<InterceptorRegistry>>,
     pub effect_emitter: Option<Arc<dyn EffectEmitter>>,
     pub execution_sessions: Arc<DashMap<String, crate::quickjs_bridge::ExecutionSession>>,
+    #[allow(dead_code)] // Carried for archive ref wiring; readers live on the session handle path.
     pub archive_ref_tables: Arc<ContextRefTables>,
 }
 

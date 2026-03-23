@@ -190,6 +190,19 @@ pub enum ToolSessionOp {
     },
 }
 
+impl ToolSessionOp {
+    /// FSM op label for tracing and plan coercion (`Open`, `Send`, …).
+    pub(crate) fn op_name(&self) -> &'static str {
+        match self {
+            ToolSessionOp::Open { .. } => "Open",
+            ToolSessionOp::Send { .. } => "Send",
+            ToolSessionOp::Read { .. } => "Read",
+            ToolSessionOp::Finish { .. } => "Finish",
+            ToolSessionOp::Abort { .. } => "Abort",
+        }
+    }
+}
+
 /// Plan-level result of extracting a single tool session fragment plus optional plan reason.
 #[derive(Debug, Clone)]
 pub(crate) struct ToolSessionPlan {

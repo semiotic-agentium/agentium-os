@@ -2,6 +2,9 @@
 
 mod common;
 
+#[path = "common/http_tool_test_helpers.rs"]
+mod http_tool_test_helpers;
+
 use std::{fs, path::PathBuf, sync::Arc};
 
 use baml_rt::baml::BamlRuntimeManager;
@@ -16,9 +19,10 @@ use baml_rt_provenance::{
 };
 use baml_tools_clickup::ClickUpTool;
 use common::{
-    RunningHttpServer, TempDirCleanup, TempEnvVar, build_clickup_agent_to_temp_async, contains_kv,
+    RunningHttpServer, TempDirCleanup, TempEnvVar, build_clickup_agent_to_temp_async,
     e2e_serial_gate, post_a2a_sse_collect, start_http_server, start_runner_api_server,
 };
+use http_tool_test_helpers::contains_kv;
 use serde_json::{Value, json};
 use test_support::common::{
     chunks_from_responses, message_texts_from_chunks, send_stream_request, workspace_fnox_path,
@@ -216,6 +220,7 @@ fn mock_clickup_in_progress_pair_result(v: &Value) -> bool {
     saw_901 && saw_902
 }
 
+
 async fn fetch_mermaid_context(base_url: &str, context_id: &ContextId) -> String {
     let http_client = reqwest::Client::new();
     let mermaid_url = format!("{base_url}/contexts/{}/mermaid", context_id.as_str());
@@ -357,7 +362,7 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
             let signature = serde_json::to_string(
                 &conversation_items
                     .iter()
-                    .map(|i| (&i.event_id, i.source_name(), &i.content))
+                    .map(|i| (&i.activity_anchor, i.source_name(), &i.content))
                     .collect::<Vec<_>>(),
             )
             .unwrap_or_default();
@@ -593,19 +598,19 @@ async fn test_e2e_clickup_get_task_description_fast() {
             .iter()
             .filter(|item| item.source_name() == "tool_result")
             .find_map(|item| {
-                if let ConversationItemContent::ToolResult(tr) = &item.content {
-                    if let ToolOutcome::Result(v) = &tr.outcome {
-                        let tasks = v.get("tasks").and_then(Value::as_array)?;
-                        if tasks.len() == 1
-                            && tasks[0].get("id").and_then(Value::as_str) == Some("task-901")
-                            && tasks[0]
-                                .get("description")
-                                .and_then(Value::as_str)
-                                .map(|d: &str| !d.trim().is_empty())
-                                .unwrap_or(false)
-                        {
-                            return Some(v.clone());
-                        }
+                if let ConversationItemContent::ToolResult(tr) = &item.content
+                    && let ToolOutcome::Result(v) = &tr.outcome
+                {
+                    let tasks = v.get("tasks").and_then(Value::as_array)?;
+                    if tasks.len() == 1
+                        && tasks[0].get("id").and_then(Value::as_str) == Some("task-901")
+                        && tasks[0]
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(|d: &str| !d.trim().is_empty())
+                            .unwrap_or(false)
+                    {
+                        return Some(v.clone());
                     }
                 }
                 None
@@ -616,7 +621,7 @@ async fn test_e2e_clickup_get_task_description_fast() {
         let signature = serde_json::to_string(
             &conversation_items
                 .iter()
-                .map(|i| (&i.event_id, i.source_name(), &i.content))
+                .map(|i| (&i.activity_anchor, i.source_name(), &i.content))
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_default();

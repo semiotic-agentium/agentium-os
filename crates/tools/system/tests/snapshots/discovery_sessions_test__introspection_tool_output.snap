@@ -32,7 +32,7 @@ expression: snapshot_safe_tool_output(output.clone())
       "a2a_client": "openai",
       "a2a_context_id": "ctx-9-9",
       "a2a_duration_ms": 220,
-      "a2a_event_id": "[prov_event_id]",
+      "a2a_activity_anchor": "[prov_activity_anchor]",
       "a2a_failure_class": "failed_graph_incomplete",
       "a2a_failure_evidence": "metadata",
       "a2a_function_name": "CallerPrompt",

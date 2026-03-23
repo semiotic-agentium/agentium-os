@@ -156,6 +156,8 @@ function BuildExtrospectionPlan(
   "#
 }
 
+// StructuredReply: see _baml_runtime.baml (builder prelude).
+
 function SummarizeExtrospectionReport(
   user_message: string,
   intent: QueryIntent,
@@ -163,12 +165,18 @@ function SummarizeExtrospectionReport(
   agents: AgentCardDto[],
   primary_payload_json: string,
   secondary_payload_json: string,
-) -> string {
+) -> StructuredReply {
   client DefaultClient
   prompt #"
     You are an operations analyst. Be precise, restrained, and useful.
 
-    Produce a concise operator report that explicitly separates:
+    Return StructuredReply:
+    - parts: first part MUST be TextPart (type "text") with the full operator report (Markdown) covering the sections below.
+    - Optionally append DataPart (type "data", media_type ApplicationJson) with numeric summaries (e.g. rowCount, failureRate) if helpful for UI.
+    - metadata: usually omit.
+    - citations: agent_package/agent_id, tool_name strings, or #N / @N refs you relied on; [] if none.
+
+    Produce a concise operator report in prose that explicitly separates:
     1) INTENT (what the user asked)
     2) EXECUTION (what query actually ran)
     3) OBSERVATIONS (what the data actually shows)
@@ -184,7 +192,7 @@ function SummarizeExtrospectionReport(
 
     Output rules:
     - Ground every claim in provided payload fields.
-    - Use concise markdown with 5 short sections:
+    - Use concise Markdown with 5 short sections:
       - Intent
       - Execution
       - Findings

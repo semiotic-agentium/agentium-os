@@ -35,7 +35,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"page1\": snapshot_
         "a2a_client": "openai",
         "a2a_context_id": "ctx-9-11",
         "a2a_duration_ms": 220,
-        "a2a_event_id": "[prov_event_id]",
+        "a2a_activity_anchor": "[prov_activity_anchor]",
         "a2a_failure_class": "failed_graph_incomplete",
         "a2a_failure_evidence": "metadata",
         "a2a_function_name": "CallerPrompt",

@@ -1167,6 +1167,7 @@ async fn test_runtime_canonical_planning_uses_custom_resolver_and_dynamic_contex
             IntentSubmission {
                 intent_id: IntentId::from("intent-raw"),
                 description: "raw description".to_string(),
+                citations: vec!["#1".parse::<baml_rt_core::Citation>().unwrap()],
                 derived_from_message_ids: vec![message_id.as_str().to_string()],
                 supersession: None,
             },
@@ -1193,7 +1194,7 @@ async fn test_runtime_canonical_planning_uses_custom_resolver_and_dynamic_contex
             "step-raw".to_string(),
             Some("pending".to_string()),
             "completed".to_string(),
-            "evidence".to_string(),
+            vec!["#1".parse::<baml_rt_core::Citation>().unwrap()],
             None,
         )
         .await

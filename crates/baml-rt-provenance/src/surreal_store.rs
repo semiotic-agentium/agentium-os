@@ -35,7 +35,7 @@ use std::{
 use async_trait::async_trait;
 use baml_rt_core::{
     bus::PlanningSupersessionKind,
-    ids::{AgentId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId},
+    ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_vocabulary::{
     A2aGraphStore, A2aGraphStoreResult, TaskSubgraphNode, TaskSubgraphUpdateNode,
@@ -91,7 +91,7 @@ const TBL_A2A_UPDATE: &str = "a2a_update";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PayloadRecord {
     payload_id: String,
-    event_id: String,
+    activity_anchor_id: String,
     activity_id: Option<String>,
     payload_kind: String,
     payload_json: String,
@@ -200,7 +200,7 @@ impl SurrealStoreBuilder {
     /// Build the store.
     pub async fn build(self) -> Result<Arc<SurrealProvenanceStore>> {
         let backend = self.backend.ok_or_else(|| ProvenanceError::InvalidEvent {
-            event_id: String::new(),
+            activity_anchor: String::new(),
             reason: "SurrealStoreBuilder: no backend set".to_string(),
         })?;
         backend.build_store(self.mermaid_cache).await
@@ -283,18 +283,18 @@ async fn init_schema(db: &Surreal<Db>) -> Result<()> {
         // Node table: unique node_id, indexed by label
         format!("DEFINE INDEX IF NOT EXISTS idx_node_id ON {TBL_NODE} FIELDS node_id UNIQUE"),
         format!("DEFINE INDEX IF NOT EXISTS idx_node_label ON {TBL_NODE} FIELDS label"),
-        // Indexes for common node property queries (context_id, task_id, event_id)
+        // Indexes for common node property queries (context_id, task_id, activity_anchor)
         format!("DEFINE INDEX IF NOT EXISTS idx_node_context ON {TBL_NODE} FIELDS props.a2a_context_id"),
         format!("DEFINE INDEX IF NOT EXISTS idx_node_task ON {TBL_NODE} FIELDS props.a2a_task_id"),
-        format!("DEFINE INDEX IF NOT EXISTS idx_node_event ON {TBL_NODE} FIELDS props.a2a_event_id"),
+        format!("DEFINE INDEX IF NOT EXISTS idx_node_activity_anchor ON {TBL_NODE} FIELDS props.a2a_activity_anchor"),
         // Edge table: indexed by from/to and rel_type
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_from ON {TBL_EDGE} FIELDS from_id"),
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_to ON {TBL_EDGE} FIELDS to_id"),
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_rel ON {TBL_EDGE} FIELDS rel_type"),
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_composite ON {TBL_EDGE} FIELDS from_id, rel_type, to_id UNIQUE"),
-        // Payload table: unique payload_id, indexed by event_id and activity_id
+        // Payload table: unique payload_id, indexed by activity_anchor_id and activity_id
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_id ON {TBL_PAYLOAD} FIELDS payload_id UNIQUE"),
-        format!("DEFINE INDEX IF NOT EXISTS idx_payload_event ON {TBL_PAYLOAD} FIELDS event_id"),
+        format!("DEFINE INDEX IF NOT EXISTS idx_payload_activity_anchor ON {TBL_PAYLOAD} FIELDS activity_anchor_id"),
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_activity ON {TBL_PAYLOAD} FIELDS activity_id, payload_kind"),
         // A2A task table
         format!("DEFINE INDEX IF NOT EXISTS idx_a2a_task_id ON {TBL_A2A_TASK} FIELDS task_id UNIQUE"),
@@ -341,8 +341,8 @@ fn map_surreal_error(e: surrealdb::Error) -> ProvenanceError {
     ProvenanceError::Storage(Box::new(e))
 }
 
-fn payload_id_for(event_id: &str, payload_kind: &str) -> String {
-    format!("payload:{event_id}:{payload_kind}")
+fn payload_id_for(anchor: &str, payload_kind: &str) -> String {
+    format!("payload:{anchor}:{payload_kind}")
 }
 
 fn archive_ref_for_payload(payload_id: &str) -> String {
@@ -353,15 +353,15 @@ fn archive_ref_for_activity(activity_id: &str) -> String {
     format!("prov:v1:activity:{activity_id}")
 }
 
-fn event_id_to_timestamp_ms(event_id: &str) -> u64 {
-    event_id
+fn activity_anchor_to_timestamp_ms(anchor: &str) -> u64 {
+    anchor
         .strip_prefix("prov-")
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(0)
 }
 
-fn event_order_key(event_id: &EventId) -> u128 {
-    let digits: String = event_id
+fn activity_anchor_order_key(anchor: &ActivityAnchorId) -> u128 {
+    let digits: String = anchor
         .as_str()
         .chars()
         .filter(|ch| ch.is_ascii_digit())
@@ -447,11 +447,11 @@ fn label_from_prov_type(prov_type: Option<&str>, default: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn payload_records_from_event(event: &crate::events::ProvEvent) -> Vec<PayloadRecord> {
-    let event_id = event.id().as_str().to_string();
+    let activity_anchor_id = event.id().as_str().to_string();
     match event.data() {
         ProvEventData::LlmCallStarted { prompt, .. } => vec![PayloadRecord {
-            payload_id: payload_id_for(&event_id, "llm_call"),
-            event_id,
+            payload_id: payload_id_for(&activity_anchor_id, "llm_call"),
+            activity_anchor_id,
             activity_id: None,
             payload_kind: "llm_call".to_string(),
             payload_json: serde_json::to_string(prompt).unwrap_or_else(|_| "null".to_string()),
@@ -460,8 +460,8 @@ fn payload_records_from_event(event: &crate::events::ProvEvent) -> Vec<PayloadRe
             prompt, metadata, ..
         } => {
             let mut out = vec![PayloadRecord {
-                payload_id: payload_id_for(&event_id, "llm_call"),
-                event_id: event_id.clone(),
+                payload_id: payload_id_for(&activity_anchor_id, "llm_call"),
+                activity_anchor_id: activity_anchor_id.clone(),
                 activity_id: None,
                 payload_kind: "llm_call".to_string(),
                 payload_json: serde_json::to_string(prompt).unwrap_or_else(|_| "null".to_string()),
@@ -477,8 +477,8 @@ fn payload_records_from_event(event: &crate::events::ProvEvent) -> Vec<PayloadRe
                 (None, None) => Value::Null,
             };
             out.push(PayloadRecord {
-                payload_id: payload_id_for(&event_id, "llm_result"),
-                event_id,
+                payload_id: payload_id_for(&activity_anchor_id, "llm_result"),
+                activity_anchor_id,
                 activity_id: None,
                 payload_kind: "llm_result".to_string(),
                 payload_json: serde_json::to_string(&payload)
@@ -505,8 +505,8 @@ fn payload_records_from_event(event: &crate::events::ProvEvent) -> Vec<PayloadRe
                 "phase": phase
             });
             let mut out = vec![PayloadRecord {
-                payload_id: payload_id_for(&event_id, "tool_call"),
-                event_id: event_id.clone(),
+                payload_id: payload_id_for(&activity_anchor_id, "tool_call"),
+                activity_anchor_id: activity_anchor_id.clone(),
                 activity_id: None,
                 payload_kind: "tool_call".to_string(),
                 payload_json: serde_json::to_string(&tool_call)
@@ -524,8 +524,8 @@ fn payload_records_from_event(event: &crate::events::ProvEvent) -> Vec<PayloadRe
                     (None, None) => Value::Null,
                 };
                 out.push(PayloadRecord {
-                    payload_id: payload_id_for(&event_id, "tool_result"),
-                    event_id,
+                    payload_id: payload_id_for(&activity_anchor_id, "tool_result"),
+                    activity_anchor_id,
                     activity_id: None,
                     payload_kind: "tool_result".to_string(),
                     payload_json: serde_json::to_string(&payload)
@@ -543,7 +543,7 @@ fn archive_payload_from_record(payload: PayloadRecord) -> Result<ProvenanceArchi
     let activity_id = payload
         .activity_id
         .ok_or_else(|| ProvenanceError::InvalidEvent {
-            event_id: payload.event_id.clone(),
+            activity_anchor: payload.activity_anchor_id.clone(),
             reason: format!(
                 "payload {} missing activity_id for kind {}",
                 payload.payload_id, payload.payload_kind
@@ -589,7 +589,7 @@ fn archive_payload_from_record(payload: PayloadRecord) -> Result<ProvenanceArchi
             result_json: payload_json,
         }),
         other => Err(ProvenanceError::InvalidEvent {
-            event_id: payload.event_id.clone(),
+            activity_anchor: payload.activity_anchor_id.clone(),
             reason: format!("unsupported payload_kind for archive retrieval: {other}"),
         }),
     }
@@ -694,10 +694,13 @@ impl SurrealProvenanceStore {
     }
 
     fn semantic_derived_from_label(prov_type: Option<&str>) -> &'static str {
-        use crate::vocabulary::a2a_relation_types;
+        use crate::vocabulary::{a2a_relation_types, a2a_relations};
         match prov_type {
             Some(t) if t == a2a_relation_types::STATUS_TRANSITION => {
                 semantic_labels::WAS_TRANSITIONED_FROM
+            }
+            Some(t) if t == a2a_relations::INFORMED_BY_OBSERVATION => {
+                semantic_labels::WAS_INFORMED_BY
             }
             _ => crate::vocabulary::prov_relations::WAS_DERIVED_FROM,
         }
@@ -1164,7 +1167,7 @@ impl SurrealProvenanceStore {
     /// Atomic payload upsert keyed on payload_id.
     async fn upsert_payload(&self, payload: PayloadRecord) -> Result<()> {
         let query = format!(
-            "UPSERT {TBL_PAYLOAD} SET payload_id = $payload_id, event_id = $event_id, \
+            "UPSERT {TBL_PAYLOAD} SET payload_id = $payload_id, activity_anchor_id = $activity_anchor_id, \
              activity_id = $activity_id, payload_kind = $payload_kind, \
              payload_json = $payload_json \
              WHERE payload_id = $payload_id"
@@ -1172,7 +1175,7 @@ impl SurrealProvenanceStore {
         self.db
             .query(&query)
             .bind(("payload_id", payload.payload_id))
-            .bind(("event_id", payload.event_id))
+            .bind(("activity_anchor_id", payload.activity_anchor_id))
             .bind(("activity_id", payload.activity_id))
             .bind(("payload_kind", payload.payload_kind))
             .bind(("payload_json", payload.payload_json))
@@ -1183,7 +1186,7 @@ impl SurrealProvenanceStore {
 
     async fn read_payload_by_id(&self, payload_id: &str) -> Result<Option<PayloadRecord>> {
         let query = format!(
-            "SELECT payload_id, event_id, activity_id, payload_kind, payload_json FROM {TBL_PAYLOAD} WHERE payload_id = $payload_id LIMIT 1"
+            "SELECT payload_id, activity_anchor_id, activity_id, payload_kind, payload_json FROM {TBL_PAYLOAD} WHERE payload_id = $payload_id LIMIT 1"
         );
         let mut response = self
             .db
@@ -1198,18 +1201,18 @@ impl SurrealProvenanceStore {
             .and_then(|v| serde_json::from_value(v).ok()))
     }
 
-    async fn read_payload_by_event_kind(
+    async fn read_payload_by_activity_anchor_kind(
         &self,
-        event_id: &str,
+        activity_anchor: &str,
         payload_kind: &str,
     ) -> Result<Option<PayloadRecord>> {
         let query = format!(
-            "SELECT payload_id, event_id, activity_id, payload_kind, payload_json FROM {TBL_PAYLOAD} WHERE event_id = $event_id AND payload_kind = $payload_kind LIMIT 1"
+            "SELECT payload_id, activity_anchor_id, activity_id, payload_kind, payload_json FROM {TBL_PAYLOAD} WHERE activity_anchor_id = $activity_anchor_id AND payload_kind = $payload_kind LIMIT 1"
         );
         let mut response = self
             .db
             .query(&query)
-            .bind(("event_id", event_id.to_string()))
+            .bind(("activity_anchor_id", activity_anchor.to_string()))
             .bind(("payload_kind", payload_kind.to_string()))
             .await
             .map_err(map_surreal_error)?;
@@ -1222,7 +1225,7 @@ impl SurrealProvenanceStore {
 
     async fn read_payloads_by_activity(&self, activity_id: &str) -> Result<Vec<PayloadRecord>> {
         let query = format!(
-            "SELECT payload_id, event_id, activity_id, payload_kind, payload_json FROM {TBL_PAYLOAD} WHERE activity_id = $activity_id ORDER BY payload_kind"
+            "SELECT payload_id, activity_anchor_id, activity_id, payload_kind, payload_json FROM {TBL_PAYLOAD} WHERE activity_id = $activity_id ORDER BY payload_kind"
         );
         let mut response = self
             .db
@@ -1312,7 +1315,7 @@ impl ProvenanceWriter for SurrealProvenanceStore {
 
         if !payload_records.is_empty() {
             let activity_id = self
-                .resolve_call_activity_id_for_event(event.id().as_str())
+                .resolve_call_activity_id_for_anchor(event.id().as_str())
                 .await?;
             for payload in &mut payload_records {
                 if let Some(ref activity_id) = activity_id {
@@ -1355,7 +1358,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                 None => continue,
             };
             let event_id = props
-                .get("a2a_event_id")
+                .get("a2a_activity_anchor")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let message_id = props
@@ -1379,7 +1382,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
             }
             messages.push(ProvenanceContextMessage {
                 message_id: MessageId::from(message_id),
-                timestamp_ms: event_id_to_timestamp_ms(event_id),
+                timestamp_ms: activity_anchor_to_timestamp_ms(event_id),
                 role: role.to_string(),
                 content: vec![content],
             });
@@ -1502,7 +1505,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                 None => continue,
             };
             // Gap 11: Skip rows with missing required fields
-            let event_id = match props.get("a2a_event_id").and_then(Value::as_str) {
+            let event_id = match props.get("a2a_activity_anchor").and_then(Value::as_str) {
                 Some(id) if !id.is_empty() => id,
                 _ => continue,
             };
@@ -1522,8 +1525,8 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                 continue;
             }
             items.push(ProvenanceConversationContextItem {
-                timestamp_ms: event_id_to_timestamp_ms(event_id),
-                event_id: EventId::from(event_id),
+                timestamp_ms: activity_anchor_to_timestamp_ms(event_id),
+                activity_anchor: ActivityAnchorId::from(event_id),
                 role: role.to_string(),
                 content: ConversationItemContent::Message(content),
             });
@@ -1539,8 +1542,8 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                 None => continue,
             };
 
-            // Gap 11: Skip rows with missing required fields (event_id, tool_name)
-            let event_id_str = match props.get("a2a_event_id").and_then(Value::as_str) {
+            // Gap 11: Skip rows with missing required fields (activity_anchor, tool_name)
+            let event_id_str = match props.get("a2a_activity_anchor").and_then(Value::as_str) {
                 Some(id) if !id.is_empty() => id,
                 _ => continue,
             };
@@ -1581,10 +1584,10 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                 .unwrap_or(Value::Object(Map::new()));
 
             let tool_call_payload = self
-                .read_payload_by_event_kind(event_id_str, "tool_call")
+                .read_payload_by_activity_anchor_kind(event_id_str, "tool_call")
                 .await?;
             let tool_result_payload = self
-                .read_payload_by_event_kind(event_id_str, "tool_result")
+                .read_payload_by_activity_anchor_kind(event_id_str, "tool_result")
                 .await?;
 
             // Gap 10: Use metadata as fallback when payload is absent
@@ -1635,8 +1638,8 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
 
             if include_call {
                 items.push(ProvenanceConversationContextItem {
-                    timestamp_ms: event_id_to_timestamp_ms(event_id_str),
-                    event_id: EventId::from(event_id_str),
+                    timestamp_ms: activity_anchor_to_timestamp_ms(event_id_str),
+                    activity_anchor: ActivityAnchorId::from(event_id_str),
                     role: "assistant".to_string(),
                     content: ConversationItemContent::ToolCall(ToolCallContent {
                         tool_name: tool_name.clone(),
@@ -1655,8 +1658,8 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                     ToolOutcome::StatusOnly
                 };
                 items.push(ProvenanceConversationContextItem {
-                    timestamp_ms: event_id_to_timestamp_ms(event_id_str),
-                    event_id: EventId::from(event_id_str),
+                    timestamp_ms: activity_anchor_to_timestamp_ms(event_id_str),
+                    activity_anchor: ActivityAnchorId::from(event_id_str),
                     role: "tool".to_string(),
                     content: ConversationItemContent::ToolResult(ToolResultContent {
                         tool_name: tool_name.clone(),
@@ -1689,7 +1692,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                     Some(p) => p,
                     None => continue,
                 };
-                let event_id = match props.get("a2a_event_id").and_then(Value::as_str) {
+                let event_id = match props.get("a2a_activity_anchor").and_then(Value::as_str) {
                     Some(id) if !id.is_empty() => id.to_string(),
                     _ => continue,
                 };
@@ -1740,8 +1743,8 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                 };
 
                 items.push(ProvenanceConversationContextItem {
-                    timestamp_ms: event_id_to_timestamp_ms(&event_id),
-                    event_id: EventId::from(event_id.as_str()),
+                    timestamp_ms: activity_anchor_to_timestamp_ms(&event_id),
+                    activity_anchor: ActivityAnchorId::from(event_id.as_str()),
                     role: "assistant".to_string(),
                     content: ConversationItemContent::SessionStep(SessionStepContent {
                         tool_name,
@@ -1754,7 +1757,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         items.sort_by_key(|i| {
             (
                 i.timestamp_ms,
-                event_id_to_timestamp_ms(i.event_id.as_str()),
+                activity_anchor_to_timestamp_ms(i.activity_anchor.as_str()),
             )
         });
         if let Some(n) = limit {
@@ -1800,10 +1803,12 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
             return Ok(None);
         }
         // Find intents that are superseded (have outgoing WAS_REPLACED_BY or WAS_REFINED_BY)
-        let replaced_sources = self.collect_superseded_event_ids(task_id, "Intent").await?;
+        let replaced_sources = self
+            .collect_superseded_activity_anchors(task_id, "Intent")
+            .await?;
         Ok(intents
             .into_iter()
-            .find(|intent| !replaced_sources.contains(intent.event_id.as_str())))
+            .find(|intent| !replaced_sources.contains(intent.activity_anchor_id.as_str())))
     }
 
     async fn query_current_plan(&self, task_id: &TaskId) -> Result<Option<PlanningPlanRecord>> {
@@ -1811,10 +1816,12 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
         if plans.is_empty() {
             return Ok(None);
         }
-        let replaced_sources = self.collect_superseded_event_ids(task_id, "Plan").await?;
+        let replaced_sources = self
+            .collect_superseded_activity_anchors(task_id, "Plan")
+            .await?;
         Ok(plans
             .into_iter()
-            .find(|plan| !replaced_sources.contains(plan.event_id.as_str())))
+            .find(|plan| !replaced_sources.contains(plan.activity_anchor_id.as_str())))
     }
 
     async fn query_intent_history(
@@ -1845,7 +1852,7 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
             };
             let context_id = props.get("a2a_context_id").and_then(Value::as_str);
             let task_id_value = props.get("a2a_task_id").and_then(Value::as_str);
-            let event_id = props.get("a2a_event_id").and_then(Value::as_str);
+            let event_id = props.get("a2a_activity_anchor").and_then(Value::as_str);
             let intent_id = props.get("a2a_intent_id").and_then(Value::as_str);
             let description = props
                 .get("prov_label")
@@ -1859,14 +1866,15 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
             intents.push(PlanningIntentRecord {
                 context_id: ContextId::from(context_id),
                 task_id: TaskId::from_external(ExternalId::new(task_id_value)),
-                event_id: EventId::from(event_id),
+                activity_anchor_id: ActivityAnchorId::from(event_id),
                 intent_id: intent_id.to_string(),
                 description: description.to_string(),
                 supersession_from_previous: intent_incoming.get(event_id).copied(),
                 superseded_by_next: intent_outgoing.get(event_id).copied(),
             });
         }
-        intents.sort_by_key(|r| std::cmp::Reverse(event_order_key(&r.event_id)));
+        intents
+            .sort_by_key(|r| std::cmp::Reverse(activity_anchor_order_key(&r.activity_anchor_id)));
         if intents.len() > limit_val {
             intents.truncate(limit_val);
         }
@@ -1900,7 +1908,7 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
             };
             let context_id = props.get("a2a_context_id").and_then(Value::as_str);
             let task_id_value = props.get("a2a_task_id").and_then(Value::as_str);
-            let event_id = props.get("a2a_event_id").and_then(Value::as_str);
+            let event_id = props.get("a2a_activity_anchor").and_then(Value::as_str);
             let intent_id = props.get("a2a_intent_id").and_then(Value::as_str);
             let plan_id = props.get("a2a_plan_id").and_then(Value::as_str);
             let (
@@ -1917,7 +1925,7 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
             plans.push(PlanningPlanRecord {
                 context_id: ContextId::from(context_id),
                 task_id: TaskId::from_external(ExternalId::new(task_id_value)),
-                event_id: EventId::from(event_id),
+                activity_anchor_id: ActivityAnchorId::from(event_id),
                 intent_id: intent_id.to_string(),
                 plan_id: plan_id.to_string(),
                 steps,
@@ -1925,7 +1933,7 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
                 superseded_by_next: plan_outgoing.get(event_id).copied(),
             });
         }
-        plans.sort_by_key(|r| std::cmp::Reverse(event_order_key(&r.event_id)));
+        plans.sort_by_key(|r| std::cmp::Reverse(activity_anchor_order_key(&r.activity_anchor_id)));
         if plans.len() > limit_val {
             plans.truncate(limit_val);
         }
@@ -1938,14 +1946,17 @@ impl SurrealProvenanceStore {
     // Graph traversal helpers
     // -----------------------------------------------------------------------
 
-    async fn resolve_call_activity_id_for_event(&self, event_id: &str) -> Result<Option<String>> {
+    async fn resolve_call_activity_id_for_anchor(
+        &self,
+        activity_anchor: &str,
+    ) -> Result<Option<String>> {
         let query = format!(
-            "SELECT node_id FROM {TBL_NODE} WHERE (label = 'LlmCall' OR label = 'ToolCall') AND props.a2a_event_id = $event_id LIMIT 1"
+            "SELECT node_id FROM {TBL_NODE} WHERE (label = 'LlmCall' OR label = 'ToolCall') AND props.a2a_activity_anchor = $activity_anchor LIMIT 1"
         );
         let mut response = self
             .db
             .query(&query)
-            .bind(("event_id", event_id.to_string()))
+            .bind(("activity_anchor", activity_anchor.to_string()))
             .await
             .map_err(map_surreal_error)?;
         let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
@@ -1984,7 +1995,7 @@ impl SurrealProvenanceStore {
             .map(AgentId::from_uuid)
             .map(Some)
             .map_err(|_| ProvenanceError::InvalidEvent {
-                event_id: String::new(),
+                activity_anchor: String::new(),
                 reason: format!("task agent instance id invalid UUID: {agent_id_str:?}"),
             })
     }
@@ -2013,7 +2024,7 @@ impl SurrealProvenanceStore {
                 .await?;
             if !completed {
                 return Err(ProvenanceError::InvalidEvent {
-                    event_id: event.id().as_str().to_string(),
+                    activity_anchor: event.id().as_str().to_string(),
                     reason: format!(
                         "step completion rejected: dependency step not completed (plan_id={plan_id}, step_id={step_id}, depends_on={dep})"
                     ),
@@ -2030,7 +2041,7 @@ impl SurrealProvenanceStore {
             .await?;
         if !has_evidence {
             return Err(ProvenanceError::InvalidEvent {
-                event_id: event.id().as_str().to_string(),
+                activity_anchor: event.id().as_str().to_string(),
                 reason: format!(
                     "step completion rejected: no terminal LLM/tool evidence linked to step (plan_id={plan_id}, step_id={step_id})"
                 ),
@@ -2187,20 +2198,20 @@ impl SurrealProvenanceStore {
         let mut incoming: HashMap<String, PlanningSupersessionKind> = HashMap::new();
         let mut outgoing: HashMap<String, PlanningSupersessionKind> = HashMap::new();
 
-        for (source_event_id, target_event_id) in &replaced_edges {
+        for (source_anchor, target_anchor) in &replaced_edges {
             incoming
-                .entry(target_event_id.clone())
+                .entry(target_anchor.clone())
                 .or_insert(PlanningSupersessionKind::ReplacedBy);
             outgoing
-                .entry(source_event_id.clone())
+                .entry(source_anchor.clone())
                 .or_insert(PlanningSupersessionKind::ReplacedBy);
         }
-        for (source_event_id, target_event_id) in &refined_edges {
+        for (source_anchor, target_anchor) in &refined_edges {
             incoming
-                .entry(target_event_id.clone())
+                .entry(target_anchor.clone())
                 .or_insert(PlanningSupersessionKind::RefinedBy);
             outgoing
-                .entry(source_event_id.clone())
+                .entry(source_anchor.clone())
                 .or_insert(PlanningSupersessionKind::RefinedBy);
         }
 
@@ -2240,16 +2251,16 @@ impl SurrealProvenanceStore {
             if from_id.is_empty() || to_id.is_empty() {
                 continue;
             }
-            // Resolve event_ids from task-scoped nodes.
+            // Resolve activity anchors from task-scoped nodes.
             let from_event = self.get_node(from_id).await?.and_then(|n| {
                 n.get("props")
-                    .and_then(|p| p.get("a2a_event_id"))
+                    .and_then(|p| p.get("a2a_activity_anchor"))
                     .and_then(Value::as_str)
                     .map(ToString::to_string)
             });
             let to_event = self.get_node(to_id).await?.and_then(|n| {
                 n.get("props")
-                    .and_then(|p| p.get("a2a_event_id"))
+                    .and_then(|p| p.get("a2a_activity_anchor"))
                     .and_then(Value::as_str)
                     .map(ToString::to_string)
             });
@@ -2260,7 +2271,7 @@ impl SurrealProvenanceStore {
         Ok(results)
     }
 
-    async fn collect_superseded_event_ids(
+    async fn collect_superseded_activity_anchors(
         &self,
         task_id: &TaskId,
         node_label: &str,
@@ -2272,11 +2283,11 @@ impl SurrealProvenanceStore {
             .query_supersession_edges(node_label, task_id, semantic_labels::WAS_REFINED_BY)
             .await?;
         let mut superseded = HashSet::new();
-        for (source_event_id, _) in replaced_edges {
-            superseded.insert(source_event_id);
+        for (source_anchor, _) in replaced_edges {
+            superseded.insert(source_anchor);
         }
-        for (source_event_id, _) in refined_edges {
-            superseded.insert(source_event_id);
+        for (source_anchor, _) in refined_edges {
+            superseded.insert(source_anchor);
         }
         Ok(superseded)
     }
@@ -2409,7 +2420,7 @@ impl SurrealProvenanceStore {
                     let incoming = (class.clone(), evidence.clone());
                     if existing != &incoming {
                         return Err(ProvenanceError::InvalidEvent {
-                            event_id: from_id,
+                            activity_anchor: from_id,
                             reason: format!(
                                 "multiple conflicting failure classifications for activity: existing=({}, {}), incoming=({}, {})",
                                 existing.0, existing.1, incoming.0, incoming.1
@@ -2559,7 +2570,7 @@ fn parse_ops_field(raw: &str) -> Option<&str> {
 fn parse_ops_sort_by(raw: Option<&str>) -> Result<&str> {
     let field = raw.unwrap_or("timestamp_ms");
     parse_ops_field(field).ok_or_else(|| ProvenanceError::InvalidEvent {
-        event_id: "ops_query".to_string(),
+        activity_anchor: "ops_query".to_string(),
         reason: format!("unsupported sort field: {field}"),
     })
 }
@@ -2570,7 +2581,7 @@ fn parse_ops_sort_dir(raw: Option<&str>) -> Result<bool> {
         "asc" | "ASC" => Ok(false),
         "desc" | "DESC" => Ok(true),
         other => Err(ProvenanceError::InvalidEvent {
-            event_id: "ops_query".to_string(),
+            activity_anchor: "ops_query".to_string(),
             reason: format!("unsupported sort direction: {other}"),
         }),
     }
@@ -2586,7 +2597,7 @@ fn parse_ops_group_by(raw: &[String]) -> Result<Vec<String>> {
             parse_ops_field(field)
                 .map(|f| f.to_string())
                 .ok_or_else(|| ProvenanceError::InvalidEvent {
-                    event_id: "ops_query".to_string(),
+                    activity_anchor: "ops_query".to_string(),
                     reason: format!("unsupported group dimension: {field}"),
                 })
         })
@@ -2675,6 +2686,7 @@ fn apply_agent_identity_fields(
 
 /// Nest drift fields into a "drift" sub-object.
 fn nest_llm_drift_fields(row: &mut Map<String, Value>) {
+    let drift_citation = row.remove("drift_citation");
     let drift_score = row.remove("drift_score");
     let drift_severity = row.remove("drift_severity");
     let drift_mode = row.remove("drift_mode");
@@ -2684,14 +2696,28 @@ fn nest_llm_drift_fields(row: &mut Map<String, Value>) {
     let response_text_preview = row.remove("response_text_preview");
     let step_text_preview = row.remove("step_text_preview");
 
-    let has_any = drift_score.is_some()
+    let plan_intent = row.remove("plan_drift_intent_alignment");
+    let plan_step = row.remove("plan_drift_step_alignment");
+    let plan_traj = row.remove("plan_drift_trajectory");
+    let plan_adherence = row.remove("plan_drift_adherence");
+    let plan_severity = row.remove("plan_drift_composite_severity");
+
+    let has_tactical = drift_score.is_some()
         || drift_severity.is_some()
         || drift_mode.is_some()
         || drift_warn_min_score.is_some()
         || drift_block_min_score.is_some()
         || intent_text_preview.is_some()
-        || response_text_preview.is_some();
-    if !has_any {
+        || response_text_preview.is_some()
+        || step_text_preview.is_some();
+
+    let has_plan_drift = plan_intent.is_some()
+        || plan_step.is_some()
+        || plan_traj.is_some()
+        || plan_adherence.is_some()
+        || plan_severity.is_some();
+
+    if !has_tactical && !has_plan_drift && drift_citation.is_none() {
         return;
     }
 
@@ -2737,18 +2763,13 @@ fn nest_llm_drift_fields(row: &mut Map<String, Value>) {
         drift.insert("stepTextPreview".to_string(), value);
     }
 
-    // Nest plan drift fields into drift.plan sub-object.
-    let plan_intent = row.remove("plan_drift_intent_alignment");
-    let plan_step = row.remove("plan_drift_step_alignment");
-    let plan_traj = row.remove("plan_drift_trajectory");
-    let plan_adherence = row.remove("plan_drift_adherence");
-    let plan_severity = row.remove("plan_drift_composite_severity");
+    if let Some(value) = drift_citation
+        && !value.is_null()
+    {
+        drift.insert("citation".to_string(), value);
+    }
 
-    let has_plan_drift = plan_intent.is_some()
-        || plan_step.is_some()
-        || plan_traj.is_some()
-        || plan_adherence.is_some()
-        || plan_severity.is_some();
+    // Nest plan drift fields into drift.plan sub-object.
     if has_plan_drift {
         let mut plan = Map::new();
         if let Some(v) = plan_intent
@@ -3037,7 +3058,7 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                     out.insert("cached_input_tokens".to_string(), v);
                 }
 
-                // Timestamp: prefer prov_endTime > prov_startTime > prov_time > event_id fallback
+                // Timestamp: prefer prov_endTime > prov_startTime > prov_time > activity_anchor fallback
                 // (coalesce: prov_endTime > prov_startTime > 0).
                 let timestamp_ms = out
                     .get("prov_endTime")
@@ -3046,10 +3067,10 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                     .or_else(|| out.get("prov_time").and_then(Value::as_u64))
                     .unwrap_or_else(|| {
                         let event_id = out
-                            .get("a2a_event_id")
+                            .get("a2a_activity_anchor")
                             .and_then(Value::as_str)
                             .unwrap_or_default();
-                        event_id_to_timestamp_ms(event_id)
+                        activity_anchor_to_timestamp_ms(event_id)
                     });
                 out.insert(
                     "timestamp_ms".to_string(),
@@ -3233,6 +3254,9 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                     if let Some(v) = row.get("a2a_step_text_preview").cloned() {
                         row.insert("step_text_preview".to_string(), v);
                     }
+                    if let Some(v) = row.get("a2a_citation_drift").cloned() {
+                        row.insert("drift_citation".to_string(), v);
+                    }
                     if let Some(v) = row.get("a2a_plan_drift_intent_alignment").cloned() {
                         row.insert("plan_drift_intent_alignment".to_string(), v);
                     }
@@ -3255,7 +3279,7 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                         let resolved =
                             failure_by_activity_id.get(&activity_id).ok_or_else(|| {
                                 ProvenanceError::InvalidEvent {
-                                event_id: activity_id.clone(),
+                                activity_anchor: activity_id.clone(),
                                 reason:
                                     "missing write-time failure classification for failed llm_call"
                                         .to_string(),
@@ -3379,7 +3403,7 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                         let resolved =
                             failure_by_activity_id.get(&activity_id).ok_or_else(|| {
                                 ProvenanceError::InvalidEvent {
-                                event_id: activity_id.clone(),
+                                activity_anchor: activity_id.clone(),
                                 reason:
                                     "missing write-time failure classification for failed tool_call"
                                         .to_string(),

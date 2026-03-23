@@ -15,7 +15,7 @@ expression: snapshot
           "a2a_client": "anthropic",
           "a2a_context_id": "ctx-100-1",
           "a2a_duration_ms": 650,
-          "a2a_event_id": "[prov_event_id]",
+          "a2a_activity_anchor": "[prov_activity_anchor]",
           "a2a_failure_class": "failed_graph_incomplete",
           "a2a_failure_evidence": "metadata",
           "a2a_function_name": "DraftPrompt",
@@ -46,8 +46,8 @@ expression: snapshot
           "activity_status": "Completed",
           "activity_kind": "llm_call",
           "activity_ref": "prov:v1:activity:llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
-          "llm_call_ref": "[prov_event_id]",
-          "llm_result_ref": "[prov_event_id]",
+          "llm_call_ref": "[prov_activity_anchor]",
+          "llm_result_ref": "[prov_activity_anchor]",
           "failure_class": "baml_validation_error",
           "failure_evidence": "BAML validation failed: invalid response schema"
         }
@@ -104,7 +104,7 @@ expression: snapshot
           "a2a_agent_id": "[uuid]",
           "a2a_context_id": "ctx-100-1",
           "a2a_duration_ms": 240,
-          "a2a_event_id": "[prov_event_id]",
+          "a2a_activity_anchor": "[prov_activity_anchor]",
           "a2a_failure_class": "failed_graph_incomplete",
           "a2a_failure_evidence": "metadata",
           "a2a_function_name": "DelegatePrompt",
@@ -131,8 +131,8 @@ expression: snapshot
           "activity_status": "Completed",
           "activity_kind": "tool_call",
           "activity_ref": "prov:v1:activity:tool_call:ctx-100-1:msg-c:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
-          "tool_call_ref": "[prov_event_id]",
-          "tool_result_ref": "[prov_event_id]",
+          "tool_call_ref": "[prov_activity_anchor]",
+          "tool_result_ref": "[prov_activity_anchor]",
           "failure_class": "failed_graph_incomplete",
           "failure_evidence": "metadata"
         }

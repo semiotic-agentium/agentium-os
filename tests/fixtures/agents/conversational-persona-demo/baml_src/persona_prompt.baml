@@ -38,17 +38,21 @@ class SelectedAgent {
   agent_instance_id string
 }
 
+// StructuredReply: shared synthesis shape in `_baml_runtime.baml` (builder prelude).
+
 // Persona-voiced summary of what agents can do (no delegation).
 // Capability summary: describe available agents in persona voice.
 // The session history carries the Read result from the preceding GetDiscoverAgentsPlan call.
-function FormatCapabilities(user_message: string) -> string {
+function FormatCapabilities(user_message: string) -> StructuredReply {
   client DefaultClient
   prompt #"
     You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns if present in ctx.tags.conversation_history for continuity.
 
     The session history below contains the list of available agents retrieved in the previous step.
     Describe what agents are available to help the user, in brutal ork persona voice.
-    2-5 sentences. No tool jargon; readable and ork-flavoured (krump, waaagh).
+    Return StructuredReply: first part MUST be TextPart (type "text") with the spoken summary (2-5 sentences). No tool jargon; readable and ork-flavoured (krump, waaagh).
+    Optionally append DataPart (type "data", media_type application/json) with a JSON string of agent ids if useful; otherwise omit.
+    citations: #N / @N refs from session history you used, or [].
 
     {% if ctx.tags.conversation_history %}
     {% for msg in ctx.tags.conversation_history %}
@@ -129,13 +133,14 @@ function MakeStructuredPlan(user_message: string) -> StandardStructuredPlan {
 /// FSM phase instructions are injected by codegen — this prompt carries goal context only.
 function DecideDelegationAction(
   goal: string,
-  agent: string,
+  agent_package: string,
+  agent_instance_id: string,
 ) -> SystemInternal_a2aSessionPlan | string? {
   client DefaultClient
   prompt #"
-    Coordinate a conversation with agent {{ agent }} to achieve this goal: {{ goal }}
+    Coordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
 
-    For Open: set initial_input.target to { agent_package: "{{ agent }}", agent_instance_id: "default" }.
+    For Open: set initial_input.target to { agent_package: "{{ agent_package }}", agent_instance_id: "{{ agent_instance_id }}" }.
     For Send: write the message that will achieve the goal.
     Return null (string?) when the goal is satisfied or after 2+ exchanges.
 
@@ -155,7 +160,7 @@ function DecideDelegationAction(
 function PersonaReact(
   user_message: string,
   plan_objective: string,
-) -> string {
+) -> StructuredReply {
   client DefaultClient
   prompt #"
     You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns in ctx.tags.conversation_history when present for continuity.
@@ -163,13 +168,12 @@ function PersonaReact(
     The user asked: {{ user_message }}
     Plan objective: {{ plan_objective }}
 
-    The session history below contains the results from your specialist agent(s). React appropriately:
-    - If the content directly answers the user's question, relay the key facts in your voice.
-    - If the output is a list or structured data, present the highlights concisely.
-    - If multiple steps ran, synthesize across them rather than repeating each.
-    - Match verbosity to the task: brief for simple lookups, fuller for complex results.
-    - Never dump raw JSON or tool payloads. Deliver the useful content.
+    The session history below contains the results from your specialist agent(s). Return StructuredReply:
+    - parts: first MUST be TextPart (type "text") with the user-facing synthesis — key facts in your voice, not raw dumps.
+    - Optionally append DataPart (type "data", media_type ApplicationJson) if a JSON string helps tools; never omit a useful text summary.
+    - If multiple steps ran, synthesize across them. Match verbosity to the task.
     - Use ork-flavoured diction (krump, waaagh) sparingly — it should enhance, not obscure.
+    - citations: #N / @N refs from history, or [].
 
     {% if ctx.tags.conversation_history %}
     {% for msg in ctx.tags.conversation_history %}

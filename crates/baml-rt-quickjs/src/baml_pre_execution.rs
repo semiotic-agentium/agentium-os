@@ -336,22 +336,56 @@ pub async fn intercept_llm_call_pre_execution(
                 error = %build_err,
                 "build_request failed; giving interceptors a chance to Substitute/Block"
             );
-            // Request build failed (e.g. missing API key). Give interceptors a chance to
-            // Substitute or Block so tests can stub LLM without real secrets.
-            let minimal = minimal_llm_context(scope, function_name);
+            // Request build failed (e.g. runtime-injected args like `session_context`
+            // that are not in the declared BAML function signature, or missing env
+            // secrets in the probe env map).  Give interceptors a chance to Substitute
+            // or Block; if they Allow, the probe failure is non-fatal and the actual
+            // call_function will proceed — it handles extra params differently.
+            let mut minimal = minimal_llm_context(scope, function_name);
             let registry = interceptor_registry.lock().await;
             let decision = registry.intercept_llm_call(&minimal).await?;
             drop(registry);
             return match decision {
                 InterceptorDecision::Substitute(value) => {
+                    // When `build_request` fails we never reach the normal `start_llm` path, but
+                    // `execute_function` still completes pending effects after Substitute. Without a
+                    // stored token that completion is a no-op — provenance never sees the call.
+                    // Emit start + pair with completion using stub client/model (minimal context has
+                    // empty provider fields; normalizer requires non-unknown client/model).
+                    if let (Some(emitter), Some(coll)) = (effect_emitter, collector) {
+                        minimal.client = "openai-generic".to_string();
+                        minimal.model = "stub".to_string();
+                        if let Value::Object(ref mut m) = minimal.metadata {
+                            m.insert("client".to_string(), json!("openai-generic"));
+                            m.insert("model".to_string(), json!("stub"));
+                        }
+                        let tool_name_resolution =
+                            match function_tool_manifest.tool_name_for_function(function_name) {
+                                Some(name) => ToolNameResolution::FromManifest(name.to_string()),
+                                None => ToolNameResolution::NotApplicable,
+                            };
+                        let effect_metadata =
+                            llm_effect_metadata_from_context(&minimal, tool_name_resolution);
+                        let context_id = minimal.runtime_scope.context_id().clone();
+                        match emitter.start_llm(context_id.clone(), effect_metadata).await {
+                            Ok(token) => coll.store_effect_token(context_id, token).await,
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = ?e,
+                                    function = function_name,
+                                    "build_request-fallback Substitute: failed to start LLM effect"
+                                );
+                            }
+                        }
+                    }
                     Ok(InterceptorDecision::Substitute(value))
                 }
                 InterceptorDecision::Block(msg) => Err(BamlRtError::BamlRuntime(format!(
                     "LLM call blocked by interceptor: {msg}"
                 ))),
-                InterceptorDecision::Allow => Err(BamlRtError::RequestBuildFailed {
-                    source: Box::new(std::io::Error::other(build_err.to_string())),
-                }),
+                // Allow: interceptors are happy to let the call proceed — the probe
+                // failure is irrelevant.  call_function will make the actual LLM call.
+                InterceptorDecision::Allow => Ok(InterceptorDecision::Allow),
             };
         }
     };

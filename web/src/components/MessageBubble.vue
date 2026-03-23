@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { ChatMessage, ContentBlock } from "../types/a2a";
+import type { ChatMessage, ContentBlock, DataContentBlock } from "../types/a2a";
 import TaskTimeline from "./TaskTimeline.vue";
 import ToolNotificationCard from "./ToolNotificationCard.vue";
 import {
@@ -23,6 +23,35 @@ function formatTime(date: Date): string {
 function isToolBlock(block: ContentBlock): block is import("../types/a2a").ToolNotificationBlock {
   return block.type === "tool";
 }
+
+function isDataBlock(block: ContentBlock): block is DataContentBlock {
+  return block.type === "data";
+}
+
+function formatStructuredBody(mediaType: string, data: unknown): string {
+  if (data === null || data === undefined) return "";
+  if (mediaType === "application/json" || mediaType.includes("json")) {
+    try {
+      return JSON.stringify(data, null, 2);
+    } catch {
+      return String(data);
+    }
+  }
+  if (mediaType === "text/csv" || mediaType === "text/plain") {
+    return typeof data === "string" ? data : JSON.stringify(data, null, 2);
+  }
+  try {
+    return typeof data === "string" ? data : JSON.stringify(data, null, 2);
+  } catch {
+    return String(data);
+  }
+}
+
+const citationRefs = computed((): string[] => {
+  const raw = props.message.metadata?.citations;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((x): x is string => typeof x === "string");
+});
 
 // Coordinator metadata parsing (only for finished agent messages)
 const coordinatorData = computed((): ParsedCoordinatorAnswer | null => {
@@ -78,7 +107,22 @@ const showGaps = ref(false);
             </div>
           </div>
           <ToolNotificationCard v-else-if="isToolBlock(block)" :block="block" />
+          <div
+            v-else-if="isDataBlock(block)"
+            :class="['bubble', 'bubble-data', message.role]"
+            role="region"
+            :aria-label="`Structured data (${block.mediaType})`"
+          >
+            <div class="structured-data-label">{{ block.mediaType }}</div>
+            <pre class="structured-data-pre">{{ formatStructuredBody(block.mediaType, block.data) }}</pre>
+          </div>
         </template>
+        <div v-if="citationRefs.length" class="citation-chip-row" role="group" aria-label="Citations">
+          <span class="citation-section-label">Citations</span>
+          <div class="source-chips">
+            <span v-for="(ref, i) in citationRefs" :key="i" class="source-chip">{{ ref }}</span>
+          </div>
+        </div>
         <div v-if="showInlineStreamingDots && message.isStreaming" class="streaming-dots-row">
           <span class="thinking-dots"><span /><span /><span /></span>
         </div>
@@ -173,3 +217,47 @@ const showGaps = ref(false);
     </div>
   </div>
 </template>
+
+<style scoped>
+.bubble-data {
+  max-width: 100%;
+}
+
+.structured-data-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+  margin-bottom: 0.35rem;
+}
+
+.structured-data-pre {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  max-height: 20rem;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-surface-elevated, #1e1e24) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border, #333) 80%, transparent);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.citation-chip-row {
+  margin-top: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.citation-section-label {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+  margin-bottom: 0.35rem;
+}
+</style>

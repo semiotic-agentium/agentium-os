@@ -6,5 +6,8 @@ expression: "serde_json::to_value(&cmd).unwrap()"
   "action": "complete_step",
   "session_id": "session-test-123",
   "step_id": "step-test-1",
-  "evidence_text": "Step completed successfully"
+  "citations": [
+    "#1",
+    "@4:2"
+  ]
 }

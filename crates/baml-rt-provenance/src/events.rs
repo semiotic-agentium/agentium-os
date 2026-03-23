@@ -5,10 +5,11 @@ use std::{
 };
 
 use baml_rt_core::{
-    Outcome,
+    Citation, Outcome,
     bus::PlanningSupersessionKind,
     ids::{
-        AgentId, ArtifactId, ContextId, EventId, IntentId, MessageId, PlanId, PlanStepId, TaskId,
+        ActivityAnchorId, AgentId, ArtifactId, ContextId, IntentId, MessageId, PlanId, PlanStepId,
+        TaskId,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -39,7 +40,7 @@ fn seed_event_counter() -> u64 {
     nanos.saturating_add(pid_component).max(1)
 }
 
-fn next_event_id() -> EventId {
+fn next_activity_anchor_id() -> ActivityAnchorId {
     let mut current = EVENT_COUNTER.load(Ordering::Relaxed);
     if current == 0 {
         let seed = seed_event_counter();
@@ -49,7 +50,7 @@ fn next_event_id() -> EventId {
         }
     }
     let id = EVENT_COUNTER.fetch_add(1, Ordering::Relaxed).max(current);
-    EventId::from_counter(id)
+    ActivityAnchorId::from_counter(id)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -87,6 +88,86 @@ pub enum LlmUsage {
     Unknown,
 }
 
+/// Per-citation similarity entry in the provenance record.
+///
+/// Stores both the scoring result **and** the resolved evidence so the API can
+/// surface the actual text that the LLM cited — not just the shorthand ref.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LlmCitationSimilarity {
+    /// The ref number (`N` in `#N` or `@N`).
+    pub n: u32,
+    /// `true` for history refs (`#N`), `false` for archive refs (`@N`).
+    pub is_history: bool,
+    /// Counter-evidence citation (`!#N` or `!@N`); excluded from `mean_similarity`.
+    #[serde(default)]
+    pub negated: bool,
+    /// Cosine similarity between the decision text and the cited content.
+    pub similarity: f32,
+    /// Raw citation string exactly as the LLM emitted it (e.g. `"#1"`, `"@2:3-5"`, `"!@1"`).
+    #[serde(default)]
+    pub raw: String,
+    /// Stable event ID of the cited activity — usable for provenance graph lookup.
+    #[serde(default)]
+    pub activity_anchor: String,
+    /// First 400 characters of the resolved content of the cited entry.
+    ///
+    /// For `#N` history refs this is the message/tool-call text; for `@N` archive
+    /// refs this is the archived tool result (scoped to any requested line range).
+    #[serde(default)]
+    pub content_preview: String,
+}
+
+/// Citation-grounded drift info stored on every LLM call completion that produced citations.
+///
+/// This is the persisted form of [`baml_rt_embedding::CitationDriftAssessment`]; it stores
+/// both the scoring results and the resolved evidence text so downstream consumers (API,
+/// UI, eval tooling) can display what the model actually cited without re-resolving.
+///
+/// ## Interpreting `mean_similarity`
+///
+/// Calibrated ranges (from `tests/fixtures/drift/`):
+///
+/// - `> 0.85` and `coverage > 0` — near-verbatim copy of archive; **synthesis BIPIA signature**
+/// - `0.67–0.78` — legitimate synthesis: paraphrase + reorganise from retrieved data
+/// - `0.40–0.67` — moderate grounding; same domain, partial overlap
+/// - `< 0.40` — likely wrong archive cited, or very weak grounding
+/// - `= 1.0` with `coverage = 0` — **vacuous**: no citations were emitted at all
+///
+/// ## Interpreting `coverage`
+///
+/// `coverage = 0` is the primary signal for *missing citations*. In
+/// [`baml_rt_tools::citations::CitationMode::Enforce`] this causes the call to be
+/// rejected at the source before it reaches this record.
+///
+/// ## BIPIA composite rule
+///
+/// Combine with `plan_drift.step_alignment` from the same call to evaluate the
+/// 2D injection firewall. See [`baml_rt_embedding::score_bipia_signal`] for the
+/// full rule and threshold guidance. Neither signal alone is sufficient:
+/// - `step_alignment` alone misses synthesis injections (step descriptions too broad)
+/// - `mean_similarity` alone fires on legitimate grounded synthesis (0.67–0.78)
+/// - Together they isolate the injection quadrant reliably across 39 test scenarios
+///
+/// ## Known limitations (unchanged from the scoring layer)
+///
+/// Numeric hallucination and broad generalisation errors are **not detectable** via
+/// this signal. Both "$7.8M revenue" and "$4.2M revenue" embed near the same
+/// "Q3 revenue figure" centroid.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LlmCitationDriftInfo {
+    /// One entry per citation the LLM emitted, including negated counter-evidence.
+    /// Negated entries are reported here but excluded from `mean_similarity`.
+    pub per_citation: Vec<LlmCitationSimilarity>,
+    /// Mean cosine similarity across **positive** (non-negated) citations only.
+    /// `1.0` is vacuous when `coverage = 0` (no citations) or when all citations are negated.
+    pub mean_similarity: f32,
+    /// Fraction of decisions that emitted at least one citation (cited_decisions / total_decisions).
+    /// `0.0` means no citations were provided — the primary missing-citation signal.
+    pub coverage: f32,
+    pub total_decisions: usize,
+    pub cited_decisions: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LlmDriftInfo {
     pub score: f32,
@@ -104,6 +185,10 @@ pub struct LlmDriftInfo {
     /// committed plan at the time of the LLM call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_drift: Option<LlmPlanDriftInfo>,
+    /// Citation-grounded drift — present when the LLM produced citations.
+    /// Independent signal; composition with tactical/plan drift is empirical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation_drift: Option<LlmCitationDriftInfo>,
 }
 
 /// Plan-anchored drift scores attached to an LLM call completion.
@@ -226,6 +311,10 @@ pub enum ProvEventData {
         duration_ms: u64,
         outcome: Outcome,
         drift: Option<Box<LlmDriftInfo>>,
+        /// Parsed citation strings co-produced by the LLM in this call.
+        /// Empty when the BAML wrapper type produced no citations.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        citations: Vec<String>,
     },
     ToolCallStarted {
         scope: CallScope,
@@ -303,7 +392,8 @@ pub enum ProvEventData {
         task_id: TaskId,
         intent_id: IntentId,
         description: String,
-        derived_from_messages: Vec<MessageId>,
+        /// Citation refs (`#N`, `@N`) for the history entries this intent was derived from.
+        citations: Vec<Citation>,
         supersession: Option<PlanningSupersessionKind>,
         /// Cosine similarity between the previous intent embedding and this
         /// new one.  Present only on supersession events.
@@ -330,7 +420,7 @@ pub enum ProvEventData {
         step_id: PlanStepId,
         old_status: Option<String>,
         new_status: String,
-        evidence_text: String,
+        citations: Vec<Citation>,
     },
     MessageReceived {
         id: MessageId,
@@ -352,14 +442,14 @@ pub enum ProvEventData {
     /// Linked to the prompt entity via the LLM call completion event id.
     PromptRejected {
         scope: CallScope,
-        llm_call_event_id: EventId,
+        llm_call_activity_anchor: ActivityAnchorId,
         reason: String,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskScopedEvent {
-    pub id: EventId,
+    pub id: ActivityAnchorId,
     pub context_id: ContextId,
     pub task_id: TaskId,
     pub timestamp_ms: u64,
@@ -368,7 +458,7 @@ pub struct TaskScopedEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalEvent {
-    pub id: EventId,
+    pub id: ActivityAnchorId,
     pub context_id: ContextId,
     pub timestamp_ms: u64,
     pub data: ProvEventData,
@@ -377,7 +467,7 @@ pub struct GlobalEvent {
 /// AgentBooted has no context by design—it is a global event before any conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentBootedEvent {
-    pub id: EventId,
+    pub id: ActivityAnchorId,
     pub timestamp_ms: u64,
     pub data: ProvEventData,
 }
@@ -391,7 +481,7 @@ pub enum ProvEvent {
 }
 
 impl ProvEvent {
-    pub fn id(&self) -> &EventId {
+    pub fn id(&self) -> &ActivityAnchorId {
         match self {
             ProvEvent::Task(event) => &event.id,
             ProvEvent::Global(event) => &event.id,
@@ -456,7 +546,7 @@ impl ProvEvent {
         metadata: JsonValue,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             timestamp_ms: now_millis(),
             data: ProvEventData::LlmCallStarted {
@@ -480,7 +570,7 @@ impl ProvEvent {
         metadata: JsonValue,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
@@ -520,6 +610,7 @@ impl ProvEvent {
             duration_ms,
             outcome,
             None,
+            vec![],
         )
     }
 
@@ -536,9 +627,10 @@ impl ProvEvent {
         duration_ms: u64,
         outcome: Outcome,
         drift: Option<Box<LlmDriftInfo>>,
+        citations: Vec<String>,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             timestamp_ms: now_millis(),
             data: ProvEventData::LlmCallCompleted {
@@ -552,6 +644,7 @@ impl ProvEvent {
                 duration_ms,
                 outcome,
                 drift,
+                citations,
             },
         })
     }
@@ -581,6 +674,7 @@ impl ProvEvent {
             duration_ms,
             outcome,
             None,
+            vec![],
         )
     }
 
@@ -597,9 +691,10 @@ impl ProvEvent {
         duration_ms: u64,
         outcome: Outcome,
         drift: Option<Box<LlmDriftInfo>>,
+        citations: Vec<String>,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
@@ -614,23 +709,57 @@ impl ProvEvent {
                 duration_ms,
                 outcome,
                 drift,
+                citations,
             },
         })
+    }
+
+    /// Same as `llm_call_completed_task_with_drift` but also carries citation strings
+    /// co-produced by the LLM call.
+    #[allow(clippy::too_many_arguments)]
+    pub fn llm_call_completed_task_with_citations(
+        context_id: ContextId,
+        task_id: TaskId,
+        client: String,
+        model: String,
+        function_name: String,
+        prompt: Value,
+        metadata: JsonValue,
+        usage: LlmUsage,
+        duration_ms: u64,
+        outcome: Outcome,
+        drift: Option<Box<LlmDriftInfo>>,
+        citations: Vec<String>,
+    ) -> Self {
+        Self::llm_call_completed_task_with_drift(
+            context_id,
+            task_id,
+            client,
+            model,
+            function_name,
+            prompt,
+            metadata,
+            usage,
+            duration_ms,
+            outcome,
+            drift,
+            citations,
+        )
     }
 
     pub fn prompt_rejected_global(
         context_id: ContextId,
         message_id: MessageId,
-        llm_call_event_id: EventId,
+        llm_call_activity_anchor: ActivityAnchorId,
         reason: String,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             timestamp_ms: now_millis(),
             data: ProvEventData::PromptRejected {
                 scope: CallScope::Message { message_id },
-                llm_call_event_id,
+                llm_call_activity_anchor,
                 reason,
             },
         })
@@ -639,17 +768,17 @@ impl ProvEvent {
     pub fn prompt_rejected_task(
         context_id: ContextId,
         task_id: TaskId,
-        llm_call_event_id: EventId,
+        llm_call_activity_anchor: ActivityAnchorId,
         reason: String,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
             data: ProvEventData::PromptRejected {
                 scope: CallScope::Task { task_id },
-                llm_call_event_id,
+                llm_call_activity_anchor,
                 reason,
             },
         })
@@ -665,7 +794,7 @@ impl ProvEvent {
         delegation_target: Option<String>,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             timestamp_ms: now_millis(),
             data: ProvEventData::ToolCallStarted {
@@ -689,7 +818,7 @@ impl ProvEvent {
         delegation_target: Option<String>,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
@@ -717,7 +846,7 @@ impl ProvEvent {
         delegation_target: Option<String>,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             timestamp_ms: now_millis(),
             data: ProvEventData::ToolCallCompleted {
@@ -746,7 +875,7 @@ impl ProvEvent {
         delegation_target: Option<String>,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
@@ -798,7 +927,7 @@ impl ProvEvent {
             ),
         };
         ProvEvent::Global(GlobalEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             timestamp_ms: now_millis(),
             data: ProvEventData::ToolSessionStep {
@@ -822,7 +951,7 @@ impl ProvEvent {
         archive_path: String,
     ) -> Self {
         ProvEvent::AgentBooted(AgentBootedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             timestamp_ms: now_millis(),
             data: ProvEventData::AgentBooted {
                 agent_id,
@@ -836,7 +965,7 @@ impl ProvEvent {
     /// Existential only. Idempotent.
     pub fn task_exists(context_id: ContextId, task_id: TaskId) -> Self {
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
@@ -854,7 +983,7 @@ impl ProvEvent {
         agent_id: AgentId,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
@@ -869,7 +998,7 @@ impl ProvEvent {
     /// Agent finishes. Emit when status becomes COMPLETED or terminal.
     pub fn task_execution_ended(context_id: ContextId, task_id: TaskId) -> Self {
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
@@ -887,7 +1016,7 @@ impl ProvEvent {
         new_status: Option<String>,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
@@ -906,7 +1035,7 @@ impl ProvEvent {
         artifact_type: Option<String>,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
@@ -923,13 +1052,13 @@ impl ProvEvent {
         task_id: TaskId,
         intent_id: impl Into<IntentId>,
         description: String,
-        derived_from_messages: Vec<MessageId>,
+        citations: Vec<Citation>,
         supersession: Option<PlanningSupersessionKind>,
         revision_intent_drift: Option<f32>,
     ) -> Self {
         let intent_id = intent_id.into();
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
@@ -937,7 +1066,7 @@ impl ProvEvent {
                 task_id,
                 intent_id,
                 description,
-                derived_from_messages,
+                citations,
                 supersession,
                 revision_intent_drift,
             },
@@ -955,7 +1084,7 @@ impl ProvEvent {
         let intent_id = intent_id.into();
         let plan_id = plan_id.into();
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
@@ -978,13 +1107,13 @@ impl ProvEvent {
         step_id: impl Into<PlanStepId>,
         old_status: Option<String>,
         new_status: String,
-        evidence_text: String,
+        citations: Vec<Citation>,
     ) -> Self {
         let intent_id = intent_id.into();
         let plan_id = plan_id.into();
         let step_id = step_id.into();
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
@@ -995,7 +1124,7 @@ impl ProvEvent {
                 step_id,
                 old_status,
                 new_status,
-                evidence_text,
+                citations,
             },
         })
     }
@@ -1012,7 +1141,7 @@ impl ProvEvent {
         timestamp_ms: u64,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             task_id,
             timestamp_ms,
@@ -1036,7 +1165,7 @@ impl ProvEvent {
         timestamp_ms: u64,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             timestamp_ms,
             data: ProvEventData::MessageReceived {
@@ -1061,7 +1190,7 @@ impl ProvEvent {
         timestamp_ms: u64,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             task_id,
             timestamp_ms,
@@ -1085,7 +1214,7 @@ impl ProvEvent {
         timestamp_ms: u64,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
-            id: next_event_id(),
+            id: next_activity_anchor_id(),
             context_id,
             timestamp_ms,
             data: ProvEventData::MessageSent {

@@ -4,6 +4,7 @@ pub mod access;
 pub mod archive_read;
 pub mod archive_refs;
 pub mod bundles;
+pub mod citations;
 pub mod config_resolver;
 pub mod host_registration;
 mod metrics;

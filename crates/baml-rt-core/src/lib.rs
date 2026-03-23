@@ -26,6 +26,7 @@ pub use agent_routing::{
     AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentListCatalogueHolder, AgentLister,
     AgentPackageName, AgentRouteKey, route_key_from_request,
 };
+pub use baml_rt_citation::Citation;
 pub use bus::{
     A2aEffectMetadata, A2aKind, Bus, BusApi, BusStream, BusWithEffects, Command, DomainEvent,
     EffectEmitter, EffectEvent, EffectKind, EffectLiveness, EffectRuntime, EffectStartToken,
@@ -37,7 +38,10 @@ pub use context::{
     Scoped,
 };
 pub use deferred::DeferredHolder;
-pub use dispatch::{AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey};
+pub use dispatch::{
+    AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey,
+    invocation_scope_for_agent_dispatch,
+};
 pub use error::{
     BamlRtError, Result, SessionLifecycleError, baml_error_disposition, retryability_for_a2a,
 };
@@ -47,7 +51,7 @@ pub use event_subscription::{
 };
 pub use function_id::{BamlFunctionId, BamlPromptName, VariantPhase};
 pub use ids::{
-    AgentId, ArtifactId, ContextId, CorrelationId, EventId, ExecutionSessionId, IntentId,
+    ActivityAnchorId, AgentId, ArtifactId, ContextId, CorrelationId, ExecutionSessionId, IntentId,
     MessageId, PlanId, PlanStepId, TaskId,
 };
 pub use json::to_json_value;

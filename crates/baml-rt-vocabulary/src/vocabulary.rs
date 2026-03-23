@@ -36,7 +36,7 @@ pub mod a2a {
     pub const PHASE: &str = "a2a:phase";
     pub const RESULT: &str = "a2a:result";
     pub const ERROR: &str = "a2a:error";
-    pub const EVENT_ID: &str = "a2a:event_id";
+    pub const ACTIVITY_ANCHOR: &str = "a2a:activity_anchor";
     pub const RELATION: &str = "a2a:relation";
     pub const FROM: &str = "a2a:from";
     pub const TO: &str = "a2a:to";
@@ -65,6 +65,8 @@ pub mod a2a {
     pub const PLAN_DRIFT_ADHERENCE: &str = "a2a:plan_drift_adherence";
     pub const PLAN_DRIFT_COMPOSITE_SEVERITY: &str = "a2a:plan_drift_composite_severity";
     pub const PLAN_DRIFT_CROSS_ENCODER_STEP: &str = "a2a:plan_drift_cross_encoder_step";
+    /// JSON blob: citation-grounded drift (`LlmCitationDriftInfo`) when present.
+    pub const CITATION_DRIFT: &str = "a2a:citation_drift";
     /// Cosine similarity between the previous intent embedding and the new one
     /// at a supersession boundary. Present only on revised IntentResolved events.
     pub const REVISION_INTENT_DRIFT: &str = "a2a:revision_intent_drift";
@@ -134,6 +136,8 @@ pub mod a2a_types {
 
 pub mod a2a_relation_types {
     pub const STATUS_TRANSITION: &str = "a2a:status_transition";
+    /// `WasDerivedFrom.prov_type` for archive (`@N`) citation lineage: decision grounded in observed data.
+    pub const INFORMED_BY_OBSERVATION: &str = "a2a:informed_by_observation";
 }
 
 /// Structural relation: Context node to nodes scoped to that context.
@@ -163,6 +167,8 @@ pub mod semantic_labels {
     pub const WAS_CALLED_BY: &str = "WAS_CALLED_BY";
     pub const WAS_TRANSITIONED_FROM: &str = "WAS_TRANSITIONED_FROM";
     pub const WAS_TRANSITIONED_TO: &str = "WAS_TRANSITIONED_TO";
+    /// Archive / observation citation lineage (contrast `prov_relations::WAS_DERIVED_FROM` for `#N` intent history).
+    pub const WAS_INFORMED_BY: &str = "WAS_INFORMED_BY";
     pub const WAS_REPLACED_BY: &str = "WAS_REPLACED_BY";
     pub const WAS_REFINED_BY: &str = "WAS_REFINED_BY";
     pub const WAS_RELATED_TO: &str = "WAS_RELATED_TO";
@@ -212,6 +218,8 @@ pub mod a2a_relations {
     pub const TASK_CALL: &str = "A2A_TASK_CALL";
     pub const TASK_STATUS_TRANSITION: &str = "A2A_TASK_STATUS_TRANSITION";
     pub const MESSAGE_CALL: &str = "A2A_MESSAGE_CALL";
+    /// Reserved for derived-relation emission when linking an LLM/decision node to an observation source (`@N`).
+    pub const INFORMED_BY_OBSERVATION: &str = "A2A_INFORMED_BY_OBSERVATION";
 }
 
 pub mod graph {
@@ -248,7 +256,7 @@ pub mod storage_safe {
     pub const A2A_PHASE: &str = "a2a_phase";
     pub const A2A_RESULT: &str = "a2a_result";
     pub const A2A_ERROR: &str = "a2a_error";
-    pub const A2A_EVENT_ID: &str = "a2a_event_id";
+    pub const A2A_ACTIVITY_ANCHOR: &str = "a2a_activity_anchor";
     pub const A2A_RELATION: &str = "a2a_relation";
     pub const A2A_FROM: &str = "a2a_from";
     pub const A2A_TO: &str = "a2a_to";
@@ -276,6 +284,7 @@ pub mod storage_safe {
     pub const A2A_PLAN_DRIFT_ADHERENCE: &str = "a2a_plan_drift_adherence";
     pub const A2A_PLAN_DRIFT_COMPOSITE_SEVERITY: &str = "a2a_plan_drift_composite_severity";
     pub const A2A_PLAN_DRIFT_CROSS_ENCODER_STEP: &str = "a2a_plan_drift_cross_encoder_step";
+    pub const A2A_CITATION_DRIFT: &str = "a2a_citation_drift";
     pub const A2A_ACTIVITY_OUTCOME: &str = "a2a_activity_outcome";
     pub const A2A_TOOL_NAME: &str = "a2a_tool_name";
     pub const A2A_ARGS: &str = "a2a_args";

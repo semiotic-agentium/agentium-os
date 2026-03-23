@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use baml_rt_core::{
     A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister,
     BusStream, ContextId, EventSubscription, Outcome, Result,
-    ids::{AgentId, EventId, ExternalId, MessageId, UuidId},
+    ids::{ActivityAnchorId, AgentId, ExternalId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
     CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceWriter,
@@ -65,7 +65,7 @@ fn call_metadata(
 fn redact_runtime_fields(value: serde_json::Value) -> serde_json::Value {
     use serde_json::Value as V;
     match value {
-        V::String(s) if s.starts_with("prov-") => V::String("[prov_event_id]".to_string()),
+        V::String(s) if s.starts_with("prov-") => V::String("[prov_activity_anchor]".to_string()),
         V::String(s) if s.starts_with("prov:v1:payload:") => {
             V::String("[prov_payload_ref]".to_string())
         }
@@ -80,8 +80,8 @@ fn redact_runtime_fields(value: serde_json::Value) -> serde_json::Value {
             let mut sorted: std::collections::BTreeMap<String, V> =
                 std::collections::BTreeMap::new();
             for (k, v) in map {
-                let val = if k == "event_id" {
-                    V::String("[prov_event_id]".to_string())
+                let val = if k == "event_id" || k == "a2a_activity_anchor" {
+                    V::String("[prov_activity_anchor]".to_string())
                 } else if k == "timestamp_ms" {
                     V::String("[timestamp_ms]".to_string())
                 } else {
@@ -168,7 +168,7 @@ async fn seeded_store_for_context(
     // ts=200: caller LLM call (success)
     store
         .add_event(ProvEvent::Global(GlobalEvent {
-            id: EventId::from_counter(10),
+            id: ActivityAnchorId::from_counter(10),
             context_id: context_id.clone(),
             timestamp_ms: 200,
             data: ProvEventData::LlmCallCompleted {
@@ -189,13 +189,14 @@ async fn seeded_store_for_context(
                 duration_ms: 100,
                 outcome: Outcome::Success,
                 drift: None,
+                citations: vec![],
             },
         }))
         .await
         .unwrap();
 
     // ts=300: caller LLM call (failure — linked to PromptRejected below)
-    let caller_failed_llm_event_id = EventId::from_counter(900);
+    let caller_failed_llm_event_id = ActivityAnchorId::from_counter(900);
     store
         .add_event(ProvEvent::Global(GlobalEvent {
             id: caller_failed_llm_event_id.clone(),
@@ -219,6 +220,7 @@ async fn seeded_store_for_context(
                 duration_ms: 220,
                 outcome: Outcome::Failure,
                 drift: None,
+                citations: vec![],
             },
         }))
         .await
@@ -227,14 +229,14 @@ async fn seeded_store_for_context(
     // ts=400: prompt rejected (linked to failed LLM call above)
     store
         .add_event(ProvEvent::Global(GlobalEvent {
-            id: EventId::from_counter(20),
+            id: ActivityAnchorId::from_counter(20),
             context_id: context_id.clone(),
             timestamp_ms: 400,
             data: ProvEventData::PromptRejected {
                 scope: CallScope::Message {
                     message_id: msg_caller.clone(),
                 },
-                llm_call_event_id: caller_failed_llm_event_id,
+                llm_call_activity_anchor: caller_failed_llm_event_id,
                 reason: "BAML validation failed: missing required field".to_string(),
             },
         }))
@@ -258,7 +260,7 @@ async fn seeded_store_for_context(
     // ts=600: tool call (support/calculate, failure)
     store
         .add_event(ProvEvent::Global(GlobalEvent {
-            id: EventId::from_counter(30),
+            id: ActivityAnchorId::from_counter(30),
             context_id: context_id.clone(),
             timestamp_ms: 600,
             data: ProvEventData::ToolCallCompleted {
@@ -294,7 +296,7 @@ async fn seeded_store_for_context(
     // ts=800: tool call (support/delegate, failure)
     store
         .add_event(ProvEvent::Global(GlobalEvent {
-            id: EventId::from_counter(40),
+            id: ActivityAnchorId::from_counter(40),
             context_id: context_id.clone(),
             timestamp_ms: 800,
             data: ProvEventData::ToolCallCompleted {
@@ -344,7 +346,7 @@ async fn seeded_store_for_context(
     // ts=1100: other agent LLM call (success)
     store
         .add_event(ProvEvent::Global(GlobalEvent {
-            id: EventId::from_counter(50),
+            id: ActivityAnchorId::from_counter(50),
             context_id: context_id.clone(),
             timestamp_ms: 1100,
             data: ProvEventData::LlmCallCompleted {
@@ -365,6 +367,7 @@ async fn seeded_store_for_context(
                 duration_ms: 300,
                 outcome: Outcome::Success,
                 drift: None,
+                citations: vec![],
             },
         }))
         .await

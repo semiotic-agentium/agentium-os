@@ -32,15 +32,6 @@ __chat_register({
   run: async (ctx): Promise<SessionResult> => {
     const userMessage = ctx.text || "get Q3 revenue data by region";
 
-    const rawMsg = ctx.message as unknown;
-    const inboundMessageId =
-      rawMsg && typeof rawMsg === "object"
-        ? (rawMsg as Record<string, unknown>).messageId ?? (rawMsg as Record<string, unknown>).id
-        : undefined;
-    const messageId = typeof inboundMessageId === "string" && inboundMessageId.trim()
-      ? inboundMessageId
-      : `msg-seceval-${Date.now()}`;
-
     try {
       // Phase 1: LLM synthesises the plan.
       const plan: ReportingPlan = await PlanReportingWork({ user_message: userMessage });
@@ -59,7 +50,7 @@ __chat_register({
       const intentPhase = await executionSession.submitIntent({
         intentId,
         description: plan.intent_description,
-        derivedFromMessageIds: [messageId],
+        citations: [],
       });
 
       const executable = await intentPhase.submitPlan({

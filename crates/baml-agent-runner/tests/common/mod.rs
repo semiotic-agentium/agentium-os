@@ -1,3 +1,4 @@
+//! Shared helpers for HTTP / e2e tests. Many items are optional per integration test binary.
 #[cfg(any(
     feature = "clickup",
     feature = "notion",
@@ -279,20 +280,6 @@ impl RunningHttpServer {
         }
     }
 
-    pub fn with_base_path(mut self, base_path: &str) -> Self {
-        let trimmed = base_path.trim();
-        if trimmed.is_empty() || trimmed == "/" {
-            return self;
-        }
-        if trimmed.starts_with('/') {
-            self.base_url.push_str(trimmed);
-        } else {
-            self.base_url.push('/');
-            self.base_url.push_str(trimmed);
-        }
-        self
-    }
-
     pub async fn stop(mut self) {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(());
@@ -367,22 +354,6 @@ pub async fn start_runner_api_server(
         Some(Arc::new(TestMermaidService::new(provenance)));
     let app = baml_rt_api::api_router(registry, mermaid, None).await;
     start_http_server(app).await
-}
-
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
-pub fn contains_kv(value: &Value, key: &str, expected: &str) -> bool {
-    match value {
-        Value::Object(map) => map.iter().any(|(k, v)| {
-            (k == key && v.as_str() == Some(expected)) || contains_kv(v, key, expected)
-        }),
-        Value::Array(items) => items.iter().any(|v| contains_kv(v, key, expected)),
-        _ => false,
-    }
 }
 
 /// Builds an agent at the given path using the builder crate (in-process, no cargo subprocess).

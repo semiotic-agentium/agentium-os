@@ -35,8 +35,56 @@ pub struct PlanningStepSummary {
     pub pending: usize,
 }
 
-/// Detail for a single LLM call that triggered a warn or block severity.
-/// Provides the textual evidence needed to understand what drifted.
+/// One citation as surfaced in the planning API — ref string, resolved preview, and similarity.
+///
+/// This is the API-layer projection of `LlmCitationSimilarity` from the provenance
+/// record. The `content_preview` field carries **resolved text** for the cited ref
+/// (history or archive), stored at scoring time so consumers need not re-resolve
+/// ephemeral `RefTable` indices.
+///
+/// ## Interpreting `similarity`
+///
+/// - `≥ 0.65` — strong grounding: response closely paraphrases this cited entry
+/// - `0.40–0.65` — moderate: same domain, different specifics
+/// - `< 0.40` — likely wrong archive cited, or unrelated evidence
+/// - `negated = true` — counter-evidence: model explicitly rejected this entry;
+///   `similarity` is still meaningful (shows how closely the rejection is worded)
+///   but this citation does NOT contribute to `mean_similarity` in drift scoring
+///
+/// ## Citation quality as a BIPIA indicator
+///
+/// When `negated = false` and the mean `similarity` across all citations for a
+/// call is `> 0.85`, combined with low `step_alignment` (`< 0.62` for synthesis
+/// steps, `< 0.45` for specific steps), the call is flagged by the 2D BIPIA rule.
+/// See `baml_rt_embedding::score_bipia_signal` for the composite firewall.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CitationDetail {
+    /// Exact string the LLM emitted, e.g. `"#1"`, `"@2:3-5"`, `"!@1"`.
+    /// The leading `!` indicates counter-evidence.
+    pub raw: String,
+    /// The ref number `N`.
+    pub n: u32,
+    /// `true` = history ref (`#N`): a session history line (user/assistant/tool-call).
+    /// `false` = archive ref (`@N`): an archived tool result blob.
+    pub is_history: bool,
+    /// `true` = counter-evidence (`!` prefix): the LLM explicitly rejected this entry.
+    /// Excluded from drift `mean_similarity` but reported here for auditability.
+    pub negated: bool,
+    /// Cosine similarity between the LLM's decision text and this citation's content.
+    pub similarity: f32,
+    /// Stable provenance event id. Use for cross-referencing in the provenance graph
+    /// (`/contexts/{id}/mermaid`, `/provenance/llm-calls`, etc.).
+    pub activity_anchor: String,
+    /// Resolved content for the `#N` or `@N` ref — what the model *claimed* it grounded in.
+    pub content_preview: String,
+}
+
+/// Detail for a single LLM call that triggered a warn or block drift severity.
+///
+/// Provides plan-anchored drift signals (intent, step, cross-encoder) and the
+/// **checked citation** trail (`raw` ref strings + resolved previews), not opaque
+/// evidence prose alone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriftedCallDetail {
@@ -45,12 +93,18 @@ pub struct DriftedCallDetail {
     pub intent_alignment: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step_alignment: Option<f32>,
+    /// Cross-encoder logit score (JINA reranker) for the step–response pair.
+    /// Always present when `step_alignment` is present. Catches injections that
+    /// cosine similarity misses (e.g. same vocabulary, wrong action).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_encoder_step_score: Option<f32>,
     pub intent_text_preview: String,
     pub response_text_preview: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub step_text_preview: String,
+    /// Per-citation resolution and similarity for this call (see [`CitationDetail`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub citations: Vec<CitationDetail>,
 }
 
 /// Summary of plan-anchored drift state for a task.

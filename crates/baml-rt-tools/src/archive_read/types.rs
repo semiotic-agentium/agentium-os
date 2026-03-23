@@ -44,6 +44,47 @@ impl<'de> Deserialize<'de> for ShortRef {
     }
 }
 
+/// History ref (`#N`) for a message or tool-call description in the conversation.
+/// Monotonic per conversation context, sharing the same `RefTable` counter as `ShortRef`.
+/// Citation-only: cannot be Read. Used in `citations` fields on BAML wrapper types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HistoryRef(u32);
+
+impl HistoryRef {
+    pub fn new(n: u32) -> Self {
+        Self(n)
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        s.strip_prefix('#')?.parse::<u32>().ok().map(Self)
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for HistoryRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
+
+impl Serialize for HistoryRef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for HistoryRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        HistoryRef::parse(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!("invalid history ref: '{s}' (expected #N)"))
+        })
+    }
+}
+
 /// Line offset into rendered content. 0-based.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -54,9 +95,9 @@ pub struct LineOffset(pub usize);
 pub struct PageLimit(usize);
 
 impl PageLimit {
-    /// Default when the LLM omits limit. Low enough to discourage blind cat-n on
-    /// large archives — the model should grep first, then paginate if needed.
-    pub const DEFAULT: usize = 40;
+    /// Default when the LLM omits limit — large enough to fit typical tool results
+    /// without forcing pagination, but bounded to keep prompts manageable.
+    pub const DEFAULT: usize = 200;
     pub const MAX: usize = 500;
 
     pub fn new(n: usize) -> Self {
@@ -221,10 +262,31 @@ mod tests {
     }
 
     #[test]
+    fn history_ref_parse() {
+        assert_eq!(HistoryRef::parse("#1").unwrap().as_u32(), 1);
+        assert_eq!(HistoryRef::parse("#42").unwrap().as_u32(), 42);
+        assert!(HistoryRef::parse("1").is_none());
+        assert!(HistoryRef::parse("#").is_none());
+        assert!(HistoryRef::parse("#abc").is_none());
+        assert!(HistoryRef::parse("").is_none());
+    }
+
+    #[test]
+    fn history_ref_display() {
+        assert_eq!(HistoryRef::new(7).to_string(), "#7");
+    }
+
+    #[test]
+    fn history_ref_no_cross_parse_with_short_ref() {
+        assert!(HistoryRef::parse("@3").is_none());
+        assert!(ShortRef::parse("#3").is_none());
+    }
+
+    #[test]
     fn page_limit_clamps() {
         assert_eq!(PageLimit::new(1000).get(), 500);
         assert_eq!(PageLimit::new(50).get(), 50);
-        assert_eq!(PageLimit::default().get(), PageLimit::DEFAULT);
+        assert_eq!(PageLimit::default().get(), 200);
     }
 
     #[test]

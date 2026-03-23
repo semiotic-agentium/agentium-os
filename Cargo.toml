@@ -12,6 +12,7 @@ members = [
   "crates/baml-rt-a2a",
   "crates/baml-rt-builder",
   "crates/baml-rt-config",
+  "crates/baml-rt-citation",
   "crates/baml-rt-core",
   "crates/baml-rt-embedding",
   "crates/baml-rt-hash",
@@ -37,6 +38,7 @@ members = [
   "crates/baml-tool-derive",
 ]
 default-members = [
+  "crates/baml-rt-citation",
   "crates/baml-rt-core",
   "crates/baml-rt-id",
   "crates/baml-rt-observability",

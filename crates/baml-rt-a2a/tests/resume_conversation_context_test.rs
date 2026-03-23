@@ -3,9 +3,7 @@
 //! Invariant: after `insert_message(resume_user_message)` completes, the **provenance graph** must
 //! expose both turns via `context_messages` (and thus the mounted Surreal store).
 //!
-//! Note: `conversation_context` currently skips Message rows without `a2a_event_id` in props; the
-//! task-store insert path may still satisfy `context_messages` first — full alignment is a separate
-//! graph-projection tightening.
+//! Conversation-visible rows come only from the provenance graph (`context_messages` / writer).
 
 #![recursion_limit = "256"]
 
@@ -41,7 +39,10 @@ fn make_message(
     }
 }
 
-fn assert_context_messages_contain(messages: &[baml_rt_provenance::ProvenanceContextMessage], needle: &str) {
+fn assert_context_messages_contain(
+    messages: &[baml_rt_provenance::ProvenanceContextMessage],
+    needle: &str,
+) {
     let flat: String = messages
         .iter()
         .flat_map(|m| m.content.iter().map(String::as_str))
@@ -65,7 +66,7 @@ async fn test_resume_message_visible_after_insert() {
         .expect("in-memory isolated provenance store");
     let writer: Arc<dyn ProvenanceWriter> = prov.clone();
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
-    let store = Arc::new(ProvenanceTaskStore::new(Some(writer), agent_id));
+    let store = Arc::new(ProvenanceTaskStore::new(writer, agent_id));
 
     let context_id = ContextId::new(10, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-resume-1"));

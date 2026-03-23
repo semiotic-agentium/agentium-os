@@ -51,7 +51,7 @@ Create or update an agent under `agents/<agent-name>`:
 
 Generated files are commonly committed for agent packages:
 
-- `baml_src/generated_tools.baml`
+- `baml_src/_baml_runtime.baml`
 - `src/baml-runtime.d.ts` (BAML function declarations, A2A session DSL, and agent contract types)
 
 Rebuild them when tool schema or A2A types change.

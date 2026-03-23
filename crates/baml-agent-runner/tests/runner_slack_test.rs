@@ -2,6 +2,9 @@
 
 mod common;
 
+#[path = "common/http_tool_test_helpers.rs"]
+mod http_tool_test_helpers;
+
 use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 
 use baml_rt::baml::BamlRuntimeManager;
@@ -16,9 +19,10 @@ use baml_rt_provenance::{
 };
 use baml_tools_slack::SlackTool;
 use common::{
-    RunningHttpServer, TempDirCleanup, TempEnvVar, build_slack_agent_to_temp_async, contains_kv,
+    RunningHttpServer, TempDirCleanup, TempEnvVar, build_slack_agent_to_temp_async,
     e2e_serial_gate, post_a2a_sse_collect, start_http_server, start_runner_api_server,
 };
+use http_tool_test_helpers::contains_kv;
 use serde_json::{Value, json};
 use test_support::common::{
     chunks_from_responses, message_texts_from_chunks, send_stream_request, workspace_fnox_path,
@@ -281,7 +285,7 @@ async fn test_e2e_slack_todo_extraction_with_mock_server_and_mermaid_http() {
         let signature = serde_json::to_string(
             &conversation_items
                 .iter()
-                .map(|i| (&i.event_id, i.source_name(), &i.content))
+                .map(|i| (&i.activity_anchor, i.source_name(), &i.content))
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_default();

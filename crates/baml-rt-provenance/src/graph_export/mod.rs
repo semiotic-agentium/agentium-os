@@ -49,7 +49,7 @@ pub struct ExportedNode {
     pub display_name: String,
     /// Selected properties for display (tool_name, model, role, etc.).
     pub properties: HashMap<String, serde_json::Value>,
-    /// Temporal ordering key extracted from `a2a:event_id` (monotonic counter)
+    /// Temporal ordering key extracted from `a2a:activity_anchor` (monotonic counter)
     /// or `a2a:timestamp_ms` as a fallback. `None` for nodes without temporal
     /// metadata (e.g. `AgentRuntimeInstance`).
     pub event_order: Option<u64>,
@@ -821,12 +821,12 @@ fn cmp_event_order(
 
 /// Extract a temporal ordering key from node properties.
 ///
-/// Primary: parse the monotonic counter from `a2a:event_id` (`"prov-42"` → 42).
+/// Primary: parse the monotonic counter from `a2a:activity_anchor` (`"prov-42"` → 42).
 /// Fallback: use `a2a:timestamp_ms`, then `a2a:task_state_time` for TaskState nodes.
 fn parse_event_order(props: &HashMap<String, serde_json::Value>) -> Option<u64> {
-    // Try a2a:event_id first (format: "prov-{counter}").
-    if let Some(event_id) = props.get(a2a::EVENT_ID).and_then(|v| v.as_str())
-        && let Some(counter_str) = event_id.strip_prefix("prov-")
+    // Try `a2a:activity_anchor` first (format: "prov-{counter}").
+    if let Some(activity_anchor) = props.get(a2a::ACTIVITY_ANCHOR).and_then(|v| v.as_str())
+        && let Some(counter_str) = activity_anchor.strip_prefix("prov-")
         && let Ok(counter) = counter_str.parse::<u64>()
     {
         return Some(counter);
@@ -1006,7 +1006,7 @@ mod tests {
             serde_json::json!({
                 "a2a:role": "",
                 "a2a:content": [],
-                "a2a:event_id": "prov-1"
+                "a2a:activity_anchor": "prov-1"
             }),
             semantic_labels::WAS_RECEIVED_BY,
             serde_json::json!({}),
@@ -1020,7 +1020,7 @@ mod tests {
             serde_json::json!({
                 "a2a:role": "ROLE_USER",
                 "a2a:content": ["hello world"],
-                "a2a:event_id": "prov-1"
+                "a2a:activity_anchor": "prov-1"
             }),
             semantic_labels::WAS_RECEIVED_BY,
             serde_json::json!({}),

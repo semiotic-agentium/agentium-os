@@ -12,7 +12,9 @@
 pub mod a2a_graph_event_recorder;
 pub mod builders;
 pub mod bus_subscriber;
+pub mod citation_queries;
 pub mod context_metrics_queries;
+pub mod conversation_projection;
 pub mod document;
 pub mod effect_subscriber;
 pub mod error;
@@ -37,6 +39,7 @@ pub use a2a_graph_event_recorder::{
 };
 pub use baml_rt_vocabulary::{A2aGraphStore, TaskSubgraphNode, TaskSubgraphUpdateNode};
 pub use bus_subscriber::ProvenanceBusSubscriber;
+pub use conversation_projection::provenance_item_to_projection_item;
 pub use effect_subscriber::ProvenanceEffectSubscriber;
 pub use error::ProvenanceError;
 pub use events::{

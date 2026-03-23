@@ -36,6 +36,8 @@ confirm_delete: boolean;
  }
 
 export interface FinalResponse { message: string;
+structured_json: string | null;
+citations: string[];
  }
 
 export interface GetTaskInput { task_id: string;
@@ -60,9 +62,9 @@ export interface NotRelevant { reason: string;
 
 export interface SessionContext { contract_version: string;
 session_open: boolean;
-scope_ref: string | null;
-output_ref: string | null;
-evidence_ref: string | null;
+allowed_ops: string[];
+selected_tool: string | null;
+status_token: string | null;
  }
 
 export interface SupportClickupAbortStep { op: "Abort";
@@ -81,9 +83,11 @@ input: ArchiveReadInput;
 
 export interface SupportClickupSendStep { op: "Send";
 input: ListTeamsInput | ListSpacesInput | ListListsInput | ListTasksInput | GetTaskInput | CreateTaskInput | UpdateTaskInput | DeleteTaskInput;
+citations: string[];
  }
 
 export interface SupportClickupSessionPlan { step: SupportClickupOpenStep | SupportClickupSendStep | SupportClickupReadStep | SupportClickupFinishStep | SupportClickupAbortStep;
+citations: string[];
  }
 
 export interface UpdateTaskInput { task_id: string;
@@ -97,12 +101,6 @@ priority: number | null;
 declare global {
 
 declare function ChooseClickUpAction(args: { goal: string; step_description: string; operation_kind: string; prior_results: string | null; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<FinalResponse | SupportClickupSessionPlan>;
-
-declare function ChooseClickUpAction__act__support_clickup(args: { goal: string; step_description: string; operation_kind: string; prior_results: string | null; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportClickupSendStep>;
-
-declare function ChooseClickUpAction__continue__support_clickup(args: { goal: string; step_description: string; operation_kind: string; prior_results: string | null; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportClickupSendStep | SupportClickupReadStep | SupportClickupFinishStep>;
-
-declare function ChooseClickUpAction__select(args: { goal: string; step_description: string; operation_kind: string; prior_results: string | null; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<FinalResponse | SupportClickupOpenStep>;
 
 declare function InferClickUpIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedClarification | NotRelevant | ClickUpIntent>;
 
@@ -215,7 +213,10 @@ export interface A2aSessionClosed {
 export interface IntentSubmission {
     intentId: string;
     description: string;
+    /** Message UUID lineage; omit to let the host merge the active message id. */
     derivedFromMessageIds?: string[];
+    /** Citation refs (`#N` history, `@N` archive) from the BAML planning return — preferred for checked provenance/drift. */
+    citations?: string[];
     supersession?: string;
 }
 export interface PlanStepSubmission {
@@ -243,8 +244,9 @@ export interface A2aExecutionSessionAwaitPlan {
 }
 export interface A2aExecutionSessionExecutable {
     sessionId: string;
-    startStep(stepId: string, evidenceText: string): Promise<void>;
-    completeStep(stepId: string, evidenceText: string): Promise<void>;
+    /** citations are optional — LLM-produced citations are captured automatically by the provenance system from BAML return types. Only pass explicitly if the agent has out-of-band provenance to record. */
+    startStep(stepId: string, citations?: string[]): Promise<void>;
+    completeStep(stepId: string, citations?: string[]): Promise<void>;
     finish(): Promise<A2aSessionClosed>;
     abort(reason?: string): Promise<A2aSessionClosed>;
 }
@@ -259,18 +261,34 @@ export interface Message {
   text?(): string;
 }
 export type ChatMessage = Message;
+/** Media type for a structured reply data part. */
+export type ReplyMediaType = "text/plain" | "text/markdown" | "application/json" | "text/csv";
+/** A prose text part of a structured reply. */
+export interface TextPart { type: "text"; text: string; }
+/** A structured data part of a structured reply (e.g. JSON, CSV). */
+export interface DataPart { type: "data"; data: string; media_type: ReplyMediaType; }
+/** One part of a structured reply: text or typed data. */
+export type ReplyPart = TextPart | DataPart;
+/**
+ * Structured reply from a synthesis function.
+ * Contains ordered reply parts and citations referencing the history entries (#N, @N) this reply was derived from.
+ */
+export interface StructuredReply {
+  parts: ReplyPart[];
+  citations: string[];
+}
 /**
  * Result shape for session.run() callback. Return { message } on success (runtime emits message and completed);
  * return { error } on failure (runtime emits failed with that error). No need to call emit helpers yourself.
  */
-export type SessionResult = { message: string } | { error: string };
+export type SessionResult = { message: string } | { message: StructuredReply } | { error: string };
 /**
  * Emitter passed into run(emit => ...) for intermediate emissions (working message, artifact, status).
  * Use when you need to stream artifacts or status before returning the final SessionResult.
  */
 export interface SessionEmitter {
-  /** Emit a working message (task state remains WORKING). */
-  message(text: string): void;
+  /** Emit a working message (task state remains WORKING). Accepts plain string or StructuredReply. */
+  message(content: string | StructuredReply): void;
   /** Emit an artifact chunk (append/lastChunk optional). */
   artifact(artifact: JsonValue, append?: boolean, lastChunk?: boolean): void;
   /** Emit a status transition (e.g. TASK_STATE_WORKING). */

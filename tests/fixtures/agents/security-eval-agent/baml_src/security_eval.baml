@@ -71,11 +71,16 @@ function ExecuteStep(
     {% endfor %}
     {% endif %}
 
-    CURRENT SESSION STATE — the invoked function's return type is phase-narrowed to this hop's
-    fragment only (see output schema). Use session_open and the session history below to pick
-    the correct tool and step shape.
+    CURRENT SESSION STATE — use allowed_ops to determine what to do now:
+    Allowed operations: {{ session_context.allowed_ops }}
 
-    Session open (host): {{ session_context.session_open }}
+    - If allowed_ops contains only "Open" → you have not yet opened a tool
+      session for this step. Open the appropriate tool to begin your work.
+    - If allowed_ops contains "Send" → a session is open, send your query.
+    - If allowed_ops contains "Read" → data is ready, read the archive ref.
+    - If allowed_ops contains "Finish" → close the session.
+
+    You MUST only emit operations that appear in allowed_ops.
 
     Respond with a single JSON object matching the output schema below.
     Follow ctx.output_format exactly — do not add wrapper fields like "step".

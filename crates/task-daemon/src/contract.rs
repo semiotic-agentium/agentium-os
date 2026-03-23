@@ -5,7 +5,7 @@
 //! material that was polled, through interpretation, to the tasks produced
 //! from it.
 
-use baml_rt_core::ids::{ContextId, CorrelationId, EventId, TaskId};
+use baml_rt_core::ids::{ActivityAnchorId, ContextId, CorrelationId, TaskId};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
@@ -50,9 +50,9 @@ pub struct ContractProvenance {
     /// Correlation identifier used to link related operations together.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<CorrelationId>,
-    /// Parent event id used to show which earlier event this one came from.
+    /// Parent provenance activity anchor (append-only stream id for the prior emission).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_event_id: Option<EventId>,
+    pub parent_activity_anchor: Option<ActivityAnchorId>,
     /// Source cursor used for this poll window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_cursor: Option<String>,
@@ -66,7 +66,7 @@ impl ContractProvenance {
         self.context_id.is_none()
             && self.task_id.is_none()
             && self.correlation_id.is_none()
-            && self.parent_event_id.is_none()
+            && self.parent_activity_anchor.is_none()
             && self.source_cursor.is_none()
             && self.source_message_ts.is_empty()
     }
@@ -184,7 +184,7 @@ impl InterpretationResultEvent {
     ) -> Self {
         let event_id = result_event_id(&request.event_id, &interpretation, &derived_tasks);
         let provenance = request.provenance.clone().map(|mut value| {
-            value.parent_event_id = Some(EventId::from(request.event_id.clone()));
+            value.parent_activity_anchor = Some(ActivityAnchorId::from(request.event_id.clone()));
             value
         });
 
@@ -615,7 +615,7 @@ mod tests {
         );
         let provided_context = ContextId::new(42, 7);
         let provided_correlation = CorrelationId::new(24, 9);
-        let provided_parent = EventId::from("prior-event".to_string());
+        let provided_parent = ActivityAnchorId::from("prior-event".to_string());
         let provided_cursor = "custom-cursor".to_string();
 
         let request = InterpretationRequestEvent::from_source_poll(
@@ -624,7 +624,7 @@ mod tests {
             Some(ContractProvenance {
                 context_id: Some(provided_context.clone()),
                 correlation_id: Some(provided_correlation.clone()),
-                parent_event_id: Some(provided_parent.clone()),
+                parent_activity_anchor: Some(provided_parent.clone()),
                 source_cursor: Some(provided_cursor.clone()),
                 ..ContractProvenance::default()
             }),
@@ -633,7 +633,7 @@ mod tests {
         let provenance = request.provenance.expect("provenance exists");
         assert_eq!(provenance.context_id, Some(provided_context));
         assert_eq!(provenance.correlation_id, Some(provided_correlation));
-        assert_eq!(provenance.parent_event_id, Some(provided_parent));
+        assert_eq!(provenance.parent_activity_anchor, Some(provided_parent));
         assert_eq!(provenance.source_cursor, Some(provided_cursor));
         assert_eq!(
             provenance.source_message_ts,
@@ -741,7 +741,10 @@ mod tests {
         assert_eq!(result.messages_scanned, 1);
         let provenance = result.provenance.expect("provenance exists");
         assert_eq!(
-            provenance.parent_event_id.as_ref().map(|id| id.as_str()),
+            provenance
+                .parent_activity_anchor
+                .as_ref()
+                .map(|id| id.as_str()),
             Some(request.event_id.as_str())
         );
         assert_eq!(

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use baml_rt_core::{
-    BamlRtError, Outcome, Result,
+    BamlRtError, Citation, Outcome, Result,
     bus::{EffectEmitter, EffectEvent, PlanningSupersessionKind, ToolEffectMetadata},
     context,
     correlation::current_correlation_id,
@@ -85,7 +85,7 @@ impl PlanningEmitEnv<'_> {
             task_id: TaskId::from_external(ExternalId::new(task_id.as_str().to_string())),
             intent_id: resolved.intent_id,
             description: resolved.description,
-            derived_from_message_ids: resolved.derived_from_message_ids,
+            citations: resolved.citations,
             supersession: resolved.supersession,
             epoch,
         };
@@ -147,7 +147,7 @@ impl PlanningEmitEnv<'_> {
         step_id: String,
         old_status: Option<String>,
         new_status: String,
-        evidence_text: String,
+        citations: Vec<Citation>,
         epoch: Option<u64>,
     ) -> Result<()> {
         let Some(task_id) = scope.task_id_opt() else {
@@ -173,7 +173,7 @@ impl PlanningEmitEnv<'_> {
                     step_id: step_id.into(),
                     old_status,
                     new_status,
-                    evidence_text,
+                    citations: citations.clone(),
                 },
             )
             .await?;
@@ -227,7 +227,11 @@ impl PlanningEmitEnv<'_> {
                     0,
                     Outcome::Success,
                     Some(serde_json::json!({
-                        "evidence_text": resolved.evidence_text,
+                        "citations": resolved
+                            .citations
+                            .iter()
+                            .map(|c| c.as_str())
+                            .collect::<Vec<_>>(),
                     })),
                 )
                 .await?;
@@ -240,7 +244,7 @@ impl PlanningEmitEnv<'_> {
             step_id: resolved.step_id,
             old_status: resolved.old_status,
             new_status: resolved.new_status,
-            evidence_text: resolved.evidence_text,
+            citations: resolved.citations,
             epoch,
         };
         emitter.emit(event).await

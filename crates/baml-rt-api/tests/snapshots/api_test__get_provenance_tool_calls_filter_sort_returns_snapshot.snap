@@ -16,7 +16,7 @@ expression: snapshot
         "tool_result": {
           "error": "timeout while calling tool"
         },
-        "a2a_event_id": "[prov_event_id]",
+        "a2a_activity_anchor": "[prov_activity_anchor]",
         "a2a_failure_class": "timeout",
         "a2a_failure_evidence": "metadata",
         "a2a_function_name": "CalcPrompt",
@@ -29,7 +29,7 @@ expression: snapshot
           "phase": null
         },
         "a2a_tool_name": "support/calculate",
-        "tool_result_ref": "[prov_event_id]",
+        "tool_result_ref": "[prov_activity_anchor]",
         "prov_endTime": "[timestamp_ms]",
         "prov_type": "a2a:ToolCall",
         "context_id": "ctx-100-1",
@@ -43,7 +43,7 @@ expression: snapshot
         "activity_status": "Completed",
         "activity_kind": "tool_call",
         "activity_ref": "prov:v1:activity:tool_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
-        "tool_call_ref": "[prov_event_id]",
+        "tool_call_ref": "[prov_activity_anchor]",
         "failure_class": "timeout",
         "failure_evidence": "metadata"
       }

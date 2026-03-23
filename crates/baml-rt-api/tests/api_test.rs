@@ -21,7 +21,7 @@ use baml_rt_core::{
     AgentDispatchRequest, AgentLister, AgentRouteKey, BamlRtError, BusStream, EventSchemaVersion,
     EventSourceKind, EventSubscription, Outcome, Result,
     event_subscription::{EventSourceKey, EventSourceKeyPrefix},
-    ids::{AgentId, ContextId, EventId, ExternalId, MessageId, UuidId},
+    ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
     CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceOpsQueryRequest,
@@ -68,8 +68,8 @@ fn redact_variant_parts(v: Value) -> Value {
             if looks_like_uuid(&s) {
                 return V::String("[uuid]".to_string());
             }
-            if looks_like_prov_event_id(&s) {
-                return V::String("[prov_event_id]".to_string());
+            if looks_like_prov_activity_anchor(&s) {
+                return V::String("[prov_activity_anchor]".to_string());
             }
             V::String(s)
         }
@@ -79,7 +79,9 @@ fn redact_variant_parts(v: Value) -> Value {
                 let redacted = match k.as_str() {
                     "instance" => V::String("[instance]".to_string()),
                     "type_url" => V::String("[type_url]".to_string()),
-                    "event_id" => V::String("[prov_event_id]".to_string()),
+                    "event_id" | "a2a_activity_anchor" => {
+                        V::String("[prov_activity_anchor]".to_string())
+                    }
                     "timestamp_ms" => V::String("[timestamp_ms]".to_string()),
                     // Wall-clock ms from Surreal / store; varies every run.
                     "prov_endTime" | "prov_startTime" => V::String("[timestamp_ms]".to_string()),
@@ -116,8 +118,8 @@ fn looks_like_uuid(s: &str) -> bool {
         && parts[4].len() == 12
 }
 
-fn looks_like_prov_event_id(s: &str) -> bool {
-    // "prov-12345" (bare event id)
+fn looks_like_prov_activity_anchor(s: &str) -> bool {
+    // "prov-12345" (bare activity anchor)
     if s.strip_prefix("prov-")
         .map(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
         .unwrap_or(false)
@@ -446,7 +448,9 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
                 response_text_preview: "Create task in list 901325431486".to_string(),
                 step_text_preview: String::new(),
                 plan_drift: None,
+                citation_drift: None,
             })),
+            vec![],
         ))
         .await
         .unwrap();
@@ -477,7 +481,7 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
         ))
         .await
         .unwrap();
-    let llm_fail_event_id = EventId::from_counter(500);
+    let llm_fail_event_id = ActivityAnchorId::from_counter(500);
     store
         .add_event(ProvEvent::Global(GlobalEvent {
             id: llm_fail_event_id.clone(),
@@ -502,6 +506,7 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
                 duration_ms: 650,
                 outcome: Outcome::Failure,
                 drift: None,
+                citations: vec![],
             },
         }))
         .await

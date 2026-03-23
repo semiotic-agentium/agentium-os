@@ -29,7 +29,7 @@
 use async_trait::async_trait;
 use baml_rt_core::{
     bus::PlanningSupersessionKind,
-    ids::{AgentId, ContextId, EventId, MessageId, TaskId},
+    ids::{ActivityAnchorId, AgentId, ContextId, MessageId, TaskId},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -144,7 +144,8 @@ impl ConversationItemContent {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProvenanceConversationContextItem {
     pub timestamp_ms: u64,
-    pub event_id: EventId,
+    /// Correlates this history line with graph `a2a_activity_anchor` / provenance emission ([`ActivityAnchorId`]).
+    pub activity_anchor: ActivityAnchorId,
     pub role: String,
     pub content: ConversationItemContent,
 }
@@ -194,17 +195,9 @@ pub enum ToolSessionPhase {
 }
 
 impl ToolSessionPhase {
-    /// True for all session FSM phases. Raw ToolCall/ToolResult entries for these are
-    /// suppressed from conversation_context; session tool calls are represented canonically
-    /// by SessionStep events (Open, SendDone @N, Read @N).
-    ///
-    /// - Send: represented by SessionStep(SendDone @N) with the archive header and inline
-    ///   content. A raw ToolResult would duplicate the pages/blocks data already visible
-    ///   via the SendDone entry.
-    /// - Read: LLM-initiated reads appear via SessionStep(Read @N) with grep/cat output
-    ///   from the archive. Internal polling reads in send_blocking are pure implementation
-    ///   and never reach this path (they bypass tool_session_read).
-    /// - Open/Finish/Abort/Next: control ops with no meaningful data payload.
+    /// True for any FSM session phase (Open/Send/Read/Next/Finish/Abort).
+    /// These tool calls are represented in history by `SessionStep` events — the
+    /// raw ToolCall/ToolResult entries are suppressed to enforce the universal Read interface.
     pub fn is_session_phase(&self) -> bool {
         !matches!(self, Self::Execute | Self::Unknown(_))
     }
@@ -292,7 +285,7 @@ pub trait ProvenanceQueryApi: Send + Sync {
 pub struct PlanningIntentRecord {
     pub context_id: ContextId,
     pub task_id: TaskId,
-    pub event_id: EventId,
+    pub activity_anchor_id: ActivityAnchorId,
     pub intent_id: String,
     pub description: String,
     /// Relation kind from the previous revision to this record, if any.
@@ -314,7 +307,7 @@ pub struct PlanningPlanStepRecord {
 pub struct PlanningPlanRecord {
     pub context_id: ContextId,
     pub task_id: TaskId,
-    pub event_id: EventId,
+    pub activity_anchor_id: ActivityAnchorId,
     pub intent_id: String,
     pub plan_id: String,
     pub steps: Vec<PlanningPlanStepRecord>,

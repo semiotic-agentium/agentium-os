@@ -7,8 +7,9 @@
 //! - Plan step entities (`label = 'PlanStep'`)
 //!
 //! Full `WAS_DERIVED_FROM` edge creation is Phase 3 work (requires resolving
-//! ref numbers to event_ids via RefTable at call time, before the event is emitted).
+//! ref numbers to activity anchors via RefTable at call time, before the emission is recorded).
 
+use baml_rt_core::Citation;
 use serde_json::Value;
 
 use crate::{
@@ -25,8 +26,8 @@ fn surreal_err(e: surrealdb::Error) -> ProvenanceError {
 pub struct CitationEntry {
     /// Activity or entity ID this citation was recorded on.
     pub node_id: String,
-    /// Raw citation strings (e.g. `["#1", "@4:2"]`).
-    pub citations: Vec<String>,
+    /// Parsed ref-table citations (invalid stored strings are skipped).
+    pub citations: Vec<Citation>,
     /// Task ID, if available.
     pub task_id: Option<String>,
     /// Function name, if available (LLM activities only).
@@ -117,34 +118,36 @@ pub async fn query_uncited_steps(
     Ok(rows
         .into_iter()
         .map(|v| CitationEntry {
-            node_id: v.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
-            citations: vec![],
-            task_id: v
-                .get("task_id")
+            node_id: v
+                .get("id")
                 .and_then(Value::as_str)
-                .map(str::to_string),
+                .unwrap_or("")
+                .to_string(),
+            citations: vec![],
+            task_id: v.get("task_id").and_then(Value::as_str).map(str::to_string),
             function_name: None,
         })
         .collect())
 }
 
 fn parse_citation_row(v: &Value) -> Option<CitationEntry> {
-    let citations: Vec<String> = v
+    let citations: Vec<Citation> = v
         .get("citations")
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
-                .filter_map(|s| s.as_str().map(str::to_string))
+                .filter_map(|s| s.as_str().and_then(|t| Citation::try_new(t).ok()))
                 .collect()
         })
         .unwrap_or_default();
     Some(CitationEntry {
-        node_id: v.get("id").and_then(Value::as_str).unwrap_or("").to_string(),
-        citations,
-        task_id: v
-            .get("task_id")
+        node_id: v
+            .get("id")
             .and_then(Value::as_str)
-            .map(str::to_string),
+            .unwrap_or("")
+            .to_string(),
+        citations,
+        task_id: v.get("task_id").and_then(Value::as_str).map(str::to_string),
         function_name: v
             .get("function_name")
             .and_then(Value::as_str)

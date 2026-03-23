@@ -37,6 +37,7 @@
 //!       --ignored --nocapture
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod cross_encoder_validation {
     use std::time::Instant;
 
@@ -64,7 +65,7 @@ mod cross_encoder_validation {
     }
 
     // ── Vector EMA centroid ───────────────────────────────────────────────
-    fn centroid_update(centroid: &mut Vec<f32>, new_emb: &[f32]) {
+    fn centroid_update(centroid: &mut [f32], new_emb: &[f32]) {
         for (c, n) in centroid.iter_mut().zip(new_emb) {
             *c = ALPHA * n + (1.0 - ALPHA) * *c;
         }

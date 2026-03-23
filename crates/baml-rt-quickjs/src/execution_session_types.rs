@@ -6,7 +6,10 @@
 //! bookkeeping, map into [`crate::planning`] (`IntentSubmission`, `PlanSubmission`, …) for
 //! [`crate::planning::PlanningResolver`].
 
-use baml_rt_core::ids::{ExecutionSessionId, IntentId, PlanId, PlanStepId};
+use baml_rt_core::{
+    Citation,
+    ids::{ExecutionSessionId, IntentId, PlanId, PlanStepId},
+};
 use serde::{Deserialize, Serialize};
 
 /// Serde-tagged command envelope for `__execution_session_invoke` payloads.
@@ -25,12 +28,14 @@ pub enum ExecutionSessionCommand {
     StartStep {
         session_id: ExecutionSessionId,
         step_id: PlanStepId,
-        evidence_text: String,
+        #[serde(default)]
+        citations: Vec<Citation>,
     },
     CompleteStep {
         session_id: ExecutionSessionId,
         step_id: PlanStepId,
-        evidence_text: String,
+        #[serde(default)]
+        citations: Vec<Citation>,
     },
     Finish {
         session_id: ExecutionSessionId,
@@ -52,6 +57,9 @@ pub struct IntentSubmissionWire {
     /// active invocation scope's message id in `__execution_session_invoke` (`submit_intent`).
     #[serde(default)]
     pub derived_from_message_ids: Vec<String>,
+    /// Citation refs (`#N` / `@N`) grounding the intent in ref-table history (BAML return).
+    #[serde(default)]
+    pub citations: Vec<Citation>,
     /// "replaced"|"replaced_by"|"replacedBy" -> ReplacedBy, "refined"|"refined_by"|"refinedBy" -> RefinedBy
     #[serde(default)]
     pub supersession: Option<String>,
@@ -99,6 +107,8 @@ mod tests {
     //! the Rust host. Any rename of a field or variant causes a snapshot diff, making
     //! accidental protocol breaks visible immediately.
 
+    use std::str::FromStr;
+
     use super::*;
 
     fn session_id() -> ExecutionSessionId {
@@ -133,7 +143,10 @@ mod tests {
             intent: IntentSubmissionWire {
                 intent_id: intent_id(),
                 description: "Investigate the anomaly".to_string(),
-                derived_from_message_ids: vec!["msg-1".to_string(), "msg-2".to_string()],
+                citations: vec![
+                    Citation::from_str("#1").unwrap(),
+                    Citation::from_str("#2").unwrap(),
+                ],
                 supersession: None,
             },
         };
@@ -150,7 +163,8 @@ mod tests {
             intent: IntentSubmissionWire {
                 intent_id: intent_id(),
                 description: "Refined intent".to_string(),
-                derived_from_message_ids: vec!["msg-3".to_string()],
+                derived_from_message_ids: vec![],
+                citations: vec![Citation::from_str("#3").unwrap()],
                 supersession: Some("replaced_by".to_string()),
             },
         };
@@ -195,7 +209,7 @@ mod tests {
         let cmd = ExecutionSessionCommand::StartStep {
             session_id: session_id(),
             step_id: step_id(),
-            evidence_text: "Beginning execution".to_string(),
+            citations: vec![Citation::from_str("#1").unwrap()],
         };
         insta::assert_json_snapshot!(
             "execution_session_command_start_step",
@@ -208,7 +222,10 @@ mod tests {
         let cmd = ExecutionSessionCommand::CompleteStep {
             session_id: session_id(),
             step_id: step_id(),
-            evidence_text: "Step completed successfully".to_string(),
+            citations: vec![
+                Citation::from_str("#1").unwrap(),
+                Citation::from_str("@4:2").unwrap(),
+            ],
         };
         insta::assert_json_snapshot!(
             "execution_session_command_complete_step",
@@ -246,7 +263,7 @@ mod tests {
             ("open", r#"{"action":"open"}"#),
             (
                 "submit_intent",
-                r#"{"action":"submit_intent","session_id":"s","intent":{"intentId":"i","description":"d","derivedFromMessageIds":[]}}"#,
+                "{\"action\":\"submit_intent\",\"session_id\":\"s\",\"intent\":{\"intentId\":\"i\",\"description\":\"d\",\"citations\":[\"#1\"]}}",
             ),
             (
                 "submit_intent_omits_derived_from_message_ids",
@@ -258,11 +275,11 @@ mod tests {
             ),
             (
                 "start_step",
-                r#"{"action":"start_step","session_id":"s","step_id":"x","evidence_text":"e"}"#,
+                "{\"action\":\"start_step\",\"session_id\":\"s\",\"step_id\":\"x\",\"citations\":[\"#1\"]}",
             ),
             (
                 "complete_step",
-                r#"{"action":"complete_step","session_id":"s","step_id":"x","evidence_text":"e"}"#,
+                "{\"action\":\"complete_step\",\"session_id\":\"s\",\"step_id\":\"x\",\"citations\":[\"#1\"]}",
             ),
             ("finish", r#"{"action":"finish","session_id":"s"}"#),
             (
@@ -284,5 +301,15 @@ mod tests {
                 "action tag mismatch for {name}"
             );
         }
+    }
+
+    #[test]
+    fn deserialize_rejects_non_ref_citation() {
+        let json =
+            r#"{"action":"start_step","session_id":"s","step_id":"x","citations":["not-a-ref"]}"#;
+        assert!(
+            serde_json::from_str::<ExecutionSessionCommand>(json).is_err(),
+            "invalid citation must fail serde deserialize"
+        );
     }
 }

@@ -1,3 +1,5 @@
+use baml_rt_core::Citation;
+
 use super::{BamlRuntimeManager, manager_prelude::*, planning_emit};
 
 impl BamlRuntimeManager {
@@ -44,7 +46,7 @@ impl BamlRuntimeManager {
         step_id: String,
         old_status: Option<String>,
         new_status: String,
-        evidence_text: String,
+        citations: Vec<Citation>,
         epoch: Option<u64>,
     ) -> Result<()> {
         self.planning_emit_env()
@@ -55,7 +57,7 @@ impl BamlRuntimeManager {
                 step_id,
                 old_status,
                 new_status,
-                evidence_text,
+                citations,
                 epoch,
             )
             .await

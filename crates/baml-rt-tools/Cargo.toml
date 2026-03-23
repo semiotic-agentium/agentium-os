@@ -6,6 +6,7 @@ authors = { workspace = true }
 publish = false
 
 [dependencies]
+baml-rt-citation = { path = "../baml-rt-citation" }
 baml-rt-core = { path = "../baml-rt-core" }
 baml-derive-core = { path = "../baml-derive-core" }
 baml-derive = { path = "../baml-derive" }

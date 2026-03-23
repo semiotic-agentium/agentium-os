@@ -19,8 +19,6 @@ use baml_rt_core::{
     context::{self, InvocationScope},
     ids::{AgentId, ContextId, ExternalId, TaskId, UuidId},
 };
-#[cfg(feature = "llm-tests")]
-use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter};
 use baml_rt_provenance::{ProvenanceContextReader, SurrealProvenanceStore, SurrealStoreBuilder};
 use baml_rt_tools::bundles::BundleType;
 #[cfg(feature = "slack")]
@@ -30,8 +28,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tar::Builder;
-#[cfg(feature = "llm-tests")]
-use tokio::time::{Duration, sleep, timeout};
 use ts_rs::TS;
 
 // Bundle type for test tools (used as AddNumbersTool::Bundle; referenced in test_runner_tool_types_for_package_build).
@@ -117,8 +113,8 @@ async fn test_slack_smoke_fixture_builds_with_generated_tools() {
         "Expected compiled dist/index.js for slack-smoke-tool fixture"
     );
     assert!(
-        built.join("baml_src").join("generated_tools.baml").exists(),
-        "Expected generated_tools.baml in packaged fixture baml_src"
+        built.join("baml_src").join("_baml_runtime.baml").exists(),
+        "Expected _baml_runtime.baml in packaged fixture baml_src"
     );
     std::fs::remove_dir_all(&built).ok();
 }

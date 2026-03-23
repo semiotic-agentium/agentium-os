@@ -87,7 +87,7 @@ async fn test_execution_session_wrong_phase_transitions() {
             name: "submit_plan_before_intent",
             uuid: "00000000-0000-0000-0000-cc0100000001",
             ctx_ms: 60_001,
-            js: r#"
+            js: r##"
               (async function() {
                 const r = await __execution_session_invoke(JSON.stringify({ action: "open" }));
                 const { sessionId } = JSON.parse(r);
@@ -103,7 +103,7 @@ async fn test_execution_session_wrong_phase_transitions() {
                   return { error: "no error raised" };
                 } catch(e) { return { error: e.toString() }; }
               })()
-            "#,
+            "##,
             expected_err: "cannot submitPlan in current phase",
         },
         // StartStep before SubmitPlan — session is AwaitPlan, not Executable
@@ -111,26 +111,26 @@ async fn test_execution_session_wrong_phase_transitions() {
             name: "start_step_before_plan",
             uuid: "00000000-0000-0000-0000-cc0100000002",
             ctx_ms: 60_002,
-            js: r#"
+            js: r##"
               (async function() {
                 const r = await __execution_session_invoke(JSON.stringify({ action: "open" }));
                 const { sessionId } = JSON.parse(r);
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_intent",
                   session_id: sessionId,
-                  intent: { intentId: "intent-x", description: "d", derivedFromMessageIds: ["msg-start_step_before_plan"] }
+                  intent: { intentId: "intent-x", description: "d", citations: ["msg-start_step_before_plan"] }
                 }));
                 try {
                   await __execution_session_invoke(JSON.stringify({
                     action: "start_step",
                     session_id: sessionId,
                     step_id: "s1",
-                    evidence_text: "ev"
+                    citations: ["#1"]
                   }));
                   return { error: "no error raised" };
                 } catch(e) { return { error: e.toString() }; }
               })()
-            "#,
+            "##,
             expected_err: "execution session is not executable",
         },
         // Double SubmitIntent — second submit on AwaitPlan should fail
@@ -138,25 +138,25 @@ async fn test_execution_session_wrong_phase_transitions() {
             name: "double_submit_intent",
             uuid: "00000000-0000-0000-0000-cc0100000003",
             ctx_ms: 60_003,
-            js: r#"
+            js: r##"
               (async function() {
                 const r = await __execution_session_invoke(JSON.stringify({ action: "open" }));
                 const { sessionId } = JSON.parse(r);
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_intent",
                   session_id: sessionId,
-                  intent: { intentId: "intent-x", description: "d", derivedFromMessageIds: ["msg-double_submit_intent"] }
+                  intent: { intentId: "intent-x", description: "d", citations: ["msg-double_submit_intent"] }
                 }));
                 try {
                   await __execution_session_invoke(JSON.stringify({
                     action: "submit_intent",
                     session_id: sessionId,
-                    intent: { intentId: "intent-y", description: "d2", derivedFromMessageIds: ["msg-double_submit_intent"] }
+                    intent: { intentId: "intent-y", description: "d2", citations: ["msg-double_submit_intent"] }
                   }));
                   return { error: "no error raised" };
                 } catch(e) { return { error: e.toString() }; }
               })()
-            "#,
+            "##,
             expected_err: "cannot submitIntent in current phase",
         },
         // Finish then Finish again — double-close
@@ -164,7 +164,7 @@ async fn test_execution_session_wrong_phase_transitions() {
             name: "double_finish",
             uuid: "00000000-0000-0000-0000-cc0100000004",
             ctx_ms: 60_004,
-            js: r#"
+            js: r##"
               (async function() {
                 const r = await __execution_session_invoke(JSON.stringify({ action: "open" }));
                 const { sessionId } = JSON.parse(r);
@@ -174,7 +174,7 @@ async fn test_execution_session_wrong_phase_transitions() {
                   return { error: "no error raised" };
                 } catch(e) { return { error: e.toString() }; }
               })()
-            "#,
+            "##,
             expected_err: "cannot finish in current phase",
         },
         // StartStep with unknown step_id
@@ -182,14 +182,14 @@ async fn test_execution_session_wrong_phase_transitions() {
             name: "start_unknown_step",
             uuid: "00000000-0000-0000-0000-cc0100000005",
             ctx_ms: 60_005,
-            js: r#"
+            js: r##"
               (async function() {
                 const r = await __execution_session_invoke(JSON.stringify({ action: "open" }));
                 const { sessionId } = JSON.parse(r);
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_intent",
                   session_id: sessionId,
-                  intent: { intentId: "intent-x", description: "d", derivedFromMessageIds: ["msg-start_unknown_step"] }
+                  intent: { intentId: "intent-x", description: "d", citations: ["msg-start_unknown_step"] }
                 }));
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_plan",
@@ -204,12 +204,12 @@ async fn test_execution_session_wrong_phase_transitions() {
                     action: "start_step",
                     session_id: sessionId,
                     step_id: "ghost-step",
-                    evidence_text: "ev"
+                    citations: ["#1"]
                   }));
                   return { error: "no error raised" };
                 } catch(e) { return { error: e.toString() }; }
               })()
-            "#,
+            "##,
             expected_err: "stepId does not exist in plan",
         },
         // StartStep on step already in_progress
@@ -217,14 +217,14 @@ async fn test_execution_session_wrong_phase_transitions() {
             name: "start_step_already_in_progress",
             uuid: "00000000-0000-0000-0000-cc0100000006",
             ctx_ms: 60_006,
-            js: r#"
+            js: r##"
               (async function() {
                 const r = await __execution_session_invoke(JSON.stringify({ action: "open" }));
                 const { sessionId } = JSON.parse(r);
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_intent",
                   session_id: sessionId,
-                  intent: { intentId: "intent-x", description: "d", derivedFromMessageIds: ["msg-start_step_already_in_progress"] }
+                  intent: { intentId: "intent-x", description: "d", citations: ["msg-start_step_already_in_progress"] }
                 }));
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_plan",
@@ -236,17 +236,17 @@ async fn test_execution_session_wrong_phase_transitions() {
                 }));
                 await __execution_session_invoke(JSON.stringify({
                   action: "start_step", session_id: sessionId,
-                  step_id: "s1", evidence_text: "begin"
+                  step_id: "s1", citations: ["#1"]
                 }));
                 try {
                   await __execution_session_invoke(JSON.stringify({
                     action: "start_step", session_id: sessionId,
-                    step_id: "s1", evidence_text: "begin again"
+                    step_id: "s1", citations: ["#1"]
                   }));
                   return { error: "no error raised" };
                 } catch(e) { return { error: e.toString() }; }
               })()
-            "#,
+            "##,
             expected_err: "step cannot transition to in_progress from in_progress",
         },
         // CompleteStep on step still pending (not in_progress)
@@ -254,14 +254,14 @@ async fn test_execution_session_wrong_phase_transitions() {
             name: "complete_step_not_in_progress",
             uuid: "00000000-0000-0000-0000-cc0100000007",
             ctx_ms: 60_007,
-            js: r#"
+            js: r##"
               (async function() {
                 const r = await __execution_session_invoke(JSON.stringify({ action: "open" }));
                 const { sessionId } = JSON.parse(r);
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_intent",
                   session_id: sessionId,
-                  intent: { intentId: "intent-x", description: "d", derivedFromMessageIds: ["msg-complete_step_not_in_progress"] }
+                  intent: { intentId: "intent-x", description: "d", citations: ["msg-complete_step_not_in_progress"] }
                 }));
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_plan",
@@ -274,12 +274,12 @@ async fn test_execution_session_wrong_phase_transitions() {
                 try {
                   await __execution_session_invoke(JSON.stringify({
                     action: "complete_step", session_id: sessionId,
-                    step_id: "s1", evidence_text: "done"
+                    step_id: "s1", citations: ["#1"]
                   }));
                   return { error: "no error raised" };
                 } catch(e) { return { error: e.toString() }; }
               })()
-            "#,
+            "##,
             expected_err: "step cannot transition to completed from pending",
         },
         // StartStep blocked by unsatisfied dependency
@@ -287,14 +287,14 @@ async fn test_execution_session_wrong_phase_transitions() {
             name: "start_step_unsatisfied_dependency",
             uuid: "00000000-0000-0000-0000-cc0100000008",
             ctx_ms: 60_008,
-            js: r#"
+            js: r##"
               (async function() {
                 const r = await __execution_session_invoke(JSON.stringify({ action: "open" }));
                 const { sessionId } = JSON.parse(r);
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_intent",
                   session_id: sessionId,
-                  intent: { intentId: "intent-x", description: "d", derivedFromMessageIds: ["msg-start_step_unsatisfied_dependency"] }
+                  intent: { intentId: "intent-x", description: "d", citations: ["msg-start_step_unsatisfied_dependency"] }
                 }));
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_plan",
@@ -310,12 +310,12 @@ async fn test_execution_session_wrong_phase_transitions() {
                 try {
                   await __execution_session_invoke(JSON.stringify({
                     action: "start_step", session_id: sessionId,
-                    step_id: "s2", evidence_text: "skip dep"
+                    step_id: "s2", citations: ["#1"]
                   }));
                   return { error: "no error raised" };
                 } catch(e) { return { error: e.toString() }; }
               })()
-            "#,
+            "##,
             expected_err: "cannot start step before dependency",
         },
     ];
@@ -349,7 +349,7 @@ async fn test_execution_session_stale_epoch_rejected() {
     let (mut bridge, _capture) = make_capturing_bridge(agent_id.clone()).await;
     let (scope, invoke_scope) = task_scope(agent_id, 61_001, "stale-epoch");
 
-    let js = r#"
+    let js = r##"
       (async function() {
         // Session A: open → submitIntent → submitPlan (epoch 1)
         const rA = await __execution_session_invoke(JSON.stringify({ action: "open" }));
@@ -357,7 +357,7 @@ async fn test_execution_session_stale_epoch_rejected() {
         await __execution_session_invoke(JSON.stringify({
           action: "submit_intent",
           session_id: sessionA,
-          intent: { intentId: "intent-a", description: "first", derivedFromMessageIds: ["msg-stale-epoch"] }
+          intent: { intentId: "intent-a", description: "first", citations: ["msg-stale-epoch"] }
         }));
         await __execution_session_invoke(JSON.stringify({
           action: "submit_plan",
@@ -375,7 +375,7 @@ async fn test_execution_session_stale_epoch_rejected() {
           action: "submit_intent",
           session_id: sessionB,
           intent: {
-            intentId: "intent-b", description: "supersedes first", derivedFromMessageIds: ["msg-stale-epoch"],
+            intentId: "intent-b", description: "supersedes first", citations: ["msg-stale-epoch"],
             supersession: "replaced_by"
           }
         }));
@@ -386,12 +386,12 @@ async fn test_execution_session_stale_epoch_rejected() {
             action: "start_step",
             session_id: sessionA,
             step_id: "s1",
-            evidence_text: "stale attempt"
+            citations: ["#1"]
           }));
           return { error: "no error raised" };
         } catch(e) { return { error: e.toString() }; }
       })()
-    "#;
+    "##;
 
     let result = eval_js(&mut bridge, &scope, &invoke_scope, js).await;
     let got = err_str(&result);
@@ -416,7 +416,7 @@ async fn test_execution_session_id_cannot_be_reused_after_finish() {
     let (mut bridge, _capture) = make_capturing_bridge(agent_id.clone()).await;
     let (scope, invoke_scope) = task_scope(agent_id, 62_001, "session-exhaustion");
 
-    let js = r#"
+    let js = r##"
       (async function() {
         const r = await __execution_session_invoke(JSON.stringify({ action: "open" }));
         const { sessionId } = JSON.parse(r);
@@ -424,17 +424,17 @@ async fn test_execution_session_id_cannot_be_reused_after_finish() {
         // Complete the full lifecycle so Finish is permitted
         await __execution_session_invoke(JSON.stringify({
           action: "submit_intent", session_id: sessionId,
-          intent: { intentId: "i1", description: "d", derivedFromMessageIds: ["msg-session-exhaustion"] }
+          intent: { intentId: "i1", description: "d", citations: ["msg-session-exhaustion"] }
         }));
         await __execution_session_invoke(JSON.stringify({
           action: "submit_plan", session_id: sessionId,
           plan: { intentId: "i1", planId: "p1", steps: [{ stepId: "s1", description: "d", order: 0, dependsOn: [] }] }
         }));
         await __execution_session_invoke(JSON.stringify({
-          action: "start_step", session_id: sessionId, step_id: "s1", evidence_text: "ev"
+          action: "start_step", session_id: sessionId, step_id: "s1", citations: ["#1"]
         }));
         await __execution_session_invoke(JSON.stringify({
-          action: "complete_step", session_id: sessionId, step_id: "s1", evidence_text: "done"
+          action: "complete_step", session_id: sessionId, step_id: "s1", citations: ["#1"]
         }));
         await __execution_session_invoke(JSON.stringify({ action: "finish", session_id: sessionId }));
 
@@ -443,12 +443,12 @@ async fn test_execution_session_id_cannot_be_reused_after_finish() {
           await __execution_session_invoke(JSON.stringify({
             action: "submit_intent",
             session_id: sessionId,
-            intent: { intentId: "intent-replay", description: "d", derivedFromMessageIds: ["msg-session-exhaustion"] }
+            intent: { intentId: "intent-replay", description: "d", citations: ["msg-session-exhaustion"] }
           }));
           return { error: "no error raised" };
         } catch(e) { return { error: e.toString() }; }
       })()
-    "#;
+    "##;
     let result = eval_js(&mut bridge, &scope, &invoke_scope, js).await;
     let got = err_str(&result);
     // Closed session: operations are rejected because the session is in Closed phase,

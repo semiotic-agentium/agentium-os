@@ -82,7 +82,7 @@ Key fields:
 - `request_event_id`: links back to the request event
 - `interpretation`: project-aware meaning of the discussion
 - `derived_tasks`: executable tasks generated from interpretation
-- `provenance.parent_event_id`: causality link to request `event_id`
+- `provenance.parent_activity_anchor`: causality link to request `event_id`
 
 Example:
 
@@ -118,7 +118,7 @@ Example:
   "provenance": {
     "context_id": "ctx-3cbbf",
     "correlation_id": "corr-20260303-001",
-    "parent_event_id": "td-interpret-request-9782a72fddf4b5a5",
+    "parent_activity_anchor": "td-interpret-request-9782a72fddf4b5a5",
     "source_cursor": "1735689700.000000",
     "source_message_ts": [
       "1735689600.000000",

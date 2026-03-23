@@ -146,8 +146,8 @@ pub enum BamlRtError {
     #[error("Session lifecycle error: {0}")]
     SessionLifecycle(#[from] SessionLifecycleError),
 
-    /// Function execution failed
-    #[error("Function execution failed")]
+    /// BAML `call_function` / step-executor hop failed (cause is the wrapped anyhow chain).
+    #[error("Function execution failed: {source}")]
     ExecutionFailed {
         #[source]
         source: AnyhowError,

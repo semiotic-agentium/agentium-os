@@ -171,6 +171,8 @@ export interface IntentSubmission {
     intentId: string;
     description: string;
     derivedFromMessageIds?: string[];
+    /** Citation refs (`#N` history, `@N` archive) from the BAML planning return — preferred for checked provenance/drift. */
+    citations?: string[];
     supersession?: string;
 }
 export interface PlanStepSubmission {
@@ -198,8 +200,9 @@ export interface A2aExecutionSessionAwaitPlan {
 }
 export interface A2aExecutionSessionExecutable {
     sessionId: string;
-    startStep(stepId: string, evidenceText: string): Promise<void>;
-    completeStep(stepId: string, evidenceText: string): Promise<void>;
+    /** citations are optional — LLM-produced citations are captured automatically by the provenance system from BAML return types. Only pass explicitly if the agent has out-of-band provenance to record. */
+    startStep(stepId: string, citations?: string[]): Promise<void>;
+    completeStep(stepId: string, citations?: string[]): Promise<void>;
     finish(): Promise<A2aSessionClosed>;
     abort(reason?: string): Promise<A2aSessionClosed>;
 }
@@ -214,18 +217,35 @@ export interface Message {
   text?(): string;
 }
 export type ChatMessage = Message;
+/** Media type for a structured reply data part. */
+export type ReplyMediaType = "text/plain" | "text/markdown" | "application/json" | "text/csv";
+/** A prose text part of a structured reply. */
+export interface TextPart { type: "text"; text: string; }
+/** A structured data part of a structured reply (e.g. JSON, CSV). */
+export interface DataPart { type: "data"; data: string; media_type: ReplyMediaType; }
+/** One part of a structured reply: text or typed data. */
+export type ReplyPart = TextPart | DataPart;
+/**
+ * Structured reply from a synthesis function.
+ * Contains ordered reply parts and citations referencing the history entries (#N, @N) this reply was derived from.
+ */
+export interface StructuredReply {
+  parts: ReplyPart[];
+  metadata?: string;
+  citations: string[];
+}
 /**
  * Result shape for session.run() callback. Return { message } on success (runtime emits message and completed);
  * return { error } on failure (runtime emits failed with that error). No need to call emit helpers yourself.
  */
-export type SessionResult = { message: string } | { error: string };
+export type SessionResult = { message: string } | { message: StructuredReply } | { error: string };
 /**
  * Emitter passed into run(emit => ...) for intermediate emissions (working message, artifact, status).
  * Use when you need to stream artifacts or status before returning the final SessionResult.
  */
 export interface SessionEmitter {
-  /** Emit a working message (task state remains WORKING). */
-  message(text: string): void;
+  /** Emit a working message (task state remains WORKING). Accepts plain string or StructuredReply. */
+  message(content: string | StructuredReply): void;
   /** Emit an artifact chunk (append/lastChunk optional). */
   artifact(artifact: JsonValue, append?: boolean, lastChunk?: boolean): void;
   /** Emit a status transition (e.g. TASK_STATE_WORKING). */
@@ -375,5 +395,95 @@ export interface ToolFailure {
 }
 
 
-=== baml_src/generated_tools.baml ===
-<not generated>
+=== baml_src/_baml_runtime.baml ===
+// Auto-generated tool interfaces
+// This file is auto-generated - do not edit manually
+
+// FSM (Finite State Machine) Tool Session Protocol:
+// All host tools use a session-based FSM with strict state transitions:
+// 1. Open: Must be the FIRST step - opens a tool session
+// 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
+// 3. Read: Deref a prior Send result. Requires archive_ref (e.g. '@1'). Supports grep/paginate.
+// 4. Finish: Closes the session gracefully
+// 5. Abort: Closes the session with an error
+//
+// CRITICAL FSM RULES:
+// - Open MUST come before Send
+// - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
+// - Read requires archive_ref from a prior Send. Use it to paginate or grep the output.
+// - Always Finish or Abort to close the session
+
+// Shared standard planning types
+class StandardAgentPlanStep {
+  agent_package string @description("Exact agent_package from discovery results (e.g. 'extrospection-agent'). Copy verbatim — do not truncate or reformat.")
+  agent_instance_id string @description("Agent instance ID, usually 'default'. Copy from discovery results.")
+  sub_message string
+}
+
+class StandardStructuredPlan {
+  intent_description string
+  objective string
+  plan_steps StandardAgentPlanStep[]
+}
+
+class HistoryContext {
+  hop int
+  op string
+  status string
+  truncated bool
+  cursor string?
+  payload string?
+}
+
+/// Runtime session state injected by the step-executor loop.
+/// Do not construct manually — values come from the FSM.
+class SessionContext {
+  contract_version string
+  session_open bool
+  allowed_ops string[]
+  selected_tool string?
+  status_token string?
+}
+
+// Structured reply types for synthesis functions
+enum ReplyMediaType {
+  TextPlain @alias("text/plain")
+  TextMarkdown @alias("text/markdown")
+  ApplicationJson @alias("application/json")
+  TextCsv @alias("text/csv")
+}
+
+class TextPart {
+  type "text"
+  text string
+}
+
+class DataPart {
+  type "data"
+  data string @description("Serialised content (e.g. JSON string, CSV string).")
+  media_type ReplyMediaType @description("MIME type of the data field.")
+}
+
+type ReplyPart = TextPart | DataPart
+
+class StructuredReply {
+  parts ReplyPart[] @description("Ordered reply parts: prose text and/or structured data.")
+  metadata string? @description("Optional opaque metadata string (e.g. JSON).")
+  citations string[] @description("History refs this reply was derived from. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence: history or archive content that contradicts this reply. Do not use # for archives or @ for history—these prefixes are different namespaces.")
+}
+
+// LLM output shape; host maps to wire StructuredReply (parts + citations) in TypeScript.
+class AgentStructuredReply {
+  prose string @description("User-visible answer. Prefer GitHub-flavored Markdown (headings, lists, **bold**, `code`, links) over plain unformatted text.")
+  structured_json string? @description("Optional strict JSON string for UI or tools; omit when not useful.")
+  citations string[] @description("URLs, stable ids, or history refs (#N, @N) this reply draws from; use [] if none.")
+}
+
+/// Archive deref input for Read steps.
+/// archive_ref is required: use the @N ref from the Send result.
+class ArchiveReadInput {
+  archive_ref string @description("Required archive ref e.g. '@1'. Use the ref returned by the preceding Send step.")
+  offset int? @description("Line offset for pagination (0-based). Omit to start from the beginning.")
+  limit int? @description("Maximum lines to return. Omit for default page size.")
+  grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
+}

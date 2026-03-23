@@ -41,6 +41,7 @@ class HistoryContext {
 class SessionContext {
   contract_version string
   session_open bool
+  allowed_ops string[]
   scope_ref string?
   output_ref string?
   evidence_ref string?

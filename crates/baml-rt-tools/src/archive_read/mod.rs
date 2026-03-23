@@ -19,4 +19,6 @@ pub use cat_n::{format_cat_n, format_cat_n_sequential};
 pub use grep::grep_paginate;
 pub use render::render_to_lines;
 pub use rendered::RenderedContent;
-pub use types::{GrepPage, GrepPattern, LineOffset, LineWithPosition, PageLimit, ShortRef};
+pub use types::{
+    GrepPage, GrepPattern, HistoryRef, LineOffset, LineWithPosition, PageLimit, ShortRef,
+};

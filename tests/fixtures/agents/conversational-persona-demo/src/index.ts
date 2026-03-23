@@ -10,30 +10,15 @@
  *   1. InferDiscoveryIntent  — LLM distils user intent (single-shot)
  *   2. GetDiscoverAgentsPlan — FSM: Open→Send→Read→Finish (archives agents @N)
  *   3. MakeStructuredPlan    — LLM plans from history; returns plan_steps or []
- *   4a. FormatCapabilities   — if no steps: in-persona capability summary
+ *   4a. FormatCapabilities   — if no steps: in-persona capability summary (StructuredReply)
  *   4b. DecideDelegationAction × N — FSM: Open→Send→Read→null per delegate
  *   5. PersonaReact          — LLM synthesizes all results from history
  */
-import type { SessionResult, StandardStructuredPlan } from "./baml-runtime";
-
-declare function openA2aExecutionSession(token: string): Promise<{
-  submitIntent: (args: {
-    intentId: string;
-    description: string;
-    derivedFromMessageIds: string[];
-  }) => Promise<{
-    submitPlan: (args: {
-      intentId: string;
-      planId: string;
-      steps: Array<{ stepId: string; description: string; order: number; dependsOn: string[] }>;
-    }) => Promise<{
-      startStep: (stepId: string, text: string) => Promise<unknown>;
-      completeStep: (stepId: string, text: string) => Promise<unknown>;
-      abort: (reason: string) => Promise<unknown>;
-      finish: () => Promise<unknown>;
-    }>;
-  }>;
-}>;
+import type {
+  SessionResult,
+  StandardStructuredPlan,
+  StructuredReply,
+} from "./baml-runtime";
 
 function slug(text: string, fallback: string): string {
   const s = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
@@ -54,12 +39,13 @@ __chat_register({
     const text = (ctx.text ?? "").trim() || "unknown";
     const msgId = messageId(ctx);
 
-    try {
-      // ── Phase 1: infer discovery intent (single-shot, goal-level) ───────────
-      const intentText = String(await InferDiscoveryIntent({ user_message: text })).trim()
-        || "Identify agents relevant to the user intent.";
+    // ── Phase 1: infer discovery intent (single-shot, goal-level) ───────────
+    const intentText = String(await InferDiscoveryIntent({ user_message: text })).trim()
+      || "Identify agents relevant to the user intent.";
 
-      // ── Phase 2: discover agents (own provenance session) ───────────────────
+    // ── Phase 2: discover agents (own provenance session) ───────────────────
+    let discoveryError: string | null = null;
+    try {
       const discoverySession = typeof openA2aExecutionSession === "function"
         ? await openA2aExecutionSession("persona-discover-" + Date.now())
         : null;
@@ -67,7 +53,6 @@ __chat_register({
         ? await discoverySession.submitIntent({
             intentId: "intent-" + slug(intentText, "persona"),
             description: intentText,
-            derivedFromMessageIds: [msgId],
           })
         : null;
       const discoveryExecutable = discoveryIntentPhase
@@ -78,11 +63,16 @@ __chat_register({
           })
         : null;
 
-      await discoveryExecutable?.startStep("step-discover", "Discovering agents.");
+      await discoveryExecutable?.startStep("step-discover");
       await runGeneratedStepExecutor("GetDiscoverAgentsPlan", { inferred_intent: intentText }, { max_steps: 8 });
-      await discoveryExecutable?.completeStep("step-discover", "Agents discovered.");
+      await discoveryExecutable?.completeStep("step-discover");
       await discoveryExecutable?.finish();
+    } catch (e) {
+      discoveryError = e instanceof Error ? e.message : String(e);
+      ctx.emit.message(`[discovery failed: ${discoveryError}]`);
+    }
 
+    try {
       // ── Phase 3: plan from history (own provenance session) ─────────────────
       const plan = await MakeStructuredPlan({ user_message: text }) as StandardStructuredPlan;
       const steps = Array.isArray(plan?.plan_steps) ? plan.plan_steps : [];
@@ -98,7 +88,6 @@ __chat_register({
         ? await session.submitIntent({
             intentId: planIntentId,
             description: String(plan?.intent_description ?? objective),
-            derivedFromMessageIds: [msgId],
           })
         : null;
 
@@ -111,11 +100,11 @@ __chat_register({
               steps: [{ stepId: "step-caps", description: "Summarise agent capabilities.", order: 0, dependsOn: [] }],
             })
           : null;
-        await capExecutable?.startStep("step-caps", "Formatting capabilities.");
-        const message = String(await FormatCapabilities({ user_message: text })).trim();
-        await capExecutable?.completeStep("step-caps", "Capabilities formatted.");
+        await capExecutable?.startStep("step-caps");
+        const cap = (await FormatCapabilities({ user_message: text })) as StructuredReply;
+        await capExecutable?.completeStep("step-caps");
         await capExecutable?.finish();
-        return { message: message.slice(0, 1800) };
+        return { message: cap };
       }
 
       // ── Phase 4b: delegate to specialist agents ──────────────────────────────
@@ -135,28 +124,32 @@ __chat_register({
       for (let i = 0; i < steps.length; i++) {
         const step = steps[i];
         const stepId = "step-" + i;
-        const pkg = String(step.agent_package ?? "");
-        const inst = String(step.agent_instance_id ?? "default");
+        const agent_package = String(step.agent_package ?? "");
+        const agent_instance_id = String(step.agent_instance_id ?? "default");
         const goal = String(step.sub_message ?? objective);
-        const agent = pkg + "/" + inst;
 
-        if (!pkg) {
-          await delegateExecutable?.completeStep(stepId, "Skipped — no agent target.");
+        if (!agent_package) {
+          await delegateExecutable?.completeStep(stepId);
           continue;
         }
 
-        await delegateExecutable?.startStep(stepId, "Delegating to " + agent + ".");
-        await runGeneratedStepExecutor("DecideDelegationAction", { goal, agent }, { max_steps: 10 });
-        await delegateExecutable?.completeStep(stepId, "Delegation complete.");
+        await delegateExecutable?.startStep(stepId);
+        await runGeneratedStepExecutor("DecideDelegationAction", { goal, agent_package, agent_instance_id }, { max_steps: 10 });
+        await delegateExecutable?.completeStep(stepId);
       }
 
       // ── Phase 5: synthesize in persona voice from history ────────────────────
-      const message = String(await PersonaReact({ user_message: text, plan_objective: objective })).trim();
+      const reacted = (await PersonaReact({
+        user_message: text,
+        plan_objective: objective,
+      })) as StructuredReply;
       await delegateExecutable?.finish();
-      return { message: message.slice(0, 1800) };
+      return { message: reacted };
 
     } catch (e) {
-      return { error: e instanceof Error ? e.message : String(e) };
+      const msg = e instanceof Error ? e.message : String(e);
+      ctx.emit.message(`[execution error: ${msg}]`);
+      return { error: msg };
     }
   },
 });

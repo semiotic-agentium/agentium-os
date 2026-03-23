@@ -1,23 +1,10 @@
-//! Snapshot-based parity tests for the SurrealDB provenance backend.
+//! Snapshot regression tests for the SurrealDB provenance store.
 //!
-//! These tests produce structured output that is captured via `insta` snapshots.
-//! Both backends should produce identical (or semantically equivalent) snapshots,
-//! proving true behavioral parity.
-//!
-//! ## Snapshot Strategy
-//!
-//! - Each scenario produces a normalized output structure
-//! - Snapshots are named with backend suffix: `{scenario}@surreal`
-//! - Outputs are normalized before snapshotting to handle:
-//!   - Timestamp differences (replaced with deterministic values)
-//!   - Ordering differences (sorted by stable keys)
-//!   - Backend-specific metadata fields (stripped)
-//!
-//! ## Running Snapshots
+//! Structured outputs are captured with `insta` after normalizing volatile fields
+//! (timestamps, ordering) so diffs stay stable across runs.
 //!
 //! ```bash
-//! # Run tests and review snapshots
-//! cargo test -p baml-rt-provenance --features surreal-backend --test surreal_snapshot_test
+//! cargo test -p baml-rt-provenance --test surreal_snapshot_test
 //! cargo insta review
 //! ```
 
@@ -25,7 +12,7 @@ use std::sync::Arc;
 
 use baml_rt_core::{
     Outcome,
-    ids::{AgentId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId},
+    ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
     AgentBootedEvent, AgentType, CallScope, LlmUsage, ProvEvent, ProvEventData,
@@ -93,7 +80,7 @@ async fn bootstrap(store: &dyn SnapshotStore, context_id: &ContextId, task_id: &
 
     store
         .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
-            id: EventId::from_counter(base),
+            id: ActivityAnchorId::from_counter(base),
             timestamp_ms: 1_700_000_000_000 + base,
             data: ProvEventData::AgentBooted {
                 agent_id: agent_id.clone(),
@@ -107,7 +94,7 @@ async fn bootstrap(store: &dyn SnapshotStore, context_id: &ContextId, task_id: &
 
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(base + 1),
+            id: ActivityAnchorId::from_counter(base + 1),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_000_000 + base + 1,
@@ -121,7 +108,7 @@ async fn bootstrap(store: &dyn SnapshotStore, context_id: &ContextId, task_id: &
 
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(base + 2),
+            id: ActivityAnchorId::from_counter(base + 2),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_000_000 + base + 2,
@@ -141,7 +128,7 @@ async fn bootstrap(store: &dyn SnapshotStore, context_id: &ContextId, task_id: &
 
 /// Normalize ops query response for snapshot comparison.
 /// - Sorts rows by activity_id for deterministic ordering
-/// - Removes volatile fields (timestamps that vary by backend)
+/// - Removes volatile fields (timestamps that vary by run)
 /// - Normalizes null vs missing fields
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct NormalizedOpsRow {
@@ -320,7 +307,7 @@ fn normalize_conversation_context(
     items: &[baml_rt_provenance::store::ProvenanceConversationContextItem],
 ) -> NormalizedConversationContext {
     let normalized: Vec<NormalizedContextItem> = items.iter().map(normalize_context_item).collect();
-    // Don't sort - preserve insertion order which should match between backends
+    // Don't sort — preserve insertion order from the store read.
 
     NormalizedConversationContext {
         item_count: normalized.len(),
@@ -363,7 +350,7 @@ async fn setup_failed_call_with_classification(store: &dyn SnapshotStore) {
     // Failed LLM call
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(10010),
+            id: ActivityAnchorId::from_counter(10010),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_010_010,
@@ -386,7 +373,7 @@ async fn setup_failed_call_with_classification(store: &dyn SnapshotStore) {
 
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(10011),
+            id: ActivityAnchorId::from_counter(10011),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_010_015,
@@ -407,6 +394,7 @@ async fn setup_failed_call_with_classification(store: &dyn SnapshotStore) {
                 duration_ms: 500,
                 outcome: Outcome::Failure,
                 drift: None,
+                citations: vec![],
             },
         }))
         .await
@@ -490,7 +478,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
     // User message
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(20010),
+            id: ActivityAnchorId::from_counter(20010),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_020_010,
@@ -584,7 +572,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
     // Assistant message
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(20020),
+            id: ActivityAnchorId::from_counter(20020),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_020_100,

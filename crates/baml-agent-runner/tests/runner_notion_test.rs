@@ -2,6 +2,9 @@
 
 mod common;
 
+#[path = "common/http_tool_test_helpers.rs"]
+mod http_tool_test_helpers;
+
 use std::{fs, path::PathBuf, sync::Arc};
 
 use baml_rt::baml::BamlRuntimeManager;
@@ -15,9 +18,10 @@ use baml_rt_provenance::{
 };
 use baml_tools_notion::NotionTool;
 use common::{
-    RunningHttpServer, TempDirCleanup, TempEnvVar, build_notion_agent_to_temp_async, contains_kv,
+    RunningHttpServer, TempDirCleanup, TempEnvVar, build_notion_agent_to_temp_async,
     e2e_serial_gate, post_a2a_sse_collect, start_http_server, start_runner_api_server,
 };
+use http_tool_test_helpers::contains_kv;
 use serde_json::{Value, json};
 use test_support::common::{chunks_from_responses, send_stream_request, workspace_fnox_path};
 use tokio::time::{Duration, sleep, timeout};
@@ -282,12 +286,12 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
             .iter()
             .filter(|item| item.source_name() == "tool_result")
             .find_map(|item| {
-                if let ConversationItemContent::ToolResult(tr) = &item.content {
-                    if let baml_rt_provenance::store::ToolOutcome::Result(v) = &tr.outcome {
-                        let blocks = v.get("blocks").and_then(Value::as_array)?;
-                        if !blocks.is_empty() {
-                            return Some(v.clone());
-                        }
+                if let ConversationItemContent::ToolResult(tr) = &item.content
+                    && let baml_rt_provenance::store::ToolOutcome::Result(v) = &tr.outcome
+                {
+                    let blocks = v.get("blocks").and_then(Value::as_array)?;
+                    if !blocks.is_empty() {
+                        return Some(v.clone());
                     }
                 }
                 None
@@ -298,7 +302,7 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
         let signature = serde_json::to_string(
             &conversation_items
                 .iter()
-                .map(|i| (&i.event_id, i.source_name(), &i.content))
+                .map(|i| (&i.activity_anchor, i.source_name(), &i.content))
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_default();
@@ -509,14 +513,14 @@ async fn test_e2e_notion_real_model_search_with_mock_server() {
             .unwrap_or_default();
         conversation_items = items.clone();
         let saw_search_result = items.iter().any(|item| {
-            if let ConversationItemContent::ToolResult(tr) = &item.content {
-                if let baml_rt_provenance::store::ToolOutcome::Result(v) = &tr.outcome {
-                    return v
-                        .get("pages")
-                        .and_then(Value::as_array)
-                        .map(|pages| !pages.is_empty())
-                        .unwrap_or(false);
-                }
+            if let ConversationItemContent::ToolResult(tr) = &item.content
+                && let baml_rt_provenance::store::ToolOutcome::Result(v) = &tr.outcome
+            {
+                return v
+                    .get("pages")
+                    .and_then(Value::as_array)
+                    .map(|pages| !pages.is_empty())
+                    .unwrap_or(false);
             }
             false
         });
@@ -526,7 +530,7 @@ async fn test_e2e_notion_real_model_search_with_mock_server() {
         let signature = serde_json::to_string(
             &conversation_items
                 .iter()
-                .map(|i| (&i.event_id, i.source_name(), &i.content))
+                .map(|i| (&i.activity_anchor, i.source_name(), &i.content))
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_default();
