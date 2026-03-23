@@ -95,6 +95,20 @@ pub struct MemoryLink;
 )]
 pub struct MemoryStats;
 
+#[baml_tool(
+    name = "memory/context_memory_resolve",
+    description = "Query shared context memory from provenance. Retrieves LLM calls, tool calls, or messages \
+        within the current conversation context. Supports filtering by agent, tool name, outcome, \
+        time range, and full-text search on payload content.",
+    tags = ["memory", "context"],
+    access = Read,
+    metadata_only,
+    open_input = ContextMemoryResolveOpenInput,
+    input = ContextMemoryResolveSendInput,
+    output = ContextMemoryResolveNextOutput,
+)]
+pub struct ContextMemoryResolve;
+
 #[cfg(test)]
 mod tests {
     use baml_rt_tools::tools::ToolAccess;
@@ -110,5 +124,9 @@ mod tests {
         assert_eq!(memory_resolve_metadata().access, Some(ToolAccess::Read));
         assert_eq!(memory_impact_metadata().access, Some(ToolAccess::Read));
         assert_eq!(memory_stats_metadata().access, Some(ToolAccess::Read));
+        assert_eq!(
+            memory_context_memory_resolve_metadata().access,
+            Some(ToolAccess::Read)
+        );
     }
 }

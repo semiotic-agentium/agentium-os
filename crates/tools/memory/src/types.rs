@@ -440,3 +440,127 @@ impl DescribeAction for MemoryStatsSendInput {
         "retrieving memory graph statistics".to_string()
     }
 }
+
+// ---------------------------------------------------------------------------
+// memory/context_memory_resolve
+// ---------------------------------------------------------------------------
+
+/// Resource type to query from provenance.
+/// Note: `LlmCalls` returns both LLM call invocations and their results
+/// as part of the same activity. Similarly, `ToolCalls` returns both
+/// tool call invocations and their results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextMemoryResource {
+    LlmCalls,
+    ToolCalls,
+    Messages,
+}
+
+/// Outcome filter for queries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextMemoryOutcome {
+    FailedOnly,
+    SuccessfulOnly,
+    #[default]
+    Both,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextMemoryResolveOpenInput {
+    /// Optional reason for opening this session (for logging/debugging).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextMemoryResolveSendInput {
+    /// Resource type to query (llm_calls, tool_calls, messages).
+    pub resource: ContextMemoryResource,
+    /// Optional agent ID filter. If not provided, queries all agents in the context.
+    #[ts(type = "string | null")]
+    #[schemars(with = "Option<String>")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<baml_rt_core::ids::AgentId>,
+    /// Optional tool name filter (exact match).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// Outcome filter (failed_only, successful_only, both). Defaults to both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ContextMemoryOutcome>,
+    /// FTS5 full-text search pattern for payload content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_text: Option<String>,
+    /// Filter events from this timestamp (inclusive, milliseconds since epoch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_timestamp_ms: Option<u64>,
+    /// Filter events until this timestamp (inclusive, milliseconds since epoch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_timestamp_ms: Option<u64>,
+    /// Maximum number of results to return (default 50).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    /// Pagination cursor from a previous response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// A single row from context memory resolve.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextMemoryResolveRow {
+    /// Activity ID from provenance.
+    pub activity_id: String,
+    /// Timestamp in milliseconds since epoch.
+    pub timestamp_ms: u64,
+    /// Source type (llm_result, tool_result, message).
+    pub source: String,
+    /// Agent ID that produced this event.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// Tool name (for tool calls/results).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// Outcome status (success, failure).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    /// Compact payload data (summarized, not raw).
+    #[ts(type = "any")]
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextMemoryResolveNextOutput {
+    /// Result rows from provenance.
+    pub rows: Vec<ContextMemoryResolveRow>,
+    /// Number of rows returned in this response (not total matching, may be paginated).
+    pub returned_count: usize,
+    /// Whether the results were truncated due to limits.
+    pub truncated: bool,
+    /// Cursor for fetching the next page, if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// Whether this session is complete.
+    pub done: bool,
+}
+
+impl DescribeAction for ContextMemoryResolveOpenInput {
+    fn describe(&self) -> String {
+        "querying context memory".to_string()
+    }
+}
+impl DescribeAction for ContextMemoryResolveSendInput {
+    fn describe(&self) -> String {
+        format!("querying {:?} from context memory", self.resource)
+    }
+}

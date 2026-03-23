@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 mod builder;
+mod optional_tool_bundles;
 mod package;
 
 use std::{
@@ -144,7 +145,7 @@ impl AgentPackage {
             agent_list_catalogue,
             tool_registry.clone(),
             a2a_handler,
-            provenance_query,
+            provenance_query.clone(),
         ))?;
         // Claude workspace root: where claude/dev session cwd lives (agent_id/workspace_name subdirs).
         // Set BAML_CLAUDE_WORKSPACES_BASE to a persistent dir so tmp isn't wiped and Claude can write.
@@ -186,11 +187,11 @@ impl AgentPackage {
             AgentWorkspaceRegistry::new(claude_workspace_root),
         )))?;
 
-        #[cfg(feature = "memory")]
-        if self.manifest.tools.iter().any(|t| t.starts_with("memory/")) {
-            let memory_bundle = baml_tools_memory::MemoryBundle::new(&self.manifest.name)?;
-            tool_registry.register_bundle(memory_bundle)?;
-        }
+        optional_tool_bundles::register_optional_tool_bundles(
+            &self.manifest,
+            tool_registry.as_ref(),
+            Some(provenance_query.clone()),
+        )?;
 
         register_manifest_tools(
             runtime_manager.tool_registry().as_ref(),

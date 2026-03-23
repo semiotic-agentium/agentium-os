@@ -2036,6 +2036,7 @@ dependencies = [
  "agentic-memory",
  "async-trait",
  "baml-rt-core",
+ "baml-rt-provenance",
  "baml-rt-tools",
  "inventory",
  "libc",
