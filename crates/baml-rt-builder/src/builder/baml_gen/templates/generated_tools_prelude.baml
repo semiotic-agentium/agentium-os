@@ -26,6 +26,7 @@ class StandardStructuredPlan {
   intent_description string
   objective string
   plan_steps StandardAgentPlanStep[]
+  citations string[]? @description("Optional checked refs (#N, @N) grounding this plan for observability; omit or use [] when none.")
 }
 
 class HistoryContext {
@@ -42,7 +43,7 @@ class HistoryContext {
 class SessionContext {
   contract_version string
   session_open bool
-  allowed_ops string[]
+  allowed_ops string[]? @description("Deprecated: per-phase step-executor functions narrow the output schema. Host may omit.")
   selected_tool string?
   status_token string?
 }

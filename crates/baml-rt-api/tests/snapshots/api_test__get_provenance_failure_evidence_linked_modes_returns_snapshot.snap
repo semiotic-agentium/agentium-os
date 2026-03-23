@@ -10,12 +10,12 @@ expression: snapshot
       "rows": [
         {
           "activity_id": "llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
+          "a2a_activity_anchor": "[prov_activity_anchor]",
           "a2a_activity_outcome": "Failed",
           "a2a_agent_id": "[uuid]",
           "a2a_client": "anthropic",
           "a2a_context_id": "ctx-100-1",
           "a2a_duration_ms": 650,
-          "a2a_activity_anchor": "[prov_activity_anchor]",
           "a2a_failure_class": "failed_graph_incomplete",
           "a2a_failure_evidence": "metadata",
           "a2a_function_name": "DraftPrompt",
@@ -100,11 +100,11 @@ expression: snapshot
       "rows": [
         {
           "activity_id": "tool_call:ctx-100-1:msg-c:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+          "a2a_activity_anchor": "[prov_activity_anchor]",
           "a2a_activity_outcome": "Failed",
           "a2a_agent_id": "[uuid]",
           "a2a_context_id": "ctx-100-1",
           "a2a_duration_ms": 240,
-          "a2a_activity_anchor": "[prov_activity_anchor]",
           "a2a_failure_class": "failed_graph_incomplete",
           "a2a_failure_evidence": "metadata",
           "a2a_function_name": "DelegatePrompt",

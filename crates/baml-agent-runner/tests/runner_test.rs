@@ -1665,7 +1665,6 @@ async fn test_internal_a2a_context_id_propagates() {
 /// serialized all child streams. Resolved by the bridge-local dispatcher
 /// introduced in Phase 1 (`runtime_refactor.md`).
 #[tokio::test]
-#[ignore = "flaky under CI contention; parallel same-context child-task fanout remains non-blocking"]
 async fn test_internal_a2a_parallel_same_context_child_tasks_and_provenance() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 

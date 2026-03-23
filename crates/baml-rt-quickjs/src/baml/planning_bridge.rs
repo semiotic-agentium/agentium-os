@@ -51,14 +51,7 @@ impl BamlRuntimeManager {
     ) -> Result<()> {
         self.planning_emit_env()
             .emit_step_status_changed(
-                scope,
-                intent_id,
-                plan_id,
-                step_id,
-                old_status,
-                new_status,
-                citations,
-                epoch,
+                scope, intent_id, plan_id, step_id, old_status, new_status, citations, epoch,
             )
             .await
     }

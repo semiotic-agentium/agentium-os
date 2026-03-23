@@ -104,11 +104,12 @@ class ReadOnlyResponse {
 
 /// Step executor for Notion retrieval. Drives a support/notion session:
 /// Open → Send (archives @N) → Read @N grep=<term> → (more Reads if needed) → Finish.
-/// Returns ReadOnlyResponse when enough content has been retrieved for synthesis.
+/// Return type is session-plan only so generated `__select` cannot emit a prose-only
+/// “skip Open” shape (that bypassed the real Notion tool in tests and production).
 function ChooseNotionAction(
   goal: string,
   step_description: string,
-) -> ReadOnlyResponse | SupportNotionSessionPlan {
+) -> SupportNotionSessionPlan {
   client OpenRouterGPT
   prompt #"
     You are executing one step of a read-only Notion retrieval plan.

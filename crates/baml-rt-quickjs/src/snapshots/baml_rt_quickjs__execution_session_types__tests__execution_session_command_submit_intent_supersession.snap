@@ -8,8 +8,8 @@ expression: "serde_json::to_value(&cmd).unwrap()"
   "intent": {
     "intentId": "intent-test-1",
     "description": "Refined intent",
-    "derivedFromMessageIds": [
-      "msg-3"
+    "citations": [
+      "#3"
     ],
     "supersession": "replaced_by"
   }

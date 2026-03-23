@@ -1,18 +1,40 @@
-function PlanSyntheticSessionStep(
+/// One-hop planner for the session-tool-eval loop: returns a **standard** structured plan
+/// with exactly one step. The step’s `sub_message` holds a JSON line describing the next
+/// tool-session op (Open / Send / Read / Finish) for `test/synthetic_session_eval`.
+function PlanSessionToolEvalStep(
   objective: string,
-) -> SyntheticPlannerPlan {
+) -> StandardStructuredPlan {
   client DefaultClient
   prompt #"
-    Output ONLY one JSON object with exactly one session `decision`. No prose. No markdown.
+    Output ONLY one JSON object matching StandardStructuredPlan. No prose. No markdown.
 
-    Objective: {{ objective }}
+    User objective (seed): {{ objective }}
 
-    Strategy:
+    Fill the schema as follows:
+    - intent_description: one sentence — the overall eval goal.
+    - objective: one sentence — what this single hop should accomplish.
+    - plan_steps: **exactly one** StandardAgentPlanStep, the next operation only.
+
+    That step MUST use:
+      agent_package: "test/synthetic_session_eval"
+      agent_instance_id: "default"
+      sub_message: a single-line JSON string (valid JSON object) with:
+        - "op": one of "Open", "Send", "Read", "Finish"
+        - optional "initial_input": object (use on Open when needed)
+        - optional "input": object (Send / Read payloads)
+
+    Example sub_message values:
+      {"op":"Open","initial_input":{}}
+      {"op":"Send","input":{"retrieve_ref":null}}
+      {"op":"Read","input":{"retrieve_ref":"ref:1"}}
+      {"op":"Finish"}
+
+    Strategy (reflect in your fields and JSON):
     - Reach goal_id = non_trivial_scope_cache_goal via explicit session reads.
     - Use projection progression: summary → identity → detail before Finish.
     - Minimise wasted reads: once you have data at one projection level, advance to the next.
 
-    The allowed ops and current session state are in the session history below.
+    The allowed ops and current session state are implied by session history below.
     Read the history to determine what has already been done, then emit the single next step.
 
     {% if ctx.tags.conversation_history %}

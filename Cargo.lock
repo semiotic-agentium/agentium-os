@@ -6099,6 +6099,7 @@ checksum = "14c00403deb17c3221a1fe4fb571b9ed0370b3dcd116553c77fa294a3d918699"
 name = "integrations-clickup-client"
 version = "0.1.0"
 dependencies = [
+ "baml-rt-llm-config",
  "reqwest 0.12.26",
  "serde_json",
  "thiserror 2.0.18",

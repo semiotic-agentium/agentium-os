@@ -118,7 +118,7 @@ async fn test_execution_session_wrong_phase_transitions() {
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_intent",
                   session_id: sessionId,
-                  intent: { intentId: "intent-x", description: "d", citations: ["msg-start_step_before_plan"] }
+                  intent: { intentId: "intent-x", description: "d", citations: ["#1"] }
                 }));
                 try {
                   await __execution_session_invoke(JSON.stringify({
@@ -145,13 +145,13 @@ async fn test_execution_session_wrong_phase_transitions() {
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_intent",
                   session_id: sessionId,
-                  intent: { intentId: "intent-x", description: "d", citations: ["msg-double_submit_intent"] }
+                  intent: { intentId: "intent-x", description: "d", citations: ["#1"] }
                 }));
                 try {
                   await __execution_session_invoke(JSON.stringify({
                     action: "submit_intent",
                     session_id: sessionId,
-                    intent: { intentId: "intent-y", description: "d2", citations: ["msg-double_submit_intent"] }
+                    intent: { intentId: "intent-y", description: "d2", citations: ["#1"] }
                   }));
                   return { error: "no error raised" };
                 } catch(e) { return { error: e.toString() }; }
@@ -189,7 +189,7 @@ async fn test_execution_session_wrong_phase_transitions() {
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_intent",
                   session_id: sessionId,
-                  intent: { intentId: "intent-x", description: "d", citations: ["msg-start_unknown_step"] }
+                  intent: { intentId: "intent-x", description: "d", citations: ["#1"] }
                 }));
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_plan",
@@ -224,7 +224,7 @@ async fn test_execution_session_wrong_phase_transitions() {
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_intent",
                   session_id: sessionId,
-                  intent: { intentId: "intent-x", description: "d", citations: ["msg-start_step_already_in_progress"] }
+                  intent: { intentId: "intent-x", description: "d", citations: ["#1"] }
                 }));
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_plan",
@@ -261,7 +261,7 @@ async fn test_execution_session_wrong_phase_transitions() {
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_intent",
                   session_id: sessionId,
-                  intent: { intentId: "intent-x", description: "d", citations: ["msg-complete_step_not_in_progress"] }
+                  intent: { intentId: "intent-x", description: "d", citations: ["#1"] }
                 }));
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_plan",
@@ -294,7 +294,7 @@ async fn test_execution_session_wrong_phase_transitions() {
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_intent",
                   session_id: sessionId,
-                  intent: { intentId: "intent-x", description: "d", citations: ["msg-start_step_unsatisfied_dependency"] }
+                  intent: { intentId: "intent-x", description: "d", citations: ["#1"] }
                 }));
                 await __execution_session_invoke(JSON.stringify({
                   action: "submit_plan",
@@ -357,7 +357,7 @@ async fn test_execution_session_stale_epoch_rejected() {
         await __execution_session_invoke(JSON.stringify({
           action: "submit_intent",
           session_id: sessionA,
-          intent: { intentId: "intent-a", description: "first", citations: ["msg-stale-epoch"] }
+          intent: { intentId: "intent-a", description: "first", citations: ["#1"] }
         }));
         await __execution_session_invoke(JSON.stringify({
           action: "submit_plan",
@@ -375,7 +375,7 @@ async fn test_execution_session_stale_epoch_rejected() {
           action: "submit_intent",
           session_id: sessionB,
           intent: {
-            intentId: "intent-b", description: "supersedes first", citations: ["msg-stale-epoch"],
+            intentId: "intent-b", description: "supersedes first", citations: ["#1"],
             supersession: "replaced_by"
           }
         }));
@@ -424,7 +424,7 @@ async fn test_execution_session_id_cannot_be_reused_after_finish() {
         // Complete the full lifecycle so Finish is permitted
         await __execution_session_invoke(JSON.stringify({
           action: "submit_intent", session_id: sessionId,
-          intent: { intentId: "i1", description: "d", citations: ["msg-session-exhaustion"] }
+          intent: { intentId: "i1", description: "d", citations: ["#1"] }
         }));
         await __execution_session_invoke(JSON.stringify({
           action: "submit_plan", session_id: sessionId,
@@ -443,7 +443,7 @@ async fn test_execution_session_id_cannot_be_reused_after_finish() {
           await __execution_session_invoke(JSON.stringify({
             action: "submit_intent",
             session_id: sessionId,
-            intent: { intentId: "intent-replay", description: "d", citations: ["msg-session-exhaustion"] }
+            intent: { intentId: "intent-replay", description: "d", citations: ["#1"] }
           }));
           return { error: "no error raised" };
         } catch(e) { return { error: e.toString() }; }

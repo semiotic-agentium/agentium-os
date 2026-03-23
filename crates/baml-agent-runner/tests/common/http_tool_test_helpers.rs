@@ -16,20 +16,3 @@ pub fn contains_kv(value: &Value, key: &str, expected: &str) -> bool {
         _ => false,
     }
 }
-
-impl crate::common::RunningHttpServer {
-    /// Mock APIs mount under a path prefix; `start_http_server` binds `/`.
-    pub fn with_base_path(mut self, base_path: &str) -> Self {
-        let trimmed = base_path.trim();
-        if trimmed.is_empty() || trimmed == "/" {
-            return self;
-        }
-        if trimmed.starts_with('/') {
-            self.base_url.push_str(trimmed);
-        } else {
-            self.base_url.push('/');
-            self.base_url.push_str(trimmed);
-        }
-        self
-    }
-}

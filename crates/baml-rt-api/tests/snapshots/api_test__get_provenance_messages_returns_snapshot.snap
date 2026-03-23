@@ -9,10 +9,10 @@ expression: snapshot
     "rows": [
       {
         "activity_id": "message:ctx-100-1:msg-b",
+        "a2a_activity_anchor": "[prov_activity_anchor]",
         "message_text": "BAML validation failed: invalid response schema",
         "a2a_context_id": "ctx-100-1",
         "a2a_direction": "sent",
-        "a2a_activity_anchor": "[prov_activity_anchor]",
         "a2a_message_id": "msg-b",
         "a2a_role": "ROLE_AGENT",
         "prov_type": "a2a:Message",
@@ -35,10 +35,10 @@ expression: snapshot
       },
       {
         "activity_id": "message:ctx-100-1:msg-a",
+        "a2a_activity_anchor": "[prov_activity_anchor]",
         "message_text": "run analysis",
         "a2a_context_id": "ctx-100-1",
         "a2a_direction": "received",
-        "a2a_activity_anchor": "[prov_activity_anchor]",
         "a2a_message_id": "msg-a",
         "a2a_role": "ROLE_USER",
         "prov_type": "a2a:Message",
@@ -61,10 +61,10 @@ expression: snapshot
       },
       {
         "activity_id": "message:ctx-100-1:msg-c",
+        "a2a_activity_anchor": "[prov_activity_anchor]",
         "message_text": "authentication failed: 401 unauthorized invalid api key",
         "a2a_context_id": "ctx-100-1",
         "a2a_direction": "sent",
-        "a2a_activity_anchor": "[prov_activity_anchor]",
         "a2a_message_id": "msg-c",
         "a2a_role": "ROLE_AGENT",
         "prov_type": "a2a:Message",

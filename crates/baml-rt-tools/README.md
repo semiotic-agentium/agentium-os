@@ -156,6 +156,12 @@ Helpers: **`should_host_retry`**, **`should_host_retry_baml_error`**, **`a2a_ret
 
 Set **`BAML_TRACE_TOOL_SESSION`** for registry stderr traces (`tool_registry_trace` in `tools.rs`).
 
+## LLM JSON boundary (tool Send payloads)
+
+LLM-emitted JSON often uses **PascalCase** enum strings where Rust uses **`serde(rename_all = "snake_case")`**, which breaks **`untagged`** tool inputs unless the host tolerates both shapes. **Prompts help; serde aliases (or equivalent) are the durable fix.**
+
+Future work: centralised derive helpers, optional normalise pass, schema-driven contract tests. See **[`docs/llm_json_boundary.md`](docs/llm_json_boundary.md)**.
+
 ## See also
 
 - [`src/lib.rs`](src/lib.rs) — public exports.

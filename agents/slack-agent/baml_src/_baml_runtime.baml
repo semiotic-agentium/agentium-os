@@ -17,8 +17,8 @@
 
 // Shared standard planning types
 class StandardAgentPlanStep {
-  agent_package string
-  agent_instance_id string
+  agent_package string @description("Exact agent_package from discovery results (e.g. 'extrospection-agent'). Copy verbatim — do not truncate or reformat.")
+  agent_instance_id string @description("Agent instance ID, usually 'default'. Copy from discovery results.")
   sub_message string
 }
 
@@ -26,6 +26,7 @@ class StandardStructuredPlan {
   intent_description string
   objective string
   plan_steps StandardAgentPlanStep[]
+  citations string[]? @description("Optional checked refs (#N, @N) grounding this plan for observability; omit or use [] when none.")
 }
 
 class HistoryContext {
@@ -37,70 +38,94 @@ class HistoryContext {
   payload string?
 }
 
-/// FSM session context injected by the host at each step.
+/// Runtime session state injected by the step-executor loop.
+/// Do not construct manually — values come from the FSM.
 class SessionContext {
   contract_version string
   session_open bool
-  allowed_ops string[]
-  scope_ref string?
-  output_ref string?
-  evidence_ref string?
+  allowed_ops string[]? @description("Deprecated: per-phase step-executor functions narrow the output schema. Host may omit.")
+  selected_tool string?
+  status_token string?
 }
 
-/// Read dereferences a prior Send result by archive ref.
-/// grep -n / cat -n interface over archived output. Standard grep CLI flags apply.
-/// IMPORTANT: always supply a grep pattern for archives larger than ~50 lines.
-/// Bare cat on a large archive wastes context — grep to find relevant sections first.
+// Structured reply types for synthesis functions
+enum ReplyMediaType {
+  TextPlain @alias("text/plain")
+  TextMarkdown @alias("text/markdown")
+  ApplicationJson @alias("application/json")
+  TextCsv @alias("text/csv")
+}
+
+class TextPart {
+  type "text"
+  text string
+}
+
+class DataPart {
+  type "data"
+  data string @description("Serialised content (e.g. JSON string, CSV string).")
+  media_type ReplyMediaType @description("MIME type of the data field.")
+}
+
+type ReplyPart = TextPart | DataPart
+
+// Canonical synthesis + wire shape: same type in BAML and TypeScript (SessionResult.message, emitters).
+class StructuredReply {
+  parts ReplyPart[] @description("Ordered parts: start with TextPart (type \"text\") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type \"data\", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.")
+  citations string[] @description("History refs this reply was derived from. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence. Do not use # for archives or @ for history—these prefixes are different namespaces.")
+}
+
+/// Archive deref input for Read steps.
+/// archive_ref is required: use the @N ref from the Send result.
 class ArchiveReadInput {
-  archive_ref string @description("Archive ref from the preceding Send, e.g. '@1'.")
-  offset int? @description("Start line for pagination (0-based). To read the next page, use the offset value shown in the trailing footer of the previous read. Do NOT re-read from offset 0 with a larger limit.")
-  limit int? @description("Maximum lines to return (default 40). Increase explicitly if you need more — e.g. limit=100 for large result sets.")
-  grep string? @description("grep pattern with optional CLI flags: -i (case-insensitive), -E (extended regex). Examples: 'title', '-i agentium', \"-iE 'agent|platform'\". Use this instead of bare cat on large archives.")
+  archive_ref string @description("Required archive ref e.g. '@1'. Use the ref returned by the preceding Send step.")
+  offset int? @description("Line offset for pagination (0-based). Omit to start from the beginning.")
+  limit int? @description("Maximum lines to return. Omit for default page size.")
+  grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
 }
-
 // Domain types generated from #[derive(BamlType)]
 /// Which Slack API token to use.
 /// Auto selects bot for most calls, user token for search (required in most orgs).
 /// Bot forces the bot token (xoxb-...). User forces the user token (xoxp-...).
 enum SlackAuthPreference {
-  Auto
-  Bot
-  User
+  Auto @alias("auto")
+  Bot @alias("bot")
+  User @alias("user")
 }
 
 /// Slack conversation type.
 /// Im = direct message (1:1 DM). Mpim = multi-person DM (group DM).
 enum SlackConversationKind {
-  PublicChannel
-  PrivateChannel
-  Im @description("Direct message (1:1 DM).")
-  Mpim @description("Multi-person direct message (group DM).")
+  PublicChannel @alias("public_channel")
+  PrivateChannel @alias("private_channel")
+  Im @alias("im") @description("Direct message (1:1 DM).")
+  Mpim @alias("mpim") @description("Multi-person direct message (group DM).")
 }
 
 /// Message sort order. LatestFirst is the default (newest messages first).
 enum SlackHistoryOrder {
-  LatestFirst
-  OldestFirst
+  LatestFirst @alias("latest_first")
+  OldestFirst @alias("oldest_first")
 }
 
 /// Controls whether Slack user IDs in results are resolved to display names.
 /// ResolveUsers (default) fetches profiles for each unique user_id found.
 /// None skips resolution — user_id only, no display name lookup.
 enum SlackUserResolutionMode {
-  None
-  ResolveUsers
+  None @alias("none")
+  ResolveUsers @alias("resolve_users")
 }
 
 /// Sort field for search results. Score ranks by relevance; Timestamp by time.
 enum SlackSearchSort {
-  Score
-  Timestamp
+  Score @alias("score")
+  Timestamp @alias("timestamp")
 }
 
 /// Sort direction for search results.
 enum SlackSearchDirection {
-  Asc
-  Desc
+  Asc @alias("asc")
+  Desc @alias("desc")
 }
 
 /// List channels and DMs available to the token.
@@ -111,7 +136,7 @@ class ListConversationsInput {
   limit int? @description("Max conversations to return (1–1000, default 100).")
   exclude_archived bool? @description("Exclude archived conversations (default true).")
   include_num_members bool? @description("Include member count in results.")
-  auth SlackAuthPreference?
+  auth SlackAuthPreference? @description("Token: `auto`, `bot`, or `user` (snake_case). PascalCase also accepted.")
 }
 
 /// Retrieve messages from a channel's history.
@@ -124,9 +149,9 @@ class GetConversationHistoryInput {
   oldest string? @description("Return messages after this timestamp (Slack format: '1609459200.000001').")
   latest string? @description("Return messages before this timestamp (Slack format: '1609459200.000001').")
   inclusive bool? @description("Include messages exactly at oldest/latest boundaries.")
-  order SlackHistoryOrder?
-  resolve_users SlackUserResolutionMode?
-  auth SlackAuthPreference?
+  order SlackHistoryOrder? @description("Sort order: JSON string `latest_first` or `oldest_first` (snake_case). `LatestFirst` / `OldestFirst` also accepted.")
+  resolve_users SlackUserResolutionMode? @description("User enrichment: prefer snake_case `none` or `resolve_users`; PascalCase `None` / `ResolveUsers` also accepted.")
+  auth SlackAuthPreference? @description("Token: prefer snake_case `auto`, `bot`, or `user`; PascalCase also accepted.")
 }
 
 /// Retrieve all replies in a thread.
@@ -140,15 +165,15 @@ class GetThreadRepliesInput {
   oldest string? @description("Return replies after this timestamp (Slack format: '1609459200.000001').")
   latest string? @description("Return replies before this timestamp (Slack format: '1609459200.000001').")
   inclusive bool? @description("Include messages exactly at oldest/latest boundaries.")
-  order SlackHistoryOrder?
-  resolve_users SlackUserResolutionMode?
-  auth SlackAuthPreference?
+  order SlackHistoryOrder? @description("Sort order: JSON string `latest_first` or `oldest_first` (snake_case). `LatestFirst` / `OldestFirst` also accepted.")
+  resolve_users SlackUserResolutionMode? @description("User enrichment: `none` or `resolve_users` (snake_case). Prefer snake_case; PascalCase (`None`, `ResolveUsers`) is tolerated.")
+  auth SlackAuthPreference? @description("Token: `auto`, `bot`, or `user` (snake_case). PascalCase also accepted.")
 }
 
 /// Resolve a list of Slack user IDs to display names and profile data.
 class ResolveUsersInput {
   user_ids string[] @description("List of Slack user IDs to resolve (e.g. ['U01234ABCDE']).")
-  auth SlackAuthPreference?
+  auth SlackAuthPreference? @description("Token: `auto`, `bot`, or `user` (snake_case). PascalCase also accepted.")
 }
 
 /// Search Slack messages across all conversations.
@@ -158,9 +183,9 @@ class SearchMessagesInput {
   query string @description("Search query. Supports modifiers: in:#channel, from:@user, before:YYYY-MM-DD, after:YYYY-MM-DD. Example: 'deploy in:#eng-releases after:2026-01-01'.")
   count int? @description("Results per page (1–100, default 20).")
   page int? @description("Page number (1-based).")
-  sort SlackSearchSort?
-  direction SlackSearchDirection?
-  resolve_users SlackUserResolutionMode?
+  sort SlackSearchSort? @description("`score` or `timestamp` (snake_case). `Score` / `Timestamp` also accepted.")
+  direction SlackSearchDirection? @description("`asc` or `desc` (snake_case). `Asc` / `Desc` also accepted.")
+  resolve_users SlackUserResolutionMode? @description("`none` or `resolve_users` (snake_case). PascalCase also accepted.")
   auth SlackAuthPreference? @description("Token preference — most orgs require User for search.")
 }
 
@@ -229,7 +254,6 @@ class SlackOutput {
   sources SlackSource[]
   message string
 }
-
 // Domain types generated from JSON schemas
 class AgentCardDto {
   name string
@@ -346,7 +370,6 @@ class ToolDiscoveryRecordDto {
   eventSources string[]?
 }
 
-
 /// Tool card for support/slack: metadata for polymorphic Open selection.
 class SupportSlackToolCard {
   tool_name "support/slack"
@@ -364,6 +387,7 @@ class SupportSlackOpenStep {
 class SupportSlackSendStep {
   op "Send"
   input SlackInput @description("Payload for this step.")
+  citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
 }
 
 class SupportSlackReadStep {
@@ -383,6 +407,7 @@ type SupportSlackSessionStep = SupportSlackOpenStep | SupportSlackSendStep | Sup
 
 class SupportSlackSessionPlan {
   step SupportSlackSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again. Access: read.")
+  citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
 }
 
 /// Tool card for system/discover_agents: metadata for polymorphic Open selection.
@@ -403,6 +428,7 @@ class SystemDiscover_agentsOpenStep {
 class SystemDiscover_agentsSendStep {
   op "Send"
   input DiscoverAgentsSendInput @description("Payload for this step.")
+  citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
 }
 
 class SystemDiscover_agentsReadStep {
@@ -422,6 +448,7 @@ type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDi
 
 class SystemDiscover_agentsSessionPlan {
   step SystemDiscover_agentsSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
+  citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
 }
 
 /// Tool card for system/discover_tools: metadata for polymorphic Open selection.
@@ -442,6 +469,7 @@ class SystemDiscover_toolsOpenStep {
 class SystemDiscover_toolsSendStep {
   op "Send"
   input DiscoverToolsSendInput @description("Payload for this step.")
+  citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
 }
 
 class SystemDiscover_toolsReadStep {
@@ -461,6 +489,7 @@ type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDisc
 
 class SystemDiscover_toolsSessionPlan {
   step SystemDiscover_toolsSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
+  citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
 }
 
 /// Tool card for system/internal_a2a: metadata for polymorphic Open selection.
@@ -481,6 +510,7 @@ class SystemInternal_a2aOpenStep {
 class SystemInternal_a2aSendStep {
   op "Send"
   input InternalA2aSendInput @description("Conversational message payload. Set text to a non-empty string. Never null, never omit text.")
+  citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
 }
 
 class SystemInternal_a2aReadStep {
@@ -500,4 +530,162 @@ type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal
 
 class SystemInternal_a2aSessionPlan {
   step SystemInternal_a2aSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send (input.text MUST be non-empty); Send done → Finish or Read @N.")
+  citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
+}
+
+
+
+// ── builder: per-phase step executors (from IR) ──
+
+// Auto-generated per-phase step executor functions.
+// Each phase narrows the return type to only the legal FSM ops.
+
+/// Phase: select — open a tool session.
+function ChooseSlackAction__select(
+  goal: string,
+  step_description: string,
+  session_context: SessionContext
+) -> ReadOnlyResponse | SupportSlackOpenStep {
+
+  client DefaultClient
+  prompt #"[OPEN] Open a session with: support/slack.\n\nYou execute ONE retrieve step of a read-only Slack plan.
+Overall goal: {{ goal }}
+This step: {{ step_description }}
+
+Looping policy: each reply is EITHER one valid SupportSlackSessionPlan step OR ReadOnlyResponse when this step is done.
+
+Slack tool (support/slack) — polymorphic Send payloads (see schema):
+- ListConversationsInput: discover channel_ids / DMs
+- GetConversationHistoryInput: channel_id required; optional oldest, latest, limit, order
+- GetThreadRepliesInput: channel_id + thread_ts (root message ts)
+- SearchMessagesInput: query string (Slack search syntax); often needs auth User in restrictive orgs
+- ResolveUsersInput: user_ids to enrich names
+
+Send JSON rules: use snake_case for keys. For enum fields (resolve_users, order, auth, sort, direction, kinds[]),
+prefer snake_case string values per the schema (e.g. resolve_users, latest_first, auto). PascalCase enum
+labels (e.g. ResolveUsers) are accepted at the host but snake_case is canonical — match {{ ctx.output_format }}.
+
+FSM:
+- No session yet → Open support/slack
+- After Open → Send exactly one SlackInput for this sub-goal
+- After Send returns archive @N → Read @N with grep when output is large; paginate with offset from footer
+- When this step's data is gathered → Finish, or emit ReadOnlyResponse if nothing left to do
+- On unrecoverable error → Abort with a short reason
+
+CRITICAL — machine-parseable output (codegen may prefix the system line with [OPEN] for the first hop):
+- Reply with ONE JSON value only, matching the schema below. No XML, HTML-like tags, markdown fences, or prose outside JSON.
+- If the system line starts with [OPEN] (session not open yet): respond ONLY with {"op":"Open","tool_name":"support/slack"} for that hop — never Send/Read/Finish until after Open succeeds.
+- After the session is open, use SupportSlackSessionPlan steps (Send/Read/Finish/Abort) or ReadOnlyResponse as appropriate.
+
+Use conversation history for channel IDs, cursors, and thread_ts from earlier retrieve steps on this turn.
+
+{% if ctx.tags.conversation_history %}
+Session history:
+{% for msg in ctx.tags.conversation_history %}
+{{ msg.role }}: {{ msg.content }}
+{% endfor %}
+{% endif %}
+
+{{ ctx.output_format }}"#
+
+}
+
+/// Phase: act — send query to support/slack.
+function ChooseSlackAction__act__support_slack(
+  goal: string,
+  step_description: string,
+  session_context: SessionContext
+) -> SupportSlackSendStep {
+
+  client DefaultClient
+  prompt #"[SEND] A support/slack session is open. Emit Send with your query.\n\nYou execute ONE retrieve step of a read-only Slack plan.
+Overall goal: {{ goal }}
+This step: {{ step_description }}
+
+Looping policy: each reply is EITHER one valid SupportSlackSessionPlan step OR ReadOnlyResponse when this step is done.
+
+Slack tool (support/slack) — polymorphic Send payloads (see schema):
+- ListConversationsInput: discover channel_ids / DMs
+- GetConversationHistoryInput: channel_id required; optional oldest, latest, limit, order
+- GetThreadRepliesInput: channel_id + thread_ts (root message ts)
+- SearchMessagesInput: query string (Slack search syntax); often needs auth User in restrictive orgs
+- ResolveUsersInput: user_ids to enrich names
+
+Send JSON rules: use snake_case for keys. For enum fields (resolve_users, order, auth, sort, direction, kinds[]),
+prefer snake_case string values per the schema (e.g. resolve_users, latest_first, auto). PascalCase enum
+labels (e.g. ResolveUsers) are accepted at the host but snake_case is canonical — match {{ ctx.output_format }}.
+
+FSM:
+- No session yet → Open support/slack
+- After Open → Send exactly one SlackInput for this sub-goal
+- After Send returns archive @N → Read @N with grep when output is large; paginate with offset from footer
+- When this step's data is gathered → Finish, or emit ReadOnlyResponse if nothing left to do
+- On unrecoverable error → Abort with a short reason
+
+CRITICAL — machine-parseable output (codegen may prefix the system line with [OPEN] for the first hop):
+- Reply with ONE JSON value only, matching the schema below. No XML, HTML-like tags, markdown fences, or prose outside JSON.
+- If the system line starts with [OPEN] (session not open yet): respond ONLY with {"op":"Open","tool_name":"support/slack"} for that hop — never Send/Read/Finish until after Open succeeds.
+- After the session is open, use SupportSlackSessionPlan steps (Send/Read/Finish/Abort) or ReadOnlyResponse as appropriate.
+
+Use conversation history for channel IDs, cursors, and thread_ts from earlier retrieve steps on this turn.
+
+{% if ctx.tags.conversation_history %}
+Session history:
+{% for msg in ctx.tags.conversation_history %}
+{{ msg.role }}: {{ msg.content }}
+{% endfor %}
+{% endif %}
+
+{{ ctx.output_format }}"#
+
+}
+
+/// Phase: continue — read, send again, or finish support/slack.
+function ChooseSlackAction__continue__support_slack(
+  goal: string,
+  step_description: string,
+  session_context: SessionContext
+) -> SupportSlackSendStep | SupportSlackReadStep | SupportSlackFinishStep {
+
+  client DefaultClient
+  prompt #"[CONTINUE] support/slack result is archived.\nCheck session history:\n- See \"@N support/slack\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/slack\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/slack\" with no content yet → emit Read archive_ref=\"@N\"\n\nYou execute ONE retrieve step of a read-only Slack plan.
+Overall goal: {{ goal }}
+This step: {{ step_description }}
+
+Looping policy: each reply is EITHER one valid SupportSlackSessionPlan step OR ReadOnlyResponse when this step is done.
+
+Slack tool (support/slack) — polymorphic Send payloads (see schema):
+- ListConversationsInput: discover channel_ids / DMs
+- GetConversationHistoryInput: channel_id required; optional oldest, latest, limit, order
+- GetThreadRepliesInput: channel_id + thread_ts (root message ts)
+- SearchMessagesInput: query string (Slack search syntax); often needs auth User in restrictive orgs
+- ResolveUsersInput: user_ids to enrich names
+
+Send JSON rules: use snake_case for keys. For enum fields (resolve_users, order, auth, sort, direction, kinds[]),
+prefer snake_case string values per the schema (e.g. resolve_users, latest_first, auto). PascalCase enum
+labels (e.g. ResolveUsers) are accepted at the host but snake_case is canonical — match {{ ctx.output_format }}.
+
+FSM:
+- No session yet → Open support/slack
+- After Open → Send exactly one SlackInput for this sub-goal
+- After Send returns archive @N → Read @N with grep when output is large; paginate with offset from footer
+- When this step's data is gathered → Finish, or emit ReadOnlyResponse if nothing left to do
+- On unrecoverable error → Abort with a short reason
+
+CRITICAL — machine-parseable output (codegen may prefix the system line with [OPEN] for the first hop):
+- Reply with ONE JSON value only, matching the schema below. No XML, HTML-like tags, markdown fences, or prose outside JSON.
+- If the system line starts with [OPEN] (session not open yet): respond ONLY with {"op":"Open","tool_name":"support/slack"} for that hop — never Send/Read/Finish until after Open succeeds.
+- After the session is open, use SupportSlackSessionPlan steps (Send/Read/Finish/Abort) or ReadOnlyResponse as appropriate.
+
+Use conversation history for channel IDs, cursors, and thread_ts from earlier retrieve steps on this turn.
+
+{% if ctx.tags.conversation_history %}
+Session history:
+{% for msg in ctx.tags.conversation_history %}
+{{ msg.role }}: {{ msg.content }}
+{% endfor %}
+{% endif %}
+
+{{ ctx.output_format }}"#
+
 }

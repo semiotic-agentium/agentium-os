@@ -918,6 +918,77 @@ body {
   color: var(--text-secondary);
   margin-bottom: 8px;
 }
+.drift-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.drift-tab-help {
+  font-size: 12px;
+  opacity: 0.65;
+  cursor: help;
+}
+.drift-tab-lede {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin: -4px 0 10px;
+}
+.drift-grounding-summary {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.drift-grounding-compact {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin: 6px 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.drift-cite-explainer {
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.35;
+  margin: 0 0 8px;
+}
+.drift-cite-explainer code {
+  font-size: 9px;
+}
+.drift-inline-help,
+.section-title-hint {
+  font-size: 11px;
+  opacity: 0.65;
+  cursor: help;
+  flex-shrink: 0;
+}
+.cite-threshold-legend {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+.cite-threshold-legend summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.cite-threshold-list {
+  margin: 6px 0 0 1rem;
+  padding: 0;
+  line-height: 1.4;
+}
+.inspector-grounding-lede {
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.35;
+  margin: 0 0 8px;
+}
+.inspector-grounding-empty {
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin: 0;
+}
 .drift-scores-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

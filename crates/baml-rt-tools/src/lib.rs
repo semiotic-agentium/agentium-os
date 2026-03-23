@@ -1,4 +1,10 @@
 //! Tool registry and mapping utilities.
+//!
+//! ## LLM → tool input JSON
+//!
+//! Send-phase payloads are deserialized from LLM output; enum casing often disagrees with
+//! `serde(rename_all = "snake_case")`. See the design note **`docs/llm_json_boundary.md`**
+//! in this crate for generalisation ideas (derive helpers, normalise layer, contract tests).
 
 pub mod access;
 pub mod archive_read;

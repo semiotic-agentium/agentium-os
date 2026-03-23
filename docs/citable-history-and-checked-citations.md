@@ -20,6 +20,10 @@ on those citations, not just carrying human-readable “reason” strings.
 ## Wire and Rust surfaces (stable names)
 
 - **JS / execution session**: `intent.citations`, `start_step` / `complete_step` payload `citations` (arrays).
+- **Trust boundary:** agent / QuickJS code is treated as **potentially adversarial**. **Message UUID lineage**
+  for planning (`derived_from_message_ids` internally) is **not** accepted from agent JSON: `IntentSubmissionWire`
+  has no such field (a legacy `derivedFromMessageIds` key is ignored), and the host binds lineage **only** from
+  the Rust invocation scope (`emit_scope.message_id()` in `baml_registration.rs`) only.
 - **Core bus**: `EffectEvent::IntentResolved { citations, .. }`, `PlanStepStatusChanged { citations, .. }`.
 - **Provenance**: `ProvEventData::IntentResolved { citations, .. }`, `PlanStepStatusChanged { citations, .. }`;
   normalizer persists them as JSON arrays on entities where applicable.

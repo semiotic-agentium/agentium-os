@@ -137,7 +137,7 @@ pub fn parse_tool_name_and_class(name: &str) -> Result<(ToolName, String)> {
 ///
 /// # Example
 /// ```rust,no_run
-/// use baml_rt_tools::{BamlTool, Support};
+/// use baml_rt_tools::{BamlTool, DescribeAction, Support};
 /// use baml_rt_core::Result;
 /// use serde::{Deserialize, Serialize};
 /// use schemars::JsonSchema;
@@ -157,6 +157,12 @@ pub fn parse_tool_name_and_class(name: &str) -> Result<(ToolName, String)> {
 /// struct WeatherOutput {
 ///     temperature: String,
 ///     location: String,
+/// }
+///
+/// impl DescribeAction for WeatherInput {
+///     fn describe(&self) -> String {
+///         format!("weather for {}", self.location)
+///     }
 /// }
 ///
 /// #[async_trait]
@@ -779,6 +785,39 @@ pub enum SessionPolicy {
     Strict,
     /// Open → Send* → Read → Finish, multiple Sends allowed per session.
     MultiSend,
+}
+
+impl SessionPolicy {
+    /// Legal FSM op labels for the step-executor LLM at this session position.
+    ///
+    /// `last_status` is the **raw** `status` string from the previous hop's tool
+    /// result (e.g. `"open"`, `"sent"`, `"done"`). When `session_open` is false,
+    /// only `Open` is offered regardless of `last_status`.
+    pub fn step_executor_allowed_ops(
+        self,
+        session_open: bool,
+        last_status: Option<&str>,
+    ) -> Vec<&'static str> {
+        if !session_open {
+            return vec!["Open"];
+        }
+        match self {
+            SessionPolicy::Strict => match last_status {
+                Some("open") => vec!["Send"],
+                Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
+                Some("done") => vec!["Finish", "Read"],
+                Some("aborted") => vec!["Abort"],
+                _ => vec!["Read"],
+            },
+            SessionPolicy::MultiSend => match last_status {
+                Some("open") => vec!["Send"],
+                Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
+                Some("done") => vec!["Read", "Send", "Finish"],
+                Some("aborted") => vec!["Abort"],
+                _ => vec!["Read"],
+            },
+        }
+    }
 }
 
 /// Metadata describing a tool function
@@ -1785,7 +1824,7 @@ impl ToolRegistry {
     ///
     /// # Example
     /// ```rust,no_run
-    /// use baml_rt_tools::{ToolRegistry, BamlTool, Support};
+    /// use baml_rt_tools::{BamlTool, DescribeAction, Support, ToolRegistry};
     /// use baml_rt_core::Result;
     /// use serde::{Deserialize, Serialize};
     /// use schemars::JsonSchema;
@@ -1801,6 +1840,12 @@ impl ToolRegistry {
     /// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
     /// #[ts(export)]
     /// struct MyOutput {}
+    ///
+    /// impl DescribeAction for MyInput {
+    ///     fn describe(&self) -> String {
+    ///         "my_tool".to_string()
+    ///     }
+    /// }
     ///
     /// #[async_trait]
     /// impl BamlTool for MyTool {

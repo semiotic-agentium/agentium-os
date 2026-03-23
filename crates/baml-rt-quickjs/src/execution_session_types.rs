@@ -2,9 +2,15 @@
 //!
 //! Replaces ad-hoc JSON parsing with serde-tagged enums for strict contract enforcement.
 //!
-//! **Wire vs planning:** `*Wire` types are JSON DTOs for `__execution_session_invoke`. After host
-//! bookkeeping, map into [`crate::planning`] (`IntentSubmission`, `PlanSubmission`, …) for
-//! [`crate::planning::PlanningResolver`].
+//! **`IntentSubmissionWire` / `PlanSubmissionWire`:** JSON DTOs from `__execution_session_invoke`.
+//! The host maps wire → [`crate::planning::IntentSubmission`] / [`crate::planning::PlanSubmission`]
+//! (parsed supersession, etc.) before resolver and effects.
+//!
+//! **Trust boundary:** agent / QuickJS code is treated as **adversarial**. Sensitive identifiers such as
+//! execution-session **message UUID lineage** are **not** accepted from the wire; the host binds
+//! [`crate::planning::IntentSubmission`]'s `derived_from_message_ids` solely from the active Rust
+//! invocation scope (see `baml_registration`). A legacy `derivedFromMessageIds`
+//! JSON key, if present, is **ignored** by serde.
 
 use baml_rt_core::{
     Citation,
@@ -46,18 +52,12 @@ pub enum ExecutionSessionCommand {
     },
 }
 
-/// Wire JSON body for `submit_intent` (`camelCase` keys). Map to [`crate::planning::IntentSubmission`]
-/// after host lineage and supersession parsing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntentSubmissionWire {
     pub intent_id: IntentId,
     pub description: String,
-    /// Provenance lineage; when omitted (e.g. BAML omitted the field), the host fills from the
-    /// active invocation scope's message id in `__execution_session_invoke` (`submit_intent`).
-    #[serde(default)]
-    pub derived_from_message_ids: Vec<String>,
-    /// Citation refs (`#N` / `@N`) grounding the intent in ref-table history (BAML return).
+    /// Citation refs (`#N` / `@N`) for the history entries this intent was derived from.
     #[serde(default)]
     pub citations: Vec<Citation>,
     /// "replaced"|"replaced_by"|"replacedBy" -> ReplacedBy, "refined"|"refined_by"|"refinedBy" -> RefinedBy
@@ -65,8 +65,6 @@ pub struct IntentSubmissionWire {
     pub supersession: Option<String>,
 }
 
-/// Wire JSON body for `submit_plan`. Steps stay as typed rows here; the host builds a JSON array
-/// for [`crate::planning::PlanSubmission::steps`] before calling the resolver.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanSubmissionWire {
@@ -163,7 +161,6 @@ mod tests {
             intent: IntentSubmissionWire {
                 intent_id: intent_id(),
                 description: "Refined intent".to_string(),
-                derived_from_message_ids: vec![],
                 citations: vec![Citation::from_str("#3").unwrap()],
                 supersession: Some("replaced_by".to_string()),
             },
@@ -266,10 +263,6 @@ mod tests {
                 "{\"action\":\"submit_intent\",\"session_id\":\"s\",\"intent\":{\"intentId\":\"i\",\"description\":\"d\",\"citations\":[\"#1\"]}}",
             ),
             (
-                "submit_intent_omits_derived_from_message_ids",
-                r#"{"action":"submit_intent","session_id":"s","intent":{"intentId":"i","description":"d"}}"#,
-            ),
-            (
                 "submit_plan",
                 r#"{"action":"submit_plan","session_id":"s","plan":{"intentId":"i","planId":"p","steps":[]}}"#,
             ),
@@ -311,5 +304,18 @@ mod tests {
             serde_json::from_str::<ExecutionSessionCommand>(json).is_err(),
             "invalid citation must fail serde deserialize"
         );
+    }
+
+    /// Adversarial agent JSON may include `derivedFromMessageIds`; it must not deserialize into wire state.
+    #[test]
+    fn deserialize_submit_intent_ignores_derived_from_message_ids() {
+        let json = r##"{"action":"submit_intent","session_id":"s","intent":{"intentId":"i","description":"d","derivedFromMessageIds":["fake-uuid"],"citations":["#1"]}}"##;
+        let cmd: ExecutionSessionCommand = serde_json::from_str(json).expect("must parse");
+        let ExecutionSessionCommand::SubmitIntent { intent, .. } = cmd else {
+            panic!("expected SubmitIntent");
+        };
+        assert_eq!(intent.intent_id.as_str(), "i");
+        assert_eq!(intent.description, "d");
+        assert_eq!(intent.citations.len(), 1);
     }
 }

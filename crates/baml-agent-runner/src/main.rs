@@ -1627,6 +1627,61 @@ impl PlanningServiceImpl {
         summary
     }
 
+    /// `drift.citation` may use camelCase (current serde) or legacy snake_case keys.
+    fn parse_citation_details_from_drift(
+        drift_obj: &serde_json::Value,
+    ) -> Vec<baml_rt_api::CitationDetail> {
+        let Some(c) = drift_obj.get("citation") else {
+            return Vec::new();
+        };
+        let Some(arr) = c
+            .get("perCitation")
+            .or_else(|| c.get("per_citation"))
+            .and_then(|v| v.as_array())
+        else {
+            return Vec::new();
+        };
+        arr.iter()
+            .filter_map(|item| {
+                let raw = item
+                    .get("raw")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let n = item.get("n")?.as_u64()? as u32;
+                Some(baml_rt_api::CitationDetail {
+                    raw,
+                    n,
+                    is_history: item
+                        .get("isHistory")
+                        .or_else(|| item.get("is_history"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true),
+                    negated: item
+                        .get("negated")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    similarity: item
+                        .get("similarity")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0) as f32,
+                    activity_anchor: item
+                        .get("activityAnchor")
+                        .or_else(|| item.get("activity_anchor"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    content_preview: item
+                        .get("contentPreview")
+                        .or_else(|| item.get("content_preview"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                })
+            })
+            .collect()
+    }
+
     async fn aggregate_drift(
         store: &baml_rt_provenance::SurrealProvenanceStore,
         context_id: &str,
@@ -1689,46 +1744,7 @@ impl PlanningServiceImpl {
                 _ => {}
             }
 
-            // Deserialize resolved citations from drift.citation.perCitation.
-            // Each entry carries the full evidence text stored at scoring time.
-            let citations: Vec<baml_rt_api::CitationDetail> = drift_obj
-                .get("citation")
-                .and_then(|c| c.get("perCitation"))
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|item| {
-                            Some(baml_rt_api::CitationDetail {
-                                raw: item.get("raw")?.as_str()?.to_string(),
-                                n: item.get("n")?.as_u64()? as u32,
-                                is_history: item
-                                    .get("isHistory")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(true),
-                                negated: item
-                                    .get("negated")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false),
-                                similarity: item
-                                    .get("similarity")
-                                    .and_then(|v| v.as_f64())
-                                    .unwrap_or(0.0)
-                                    as f32,
-                                activity_anchor: item
-                                    .get("activityAnchor")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                                content_preview: item
-                                    .get("contentPreview")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string(),
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let citations = Self::parse_citation_details_from_drift(drift_obj);
 
             drifted_calls.push(baml_rt_api::DriftedCallDetail {
                 function_name: row

@@ -130,17 +130,16 @@ impl Phase {
     }
 }
 
-/// Build the session_context JSON injected into BAML function args.
-/// Which step fragment to emit is determined only by the per-phase BAML function (narrow return type).
+/// Build the `session_context` JSON injected into BAML function args.
+///
+/// FSM facts only — which operation is legal is expressed by the **per-phase**
+/// BAML function's narrowed return type (`ExecuteStep__select`, `__act__`, …),
+/// not by a redundant `allowed_ops` list in the prompt.
 fn build_session_context(phase: &Phase) -> Value {
-    let mut ctx = serde_json::json!({
+    serde_json::json!({
         "contract_version": "session_context",
         "session_open": phase.is_session_open(),
-    });
-    if let Some(tool) = phase.selected_tool() {
-        ctx["selected_tool"] = Value::String(tool.to_string());
-    }
-    ctx
+    })
 }
 
 /// Extract the status string from a tool execution result.

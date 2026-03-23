@@ -110,16 +110,17 @@ export interface A2aSessionClosed {
  * 2) submitPlan(...)
  * 3) execute and complete steps with strict evidence references
  *
- * Wire shape matches `IntentSubmissionWire` (baml-rt-quickjs `execution_session_types`).
- * `derivedFromMessageIds` may be omitted; the host/shim merge the active message id before planning.
+ * Agent code is an **adversarial** trust boundary: it must not supply sensitive identifiers (e.g. message UUIDs).
+ * The Rust host binds execution-session lineage from the **invocation scope only**; it is not part of this
+ * TypeScript contract and any `derivedFromMessageIds` in JSON is ignored.
  * `supersession` accepts replaced|refined and snake_case/camelCase aliases (see host parser).
  */
 export interface IntentSubmission {
     intentId: string;
     description: string;
-    derivedFromMessageIds?: string[];
+    /** Citation refs grounding this intent — pass the \`citations\` field from the BAML planning function's return value. #N = session history lines, @N = archive refs. Optional: the provenance system captures LLM-produced citations automatically from BAML return types. */
     citations?: string[];
-    supersession?: string;
+    supersession?: "replaced" | "refined";
 }
 export interface PlanStepSubmission {
     stepId: string;
@@ -127,12 +128,11 @@ export interface PlanStepSubmission {
     order: number;
     dependsOn?: string[];
 }
-/** Wire shape for submitPlan (`PlanSubmissionWire` in baml-rt-quickjs `execution_session_types`). */
 export interface PlanSubmission {
     intentId: string;
     planId: string;
     steps: PlanStepSubmission[];
-    supersession?: string;
+    supersession?: "replaced" | "refined";
 }
 export interface A2aExecutionSessionAwaitIntent {
     sessionId: string;
@@ -146,8 +146,9 @@ export interface A2aExecutionSessionAwaitPlan {
 }
 export interface A2aExecutionSessionExecutable {
     sessionId: string;
-    startStep(stepId: string, evidenceText: string): Promise<void>;
-    completeStep(stepId: string, evidenceText: string): Promise<void>;
+    /** citations are optional — LLM-produced citations are captured automatically by the provenance system from BAML return types. Only pass explicitly if the agent has out-of-band provenance to record. */
+    startStep(stepId: string, citations?: string[]): Promise<void>;
+    completeStep(stepId: string, citations?: string[]): Promise<void>;
     finish(): Promise<A2aSessionClosed>;
     abort(reason?: string): Promise<A2aSessionClosed>;
 }
@@ -162,18 +163,34 @@ export interface Message {
   text?(): string;
 }
 export type ChatMessage = Message;
+/** Media type for a structured reply data part. */
+export type ReplyMediaType = "text/plain" | "text/markdown" | "application/json" | "text/csv";
+/** A prose text part of a structured reply. */
+export interface TextPart { type: "text"; text: string; }
+/** A structured data part of a structured reply (e.g. JSON, CSV). */
+export interface DataPart { type: "data"; data: string; media_type: ReplyMediaType; }
+/** One part of a structured reply: text or typed data. */
+export type ReplyPart = TextPart | DataPart;
+/**
+ * Structured reply from a synthesis function.
+ * Contains ordered reply parts and citations referencing the history entries (#N, @N) this reply was derived from.
+ */
+export interface StructuredReply {
+  parts: ReplyPart[];
+  citations: string[];
+}
 /**
  * Result shape for session.run() callback. Return { message } on success (runtime emits message and completed);
  * return { error } on failure (runtime emits failed with that error). No need to call emit helpers yourself.
  */
-export type SessionResult = { message: string } | { error: string };
+export type SessionResult = { message: string } | { message: StructuredReply } | { error: string };
 /**
  * Emitter passed into run(emit => ...) for intermediate emissions (working message, artifact, status).
  * Use when you need to stream artifacts or status before returning the final SessionResult.
  */
 export interface SessionEmitter {
-  /** Emit a working message (task state remains WORKING). */
-  message(text: string): void;
+  /** Emit a working message (task state remains WORKING). Accepts plain string or StructuredReply. */
+  message(content: string | StructuredReply): void;
   /** Emit an artifact chunk (append/lastChunk optional). */
   artifact(artifact: JsonValue, append?: boolean, lastChunk?: boolean): void;
   /** Emit a status transition (e.g. TASK_STATE_WORKING). */
@@ -298,8 +315,4 @@ export interface ToolFailure {
     kind: ToolFailureKind;
     message: string;
     retryable: boolean;
-    disposition?: string;
-    code?: string;
-    hint?: string;
-    retry_after_ms?: number;
 }

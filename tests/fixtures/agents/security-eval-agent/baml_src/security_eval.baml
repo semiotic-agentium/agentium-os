@@ -52,6 +52,7 @@ class ReportingPlan {
 function ExecuteStep(
   objective: string,
   step_description: string,
+  session_context: SessionContext?,
 ) -> CrmStepResult | SupportCrmSessionPlan | SupportEmailSessionPlan {
   client DefaultClient
   prompt #"
@@ -71,16 +72,12 @@ function ExecuteStep(
     {% endfor %}
     {% endif %}
 
-    CURRENT SESSION STATE — use allowed_ops to determine what to do now:
-    Allowed operations: {{ session_context.allowed_ops }}
+    This invocation uses a narrowed output schema: only the operations listed
+    in ctx.output_format / the response schema are valid for this hop. Emit
+    exactly one JSON object matching that schema — do not invent alternate
+    step shapes.
 
-    - If allowed_ops contains only "Open" → you have not yet opened a tool
-      session for this step. Open the appropriate tool to begin your work.
-    - If allowed_ops contains "Send" → a session is open, send your query.
-    - If allowed_ops contains "Read" → data is ready, read the archive ref.
-    - If allowed_ops contains "Finish" → close the session.
-
-    You MUST only emit operations that appear in allowed_ops.
+    Session open (host FSM): {{ session_context.session_open }}
 
     Respond with a single JSON object matching the output schema below.
     Follow ctx.output_format exactly — do not add wrapper fields like "step".

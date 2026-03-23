@@ -309,13 +309,11 @@ impl TypeGenerator for RuntimeTypeGenerator {
                 generated_baml.push_str(&coord_baml);
             }
 
-
             let prelude_path = baml_src_build.join(GENERATED_BAML_PRELUDE_FILE);
             if let Some(parent) = prelude_path.parent() {
                 fs::create_dir_all(parent).map_err(BamlBuilderError::Io)?;
             }
             atomic_write(&prelude_path, generated_baml.as_bytes())?;
-
 
             // Resolve tool metadata once — used by both polymorphic type generation
             // and per-phase function generation.

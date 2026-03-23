@@ -49,8 +49,14 @@ fn backoff_delay(retries: usize) -> std::time::Duration {
 #[serde(rename_all = "snake_case")]
 pub enum SlackAuthPreference {
     #[default]
+    #[serde(alias = "Auto")]
+    #[baml(alias = "auto")]
     Auto,
+    #[serde(alias = "Bot")]
+    #[baml(alias = "bot")]
     Bot,
+    #[serde(alias = "User")]
+    #[baml(alias = "user")]
     User,
 }
 
@@ -60,11 +66,19 @@ pub enum SlackAuthPreference {
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackConversationKind {
+    #[serde(alias = "PublicChannel")]
+    #[baml(alias = "public_channel")]
     PublicChannel,
+    #[serde(alias = "PrivateChannel")]
+    #[baml(alias = "private_channel")]
     PrivateChannel,
     #[baml(description = "Direct message (1:1 DM).")]
+    #[serde(alias = "Im")]
+    #[baml(alias = "im")]
     Im,
     #[baml(description = "Multi-person direct message (group DM).")]
+    #[serde(alias = "Mpim")]
+    #[baml(alias = "mpim")]
     Mpim,
 }
 
@@ -85,19 +99,30 @@ impl SlackConversationKind {
 #[serde(rename_all = "snake_case")]
 pub enum SlackHistoryOrder {
     #[default]
+    #[serde(alias = "LatestFirst")]
+    #[baml(alias = "latest_first")]
     LatestFirst,
+    #[serde(alias = "OldestFirst")]
+    #[baml(alias = "oldest_first")]
     OldestFirst,
 }
 
 /// Controls whether Slack user IDs in results are resolved to display names.
 /// ResolveUsers (default) fetches profiles for each unique user_id found.
 /// None skips resolution — user_id only, no display name lookup.
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, BamlType,
+)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackUserResolutionMode {
+    /// LLMs often emit TypeScript-style `None` / `ResolveUsers`; accept those at the JSON boundary.
+    #[serde(alias = "None")]
+    #[baml(alias = "none")]
     None,
     #[default]
+    #[serde(alias = "ResolveUsers")]
+    #[baml(alias = "resolve_users")]
     ResolveUsers,
 }
 
@@ -107,7 +132,11 @@ pub enum SlackUserResolutionMode {
 #[serde(rename_all = "snake_case")]
 pub enum SlackSearchSort {
     #[default]
+    #[serde(alias = "Score")]
+    #[baml(alias = "score")]
     Score,
+    #[serde(alias = "Timestamp")]
+    #[baml(alias = "timestamp")]
     Timestamp,
 }
 
@@ -116,8 +145,12 @@ pub enum SlackSearchSort {
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackSearchDirection {
+    #[serde(alias = "Asc")]
+    #[baml(alias = "asc")]
     Asc,
     #[default]
+    #[serde(alias = "Desc")]
+    #[baml(alias = "desc")]
     Desc,
 }
 
@@ -137,6 +170,9 @@ pub struct ListConversationsInput {
     pub exclude_archived: Option<bool>,
     #[baml(description = "Include member count in results.")]
     pub include_num_members: Option<bool>,
+    #[baml(
+        description = "Token: `auto`, `bot`, or `user` (snake_case). PascalCase also accepted."
+    )]
     pub auth: Option<SlackAuthPreference>,
 }
 
@@ -163,8 +199,17 @@ pub struct GetConversationHistoryInput {
     pub latest: Option<String>,
     #[baml(description = "Include messages exactly at oldest/latest boundaries.")]
     pub inclusive: Option<bool>,
+    #[baml(
+        description = "Sort order: JSON string `latest_first` or `oldest_first` (snake_case). `LatestFirst` / `OldestFirst` also accepted."
+    )]
     pub order: Option<SlackHistoryOrder>,
+    #[baml(
+        description = "User enrichment: prefer snake_case `none` or `resolve_users`; PascalCase `None` / `ResolveUsers` also accepted."
+    )]
     pub resolve_users: Option<SlackUserResolutionMode>,
+    #[baml(
+        description = "Token: prefer snake_case `auto`, `bot`, or `user`; PascalCase also accepted."
+    )]
     pub auth: Option<SlackAuthPreference>,
 }
 
@@ -197,8 +242,17 @@ pub struct GetThreadRepliesInput {
     pub latest: Option<String>,
     #[baml(description = "Include messages exactly at oldest/latest boundaries.")]
     pub inclusive: Option<bool>,
+    #[baml(
+        description = "Sort order: JSON string `latest_first` or `oldest_first` (snake_case). `LatestFirst` / `OldestFirst` also accepted."
+    )]
     pub order: Option<SlackHistoryOrder>,
+    #[baml(
+        description = "User enrichment: `none` or `resolve_users` (snake_case). Prefer snake_case; PascalCase (`None`, `ResolveUsers`) is tolerated."
+    )]
     pub resolve_users: Option<SlackUserResolutionMode>,
+    #[baml(
+        description = "Token: `auto`, `bot`, or `user` (snake_case). PascalCase also accepted."
+    )]
     pub auth: Option<SlackAuthPreference>,
 }
 
@@ -209,6 +263,9 @@ pub struct GetThreadRepliesInput {
 pub struct ResolveUsersInput {
     #[baml(description = "List of Slack user IDs to resolve (e.g. ['U01234ABCDE']).")]
     pub user_ids: Vec<String>,
+    #[baml(
+        description = "Token: `auto`, `bot`, or `user` (snake_case). PascalCase also accepted."
+    )]
     pub auth: Option<SlackAuthPreference>,
 }
 
@@ -227,8 +284,13 @@ pub struct SearchMessagesInput {
     pub count: Option<u16>,
     #[baml(description = "Page number (1-based).")]
     pub page: Option<u16>,
+    #[baml(
+        description = "`score` or `timestamp` (snake_case). `Score` / `Timestamp` also accepted."
+    )]
     pub sort: Option<SlackSearchSort>,
+    #[baml(description = "`asc` or `desc` (snake_case). `Asc` / `Desc` also accepted.")]
     pub direction: Option<SlackSearchDirection>,
+    #[baml(description = "`none` or `resolve_users` (snake_case). PascalCase also accepted.")]
     pub resolve_users: Option<SlackUserResolutionMode>,
     #[baml(description = "Token preference — most orgs require User for search.")]
     pub auth: Option<SlackAuthPreference>,
@@ -1538,7 +1600,8 @@ mod tests {
     use super::{
         BASE_URL, GetConversationHistoryInput, ListConversationsInput, RetryAfter,
         SlackApiErrorClass, SlackClient, SlackConversationKind, SlackInput, SlackTool,
-        backoff_delay, map_slack_api_error, should_warn_on_insecure_base_url,
+        SlackUserResolutionMode, backoff_delay, map_slack_api_error,
+        should_warn_on_insecure_base_url,
     };
 
     fn slack_env_lock() -> &'static tokio::sync::Mutex<()> {
@@ -1571,6 +1634,22 @@ mod tests {
             SlackClient::parse_retry_after(None),
             RetryAfter::Missing
         ));
+    }
+
+    /// LLMs often emit TypeScript / BAML-style PascalCase for enum JSON values; serde must accept it.
+    #[test]
+    fn slack_input_accepts_pascal_case_resolve_users_on_get_thread_replies() {
+        let raw = r#"{"channel_id":"C12345678","thread_ts":"1735689600.000000","inclusive":true,"limit":1000,"resolve_users":"ResolveUsers"}"#;
+        let parsed: SlackInput =
+            serde_json::from_str(raw).expect("untagged SlackInput should deserialize");
+        match parsed {
+            SlackInput::GetThreadReplies(t) => {
+                assert_eq!(t.channel_id, "C12345678");
+                assert_eq!(t.thread_ts, "1735689600.000000");
+                assert_eq!(t.resolve_users, Some(SlackUserResolutionMode::ResolveUsers));
+            }
+            other => panic!("expected GetThreadReplies, got {other:?}"),
+        }
     }
 
     #[tokio::test]

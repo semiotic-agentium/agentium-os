@@ -1165,7 +1165,7 @@ async fn test_runtime_canonical_planning_uses_custom_resolver_and_dynamic_contex
         .emit_planning_intent_resolved(
             &scope,
             IntentSubmission {
-                intent_id: IntentId::from("intent-raw"),
+                intent_id: IntentId::from("intent-raw".to_string()),
                 description: "raw description".to_string(),
                 citations: vec!["#1".parse::<baml_rt_core::Citation>().unwrap()],
                 derived_from_message_ids: vec![message_id.as_str().to_string()],

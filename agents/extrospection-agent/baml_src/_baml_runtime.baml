@@ -26,6 +26,7 @@ class StandardStructuredPlan {
   intent_description string
   objective string
   plan_steps StandardAgentPlanStep[]
+  citations string[]? @description("Optional checked refs (#N, @N) grounding this plan for observability; omit or use [] when none.")
 }
 
 class HistoryContext {
@@ -42,7 +43,7 @@ class HistoryContext {
 class SessionContext {
   contract_version string
   session_open bool
-  allowed_ops string[]
+  allowed_ops string[]? @description("Deprecated: per-phase step-executor functions narrow the output schema. Host may omit.")
   selected_tool string?
   status_token string?
 }
@@ -70,8 +71,7 @@ type ReplyPart = TextPart | DataPart
 
 // Canonical synthesis + wire shape: same type in BAML and TypeScript (SessionResult.message, emitters).
 class StructuredReply {
-  parts ReplyPart[] @description("Ordered parts: start with a TextPart (type \"text\") for the main user-visible Markdown; optionally append a DataPart (type \"data\", media_type application/json) whose data field is a JSON string for machine-readable UI payloads.")
-  metadata string? @description("Optional opaque metadata string (e.g. JSON). Usually omit.")
+  parts ReplyPart[] @description("Ordered parts: start with TextPart (type \"text\") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type \"data\", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.")
   citations string[] @description("History refs this reply was derived from. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence. Do not use # for archives or @ for history—these prefixes are different namespaces.")
 }
 
@@ -83,7 +83,6 @@ class ArchiveReadInput {
   limit int? @description("Maximum lines to return. Omit for default page size.")
   grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
 }
-
 // Domain types generated from JSON schemas
 class AgentCardDto {
   name string

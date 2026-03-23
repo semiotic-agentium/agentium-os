@@ -306,11 +306,10 @@ impl BamlExecutor {
         .await?;
         if let Some(ref registry) = interceptor_registry {
             // `session_context` is a runtime-injected arg for step-executor functions.
-            // The BAML template for phase functions uses `{{ session_context.allowed_ops }}`
-            // which must be renderable during the build_request probe inside
-            // intercept_llm_call_pre_execution.  Pass the full params including
-            // session_context so the template renders; the actual call_function also
-            // receives the full params with the real allowed_ops populated.
+            // Phase prompts may reference FSM facts (e.g. `session_context.session_open`);
+            // legal ops come from narrowed per-phase return types, not `allowed_ops`.
+            // Pass the full params (including session_context) into the interceptor probe
+            // so templates match the real `call_function` invocation.
             let interceptor_params = params.clone();
             match intercept_llm_call_pre_execution(
                 &self.runtime,

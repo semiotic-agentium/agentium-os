@@ -80,13 +80,25 @@ pub fn render_generated_session_baml_from_ir(
 
         let base_args = build_args_block_from_ir(&func.elem().inputs);
         let args_block = {
-            let inner = base_args.trim();
-            let before_close = inner.strip_suffix(')').unwrap_or(inner);
-            let trimmed = before_close.trim_end();
-            if trimmed == "(" {
-                "(\n  session_context: SessionContext\n)".to_string()
+            // Host injects `session_context` for step executors. If the hand-written function
+            // already declares it (e.g. `SessionContext?` for polymorphic prompts), do not append
+            // a second parameter — duplicate names break BAML compile.
+            let has_session_context = func
+                .elem()
+                .inputs
+                .iter()
+                .any(|(name, _)| name == "session_context");
+            if has_session_context {
+                base_args
             } else {
-                format!("{trimmed},\n  session_context: SessionContext\n)")
+                let inner = base_args.trim();
+                let before_close = inner.strip_suffix(')').unwrap_or(inner);
+                let trimmed = before_close.trim_end();
+                if trimmed == "(" {
+                    "(\n  session_context: SessionContext\n)".to_string()
+                } else {
+                    format!("{trimmed},\n  session_context: SessionContext\n)")
+                }
             }
         };
 

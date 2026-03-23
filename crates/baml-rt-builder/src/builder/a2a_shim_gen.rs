@@ -294,29 +294,14 @@ pub fn render_a2a_shim() -> Result<String> {
     var api = {
       sessionId: sessionId,
       submitIntent: async function(intent) {
-        // Planning rails require provenance; BAML/LLM outputs may omit derivedFromMessageIds.
-        // Normalize here (chat run sets __a2a_current_message_id) so the host JSON always
-        // carries lineage when we have a message id; Rust still backfills if both are empty.
+        // Message UUID lineage is host-bound in Rust from the invocation scope; agent/JS is untrusted.
         if (intent == null || typeof intent !== "object") {
           throw new Error("submitIntent: intent must be an object");
-        }
-        var normalized = {};
-        for (var key in intent) {
-          if (Object.prototype.hasOwnProperty.call(intent, key)) {
-            normalized[key] = intent[key];
-          }
-        }
-        var lineage = normalized.derivedFromMessageIds;
-        if (!Array.isArray(lineage) || lineage.length === 0) {
-          var mid = globalThis.__a2a_current_message_id;
-          if (typeof mid === "string" && mid.trim().length > 0) {
-            normalized.derivedFromMessageIds = [mid];
-          }
         }
         await invokeExecutionSession({
           action: "submit_intent",
           session_id: sessionId,
-          intent: normalized
+          intent: intent
         });
         return this;
       },

@@ -9,9 +9,10 @@
 //!
 //! Submissions carry **`citations: Vec<Citation>`** ([`baml_rt_core::Citation`]): validated ref-table
 //! strings (`#N` session history, `@N` / `@N:L` archives). They ground intent and step transitions for
-//! provenance and drift checks. **`derived_from_message_ids`** retains execution-session **message UUID
-//! lineage** when the client omits explicit citations; the host fills at least one id from the active
-//! scope. Provenance `IntentResolved` effects carry **citations** only (see `baml_rt_core::bus`).
+//! provenance and drift checks. **`derived_from_message_ids`** is **host bookkeeping** (execution-session
+//! message UUID lineage): bound **only** from the Rust invocation scope — agent / QuickJS input is adversarial and
+//! must not control sensitive ids (the wire omits this field; legacy JSON keys are ignored). Provenance
+//! `IntentResolved` effects carry **citations** only (see `baml_rt_core::bus`).
 //!
 //! See **`docs/citable-history-and-checked-citations.md`**.
 
@@ -38,7 +39,7 @@ pub struct IntentSubmission {
     pub intent_id: IntentId,
     pub description: String,
     pub citations: Vec<Citation>,
-    /// Host-filled message UUIDs when the client omitted explicit citations (execution-session lineage).
+    /// Host bookkeeping: execution-session message UUID lineage (host/shim wire field; merged from scope when omitted).
     pub derived_from_message_ids: Vec<String>,
     pub supersession: Option<PlanningSupersessionKind>,
 }
@@ -108,7 +109,7 @@ impl PlanningResolver for DefaultPlanningResolver {
         }
         if submission.citations.is_empty() && submission.derived_from_message_ids.is_empty() {
             return Err(BamlRtError::InvalidArgument(
-                "intent must include citations and/or derived_from_message_ids (host fills message id when omitted)"
+                "intent must include citations and/or host-bound derived_from_message_ids (message id from invocation scope)"
                     .to_string(),
             ));
         }

@@ -7,6 +7,7 @@ publish = false
 description = "Shared ClickUp API client for tools and daemons"
 
 [dependencies]
+baml-rt-llm-config = { path = "../../baml-rt-llm-config" }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

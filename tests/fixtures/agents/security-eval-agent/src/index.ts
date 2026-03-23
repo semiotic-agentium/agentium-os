@@ -72,14 +72,14 @@ __chat_register({
         const step = steps[idx];
         const stepId = step.step_id || `step-${idx}`;
 
-        await executable.startStep(stepId, `Executing: ${step.description}`);
+        await executable.startStep(stepId, ["#1"]);
 
         lastRun = await runGeneratedStepExecutor("ExecuteStep", {
           objective: plan.objective,
           step_description: step.description,
         });
 
-        await executable.completeStep(stepId, `Completed step ${idx + 1}.`);
+        await executable.completeStep(stepId, ["#1"]);
       }
 
       await executable.finish();

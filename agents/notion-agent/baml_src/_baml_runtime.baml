@@ -17,8 +17,8 @@
 
 // Shared standard planning types
 class StandardAgentPlanStep {
-  agent_package string
-  agent_instance_id string
+  agent_package string @description("Exact agent_package from discovery results (e.g. 'extrospection-agent'). Copy verbatim — do not truncate or reformat.")
+  agent_instance_id string @description("Agent instance ID, usually 'default'. Copy from discovery results.")
   sub_message string
 }
 
@@ -26,6 +26,7 @@ class StandardStructuredPlan {
   intent_description string
   objective string
   plan_steps StandardAgentPlanStep[]
+  citations string[]? @description("Optional checked refs (#N, @N) grounding this plan for observability; omit or use [] when none.")
 }
 
 class HistoryContext {
@@ -37,27 +38,51 @@ class HistoryContext {
   payload string?
 }
 
-/// FSM session context injected by the host at each step.
+/// Runtime session state injected by the step-executor loop.
+/// Do not construct manually — values come from the FSM.
 class SessionContext {
   contract_version string
   session_open bool
-  allowed_ops string[]
-  scope_ref string?
-  output_ref string?
-  evidence_ref string?
+  allowed_ops string[]? @description("Deprecated: per-phase step-executor functions narrow the output schema. Host may omit.")
+  selected_tool string?
+  status_token string?
 }
 
-/// Read dereferences a prior Send result by archive ref.
-/// grep -n / cat -n interface over archived output. Standard grep CLI flags apply.
-/// IMPORTANT: always supply a grep pattern for archives larger than ~50 lines.
-/// Bare cat on a large archive wastes context — grep to find relevant sections first.
+// Structured reply types for synthesis functions
+enum ReplyMediaType {
+  TextPlain @alias("text/plain")
+  TextMarkdown @alias("text/markdown")
+  ApplicationJson @alias("application/json")
+  TextCsv @alias("text/csv")
+}
+
+class TextPart {
+  type "text"
+  text string
+}
+
+class DataPart {
+  type "data"
+  data string @description("Serialised content (e.g. JSON string, CSV string).")
+  media_type ReplyMediaType @description("MIME type of the data field.")
+}
+
+type ReplyPart = TextPart | DataPart
+
+// Canonical synthesis + wire shape: same type in BAML and TypeScript (SessionResult.message, emitters).
+class StructuredReply {
+  parts ReplyPart[] @description("Ordered parts: start with TextPart (type \"text\") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type \"data\", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.")
+  citations string[] @description("History refs this reply was derived from. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence. Do not use # for archives or @ for history—these prefixes are different namespaces.")
+}
+
+/// Archive deref input for Read steps.
+/// archive_ref is required: use the @N ref from the Send result.
 class ArchiveReadInput {
-  archive_ref string @description("Archive ref from the preceding Send, e.g. '@1'.")
-  offset int? @description("Start line for pagination (0-based). To read the next page, use the offset value shown in the trailing footer of the previous read. Do NOT re-read from offset 0 with a larger limit.")
-  limit int? @description("Maximum lines to return (default 40). Increase explicitly if you need more — e.g. limit=100 for large result sets.")
-  grep string? @description("grep pattern with optional CLI flags: -i (case-insensitive), -E (extended regex). Examples: 'title', '-i agentium', \"-iE 'agent|platform'\". Use this instead of bare cat on large archives.")
+  archive_ref string @description("Required archive ref e.g. '@1'. Use the ref returned by the preceding Send step.")
+  offset int? @description("Line offset for pagination (0-based). Omit to start from the beginning.")
+  limit int? @description("Maximum lines to return. Omit for default page size.")
+  grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
 }
-
 // Domain types generated from #[derive(BamlType)]
 /// Search Notion pages by keyword. Returns a list of page titles and IDs.
 /// Does NOT return page content — use GetPageBlocks to read actual content.
@@ -127,7 +152,6 @@ class NotionOutput {
   sources NotionSource[]
   message string
 }
-
 // Domain types generated from JSON schemas
 class AgentCardDto {
   name string
@@ -244,7 +268,6 @@ class ToolDiscoveryRecordDto {
   eventSources string[]?
 }
 
-
 /// Tool card for support/notion: metadata for polymorphic Open selection.
 class SupportNotionToolCard {
   tool_name "support/notion"
@@ -262,6 +285,7 @@ class SupportNotionOpenStep {
 class SupportNotionSendStep {
   op "Send"
   input NotionInput @description("Payload for this step.")
+  citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
 }
 
 class SupportNotionReadStep {
@@ -281,6 +305,7 @@ type SupportNotionSessionStep = SupportNotionOpenStep | SupportNotionSendStep | 
 
 class SupportNotionSessionPlan {
   step SupportNotionSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again. Access: read.")
+  citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
 }
 
 /// Tool card for system/discover_agents: metadata for polymorphic Open selection.
@@ -301,6 +326,7 @@ class SystemDiscover_agentsOpenStep {
 class SystemDiscover_agentsSendStep {
   op "Send"
   input DiscoverAgentsSendInput @description("Payload for this step.")
+  citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
 }
 
 class SystemDiscover_agentsReadStep {
@@ -320,6 +346,7 @@ type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDi
 
 class SystemDiscover_agentsSessionPlan {
   step SystemDiscover_agentsSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
+  citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
 }
 
 /// Tool card for system/discover_tools: metadata for polymorphic Open selection.
@@ -340,6 +367,7 @@ class SystemDiscover_toolsOpenStep {
 class SystemDiscover_toolsSendStep {
   op "Send"
   input DiscoverToolsSendInput @description("Payload for this step.")
+  citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
 }
 
 class SystemDiscover_toolsReadStep {
@@ -359,6 +387,7 @@ type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDisc
 
 class SystemDiscover_toolsSessionPlan {
   step SystemDiscover_toolsSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
+  citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
 }
 
 /// Tool card for system/internal_a2a: metadata for polymorphic Open selection.
@@ -379,6 +408,7 @@ class SystemInternal_a2aOpenStep {
 class SystemInternal_a2aSendStep {
   op "Send"
   input InternalA2aSendInput @description("Conversational message payload. Set text to a non-empty string. Never null, never omit text.")
+  citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
 }
 
 class SystemInternal_a2aReadStep {
@@ -398,4 +428,81 @@ type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal
 
 class SystemInternal_a2aSessionPlan {
   step SystemInternal_a2aSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send (input.text MUST be non-empty); Send done → Finish or Read @N.")
+  citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
+}
+
+
+
+// ── builder: per-phase step executors (from IR) ──
+
+// Auto-generated per-phase step executor functions.
+// Each phase narrows the return type to only the legal FSM ops.
+
+/// Phase: select — open a tool session.
+function ChooseNotionAction__select(
+  goal: string,
+  step_description: string,
+  session_context: SessionContext
+) -> SupportNotionOpenStep {
+
+  client OpenRouterGPT
+  prompt #"[OPEN] Open a session with: support/notion.\n\nYou are executing one step of a read-only Notion retrieval plan.
+Overall goal: {{ goal }}
+This step: {{ step_description }}
+
+{% if ctx.tags.conversation_history %}
+Session history:
+{% for msg in ctx.tags.conversation_history %}
+{{ msg.role }}: {{ msg.content }}
+{% endfor %}
+{% endif %}
+
+{{ ctx.output_format }}"#
+
+}
+
+/// Phase: act — send query to support/notion.
+function ChooseNotionAction__act__support_notion(
+  goal: string,
+  step_description: string,
+  session_context: SessionContext
+) -> SupportNotionSendStep {
+
+  client OpenRouterGPT
+  prompt #"[SEND] A support/notion session is open. Emit Send with your query.\n\nYou are executing one step of a read-only Notion retrieval plan.
+Overall goal: {{ goal }}
+This step: {{ step_description }}
+
+{% if ctx.tags.conversation_history %}
+Session history:
+{% for msg in ctx.tags.conversation_history %}
+{{ msg.role }}: {{ msg.content }}
+{% endfor %}
+{% endif %}
+
+{{ ctx.output_format }}"#
+
+}
+
+/// Phase: continue — read, send again, or finish support/notion.
+function ChooseNotionAction__continue__support_notion(
+  goal: string,
+  step_description: string,
+  session_context: SessionContext
+) -> SupportNotionSendStep | SupportNotionReadStep | SupportNotionFinishStep {
+
+  client OpenRouterGPT
+  prompt #"[CONTINUE] support/notion result is archived.\nCheck session history:\n- See \"@N support/notion\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/notion\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/notion\" with no content yet → emit Read archive_ref=\"@N\"\n\nYou are executing one step of a read-only Notion retrieval plan.
+Overall goal: {{ goal }}
+This step: {{ step_description }}
+
+{% if ctx.tags.conversation_history %}
+Session history:
+{% for msg in ctx.tags.conversation_history %}
+{{ msg.role }}: {{ msg.content }}
+{% endfor %}
+{% endif %}
+
+{{ ctx.output_format }}"#
+
 }

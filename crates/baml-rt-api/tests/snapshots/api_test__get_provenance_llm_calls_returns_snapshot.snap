@@ -9,6 +9,7 @@ expression: snapshot
     "rows": [
       {
         "activity_id": "llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+        "a2a_activity_anchor": "[prov_activity_anchor]",
         "a2a_activity_outcome": "Success",
         "a2a_agent_id": "[uuid]",
         "a2a_client": "openai",
@@ -19,7 +20,6 @@ expression: snapshot
         "a2a_drift_severity": "warn",
         "a2a_drift_warn_min_score": 0.5,
         "a2a_duration_ms": 181,
-        "a2a_activity_anchor": "[prov_activity_anchor]",
         "a2a_function_name": "SummarizePrompt",
         "a2a_intent_text_preview": "Create a task titled Research",
         "llm_result": null,

@@ -9,6 +9,7 @@ expression: snapshot
     "rows": [
       {
         "activity_id": "tool_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+        "a2a_activity_anchor": "[prov_activity_anchor]",
         "a2a_activity_outcome": "Failed",
         "a2a_agent_id": "[uuid]",
         "a2a_context_id": "ctx-100-1",
@@ -16,7 +17,6 @@ expression: snapshot
         "tool_result": {
           "error": "timeout while calling tool"
         },
-        "a2a_activity_anchor": "[prov_activity_anchor]",
         "a2a_failure_class": "timeout",
         "a2a_failure_evidence": "metadata",
         "a2a_function_name": "CalcPrompt",

@@ -31,10 +31,10 @@ Agent code uses `__chat_register({ run: async (ctx) => { ... } })` or `session(m
 ## Binaries
 
 - **`baml-agent-builder`**: CLI entry point — lint, compile, and package agents.
-- **`regen_fixtures`**: Regenerates `baml-runtime.d.ts` for all fixture agents under `tests/fixtures/agents/` (task-lifecycle-demo, stream-baml-tool, stream-js-tool, conversational-context-auto, conversational-persona-demo). Run after changing the generator or BAML fixtures to keep checked-in declarations up to date:
+- **`regen_fixtures`**: Regenerates `baml-runtime.d.ts` and `_baml_runtime.baml` for every directory under `tests/fixtures/agents/` and `agents/` that has `baml_src/`. Run after changing the generator, prelude, or agent BAML. **Pass `--all-features` (or at least `http-tools`)** so optional tool crates link and manifest tools resolve (e.g. `support/crm` / `support/slack`).
 
   ```bash
-  cargo run -p baml-rt-builder --bin regen_fixtures
+  cargo run -p baml-rt-builder --all-features --bin regen_fixtures
   ```
 
-  Also refreshes checked-in `_baml_runtime.baml` where applicable.
+  Workspace shortcut: `just regen-fixtures`.

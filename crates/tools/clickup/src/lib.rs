@@ -310,7 +310,7 @@ impl From<ClickUpError> for BamlRtError {
     fn from(err: ClickUpError) -> Self {
         match err {
             ClickUpError::Client(inner) => match inner {
-                ClickUpClientError::MissingApiKey(_) | ClickUpClientError::Unauthorized { .. } => {
+                ClickUpClientError::MissingApiKey | ClickUpClientError::Unauthorized { .. } => {
                     BamlRtError::Configuration(inner.to_string())
                 }
                 ClickUpClientError::NotFound { .. } => {
@@ -339,6 +339,13 @@ impl ClickUpTool {
     pub fn new() -> Self {
         Self {
             client: ClickUpClient::new(),
+        }
+    }
+
+    /// Same as [`Self::new`] but targets a custom ClickUp API base URL (fixture / proxy).
+    pub fn with_base_url(base: impl Into<String>) -> Self {
+        Self {
+            client: ClickUpClient::with_base_url(base),
         }
     }
 

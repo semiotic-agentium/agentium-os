@@ -24,6 +24,9 @@ impl BamlRuntimeManager {
     /// # #[derive(Serialize, Deserialize, JsonSchema, TS)]
     /// # #[ts(export)]
     /// # struct WeatherInput { location: String }
+    /// # impl baml_rt_tools::DescribeAction for WeatherInput {
+    /// #     fn describe(&self) -> String { format!("weather for {}", self.location) }
+    /// # }
     /// # #[derive(Serialize, Deserialize, JsonSchema, TS)]
     /// # #[ts(export)]
     /// # struct WeatherOutput { temperature: String }

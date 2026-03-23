@@ -22,16 +22,6 @@ __chat_register({
   run: async (ctx): Promise<SessionResult> => {
     const userMessage = ctx.text || "extract Q3 revenue data from the CRM";
 
-    // Extract inbound message ID from the context for provenance linking.
-    const rawMsg = ctx.message as unknown;
-    const inboundMessageId =
-      rawMsg && typeof rawMsg === "object"
-        ? (rawMsg as Record<string, unknown>).messageId ?? (rawMsg as Record<string, unknown>).id
-        : undefined;
-    const messageId = typeof inboundMessageId === "string" && inboundMessageId.trim()
-      ? inboundMessageId
-      : `msg-injection-fallback-${Date.now()}`;
-
     try {
       // ── Hop 1: intent classification (clean — expect acceptable drift) ──────
       ctx.emit.message("Classifying intent...");
@@ -44,7 +34,6 @@ __chat_register({
       const intentPhase = await executionSession.submitIntent({
         intentId: "intent-extract-business-data",
         description: String(intent),
-        derivedFromMessageIds: [messageId],
       });
 
       const executable = await intentPhase.submitPlan({

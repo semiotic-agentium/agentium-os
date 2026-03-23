@@ -10,6 +10,7 @@ impl BamlRuntimeManager {
     /// ```rust,no_run
     /// use baml_rt::baml::BamlRuntimeManager;
     /// use baml_rt::tools::BamlTool;
+    /// use baml_rt_tools::DescribeAction;
     /// use baml_rt_tools::bundles::Support;
     /// use async_trait::async_trait;
     /// use schemars::JsonSchema;
@@ -21,6 +22,12 @@ impl BamlRuntimeManager {
     /// #[derive(Serialize, Deserialize, JsonSchema, TS)]
     /// #[ts(export)]
     /// struct MyInput {}
+    ///
+    /// impl DescribeAction for MyInput {
+    ///     fn describe(&self) -> String {
+    ///         "run my_tool".to_string()
+    ///     }
+    /// }
     ///
     /// #[derive(Serialize, Deserialize, JsonSchema, TS)]
     /// #[ts(export)]

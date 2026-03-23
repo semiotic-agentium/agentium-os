@@ -260,6 +260,9 @@ async function runNotionPlan(
     }
     if (executable) await executable.finish?.();
 
+    if (typeof finalMessage === "string") {
+      return { message: finalMessage };
+    }
     return { message: finalMessage };
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);

@@ -122,18 +122,17 @@ export interface A2aSessionClosed {
  * 2) submitPlan(...)
  * 3) execute and complete steps with strict evidence references
  *
- * Wire shape matches `IntentSubmissionWire` (baml-rt-quickjs `execution_session_types`).
- * `derivedFromMessageIds` may be omitted; the host/shim merge the active message id before planning.
+ * Agent code is an **adversarial** trust boundary: it must not supply sensitive identifiers (e.g. message UUIDs).
+ * The Rust host binds execution-session lineage from the **invocation scope only**; it is not part of this
+ * TypeScript contract and any `derivedFromMessageIds` in JSON is ignored.
  * `supersession` accepts replaced|refined and snake_case/camelCase aliases (see host parser).
  */
 export interface IntentSubmission {
     intentId: string;
     description: string;
-    /** Message UUID lineage; omit to let the host merge the active message id. */
-    derivedFromMessageIds?: string[];
-    /** Citation refs (`#N` history, `@N` archive) from the BAML planning return — preferred for checked provenance/drift. */
+    /** Citation refs grounding this intent — pass the \`citations\` field from the BAML planning function's return value. #N = session history lines, @N = archive refs. Optional: the provenance system captures LLM-produced citations automatically from BAML return types. */
     citations?: string[];
-    supersession?: string;
+    supersession?: "replaced" | "refined";
 }
 
 export interface PlanStepSubmission {
@@ -143,12 +142,11 @@ export interface PlanStepSubmission {
     dependsOn?: string[];
 }
 
-/** Wire shape for submitPlan (`PlanSubmissionWire` in baml-rt-quickjs `execution_session_types`). */
 export interface PlanSubmission {
     intentId: string;
     planId: string;
     steps: PlanStepSubmission[];
-    supersession?: string;
+    supersession?: "replaced" | "refined";
 }
 
 export interface A2aExecutionSessionAwaitIntent {
@@ -358,11 +356,6 @@ declare global {
             kind: ToolFailureKind;
             message: string;
             retryable: boolean;
-            // Host-retriable vs LLM-correctable vs terminal-for-call (snake_case on wire).
-            disposition?: string;
-            code?: string;
-            hint?: string;
-            retry_after_ms?: number;
         }
     );
     tokens.line();

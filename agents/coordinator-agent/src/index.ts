@@ -184,14 +184,6 @@ function slugToken(value: string, fallback: string): string {
   return normalized.length > 0 ? normalized : fallback;
 }
 
-function executionMessageId(message: unknown): string {
-  if (isObject(message)) {
-    if (typeof message.messageId === "string" && message.messageId.trim().length > 0) return message.messageId;
-    if (typeof message.id === "string" && message.id.trim().length > 0) return message.id;
-  }
-  return "msg-coordinator-fallback";
-}
-
 function normalizeOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
@@ -2704,7 +2696,6 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
     ? await openA2aExecutionSession("coordinator-" + Date.now().toString())
     : null;
   const rootIntentId = "intent-" + slugToken(baseUserText, "coordinate-request");
-  const rootMessageId = executionMessageId(ctx.message);
   let executionExecutable: { finish(): Promise<unknown> } | null = null;
 
   ctx.emit.statusChanged("TASK_STATE_WORKING");
@@ -2769,7 +2760,6 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
       const intentPhase = await executionSession.submitIntent({
         intentId: rootIntentId,
         description: plan.goal || "Coordinate specialists to satisfy user request.",
-        derivedFromMessageIds: [rootMessageId],
       });
       executionExecutable = await intentPhase.submitPlan({
         intentId: rootIntentId,

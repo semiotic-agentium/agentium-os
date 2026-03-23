@@ -21,19 +21,26 @@ __chat_register({
     try {
       for (let hop = 0; hop < 24; hop++) {
         // LLM derives current state from ctx.tags.conversation_history — no op list passed.
-        const plan = await PlanSyntheticSessionStep({ objective });
-        const decision = (plan as { decision?: { op?: string; initial_input?: unknown; input?: unknown } })
-          .decision;
+        const plan = await PlanSessionToolEvalStep({ objective });
+        const step = plan.plan_steps?.[0];
+        if (!step) return { error: "planner returned no plan_steps[0]" };
+
+        let decision: { op?: string; initial_input?: unknown; input?: unknown };
+        try {
+          decision = JSON.parse(step.sub_message) as typeof decision;
+        } catch {
+          return { error: "planner sub_message is not valid JSON" };
+        }
         const op = decision?.op;
 
-        if (!op) return { error: "planner returned no op" };
+        if (!op) return { error: "planner JSON missing op" };
 
         if (op === "Open") {
           const openInput =
             decision.initial_input && typeof decision.initial_input === "object"
               ? (decision.initial_input as Record<string, unknown>)
               : { reason: "session-tool-eval" };
-          handle = await openToolSession("test_eval/synthetic_session_eval", openInput);
+          handle = await openToolSession("test/synthetic_session_eval", openInput);
           continue;
         }
 

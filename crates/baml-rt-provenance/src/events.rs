@@ -93,6 +93,7 @@ pub enum LlmUsage {
 /// Stores both the scoring result **and** the resolved evidence so the API can
 /// surface the actual text that the LLM cited — not just the shorthand ref.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct LlmCitationSimilarity {
     /// The ref number (`N` in `#N` or `@N`).
     pub n: u32,
@@ -154,6 +155,7 @@ pub struct LlmCitationSimilarity {
 /// this signal. Both "$7.8M revenue" and "$4.2M revenue" embed near the same
 /// "Q3 revenue figure" centroid.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct LlmCitationDriftInfo {
     /// One entry per citation the LLM emitted, including negated counter-evidence.
     /// Negated entries are reported here but excluded from `mean_similarity`.

@@ -428,11 +428,59 @@ function citationSimLabel(sim: number, negated: boolean): string {
   return "weak";
 }
 
+/** Normalize one citation row from API (camelCase or legacy snake_case). */
+function normalizePerCitationItem(item: Record<string, unknown>): CitationSimilarityOnRow {
+  const raw = typeof item.raw === "string" ? item.raw : undefined;
+  const n = typeof item.n === "number" ? item.n : Number(item.n ?? 0);
+  let isHistory = true;
+  if (item.isHistory === true || item.is_history === true) isHistory = true;
+  else if (item.isHistory === false || item.is_history === false) isHistory = false;
+  const negated = Boolean(item.negated);
+  const similarity = typeof item.similarity === "number" ? item.similarity : Number(item.similarity ?? 0);
+  const activityAnchor =
+    typeof item.activityAnchor === "string"
+      ? item.activityAnchor
+      : typeof item.activity_anchor === "string"
+        ? item.activity_anchor
+        : undefined;
+  const contentPreview =
+    typeof item.contentPreview === "string"
+      ? item.contentPreview
+      : typeof item.content_preview === "string"
+        ? item.content_preview
+        : undefined;
+  return { n, isHistory, negated, similarity, raw, activityAnchor, contentPreview };
+}
+
 function rowCitationDrift(row: ProvenanceRowBase): { perCitation: CitationSimilarityOnRow[]; meanSimilarity: number } | null {
   const drift = row.drift as Record<string, unknown> | undefined;
-  const cit = drift?.citation as { perCitation?: CitationSimilarityOnRow[]; meanSimilarity?: number } | undefined;
-  if (!cit?.perCitation?.length) return null;
-  return { perCitation: cit.perCitation, meanSimilarity: cit.meanSimilarity ?? 1.0 };
+  const citRaw = drift?.citation as Record<string, unknown> | undefined;
+  if (!citRaw) return null;
+  const arr = (citRaw.perCitation ?? citRaw.per_citation) as unknown[] | undefined;
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const perCitation = arr
+    .map((x) =>
+      x && typeof x === "object" ? normalizePerCitationItem(x as Record<string, unknown>) : null,
+    )
+    .filter((x): x is CitationSimilarityOnRow => x != null);
+  if (perCitation.length === 0) return null;
+  const meanRaw = citRaw.meanSimilarity ?? citRaw.mean_similarity;
+  const meanSimilarity = typeof meanRaw === "number" ? meanRaw : Number(meanRaw ?? 1.0);
+  return { perCitation, meanSimilarity };
+}
+
+/** Mean similarity over non-negated cites; falls back to all cites if none positive. */
+function meanPositiveSimilarity(citations: CitationDetail[]): number {
+  const pos = citations.filter((c) => !c.negated);
+  const use = pos.length > 0 ? pos : citations;
+  if (use.length === 0) return 0;
+  return use.reduce((s, c) => s + c.similarity, 0) / use.length;
+}
+
+function groundingCallCount(task: ContextPlanningTaskSnapshot): number {
+  const calls = task.drift?.driftedCalls;
+  if (!calls?.length) return 0;
+  return calls.filter((c) => (c.citations?.length ?? 0) > 0).length;
 }
 
 function drillToDriftCalls(taskId: string) {
@@ -455,6 +503,14 @@ const driftHelp = {
   trajectory: "Running average of all responses vs the original intent. Detects gradual cumulative drift that individual call scores miss — the 'boiling frog' signal.",
   adherence: "Weighted composite of intent and step alignment. Early plan steps are weighted more heavily because they anchor the entire downstream execution.",
   composite: "Worst-case severity across all four dimensions. If any single dimension crosses a threshold, the composite reflects it.",
+  planDriftTab:
+    "Plan alignment (intent, step, trajectory, adherence) for this task. Expand each call to see grounding: how much the response resembles each cited history/archive snippet. Grounding is embedding similarity — not proof the facts are correct.",
+  tactical:
+    "Cosine similarity between the prompt's user message and the LLM response. Only meaningful when the prompt includes a user message.",
+  grounding:
+    "Each score compares the model's answer to the text of the ref it cited (#N history, @N archive). ≥0.65 strong, 0.40–0.65 moderate, <0.40 weak. Counter-evidence (!# / !@) is shown but excluded from the mean. See docs/drift-catalogue.md for full calibration.",
+  groundingEmpty:
+    "No resolved citation grounding on this row: the model may not have emitted citations, refs could not be resolved, or embedding scoring did not run.",
 } as const;
 
 const exploreRows = computed(() => exploreQuery.state.value.response?.rows ?? []);
@@ -1052,7 +1108,14 @@ onUnmounted(() => {
         <button class="provenance-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">Live</button>
         <button class="provenance-tab" :class="{ active: activeTab === 'failures' }" @click="activeTab = 'failures'">Failures</button>
         <button class="provenance-tab" :class="{ active: activeTab === 'anomalies' }" @click="activeTab = 'anomalies'">Anomalies</button>
-        <button class="provenance-tab" :class="{ active: activeTab === 'drift' }" @click="activeTab = 'drift'">Drift</button>
+        <button
+          class="provenance-tab"
+          :class="{ active: activeTab === 'drift' }"
+          :title="driftHelp.planDriftTab"
+          @click="activeTab = 'drift'"
+        >
+          Drift
+        </button>
         <button class="provenance-tab" :class="{ active: activeTab === 'explore' }" @click="activeTab = 'explore'">Explore</button>
       </div>
 
@@ -1268,7 +1331,13 @@ onUnmounted(() => {
         </template>
 
         <template v-else-if="activeTab === 'drift'">
-          <div class="provenance-section-title">Plan Drift Analysis</div>
+          <div class="provenance-section-title drift-section-title">
+            Plan drift
+            <span class="drift-help drift-tab-help" :data-tooltip="driftHelp.planDriftTab">ⓘ</span>
+          </div>
+          <p class="drift-tab-lede">
+            Task-level <strong>plan alignment</strong> below; each call can include <strong>grounding</strong> (answer vs cited snippet — not factual verification).
+          </p>
           <div v-if="planningTasks.length === 0" class="provenance-empty">
             No planning data available. Drift analysis requires committed intents and plans.
           </div>
@@ -1307,6 +1376,10 @@ onUnmounted(() => {
                   @click="drillToDriftCalls(task.taskId)"
                   title="View LLM calls for this task"
                 >{{ task.drift?.blockCount }} block</button>
+              </div>
+
+              <div v-if="groundingCallCount(task) > 0" class="drift-grounding-summary">
+                <strong>Grounding:</strong> {{ groundingCallCount(task) }} call(s) with resolved citations
               </div>
 
               <div class="drift-bar-row">
@@ -1354,11 +1427,32 @@ onUnmounted(() => {
                     <button class="drift-count-link" @click="drillToDriftCalls(task.taskId)">View in Explore</button>
                   </div>
 
+                  <div
+                    v-if="call.citations && call.citations.length > 0"
+                    class="drift-grounding-compact"
+                  >
+                    {{ call.citations.length }} citation(s) · mean {{ meanPositiveSimilarity(call.citations).toFixed(2) }}
+                    <span class="drift-help drift-inline-help" :data-tooltip="driftHelp.grounding">ⓘ</span>
+                  </div>
+
                   <!-- Inline citation evidence for this call -->
                   <div v-if="call.citations && call.citations.length > 0" class="drift-cite-section">
                     <div class="drift-cite-header">
-                      Citations ({{ call.citations.length }})
+                      Grounding — cited snippets
+                      <span class="drift-help drift-inline-help" :data-tooltip="driftHelp.grounding">ⓘ</span>
                     </div>
+                    <p class="drift-cite-explainer">
+                      Similarity measures how much the response resembles each cited entry (not whether facts are true). Calibrated bands: ≥0.65 strong, 0.40–0.65 moderate, &lt;0.40 weak. Full reference: <code>docs/drift-catalogue.md</code> in the repo.
+                    </p>
+                    <details class="cite-threshold-legend">
+                      <summary>Threshold legend</summary>
+                      <ul class="cite-threshold-list">
+                        <li><strong>Strong (≥0.65):</strong> answer closely paraphrases the cited snippet.</li>
+                        <li><strong>Moderate (0.40–0.65):</strong> same domain, partial overlap.</li>
+                        <li><strong>Weak (&lt;0.40):</strong> likely wrong ref or weak tie to cited text.</li>
+                        <li><strong>Counter:</strong> model flagged contradicting evidence; excluded from mean.</li>
+                      </ul>
+                    </details>
                     <div class="cite-list cite-list-compact">
                       <div
                         v-for="(c, ci) in call.citations"
@@ -1590,37 +1684,26 @@ onUnmounted(() => {
                 </div>
               </section>
 
-              <!-- Citation Evidence — actual text the LLM cited -->
               <section
-                v-if="selectedRow && rowCitationDrift(selectedRow)"
+                v-if="
+                  exploreForm.resource === 'llm_calls' &&
+                  selectedRow?.drift &&
+                  ((selectedRow.drift as any).score != null || (selectedRow.drift as any).severity)
+                "
                 class="row-inspector-section"
               >
                 <div class="row-inspector-section-title">
-                  Citation Evidence
-                  <span class="cite-mean-badge" :class="citationSimClass(rowCitationDrift(selectedRow)!.meanSimilarity, false)">
-                    mean {{ rowCitationDrift(selectedRow)!.meanSimilarity.toFixed(2) }}
-                  </span>
+                  Tactical drift
+                  <span class="drift-help section-title-hint" :data-tooltip="driftHelp.tactical">ⓘ</span>
                 </div>
-                <div class="cite-list">
-                  <div
-                    v-for="(c, i) in rowCitationDrift(selectedRow)!.perCitation"
-                    :key="`cite-${i}`"
-                    class="cite-entry"
-                    :class="{ 'cite-entry-negated': c.negated }"
-                  >
-                    <div class="cite-header">
-                      <span class="cite-ref-tag" :class="c.isHistory ? 'cite-ref-history' : 'cite-ref-archive'">
-                        {{ citationRefLabel(c) }}
-                      </span>
-                      <span v-if="c.negated" class="cite-negated-badge">counter-evidence</span>
-                      <span class="cite-sim-pill" :class="citationSimClass(c.similarity, c.negated)">
-                        {{ c.similarity.toFixed(2) }} · {{ citationSimLabel(c.similarity, c.negated) }}
-                      </span>
-                      <span v-if="c.isHistory" class="cite-kind-label">history</span>
-                      <span v-else class="cite-kind-label">archive</span>
-                    </div>
-                    <pre v-if="c.contentPreview" class="cite-content">{{ c.contentPreview }}</pre>
-                    <div v-else class="cite-content-empty">content not resolved</div>
+                <div class="drift-scores-grid inspector-drift-grid">
+                  <div class="drift-score-item">
+                    <span class="drift-score-label">Score</span>
+                    <span class="drift-score-value">{{ formatDriftScore((selectedRow.drift as any)?.score) }}</span>
+                  </div>
+                  <div class="drift-score-item">
+                    <span class="drift-score-label">Severity</span>
+                    <span class="drift-score-value">{{ (selectedRow.drift as any)?.severity ?? "—" }}</span>
                   </div>
                 </div>
               </section>
@@ -1629,12 +1712,11 @@ onUnmounted(() => {
                 v-if="selectedRow?.drift && (selectedRow.drift as any)?.plan"
                 class="row-inspector-section"
               >
-                <div class="row-inspector-section-title">Plan Drift Analysis</div>
+                <div class="row-inspector-section-title">
+                  Plan alignment
+                  <span class="drift-help section-title-hint" :data-tooltip="driftHelp.adherence">ⓘ</span>
+                </div>
                 <div class="drift-scores-grid inspector-drift-grid">
-                  <div class="drift-score-item">
-                    <span class="drift-score-label drift-help" data-tooltip="Cosine similarity between the prompt's user message and the LLM response. Only available when the prompt contains a user message.">Tactical</span>
-                    <span class="drift-score-value">{{ formatDriftScore((selectedRow.drift as any)?.score) }}</span>
-                  </div>
                   <div class="drift-score-item">
                     <span class="drift-score-label drift-help" :data-tooltip="driftHelp.intent">Intent align.</span>
                     <span class="drift-score-value">{{ formatDriftScore((selectedRow.drift as any)?.plan?.intentAlignment) }}</span>
@@ -1672,6 +1754,64 @@ onUnmounted(() => {
                     <div class="drift-preview-text">{{ (selectedRow.drift as any).responseTextPreview }}</div>
                   </div>
                 </div>
+              </section>
+
+              <section
+                v-if="
+                  exploreForm.resource === 'llm_calls' &&
+                  selectedRow &&
+                  (rowCitationDrift(selectedRow) || selectedRow.drift)
+                "
+                class="row-inspector-section"
+              >
+                <template v-if="rowCitationDrift(selectedRow)">
+                  <div class="row-inspector-section-title">
+                    Grounding
+                    <span class="cite-mean-badge" :class="citationSimClass(rowCitationDrift(selectedRow)!.meanSimilarity, false)">
+                      mean {{ rowCitationDrift(selectedRow)!.meanSimilarity.toFixed(2) }}
+                    </span>
+                    <span class="drift-help section-title-hint" :data-tooltip="driftHelp.grounding">ⓘ</span>
+                  </div>
+                  <p class="inspector-grounding-lede">
+                    Embedding similarity between the response and each cited snippet. Not a factual truth check.
+                    <span class="drift-help drift-inline-help" :data-tooltip="driftHelp.grounding">ⓘ</span>
+                  </p>
+                  <div class="cite-list">
+                    <div
+                      v-for="(c, i) in rowCitationDrift(selectedRow)!.perCitation"
+                      :key="`cite-${i}`"
+                      class="cite-entry"
+                      :class="{ 'cite-entry-negated': c.negated }"
+                    >
+                      <div class="cite-header">
+                        <span class="cite-ref-tag" :class="c.isHistory ? 'cite-ref-history' : 'cite-ref-archive'">
+                          {{ citationRefLabel(c) }}
+                        </span>
+                        <span v-if="c.negated" class="cite-negated-badge">counter-evidence</span>
+                        <span class="cite-sim-pill" :class="citationSimClass(c.similarity, c.negated)">
+                          {{ c.similarity.toFixed(2) }} · {{ citationSimLabel(c.similarity, c.negated) }}
+                        </span>
+                        <span v-if="c.isHistory" class="cite-kind-label">history</span>
+                        <span v-else class="cite-kind-label">archive</span>
+                      </div>
+                      <pre v-if="c.contentPreview" class="cite-content">{{ c.contentPreview }}</pre>
+                      <div v-else class="cite-content-empty">content not resolved</div>
+                    </div>
+                  </div>
+                  <details class="cite-threshold-legend">
+                    <summary>Threshold legend</summary>
+                    <ul class="cite-threshold-list">
+                      <li><strong>Strong (≥0.65):</strong> answer closely paraphrases the cited snippet.</li>
+                      <li><strong>Moderate (0.40–0.65):</strong> same domain, partial overlap.</li>
+                      <li><strong>Weak (&lt;0.40):</strong> likely wrong ref or weak tie to cited text.</li>
+                      <li><strong>Counter:</strong> model flagged contradicting evidence; excluded from mean.</li>
+                    </ul>
+                  </details>
+                </template>
+                <template v-else-if="selectedRow.drift">
+                  <div class="row-inspector-section-title">Grounding</div>
+                  <p class="inspector-grounding-empty">{{ driftHelp.groundingEmpty }}</p>
+                </template>
               </section>
             </div>
           </section>

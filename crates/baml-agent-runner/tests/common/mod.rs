@@ -290,6 +290,26 @@ impl RunningHttpServer {
     }
 }
 
+/// Single place for `http://host:port` + optional API root (e.g. `/v1`, `/api/v2`). Canonicalized once.
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+fn http_server_base_url(addr: std::net::SocketAddr, base_path: Option<&str>) -> String {
+    let root = format!("http://{addr}");
+    let Some(path) = base_path else {
+        return root;
+    };
+    let path = path.trim_matches('/');
+    if path.is_empty() {
+        return root;
+    }
+    let root = root.trim_end_matches('/');
+    format!("{root}/{path}")
+}
+
 #[cfg(any(
     feature = "clickup",
     feature = "notion",
@@ -313,7 +333,10 @@ impl Drop for RunningHttpServer {
     feature = "slack",
     feature = "llm-tests"
 ))]
-pub async fn start_http_server(app: axum::Router) -> std::io::Result<RunningHttpServer> {
+pub async fn start_http_server(
+    app: axum::Router,
+    base_path: Option<&str>,
+) -> std::io::Result<RunningHttpServer> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -326,7 +349,7 @@ pub async fn start_http_server(app: axum::Router) -> std::io::Result<RunningHttp
     });
 
     Ok(RunningHttpServer::new(
-        format!("http://{addr}"),
+        http_server_base_url(addr, base_path),
         shutdown_tx,
         handle,
     ))
@@ -353,7 +376,7 @@ pub async fn start_runner_api_server(
     let mermaid: Option<Arc<dyn baml_rt_api::MermaidService>> =
         Some(Arc::new(TestMermaidService::new(provenance)));
     let app = baml_rt_api::api_router(registry, mermaid, None).await;
-    start_http_server(app).await
+    start_http_server(app, None).await
 }
 
 /// Builds an agent at the given path using the builder crate (in-process, no cargo subprocess).

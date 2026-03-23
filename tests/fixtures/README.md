@@ -15,11 +15,14 @@ This directory contains test fixtures used by the test suite.
   - **`tool-discovery-demo`** — Uses `system/discover_tools` + BAML prompt to find tools by query (e.g. "Notion", "calculate"). Ad hoc verification: `./scripts/verify-tool-discovery.sh --build`.
   - `emit-plan-then-block` — Fixture that emits plan chunks then blocks the event loop (no yield) before returning; used in A2A stream tests for relay flush timing.
 
-  Each agent’s `src/baml-runtime.d.ts` is **generated** from its `baml_src/` by the runtime type generator. To refresh all fixture declarations after changing the generator or BAML:
+  Each agent’s `src/baml-runtime.d.ts` and **`baml_src/_baml_runtime.baml`** are **generated** from manifest + hand-written BAML. To refresh all fixture trees after changing the generator, prelude, or agent BAML:
 
   ```bash
-  cargo run -p baml-rt-builder --bin regen_fixtures
+  just regen-fixtures
+  # or: cargo run -p baml-rt-builder --all-features --bin regen_fixtures
   ```
+
+  `regen_fixtures` must link every tool crate your fixtures declare (e.g. `support/crm` / `support/email` need `security-eval`; `support/slack` needs `slack`). **`--all-features`** (or at least `http-tools`) avoids “Tool metadata missing” failures.
 
 - **`baml/`** — BAML schema fixtures (if present)
   - Used for schema-level tests
@@ -39,6 +42,6 @@ let agent_root = agent_fixture("stream-baml-tool");   // path to agents/stream-b
 ## Adding New Fixtures
 
 1. Add an agent under `agents/{name}/` with `baml_src/`, `src/`, `manifest.json`, `tsconfig.json`.
-2. Add `{name}` to the `regen_fixtures` binary in `crates/baml-rt-builder/src/bin/regen_fixtures.rs`.
-3. Run `cargo run -p baml-rt-builder --bin regen_fixtures` to generate `src/baml-runtime.d.ts`.
+2. If the agent declares tools that need optional crates, ensure `regen_fixtures` / `baml-agent-builder` link those crates (`crates/baml-rt-builder/src/bin/regen_fixtures.rs` uses `#[cfg(feature = …)] use baml_tools_* as _;`).
+3. Run `just regen-fixtures` (or `cargo run -p baml-rt-builder --all-features --bin regen_fixtures`) to emit `_baml_runtime.baml` and `src/baml-runtime.d.ts`.
 4. Update this README if adding new categories.

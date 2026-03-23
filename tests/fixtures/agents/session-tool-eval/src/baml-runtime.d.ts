@@ -6,38 +6,22 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface SessionReadEnvelopeLite { refId: string;
-budgetHint: number | null;
+export interface StandardAgentPlanStep { agent_package: string;
+agent_instance_id: string;
+sub_message: string;
  }
 
-export type SessionStepOp = "Open" | "Send" | "Read" | "Finish" | "Abort";
-
-export interface SyntheticPlannerOpenInput { reason: string | null;
+export interface StandardStructuredPlan { intent_description: string;
+objective: string;
+plan_steps: StandardAgentPlanStep[];
+citations: string[] | null;
  }
-
-export interface SyntheticPlannerPlan { decision: SyntheticPlannerStep;
-reason: string | null;
- }
-
-export interface SyntheticPlannerSendInput { read: SessionReadEnvelopeLite | null;
-goal_id: string | null;
-limit: number | null;
-projection: SyntheticProjectionMode | null;
- }
-
-export interface SyntheticPlannerStep { op: SessionStepOp;
-initial_input: SyntheticPlannerOpenInput | null;
-input: SyntheticPlannerSendInput | null;
-reason: string | null;
- }
-
-export type SyntheticProjectionMode = "SUMMARY" | "IDENTITY" | "DETAIL";
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
-declare function PlanSyntheticSessionStep(args: { objective: string } & { __baml_invocation_token?: string }): Promise<SyntheticPlannerPlan>;
+declare function PlanSessionToolEvalStep(args: { objective: string } & { __baml_invocation_token?: string }): Promise<StandardStructuredPlan>;
 
 }
 
@@ -138,6 +122,11 @@ export interface A2aSessionClosed {
  * 1) submitIntent(...)
  * 2) submitPlan(...)
  * 3) execute and complete steps with strict evidence references
+ *
+ * Agent code is an **adversarial** trust boundary: it must not supply sensitive identifiers (e.g. message UUIDs).
+ * The Rust host binds execution-session lineage from the **invocation scope only**; it is not part of this
+ * TypeScript contract and any `derivedFromMessageIds` in JSON is ignored.
+ * `supersession` accepts replaced|refined and snake_case/camelCase aliases (see host parser).
  */
 export interface IntentSubmission {
     intentId: string;
@@ -201,7 +190,6 @@ export type ReplyPart = TextPart | DataPart;
  */
 export interface StructuredReply {
   parts: ReplyPart[];
-  metadata?: string;
   citations: string[];
 }
 /**
