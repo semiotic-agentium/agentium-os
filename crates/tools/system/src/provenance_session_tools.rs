@@ -5,191 +5,27 @@ use std::{collections::BTreeMap, sync::Arc};
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_provenance::{
-    ProvenanceArchivePayload, ProvenanceArchiveRecord, ProvenanceOpsFilters, ProvenanceOpsQuery,
+    ProvenanceAddressedMaterialResolver, ProvenanceOpsFilters, ProvenanceOpsQuery,
     ProvenanceOpsQueryRequest, ProvenanceOpsResource, ProvenanceOutcomeSegment,
     ProvenanceResponseProfile,
 };
 use baml_rt_tools::{
-    ToolCapability, ToolFailure, ToolHandler, ToolSession, ToolSessionError, ToolStep,
+    AddressedMaterialResolver, MaterialAdmissionPolicy, MaterialKind, MaterialProjection,
+    MaterialRetrievalBudget, ResolvedMaterialRecord, ToolCapability, ToolFailure, ToolHandler,
+    ToolSession, ToolSessionError, ToolStep,
     tools::{HistoryContextV1, SessionReadMode, ToolFunctionMetadata, ToolSessionContext},
 };
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
     metadata::{system_extrospection_metadata, system_introspection_metadata},
-    tools::{
-        ProvenanceArchivePayloadDto, ProvenanceArchiveRecordDto, ProvenanceArchiveSummaryDto,
-        ProvenancePayloadLlmCallDto, ProvenancePayloadLlmResultDto, ProvenancePayloadToolCallDto,
-        ProvenancePayloadToolResultDto, ProvenanceQueryNextOutput, ProvenanceQueryOpenInput,
-        ProvenanceQuerySendInput, ProvenanceReadProjectionDto, ProvenanceRetrievalBudgetDto,
-        SessionReadResultDto,
-    },
+    tools::{ProvenanceQueryNextOutput, ProvenanceQueryOpenInput, ProvenanceQuerySendInput},
 };
 
 const RETRIEVAL_CALLS_CAP: u32 = 8;
 const RETRIEVAL_BYTES_CAP: u32 = 64 * 1024;
 const RETRIEVAL_ITEMS_CAP: u32 = 64;
-
-#[derive(Debug, Clone, Copy)]
-enum ProvenanceReadProjection {
-    Identity,
-    Summary,
-    Detail,
-}
-
-impl ProvenanceReadProjection {
-    fn parse(raw: Option<&str>) -> std::result::Result<Self, ToolSessionError> {
-        match raw
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(|v| v.to_ascii_lowercase())
-            .as_deref()
-        {
-            None | Some("summary") => Ok(Self::Summary),
-            Some("identity") => Ok(Self::Identity),
-            Some("detail") => Ok(Self::Detail),
-            Some(other) => Err(ToolSessionError::Tool(ToolFailure::invalid_input(format!(
-                "unsupported read.projection '{other}' for provenance session tool"
-            )))),
-        }
-    }
-
-    fn to_dto(self) -> ProvenanceReadProjectionDto {
-        match self {
-            Self::Identity => ProvenanceReadProjectionDto::Identity,
-            Self::Summary => ProvenanceReadProjectionDto::Summary,
-            Self::Detail => ProvenanceReadProjectionDto::Detail,
-        }
-    }
-}
-
-fn archive_payload_to_dto(payload: ProvenanceArchivePayload) -> ProvenanceArchivePayloadDto {
-    match payload {
-        ProvenanceArchivePayload::LlmCall {
-            payload_ref,
-            activity_ref,
-            prompt_json,
-        } => ProvenanceArchivePayloadDto::LlmCall(ProvenancePayloadLlmCallDto {
-            payload_ref: payload_ref.0,
-            activity_ref: activity_ref.0,
-            prompt_json,
-        }),
-        ProvenanceArchivePayload::LlmResult {
-            payload_ref,
-            activity_ref,
-            result_json,
-        } => ProvenanceArchivePayloadDto::LlmResult(ProvenancePayloadLlmResultDto {
-            payload_ref: payload_ref.0,
-            activity_ref: activity_ref.0,
-            result_json,
-        }),
-        ProvenanceArchivePayload::ToolCall {
-            payload_ref,
-            activity_ref,
-            tool_name,
-            phase,
-            args_json,
-        } => ProvenanceArchivePayloadDto::ToolCall(ProvenancePayloadToolCallDto {
-            payload_ref: payload_ref.0,
-            activity_ref: activity_ref.0,
-            tool_name,
-            phase,
-            args_json,
-        }),
-        ProvenanceArchivePayload::ToolResult {
-            payload_ref,
-            activity_ref,
-            result_json,
-        } => ProvenanceArchivePayloadDto::ToolResult(ProvenancePayloadToolResultDto {
-            payload_ref: payload_ref.0,
-            activity_ref: activity_ref.0,
-            result_json,
-        }),
-    }
-}
-
-fn archive_record_to_dto(record: ProvenanceArchiveRecord) -> ProvenanceArchiveRecordDto {
-    ProvenanceArchiveRecordDto {
-        archive_ref: record.archive_ref.0,
-        payloads: record
-            .payloads
-            .into_iter()
-            .map(archive_payload_to_dto)
-            .collect(),
-    }
-}
-
-fn payload_source_name(payload: &ProvenanceArchivePayloadDto) -> &'static str {
-    match payload {
-        ProvenanceArchivePayloadDto::LlmCall(_) => "llm_call",
-        ProvenanceArchivePayloadDto::LlmResult(_) => "llm_result",
-        ProvenanceArchivePayloadDto::ToolCall(_) => "tool_call",
-        ProvenanceArchivePayloadDto::ToolResult(_) => "tool_result",
-    }
-}
-
-fn collect_refs_with_prefix(
-    prefix_ref: &str,
-    record: Option<&ProvenanceArchiveRecordDto>,
-) -> Vec<String> {
-    let mut refs = vec![prefix_ref.to_string()];
-    let Some(record) = record else {
-        return refs;
-    };
-
-    refs.push(record.archive_ref.clone());
-    for payload in &record.payloads {
-        match payload {
-            ProvenanceArchivePayloadDto::LlmCall(ProvenancePayloadLlmCallDto {
-                payload_ref,
-                activity_ref,
-                ..
-            })
-            | ProvenanceArchivePayloadDto::LlmResult(ProvenancePayloadLlmResultDto {
-                payload_ref,
-                activity_ref,
-                ..
-            })
-            | ProvenanceArchivePayloadDto::ToolResult(ProvenancePayloadToolResultDto {
-                payload_ref,
-                activity_ref,
-                ..
-            }) => {
-                refs.push(payload_ref.clone());
-                refs.push(activity_ref.clone());
-            }
-            ProvenanceArchivePayloadDto::ToolCall(ProvenancePayloadToolCallDto {
-                payload_ref,
-                activity_ref,
-                ..
-            }) => {
-                refs.push(payload_ref.clone());
-                refs.push(activity_ref.clone());
-            }
-        }
-    }
-    refs.sort();
-    refs.dedup();
-    if refs.first().map(|s| s.as_str()) != Some(prefix_ref) {
-        refs.retain(|r| r != prefix_ref);
-        refs.insert(0, prefix_ref.to_string());
-    }
-    refs
-}
-
-fn summarize_record(record: &ProvenanceArchiveRecordDto) -> ProvenanceArchiveSummaryDto {
-    let payload_sources = record
-        .payloads
-        .iter()
-        .map(payload_source_name)
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    ProvenanceArchiveSummaryDto {
-        archive_ref: record.archive_ref.clone(),
-        payload_count: u32::try_from(record.payloads.len()).unwrap_or(u32::MAX),
-        payload_sources,
-    }
-}
 
 fn parse_resource(raw: &str) -> ProvenanceOpsResource {
     match raw.to_ascii_lowercase().as_str() {
@@ -220,8 +56,8 @@ struct ProvenanceQuerySession {
 }
 
 impl ProvenanceQuerySession {
-    fn retrieval_budget(&self) -> ProvenanceRetrievalBudgetDto {
-        ProvenanceRetrievalBudgetDto {
+    fn retrieval_budget(&self) -> MaterialRetrievalBudget {
+        MaterialRetrievalBudget {
             calls_used: self.retrieval_calls_used,
             calls_cap: RETRIEVAL_CALLS_CAP,
             bytes_used: self.retrieval_bytes_used,
@@ -300,6 +136,12 @@ fn attach_history_context(value: &mut Value, hop: u32) {
     }
 }
 
+fn serialized_json_size<T: Serialize>(value: &T) -> std::result::Result<u32, ToolSessionError> {
+    let encoded = serde_json::to_vec(value)
+        .map_err(|e| ToolSessionError::Tool(ToolFailure::from_error(&BamlRtError::Json(e))))?;
+    Ok(u32::try_from(encoded.len()).unwrap_or(u32::MAX))
+}
+
 #[async_trait]
 impl ToolSession for ProvenanceQuerySession {
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
@@ -313,7 +155,12 @@ impl ToolSession for ProvenanceQuerySession {
                     "unsupported read.mode for provenance session tool",
                 )));
             }
-            let projection = ProvenanceReadProjection::parse(read.projection.as_deref())?;
+            let projection =
+                MaterialProjection::parse(read.projection.as_deref()).map_err(|error| {
+                    ToolSessionError::Tool(ToolFailure::invalid_input(format!(
+                        "{error} for provenance session tool"
+                    )))
+                })?;
             let archive_ref = read.ref_id.as_str();
             let already_exhausted = self.retrieval_calls_used >= RETRIEVAL_CALLS_CAP
                 || self.retrieval_bytes_used >= RETRIEVAL_BYTES_CAP
@@ -326,25 +173,32 @@ impl ToolSession for ProvenanceQuerySession {
                 );
                 return Ok(());
             }
-            let record = self
-                .query
-                .resolve_archive_ref(archive_ref)
+            let resolver = ProvenanceAddressedMaterialResolver::new(self.query.clone());
+            let record = resolver
+                .resolve_material_ref(archive_ref)
                 .await
                 .map_err(|e| {
                     ToolSessionError::Tool(ToolFailure::from_error(&BamlRtError::InvalidArgument(
                         e.to_string(),
                     )))
                 })?;
-            let items_in_record = record.as_ref().map_or(0u32, |rec| {
-                u32::try_from(rec.payloads.len()).unwrap_or(u32::MAX)
+            let material = record.unwrap_or_else(|| ResolvedMaterialRecord {
+                ref_id: archive_ref.to_string(),
+                refs: vec![archive_ref.to_string()],
+                material_kind: MaterialKind::Unknown,
+                admission_policy: MaterialAdmissionPolicy::OutOfBandOnly,
+                item_count: 0,
+                source_types: Vec::new(),
+                byte_count: Some(0),
+                detail_json: None,
             });
-            let record_bytes = record.as_ref().map_or(0u32, |rec| {
-                serde_json::to_vec(rec)
-                    .map_or(0u32, |buf| u32::try_from(buf.len()).unwrap_or(u32::MAX))
-            });
+            let read_result = material.to_read_result(SessionReadMode::RetrieveRef, projection);
+            let read_result_bytes = serialized_json_size(&read_result)?;
             let projected_calls = self.retrieval_calls_used.saturating_add(1);
-            let projected_items = self.retrieval_items_used.saturating_add(items_in_record);
-            let projected_bytes = self.retrieval_bytes_used.saturating_add(record_bytes);
+            let projected_items = self
+                .retrieval_items_used
+                .saturating_add(material.item_count);
+            let projected_bytes = self.retrieval_bytes_used.saturating_add(read_result_bytes);
             if projected_calls > RETRIEVAL_CALLS_CAP
                 || projected_items > RETRIEVAL_ITEMS_CAP
                 || projected_bytes > RETRIEVAL_BYTES_CAP
@@ -359,28 +213,9 @@ impl ToolSession for ProvenanceQuerySession {
             self.retrieval_calls_used = projected_calls;
             self.retrieval_items_used = projected_items;
             self.retrieval_bytes_used = projected_bytes;
-            let archive_record = record.map(archive_record_to_dto);
-            let refs = collect_refs_with_prefix(archive_ref, archive_record.as_ref());
             let wrapped = ProvenanceQueryNextOutput {
                 payload_json: None,
-                read_result: Some(SessionReadResultDto {
-                    mode: SessionReadMode::RetrieveRef,
-                    ref_id: archive_ref.to_string(),
-                    projection: projection.to_dto(),
-                    refs,
-                    archive_summary: match projection {
-                        ProvenanceReadProjection::Identity => None,
-                        ProvenanceReadProjection::Summary | ProvenanceReadProjection::Detail => {
-                            archive_record.as_ref().map(summarize_record)
-                        }
-                    },
-                    archive_record: match projection {
-                        ProvenanceReadProjection::Detail => archive_record,
-                        ProvenanceReadProjection::Identity | ProvenanceReadProjection::Summary => {
-                            None
-                        }
-                    },
-                }),
+                read_result: Some(read_result),
                 retrieval_budget: Some(self.retrieval_budget()),
                 budget_exhausted: Some(false),
                 done: true,

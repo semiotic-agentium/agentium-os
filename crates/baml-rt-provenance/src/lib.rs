@@ -23,6 +23,7 @@ pub mod graph_export;
 pub mod graph_model;
 pub mod id_semantics;
 pub mod interceptors;
+pub mod materials;
 pub mod mermaid_cache;
 pub mod normalizer;
 pub(crate) mod payload_record;
@@ -65,6 +66,7 @@ pub use graph_model::{
     mapping_for_event_data, mapping_for_event_kind,
 };
 pub use interceptors::ProvenanceInterceptor;
+pub use materials::ProvenanceAddressedMaterialResolver;
 pub use mermaid_cache::MermaidCache;
 pub use normalizer::{
     A2aDerivedRelation, A2aRelationType, DefaultProvNormalizer, NormalizeContext, NormalizedProv,

@@ -2,7 +2,10 @@
 
 use baml_derive::BamlType;
 use baml_rt_core::ids::{AgentId, ContextId, TaskId};
-use baml_rt_tools::tools::{HistoryContextV1, SessionReadEnvelope, SessionReadMode};
+use baml_rt_tools::{
+    MaterialReadResult, MaterialRetrievalBudget,
+    tools::{HistoryContextV1, SessionReadEnvelope},
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
@@ -296,99 +299,12 @@ pub struct ProvenanceQueryNextOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload_json: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub read_result: Option<SessionReadResultDto>,
+    pub read_result: Option<MaterialReadResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub retrieval_budget: Option<ProvenanceRetrievalBudgetDto>,
+    pub retrieval_budget: Option<MaterialRetrievalBudget>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_exhausted: Option<bool>,
     pub done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_context: Option<HistoryContextV1>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
-#[serde(rename_all = "camelCase")]
-pub struct ProvenanceRetrievalBudgetDto {
-    pub calls_used: u32,
-    pub calls_cap: u32,
-    pub bytes_used: u32,
-    pub bytes_cap: u32,
-    pub items_used: u32,
-    pub items_cap: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
-#[serde(rename_all = "camelCase")]
-pub struct ProvenanceArchiveRecordDto {
-    pub archive_ref: String,
-    pub payloads: Vec<ProvenanceArchivePayloadDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
-#[serde(rename_all = "snake_case")]
-pub enum ProvenanceReadProjectionDto {
-    Identity,
-    Summary,
-    Detail,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
-#[serde(rename_all = "camelCase")]
-pub struct ProvenanceArchiveSummaryDto {
-    pub archive_ref: String,
-    pub payload_count: u32,
-    pub payload_sources: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
-pub struct ProvenancePayloadLlmCallDto {
-    pub payload_ref: String,
-    pub activity_ref: String,
-    pub prompt_json: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
-pub struct ProvenancePayloadLlmResultDto {
-    pub payload_ref: String,
-    pub activity_ref: String,
-    pub result_json: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
-pub struct ProvenancePayloadToolCallDto {
-    pub payload_ref: String,
-    pub activity_ref: String,
-    pub tool_name: Option<String>,
-    pub phase: Option<String>,
-    pub args_json: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
-pub struct ProvenancePayloadToolResultDto {
-    pub payload_ref: String,
-    pub activity_ref: String,
-    pub result_json: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
-#[baml(union)]
-#[serde(tag = "source", rename_all = "snake_case")]
-pub enum ProvenanceArchivePayloadDto {
-    LlmCall(ProvenancePayloadLlmCallDto),
-    LlmResult(ProvenancePayloadLlmResultDto),
-    ToolCall(ProvenancePayloadToolCallDto),
-    ToolResult(ProvenancePayloadToolResultDto),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionReadResultDto {
-    pub mode: SessionReadMode,
-    pub ref_id: String,
-    pub projection: ProvenanceReadProjectionDto,
-    pub refs: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub archive_summary: Option<ProvenanceArchiveSummaryDto>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub archive_record: Option<ProvenanceArchiveRecordDto>,
 }

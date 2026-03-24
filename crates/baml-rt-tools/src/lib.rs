@@ -13,6 +13,7 @@ pub mod bundles;
 pub mod citations;
 pub mod config_resolver;
 pub mod host_registration;
+pub mod materials;
 mod metrics;
 pub mod prompt_projection;
 pub mod session_coordination;
@@ -32,6 +33,11 @@ pub use baml_tool_derive::baml_tool;
 pub use bundles::{BundleType, Support};
 pub use config_resolver::ConfigResolver;
 pub use host_registration::register_manifest_tools;
+pub use materials::{
+    AddressedMaterialResolver, MaterialAdmissionPolicy, MaterialKind, MaterialProjection,
+    MaterialReadResult, MaterialRecord, MaterialRetrievalBudget, MaterialSummary,
+    ResolvedMaterialRecord,
+};
 pub use session_coordination::get_session_coordination_baml_for_tools;
 pub use tool_catalog::{InventoryCatalog, ManifestToolNames, ToolCatalog};
 pub use tool_discovery::search_tools;

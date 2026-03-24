@@ -141,53 +141,37 @@ class DiscoverAgentsSendInput {
   offset int | null?
 }
 
-class ProvenanceArchiveSummaryDto {
-  archive_ref string
-  payload_count int
-  payload_sources string[]
+class MaterialSummary {
+  ref_id string
+  material_kind string
+  admission_policy string
+  item_count int
+  source_types string[]
+  byte_count int | null?
 }
 
-class ProvenancePayloadLlmCallDto {
-  payload_ref string
-  activity_ref string
-  prompt_json string
+class MaterialRecord {
+  ref_id string
+  material_kind string
+  admission_policy string
+  item_count int
+  source_types string[]
+  byte_count int | null?
+  detail_json string | null?
 }
 
-class ProvenancePayloadLlmResultDto {
-  payload_ref string
-  activity_ref string
-  result_json string
-}
-
-class ProvenancePayloadToolCallDto {
-  payload_ref string
-  activity_ref string
-  tool_name string | null?
-  phase string | null?
-  args_json string
-}
-
-class ProvenancePayloadToolResultDto {
-  payload_ref string
-  activity_ref string
-  result_json string
-}
-
-class ProvenanceArchiveRecordDto {
-  archive_ref string
-  payloads ProvenancePayloadLlmCallDto | ProvenancePayloadLlmResultDto | ProvenancePayloadToolCallDto | ProvenancePayloadToolResultDto[]
-}
-
-class SessionReadResultDto {
+class MaterialReadResult {
   mode string
   ref_id string
   projection string
   refs string[]
-  archive_summary ProvenanceArchiveSummaryDto | null?
-  archive_record ProvenanceArchiveRecordDto | null?
+  material_kind string
+  admission_policy string
+  summary MaterialSummary | null?
+  record MaterialRecord | null?
 }
 
-class ProvenanceRetrievalBudgetDto {
+class MaterialRetrievalBudget {
   calls_used int
   calls_cap int
   bytes_used int
@@ -198,8 +182,8 @@ class ProvenanceRetrievalBudgetDto {
 
 class ProvenanceQueryNextOutput {
   payload_json string | null?
-  read_result SessionReadResultDto | null?
-  retrieval_budget ProvenanceRetrievalBudgetDto | null?
+  read_result MaterialReadResult | null?
+  retrieval_budget MaterialRetrievalBudget | null?
   budget_exhausted bool | null?
   done bool
   history_context HistoryContextV1 | null?

@@ -9,10 +9,10 @@ use baml_rt_core::{
     ids::{ActivityAnchorId, AgentId, ExternalId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
-    CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceWriter,
-    SurrealStoreBuilder,
+    CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData,
+    ProvenanceAddressedMaterialResolver, ProvenanceOpsQuery, ProvenanceWriter, SurrealStoreBuilder,
 };
-use baml_rt_tools::{ToolRegistry, ToolStep};
+use baml_rt_tools::{AddressedMaterialResolver, MaterialProjection, ToolRegistry, ToolStep};
 use baml_tools_calculator::CalculatorTool;
 use baml_tools_system::SystemBundle;
 use futures_util::stream;
@@ -365,6 +365,63 @@ async fn seeded_store_for_context(
                     cached_input_tokens: None,
                 },
                 duration_ms: 300,
+                outcome: Outcome::Success,
+                drift: None,
+                citations: vec![],
+            },
+        }))
+        .await
+        .unwrap();
+
+    store
+}
+
+async fn seeded_store_for_detail_budget_regression(
+    context_id: &ContextId,
+    caller_agent: &AgentId,
+) -> Arc<baml_rt_provenance::SurrealProvenanceStore> {
+    let store = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("build isolated in-memory store");
+    let msg_caller =
+        MessageId::from_external(ExternalId::new("tool-msg-detail-budget".to_string()));
+    let quote_heavy = "\"".repeat(15_800);
+
+    store
+        .add_event(ProvEvent::message_received_global(
+            context_id.clone(),
+            msg_caller.clone(),
+            "ROLE_USER".to_string(),
+            vec!["detail budget path".to_string()],
+            None,
+            caller_agent.clone(),
+            100,
+        ))
+        .await
+        .unwrap();
+
+    store
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: ActivityAnchorId::from_counter(10_001),
+            context_id: context_id.clone(),
+            timestamp_ms: 200,
+            data: ProvEventData::LlmCallCompleted {
+                scope: CallScope::Message {
+                    message_id: msg_caller.clone(),
+                },
+                client: "openai".to_string(),
+                model: "gpt-4o-mini".to_string(),
+                function_name: "DetailBudgetPrompt".to_string(),
+                prompt: json!({"input": quote_heavy}),
+                metadata: call_metadata(caller_agent, &msg_caller, None),
+                usage: LlmUsage::Known {
+                    prompt_tokens: 5,
+                    completion_tokens: 3,
+                    total_tokens: 8,
+                    cached_input_tokens: None,
+                },
+                duration_ms: 100,
                 outcome: Outcome::Success,
                 drift: None,
                 citations: vec![],
@@ -1310,21 +1367,31 @@ async fn extrospection_session_retrieve_ref_returns_typed_archive_record() {
         Some(retrieve_ref.as_str()),
         "refs must prepend the traversal ref"
     );
-    let archive_summary = read_result
-        .get("archiveSummary")
+    assert_eq!(
+        read_result.get("materialKind").and_then(|v| v.as_str()),
+        Some("json"),
+        "provenance retrieve_ref should currently resolve to JSON material"
+    );
+    assert_eq!(
+        read_result.get("admissionPolicy").and_then(|v| v.as_str()),
+        Some("prompt_text_allowed"),
+        "provenance retrieve_ref should declare prompt admission policy explicitly"
+    );
+    let material_summary = read_result
+        .get("summary")
         .and_then(|v| v.as_object())
-        .expect("readResult.archiveSummary object");
+        .expect("readResult.summary object");
     assert!(
-        archive_summary
-            .get("payloadCount")
+        material_summary
+            .get("itemCount")
             .and_then(|v| v.as_u64())
             .is_some(),
-        "archiveSummary.payloadCount should be present"
+        "summary.itemCount should be present"
     );
-    let archive_record = read_result.get("archiveRecord").and_then(|v| v.as_object());
+    let material_record = read_result.get("record").and_then(|v| v.as_object());
     assert!(
-        archive_record.is_none(),
-        "summary projection should not include archiveRecord detail payloads"
+        material_record.is_none(),
+        "summary projection should not include material record detail payloads"
     );
 
     registry
@@ -1359,12 +1426,12 @@ async fn extrospection_session_retrieve_ref_returns_typed_archive_record() {
         Some("identity")
     );
     assert!(
-        identity_result.get("archiveSummary").is_none(),
-        "identity projection should omit archive summary"
+        identity_result.get("summary").is_none(),
+        "identity projection should omit material summary"
     );
     assert!(
-        identity_result.get("archiveRecord").is_none(),
-        "identity projection should omit archive record"
+        identity_result.get("record").is_none(),
+        "identity projection should omit material record"
     );
 
     registry
@@ -1399,16 +1466,22 @@ async fn extrospection_session_retrieve_ref_returns_typed_archive_record() {
         Some("detail")
     );
     let detail_record = detail_result
-        .get("archiveRecord")
+        .get("record")
         .and_then(|v| v.as_object())
-        .expect("detail archiveRecord");
-    let payloads = detail_record
+        .expect("detail material record");
+    let detail_json = detail_record
+        .get("detailJson")
+        .and_then(|v| v.as_str())
+        .expect("detail material record detailJson");
+    let parsed_detail = serde_json::from_str::<serde_json::Value>(detail_json)
+        .expect("detail material detailJson must parse");
+    let payloads = parsed_detail
         .get("payloads")
         .and_then(|v| v.as_array())
-        .expect("detail archiveRecord.payloads array");
+        .expect("detail material payloads array");
     assert!(
         !payloads.is_empty(),
-        "detail projection should include archive payload entries"
+        "detail projection should include material payload entries"
     );
     let source = payloads[0].get("source").and_then(|v| v.as_str());
     assert!(
@@ -1515,6 +1588,134 @@ async fn extrospection_retrieve_ref_enforces_hard_budget_caps() {
     assert!(
         exhausted,
         "read envelope loop should eventually hit hard budget cap"
+    );
+}
+
+#[tokio::test]
+async fn extrospection_detail_retrieve_ref_budgets_escaped_read_result_bytes() {
+    let _suite_guard = suite_lock().lock().await;
+    let registry = Arc::new(ToolRegistry::new());
+    let context = ContextId::new(9, 20);
+    let caller =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000718").unwrap());
+    let store = seeded_store_for_detail_budget_regression(&context, &caller).await;
+    registry
+        .register_bundle(SystemBundle::new_with_provenance(
+            Arc::new(MockAgentList::new(vec![])),
+            registry.clone(),
+            Arc::new(MockA2aHandler),
+            store.clone(),
+        ))
+        .unwrap();
+
+    let session_id = registry
+        .open_session("system/extrospection", json!({}), &context, &caller)
+        .await
+        .unwrap();
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "resource": "llm_calls",
+                "agentId": caller.as_str(),
+                "pageSize": 1
+            }),
+        )
+        .await
+        .unwrap();
+    let initial = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+    let initial_output = match initial {
+        ToolStep::Done {
+            output: Some(output),
+        } => output,
+        other => panic!("expected Done(Some(output)), got {:?}", other),
+    };
+    let payload = initial_output
+        .get("payloadJson")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .or_else(|| initial_output.get("payload").cloned())
+        .expect("payloadJson or payload field must be present");
+    let rows = payload
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .expect("rows array");
+    let retrieve_ref = rows
+        .iter()
+        .find_map(|row| row.get("llm_call_ref").and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .expect("llm_call_ref in rows");
+
+    let raw_record = store
+        .resolve_archive_ref(&retrieve_ref)
+        .await
+        .unwrap()
+        .expect("resolved raw provenance record");
+    let raw_bytes = serde_json::to_vec(&raw_record)
+        .expect("serialize raw provenance record")
+        .len();
+    assert!(
+        raw_bytes < 64 * 1024,
+        "test fixture must stay under the raw record cap; got {raw_bytes} bytes"
+    );
+
+    let resolver = ProvenanceAddressedMaterialResolver::new(store.clone());
+    let material = resolver
+        .resolve_material_ref(&retrieve_ref)
+        .await
+        .unwrap()
+        .expect("resolved material record");
+    let detail_bytes = serde_json::to_vec(&material.to_read_result(
+        baml_rt_tools::tools::SessionReadMode::RetrieveRef,
+        MaterialProjection::Detail,
+    ))
+    .expect("serialize detail read result")
+    .len();
+    assert!(
+        detail_bytes > 64 * 1024,
+        "test fixture must exceed the readResult cap once detailJson is escaped; got {detail_bytes} bytes"
+    );
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "resource": "llm_calls",
+                "read": {
+                    "refId": retrieve_ref,
+                    "projection": "detail"
+                }
+            }),
+        )
+        .await
+        .unwrap();
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+    let output = match step {
+        ToolStep::Done {
+            output: Some(output),
+        } => output,
+        other => panic!("expected Done(Some(output)), got {:?}", other),
+    };
+    assert_eq!(output.get("readResult"), None);
+    assert_eq!(
+        output.get("budgetExhausted").and_then(|v| v.as_bool()),
+        Some(true),
+        "detail reads that exceed the wire cap must stop before returning the readResult"
+    );
+    let budget = output
+        .get("retrievalBudget")
+        .and_then(|v| v.as_object())
+        .expect("retrievalBudget object");
+    assert_eq!(
+        budget.get("bytesUsed").and_then(|v| v.as_u64()),
+        Some(0),
+        "rejected detail reads should not consume retrieval bytes"
     );
 }
 
