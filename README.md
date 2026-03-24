@@ -105,12 +105,19 @@ The `baml-rt` crate exposes feature-gated modules:
 
 Default features enable all of the above.
 
+## Documentation
+
+- **[How to write agents](docs/how-to-write-agents.md)** — Primary guide: package layout, A2A entrypoints, `ToolSessionPlan`, plan/intent + ReAct, `StructuredReply`, and **history / citations**.
+- **Deep references:** [Intent-based planning & session prompting](docs/intent-based-planning-and-session-prompting.md), [Agent patterns](docs/agent-patterns.md), [Host tool guide (Rust)](docs/host-tool-guide.md), [Citable history & citations](docs/citable-history-and-checked-citations.md).
+
 ## BAML ↔ Host Tool Contract
 
-Host tools are **session-based**. BAML returns a declarative `ToolSessionPlan`
-that describes FSM steps (`Open`, `Send`, `Next`, `Finish`, `Abort`), and the
-runtime executes those steps **in Rust**. JavaScript never mediates host tool
-execution; JS only handles JS tools via `invokeTool`.
+Host tools are **session-based**. BAML returns a declarative session **fragment**
+(typically `step` + `op`, or a flat `op` object) with `Open`, `Send`, `Read`,
+`Finish`, `Abort`; the runtime executes each fragment **in Rust**. JavaScript
+does not mediate host tool execution except via generated helpers such as
+`openToolSession`; JS-only tools use `invokeTool`. Authoring details:
+[docs/how-to-write-agents.md](docs/how-to-write-agents.md) §3.
 
 `Open.initial_input` is open-time session configuration (for tools that define
 it). `Send.input` carries per-turn payloads.
@@ -151,7 +158,7 @@ Binaries that call `baml_rt_observability::init_tracing()` merge defaults such a
 
 ## Conversation Handling (A2A DSL)
 
-The **best reference** for multi-turn conversation and task lifecycle is the
+See **[How to write agents](docs/how-to-write-agents.md)** for the full authoring story. The **best reference** for multi-turn conversation and task lifecycle in code is the
 **task-lifecycle-demo** fixture:
 
 - **Path:** `tests/fixtures/agents/task-lifecycle-demo/src/index.ts`

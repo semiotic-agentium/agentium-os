@@ -113,35 +113,18 @@ class CalculatorOutput {
 }
 // Domain types generated from JSON schemas
 class DiscoverToolsNextOutput {
-  tools ToolDiscoveryRecordDto[]
+  tools string[]
   done bool
-  historyContext HistoryContextV1 | null?
+  history_context string | null?
 }
 
 class DiscoverToolsOpenInput {
-  reason string?
+  reason string | null?
 }
 
 class DiscoverToolsSendInput {
-  query string? @description("Optional case-insensitive filter over tool name, bundle, or description.\nOmit or null to list all discoverable tools.")
-  limit int? @description("Optional maximum number of tools to return for this Send query.\nUse a small value when you want compact, token-efficient results.")
-}
-
-class HistoryContextV1 {
-  hop int
-  op string
-  status string
-  truncated bool?
-  cursor string?
-  payload string?
-}
-
-class ToolDiscoveryRecordDto {
-  name string
-  bundle string
-  description string
-  tags string[]
-  eventSources string[]?
+  query string | null?
+  limit int | null?
 }
 
 /// Tool card for system/discover_tools: metadata for polymorphic Open selection.
@@ -190,7 +173,7 @@ class SupportCalculateToolCard {
   tool_name "support/calculate"
   description "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division."
   session_policy "Strict"
-  input_summary "{ expression: any }"
+  input_summary "{ expression: object }"
   tags string[] @description("Tool tags: support, calculate")
 }
 

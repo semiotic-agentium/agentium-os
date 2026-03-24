@@ -1,5 +1,7 @@
 # Intent-Based Planning and Session Prompting
 
+**Start with** [How to write agents](how-to-write-agents.md) for onboarding (entrypoints, tools, plans + ReAct, citations). This document is the **deep guide** for plan-anchored prompting, session template ordering, and executor discipline—it complements that model (**ReAct with plans and revision**, not a separate “heavy” paradigm).
+
 This guide defines best practices for intent-driven orchestration with host-managed session tools in this runtime.
 
 It focuses on:

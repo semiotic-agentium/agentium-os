@@ -116,7 +116,7 @@ class SupportCalculateToolCard {
   tool_name "support/calculate"
   description "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division."
   session_policy "Strict"
-  input_summary "{ expression: any }"
+  input_summary "{ expression: object }"
   tags string[] @description("Tool tags: support, calculate")
 }
 

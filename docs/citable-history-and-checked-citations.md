@@ -1,5 +1,7 @@
 # Citable history & checked citations (vs PUD-style evidence)
 
+**Agent onboarding:** [How to write agents](how-to-write-agents.md) § history and citations — this note is the **detailed contract** (wire surfaces, trust boundary, novelty vs PUD).
+
 This note captures **why** planning and provenance use **ref-table `citations`** (`Vec<String>` in the
 `#N` / `@N` vocabulary) instead of opaque “evidence” strings or parallel “derived message id” fields.
 

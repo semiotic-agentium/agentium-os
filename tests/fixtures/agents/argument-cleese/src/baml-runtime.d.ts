@@ -12,21 +12,10 @@ limit: number | null;
 grep: string | null;
  }
 
-export interface ConversationPart { text: string | null;
-raw: string | null;
-url: string | null;
-filename: string | null;
-mediaType: string | null;
+export interface InternalA2aOpenInput { target: string;
  }
 
-export interface InternalA2aOpenInput { target: InternalA2aTarget;
- }
-
-export interface InternalA2aSendInput { parts: ConversationPart[];
- }
-
-export interface InternalA2aTarget { agent_package: string;
-agent_instance_id: string;
+export interface InternalA2aSendInput { parts: string[];
  }
 
 export interface SystemInternal_a2aAbortStep { op: "Abort";

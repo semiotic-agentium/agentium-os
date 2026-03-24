@@ -255,119 +255,52 @@ class SlackOutput {
   message string
 }
 // Domain types generated from JSON schemas
-class AgentCardDto {
-  name string
-  version string
-  agentPackage string
-  agentInstanceId string
-  tools string[]
-  description string?
-  capabilities string[]
-  subscriptions AgentEventSubscriptionDto[]?
-}
-
-class AgentEventSubscriptionDto {
-  schemaVersions string[]?
-  sourceKinds string[]?
-  sourceKeys string[]?
-  sourceKeyPrefixes string[]?
-}
-
-class ConversationChunk {
-  message ConversationMessage | null?
-  task string?
-  statusUpdate string?
-  artifactUpdate string?
-}
-
-class ConversationMessage {
-  role string?
-  parts ConversationPart[]
-}
-
-class ConversationPart {
-  text string?
-  raw string?
-  url string?
-  filename string?
-  mediaType string?
-}
-
 class DiscoverAgentsNextOutput {
-  agents AgentCardDto[]
+  agents string[]
   done bool
-  historyContext HistoryContextV1 | null?
+  history_context string | null?
 }
 
 class DiscoverAgentsOpenInput {
-  reason string?
+  reason string | null?
 }
 
 class DiscoverAgentsSendInput {
-  query string? @description("Optional text filter over agent name, package, or description.")
-  requiredCapabilities string[]? @description("Only return agents that declare every listed capability.")
-  requiredSchemaVersions string[]? @description("Only return agents with a matching event subscription for any listed schema version.")
-  requiredSourceKinds string[]? @description("Only return agents with a matching event subscription for any listed source kind.")
-  limit int?
-  offset int?
+  query string | null?
+  required_capabilities string[] | null?
+  required_schema_versions string[] | null?
+  required_source_kinds string[] | null?
+  limit int | null?
+  offset int | null?
 }
 
 class DiscoverToolsNextOutput {
-  tools ToolDiscoveryRecordDto[]
+  tools string[]
   done bool
-  historyContext HistoryContextV1 | null?
+  history_context string | null?
 }
 
 class DiscoverToolsOpenInput {
-  reason string?
+  reason string | null?
 }
 
 class DiscoverToolsSendInput {
-  query string? @description("Optional case-insensitive filter over tool name, bundle, or description.\nOmit or null to list all discoverable tools.")
-  limit int? @description("Optional maximum number of tools to return for this Send query.\nUse a small value when you want compact, token-efficient results.")
-}
-
-class HistoryContextV1 {
-  hop int
-  op string
-  status string
-  truncated bool?
-  cursor string?
-  payload string?
-}
-
-enum InternalA2aCompletion {
-  DONE
-  INPUTREQUIRED
-    @alias("INPUT_REQUIRED")
-  FAILED
+  query string | null?
+  limit int | null?
 }
 
 class InternalA2aNextOutput {
-  chunks ConversationChunk[]
-  completion InternalA2aCompletion | null? @description("Present when the delegated agent paused and needs more input.")
-  historyContext HistoryContextV1 | null?
+  chunks string[]
+  completion string | null?
+  history_context string | null?
 }
 
 class InternalA2aOpenInput {
-  target InternalA2aTarget
+  target string
 }
 
 class InternalA2aSendInput {
-  parts ConversationPart[] @description("Message parts. Provide at least one with a non-empty text field.")
-}
-
-class InternalA2aTarget {
-  agent_package string
-  agent_instance_id string
-}
-
-class ToolDiscoveryRecordDto {
-  name string
-  bundle string
-  description string
-  tags string[]
-  eventSources string[]?
+  parts string[]
 }
 
 /// Tool card for support/slack: metadata for polymorphic Open selection.
@@ -415,7 +348,7 @@ class SystemDiscover_agentsToolCard {
   tool_name "system/discover_agents"
   description "Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents."
   session_policy "Strict"
-  input_summary "{ limit?: any, offset?: any, query?: any, requiredCapabilities?: any, requiredSchemaVersions?: any, requiredSourceKinds?: any }"
+  input_summary "{ limit?: any, offset?: any, query?: any, required_capabilities?: any, required_schema_versions?: any, required_source_kinds?: any }"
   tags string[] @description("Tool tags: system, discovery")
 }
 
