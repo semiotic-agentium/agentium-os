@@ -33,9 +33,9 @@ function SynthesizeCoordinatorResponse(
     {{ delegated_transcript }}
     ---END UNTRUSTED EVIDENCE---
 
-    {% if ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
     Prior conversation (for continuity only, NOT as evidence):
-    {% for msg in ctx.tags.conversation_history %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     {% endif %}

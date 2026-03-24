@@ -90,11 +90,81 @@ pub struct ClaudeToolNextOutput {
     pub history_context: Option<HistoryContextV1>,
 }
 
-// Manual JsonSchemaType + TsType for complex struct-variant enums.
-// These are opaque streaming event types; schema is intentionally permissive (any).
+// Manual JsonSchemaType + TsType for internally tagged struct-variant enums.
+// A concrete `oneOf` is required: the builder maps `{}` to BAML `any`, which the BAML compiler rejects.
 impl JsonSchemaType for ClaudeEventDto {
     fn json_schema_inline() -> serde_json::Value {
-        serde_json::json!({})
+        serde_json::json!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "assistant_text" },
+                        "text": { "type": "string" }
+                    },
+                    "required": ["kind", "text"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "assistant_thinking" },
+                        "thinking": { "type": "string" }
+                    },
+                    "required": ["kind", "thinking"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "assistant_tool_use" },
+                        "id": { "type": "string" },
+                        "name": { "type": "string" },
+                        "input": { "type": "string" }
+                    },
+                    "required": ["kind", "id", "name", "input"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "assistant_tool_result" },
+                        "tool_use_id": { "type": "string" },
+                        "content": { "type": "string" },
+                        "is_error": { "type": "boolean" }
+                    },
+                    "required": ["kind", "tool_use_id"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "system_notice" },
+                        "subtype": { "type": "string" },
+                        "cwd": { "type": "string" },
+                        "model": { "type": "string" },
+                        "data": { "type": "string" }
+                    },
+                    "required": ["kind", "subtype", "cwd", "model"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "stream_event_raw" },
+                        "event": { "type": "string" }
+                    },
+                    "required": ["kind", "event"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "terminal_result" },
+                        "subtype": { "type": "string" },
+                        "is_error": { "type": "boolean" },
+                        "num_turns": { "type": "integer" },
+                        "total_cost_usd": { "type": "number" },
+                        "result": { "type": "string" }
+                    },
+                    "required": ["kind", "subtype", "is_error", "num_turns"]
+                }
+            ]
+        })
     }
 }
 
@@ -109,7 +179,35 @@ impl TsType for ClaudeEventDto {
 
 impl JsonSchemaType for ClaudeUserContentBlockDto {
     fn json_schema_inline() -> serde_json::Value {
-        serde_json::json!({})
+        serde_json::json!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "text" },
+                        "text": { "type": "string" }
+                    },
+                    "required": ["kind", "text"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "image_url" },
+                        "url": { "type": "string" }
+                    },
+                    "required": ["kind", "url"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "image_base64" },
+                        "media_type": { "type": "string" },
+                        "data": { "type": "string" }
+                    },
+                    "required": ["kind", "media_type", "data"]
+                }
+            ]
+        })
     }
 }
 

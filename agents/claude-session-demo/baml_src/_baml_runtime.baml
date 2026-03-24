@@ -95,101 +95,38 @@ class ArchiveReadInput {
   grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
 }
 // Domain types generated from JSON schemas
-enum ClaudeCompletion {
-  DONE
-  INPUTREQUIRED
-    @alias("INPUT_REQUIRED")
-  INTERRUPTED
-}
-
-class ClaudeEventDtoVariant1 {
+class ClaudeToolNextOutputEvents {
+  kind string
   text string
-  kind string
 }
-
-class ClaudeEventDtoVariant2 {
-  thinking string
-  kind string
-}
-
-class ClaudeEventDtoVariant3 {
-  id string
-  name string
-  input string
-  kind string
-}
-
-class ClaudeEventDtoVariant4 {
-  tool_use_id string
-  content string?
-  is_error bool?
-  kind string
-}
-
-class ClaudeEventDtoVariant5 {
-  subtype string
-  cwd string
-  model string
-  data string?
-  kind string
-}
-
-class ClaudeEventDtoVariant6 {
-  event string
-  kind string
-}
-
-class ClaudeEventDtoVariant7 {
-  subtype string
-  is_error bool
-  num_turns int
-  total_cost_usd float?
-  result string?
-  kind string
-}
-
-type ClaudeEventDto = ClaudeEventDtoVariant1 | ClaudeEventDtoVariant2 | ClaudeEventDtoVariant3 | ClaudeEventDtoVariant4 | ClaudeEventDtoVariant5 | ClaudeEventDtoVariant6 | ClaudeEventDtoVariant7
-
-class ClaudeToolNextOutput {
-  events ClaudeEventDto[]
-  completion ClaudeCompletion | null?
-  historyContext HistoryContextV1 | null?
-}
-
-class ClaudeToolOpenInput {
-  workspace string?
-}
-
-class ClaudeToolSendInput {
-  prompt string?
-  content ClaudeUserContentBlockDto[]?
-}
-
-class ClaudeUserContentBlockDtoVariant1 {
-  text string
-  kind string
-}
-
-class ClaudeUserContentBlockDtoVariant2 {
-  url string
-  kind string
-}
-
-class ClaudeUserContentBlockDtoVariant3 {
-  media_type string
-  data string
-  kind string
-}
-
-type ClaudeUserContentBlockDto = ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3
 
 class HistoryContextV1 {
   hop int
   op string
   status string
-  truncated bool?
-  cursor string?
-  payload string?
+  truncated bool
+  cursor string | null?
+  payload string | null?
+}
+
+class ClaudeToolNextOutput {
+  events ClaudeToolNextOutputEvents | ClaudeToolNextOutputEvents | ClaudeToolNextOutputEvents | ClaudeToolNextOutputEvents | ClaudeToolNextOutputEvents | ClaudeToolNextOutputEvents | ClaudeToolNextOutputEvents[]
+  completion string | null?
+  history_context HistoryContextV1 | null?
+}
+
+class ClaudeToolOpenInput {
+  workspace string | null?
+}
+
+class ClaudeToolSendInputContent {
+  kind string
+  text string
+}
+
+class ClaudeToolSendInput {
+  prompt string | null?
+  content ClaudeToolSendInputContent | ClaudeToolSendInputContent | ClaudeToolSendInputContent[] | null?
 }
 
 /// Tool card for claude/dev: metadata for polymorphic Open selection.
@@ -287,9 +224,9 @@ function ChooseClaudeDevAction(
 
     {{ ctx.output_format }}
 
-    {% if ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
     Conversation history:
-    {% for msg in ctx.tags.conversation_history %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ _.role(msg.role) }}
     {{ msg.content }}
     {% endfor %}
@@ -354,9 +291,9 @@ OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown
 
 {{ ctx.output_format }}
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Conversation history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ _.role(msg.role) }}
 {{ msg.content }}
 {% endfor %}
@@ -415,9 +352,9 @@ OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown
 
 {{ ctx.output_format }}
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Conversation history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ _.role(msg.role) }}
 {{ msg.content }}
 {% endfor %}
@@ -476,9 +413,9 @@ OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown
 
 {{ ctx.output_format }}
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Conversation history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ _.role(msg.role) }}
 {{ msg.content }}
 {% endfor %}

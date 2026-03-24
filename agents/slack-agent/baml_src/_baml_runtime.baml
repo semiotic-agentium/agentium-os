@@ -583,9 +583,9 @@ CRITICAL — machine-parseable output (codegen may prefix the system line with [
 
 Use conversation history for channel IDs, cursors, and thread_ts from earlier retrieve steps on this turn.
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -633,9 +633,9 @@ CRITICAL — machine-parseable output (codegen may prefix the system line with [
 
 Use conversation history for channel IDs, cursors, and thread_ts from earlier retrieve steps on this turn.
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -683,9 +683,9 @@ CRITICAL — machine-parseable output (codegen may prefix the system line with [
 
 Use conversation history for channel IDs, cursors, and thread_ts from earlier retrieve steps on this turn.
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}

@@ -348,9 +348,9 @@ For Open: set initial_input.target to { agent_package: "{{ agent_package }}", ag
 For Send: write the message that will achieve the goal.
 Return null (string?) when the goal is satisfied or after 2+ exchanges.
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -374,9 +374,9 @@ For Open: set initial_input.target to { agent_package: "{{ agent_package }}", ag
 For Send: write the message that will achieve the goal.
 Return null (string?) when the goal is satisfied or after 2+ exchanges.
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -400,9 +400,9 @@ For Open: set initial_input.target to { agent_package: "{{ agent_package }}", ag
 For Send: write the message that will achieve the goal.
 Return null (string?) when the goal is satisfied or after 2+ exchanges.
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -421,9 +421,9 @@ function GetDiscoverAgentsPlan__select(
   prompt #"[OPEN] Open a session with: system/discover_agents.\n\nDiscover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -442,9 +442,9 @@ function GetDiscoverAgentsPlan__act__system_discover_agents(
   prompt #"[SEND] A system/discover_agents session is open. Emit Send with your query.\n\nDiscover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -463,9 +463,9 @@ function GetDiscoverAgentsPlan__continue__system_discover_agents(
   prompt #"[CONTINUE] system/discover_agents result is archived.\nCheck session history:\n- See \"@N system/discover_agents\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_agents\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_agents\" with no content yet → emit Read archive_ref=\"@N\"\n\nDiscover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}

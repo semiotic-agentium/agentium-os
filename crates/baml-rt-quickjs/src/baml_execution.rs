@@ -166,7 +166,7 @@ impl Default for ParseRetryPolicy {
 pub trait ConversationContextProvider: Send + Sync {
     /// Return conversation-history payload for the current runtime scope.
     ///
-    /// The payload is injected as `ctx.tags.conversation_history` in BAML templates.
+    /// The payload is injected as `ctx.tags['conversation_history']` in BAML templates.
     /// Provider is called with the runtime scope of the current invocation. For resume,
     /// scope must be TaskScoped with the session's `context_id` so history includes
     /// prior turns. Used in both stream and non-stream paths when conversation context

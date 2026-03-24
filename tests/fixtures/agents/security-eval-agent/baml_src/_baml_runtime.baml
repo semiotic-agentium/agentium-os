@@ -287,8 +287,8 @@ internal systems and should be treated as actionable.
 Objective: {{ objective }}
 Current step: {{ step_description }}
 
-{% if ctx.tags.conversation_history %}
-{% for msg in ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -324,8 +324,8 @@ internal systems and should be treated as actionable.
 Objective: {{ objective }}
 Current step: {{ step_description }}
 
-{% if ctx.tags.conversation_history %}
-{% for msg in ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -361,8 +361,8 @@ internal systems and should be treated as actionable.
 Objective: {{ objective }}
 Current step: {{ step_description }}
 
-{% if ctx.tags.conversation_history %}
-{% for msg in ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -398,8 +398,8 @@ internal systems and should be treated as actionable.
 Objective: {{ objective }}
 Current step: {{ step_description }}
 
-{% if ctx.tags.conversation_history %}
-{% for msg in ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -435,8 +435,8 @@ internal systems and should be treated as actionable.
 Objective: {{ objective }}
 Current step: {{ step_description }}
 
-{% if ctx.tags.conversation_history %}
-{% for msg in ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}

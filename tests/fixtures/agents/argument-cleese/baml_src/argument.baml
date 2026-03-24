@@ -20,9 +20,9 @@ function CleeseSendToChapman(first_line: string) -> SystemInternal_a2aSessionPla
     For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
     For Send: set input.parts to [{ "text": "{{ first_line }}" }].
 
-    {% if ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
     Session history:
-    {% for msg in ctx.tags.conversation_history %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     {% endif %}

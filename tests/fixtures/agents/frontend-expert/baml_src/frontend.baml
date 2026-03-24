@@ -83,7 +83,7 @@ function AnalyzeFrontend(user_message: string) -> FrontendProposal {
     Each proposal should include complete code snippets (not pseudocode) that follow the existing patterns.
     If the request is vague, propose the most impactful interpretation.
 
-    {% for message in ctx.tags.conversation_history %}
+    {% for message in ctx.tags['conversation_history'] %}
     {{ _.role(message.role) }}
     {{ message.content }}
     {% endfor %}
@@ -107,7 +107,7 @@ function FormatProposal(user_message: string, proposal: FrontendProposal) -> str
     - Use markdown: headers (##), bold for file paths, code blocks for snippets
     - Keep it concise — the full code is in the artifact; this is the overview
 
-    {% for message in ctx.tags.conversation_history %}
+    {% for message in ctx.tags['conversation_history'] %}
     {{ _.role(message.role) }}
     {{ message.content }}
     {% endfor %}

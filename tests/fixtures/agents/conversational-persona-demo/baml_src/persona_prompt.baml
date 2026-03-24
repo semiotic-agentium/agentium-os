@@ -8,9 +8,9 @@ function GetDiscoverAgentsPlan(
     Discover available agents to match the user's intent.
     Inferred intent: {{ inferred_intent }}
 
-    {% if ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
     Session history:
-    {% for msg in ctx.tags.conversation_history %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     {% endif %}
@@ -46,14 +46,14 @@ class SelectedAgent {
 function FormatCapabilities(user_message: string) -> StructuredReply {
   client DefaultClient
   prompt #"
-    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns if present in ctx.tags.conversation_history for continuity.
+    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns if present in ctx.tags['conversation_history'] for continuity.
 
     The session history below contains the list of available agents retrieved in the previous step.
     Describe what agents are available to help the user, in brutal ork persona voice.
     Match the output schema exactly (StructuredReply: parts + citations). 2-5 sentences in the text part; no tool jargon.
 
-    {% if ctx.tags.conversation_history %}
-    {% for msg in ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     {% endif %}
@@ -73,13 +73,13 @@ function SelectAgentForMessage(user_message: string) -> SelectedAgent | null {
     You do NOT perform the user's task. You only choose which specialist agent will do it. Return only the structured selection (agent_package, agent_instance_id) or null. Never generate code, scripts, or the answer yourself.
 
     The session history below contains the list of available agents retrieved in the previous step.
-    Pick the single best agent for the user's request. Use prior turns in ctx.tags.conversation_history when present (e.g. follow-ups like "use the argument one").
+    Pick the single best agent for the user's request. Use prior turns in ctx.tags['conversation_history'] when present (e.g. follow-ups like "use the argument one").
     Return that agent's agent_package and agent_instance_id only. If no agent fits, or the user just wants to know capabilities, return null. Never select conversational-persona-demo (that is this router itself).
 
     {{ ctx.output_format }}
 
-    {% if ctx.tags.conversation_history %}
-    {% for msg in ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     {% endif %}
@@ -116,8 +116,8 @@ function MakeStructuredPlan(user_message: string) -> StandardStructuredPlan {
 
     {{ ctx.output_format }}
 
-    {% if ctx.tags.conversation_history %}
-    {% for msg in ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     {% endif %}
@@ -142,9 +142,9 @@ function DecideDelegationAction(
     For Send: write the message that will achieve the goal.
     Return null (string?) when the goal is satisfied or after 2+ exchanges.
 
-    {% if ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
     Session history:
-    {% for msg in ctx.tags.conversation_history %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     {% endif %}
@@ -161,7 +161,7 @@ function PersonaReact(
 ) -> StructuredReply {
   client DefaultClient
   prompt #"
-    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns in ctx.tags.conversation_history when present for continuity.
+    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns in ctx.tags['conversation_history'] when present for continuity.
 
     The user asked: {{ user_message }}
     Plan objective: {{ plan_objective }}
@@ -170,8 +170,8 @@ function PersonaReact(
     Match the output schema exactly (StructuredReply: parts + citations).
     Synthesize across steps when needed; use ork-flavoured diction (krump, waaagh) sparingly.
 
-    {% if ctx.tags.conversation_history %}
-    {% for msg in ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     {% endif %}
@@ -190,7 +190,7 @@ function PersonaChat(user_message: string) -> string {
     - Keep responses short (2-5 sentences) unless the user asks for depth.
     - Ask one follow-up question when it helps continue the conversation.
 
-    {% for message in ctx.tags.conversation_history %}
+    {% for message in ctx.tags['conversation_history'] %}
     {{ _.role(message.role) }}
     {{ message.content }}
     {% endfor %}

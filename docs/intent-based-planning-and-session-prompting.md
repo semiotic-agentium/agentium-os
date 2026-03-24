@@ -73,9 +73,9 @@ prompt #"
   {{ ctx.output_format }}
   Inferred intent: {{ inferred_intent }}
   Allowed ops: {{ session_context.allowed_ops }}
-  {% if ctx.tags.event_log %}
+  {% if ctx.tags['event_log'] %}
   Event log (most recent context):
-  {% for event in ctx.tags.event_log %}
+  {% for event in ctx.tags['event_log'] %}
   - {{ event.role }} | {{ event.source }} | {{ event.content }}
   {% endfor %}
   {% endif %}
@@ -125,9 +125,9 @@ prompt #"
   {{ ctx.output_format }}
   Inferred intent: {{ inferred_intent }}
   Allowed ops: {{ session_context.allowed_ops }}
-  {% if ctx.tags.event_log %}
+  {% if ctx.tags['event_log'] %}
   Event log (most recent context):
-  {% for event in ctx.tags.event_log %}
+  {% for event in ctx.tags['event_log'] %}
   - {{ event.role }} | {{ event.source }} | {{ event.content }}
   {% endfor %}
   {% endif %}

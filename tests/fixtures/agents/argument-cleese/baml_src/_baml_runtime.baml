@@ -202,9 +202,9 @@ function CleeseSendToChapman__select(
 For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
 For Send: set input.parts to [{ "text": "{{ first_line }}" }].
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -224,9 +224,9 @@ function CleeseSendToChapman__act__system_internal_a2a(
 For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
 For Send: set input.parts to [{ "text": "{{ first_line }}" }].
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -246,9 +246,9 @@ function CleeseSendToChapman__continue__system_internal_a2a(
 For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
 For Send: set input.parts to [{ "text": "{{ first_line }}" }].
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
