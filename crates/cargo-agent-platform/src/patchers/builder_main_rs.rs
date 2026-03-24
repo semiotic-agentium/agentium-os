@@ -31,10 +31,7 @@ impl Patcher for BuilderMainRsPatcher {
             })?;
 
         lines.insert(insert_at, use_line);
-        lines.insert(
-            insert_at,
-            format!("#[cfg(feature = \"{tool_name}\")]"),
-        );
+        lines.insert(insert_at, format!("#[cfg(feature = \"{tool_name}\")]"));
 
         Ok(format!("{}\n", lines.join("\n")))
     }

@@ -3,7 +3,10 @@
 //! This wraps the `baml-agent-builder package` functionality with a more
 //! ergonomic CLI that supports building by agent name, path, or current directory.
 
-use std::{path::{Path, PathBuf}, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{Context, Result, bail};
 use baml_rt_builder::builder::{
@@ -180,8 +183,8 @@ async fn build_agent(agent_dir: &Path, output: &Path) -> Result<()> {
 
     if let Err(err) = build_result {
         let msg = err.to_string();
-        let local_fallback_disabled = std::env::var_os("CARGO_AGENT_PLATFORM_NO_LOCAL_FALLBACK")
-            .is_some();
+        let local_fallback_disabled =
+            std::env::var_os("CARGO_AGENT_PLATFORM_NO_LOCAL_FALLBACK").is_some();
 
         if msg.contains("Tool metadata missing for:") && !local_fallback_disabled {
             println!(

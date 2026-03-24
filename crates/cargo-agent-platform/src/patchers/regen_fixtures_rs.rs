@@ -15,7 +15,9 @@ impl Patcher for RegenFixturesRsPatcher {
 
     fn patch_for_tool(&self, content: &str, tool_name: &str) -> Result<String> {
         let crate_name = format!("baml_tools_{}", tool_name.replace('-', "_"));
-        let use_line = format!("use {crate_name} as _; // Force link so {tool_name} tool metadata is in inventory");
+        let use_line = format!(
+            "use {crate_name} as _; // Force link so {tool_name} tool metadata is in inventory"
+        );
         if content.contains(&format!("use {crate_name} as _;")) {
             return Ok(content.to_string());
         }
@@ -31,10 +33,7 @@ impl Patcher for RegenFixturesRsPatcher {
             })?;
 
         lines.insert(insert_at, use_line);
-        lines.insert(
-            insert_at,
-            format!("#[cfg(feature = \"{tool_name}\")]"),
-        );
+        lines.insert(insert_at, format!("#[cfg(feature = \"{tool_name}\")]"));
 
         Ok(format!("{}\n", lines.join("\n")))
     }
