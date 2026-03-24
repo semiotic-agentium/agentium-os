@@ -383,7 +383,8 @@ export interface ToolFailure {
     "skipLibCheck": true,
     "declaration": false,
     "sourceMap": false,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "rootDir": "./src"
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"]
 }
