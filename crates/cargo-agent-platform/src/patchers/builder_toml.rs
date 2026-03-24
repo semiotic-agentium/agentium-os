@@ -79,7 +79,9 @@ slack = ["dep:baml-tools-slack"]
         let patcher = BuilderTomlPatcher;
         let result = patcher.patch_for_tool(content, "github").unwrap();
 
-        assert!(result.contains("baml-tools-github = { path = \"../tools/github\", optional = true }"));
+        assert!(
+            result.contains("baml-tools-github = { path = \"../tools/github\", optional = true }")
+        );
         assert!(result.contains("github = [\"dep:baml-tools-github\"]"));
     }
 
@@ -99,7 +101,12 @@ github = ["dep:baml-tools-github"]
         let result = patcher.patch_for_tool(content, "github").unwrap();
 
         // Should not add duplicate feature line or dependency line
-        assert_eq!(result.matches("github = [\"dep:baml-tools-github\"]").count(), 1);
+        assert_eq!(
+            result
+                .matches("github = [\"dep:baml-tools-github\"]")
+                .count(),
+            1
+        );
         assert_eq!(
             result
                 .matches("baml-tools-github = { path = \"../tools/github\", optional = true }")
