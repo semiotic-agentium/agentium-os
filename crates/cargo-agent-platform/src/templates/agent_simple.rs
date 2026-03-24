@@ -87,10 +87,11 @@ pub fn generate_baml_prompt(prompt_name: &str, tool_ids: &[String]) -> String {
 }}
 
 client DefaultClient {{
-  provider openai
+  provider openai-generic
   options {{
-    model "gpt-4o-mini"
-    api_key env.OPENAI_API_KEY
+    model "openai/gpt-4o-mini"
+    base_url "https://openrouter.ai/api/v1"
+    api_key env.OPENROUTER_API_KEY
   }}
 }}
 "##,
@@ -144,10 +145,11 @@ function Present{pascal_name}Reply(user_message: string) -> StructuredReply {{
 }}
 
 client DefaultClient {{
-  provider openai
+  provider openai-generic
   options {{
-    model "gpt-4o-mini"
-    api_key env.OPENAI_API_KEY
+    model "openai/gpt-4o-mini"
+    base_url "https://openrouter.ai/api/v1"
+    api_key env.OPENROUTER_API_KEY
   }}
 }}
 "##,

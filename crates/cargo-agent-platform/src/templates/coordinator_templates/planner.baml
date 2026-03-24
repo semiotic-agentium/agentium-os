@@ -88,9 +88,10 @@ function PlanCoordinatorWorkflow(
 }
 
 client DefaultClient {
-  provider openai
+  provider openai-generic
   options {
-    model "gpt-4o-mini"
-    api_key env.OPENAI_API_KEY
+    model "openai/gpt-4o-mini"
+    base_url "https://openrouter.ai/api/v1"
+    api_key env.OPENROUTER_API_KEY
   }
 }
