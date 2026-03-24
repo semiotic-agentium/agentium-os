@@ -6,6 +6,28 @@ function textReply(text: string): StructuredReply {
   return { parts, citations: [] };
 }
 
+/** Plain text for dispatch ack / logging — handles legacy string or StructuredReply. */
+function plainTextFromSessionMessage(
+  message: string | StructuredReply | undefined,
+): string | null {
+  if (message == null) return null;
+  if (typeof message === "string") {
+    const t = message.trim();
+    return t.length > 0 ? t : null;
+  }
+  const parts = message.parts;
+  if (!Array.isArray(parts)) return null;
+  const texts: string[] = [];
+  for (const p of parts) {
+    if (p != null && typeof p === "object" && p.type === "text" && typeof p.text === "string") {
+      const t = p.text.trim();
+      if (t.length > 0) texts.push(t);
+    }
+  }
+  if (texts.length === 0) return null;
+  return texts.join("\n");
+}
+
 type ToolSessionHandle = {
   send(args: Record<string, unknown>): Promise<unknown>;
   continue(): Promise<unknown>;
@@ -1024,7 +1046,7 @@ async function onDispatch(
   return {
     accepted: true,
     detail:
-      normalizeOptionalString(result.message) ??
+      plainTextFromSessionMessage(result.message) ??
       `workflow-intake-agent accepted ${expectedRoutingKey}.`,
   };
 }
