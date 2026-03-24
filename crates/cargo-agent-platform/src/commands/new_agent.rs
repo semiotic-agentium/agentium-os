@@ -429,13 +429,13 @@ fn print_summary(
     println!("    tsconfig.json");
     println!("    baml_src/");
     println!("      {}_prompt.baml", slug.replace('-', "_"));
-    println!("      generated_tools.baml (after type generation)");
+    println!("      _baml_runtime.baml (after type generation)");
     println!("    src/");
     println!("      index.ts");
     println!("      baml-runtime.d.ts (after type generation)");
 }
 
-/// Create a basic agent (simple or basic-tools) using run_bootstrap.
+/// Create a basic agent (simple or basic-tools).
 fn create_basic_agent(
     output_dir: &Path,
     name: &str,
@@ -443,43 +443,28 @@ fn create_basic_agent(
     tool_ids: &[String],
     subscriptions: &[EventSubscription],
 ) -> Result<()> {
-    // Use tokio runtime to run async bootstrap
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        baml_rt_builder::builder::bootstrap::run_bootstrap(output_dir, name, description, tool_ids)
-            .await
-            .map_err(|e| anyhow::anyhow!("Bootstrap failed: {}", e))
-    })?;
+    let slug = name.to_string();
+    let prompt_name = slug.replace('-', "_");
 
-    // If subscriptions are provided, update the manifest.json
-    if !subscriptions.is_empty() {
-        update_manifest_subscriptions(output_dir, subscriptions)?;
-    }
+    std::fs::create_dir_all(output_dir.join("baml_src"))?;
+    std::fs::create_dir_all(output_dir.join("src"))?;
 
-    Ok(())
-}
+    let manifest = agent_simple::generate_manifest(&slug, description, tool_ids, subscriptions);
+    std::fs::write(output_dir.join("manifest.json"), manifest)?;
 
-/// Update manifest.json to include subscriptions.
-fn update_manifest_subscriptions(
-    output_dir: &Path,
-    subscriptions: &[EventSubscription],
-) -> Result<()> {
-    use baml_rt_core::AgentManifest;
+    let baml_prompt = agent_simple::generate_baml_prompt(&prompt_name, tool_ids);
+    std::fs::write(
+        output_dir
+            .join("baml_src")
+            .join(format!("{}_prompt.baml", prompt_name)),
+        baml_prompt,
+    )?;
 
-    let manifest_path = output_dir.join("manifest.json");
-    let content = std::fs::read_to_string(&manifest_path)
-        .context("Failed to read manifest.json for subscription update")?;
+    let index_ts = agent_simple::generate_index_ts(&prompt_name, !tool_ids.is_empty());
+    std::fs::write(output_dir.join("src").join("index.ts"), index_ts)?;
 
-    let mut manifest: AgentManifest =
-        serde_json::from_str(&content).context("Failed to parse manifest.json")?;
-
-    // Ensure discovery exists and update subscriptions
-    let discovery = manifest.discovery.get_or_insert_with(Default::default);
-    discovery.subscriptions = subscriptions.to_vec();
-
-    let updated =
-        serde_json::to_string_pretty(&manifest).context("Failed to serialize manifest")?;
-    std::fs::write(&manifest_path, updated).context("Failed to write updated manifest.json")?;
+    let tsconfig = agent_simple::generate_tsconfig();
+    std::fs::write(output_dir.join("tsconfig.json"), tsconfig)?;
 
     Ok(())
 }
@@ -566,7 +551,7 @@ fn create_coordinator_agent(
     )?;
 
     // Generate index.ts
-    let index_ts = agent_coordinator::generate_index_ts(&prompt_name);
+    let index_ts = agent_coordinator::generate_index_ts(&slug);
     std::fs::write(output_dir.join("src").join("index.ts"), index_ts)?;
 
     // Generate tsconfig.json

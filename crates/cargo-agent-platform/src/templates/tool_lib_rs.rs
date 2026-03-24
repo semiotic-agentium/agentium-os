@@ -38,6 +38,12 @@ pub struct {pascal_name}Input {{
     pub query: String,
 }}
 
+impl baml_rt_tools::DescribeAction for {pascal_name}Input {{
+    fn describe(&self) -> String {{
+        format!("query='{{}}'", self.query)
+    }}
+}}
+
 // ---------------------------------------------------------------------------
 // Output types
 // ---------------------------------------------------------------------------

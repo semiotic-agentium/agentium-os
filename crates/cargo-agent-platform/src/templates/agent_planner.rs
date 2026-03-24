@@ -1,9 +1,4 @@
-//! Planner agent template — 3-phase architecture: Intent -> Plan -> Execute.
-//!
-//! Based on the clickup-agent pattern:
-//! 1. Intent inference: Classify user message, ask for clarification, or reject
-//! 2. Planning: Generate step plan from validated intent
-//! 3. Execution: Execute plan steps via tool sessions
+//! Planner agent template — 3-phase architecture: Intent -> Plan -> Execute -> Present.
 
 use baml_rt_core::{AgentManifest, EventSubscription, package::ManifestDiscovery};
 
@@ -19,6 +14,19 @@ fn to_pascal_case(s: &str) -> String {
             }
         })
         .collect()
+}
+
+fn session_plan_type_for_tool_id(tool_id: &str) -> String {
+    let parts: Vec<&str> = tool_id.splitn(2, '/').collect();
+    if parts.len() == 2 {
+        format!(
+            "{}{}SessionPlan",
+            to_pascal_case(parts[0]),
+            to_pascal_case(parts[1])
+        )
+    } else {
+        format!("{}SessionPlan", to_pascal_case(tool_id))
+    }
 }
 
 /// Generate manifest.json content.
@@ -59,139 +67,180 @@ pub fn generate_manifest(
 pub fn generate_baml_prompt(prompt_name: &str, tool_ids: &[String]) -> String {
     let pascal_name = to_pascal_case(prompt_name);
 
-    // Determine the session plan type from the first tool
-    let session_plan_type = if tool_ids.is_empty() {
-        format!("{}SessionPlan", pascal_name)
-    } else {
-        // Convert tool ID to session plan type name
-        // e.g., "support/github" -> "SupportGithubSessionPlan"
-        let parts: Vec<&str> = tool_ids[0].splitn(2, '/').collect();
-        if parts.len() == 2 {
-            format!(
-                "{}{}SessionPlan",
-                to_pascal_case(parts[0]),
-                to_pascal_case(parts[1])
-            )
-        } else {
-            format!("{}SessionPlan", to_pascal_case(&tool_ids[0]))
-        }
-    };
-
-    format!(
-        r##"/// Phase 1 — Intent inference.
-/// Classifies whether the message is a valid request, asks for clarification
-/// if ambiguous, rejects irrelevant requests, or distills a clean intent statement.
-class NeedClarification {{
-  question string @description("A clarifying question when the request is too vague to act on.")
+    if tool_ids.is_empty() {
+        return format!(
+            r##"class NeedClarification {{
+  question string
 }}
 
 class NotRelevant {{
-  reason string @description("Why this message isn't relevant to this agent's domain.")
+  reason string
 }}
 
 class {pascal_name}Intent {{
-  intent string @description("Clean, distilled goal statement — what the user wants to do.")
-  operation_kind "read" | "write" | "delete" @description("Broad category: read (list/get), write (create/update), delete.")
+  intent string
 }}
 
 function Infer{pascal_name}Intent(user_message: string) -> NeedClarification | NotRelevant | {pascal_name}Intent {{
   client DefaultClient
   prompt #"
-    You are the intent classifier for a {pascal_name} assistant.
-    Your only job is to categorise the user's message — do NOT fetch data or execute actions.
+    You classify user intent for a {pascal_name} assistant.
+
+    - Return {pascal_name}Intent when request is relevant.
+    - Return NeedClarification only if no actionable topic is present.
+    - Return NotRelevant when request is outside this assistant's domain.
+
+    {{ ctx.output_format }}
+
+    {{ _.role('user') }}
+    {{ user_message }}
+  "#
+}}
+
+function Present{pascal_name}ToUser(user_message: string, goal: string) -> StructuredReply {{
+  client DefaultClient
+  prompt #"
+    Produce the final response for the user.
+    Return StructuredReply JSON exactly.
+
+    User request: {{ user_message }}
+    Goal: {{ goal }}
+
+    {{ ctx.output_format }}
+  "#
+}}
+
+client DefaultClient {{
+  provider openai
+  options {{
+    model "gpt-4o-mini"
+    api_key env.OPENAI_API_KEY
+  }}
+}}
+"##,
+            pascal_name = pascal_name
+        );
+    }
+
+    let session_union = tool_ids
+        .iter()
+        .map(|tool_id| session_plan_type_for_tool_id(tool_id))
+        .collect::<Vec<_>>()
+        .join(" | ");
+
+    format!(
+        r##"/// Phase 1 — Intent inference.
+class NeedClarification {{
+  question string @description("A clarifying question when the request is too vague to act on.")
+}}
+
+class NotRelevant {{
+  reason string @description("Why this message is outside this agent's domain.")
+}}
+
+class {pascal_name}Intent {{
+  intent string @description("Clean, distilled goal statement.")
+  operation_kind "read" | "write" | "delete" @description("Broad operation class for planning.")
+}}
+
+function Infer{pascal_name}Intent(user_message: string) -> NeedClarification | NotRelevant | {pascal_name}Intent {{
+  client DefaultClient
+  prompt #"
+    You classify user intent for a {pascal_name} assistant.
 
     Decision rules:
-    1. Return {pascal_name}Intent when the message is relevant to this agent's domain.
-       - intent: plain-English goal statement (normalised, no filler)
-       - operation_kind: "read" for any query/search; "write" for create/update; "delete" for delete
-    2. Return NeedClarification when the message is relevant but too vague to plan.
-    3. Return NotRelevant when the message has no connection to this agent's domain.
+    - Return {pascal_name}Intent when relevant.
+    - Return NeedClarification only if essential detail is missing.
+    - Return NotRelevant when unrelated.
 
-    {{{{ ctx.output_format }}}}
+    {{ ctx.output_format }}
 
-    {{{{ _.role('user') }}}}
-    {{{{ user_message }}}}
+    {{% if ctx.tags.conversation_history %}}
+    {{% for msg in ctx.tags.conversation_history %}}
+    {{ msg.role }}: {{ msg.content }}
+    {{% endfor %}}
+    {{% endif %}}
+
+    {{ _.role('user') }}
+    {{ user_message }}
   "#
 }}
 
 /// Phase 2 — Planning.
-/// Takes a validated intent and produces an explicit step plan.
 class {pascal_name}Plan {{
-  goal string @description("Clean goal statement (copy from intent).")
+  goal string
   steps {pascal_name}PlanStep[]
 }}
 
 class {pascal_name}PlanStep {{
-  id string @description("Stable kebab-case step ID.")
-  description string @description("What this step accomplishes.")
-  kind "navigate" | "execute" | "format"
+  id string
+  description string
+  kind "navigate" | "execute" | "synthesize"
 }}
 
 function Plan{pascal_name}Work(intent: string, operation_kind: string) -> {pascal_name}Plan {{
   client DefaultClient
   prompt #"
-    You are the planner for a {pascal_name} assistant.
-    Validated intent: {{{{ intent }}}}
-    Operation kind: {{{{ operation_kind }}}}
-    Produce a short step plan. Do NOT retrieve data or execute actions — just plan.
+    You are planning work for a {pascal_name} assistant.
 
-    Step kinds:
-    - navigate: discover IDs or resources the operation needs
-    - execute: perform the target operation once resources are known
-    - format: produce the final user-facing response from tool results
+    Intent: {{ intent }}
+    Operation kind: {{ operation_kind }}
 
-    PLAN RULES:
-    - read operations: [navigate, execute, format]
-    - write operations (create/update): [navigate, execute, format]
-    - delete operations: [navigate, execute, format]
-    - Always end with a format step.
-    - Keep step ids short and unique.
+    Rules:
+    - Return 2-4 concise steps.
+    - Always end with a synthesize step.
+    - Keep step IDs unique, lowercase, kebab-case.
 
-    {{{{ ctx.output_format }}}}
+    {{ ctx.output_format }}
   "#
 }}
 
-/// Phase 3 — Step execution.
-/// Called repeatedly by runGeneratedStepExecutor for ONE plan step at a time.
-class FinalResponse {{
-  message string @description("Final answer or summary when this step is complete.")
-}}
-
+/// Phase 3 — Tool execution step.
 function Choose{pascal_name}Action(
   goal: string,
   step_description: string,
   operation_kind: string,
-  prior_results: string?,
-  session_context: SessionContext?,
-) -> FinalResponse | {session_plan_type} {{
+) -> {session_union} {{
   client DefaultClient
   prompt #"
-    You are executing one step of a {pascal_name} plan.
-    Overall goal: {{{{ goal }}}}
-    This step: {{{{ step_description }}}}
-    Operation kind: {{{{ operation_kind }}}}
+    Execute ONE plan step using tools.
 
-    This function is called in an iterative loop. Each call you make ONE decision:
-    either execute ONE tool action fragment, or return FinalResponse when this step is done.
-    Emit exactly one FSM step object per reply.
+    Goal: {{ goal }}
+    Step: {{ step_description }}
+    Operation kind: {{ operation_kind }}
 
-    Guidance:
-    - Focus on what THIS STEP needs to accomplish, using prior_results for any context found earlier.
-    - When this step is complete, emit {{ "message": "<summary>" }}.
-
-    STRICT FSM VALIDITY:
-    - When tool work is needed: emit exactly one Send step using the schema from ctx.output_format.
-    - Only Send is valid. Never emit Open, Read, Next, Finish, or Abort.
-    - When this step is complete: emit the completion variant (message field), not a step object.
-
-    {{{{ ctx.output_format }}}}
-
-    {{% if prior_results %}}
-    Results from previous steps (use data from here):
-    {{{{ prior_results }}}}
+    {{% if ctx.tags.conversation_history %}}
+    {{% for msg in ctx.tags.conversation_history %}}
+    {{ msg.role }}: {{ msg.content }}
+    {{% endfor %}}
     {{% endif %}}
 
-    session_context: {{{{ session_context }}}}
+    Return exactly one valid tool-session step object for the current phase.
+
+    {{ ctx.output_format }}
+  "#
+}}
+
+/// Phase 4 — User-facing synthesis.
+function Present{pascal_name}ToUser(
+  user_message: string,
+  goal: string,
+) -> StructuredReply {{
+  client DefaultClient
+  prompt #"
+    You have completed tool execution. Produce the final user-visible answer.
+    Return StructuredReply JSON exactly.
+
+    User request: {{ user_message }}
+    Goal: {{ goal }}
+
+    {{% if ctx.tags.conversation_history %}}
+    {{% for msg in ctx.tags.conversation_history %}}
+    {{ msg.role }}: {{ msg.content }}
+    {{% endfor %}}
+    {{% endif %}}
+
+    {{ ctx.output_format }}
   "#
 }}
 
@@ -204,7 +253,7 @@ client DefaultClient {{
 }}
 "##,
         pascal_name = pascal_name,
-        session_plan_type = session_plan_type
+        session_union = session_union
     )
 }
 
@@ -215,69 +264,49 @@ pub fn generate_index_ts(prompt_name: &str, tool_ids: &[String]) -> String {
 
     format!(
         r##"/// <reference path="./baml-runtime.d.ts" />
-import type {{ RunContext, SessionResult }} from "./baml-runtime";
+import type {{
+  ReplyPart,
+  RunContext,
+  SessionResult,
+  StructuredReply,
+}} from "./baml-runtime";
 
-const MAX_REACT_STEPS = 8;
+const MAX_REACT_STEPS = 10;
 const MAX_CLARIFY = 2;
 
-// Type definitions for the 3-phase planner pattern
 type NeedClarification = {{ question: string }};
 type NotRelevant = {{ reason: string }};
-type {pascal_name}Intent = {{ intent: string; operation_kind: "read" | "write" | "delete" }};
-type {pascal_name}PlanStep = {{ id: string; description: string; kind: "navigate" | "execute" | "format" }};
+type {pascal_name}Intent = {{ intent: string; operation_kind?: "read" | "write" | "delete" }};
+type {pascal_name}PlanStep = {{ id: string; description: string; kind: "navigate" | "execute" | "synthesize" }};
 type {pascal_name}Plan = {{ goal: string; steps: {pascal_name}PlanStep[] }};
-type FinalResponse = {{ message: string }};
 
-// Type guards
+function textReply(text: string): StructuredReply {{
+  const parts: ReplyPart[] = [{{ type: "text", text }}];
+  return {{ parts, citations: [] }};
+}}
+
 function isObject(v: unknown): v is Record<string, unknown> {{
   return v != null && typeof v === "object";
 }}
 
+function slugGoal(goal: string): string {{
+  return goal.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "goal";
+}}
+
 function isNeedClarification(v: unknown): v is NeedClarification {{
-  return isObject(v) && typeof v.question === "string" && v.question.trim().length > 0
-    && !("message" in v) && !("intent" in v) && !("reason" in v) && !("steps" in v);
+  return isObject(v) && typeof v.question === "string" && v.question.trim().length > 0;
 }}
 
 function isNotRelevant(v: unknown): v is NotRelevant {{
-  return isObject(v) && typeof v.reason === "string" && !("question" in v) && !("intent" in v);
+  return isObject(v) && typeof v.reason === "string";
 }}
 
 function is{pascal_name}Intent(v: unknown): v is {pascal_name}Intent {{
-  return isObject(v) && typeof v.intent === "string" && v.intent.trim().length > 0
-    && typeof v.operation_kind === "string" && !("question" in v) && !("reason" in v);
+  return isObject(v) && typeof v.intent === "string" && v.intent.trim().length > 0;
 }}
 
 function is{pascal_name}Plan(v: unknown): v is {pascal_name}Plan {{
   return isObject(v) && typeof v.goal === "string" && Array.isArray(v.steps);
-}}
-
-function isFinalResponse(v: unknown): v is FinalResponse {{
-  if (!isObject(v)) return false;
-  if (typeof v.message !== "string") return false;
-  return !("steps" in v || "action" in v || "intent" in v);
-}}
-
-// Collect step results for threading context forward
-function collectStepResultsJson(steps: unknown[]): string {{
-  const outputs: unknown[] = [];
-  for (const step of steps) {{
-    if (isFinalResponse(step)) outputs.push({{ message: step.message }});
-    else if (isObject(step)) outputs.push(step);
-  }}
-  try {{
-    return JSON.stringify(outputs.length > 0 ? outputs : steps.slice(-3), null, 2).slice(0, 6000);
-  }} catch (_) {{
-    return "{{}}";
-  }}
-}}
-
-// Extract final message from step outputs
-function extractFinalMessage(steps: unknown[]): string {{
-  for (const step of [...steps].reverse()) {{
-    if (isFinalResponse(step)) return step.message;
-    if (isObject(step) && typeof step.message === "string") return step.message;
-  }}
-  return "No response generated.";
 }}
 
 {run_plan_function}
@@ -287,7 +316,6 @@ __chat_register({{
     const originalText = typeof ctx.text === "string" && ctx.text.length > 0 ? ctx.text : "unknown";
     let text = originalText;
 
-    // ── Phase 1: Intent inference ────────────────────────────────────────────
     let resolvedIntent: {pascal_name}Intent | null = null;
     for (let i = 0; i <= MAX_CLARIFY; i++) {{
       const intentResult = await Infer{pascal_name}Intent({{ user_message: text }});
@@ -297,36 +325,34 @@ __chat_register({{
         break;
       }}
       if (isNotRelevant(intentResult)) {{
-        return {{ message: `This doesn't look like a relevant request — ${{intentResult.reason}}` }};
+        return {{ message: textReply(`This request is not relevant to this agent: ${{intentResult.reason}}`) }};
       }}
       if (isNeedClarification(intentResult) && i < MAX_CLARIFY) {{
         const reply = await ctx.emit.awaitInput(intentResult.question);
         const clarifiedText = messageText(reply).trim();
         if (clarifiedText) text = clarifiedText;
       }} else {{
-        // Exhausted clarification rounds — treat message as-is.
         resolvedIntent = {{ intent: text, operation_kind: "read" }};
         break;
       }}
     }}
+
     if (!resolvedIntent) return {{ error: "Could not determine a valid intent." }};
 
-    // ── Phase 2: Planning ────────────────────────────────────────────────────
     const planResult = await Plan{pascal_name}Work({{
       intent: resolvedIntent.intent,
-      operation_kind: resolvedIntent.operation_kind,
+      operation_kind: resolvedIntent.operation_kind || "read",
     }});
+
     const plan: {pascal_name}Plan = is{pascal_name}Plan(planResult) ? planResult : {{
       goal: resolvedIntent.intent,
       steps: [
-        {{ id: "step-navigate", description: "Navigate to find required resources.", kind: "navigate" }},
-        {{ id: "step-execute", description: "Execute the target operation.", kind: "execute" }},
-        {{ id: "step-format", description: "Format results into user response.", kind: "format" }},
+        {{ id: "step-execute", description: "Execute the request with available tools.", kind: "execute" }},
+        {{ id: "step-synthesize", description: "Synthesize the final response.", kind: "synthesize" }},
       ],
     }};
 
-    // ── Phase 3: Execute plan ────────────────────────────────────────────────
-    return run{pascal_name}Plan(ctx, plan, resolvedIntent.operation_kind);
+    return run{pascal_name}Plan(ctx, text, plan, resolvedIntent.operation_kind || "read");
   }},
 }});
 "##,
@@ -339,36 +365,65 @@ __chat_register({{
 fn generate_run_plan_function(pascal_name: &str, has_tools: bool) -> String {
     if has_tools {
         format!(
-            r##"/** Execute a resolved plan: run per-step executors, return final message. */
-async function run{pascal_name}Plan(
-  ctx: RunContext,
+            r##"async function run{pascal_name}Plan(
+  _ctx: RunContext,
+  userText: string,
   plan: {pascal_name}Plan,
   operationKind: string,
 ): Promise<SessionResult> {{
   const {{ goal, steps }} = plan;
 
-  // Execute each plan step independently, threading prior results forward.
-  const toolSteps = steps.filter((s) => s.kind !== "format");
-  const allStepOutputs: unknown[][] = [];
-  let priorResultsJson: string | null = null;
+  const executionSession = typeof openA2aExecutionSession === "function"
+    ? await openA2aExecutionSession("planner-" + Date.now().toString())
+    : null;
+  const intentId = "intent-" + slugGoal(goal);
+
+  const intentPhase = executionSession
+    ? await executionSession.submitIntent({{ intentId, description: goal, citations: [] }})
+    : null;
+  const executable = intentPhase
+    ? await intentPhase.submitPlan({{
+        intentId,
+        planId: "plan-" + slugGoal(goal),
+        steps: steps.map((s, i) => ({{
+          stepId: s.id,
+          description: s.description,
+          order: i,
+          dependsOn: i > 0 ? [steps[i - 1]!.id] : [],
+        }})),
+      }})
+    : null;
 
   try {{
-    for (const toolStep of toolSteps) {{
-      const run = await runGeneratedStepExecutor("Choose{pascal_name}Action", {{
+    for (const toolStep of steps.filter((s) => s.kind !== "synthesize")) {{
+      if (executable) await executable.startStep?.(toolStep.id, ["#1"]);
+
+      await runGeneratedStepExecutor("Choose{pascal_name}Action", {{
         goal,
         step_description: toolStep.description,
         operation_kind: operationKind,
-        prior_results: priorResultsJson,
       }}, {{ max_steps: MAX_REACT_STEPS }});
 
-      allStepOutputs.push(run.steps);
-      priorResultsJson = collectStepResultsJson(run.steps);
+      if (executable) await executable.completeStep?.(toolStep.id, ["#1"]);
     }}
 
-    const finalMessage = extractFinalMessage(allStepOutputs.flat());
+    const synthStep = steps.find((s) => s.kind === "synthesize");
+    if (synthStep && executable) await executable.startStep?.(synthStep.id, ["#1"]);
+
+    let finalMessage: StructuredReply;
+    try {{
+      finalMessage = await Present{pascal_name}ToUser({{ user_message: userText, goal }});
+    }} catch (_) {{
+      finalMessage = textReply("Completed execution, but synthesis failed.");
+    }}
+
+    if (synthStep && executable) await executable.completeStep?.(synthStep.id, ["#1"]);
+    if (executable) await executable.finish?.();
+
     return {{ message: finalMessage }};
   }} catch (e) {{
     const errMsg = e instanceof Error ? e.message : String(e);
+    try {{ if (executable) await executable.abort?.(errMsg); }} catch (_) {{}}
     return {{ error: `Agent error: ${{errMsg}}` }};
   }}
 }}"##,
@@ -376,15 +431,15 @@ async function run{pascal_name}Plan(
         )
     } else {
         format!(
-            r##"/** Execute a resolved plan without tools: just format the intent as a response. */
-async function run{pascal_name}Plan(
+            r##"async function run{pascal_name}Plan(
   _ctx: RunContext,
+  userText: string,
   plan: {pascal_name}Plan,
   _operationKind: string,
 ): Promise<SessionResult> {{
-  // Without tools, we just return the goal as the response
-  // In a real implementation, you might call an LLM here
-  return {{ message: `Processed request: ${{plan.goal}}` }};
+  const goal = plan.goal || userText;
+  const message = await Present{pascal_name}ToUser({{ user_message: userText, goal }});
+  return {{ message }};
 }}"##,
             pascal_name = pascal_name
         )

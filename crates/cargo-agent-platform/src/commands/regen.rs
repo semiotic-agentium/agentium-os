@@ -1,4 +1,4 @@
-//! `regen` subcommand — regenerate generated_tools.baml and baml-runtime.d.ts for all agents.
+//! `regen` subcommand — regenerate runtime BAML prelude and baml-runtime.d.ts for agents.
 
 use std::{collections::HashSet, path::Path};
 
@@ -143,7 +143,7 @@ fn regen_agent(root: &Path) -> Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("Type generation failed: {}", e))?;
 
-        // Sync generated_*.baml tool interfaces back into the agent's baml_src
+        // Sync generated BAML artifacts (including _baml_runtime.baml) back into agent baml_src
         sync_generated_baml_files(&build_dir, &agent_dir.baml_src())
     })
 }

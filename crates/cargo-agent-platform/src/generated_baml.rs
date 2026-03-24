@@ -2,7 +2,7 @@ use std::{collections::HashSet, io::Write, path::Path};
 
 use anyhow::Result;
 
-/// Sync generated_*.baml files from build_dir to agent's baml_src.
+/// Sync generated runtime BAML files from build_dir to agent's baml_src.
 pub fn sync_generated_baml_files(
     build_dir: &baml_rt_builder::builder::BuildDir,
     dest_baml_src: &Path,
@@ -25,11 +25,15 @@ pub fn sync_generated_baml_files(
         let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !file_name.starts_with("generated_") || !file_name.ends_with(".baml") {
+        let should_sync = (file_name.starts_with("generated_") && file_name.ends_with(".baml"))
+            || file_name == "_baml_runtime.baml";
+        if !should_sync {
             continue;
         }
 
-        generated_names.insert(file_name.to_string());
+        if file_name.starts_with("generated_") && file_name.ends_with(".baml") {
+            generated_names.insert(file_name.to_string());
+        }
         let data = std::fs::read(&path)?;
         let mut tmp = tempfile::NamedTempFile::new_in(dest_baml_src)?;
         tmp.write_all(&data)?;

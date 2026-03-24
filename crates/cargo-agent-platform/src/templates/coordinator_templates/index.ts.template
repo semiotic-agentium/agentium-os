@@ -1,5 +1,10 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { ChatMessage, RunContext, SessionResult } from "./baml-runtime";
+import type {
+  ReplyPart,
+  RunContext,
+  SessionResult,
+  StructuredReply,
+} from "./baml-runtime";
 
 // Constants
 const MAX_FANOUT_CONCURRENCY = 3;
@@ -61,6 +66,21 @@ type CoordinatorAnswer = {
   gaps: string[];
   clarification_question?: string | null;
 };
+
+function textReply(text: string): StructuredReply {
+  const parts: ReplyPart[] = [{ type: "text", text }];
+  return { parts, citations: [] };
+}
+
+function coordinatorAnswerToStructured(answer: CoordinatorAnswer): StructuredReply {
+  const citations = answer.sources
+    .map((source) => source.trim())
+    .filter((source) => source.length > 0 && source !== "None");
+  const parts: ReplyPart[] = [
+    { type: "text", text: renderCoordinatorAnswer(answer) },
+  ];
+  return { parts, citations };
+}
 
 type ToolSessionHandle = {
   send(args: Record<string, unknown>): Promise<unknown>;
@@ -346,7 +366,7 @@ async function synthesize(
   userText: string,
   transcript: string,
   conversationSummary: string | null,
-): Promise<string> {
+): Promise<StructuredReply> {
   try {
     const raw = await SynthesizeCoordinatorResponse({
       user_message: userText,
@@ -354,10 +374,10 @@ async function synthesize(
       conversation_context: conversationSummary || null,
     });
     const answer = toCoordinatorAnswer(raw);
-    if (answer) return renderCoordinatorAnswer(answer);
-    return transcript || "No response generated.";
+    if (answer) return coordinatorAnswerToStructured(answer);
+    return textReply(transcript || "No response generated.");
   } catch {
-    return transcript || "Synthesis failed.";
+    return textReply(transcript || "Synthesis failed.");
   }
 }
 
@@ -379,7 +399,7 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   const agents = await discoverAgents(userText);
   
   if (agents.length === 0) {
-    return { message: "No specialist agents are currently available. Please try again later." };
+    return { message: textReply("No specialist agents are currently available. Please try again later.") };
   }
   
   ctx.emit.message("Planning workflow...");
@@ -401,7 +421,7 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   
   const directNode = plan.nodes.find((n) => n.kind === "direct_answer");
   if (directNode && directNode.prompt_template && plan.nodes.length === 1) {
-    return { message: directNode.prompt_template };
+    return { message: textReply(directNode.prompt_template) };
   }
   
   ctx.emit.message("Executing workflow...");

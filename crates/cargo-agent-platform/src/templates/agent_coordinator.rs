@@ -54,7 +54,7 @@ pub fn generate_coordinator_baml(_prompt_name: &str) -> String {
 }
 
 /// Generate the index.ts file for a coordinator agent.
-pub fn generate_index_ts(prompt_name: &str) -> String {
+pub fn generate_index_ts(agent_package: &str) -> String {
     let template = include_str!("coordinator_templates/index.ts.template");
-    template.replace("{{AGENT_NAME}}", prompt_name)
+    template.replace("{{AGENT_NAME}}", agent_package)
 }
