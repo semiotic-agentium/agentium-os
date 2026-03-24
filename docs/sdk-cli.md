@@ -782,7 +782,7 @@ cargo run -p baml-rt-builder --features http-tools,memory --bin regen_fixtures
 
 When you run `new-tool`, the generated `lib.rs` includes:
 
-- Input/Output structs with all required derives (`BamlType`, `JsonSchema`, `TS`, etc.)
+- Input/Output structs with required derives (`BamlType` for BAML + TS + JSON Schema generation)
 - Error type with `From<Error> for BamlRtError` implementation
 - Tool struct with `#[baml_tool(...)]` attribute
 - `BamlTool` trait implementation with placeholder logic
