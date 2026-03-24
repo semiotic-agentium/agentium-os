@@ -2,6 +2,8 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 set dotenv-load
 
 provenance_db := "provenance.db"
+# Separate SurrealKV store dirs (provenance + sibling config.db) so this stack can run alongside another runner using `provenance.db`.
+provenance_persona_claude_notion_db := "persona-claude-notion-provenance.db"
 runner_http_bind := "127.0.0.1:8080"
 slack_channel := "agentium-eng"
 
@@ -82,6 +84,13 @@ persona-notion: build-release
     {{builder_bin}} package --agent-dir tests/fixtures/agents/conversational-persona-demo --output conversational-persona-demo.tar.gz
     {{builder_bin}} package --agent-dir agents/notion-agent --output notion-agent.tar.gz
     {{runner_bin}} conversational-persona-demo.tar.gz notion-agent.tar.gz --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}} --web-dir web/dist
+
+# Persona + Claude session + Notion, HTTP + provenance + web UI. Requires web/dist (`cd web && npm ci && npm run build`).
+persona-claude-notion: build-release
+    {{builder_bin}} package --agent-dir tests/fixtures/agents/conversational-persona-demo --output conversational-persona-demo.tar.gz
+    {{builder_bin}} package --agent-dir agents/claude-session-demo --output claude-session-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    {{runner_bin}} conversational-persona-demo.tar.gz claude-session-agent.tar.gz notion-agent.tar.gz --serve-http {{runner_http_bind}} --provenance-db {{provenance_persona_claude_notion_db}} --web-dir web/dist
 
 # Full local dev stack: all primary dev agent packages, web UI, provenance.
 # `.env` is loaded via `set dotenv-load`. HTTP only (no --a2a-stdio) so the server stays up without a stdio client.

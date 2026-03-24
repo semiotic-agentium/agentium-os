@@ -1062,7 +1062,7 @@ fn wrap_plaintext_message(text: &str) -> Result<Value> {
         .map_err(|e| BamlRtError::InvalidArgument(format!("Failed to build stdio request: {e}")))
 }
 
-/// Provenance DB: in-memory (default) or file-backed SQLite. No FalkorDB.
+/// Provenance store: in-memory (default) or file-backed embedded SurrealDB (SurrealKV directory).
 #[derive(Debug, Clone)]
 enum ProvenanceDb {
     InMemory,
@@ -1108,7 +1108,7 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     web_dir: Option<PathBuf>,
 
-    /// Provenance SQLite database path. Default is ":memory:".
+    /// Provenance storage path: `:memory:` or a directory for embedded SurrealKV (config lives alongside as `config.db`).
     #[arg(long, value_name = "PATH", default_value = ":memory:")]
     provenance_db: String,
 
@@ -1940,7 +1940,7 @@ async fn main() -> anyhow::Result<()> {
             "Provenance backend: in-memory (:memory:). External graph_exporter cannot read this process-local data."
         ),
         ProvenanceDb::File(path) => {
-            info!(path = %path.display(), "Provenance backend: sqlite file")
+            info!(path = %path.display(), "Provenance backend: SurrealKV directory")
         }
     }
     let config_service: Arc<dyn baml_rt_config::ConfigService> = match &config.provenance_db {

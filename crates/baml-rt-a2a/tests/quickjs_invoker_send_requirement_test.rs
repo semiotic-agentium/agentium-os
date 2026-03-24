@@ -8,9 +8,10 @@ use test_support::common::{
 };
 use tokio::time::{Duration, timeout};
 
-fn init_trace() {
+/// stderr logging: honors `RUST_LOG` when set; otherwise only errors (see `EnvFilter::from_default_env`).
+fn init_tracing() {
     let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .with_target(true)
         .try_init();
@@ -68,7 +69,7 @@ async fn collect_with_agent(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_stream_phase_matrix_regression_under_load() {
-    init_trace();
+    init_tracing();
 
     let agent = build_minimal_a2a_agent_with_stream_idle_secs(
         r#"

@@ -10,7 +10,7 @@
 //! ## Concurrency model
 //!
 //! SurrealDB is async-first with native MVCC. No global mutex or dedicated worker thread
-//! is needed (unlike SQLite-based stores which require a serialized worker due to
+//! is needed (unlike synchronous embedded stores that require a serialized worker for
 //! global mutable state).
 //!
 //! ## Storage architecture
