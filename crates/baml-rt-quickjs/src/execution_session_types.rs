@@ -15,6 +15,11 @@
 //! **BAML interop:** `PlanSubmissionWire` / `PlanStepSubmission` also accept **snake_case** keys
 //! (`intent_id`, `plan_id`, `step_id`, `depends_on`) via serde `alias`, so nested `plan` objects can
 //! be built from BAML-shaped step structs without renaming fields in TypeScript.
+//!
+//! **Planning identifiers are not global provenance keys:** strings on this wire (`intentId`,
+//! `planId`, `stepId`) are **task-scoped planning aliases** (often agent-chosen or LLM-authored
+//! slugs). The host derives canonical graph entity ids by compounding them with `task_id` (and
+//! related scope); agents must never treat these strings as durable global identifiers.
 
 use baml_rt_core::{
     Citation,
@@ -56,6 +61,7 @@ pub enum ExecutionSessionCommand {
     },
 }
 
+/// Wire DTO: `intent_id` is a **planning alias** for this task’s execution session, not a global id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntentSubmissionWire {
@@ -70,6 +76,7 @@ pub struct IntentSubmissionWire {
     pub supersession: Option<String>,
 }
 
+/// Wire DTO: `intent_id` / `plan_id` are **task-scoped planning aliases**, not global provenance ids.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanSubmissionWire {
@@ -82,6 +89,8 @@ pub struct PlanSubmissionWire {
     pub supersession: Option<String>,
 }
 
+/// Wire DTO: `step_id` is a **plan-local alias** (may be LLM-authored); canonical step entities
+/// compound `task_id` + `plan_id` + this string.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanStepSubmission {

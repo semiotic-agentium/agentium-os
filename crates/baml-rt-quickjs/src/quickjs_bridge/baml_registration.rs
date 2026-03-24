@@ -1133,6 +1133,8 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                                 let mut step_deps = HashMap::new();
                                 let mut seen = HashSet::new();
 
+                                // Wire step_id / plan_id / intent_id are planning aliases (often LLM-authored).
+                                // Canonical provenance entity ids are derived server-side from task_id + these strings.
                                 for step in &plan.steps {
                                     let step_id = step.step_id.as_str().to_string();
                                     if !seen.insert(step_id.clone()) {

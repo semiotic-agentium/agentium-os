@@ -21,6 +21,15 @@ Identifiers are constructed to match the semantics of the thing they model:
   (manifest `name@version` or a package hash), never from temp extraction paths.
 - **Runner ID**: `agent:runner` is a constant control-plane identity.
 
+### Planning aliases (intent / plan / step)
+
+Strings submitted on the execution-session wire (`intentId`, `planId`, `stepId`) and echoed in
+planning query records are **not** global provenance identifiers. They are **task-scoped planning
+aliases** (often agent-chosen or LLM-authored slugs). Canonical graph nodes for intent, plan, and
+plan step entities use **derived** ids that compound `task_id` with those aliases — see
+`IntentEntityId`, `PlanEntityId`, and `PlanStepEntityId` in `id_semantics.rs` (inputs include
+`task_id` + alias).
+
 For explicit mappings and intent, see:
 `crates/baml-rt-provenance/src/id_semantics.rs` and
 `crates/baml-rt-provenance/src/normalizer.rs`.

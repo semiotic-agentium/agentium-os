@@ -281,6 +281,9 @@ pub trait ProvenanceQueryApi: Send + Sync {
     ) -> Result<Vec<ProvenanceConversationContextItem>>;
 }
 
+/// Planning snapshot for explainability. `intent_id` is the **task-scoped planning alias** from
+/// the execution-session wire (often agent-chosen or LLM-suggested text), **not** a standalone
+/// global provenance key; pair with `task_id` (and derived intent entity id in the graph).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanningIntentRecord {
     pub context_id: ContextId,
@@ -294,6 +297,9 @@ pub struct PlanningIntentRecord {
     pub superseded_by_next: Option<PlanningSupersessionKind>,
 }
 
+/// Step row in a planning snapshot. `step_id` is the **plan-local alias** (may be LLM-authored);
+/// it is not globally unique — canonical step entities in the graph use ids derived from
+/// `(task_id, plan_id, step_id)`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanningPlanStepRecord {
     pub step_id: String,
@@ -303,6 +309,8 @@ pub struct PlanningPlanStepRecord {
     pub status: String,
 }
 
+/// Planning snapshot for a committed plan. `intent_id` and `plan_id` are **task-scoped aliases**
+/// from the wire, not global provenance identifiers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanningPlanRecord {
     pub context_id: ContextId,

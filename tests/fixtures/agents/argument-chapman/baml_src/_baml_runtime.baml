@@ -30,13 +30,14 @@ class StandardStructuredPlan {
 }
 
 /// Step row for LLM-authored plans committed via execution-session `submitPlan`.
-/// `step_id` is the session-scoped alias the agent passes to `startStep` / `completeStep`.
+/// `step_id` is a plan-local alias for `startStep` / `completeStep` — not a global provenance identifier;
+/// the host derives canonical step entity ids from task scope + plan + this slug.
 /// `depends_on` lists prerequisite `step_id` values (DAG). Omit or use [] when none; use `order` for display and tie-breaking.
 class ProvenancePlanStep {
-  step_id string @description("Short slug for this step; reuse in startStep/completeStep.")
+  step_id string @description("Plan-local slug (may be LLM-authored); not globally unique — host compounds with task/plan for canonical ids. Reuse in startStep/completeStep.")
   description string @description("What this step does.")
   order int @description("Ordinal for display and tie-breaking.")
-  depends_on string[]? @description("Prerequisite step_ids; omit or [] if none (e.g. strictly linear — agent may still default chain in TS).")
+  depends_on string[]? @description("Prerequisite step_ids (same alias namespace as step_id); omit or [] if none.")
 }
 
 class HistoryContext {
