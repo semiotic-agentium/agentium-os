@@ -19,7 +19,7 @@ impl BamlRuntimeManager {
     ///
     /// struct MyTool;
     ///
-    /// #[derive(Serialize, Deserialize, JsonSchema, TS)]
+    /// #[derive(Serialize, Deserialize, BamlType)]
     /// #[ts(export)]
     /// struct MyInput {}
     ///
@@ -29,7 +29,7 @@ impl BamlRuntimeManager {
     ///     }
     /// }
     ///
-    /// #[derive(Serialize, Deserialize, JsonSchema, TS)]
+    /// #[derive(Serialize, Deserialize, BamlType)]
     /// #[ts(export)]
     /// struct MyOutput {
     ///     result: String,

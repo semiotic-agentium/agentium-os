@@ -95,46 +95,44 @@ class ArchiveReadInput {
   grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
 }
 // Domain types generated from JSON schemas
-class ConversationChunk {
-  message ConversationMessage | null?
-  task string?
-  statusUpdate string?
-  artifactUpdate string?
+class ConversationPart {
+  text string | null?
+  raw string | null?
+  url string | null?
+  filename string | null?
+  media_type string | null?
 }
 
 class ConversationMessage {
-  role string?
+  role string | null?
   parts ConversationPart[]
 }
 
-class ConversationPart {
-  text string?
-  raw string?
-  url string?
-  filename string?
-  mediaType string?
+class ConversationChunk {
+  message ConversationMessage | null?
+  task string | null?
+  status_update string | null?
+  artifact_update string | null?
 }
 
 class HistoryContextV1 {
   hop int
   op string
   status string
-  truncated bool?
-  cursor string?
-  payload string?
-}
-
-enum InternalA2aCompletion {
-  DONE
-  INPUTREQUIRED
-    @alias("INPUT_REQUIRED")
-  FAILED
+  truncated bool
+  cursor string | null?
+  payload string | null?
 }
 
 class InternalA2aNextOutput {
   chunks ConversationChunk[]
-  completion InternalA2aCompletion | null? @description("Present when the delegated agent paused and needs more input.")
-  historyContext HistoryContextV1 | null?
+  completion string | null?
+  history_context HistoryContextV1 | null?
+}
+
+class InternalA2aTarget {
+  agent_package string
+  agent_instance_id string
 }
 
 class InternalA2aOpenInput {
@@ -142,12 +140,7 @@ class InternalA2aOpenInput {
 }
 
 class InternalA2aSendInput {
-  parts ConversationPart[] @description("Message parts. Provide at least one with a non-empty text field.")
-}
-
-class InternalA2aTarget {
-  agent_package string
-  agent_instance_id string
+  parts ConversationPart[]
 }
 
 /// Tool card for system/internal_a2a: metadata for polymorphic Open selection.

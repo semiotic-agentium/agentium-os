@@ -5,6 +5,7 @@ use std::sync::Arc;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::{
     SessionPolicy, ToolHandler, parse_tool_name_and_class, register_tool,
+    tool_schema::ToolType,
     tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder},
 };
 
@@ -50,9 +51,9 @@ fn build_discover_metadata<Open, SendInput, Next>(
     description: &str,
 ) -> ToolFunctionMetadata
 where
-    Open: schemars::JsonSchema + ts_rs::TS + Send + Sync + 'static,
-    SendInput: schemars::JsonSchema + ts_rs::TS + Send + Sync + 'static,
-    Next: schemars::JsonSchema + ts_rs::TS + Send + Sync + 'static,
+    Open: ToolType + Send + Sync + 'static,
+    SendInput: ToolType + Send + Sync + 'static,
+    Next: ToolType + Send + Sync + 'static,
 {
     let (name, class_name) = parse_tool_name_and_class(tool_name)
         .expect("discover tool name is a compile-time constant");

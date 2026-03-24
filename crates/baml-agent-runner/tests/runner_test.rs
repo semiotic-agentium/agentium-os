@@ -11,6 +11,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt::{A2aRequestHandler, baml::BamlRuntimeManager, tools::BamlTool};
 use baml_rt_a2a::RegistrationMode;
 use baml_rt_core::{
@@ -24,11 +25,9 @@ use baml_rt_tools::bundles::BundleType;
 #[cfg(feature = "slack")]
 use baml_tools_slack as _;
 use flate2::{Compression, write::GzEncoder};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tar::Builder;
-use ts_rs::TS;
 
 // Bundle type for test tools (used as AddNumbersTool::Bundle; referenced in test_runner_tool_types_for_package_build).
 struct Test;
@@ -197,11 +196,10 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-// Tool type for package build and ts_rs/JsonSchema; referenced in test_runner_tool_types_for_package_build.
+// Tool type for package build (`BamlType`); referenced in test_runner_tool_types_for_package_build.
 struct AddNumbersTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct AddNumbersInput {
     a: f64,
     b: f64,
@@ -212,8 +210,7 @@ impl baml_rt_tools::DescribeAction for AddNumbersInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct AddNumbersOutput {
     result: f64,
 }

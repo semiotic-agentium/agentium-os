@@ -13,6 +13,7 @@
 //! production: the QuickJS bridge passes the invoking function name automatically).
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt::{
     interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor},
     tools::BamlTool,
@@ -34,7 +35,6 @@ use baml_rt_core::{
     context::{self, InvocationScope},
     ids::{AgentId, UuidId},
 };
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use test_support::common::{
@@ -46,7 +46,6 @@ use tokio::{
     sync::Barrier,
     time::{Duration, timeout},
 };
-use ts_rs::TS;
 
 /// Stub interceptor: strict-mode single fragment for calculator session tests.
 struct StubChooseCalcToolStrictInterceptor;
@@ -161,8 +160,7 @@ async fn test_llm_tool_calling_js() {
     // Register a tool using the trait
     struct ReverseStringTool;
 
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    #[ts(export)]
+    #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
     struct ReverseInput {
         text: String,
     }
@@ -172,8 +170,7 @@ async fn test_llm_tool_calling_js() {
         }
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    #[ts(export)]
+    #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
     struct ReverseOutput {
         reversed: String,
         original: String,
@@ -248,7 +245,7 @@ async fn test_e2e_voidship_baml_tool_calling() {
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000b1").unwrap());
     let scope = InvocationScope::synthetic_message(agent_id);
 
-    let result = context::with_scope(scope.as_scope().clone(), async {
+    let tool_choice = context::with_scope(scope.as_scope().clone(), async {
         let manager = baml_manager.lock().await;
         manager
             .invoke_function(
@@ -258,20 +255,14 @@ async fn test_e2e_voidship_baml_tool_calling() {
             )
             .await
     })
-    .await;
+    .await
+    .expect("ChooseCalcTool with strict stub should succeed (API key optional when interceptor substitutes)");
 
-    match result {
-        Ok(tool_choice) => {
-            let manager = baml_manager.lock().await;
-            let value = execute_calc_session_strict(&manager, &scope, tool_choice)
-                .await
-                .expect("strict session execution should succeed");
-            assert_eq!(value, 5.0, "Expected 2 + 3 = 5");
-        }
-        Err(e) => {
-            tracing::warn!("BAML tool selection failed: {}", e);
-        }
-    }
+    let manager = baml_manager.lock().await;
+    let value = execute_calc_session_strict(&manager, &scope, tool_choice)
+        .await
+        .expect("strict session execution should succeed");
+    assert_eq!(value, 5.0, "Expected 2 + 3 = 5");
 }
 
 /// **Purpose:** Authoritative concurrent E2E: four requests with distinct agent IDs run

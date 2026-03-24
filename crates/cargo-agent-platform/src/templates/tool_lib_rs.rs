@@ -25,18 +25,15 @@ use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::{{BamlRtError, Result}};
 use baml_rt_tools::{{baml_tool, bundles::{bundle_type}, tools::BamlTool}};
-use schemars::JsonSchema;
 use serde::{{Deserialize, Serialize}};
-use ts_rs::TS;
 
 // ---------------------------------------------------------------------------
 // Input types
 // ---------------------------------------------------------------------------
 
 /// Primary input for the {pascal_name} tool.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct {pascal_name}Input {{
     /// TODO: Define your input fields
     pub query: String,
@@ -47,8 +44,7 @@ pub struct {pascal_name}Input {{
 // ---------------------------------------------------------------------------
 
 /// Output returned by the {pascal_name} tool.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct {pascal_name}Output {{
     pub message: String,
 }}

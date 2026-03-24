@@ -2,14 +2,11 @@ use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::Result;
 use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 /// A binary arithmetic expression: left OP right.
 /// Provide integer operands and choose one of the four arithmetic operations.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct Expression {
     #[baml(description = "Left-hand integer operand.")]
     pub left: i64,
@@ -21,8 +18,7 @@ pub struct Expression {
 
 /// Arithmetic operation for a binary expression.
 /// Accepted as the variant name (e.g. 'Add') or its symbolic alias ('+', '-', '*', '/').
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub enum MathOperation {
     #[serde(alias = "+")]
     #[baml(alias = "+")]
@@ -39,8 +35,7 @@ pub enum MathOperation {
 }
 
 /// Input to the calculator tool. Construct an Expression and submit it to evaluate.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct CalculatorInput {
     #[baml(description = "The binary expression to evaluate.")]
     pub expression: Expression,
@@ -59,8 +54,7 @@ impl baml_rt_tools::DescribeAction for CalculatorInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct CalculatorOutput {
     pub expression: String,
     pub result: f64,

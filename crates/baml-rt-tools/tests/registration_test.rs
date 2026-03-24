@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt::tools::BamlTool;
 use baml_rt_core::{
     context::InvocationScope,
@@ -14,7 +15,6 @@ use baml_rt_tools::{
     bundles::BundleType,
     tools::{ToolFunctionMetadata, ToolSessionContext},
 };
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use test_support::common::{
@@ -22,7 +22,6 @@ use test_support::common::{
     setup_bridge,
 };
 use tokio::sync::Mutex;
-use ts_rs::TS;
 
 // Test bundle for test tools
 struct Test;
@@ -37,8 +36,7 @@ impl BundleType for Test {
 // Simple test tools
 struct AddNumbersTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct AddNumbersInput {
     a: f64,
     b: f64,
@@ -49,8 +47,7 @@ impl baml_rt_tools::DescribeAction for AddNumbersInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct AddNumbersOutput {
     result: f64,
 }
@@ -76,8 +73,7 @@ impl BamlTool for AddNumbersTool {
 
 struct GreetTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct GreetInput {
     name: String,
 }
@@ -87,8 +83,7 @@ impl baml_rt_tools::DescribeAction for GreetInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct GreetOutput {
     greeting: String,
 }
@@ -114,8 +109,7 @@ impl BamlTool for GreetTool {
 
 struct StreamLettersTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct StreamLettersInput {
     word: String,
 }
@@ -127,8 +121,7 @@ impl baml_rt_tools::DescribeAction for StreamLettersInput {
 
 struct SyntheticSessionEvalTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct SyntheticSessionEvalInput {
     retrieve_ref: Option<String>,
 }
@@ -138,8 +131,7 @@ impl baml_rt_tools::DescribeAction for SyntheticSessionEvalInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct SyntheticSessionEvalOutput {
     refs: Vec<String>,
     items: Vec<String>,
@@ -176,8 +168,7 @@ impl BamlTool for SyntheticSessionEvalTool {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct StreamLettersOutput {
     letters: Vec<String>,
     count: usize,
@@ -216,8 +207,7 @@ struct ScopeCaptureHandler {
     captures: Arc<StdMutex<Vec<Option<TaskId>>>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct ScopeCaptureInput {}
 impl baml_rt_tools::DescribeAction for ScopeCaptureInput {
     fn describe(&self) -> String {
@@ -225,8 +215,7 @@ impl baml_rt_tools::DescribeAction for ScopeCaptureInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct ScopeCaptureOutput {
     task_id: Option<String>,
 }
@@ -569,8 +558,7 @@ async fn test_js_tool_name_conflict_with_rust_tool() {
     // Create a Rust tool
     struct TestRustTool;
 
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    #[ts(export)]
+    #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
     struct ConflictInput {}
     impl baml_rt_tools::DescribeAction for ConflictInput {
         fn describe(&self) -> String {
@@ -578,8 +566,7 @@ async fn test_js_tool_name_conflict_with_rust_tool() {
         }
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    #[ts(export)]
+    #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
     struct ConflictOutput {
         from: String,
     }

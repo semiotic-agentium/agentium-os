@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt_core::{
     context::{self, InvocationScope, RuntimeScope},
@@ -14,10 +15,8 @@ use baml_rt_core::{
 };
 use baml_rt_tools::{BamlTool, ToolStep, bundles::BundleType};
 use proptest::prelude::*;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use ts_rs::TS;
 
 fn proptest_cfg(cases: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(cases);
@@ -35,7 +34,7 @@ impl BundleType for Test {
 
 struct EchoTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct EchoInput {
     text: String,
 }
@@ -44,7 +43,7 @@ impl baml_rt_tools::DescribeAction for EchoInput {
         "EchoInput".to_string()
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct EchoOutput {
     echo: String,
 }

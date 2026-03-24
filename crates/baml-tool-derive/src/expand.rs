@@ -67,42 +67,42 @@ fn access_tokens(access: &Option<Ident>) -> TokenStream {
     }
 }
 
+/// Emit the `with_event_sources(...)` builder call (or nothing if empty).
+///
+/// Each string is validated at registration time via `EventSourceKind::parse`.
+fn event_sources_tokens(sources: &[syn::LitStr]) -> TokenStream {
+    if sources.is_empty() {
+        return TokenStream::new();
+    }
+    let items = sources.iter().map(|s| {
+        quote! {
+            ::baml_rt_core::EventSourceKind::parse(#s).expect(
+                "baml_tool: invalid `event_sources` entry; must be a valid event source kind",
+            )
+        }
+    });
+    quote! {
+        .with_event_sources(::std::vec![#(#items),*])
+    }
+}
+
 /// Emit the `with_extra_ts_decls(...)` builder call (or nothing if empty).
+///
+/// Uses `TsType::ts_decl()` via `baml_rt_tools::ts_decl` which now delegates
+/// to the `TsType` trait from `baml-derive-core`.
 fn extra_ts_decls_tokens(extra_ts_types: &[Path]) -> TokenStream {
     if extra_ts_types.is_empty() {
         return TokenStream::new();
     }
     let decl_calls = extra_ts_types.iter().map(|ty| {
         quote! {
-            ::baml_rt_tools::ts_decl::<#ty>()
+            <#ty as ::baml_derive_core::TsType>::ts_decl()
         }
     });
     quote! {
         .with_extra_ts_decls(
             [#(#decl_calls),*].into_iter().flatten().collect()
         )
-    }
-}
-
-/// Emit the `with_event_sources(...)` builder call (or nothing if empty).
-///
-/// Safety: `parse.rs` rejects empty string literals at compile time,
-/// so `EventSourceKind::parse` will always return `Some` here.
-fn event_sources_tokens(event_sources: &[syn::LitStr]) -> TokenStream {
-    if event_sources.is_empty() {
-        return TokenStream::new();
-    }
-    let values = event_sources.iter().map(|s| {
-        let msg = format!(
-            "event_sources value {:?} validated at compile time",
-            s.value()
-        );
-        quote! {
-            ::baml_rt_core::EventSourceKind::parse(#s).unwrap_or_else(|| unreachable!(#msg))
-        }
-    });
-    quote! {
-        .with_event_sources(::std::vec![#(#values),*])
     }
 }
 
@@ -201,7 +201,6 @@ pub(crate) fn expand_impl(attrs: &ToolAttrs, impl_block: &ItemImpl) -> syn::Resu
                 class_name,
                 ::std::string::String::from(#description),
             )
-            .with_session_policy(<#self_ty as ::baml_rt_tools::tools::BamlTool>::SESSION_POLICY)
             #baml_decl
             #extra_ts
             #tags

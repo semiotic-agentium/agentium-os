@@ -4,6 +4,8 @@ Facade crate for the Agentium OS workspace. This crate re-exports the
 workspace sub-crates behind feature flags so downstream users can depend on a
 single crate and opt into specific capabilities.
 
+**Authoring agents:** see the workspace guide [`docs/how-to-write-agents.md`](../../docs/how-to-write-agents.md).
+
 ## Responsibilities
 - Feature-gated re-exports of core, tools, interceptors, QuickJS runtime, A2A,
   builder, and observability crates.

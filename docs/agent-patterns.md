@@ -1,4 +1,7 @@
 **Agent Patterns**
+
+**Onboarding:** [How to write agents](how-to-write-agents.md) — entrypoints, `ToolSessionPlan`, planning-oriented loops, and **history / citations**.
+
 This doc captures the highest‑leverage patterns for building agents in this
 codebase. It is written for coding agents and maintainers, and aims to make
 behavior deterministic, testable, and easy to evolve.

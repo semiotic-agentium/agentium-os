@@ -38,12 +38,12 @@ uuid = { workspace = true }
 [dev-dependencies]
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
+baml-derive = { path = "../baml-derive" }
+baml-derive-core = { path = "../baml-derive-core" }
 async-trait = { workspace = true }
 dotenvy = { workspace = true }
 futures-util = { workspace = true }
-schemars = { workspace = true }
 serde = { workspace = true }
-ts-rs = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
 insta = { workspace = true }

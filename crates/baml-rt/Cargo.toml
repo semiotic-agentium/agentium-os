@@ -61,7 +61,7 @@ dotenvy = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 async-trait = { workspace = true }
 test-support = { path = "../test-support" }
-schemars = { workspace = true }
-ts-rs = { workspace = true }
+baml-derive = { path = "../baml-derive" }
+baml-derive-core = { path = "../baml-derive-core" }
 uuid = { workspace = true }
 baml-rt-provenance = { path = "../baml-rt-provenance" }

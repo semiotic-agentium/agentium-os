@@ -16,16 +16,16 @@ export interface ConversationPart { text: string | null;
 raw: string | null;
 url: string | null;
 filename: string | null;
-mediaType: string | null;
+media_type: string | null;
  }
 
 export interface DiscoverAgentsOpenInput { reason: string | null;
  }
 
 export interface DiscoverAgentsSendInput { query: string | null;
-requiredCapabilities: string[] | null;
-requiredSchemaVersions: string[] | null;
-requiredSourceKinds: string[] | null;
+required_capabilities: string[] | null;
+required_schema_versions: string[] | null;
+required_source_kinds: string[] | null;
 limit: number | null;
 offset: number | null;
  }

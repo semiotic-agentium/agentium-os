@@ -47,6 +47,15 @@ fn production_agents_dir() -> Result<PathBuf> {
     Ok(workspace_root.join("agents"))
 }
 
+/// Strip trailing CR/LF and append exactly one `\n` so pre-commit `end-of-file-fixer` agrees with regen.
+fn normalize_unix_text_eof(mut bytes: Vec<u8>) -> Vec<u8> {
+    while matches!(bytes.last().copied(), Some(b'\n' | b'\r')) {
+        bytes.pop();
+    }
+    bytes.push(b'\n');
+    bytes
+}
+
 fn sync_generated_baml_files(build_dir: &BuildDir, dest_baml_src: &Path) -> Result<()> {
     let generated_src_dir = build_dir.join("baml_src");
     if !generated_src_dir.is_dir() {
@@ -73,7 +82,7 @@ fn sync_generated_baml_files(build_dir: &BuildDir, dest_baml_src: &Path) -> Resu
         }
 
         generated_names.insert(file_name.to_string());
-        let data = std::fs::read(&path)?;
+        let data = normalize_unix_text_eof(std::fs::read(&path)?);
         let mut tmp = tempfile::NamedTempFile::new_in(dest_baml_src)?;
         tmp.write_all(&data)?;
         let dest_path = dest_baml_src.join(file_name);

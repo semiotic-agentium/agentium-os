@@ -231,6 +231,45 @@ impl ExternalConstructible for ArtifactId {}
 impl MonotonicConstructible for ActivityAnchorId {}
 impl UuidConstructible for AgentId {}
 
+macro_rules! impl_id_json_schema_and_ts {
+    ($($name:ident),* $(,)?) => {
+        $(
+        impl baml_derive_core::JsonSchemaType for $name {
+            fn json_schema_inline() -> serde_json::Value {
+                serde_json::json!({"type": "string"})
+            }
+        }
+
+        impl baml_derive_core::TsType for $name {
+            fn ts_type_name() -> &'static str {
+                stringify!($name)
+            }
+
+            fn ts_decl() -> Option<String> {
+                Some(::std::format!(
+                    "export type {} = string;",
+                    stringify!($name)
+                ))
+            }
+        }
+        )*
+    };
+}
+
+impl_id_json_schema_and_ts!(
+    MessageId,
+    TaskId,
+    ContextId,
+    CorrelationId,
+    ArtifactId,
+    ActivityAnchorId,
+    AgentId,
+    ExecutionSessionId,
+    IntentId,
+    PlanId,
+    PlanStepId
+);
+
 #[cfg(test)]
 mod tests {
     //! Property tests for the planning/session typed ID newtypes.

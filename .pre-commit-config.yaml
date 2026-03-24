@@ -33,6 +33,28 @@ repos:
         pass_filenames: false
         types: [rust]
 
+      # After clippy warms the same builder/tool graph, ensure committed
+      # _baml_runtime.baml / baml-runtime.d.ts match the generator when
+      # builder, tools, or agent trees change. Skip: SKIP=regen-fixtures git commit
+      - id: regen-fixtures
+        name: regen fixtures (agents + test fixtures)
+        entry: bash scripts/pre-commit-regen-fixtures.sh
+        language: system
+        pass_filenames: true
+        files: |
+          (?x)^(
+            Cargo\.lock|
+            Cargo\.toml|
+            crates/baml-derive-core/.*|
+            crates/baml-derive/.*|
+            crates/baml-rt-builder/.*|
+            crates/baml-rt-tools/.*|
+            crates/baml-tool-derive/.*|
+            crates/tools/.*|
+            agents/.*|
+            tests/fixtures/agents/.*
+          )$
+
   # Typos - spell checker for code
   - repo: https://github.com/crate-ci/typos
     rev: v1.28.1

@@ -41,7 +41,7 @@ pub use tool_error_classify::{
 };
 pub use tool_fsm::{
     SessionPhase, ToolFailure, ToolFailureKind, ToolSession, ToolSessionError, ToolSessionId,
-    ToolStep,
+    ToolStep, tool_failure_to_baml_tool_execution_error,
 };
 pub use tool_schema::{DescribeAction, ToolType, json_schema_value, ts_decl, ts_name};
 pub use tools::{

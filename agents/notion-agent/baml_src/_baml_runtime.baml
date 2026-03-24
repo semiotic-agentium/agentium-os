@@ -164,111 +164,50 @@ class NotionOutput {
   message string
 }
 // Domain types generated from JSON schemas
+class AgentEventSubscriptionDto {
+  schema_versions string[]
+  source_kinds string[]
+  source_keys string[]
+  source_key_prefixes string[]
+}
+
 class AgentCardDto {
   name string
   version string
-  agentPackage string
-  agentInstanceId string
+  agent_package string
+  agent_instance_id string
   tools string[]
-  description string?
+  description string | null?
   capabilities string[]
-  subscriptions AgentEventSubscriptionDto[]?
-}
-
-class AgentEventSubscriptionDto {
-  schemaVersions string[]?
-  sourceKinds string[]?
-  sourceKeys string[]?
-  sourceKeyPrefixes string[]?
-}
-
-class ConversationChunk {
-  message ConversationMessage | null?
-  task string?
-  statusUpdate string?
-  artifactUpdate string?
-}
-
-class ConversationMessage {
-  role string?
-  parts ConversationPart[]
-}
-
-class ConversationPart {
-  text string?
-  raw string?
-  url string?
-  filename string?
-  mediaType string?
-}
-
-class DiscoverAgentsNextOutput {
-  agents AgentCardDto[]
-  done bool
-  historyContext HistoryContextV1 | null?
-}
-
-class DiscoverAgentsOpenInput {
-  reason string?
-}
-
-class DiscoverAgentsSendInput {
-  query string? @description("Optional text filter over agent name, package, or description.")
-  requiredCapabilities string[]? @description("Only return agents that declare every listed capability.")
-  requiredSchemaVersions string[]? @description("Only return agents with a matching event subscription for any listed schema version.")
-  requiredSourceKinds string[]? @description("Only return agents with a matching event subscription for any listed source kind.")
-  limit int?
-  offset int?
-}
-
-class DiscoverToolsNextOutput {
-  tools ToolDiscoveryRecordDto[]
-  done bool
-  historyContext HistoryContextV1 | null?
-}
-
-class DiscoverToolsOpenInput {
-  reason string?
-}
-
-class DiscoverToolsSendInput {
-  query string? @description("Optional case-insensitive filter over tool name, bundle, or description.\nOmit or null to list all discoverable tools.")
-  limit int? @description("Optional maximum number of tools to return for this Send query.\nUse a small value when you want compact, token-efficient results.")
+  subscriptions AgentEventSubscriptionDto[]
 }
 
 class HistoryContextV1 {
   hop int
   op string
   status string
-  truncated bool?
-  cursor string?
-  payload string?
+  truncated bool
+  cursor string | null?
+  payload string | null?
 }
 
-enum InternalA2aCompletion {
-  DONE
-  INPUTREQUIRED
-    @alias("INPUT_REQUIRED")
-  FAILED
+class DiscoverAgentsNextOutput {
+  agents AgentCardDto[]
+  done bool
+  history_context HistoryContextV1 | null?
 }
 
-class InternalA2aNextOutput {
-  chunks ConversationChunk[]
-  completion InternalA2aCompletion | null? @description("Present when the delegated agent paused and needs more input.")
-  historyContext HistoryContextV1 | null?
+class DiscoverAgentsOpenInput {
+  reason string | null?
 }
 
-class InternalA2aOpenInput {
-  target InternalA2aTarget
-}
-
-class InternalA2aSendInput {
-  parts ConversationPart[] @description("Message parts. Provide at least one with a non-empty text field.")
-}
-
-class InternalA2aTarget {
-  agent_package string
-  agent_instance_id string
+class DiscoverAgentsSendInput {
+  query string | null?
+  required_capabilities string[] | null?
+  required_schema_versions string[] | null?
+  required_source_kinds string[] | null?
+  limit int | null?
+  offset int | null?
 }
 
 class ToolDiscoveryRecordDto {
@@ -276,14 +215,68 @@ class ToolDiscoveryRecordDto {
   bundle string
   description string
   tags string[]
-  eventSources string[]?
+  event_sources string[]
+}
+
+class DiscoverToolsNextOutput {
+  tools ToolDiscoveryRecordDto[]
+  done bool
+  history_context HistoryContextV1 | null?
+}
+
+class DiscoverToolsOpenInput {
+  reason string | null?
+}
+
+class DiscoverToolsSendInput {
+  query string | null?
+  limit int | null?
+}
+
+class ConversationPart {
+  text string | null?
+  raw string | null?
+  url string | null?
+  filename string | null?
+  media_type string | null?
+}
+
+class ConversationMessage {
+  role string | null?
+  parts ConversationPart[]
+}
+
+class ConversationChunk {
+  message ConversationMessage | null?
+  task string | null?
+  status_update string | null?
+  artifact_update string | null?
+}
+
+class InternalA2aNextOutput {
+  chunks ConversationChunk[]
+  completion string | null?
+  history_context HistoryContextV1 | null?
+}
+
+class InternalA2aTarget {
+  agent_package string
+  agent_instance_id string
+}
+
+class InternalA2aOpenInput {
+  target InternalA2aTarget
+}
+
+class InternalA2aSendInput {
+  parts ConversationPart[]
 }
 
 /// Tool card for support/notion: metadata for polymorphic Open selection.
 class SupportNotionToolCard {
   tool_name "support/notion"
   description "Read-only Notion access (search pages, get page, get page blocks)."
-  session_policy "MultiSend"
+  session_policy "Strict"
   input_summary "{}"
   tags string[] @description("Tool tags: support, notion, read")
 }
@@ -324,7 +317,7 @@ class SystemDiscover_agentsToolCard {
   tool_name "system/discover_agents"
   description "Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents."
   session_policy "Strict"
-  input_summary "{ limit?: any, offset?: any, query?: any, requiredCapabilities?: any, requiredSchemaVersions?: any, requiredSourceKinds?: any }"
+  input_summary "{ limit?: any, offset?: any, query?: any, required_capabilities?: any, required_schema_versions?: any, required_source_kinds?: any }"
   tags string[] @description("Tool tags: system, discovery")
 }
 

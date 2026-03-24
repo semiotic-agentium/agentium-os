@@ -2,10 +2,11 @@
 
 Agent build pipeline and packaging utilities.
 
+**Authoring agents:** [`docs/how-to-write-agents.md`](../../docs/how-to-write-agents.md) — when to run `regen_fixtures`, `steps` vs `plan_steps`, and generated artifacts.
+
 ## Responsibilities
 
 - TypeScript/JavaScript linting and compilation via OXC.
-- BAML type generation and schema handling for packaging.
 - BAML type generation and schema handling for packaging.
 - **Runtime type generation**: typed `baml-runtime.d.ts` from BAML runtime IR (no BAML source parsing).
 - Agent packaging into distributable archives.
@@ -26,7 +27,7 @@ The runtime type generator produces `dist/baml-runtime.d.ts` with:
 - **A2A task DSL**: `session(message)`, `RunContext`, `SessionEmitter`, `SessionResult`; `__chat_register({ run })` so the agent entrypoint is `run(ctx)` with `ctx.text`, `ctx.message`, `ctx.emit`; `messageText(message)` and `message.text()` for first-text extraction; `emit.awaitInput(prompt)` for INPUT_REQUIRED suspension. All in one file; no separate `a2a.ts`.
 - **Host tool session API**: `openToolSession`, tool-specific openers, and shared types (e.g. `ToolFailure`, `ToolStep`, `ToolSession`).
 
-Agent code uses `__chat_register({ run: async (ctx) => { ... } })` or `session(message).run(...)` and calls `await MyBamlFunction(args)` with full types. The **task-lifecycle-demo** fixture (`tests/fixtures/agents/task-lifecycle-demo/src/index.ts`) is the reference for conversation handling.
+Agent code uses `__chat_register({ run: async (ctx) => { ... } })` or `session(message).run(...)` and calls `await MyBamlFunction(args)` with full types. See the how-to doc for DSL overview; **task-lifecycle-demo** (`tests/fixtures/agents/task-lifecycle-demo/src/index.ts`) remains the detailed lifecycle reference.
 
 ## Binaries
 

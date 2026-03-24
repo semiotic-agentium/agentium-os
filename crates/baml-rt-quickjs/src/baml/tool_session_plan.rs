@@ -1,6 +1,41 @@
 // FSM execution for typed ToolSessionPlan fragments (Open/Send/Read/Finish/Abort).
 
+use baml_rt_core::semantics::ErrorDisposition;
+use baml_rt_tools::{ToolFailure, should_host_retry, tool_failure_to_baml_tool_execution_error};
+
 use super::{BamlRuntimeManager, ToolSessionOp, ToolSessionPlan, manager_prelude::*, open_input};
+use crate::tool_session_handle::{SendResult, ToolSessionSendBlockingOutcome};
+
+fn plan_send_tool_error_value(
+    tool_name: &str,
+    session_id: &ToolSessionId,
+    failure: &ToolFailure,
+) -> Value {
+    serde_json::json!({
+        "status": "error",
+        "tool_name": tool_name,
+        "session_id": session_id.to_string(),
+        "error": {
+            "kind": format!("{:?}", failure.kind),
+            "message": failure.message,
+            "retryable": bool::from(failure.retryability),
+            "disposition": failure.classified.disposition,
+            "code": failure.classified.code,
+            "hint": failure.classified.hint,
+            "retry_after_ms": failure.classified.retry_after_ms,
+        },
+        "result": Value::Null,
+    })
+}
+
+fn send_done_json(send_result: &SendResult) -> Value {
+    serde_json::json!({
+        "status": "done",
+        "output": send_result.header,
+        "archive_ref": send_result.archive_ref.to_string(),
+        "result": send_result.output.clone(),
+    })
+}
 
 impl BamlRuntimeManager {
     /// Recover a stale session ID by looking up the live session for this scope + tool.
@@ -189,82 +224,122 @@ impl BamlRuntimeManager {
                         )
                     })?;
                     let normalized = normalize_plan_input(input)?;
-                    // Send blocks until Done; returns archive ref + header.
-                    let mut send_result = self
+                    let chunk_timeout = std::time::Duration::from_secs(300);
+                    let mut active_session = current_session.clone();
+
+                    let mut send_outcome = self
                         .tool_session_handle()
                         .tool_session_send_blocking(
-                            &current_session,
+                            &active_session,
                             normalized.clone(),
                             &plan_scope,
                             &self.state.archive_ref_tables,
-                            std::time::Duration::from_secs(300),
+                            chunk_timeout,
                         )
                         .await;
-                    // Handle stale session: recover and retry once.
-                    send_result = match send_result {
-                        Err(BamlRtError::SessionLifecycle(
-                            SessionLifecycleError::ToolSessionNotFound { .. },
-                        )) => {
-                            let fresh = self
-                                .recover_stale_session(
-                                    &plan_scope,
-                                    &tool_name_str,
-                                    &current_session,
-                                    "Send",
-                                )
-                                .await?;
-                            session_id = Some(fresh.clone());
-                            self.tool_session_handle()
-                                .tool_session_send_blocking(
-                                    &fresh,
-                                    normalize_plan_input(serde_json::Value::Null)?,
-                                    &plan_scope,
-                                    &self.state.archive_ref_tables,
-                                    std::time::Duration::from_secs(300),
-                                )
-                                .await
-                        }
-                        other => other,
-                    };
-                    // Host-retriable failures (rate limits, transient IO): one bounded retry without a new LLM turn.
-                    send_result = match send_result {
-                        Err(ref e) if should_host_retry_baml_error(e) => {
-                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                            self.tool_session_handle()
-                                .tool_session_send_blocking(
-                                    &current_session,
-                                    normalized,
-                                    &plan_scope,
-                                    &self.state.archive_ref_tables,
-                                    std::time::Duration::from_secs(300),
-                                )
-                                .await
-                        }
-                        other => other,
-                    };
-                    let send_result = send_result?;
-                    last_output = Some(serde_json::json!({
-                        "status": "done",
-                        // Human-readable header for LLM: "@1 tool 'summary' [N lines, KB]"
-                        "output": send_result.header,
-                        "archive_ref": send_result.archive_ref.to_string(),
-                        // Raw structured output for TypeScript orchestrators that need
-                        // to parse the result without going through archive Read.
-                        "result": send_result.output,
-                    }));
-                    // Emit SendDone session step so conversation_context sees the archive.
-                    if let Some(emitter) = self.state.effect_emitter.as_ref() {
-                        let _ = emitter
-                            .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
-                                context_id: plan_scope.context_id().clone(),
-                                tool_name: tool_name_str.clone(),
-                                session_id: current_session.to_string(),
-                                op: baml_rt_core::bus::SessionStepOp::SendDone {
-                                    archive_ref: send_result.archive_ref.to_string(),
-                                    header: send_result.header.clone(),
-                                },
-                            })
+
+                    if let Err(BamlRtError::SessionLifecycle(
+                        SessionLifecycleError::ToolSessionNotFound { .. },
+                    )) = send_outcome
+                    {
+                        let fresh = self
+                            .recover_stale_session(
+                                &plan_scope,
+                                &tool_name_str,
+                                &active_session,
+                                "Send",
+                            )
+                            .await?;
+                        session_id = Some(fresh.clone());
+                        active_session = fresh;
+                        send_outcome = self
+                            .tool_session_handle()
+                            .tool_session_send_blocking(
+                                &active_session,
+                                normalize_plan_input(serde_json::Value::Null)?,
+                                &plan_scope,
+                                &self.state.archive_ref_tables,
+                                chunk_timeout,
+                            )
                             .await;
+                    }
+
+                    const MAX_HOST_RETRIES: u32 = 1u32;
+                    let mut host_attempt: u32 = 0;
+                    loop {
+                        match send_outcome {
+                            Ok(ToolSessionSendBlockingOutcome::Completed(send_result)) => {
+                                last_output = Some(send_done_json(&send_result));
+                                if let Some(emitter) = self.state.effect_emitter.as_ref() {
+                                    let _ = emitter
+                                        .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
+                                            context_id: plan_scope.context_id().clone(),
+                                            tool_name: tool_name_str.clone(),
+                                            session_id: active_session.to_string(),
+                                            op: baml_rt_core::bus::SessionStepOp::SendDone {
+                                                archive_ref: send_result.archive_ref.to_string(),
+                                                header: send_result.header.clone(),
+                                            },
+                                        })
+                                        .await;
+                                }
+                                break;
+                            }
+                            Ok(ToolSessionSendBlockingOutcome::ToolFailed(failure)) => {
+                                let retry_classified = should_host_retry(&failure.classified)
+                                    && host_attempt < MAX_HOST_RETRIES;
+                                if retry_classified {
+                                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                                    host_attempt += 1;
+                                    send_outcome = self
+                                        .tool_session_handle()
+                                        .tool_session_send_blocking(
+                                            &active_session,
+                                            normalized.clone(),
+                                            &plan_scope,
+                                            &self.state.archive_ref_tables,
+                                            chunk_timeout,
+                                        )
+                                        .await;
+                                    continue;
+                                }
+                                match failure.classified.disposition {
+                                    ErrorDisposition::Fatal => {
+                                        return Err(tool_failure_to_baml_tool_execution_error(
+                                            &failure,
+                                        ));
+                                    }
+                                    ErrorDisposition::HostRetriable
+                                    | ErrorDisposition::LlmCorrectable
+                                    | ErrorDisposition::InformAndContinue => {
+                                        last_output = Some(plan_send_tool_error_value(
+                                            &tool_name_str,
+                                            &active_session,
+                                            &failure,
+                                        ));
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(ref e)
+                                if should_host_retry_baml_error(e)
+                                    && host_attempt < MAX_HOST_RETRIES =>
+                            {
+                                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                                host_attempt += 1;
+                                send_outcome = self
+                                    .tool_session_handle()
+                                    .tool_session_send_blocking(
+                                        &active_session,
+                                        normalized.clone(),
+                                        &plan_scope,
+                                        &self.state.archive_ref_tables,
+                                        chunk_timeout,
+                                    )
+                                    .await;
+                            }
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
                 ToolSessionOp::Read {

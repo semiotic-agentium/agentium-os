@@ -1,13 +1,12 @@
 //! Tool-facing types for the Claude bundle.
 
+use baml_derive::BamlType;
+use baml_derive_core::{JsonSchemaType, TsType};
 use baml_rt_tools::tools::HistoryContextV1;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use ts_rs::TS;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ClaudeCompletion {
     #[default]
@@ -16,8 +15,7 @@ pub enum ClaudeCompletion {
     Interrupted,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClaudeEventDto {
     AssistantText {
@@ -54,16 +52,14 @@ pub enum ClaudeEventDto {
     },
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeToolOpenInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClaudeUserContentBlockDto {
     Text { text: String },
@@ -71,8 +67,7 @@ pub enum ClaudeUserContentBlockDto {
     ImageBase64 { media_type: String, data: String },
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeToolSendInput {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,13 +76,11 @@ pub struct ClaudeToolSendInput {
     pub content: Option<Vec<ClaudeUserContentBlockDto>>,
     /// Structured input (e.g. UserInput::ToolApproval). When present, session uses the right type; for ToolApproval, prompt or display_text is sent and permission is applied. Not in TS/schema (opaque JSON).
     #[serde(skip_serializing_if = "Option::is_none", rename = "userInput")]
-    #[ts(skip)]
-    #[schemars(skip)]
+    #[baml(skip)]
     pub user_input: Option<JsonValue>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeToolNextOutput {
     pub events: Vec<ClaudeEventDto>,
@@ -95,4 +88,36 @@ pub struct ClaudeToolNextOutput {
     pub completion: Option<ClaudeCompletion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_context: Option<HistoryContextV1>,
+}
+
+// Manual JsonSchemaType + TsType for complex struct-variant enums.
+// These are opaque streaming event types; schema is intentionally permissive (any).
+impl JsonSchemaType for ClaudeEventDto {
+    fn json_schema_inline() -> serde_json::Value {
+        serde_json::json!({})
+    }
+}
+
+impl TsType for ClaudeEventDto {
+    fn ts_type_name() -> &'static str {
+        "ClaudeEventDto"
+    }
+    fn ts_decl() -> Option<String> {
+        None
+    }
+}
+
+impl JsonSchemaType for ClaudeUserContentBlockDto {
+    fn json_schema_inline() -> serde_json::Value {
+        serde_json::json!({})
+    }
+}
+
+impl TsType for ClaudeUserContentBlockDto {
+    fn ts_type_name() -> &'static str {
+        "ClaudeUserContentBlockDto"
+    }
+    fn ts_decl() -> Option<String> {
+        None
+    }
 }

@@ -3,7 +3,7 @@
 use std::{borrow::Cow, fmt};
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, Retryability};
+use baml_rt_core::{BamlRtError, Retryability, semantics::ErrorDisposition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -155,6 +155,12 @@ impl ToolFailure {
     }
 }
 
+/// Preserve structured [`ClassifiedToolError`] on the [`BamlRtError`] boundary (no string round-trip).
+#[must_use]
+pub fn tool_failure_to_baml_tool_execution_error(failure: &ToolFailure) -> BamlRtError {
+    BamlRtError::ToolClassified(failure.classified.clone())
+}
+
 fn tool_failure_kind_from(error: &BamlRtError) -> ToolFailureKind {
     match error {
         BamlRtError::InvalidArgument(_) | BamlRtError::InvalidArgumentWithSource { .. } => {
@@ -164,6 +170,13 @@ fn tool_failure_kind_from(error: &BamlRtError) -> ToolFailureKind {
             ToolFailureKind::ExecutionFailed
         }
         BamlRtError::ToolExecution(_) => ToolFailureKind::ExecutionFailed,
+        BamlRtError::ToolClassified(c) => match c.disposition {
+            ErrorDisposition::HostRetriable => ToolFailureKind::RateLimited,
+            ErrorDisposition::LlmCorrectable => ToolFailureKind::InvalidInput,
+            ErrorDisposition::InformAndContinue | ErrorDisposition::Fatal => {
+                ToolFailureKind::ExecutionFailed
+            }
+        },
         _ => ToolFailureKind::Unknown,
     }
 }

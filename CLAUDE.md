@@ -26,7 +26,7 @@ cargo test -p baml-rt --features llm-tests -j 1
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --check
 
-# Full pre-commit checks (fmt, clippy, typos, cargo-check)
+# Full pre-commit checks (fmt, clippy, regen-fixtures when relevant paths change, typos, cargo-check)
 pre-commit run --all-files
 
 # Snapshot testing (provenance crate uses insta)
@@ -49,6 +49,8 @@ API keys for tests are resolved through `fnox.toml` via `FnoxFileSecretResolver`
 
 Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchain.toml`) for executing BAML functions, running JavaScript agents via QuickJS, tool orchestration, and serving A2A (agent-to-agent) protocol requests.
 
+**Agent authoring:** `docs/how-to-write-agents.md` (entrypoints, tools, plans + ReAct, citations, `StructuredReply`).
+
 ### Crate Map
 
 **Foundation**
@@ -61,7 +63,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-embedding** — Embedding and drift detection
 
 **Runtime**
-- **baml-rt-tools** — Tool trait, registry/executor, session FSM (`ToolSessionPlan` with Open/Send/Next/Finish/Abort ops)
+- **baml-rt-tools** — Tool trait, registry/executor, session FSM (`ToolSessionPlan` with Open/Send/Read/Finish/Abort ops)
 - **baml-rt-interceptor** — Interceptor trait + pipeline (pre/post execution hooks)
 - **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics
 - **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations
@@ -109,11 +111,11 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 
 ### Host Tool Contract
 
-Host tools are session-based. BAML returns a declarative `ToolSessionPlan` describing FSM steps (Open → Send* → Next → Finish/Abort). The Rust runtime executes these steps; JavaScript never mediates host tool execution.
+Host tools are session-based. BAML returns a declarative tool session fragment (wrapper `step` or flat `op`) with Open → Send / Read → Finish/Abort. The Rust runtime executes each fragment; JavaScript never mediates host tool execution except via `openToolSession` helpers.
 
 Tools have two roles: **invoke** (agent calls tool via session FSM) and optionally **produce events** (tool declares `event_sources` in metadata, host polls and routes to subscribed agents). See `docs/host-to-agent-event-delivery.md` for the full model.
 
-**BAML return shape and session plans:** Any BAML result with a top-level `"steps"` array is parsed as a `ToolSessionPlan` (steps must have `op`: Open/Send/Next/Finish/Abort). BAML functions that return a *product* plan (e.g. ordered steps for a coordinator) must use a different key (e.g. `plan_steps`) so the runtime does not treat the result as an executable session plan. Only functions that are intended to return a session plan (and are listed in the builder-generated `session_plan_functions.json`) should emit `steps`.
+**BAML return shape and session plans:** A BAML result that looks like a tool session fragment—top-level **`step`** with `op`, or a flat object with **`op`**—is parsed and executed as one FSM hop (`Open` / `Send` / `Read` / `Finish` / `Abort`). Coordinator *product* plans (ordered work for your loop) must **not** reuse that shape at the top level; use distinct fields (e.g. `plan_steps`). Session-planning BAML functions should be listed in builder-generated `session_plan_functions.json`. See `docs/how-to-write-agents.md` §3.
 
 ### Conversation Handling (A2A DSL) — Reference Example
 
@@ -147,7 +149,7 @@ Other fixtures (stream-js-tool, stream-baml-tool, conversational-context-auto, e
 
 Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 
-- **nextest (workspace)** — `cargo nextest run --workspace --locked --profile ci` with all feature flags enabled (`http-tools`, `llm-tests`, `memory`). Uses rust-cache with shared key `ci-nextest`. JUnit report published via `mikepenz/action-junit-report`. Secrets written to `fnox.toml` from GitHub secrets.
+- **nextest (workspace)** — `cargo nextest run --workspace --locked --profile ci` with all feature flags enabled (`http-tools`, `llm-tests`, `memory`). Uses rust-cache with shared key `ci-nextest`. JUnit report published via `mikepenz/action-junit-report`. Secrets written to `fnox.toml` from GitHub secrets. **`regen_fixtures` is not run in CI**; generated `agents/**` and `tests/fixtures/agents/**` outputs stay committed, refreshed locally via `just regen-fixtures` / the pre-commit `regen-fixtures` hook.
 - Toolchain: stable for build/test, nightly for `cargo fmt --check` only.
 
 ## Testing Conventions

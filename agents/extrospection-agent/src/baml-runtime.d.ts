@@ -8,18 +8,18 @@
 
 export interface AgentCardDto { name: string;
 version: string;
-agentPackage: string;
-agentInstanceId: string;
+agent_package: string;
+agent_instance_id: string;
 tools: string[];
 description: string | null;
 capabilities: string[];
-subscriptions: AgentEventSubscriptionDto[] | null;
+subscriptions: AgentEventSubscriptionDto[];
  }
 
-export interface AgentEventSubscriptionDto { schemaVersions: string[] | null;
-sourceKinds: string[] | null;
-sourceKeys: string[] | null;
-sourceKeyPrefixes: string[] | null;
+export interface AgentEventSubscriptionDto { schema_versions: string[];
+source_kinds: string[];
+source_keys: string[];
+source_key_prefixes: string[];
  }
 
 export interface ArchiveReadInput { archive_ref: string;
@@ -32,9 +32,9 @@ export interface DiscoverAgentsOpenInput { reason: string | null;
  }
 
 export interface DiscoverAgentsSendInput { query: string | null;
-requiredCapabilities: string[] | null;
-requiredSchemaVersions: string[] | null;
-requiredSourceKinds: string[] | null;
+required_capabilities: string[] | null;
+required_schema_versions: string[] | null;
+required_source_kinds: string[] | null;
 limit: number | null;
 offset: number | null;
  }
@@ -47,21 +47,21 @@ export interface ProvenanceQueryOpenInput { reason: string | null;
 
 export interface ProvenanceQuerySendInput { read: SessionReadEnvelope | null;
 resource: string;
-contextId: string | null;
-taskId: string | null;
-agentId: string | null;
+context_id: string | null;
+task_id: string | null;
+agent_id: string | null;
 provider: string | null;
 model: string | null;
-toolName: string | null;
-bamlPrompt: string | null;
-payloadText: string | null;
-groupBy: string[] | null;
-sortBy: string | null;
-sortDir: string | null;
+tool_name: string | null;
+baml_prompt: string | null;
+payload_text: string | null;
+group_by: string[] | null;
+sort_by: string | null;
+sort_dir: string | null;
 outcome: string | null;
-pageSize: number | null;
+page_size: number | null;
 cursor: string | null;
-topK: number | null;
+top_k: number | null;
  }
 
 export interface QueryIntent { resource: QueryResource;
@@ -83,13 +83,11 @@ description: string | null;
 capabilities: string[];
  }
 
-export interface SessionReadEnvelope { mode: SessionReadMode | null;
-refId: string;
+export interface SessionReadEnvelope { mode: string | null;
+ref_id: string;
 projection: string | null;
-budgetHint: number | null;
+budget_hint: number | null;
  }
-
-export type SessionReadMode = "RetrieveRef";
 
 export interface SystemDiscover_agentsAbortStep { op: "Abort";
  }

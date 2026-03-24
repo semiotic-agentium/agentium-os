@@ -1,19 +1,9 @@
 # Nextest config for BAML runtime workspace.
 # See https://nexte.st/docs/configuration/
-
-experimental = ["setup-scripts"]
-
-# Regenerate fixture TypeScript type declarations once before tests start.
-# Runs for both default and ci profiles (ci inherits from default).
-[scripts.setup.regen-fixtures]
-# Binary is pre-built in CI (see rust-ci.yml "Build regen_fixtures binary" step).
-# cargo run re-uses the cached build — no recompile needed.
-command = 'cargo run -p baml-rt-builder --features http-tools,memory,security-eval --bin regen_fixtures'
-slow-timeout = { period = "300s", terminate-after = 2 }
-
-[[profile.default.scripts]]
-filter = 'all()'
-setup = 'regen-fixtures'
+#
+# Generated fixture/agent files (`_baml_runtime.baml`, `baml-runtime.d.ts`) are
+# committed; refresh with `just regen-fixtures`. Pre-commit runs regen when
+# relevant paths are staged (see `.pre-commit-config.yaml`).
 
 [profile.ci]
 fail-fast = false

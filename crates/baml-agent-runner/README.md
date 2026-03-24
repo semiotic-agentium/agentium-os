@@ -2,6 +2,8 @@
 
 CLI for loading and executing packaged agents.
 
+**Authoring agents:** [`docs/how-to-write-agents.md`](../../docs/how-to-write-agents.md) — manifests, BAML, and how turns surface to operators (`StructuredReply`, citations).
+
 ## Responsibilities
 
 - Load and validate packaged agent archives (tar.gz with manifest, dist, baml_src).
@@ -12,9 +14,7 @@ CLI for loading and executing packaged agents.
 - Uses stream-first A2A handling internally; stdio/HTTP adapters choose whether
   to collect stream responses or forward them as live events.
 
-Agents are written against the A2A DSL (see **task-lifecycle-demo** in
-`tests/fixtures/agents/task-lifecycle-demo/` for the reference conversation
-handling example).
+The **task-lifecycle-demo** fixture (`tests/fixtures/agents/task-lifecycle-demo/`) is the in-repo reference for `awaitInput` and multi-turn lifecycle; the how-to doc links it with other patterns.
 
 ## Provenance architecture
 

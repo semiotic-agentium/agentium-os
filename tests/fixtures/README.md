@@ -24,6 +24,8 @@ This directory contains test fixtures used by the test suite.
 
   `regen_fixtures` must link every tool crate your fixtures declare (e.g. `support/crm` / `support/email` need `security-eval`; `support/slack` needs `slack`). **`--all-features`** (or at least `http-tools`) avoids “Tool metadata missing” failures.
 
+  **Pre-commit:** With `pre-commit install`, the `regen-fixtures` hook runs `regen_fixtures` when staged files match builder/tools/agent paths (see `.pre-commit-config.yaml`) and fails if `agents/` or `tests/fixtures/agents/` would change—stage the regenerated files and commit again. Skip (emergency only): `SKIP=regen-fixtures git commit …`. CI does **not** run regen; keep generated outputs committed.
+
 - **`baml/`** — BAML schema fixtures (if present)
   - Used for schema-level tests
 

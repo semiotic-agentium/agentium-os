@@ -1,13 +1,15 @@
 # Adding a Host Tool (Rust)
 
-This guide describes how to add a new host tool to Agentium OS. Host tools are executed in Rust, are session-based, and are allowlisted by agent manifests.
+This guide describes how to add a new **Rust** host tool to Agentium OS. For **agent authoring** (BAML, QuickJS, citations, `StructuredReply`), start with [How to write agents](how-to-write-agents.md).
+
+Host tools are executed in Rust, are session-based, and are allowlisted by agent manifests.
 
 ## 1) Implement the tool
 
 Create a new Rust module in `crates/baml-rt-tools/src/` and implement the `BamlTool` trait.
 
 Key requirements:
-- Provide `Input` and `Output` types (serde + schemars + ts-rs).
+- Provide `OpenInput`, `Input`, and `Output` types that implement **`serde::Serialize` / `Deserialize`** and the schema traits the registry expects—on `BamlTool`, phase payloads use **`ToolType`** (JSON Schema + TypeScript generation via the tooling pipeline in `baml-rt-tools`). BAML-facing agent types often use **`#[derive(BamlType)]`** (`baml_derive`) where appropriate; tool I/O phases are **`ToolType`** + **`DescribeAction`** where summaries are needed.
 - Provide a `description()` string (avoid unescaped quotes in descriptions).
 - Enforce action-specific required fields at runtime.
 - Map tool errors to `BamlRtError`.
