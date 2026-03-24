@@ -19,7 +19,14 @@ use crate::{
 };
 
 /// Run the new-tool command.
-pub fn run(name: &str, bundle: &str, access: &str, dry_run: bool, interactive: bool) -> Result<()> {
+pub fn run(
+    name: &str,
+    bundle: &str,
+    access: &str,
+    description: &str,
+    dry_run: bool,
+    interactive: bool,
+) -> Result<()> {
     // Validate inputs
     validate_tool_name(name)?;
     validate_bundle(bundle)?;
@@ -50,9 +57,14 @@ pub fn run(name: &str, bundle: &str, access: &str, dry_run: bool, interactive: b
     writer.stage_mkdir(&tool_dir);
     writer.stage_mkdir(&tool_src_dir);
 
-    let description = format!("{} tool for BAML runtime", capitalize_first(name));
-    let cargo_toml_content = tool_cargo_toml::generate(name, &description);
-    let lib_rs_content = tool_lib_rs::generate(name, bundle, access);
+    let default_description = format!("{} tool for BAML runtime", capitalize_first(name));
+    let description = if description.trim().is_empty() {
+        default_description.as_str()
+    } else {
+        description.trim()
+    };
+    let cargo_toml_content = tool_cargo_toml::generate(name, description);
+    let lib_rs_content = tool_lib_rs::generate(name, bundle, access, description);
 
     writer
         .stage_create(tool_dir.join("Cargo.toml"), cargo_toml_content)
@@ -83,6 +95,7 @@ pub fn run(name: &str, bundle: &str, access: &str, dry_run: bool, interactive: b
         println!("  Name:   {}", style(name).cyan());
         println!("  Bundle: {}", style(bundle).cyan());
         println!("  Access: {}", style(access).cyan());
+        println!("  Desc:   {}", style(description).cyan());
     }
 
     println!();

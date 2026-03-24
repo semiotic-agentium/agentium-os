@@ -123,6 +123,15 @@ pub fn prompt_access() -> Result<String> {
     Ok(selected.value.to_string())
 }
 
+/// Prompt for tool description.
+pub fn prompt_tool_description() -> Result<String> {
+    let description = Text::new("Description (optional):")
+        .with_help_message("Human-readable description shown in tool discovery/list")
+        .prompt()?;
+
+    Ok(description.trim().to_string())
+}
+
 // ---------------------------------------------------------------------------
 // new-agent prompts
 // ---------------------------------------------------------------------------

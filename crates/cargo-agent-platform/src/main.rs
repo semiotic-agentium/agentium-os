@@ -60,6 +60,10 @@ enum Commands {
         #[arg(long)]
         access: Option<String>,
 
+        /// Human-readable description for this tool
+        #[arg(long)]
+        description: Option<String>,
+
         /// Validate and print planned changes without writing files; exits non-zero on validation failures (non-interactive only)
         #[arg(long)]
         dry_run: bool,
@@ -159,6 +163,7 @@ fn main() -> anyhow::Result<()> {
             name,
             bundle,
             access,
+            description,
             dry_run,
         } => {
             // Interactive mode when name is not provided
@@ -181,10 +186,16 @@ fn main() -> anyhow::Result<()> {
                 None => "read".to_string(),
             };
 
+            let description = match description {
+                Some(d) => d,
+                None if interactive => interactive::prompt_tool_description()?,
+                None => String::new(),
+            };
+
             // In interactive mode, ignore --dry-run (confirmation prompt replaces it)
             let dry_run = if interactive { false } else { dry_run };
 
-            commands::new_tool::run(&name, &bundle, &access, dry_run, interactive)
+            commands::new_tool::run(&name, &bundle, &access, &description, dry_run, interactive)
         }
 
         Commands::NewAgent {
