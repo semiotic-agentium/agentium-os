@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use inquire::{Confirm, MultiSelect, Select, Text};
 
-use crate::{text::truncate_for_display, tool_catalog::load_cli_tools};
+use crate::{text::truncate_for_display, tool_catalog::load_cli_tools_for_picker};
 
 /// Known schema versions for event delivery.
 ///
@@ -192,7 +192,7 @@ pub fn prompt_template() -> Result<String> {
 
 /// Prompt for tool selection (multi-select from inventory).
 pub fn prompt_tools() -> Result<Option<String>> {
-    let tools = load_cli_tools()?;
+    let tools = load_cli_tools_for_picker()?;
 
     if tools.is_empty() {
         println!("No tools found.");

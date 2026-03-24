@@ -20,11 +20,19 @@ fn session_plan_type_for_tool_id(tool_id: &str) -> String {
     if parts.len() == 2 {
         format!(
             "{}{}SessionPlan",
-            to_pascal_case(parts[0]),
-            to_pascal_case(parts[1])
+            capitalize_first(parts[0]),
+            capitalize_first(parts[1])
         )
     } else {
-        format!("{}SessionPlan", to_pascal_case(tool_id))
+        format!("{}SessionPlan", capitalize_first(tool_id))
+    }
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 

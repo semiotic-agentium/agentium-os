@@ -26,7 +26,13 @@ pub fn load_cli_tools() -> Result<Vec<CliTool>> {
         merged.insert(tool.id.clone(), tool);
     }
 
-    Ok(merged.into_values().collect())
+    let mut tools: Vec<CliTool> = merged.into_values().collect();
+    tools.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(tools)
+}
+
+pub fn load_cli_tools_for_picker() -> Result<Vec<CliTool>> {
+    Ok(canonicalize_tools(load_cli_tools()?))
 }
 
 fn inventory_tools() -> Vec<CliTool> {
@@ -145,4 +151,107 @@ fn parse_baml_tool_attrs(content: &str) -> Vec<CliTool> {
     }
 
     out
+}
+
+fn canonicalize_tools(tools: Vec<CliTool>) -> Vec<CliTool> {
+    let mut by_family: BTreeMap<(String, String), Vec<CliTool>> = BTreeMap::new();
+    let mut passthrough = Vec::new();
+
+    for tool in tools {
+        if let Some((bundle, local)) = split_tool_id(&tool.id) {
+            let root = family_root(local);
+            by_family
+                .entry((bundle.to_string(), root.to_string()))
+                .or_default()
+                .push(tool);
+        } else {
+            passthrough.push(tool);
+        }
+    }
+
+    let mut out = passthrough;
+    for ((_bundle, root), mut group) in by_family {
+        if group.len() == 1 {
+            out.push(group.remove(0));
+            continue;
+        }
+
+        group.sort_by(|a, b| {
+            let la = split_tool_id(&a.id)
+                .map(|(_, local)| local)
+                .unwrap_or_default();
+            let lb = split_tool_id(&b.id)
+                .map(|(_, local)| local)
+                .unwrap_or_default();
+            let a_is_root = la == root;
+            let b_is_root = lb == root;
+
+            b_is_root
+                .cmp(&a_is_root)
+                .then_with(|| la.len().cmp(&lb.len()))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        out.push(group.remove(0));
+    }
+
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+pub fn canonicalize_tool_ids(ids: &[String]) -> Vec<String> {
+    let mut by_family: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    let mut passthrough = Vec::new();
+
+    for id in ids {
+        if let Some((bundle, local)) = split_tool_id(id) {
+            let root = family_root(local);
+            by_family
+                .entry((bundle.to_string(), root.to_string()))
+                .or_default()
+                .push(id.clone());
+        } else {
+            passthrough.push(id.clone());
+        }
+    }
+
+    let mut out = passthrough;
+    for ((_bundle, root), mut group) in by_family {
+        if group.len() == 1 {
+            out.push(group.remove(0));
+            continue;
+        }
+
+        group.sort_by(|a, b| {
+            let la = split_tool_id(a).map(|(_, local)| local).unwrap_or_default();
+            let lb = split_tool_id(b).map(|(_, local)| local).unwrap_or_default();
+            let a_is_root = la == root;
+            let b_is_root = lb == root;
+            b_is_root
+                .cmp(&a_is_root)
+                .then_with(|| la.len().cmp(&lb.len()))
+                .then_with(|| a.cmp(b))
+        });
+        out.push(group.remove(0));
+    }
+
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn split_tool_id(id: &str) -> Option<(&str, &str)> {
+    let (bundle, local) = id.split_once('/')?;
+    if bundle.is_empty() || local.is_empty() {
+        return None;
+    }
+    Some((bundle, local))
+}
+
+fn family_root(local: &str) -> &str {
+    for (idx, ch) in local.char_indices() {
+        if ch.is_ascii_uppercase() {
+            return &local[..idx];
+        }
+    }
+    local
 }

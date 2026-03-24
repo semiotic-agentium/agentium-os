@@ -12,6 +12,7 @@ use console::style;
 use crate::{
     generated_baml::sync_generated_baml_files,
     templates::{agent_coordinator, agent_planner, agent_simple},
+    tool_catalog::canonicalize_tool_ids,
     workspace::find_workspace_root,
 };
 
@@ -65,7 +66,7 @@ pub fn run(
     let slug = validate_agent_name(name)?;
 
     // Parse tools
-    let tool_ids: Vec<String> = match tools {
+    let raw_tool_ids: Vec<String> = match tools {
         Some(t) if !t.trim().is_empty() => t
             .split(',')
             .map(|s| s.trim().to_string())
@@ -73,6 +74,14 @@ pub fn run(
             .collect(),
         _ => Vec::new(),
     };
+    let tool_ids = canonicalize_tool_ids(&raw_tool_ids);
+    if tool_ids.len() < raw_tool_ids.len() {
+        println!(
+            "{} Collapsed overlapping tool variants to canonical IDs: {}",
+            style("Note:").yellow(),
+            tool_ids.join(", ")
+        );
+    }
 
     // Parse subscriptions
     let subscriptions = match subscriptions {
