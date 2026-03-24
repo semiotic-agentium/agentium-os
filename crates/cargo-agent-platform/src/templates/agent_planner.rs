@@ -90,10 +90,10 @@ function Infer{pascal_name}Intent(user_message: string) -> NeedClarification | N
     - Return NeedClarification only if no actionable topic is present.
     - Return NotRelevant when request is outside this assistant's domain.
 
-    {{ ctx.output_format }}
+    {{{{ ctx.output_format }}}}
 
-    {{ _.role('user') }}
-    {{ user_message }}
+    {{{{ _.role('user') }}}}
+    {{{{ user_message }}}}
   "#
 }}
 
@@ -103,10 +103,10 @@ function Present{pascal_name}ToUser(user_message: string, goal: string) -> Struc
     Produce the final response for the user.
     Return StructuredReply JSON exactly.
 
-    User request: {{ user_message }}
-    Goal: {{ goal }}
+    User request: {{{{ user_message }}}}
+    Goal: {{{{ goal }}}}
 
-    {{ ctx.output_format }}
+    {{{{ ctx.output_format }}}}
   "#
 }}
 
@@ -153,16 +153,16 @@ function Infer{pascal_name}Intent(user_message: string) -> NeedClarification | N
     - Return NeedClarification only if essential detail is missing.
     - Return NotRelevant when unrelated.
 
-    {{ ctx.output_format }}
+    {{{{ ctx.output_format }}}}
 
     {{% if ctx.tags.conversation_history %}}
     {{% for msg in ctx.tags.conversation_history %}}
-    {{ msg.role }}: {{ msg.content }}
+    {{{{ msg.role }}}}: {{{{ msg.content }}}}
     {{% endfor %}}
     {{% endif %}}
 
-    {{ _.role('user') }}
-    {{ user_message }}
+    {{{{ _.role('user') }}}}
+    {{{{ user_message }}}}
   "#
 }}
 
@@ -183,15 +183,15 @@ function Plan{pascal_name}Work(intent: string, operation_kind: string) -> {pasca
   prompt #"
     You are planning work for a {pascal_name} assistant.
 
-    Intent: {{ intent }}
-    Operation kind: {{ operation_kind }}
+    Intent: {{{{ intent }}}}
+    Operation kind: {{{{ operation_kind }}}}
 
     Rules:
     - Return 2-4 concise steps.
     - Always end with a synthesize step.
     - Keep step IDs unique, lowercase, kebab-case.
 
-    {{ ctx.output_format }}
+    {{{{ ctx.output_format }}}}
   "#
 }}
 
@@ -205,19 +205,19 @@ function Choose{pascal_name}Action(
   prompt #"
     Execute ONE plan step using tools.
 
-    Goal: {{ goal }}
-    Step: {{ step_description }}
-    Operation kind: {{ operation_kind }}
+    Goal: {{{{ goal }}}}
+    Step: {{{{ step_description }}}}
+    Operation kind: {{{{ operation_kind }}}}
 
     {{% if ctx.tags.conversation_history %}}
     {{% for msg in ctx.tags.conversation_history %}}
-    {{ msg.role }}: {{ msg.content }}
+    {{{{ msg.role }}}}: {{{{ msg.content }}}}
     {{% endfor %}}
     {{% endif %}}
 
     Return exactly one valid tool-session step object for the current phase.
 
-    {{ ctx.output_format }}
+    {{{{ ctx.output_format }}}}
   "#
 }}
 
@@ -231,16 +231,16 @@ function Present{pascal_name}ToUser(
     You have completed tool execution. Produce the final user-visible answer.
     Return StructuredReply JSON exactly.
 
-    User request: {{ user_message }}
-    Goal: {{ goal }}
+    User request: {{{{ user_message }}}}
+    Goal: {{{{ goal }}}}
 
     {{% if ctx.tags.conversation_history %}}
     {{% for msg in ctx.tags.conversation_history %}}
-    {{ msg.role }}: {{ msg.content }}
+    {{{{ msg.role }}}}: {{{{ msg.content }}}}
     {{% endfor %}}
     {{% endif %}}
 
-    {{ ctx.output_format }}
+    {{{{ ctx.output_format }}}}
   "#
 }}
 

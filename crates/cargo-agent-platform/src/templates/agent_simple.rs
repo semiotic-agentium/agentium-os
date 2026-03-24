@@ -71,10 +71,10 @@ pub fn generate_baml_prompt(prompt_name: &str, tool_ids: &[String]) -> String {
     You are a concise assistant. Answer the user clearly and directly.
     Return StructuredReply JSON exactly.
 
-    {{ ctx.output_format }}
+    {{{{ ctx.output_format }}}}
 
-    {{ _.role('user') }}
-    {{ user_message }}
+    {{{{ _.role('user') }}}}
+    {{{{ user_message }}}}
   "#
 }}
 
@@ -103,16 +103,16 @@ client DefaultClient {{
     You are a tool-using assistant. Execute the user's request via the allowed tools.
     Return one valid tool session step according to the schema.
 
-    {{ ctx.output_format }}
+    {{{{ ctx.output_format }}}}
 
     {{% if ctx.tags.conversation_history %}}
     {{% for msg in ctx.tags.conversation_history %}}
-    {{ msg.role }}: {{ msg.content }}
+    {{{{ msg.role }}}}: {{{{ msg.content }}}}
     {{% endfor %}}
     {{% endif %}}
 
-    {{ _.role('user') }}
-    {{ user_message }}
+    {{{{ _.role('user') }}}}
+    {{{{ user_message }}}}
   "#
 }}
 
@@ -122,16 +122,16 @@ function Present{pascal_name}Reply(user_message: string) -> StructuredReply {{
     Synthesize a final user-facing answer from conversation history.
     Return StructuredReply JSON exactly.
 
-    {{ ctx.output_format }}
+    {{{{ ctx.output_format }}}}
 
     {{% if ctx.tags.conversation_history %}}
     {{% for msg in ctx.tags.conversation_history %}}
-    {{ msg.role }}: {{ msg.content }}
+    {{{{ msg.role }}}}: {{{{ msg.content }}}}
     {{% endfor %}}
     {{% endif %}}
 
-    {{ _.role('user') }}
-    {{ user_message }}
+    {{{{ _.role('user') }}}}
+    {{{{ user_message }}}}
   "#
 }}
 
