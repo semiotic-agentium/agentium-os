@@ -61,7 +61,14 @@ jobs:
             curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
             sudo apt-get install -y nodejs
           fi
-          sudo npm install -g typescript
+          # Pin TS 6.x: builder agents rely on tsc behaviour guarded in tsconfig (e.g. rootDir ./src).
+          # Unpinned `typescript` tracks latest major and can break CI without a coordinated bump.
+          sudo npm install -g typescript@6
+          tsc --version
+          tsc --version | grep -qE '^Version 6\.' || {
+            echo "error: expected global tsc 6.x (got $(tsc --version))"
+            exit 1
+          }
 
       - name: System info
         run: |

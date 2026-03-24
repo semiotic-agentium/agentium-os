@@ -505,7 +505,7 @@ declare global {
     "declaration": false,
     "sourceMap": false,
     "isolatedModules": true,
-    "rootDir": "src"
+    "rootDir": "./src"
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

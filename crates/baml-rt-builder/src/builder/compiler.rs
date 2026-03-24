@@ -33,7 +33,8 @@ use crate::builder::{
 ///
 /// **`rootDir`** is required explicitly: TypeScript 6 defaults `rootDir` to the directory
 /// containing `tsconfig.json` unless set; sources under `src/` then trigger TS5011 unless
-/// `rootDir` is explicitly `"src"` (see <https://aka.ms/ts6> migration notes).
+/// `rootDir` is explicitly `"./src"` (must match the inferred common source path; see
+/// <https://aka.ms/ts6> migration notes).
 pub const TSCONFIG_JSON: &str = r#"{
   "compilerOptions": {
     "target": "ES2020",
@@ -46,7 +47,7 @@ pub const TSCONFIG_JSON: &str = r#"{
     "declaration": false,
     "sourceMap": false,
     "isolatedModules": true,
-    "rootDir": "src"
+    "rootDir": "./src"
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"]
 }
