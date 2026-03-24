@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use inquire::{Confirm, MultiSelect, Select, Text};
 
-use crate::text::truncate_for_display;
+use crate::{text::truncate_for_display, tool_catalog::load_cli_tools};
 
 /// Known schema versions for event delivery.
 ///
@@ -183,19 +183,17 @@ pub fn prompt_template() -> Result<String> {
 
 /// Prompt for tool selection (multi-select from inventory).
 pub fn prompt_tools() -> Result<Option<String>> {
-    let catalog = InventoryCatalog::new();
-    let mut tools: Vec<_> = catalog.iter().collect();
-    tools.sort_by_key(|t| t.name.to_string());
+    let tools = load_cli_tools()?;
 
     if tools.is_empty() {
-        println!("No tools found in inventory.");
+        println!("No tools found.");
         return Ok(None);
     }
 
     let options: Vec<ToolOption> = tools
         .iter()
         .map(|t| ToolOption {
-            id: t.name.to_string(),
+            id: t.id.to_string(),
             description: truncate_for_display(&t.description, 45),
         })
         .collect();

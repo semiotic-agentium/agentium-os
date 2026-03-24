@@ -23,6 +23,7 @@ mod interactive;
 mod patchers;
 mod templates;
 mod text;
+mod tool_catalog;
 mod transaction;
 mod workspace;
 
