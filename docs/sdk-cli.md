@@ -156,11 +156,13 @@ When no name is provided, interactive mode guides you through the process:
 ? Tool name (kebab-case): github
 ? Bundle type: support (default) - Standard support tool
 ? Access level: read (default) - Query-only, no side effects
+? Description (optional): basic github API interactions
 
 Summary:
   Name:   github
   Bundle: support
   Access: read
+  Desc:   basic github API interactions
 
 Operations to perform:
   CREATE DIR  crates/tools/github
@@ -171,7 +173,10 @@ Operations to perform:
   EDIT        crates/baml-tool-links/Cargo.toml
   EDIT        crates/baml-tool-links/src/lib.rs
   EDIT        crates/baml-agent-runner/Cargo.toml
+  EDIT        crates/baml-agent-runner/src/main.rs
   EDIT        crates/baml-rt-builder/Cargo.toml
+  EDIT        crates/baml-rt-builder/src/baml-agent-builder.rs
+  EDIT        crates/baml-rt-builder/src/bin/regen_fixtures.rs
 
 Note:
   Most tools are auto-registered via inventory and need no extra setup.
@@ -202,6 +207,7 @@ cargo run -p cargo-agent-platform -- new-tool <name> [options]
 |--------|---------|-------------|
 | `--bundle <type>` | `support` | Bundle type. Currently only `support` is supported. |
 | `--access <level>` | `read` | Access level: `read` (query-only) or `write` (can mutate) |
+| `--description <desc>` | `""` | Optional user-facing tool description shown in discovery and picker UIs |
 | `--dry-run` | - | Validate and preview changes without writing files (non-interactive only). Returns non-zero if validation fails. |
 
 **Access Levels:**
@@ -244,7 +250,10 @@ crates/tools/<name>/
 | `crates/baml-tool-links/Cargo.toml` | Adds optional dependency and feature |
 | `crates/baml-tool-links/src/lib.rs` | Adds entry to `force_link_all_tools!` macro |
 | `crates/baml-agent-runner/Cargo.toml` | Adds feature forwarding |
+| `crates/baml-agent-runner/src/main.rs` | Adds force-link import for runtime tool registration |
 | `crates/baml-rt-builder/Cargo.toml` | Adds feature forwarding |
+| `crates/baml-rt-builder/src/baml-agent-builder.rs` | Adds force-link import for packaging/type generation |
+| `crates/baml-rt-builder/src/bin/regen_fixtures.rs` | Adds force-link import for regen flows |
 
 **After creating a tool:**
 
@@ -519,6 +528,23 @@ agents/<name>/
 2. Edit `baml_src/<name>_prompt.baml` to customize BAML prompts
 3. Run `cargo run -p baml-rt-builder --bin baml-agent-builder` to package the agent
 
+**Default LLM client in generated templates:**
+
+Newly generated `simple`, `planner`, and `coordinator` templates use:
+
+```baml
+client DefaultClient {
+  provider openai-generic
+  options {
+    model "openai/gpt-4o-mini"
+    base_url "https://openrouter.ai/api/v1"
+    api_key env.OPENROUTER_API_KEY
+  }
+}
+```
+
+You can change this in your agent's `baml_src/*.baml` files.
+
 ---
 
 ### `list-agents`
@@ -631,8 +657,8 @@ Each output file is named `<agent-name>-<version>.tar.gz`. By default, files are
 After building, run the agent using `baml-agent-runner` directly. The runner must be built with appropriate features for the tools your agent uses:
 
 ```bash
-# Build the runner with required features (do this once)
-cargo build -p baml-agent-runner --features http-tools,memory --release
+# Build the runner with tool support (recommended for local dev)
+cargo build -p baml-agent-runner --all-features --release
 
 # Run the agent
 ./target/release/baml-agent-runner \
@@ -648,6 +674,8 @@ cargo build -p baml-agent-runner --features http-tools,memory --release
 | `http-tools` | ClickUp, Notion, Slack tools (`support/clickup`, `support/notion`, `support/slack`) |
 | `memory` | Memory tools (`memory/add`, `memory/query`, etc.) |
 | `llm-tests` | LLM-dependent tests (not needed for running agents) |
+
+For local development, `--all-features` is the safest default to avoid "Unknown tool in manifest" errors when adding new tool crates.
 
 **Runner options:**
 
