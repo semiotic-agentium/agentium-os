@@ -150,6 +150,14 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "quickjs",
             retryability_for_a2a(error),
         ),
+        BamlRtError::ToolClassified(c) => mapping(
+            error,
+            -32603,
+            "Internal error",
+            Some(serde_json::json!({ "tool_error": c.to_tool_error_json() })),
+            "tool_classified",
+            retryability_for_a2a(error),
+        ),
         BamlRtError::ToolExecution(_) => mapping(
             error,
             -32603,

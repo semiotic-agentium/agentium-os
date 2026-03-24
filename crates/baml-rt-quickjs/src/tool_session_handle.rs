@@ -13,7 +13,7 @@ use baml_rt_core::{
 };
 use baml_rt_interceptor::ToolCallContext;
 use baml_rt_observability::metrics;
-use baml_rt_tools::{ToolName, ToolSessionId, ToolStep};
+use baml_rt_tools::{ToolFailure, ToolName, ToolSessionId, ToolStep};
 use dashmap::DashMap;
 use serde_json::Value;
 
@@ -577,10 +577,9 @@ impl ToolSessionExecutionHandle {
 
             let completion = match &result {
                 Ok(ToolStep::Done { output }) => Some(Ok(output.clone().unwrap_or(Value::Null))),
-                Ok(ToolStep::Error { error }) => Some(Err(BamlRtError::InvalidArgument(format!(
-                    "Tool failure ({:?}): {}",
-                    error.kind, error.message
-                )))),
+                Ok(ToolStep::Error { error }) => Some(Err(
+                    baml_rt_tools::tool_failure_to_baml_tool_execution_error(error),
+                )),
                 Err(err) => Some(Err(completion_error_from(err))),
                 _ => None,
             };
@@ -837,7 +836,7 @@ impl ToolSessionExecutionHandle {
         plan_scope: &context::RuntimeScope,
         archive_ref_tables: &baml_rt_tools::archive_refs::ContextRefTables,
         chunk_timeout: std::time::Duration,
-    ) -> Result<crate::tool_session_handle::SendResult> {
+    ) -> Result<ToolSessionSendBlockingOutcome> {
         use baml_rt_tools::{archive_read, archive_refs};
 
         // Fire the send — this enqueues input but does not block.
@@ -921,24 +920,28 @@ impl ToolSessionExecutionHandle {
                         archive_refs::get_or_create_ref_table(archive_ref_tables, &context_id);
                     let archive_ref = ref_table.insert(entry.clone());
                     let header = entry.display_header(archive_ref);
-                    return Ok(crate::tool_session_handle::SendResult {
+                    return Ok(ToolSessionSendBlockingOutcome::Completed(SendResult {
                         archive_ref,
                         header,
                         output: output_value,
-                    });
+                    }));
                 }
                 ToolStep::Error { error } => {
                     self.tool_session_abort(session_id, Some(error.message.clone()))
                         .await
                         .ok();
-                    return Err(BamlRtError::InvalidArgument(format!(
-                        "Tool failure ({:?}): {}",
-                        error.kind, error.message
-                    )));
+                    return Ok(ToolSessionSendBlockingOutcome::ToolFailed(error));
                 }
             }
         }
     }
+}
+
+/// Outcome of [`ToolSessionExecutionHandle::tool_session_send_blocking`].
+#[derive(Debug, Clone)]
+pub enum ToolSessionSendBlockingOutcome {
+    Completed(SendResult),
+    ToolFailed(ToolFailure),
 }
 
 /// Result of a blocking Send: archived output with header line and raw value.

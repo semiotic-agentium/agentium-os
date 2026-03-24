@@ -18,9 +18,7 @@ use integrations_notion_read::{
 pub use notion_read::BASE_URL;
 /// Notion API version header value.
 pub use notion_read::NOTION_VERSION;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 const MAX_BLOCK_DEPTH: u32 = 10;
 
 #[cfg(test)]
@@ -83,9 +81,8 @@ fn backoff_delay(retries: usize) -> std::time::Duration {
 
 /// Search Notion pages by keyword. Returns a list of page titles and IDs.
 /// Does NOT return page content — use GetPageBlocks to read actual content.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct NotionSearchPagesInput {
     #[baml(description = "Search keyword. Omit to list all pages.")]
     pub query: Option<String>,
@@ -100,9 +97,8 @@ pub struct NotionSearchPagesInput {
 /// Fetch page METADATA only: title, URL, last-edited timestamp.
 /// Returns NO page content (text, headings, bullets, etc.).
 /// To read the actual content of a page, use GetPageBlocks with the same ID.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct NotionGetPageInput {
     #[baml(
         description = "Notion page UUID from a SearchPages result, e.g. '238cff78-8181-80c8-8273-cc5fbdd8c7da'."
@@ -114,9 +110,8 @@ pub struct NotionGetPageInput {
 /// (headings, paragraphs, bullet lists, etc.).
 /// block_id is the same UUID as the page id returned by SearchPages.
 /// Use this — not GetPage — when you need to read what a page says.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct NotionGetPageBlocksInput {
     #[baml(
         description = "Page UUID to read blocks from — same value as the page id from SearchPages."
@@ -135,10 +130,9 @@ pub struct NotionGetPageBlocksInput {
 /// SearchPages: find pages by keyword (returns titles+IDs, no content).
 /// GetPage: fetch page metadata only (title, URL, timestamps — NOT content).
 /// GetPageBlocks: read the actual text content of a page. Use this to understand what a page says.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[baml(union)]
 #[serde(untagged)]
-#[ts(export)]
 pub enum NotionInput {
     SearchPages(NotionSearchPagesInput),
     GetPage(NotionGetPageInput),
@@ -183,8 +177,7 @@ impl baml_rt_tools::DescribeAction for NotionGetPageBlocksInput {
 // Output types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct NotionPageSummary {
     pub id: String,
     pub title: String,
@@ -193,8 +186,7 @@ pub struct NotionPageSummary {
     pub last_edited_time: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct NotionBlockSummary {
     pub id: String,
     pub block_type: String,
@@ -203,8 +195,7 @@ pub struct NotionBlockSummary {
     pub has_children: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct NotionSource {
     pub page_id: String,
     pub url: String,
@@ -218,8 +209,7 @@ pub enum NotionOperation {
     GetPageBlocks,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct NotionOutput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<NotionPageSummary>,
@@ -232,8 +222,6 @@ pub struct NotionOutput {
     pub sources: Vec<NotionSource>,
     pub message: String,
     #[baml(skip)]
-    #[schemars(skip)]
-    #[ts(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<NotionOperation>,
 }
@@ -241,8 +229,7 @@ pub struct NotionOutput {
 /// Controls how Notion blocks are rendered in the output.
 /// Enriched (default): adds Notable Lines summaries and Missing Info hints for tables.
 /// Raw: returns blocks verbatim without post-processing or hints.
-#[derive(Debug, Default, Clone, Copy, Serialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Default, Clone, Copy, Serialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockRenderMode {
     Raw,

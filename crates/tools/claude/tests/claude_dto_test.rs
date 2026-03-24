@@ -1,8 +1,8 @@
+use baml_rt_tools::json_schema_value;
 use baml_rt_tools_claude::{
     ClaudeCompletion, ClaudeEventDto, ClaudeToolNextOutput, ClaudeToolOpenInput,
     ClaudeToolSendInput, ClaudeUserContentBlockDto, ContextItem, ReviewDecision, UserInput,
 };
-use schemars::schema_for;
 use serde_json::json;
 
 #[test]
@@ -69,8 +69,7 @@ fn claude_next_output_serializes_completion_and_events() {
 
 #[test]
 fn claude_dto_schema_generation_is_valid() {
-    let schema = schema_for!(ClaudeToolNextOutput);
-    let json = serde_json::to_value(schema).expect("schema serialize");
+    let json = json_schema_value::<ClaudeToolNextOutput>();
     assert!(json.get("$schema").is_some());
 }
 

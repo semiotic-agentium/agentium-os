@@ -8,6 +8,45 @@ use thiserror::Error;
 
 use crate::semantics::{ErrorDisposition, Retryability};
 
+/// Structured tool failure for LLM-visible payloads and host retry policy.
+///
+/// Construct this from **typed** integration errors (`impl From<NotionError> for ClassifiedToolError`,
+/// etc.) at the tool boundary. Do not rebuild this by parsing [`BamlRtError::ToolExecution`] strings.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Error)]
+#[error("{message}")]
+pub struct ClassifiedToolError {
+    /// Short machine-readable code (e.g. `notion_rate_limited`).
+    pub code: String,
+    pub disposition: ErrorDisposition,
+    /// Message safe to show to the model (no secrets).
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+}
+
+impl ClassifiedToolError {
+    #[must_use]
+    pub fn host_retryability(&self) -> Retryability {
+        match self.disposition {
+            ErrorDisposition::HostRetriable => Retryability::Retryable,
+            _ => Retryability::Permanent,
+        }
+    }
+
+    #[must_use]
+    pub fn to_tool_error_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_else(|_| {
+            serde_json::json!({
+                "code": self.code,
+                "disposition": self.disposition,
+                "message": self.message,
+            })
+        })
+    }
+}
+
 /// Typed lifecycle failures for stream/tool sessions.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum SessionLifecycleError {
@@ -126,6 +165,10 @@ pub enum BamlRtError {
     #[error("Tool execution error: {0}")]
     ToolExecution(String),
 
+    /// Tool failed with structured classification from typed integration errors.
+    #[error(transparent)]
+    ToolClassified(#[from] ClassifiedToolError),
+
     /// Tool registration error
     #[error("Tool registration error: {0}")]
     ToolRegistration(String),
@@ -189,6 +232,56 @@ pub enum BamlRtError {
     },
 }
 
+impl ClassifiedToolError {
+    /// Classify from any [`BamlRtError`]. [`BamlRtError::ToolClassified`] is returned verbatim.
+    #[must_use]
+    pub fn from_baml_error(err: &BamlRtError) -> Self {
+        if let BamlRtError::ToolClassified(c) = err {
+            return c.clone();
+        }
+        let disposition = baml_error_disposition(err);
+        let code = code_for_classified(err, disposition);
+        let message = err.to_string();
+        Self {
+            code,
+            disposition,
+            message,
+            hint: None,
+            retry_after_ms: None,
+        }
+    }
+}
+
+fn code_for_classified(err: &BamlRtError, disposition: ErrorDisposition) -> String {
+    match err {
+        BamlRtError::InvalidArgument(_)
+        | BamlRtError::InvalidArgumentWithSource { .. }
+        | BamlRtError::InvalidOpenInput { .. }
+        | BamlRtError::Json(_)
+        | BamlRtError::JsonWithRaw { .. }
+        | BamlRtError::FunctionNotFound(_)
+        | BamlRtError::TypeConversion(_) => "invalid_argument".to_string(),
+        BamlRtError::ToolExecution(_) => match disposition {
+            ErrorDisposition::HostRetriable => "transient_tool_execution".to_string(),
+            ErrorDisposition::LlmCorrectable
+            | ErrorDisposition::InformAndContinue
+            | ErrorDisposition::Fatal => "tool_execution".to_string(),
+        },
+        BamlRtError::ExecutionFailed { .. } | BamlRtError::ParsedResultFailed { .. } => {
+            match disposition {
+                ErrorDisposition::HostRetriable => "transient_execution".to_string(),
+                ErrorDisposition::LlmCorrectable
+                | ErrorDisposition::InformAndContinue
+                | ErrorDisposition::Fatal => "execution_failed".to_string(),
+            }
+        }
+        BamlRtError::Io(_) => "io_error".to_string(),
+        BamlRtError::QuickJs(_) | BamlRtError::QuickJsWithSource { .. } => "quickjs".to_string(),
+        BamlRtError::SessionLifecycle(_) => "session_lifecycle".to_string(),
+        _ => "runtime_error".to_string(),
+    }
+}
+
 /// Classify how this error should be surfaced for host retries vs LLM correction.
 pub fn baml_error_disposition(err: &BamlRtError) -> ErrorDisposition {
     match err {
@@ -213,9 +306,11 @@ pub fn baml_error_disposition(err: &BamlRtError) -> ErrorDisposition {
         BamlRtError::SessionLifecycle(SessionLifecycleError::InvocationCancelled) => {
             ErrorDisposition::HostRetriable
         }
-        BamlRtError::ToolExecution(msg) => disposition_from_tool_execution_message(msg),
-        BamlRtError::ExecutionFailed { source } => disposition_from_anyhow_chain(source),
-        BamlRtError::ParsedResultFailed { source } => disposition_from_anyhow_chain(source),
+        BamlRtError::ToolClassified(c) => c.disposition,
+        BamlRtError::ToolExecution(_) => ErrorDisposition::InformAndContinue,
+        BamlRtError::ExecutionFailed { .. } | BamlRtError::ParsedResultFailed { .. } => {
+            ErrorDisposition::InformAndContinue
+        }
         BamlRtError::Io(_)
         | BamlRtError::QuickJs(_)
         | BamlRtError::QuickJsWithSource { .. }
@@ -240,66 +335,6 @@ pub fn retryability_for_a2a(err: &BamlRtError) -> Retryability {
         | ErrorDisposition::InformAndContinue
         | ErrorDisposition::Fatal => Retryability::Permanent,
     }
-}
-
-fn disposition_from_tool_execution_message(msg: &str) -> ErrorDisposition {
-    let lower = msg.to_ascii_lowercase();
-    if lower.contains("rate limit")
-        || lower.contains("rate_limited")
-        || lower.contains("429")
-        || lower.contains("timeout")
-        || lower.contains("temporarily unavailable")
-        || lower.contains("503")
-        || lower.contains("connection reset")
-    {
-        return ErrorDisposition::HostRetriable;
-    }
-    if lower.contains("401")
-        || lower.contains("unauthorized")
-        || lower.contains("403")
-        || lower.contains("forbidden")
-        || lower.contains("not found")
-        || lower.contains("404")
-        || lower.contains("invalid_argument")
-    {
-        return ErrorDisposition::InformAndContinue;
-    }
-    ErrorDisposition::InformAndContinue
-}
-
-fn disposition_from_anyhow_chain(source: &AnyhowError) -> ErrorDisposition {
-    let chain = format!("{source:#}");
-    let lower = chain.to_ascii_lowercase();
-    if lower.contains("429")
-        || lower.contains("rate limit")
-        || lower.contains("too many requests")
-        || lower.contains("503")
-        || lower.contains("502")
-        || lower.contains("504")
-        || lower.contains("timeout")
-        || lower.contains("timed out")
-        || lower.contains("connection reset")
-        || lower.contains("broken pipe")
-    {
-        return ErrorDisposition::HostRetriable;
-    }
-    if lower.contains("401")
-        || lower.contains("unauthorized")
-        || lower.contains("403")
-        || lower.contains("forbidden")
-        || lower.contains("404")
-        || lower.contains("not found")
-    {
-        return ErrorDisposition::InformAndContinue;
-    }
-    if lower.contains("invalid")
-        || lower.contains("argument")
-        || lower.contains("schema")
-        || lower.contains("parse")
-    {
-        return ErrorDisposition::LlmCorrectable;
-    }
-    ErrorDisposition::Fatal
 }
 
 /// Result type alias for convenience

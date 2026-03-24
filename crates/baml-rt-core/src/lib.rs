@@ -43,7 +43,8 @@ pub use dispatch::{
     invocation_scope_for_agent_dispatch,
 };
 pub use error::{
-    BamlRtError, Result, SessionLifecycleError, baml_error_disposition, retryability_for_a2a,
+    BamlRtError, ClassifiedToolError, Result, SessionLifecycleError, baml_error_disposition,
+    retryability_for_a2a,
 };
 pub use event_subscription::{
     EventSchemaVersion, EventSourceKind, EventSubscription, EventSubscriptionFilter,

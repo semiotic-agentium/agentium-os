@@ -5,6 +5,7 @@
 use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt::{
     baml::{
         BamlRuntimeManager, IntentSubmission, PlanStepStatusChange, PlanSubmission,
@@ -23,11 +24,9 @@ use baml_rt_provenance::{
     ProvEvent, ProvenanceEffectSubscriber, ProvenanceWriter, SurrealStoreBuilder,
 };
 use baml_rt_tools::{BamlTool, bundles::BundleType};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{sync::Mutex, task::LocalSet};
-use ts_rs::TS;
 
 // Test bundle for test tools
 struct Test;
@@ -428,8 +427,7 @@ async fn test_bridge_lock_not_held_across_async_work() {
 #[derive(Debug)]
 struct ScopeEchoTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct ScopeEchoInput {
     text: Option<String>,
     context_id: Option<String>,
@@ -442,8 +440,7 @@ impl baml_rt_tools::DescribeAction for ScopeEchoInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct ScopeEchoOutput {
     context_id: Option<String>,
     message_id: Option<String>,
@@ -477,8 +474,7 @@ impl BamlTool for ScopeEchoTool {
 #[derive(Debug)]
 struct SlowTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, Default)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType, Default)]
 struct SlowInput {}
 impl baml_rt_tools::DescribeAction for SlowInput {
     fn describe(&self) -> String {
@@ -486,8 +482,7 @@ impl baml_rt_tools::DescribeAction for SlowInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct SlowOutput {
     done: bool,
 }

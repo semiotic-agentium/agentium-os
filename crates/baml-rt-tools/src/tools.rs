@@ -12,23 +12,25 @@ use std::{
 };
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt_core::{
     BamlRtError, ContextId, EventSourceKind, Result, SessionLifecycleError,
     ids::{AgentId, TaskId},
 };
 use dashmap::DashMap;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex as TokioMutex;
-use ts_rs::TS;
 
 use crate::{
     bundles::BundleType,
     config_resolver::ConfigResolver,
     tool_catalog::{InventoryCatalog, ToolCatalog},
     tool_error_classify::{ClassifiedToolError, ToolExecutionClassifier},
-    tool_fsm::{SessionPhase, ToolFailure, ToolSession, ToolSessionError, ToolSessionId, ToolStep},
+    tool_fsm::{
+        SessionPhase, ToolFailure, ToolSession, ToolSessionError, ToolSessionId, ToolStep,
+        tool_failure_to_baml_tool_execution_error,
+    },
     tool_schema::{DescribeAction, ToolType, json_schema_value},
     ts_gen::render_tool_typescript,
 };
@@ -140,20 +142,17 @@ pub fn parse_tool_name_and_class(name: &str) -> Result<(ToolName, String)> {
 /// use baml_rt_tools::{BamlTool, DescribeAction, Support};
 /// use baml_rt_core::Result;
 /// use serde::{Deserialize, Serialize};
-/// use schemars::JsonSchema;
-/// use ts_rs::TS;
+/// use baml_derive::BamlType;
 /// use async_trait::async_trait;
 ///
 /// struct WeatherTool;
 ///
-/// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-/// #[ts(export)]
+/// #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 /// struct WeatherInput {
 ///     location: String,
 /// }
 ///
-/// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-/// #[ts(export)]
+/// #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 /// struct WeatherOutput {
 ///     temperature: String,
 ///     location: String,
@@ -1239,16 +1238,14 @@ pub struct ToolSessionContext {
 ///
 /// This is runtime-general and tool-agnostic. Tools may opt into supporting one or more
 /// read modes and must validate mode-specific constraints.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionReadMode {
     #[serde(alias = "RETRIEVE_REF", alias = "RetrieveRef")]
     RetrieveRef,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionReadEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1260,8 +1257,7 @@ pub struct SessionReadEnvelope {
     pub budget_hint: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryContextV1 {
     pub hop: u32,
@@ -1271,8 +1267,8 @@ pub struct HistoryContextV1 {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
-    #[ts(type = "Record<string, unknown> | null")]
-    #[schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")]
+    // `BTreeMap<String, Value>` auto-maps to `Record<string, any> | null` in TS
+    // and `{"type":"object","additionalProperties":{}} | null` in JSON Schema.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<BTreeMap<String, Value>>,
 }
@@ -1315,6 +1311,15 @@ pub trait ToolHandler: Send + Sync {
         ctx: ToolSessionContext,
         open_input: Value,
     ) -> Result<Box<dyn ToolSession>>;
+
+    /// Classify execution failures for this handler (installed on the session as
+    /// [`ToolSessionContext::execution_classifier`] by the registry).
+    ///
+    /// Default uses [`ClassifiedToolError::from_baml_error`] (core-only disposition). [`ToolWrapper`]
+    /// overrides to delegate to [`BamlTool::classify_execution_error`].
+    fn classify_execution_error(&self, err: &BamlRtError) -> ClassifiedToolError {
+        ClassifiedToolError::from_baml_error(err)
+    }
 }
 
 pub trait ToolBundle: Send + Sync {
@@ -1358,14 +1363,7 @@ fn extract_tool_name_from_payload(content: &Value) -> Option<String> {
 fn map_session_error(error: ToolSessionError) -> BamlRtError {
     match error {
         ToolSessionError::Transport(err) => err,
-        ToolSessionError::Tool(failure) => {
-            let payload = serde_json::json!({
-                "tool_error": failure.classified.to_tool_error_json(),
-                "failure_kind": format!("{:?}", failure.kind),
-                "summary": failure.message,
-            });
-            BamlRtError::ToolExecution(payload.to_string())
-        }
+        ToolSessionError::Tool(failure) => tool_failure_to_baml_tool_execution_error(&failure),
     }
 }
 
@@ -1688,15 +1686,17 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
         Some(self.tool.describe_open())
     }
 
+    fn classify_execution_error(&self, err: &BamlRtError) -> ClassifiedToolError {
+        T::classify_execution_error(err)
+    }
+
     async fn open_session(
         &self,
-        mut ctx: ToolSessionContext,
+        ctx: ToolSessionContext,
         open_input: Value,
     ) -> Result<Box<dyn ToolSession>> {
         // Parse and validate open_input if needed
         validate_open_input::<T::OpenInput>(open_input)?;
-
-        ctx.execution_classifier = Some(Arc::new(|err| T::classify_execution_error(err)));
 
         let tool = self.tool.clone();
         let executor: Box<dyn ToolExecutor> = Box::new(ExecutorAdapter::new(move |input| {
@@ -1827,18 +1827,15 @@ impl ToolRegistry {
     /// use baml_rt_tools::{BamlTool, DescribeAction, Support, ToolRegistry};
     /// use baml_rt_core::Result;
     /// use serde::{Deserialize, Serialize};
-    /// use schemars::JsonSchema;
-    /// use ts_rs::TS;
+    /// use baml_derive::BamlType;
     /// use async_trait::async_trait;
     ///
     /// struct MyTool;
     ///
-    /// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    /// #[ts(export)]
+    /// #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
     /// struct MyInput {}
     ///
-    /// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    /// #[ts(export)]
+    /// #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
     /// struct MyOutput {}
     ///
     /// impl DescribeAction for MyInput {
@@ -2221,6 +2218,9 @@ impl ToolRegistry {
             }
         };
 
+        let handler_for_classify = handler.clone();
+        let execution_classifier: ToolExecutionClassifier =
+            Arc::new(move |err| handler_for_classify.classify_execution_error(err));
         let ctx = ToolSessionContext {
             session_id: session_id.clone(),
             tool_name: metadata.name.clone(),
@@ -2229,7 +2229,7 @@ impl ToolRegistry {
             config,
             config_version,
             task_id: task_id.cloned(),
-            execution_classifier: None,
+            execution_classifier: Some(execution_classifier),
         };
         let session = handler.open_session(ctx, open_input).await?;
         self.sessions

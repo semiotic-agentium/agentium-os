@@ -21,13 +21,13 @@ impl BamlRuntimeManager {
     /// # use serde::{Deserialize, Serialize};
     /// # use ts_rs::TS;
     /// # struct WeatherTool;
-    /// # #[derive(Serialize, Deserialize, JsonSchema, TS)]
+    /// # #[derive(Serialize, Deserialize, BamlType)]
     /// # #[ts(export)]
     /// # struct WeatherInput { location: String }
     /// # impl baml_rt_tools::DescribeAction for WeatherInput {
     /// #     fn describe(&self) -> String { format!("weather for {}", self.location) }
     /// # }
-    /// # #[derive(Serialize, Deserialize, JsonSchema, TS)]
+    /// # #[derive(Serialize, Deserialize, BamlType)]
     /// # #[ts(export)]
     /// # struct WeatherOutput { temperature: String }
     /// # #[async_trait]

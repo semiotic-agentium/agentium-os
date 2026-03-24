@@ -2,7 +2,7 @@
 //! Tests for A2A error mapping. I4: every mapped error includes retryable and classifier.
 
 use baml_rt_a2a::error_mapping;
-use baml_rt_core::{BamlRtError, Retryability};
+use baml_rt_core::{BamlRtError, ClassifiedToolError, Retryability, semantics::ErrorDisposition};
 
 fn assert_retryable_classifier(
     error: &BamlRtError,
@@ -45,12 +45,23 @@ fn error_mapping_table_driven() {
         (
             BamlRtError::ToolExecution("timeout".into()),
             "tool_execution",
-            Retryability::Retryable,
+            Retryability::Permanent,
         ),
         (
             BamlRtError::ToolExecution("HTTP 401 unauthorized".into()),
             "tool_execution",
             Retryability::Permanent,
+        ),
+        (
+            BamlRtError::ToolClassified(ClassifiedToolError {
+                code: "vendor_rate_limited".into(),
+                disposition: ErrorDisposition::HostRetriable,
+                message: "slow down".into(),
+                hint: None,
+                retry_after_ms: None,
+            }),
+            "tool_classified",
+            Retryability::Retryable,
         ),
         (
             BamlRtError::ProvenanceContextRead {

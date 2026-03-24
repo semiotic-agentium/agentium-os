@@ -7,18 +7,15 @@ use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::Result;
 use baml_rt_tools::{DescribeAction, baml_tool, bundles::Support, tools::BamlTool};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 // ---------------------------------------------------------------------------
 // Input types
 // ---------------------------------------------------------------------------
 
 /// Send an email message to a recipient.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct SendEmailInput {
     #[baml(description = "Recipient email address (e.g. 'user@example.com').")]
     pub to: String,
@@ -38,8 +35,7 @@ impl DescribeAction for SendEmailInput {
 // Output types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct EmailOutput {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

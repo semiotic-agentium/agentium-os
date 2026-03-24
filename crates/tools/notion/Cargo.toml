@@ -17,8 +17,6 @@ serde = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
-schemars = { workspace = true }
-ts-rs = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
 inventory = { workspace = true }

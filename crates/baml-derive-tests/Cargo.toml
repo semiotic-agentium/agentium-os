@@ -9,4 +9,5 @@ publish = false
 [dev-dependencies]
 baml-derive = { path = "../baml-derive" }
 baml-derive-core = { path = "../baml-derive-core" }
+serde_json = { workspace = true }
 insta = { workspace = true }

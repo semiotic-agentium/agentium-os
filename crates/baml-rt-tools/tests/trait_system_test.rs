@@ -6,19 +6,18 @@
 //! E2E authority for LLM→tool is in baml-rt (voidship) and runner.
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt::tools::BamlTool;
 use baml_rt_core::{
     context,
     ids::{AgentId, UuidId},
 };
 use baml_rt_tools::bundles::BundleType;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use test_support::common::{
     assert_tool_registered_in_js, setup_baml_runtime_default, setup_bridge,
 };
-use ts_rs::TS;
 
 // Test bundle for test tools
 struct Test;
@@ -33,9 +32,8 @@ impl BundleType for Test {
 /// Test tool for arithmetic operations
 struct ArithmeticTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "lowercase")]
-#[ts(export)]
 enum ArithmeticOp {
     Add,
     Subtract,
@@ -43,8 +41,7 @@ enum ArithmeticOp {
     Divide,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct ArithmeticInput {
     operation: ArithmeticOp,
     a: f64,
@@ -56,8 +53,7 @@ impl baml_rt_tools::DescribeAction for ArithmeticInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct ArithmeticOutput {
     operation: ArithmeticOp,
     a: f64,
@@ -111,17 +107,15 @@ impl BamlTool for ArithmeticTool {
 /// Test tool for string manipulation
 struct StringManipulationTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "lowercase")]
-#[ts(export)]
 enum StringOp {
     Uppercase,
     Lowercase,
     Reverse,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct StringManipulationInput {
     operation: StringOp,
     text: String,
@@ -132,8 +126,7 @@ impl baml_rt_tools::DescribeAction for StringManipulationInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct StringManipulationOutput {
     operation: StringOp,
     original: String,

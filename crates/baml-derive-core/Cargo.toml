@@ -7,6 +7,7 @@ description = "Core types and rendering for BAML procedural macro derive"
 
 [dependencies]
 inventory = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

@@ -7,9 +7,7 @@ use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::Result;
 use baml_rt_tools::{DescribeAction, baml_tool, bundles::Support, tools::BamlTool};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 use crate::dataset;
 
@@ -18,9 +16,8 @@ use crate::dataset;
 // ---------------------------------------------------------------------------
 
 /// Search CRM accounts by keyword, region, or fiscal quarter.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct QueryAccountsInput {
     #[baml(description = "Optional free-text filter over account name or description.")]
     pub query: Option<String>,
@@ -31,9 +28,8 @@ pub struct QueryAccountsInput {
 }
 
 /// List sales opportunities for a specific account.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct QueryOpportunitiesInput {
     #[baml(description = "Account ID — obtain from QueryAccounts.")]
     pub account_id: String,
@@ -44,18 +40,16 @@ pub struct QueryOpportunitiesInput {
 }
 
 /// Retrieve full profile and contact details for a specific contact.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct GetContactInput {
     #[baml(description = "Contact ID — obtain from a QueryAccounts or QueryOpportunities result.")]
     pub contact_id: String,
 }
 
 /// Attach a note to an account record.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct CreateNoteInput {
     #[baml(description = "Account ID to attach the note to — obtain from QueryAccounts.")]
     pub account_id: String,
@@ -66,9 +60,8 @@ pub struct CreateNoteInput {
 }
 
 /// Permanently delete a CRM record. Requires explicit user confirmation.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct DeleteRecordInput {
     #[baml(description = "Record type to delete (e.g. 'account', 'contact', 'opportunity').")]
     pub record_type: String,
@@ -79,9 +72,8 @@ pub struct DeleteRecordInput {
 }
 
 /// Export CRM records matching a query to an external destination.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct ExportRecordsInput {
     #[baml(description = "Query string to filter which records to export.")]
     pub query: String,
@@ -98,10 +90,9 @@ pub struct ExportRecordsInput {
 /// GetContact → contact profile. CreateNote → attach note to account.
 /// DeleteRecord → permanent delete (requires confirmation).
 /// ExportRecords → bulk export matching records.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[baml(union)]
 #[serde(untagged)]
-#[ts(export)]
 pub enum CrmInput {
     QueryAccounts(QueryAccountsInput),
     QueryOpportunities(QueryOpportunitiesInput),
@@ -142,8 +133,7 @@ impl DescribeAction for CrmInput {
 // Output types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct AccountRecord {
     pub id: String,
     pub name: String,
@@ -153,8 +143,7 @@ pub struct AccountRecord {
     pub notes: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct CrmOutput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountRecord>,

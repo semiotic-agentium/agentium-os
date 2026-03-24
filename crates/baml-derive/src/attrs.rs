@@ -22,6 +22,14 @@ pub(crate) struct FieldAttrs {
     pub skip: bool,
     /// `#[baml(type = "...")]` — escape hatch for explicit BAML type override.
     pub type_override: Option<String>,
+    /// `#[baml(ts_type = "...")]` — override for the emitted TypeScript type.
+    ///
+    /// Use this when the automatic Rust→TypeScript mapping is insufficient, e.g.:
+    /// ```rust,ignore
+    /// #[baml(ts_type = "Record<string, unknown> | null")]
+    /// pub payload: Option<BTreeMap<String, serde_json::Value>>,
+    /// ```
+    pub ts_type: Option<String>,
 }
 
 /// Variant-level attributes from `#[baml(...)]`.
@@ -84,8 +92,12 @@ pub(crate) fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> 
                 result.type_override = Some(parse_string_value(&meta)?);
                 return Ok(());
             }
+            if meta.path.is_ident("ts_type") {
+                result.ts_type = Some(parse_string_value(&meta)?);
+                return Ok(());
+            }
             Err(meta.error(
-                "unknown baml field attribute; expected `alias`, `description`, `skip`, or `type`",
+                "unknown baml field attribute; expected `alias`, `description`, `skip`, `type`, or `ts_type`",
             ))
         })?;
     }

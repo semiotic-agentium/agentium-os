@@ -10,9 +10,7 @@ use baml_rt_tools::{ClassifiedToolError, baml_tool, bundles::Support, tools::Bam
 /// ClickUp v2 REST API base URL.
 pub use integrations_clickup_client::BASE_URL;
 use integrations_clickup_client::{ClickUpClient, ClickUpClientError};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 fn option_is_empty(opt: &Option<String>) -> bool {
     opt.as_ref().is_none_or(|s| s.is_empty())
@@ -23,51 +21,45 @@ fn option_is_empty(opt: &Option<String>) -> bool {
 // ---------------------------------------------------------------------------
 
 /// List all teams/workspaces — no parameters needed.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct ListTeamsInput {}
 
 /// List spaces in a team. Call ListTeams first to get the team_id.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct ListSpacesInput {
     #[baml(description = "ClickUp team (workspace) ID — obtain from ListTeams.")]
     pub team_id: String,
 }
 
 /// List task-lists in a space. Call ListSpaces first to get the space_id.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct ListListsInput {
     #[baml(description = "ClickUp space ID — obtain from ListSpaces.")]
     pub space_id: String,
 }
 
 /// List tasks in a list. Call ListLists first to get the list_id.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct ListTasksInput {
     #[baml(description = "ClickUp list ID — obtain from ListLists.")]
     pub list_id: String,
 }
 
 /// Get full details of a specific task (description, status, priority, assignees).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct GetTaskInput {
     #[baml(description = "ClickUp task ID — obtain from ListTasks.")]
     pub task_id: String,
 }
 
 /// Create a new task in a list.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct CreateTaskInput {
     #[baml(
         description = "ClickUp list ID where the task will be created — obtain from ListLists."
@@ -82,9 +74,8 @@ pub struct CreateTaskInput {
 }
 
 /// Update an existing task's status, description, or priority.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct UpdateTaskInput {
     #[baml(description = "ClickUp task ID to update — obtain from ListTasks or GetTask.")]
     pub task_id: String,
@@ -97,9 +88,8 @@ pub struct UpdateTaskInput {
 }
 
 /// Permanently delete a task. Confirm with the user before proceeding.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct DeleteTaskInput {
     #[baml(description = "ClickUp task ID to delete — obtain from ListTasks.")]
     pub task_id: String,
@@ -110,10 +100,9 @@ pub struct DeleteTaskInput {
 /// ClickUp tool — navigate teams → spaces → lists → tasks.
 /// ListTeams → ListSpaces → ListLists → ListTasks → GetTask/CreateTask/UpdateTask/DeleteTask.
 /// IDs must come from prior navigation results, not invented.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[baml(union)]
 #[serde(untagged)]
-#[ts(export)]
 pub enum ClickUpInput {
     ListTeams(ListTeamsInput),
     ListSpaces(ListSpacesInput),
@@ -145,8 +134,7 @@ impl baml_rt_tools::DescribeAction for ClickUpInput {
 // ---------------------------------------------------------------------------
 
 /// Summary of a single ClickUp task, projected from the API response.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct ClickUpTaskSummary {
     pub id: String,
     pub name: String,
@@ -163,8 +151,7 @@ pub struct ClickUpTaskSummary {
 }
 
 /// A generic item returned by navigation actions (teams, spaces, lists).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct ClickUpItem {
     pub id: String,
     pub name: String,
@@ -192,8 +179,7 @@ pub enum ClickUpOperation {
 /// Output returned by every ClickUp tool action.
 ///
 /// Task actions populate `tasks`; navigation actions populate `items`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct ClickUpOutput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<ClickUpTaskSummary>,
@@ -203,8 +189,6 @@ pub struct ClickUpOutput {
     pub items: Vec<ClickUpItem>,
     pub message: String,
     #[baml(skip)]
-    #[schemars(skip)]
-    #[ts(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<ClickUpOperation>,
 }

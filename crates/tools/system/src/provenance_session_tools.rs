@@ -19,8 +19,10 @@ use crate::{
     metadata::{system_extrospection_metadata, system_introspection_metadata},
     tools::{
         ProvenanceArchivePayloadDto, ProvenanceArchiveRecordDto, ProvenanceArchiveSummaryDto,
-        ProvenanceQueryNextOutput, ProvenanceQueryOpenInput, ProvenanceQuerySendInput,
-        ProvenanceReadProjectionDto, ProvenanceRetrievalBudgetDto, SessionReadResultDto,
+        ProvenancePayloadLlmCallDto, ProvenancePayloadLlmResultDto, ProvenancePayloadToolCallDto,
+        ProvenancePayloadToolResultDto, ProvenanceQueryNextOutput, ProvenanceQueryOpenInput,
+        ProvenanceQuerySendInput, ProvenanceReadProjectionDto, ProvenanceRetrievalBudgetDto,
+        SessionReadResultDto,
     },
 };
 
@@ -67,42 +69,42 @@ fn archive_payload_to_dto(payload: ProvenanceArchivePayload) -> ProvenanceArchiv
             payload_ref,
             activity_ref,
             prompt_json,
-        } => ProvenanceArchivePayloadDto::LlmCall {
+        } => ProvenanceArchivePayloadDto::LlmCall(ProvenancePayloadLlmCallDto {
             payload_ref: payload_ref.0,
             activity_ref: activity_ref.0,
             prompt_json,
-        },
+        }),
         ProvenanceArchivePayload::LlmResult {
             payload_ref,
             activity_ref,
             result_json,
-        } => ProvenanceArchivePayloadDto::LlmResult {
+        } => ProvenanceArchivePayloadDto::LlmResult(ProvenancePayloadLlmResultDto {
             payload_ref: payload_ref.0,
             activity_ref: activity_ref.0,
             result_json,
-        },
+        }),
         ProvenanceArchivePayload::ToolCall {
             payload_ref,
             activity_ref,
             tool_name,
             phase,
             args_json,
-        } => ProvenanceArchivePayloadDto::ToolCall {
+        } => ProvenanceArchivePayloadDto::ToolCall(ProvenancePayloadToolCallDto {
             payload_ref: payload_ref.0,
             activity_ref: activity_ref.0,
             tool_name,
             phase,
             args_json,
-        },
+        }),
         ProvenanceArchivePayload::ToolResult {
             payload_ref,
             activity_ref,
             result_json,
-        } => ProvenanceArchivePayloadDto::ToolResult {
+        } => ProvenanceArchivePayloadDto::ToolResult(ProvenancePayloadToolResultDto {
             payload_ref: payload_ref.0,
             activity_ref: activity_ref.0,
             result_json,
-        },
+        }),
     }
 }
 
@@ -119,10 +121,10 @@ fn archive_record_to_dto(record: ProvenanceArchiveRecord) -> ProvenanceArchiveRe
 
 fn payload_source_name(payload: &ProvenanceArchivePayloadDto) -> &'static str {
     match payload {
-        ProvenanceArchivePayloadDto::LlmCall { .. } => "llm_call",
-        ProvenanceArchivePayloadDto::LlmResult { .. } => "llm_result",
-        ProvenanceArchivePayloadDto::ToolCall { .. } => "tool_call",
-        ProvenanceArchivePayloadDto::ToolResult { .. } => "tool_result",
+        ProvenanceArchivePayloadDto::LlmCall(_) => "llm_call",
+        ProvenanceArchivePayloadDto::LlmResult(_) => "llm_result",
+        ProvenanceArchivePayloadDto::ToolCall(_) => "tool_call",
+        ProvenanceArchivePayloadDto::ToolResult(_) => "tool_result",
     }
 }
 
@@ -138,29 +140,29 @@ fn collect_refs_with_prefix(
     refs.push(record.archive_ref.clone());
     for payload in &record.payloads {
         match payload {
-            ProvenanceArchivePayloadDto::LlmCall {
+            ProvenanceArchivePayloadDto::LlmCall(ProvenancePayloadLlmCallDto {
                 payload_ref,
                 activity_ref,
                 ..
-            }
-            | ProvenanceArchivePayloadDto::LlmResult {
+            })
+            | ProvenanceArchivePayloadDto::LlmResult(ProvenancePayloadLlmResultDto {
                 payload_ref,
                 activity_ref,
                 ..
-            }
-            | ProvenanceArchivePayloadDto::ToolResult {
+            })
+            | ProvenanceArchivePayloadDto::ToolResult(ProvenancePayloadToolResultDto {
                 payload_ref,
                 activity_ref,
                 ..
-            } => {
+            }) => {
                 refs.push(payload_ref.clone());
                 refs.push(activity_ref.clone());
             }
-            ProvenanceArchivePayloadDto::ToolCall {
+            ProvenanceArchivePayloadDto::ToolCall(ProvenancePayloadToolCallDto {
                 payload_ref,
                 activity_ref,
                 ..
-            } => {
+            }) => {
                 refs.push(payload_ref.clone());
                 refs.push(activity_ref.clone());
             }
