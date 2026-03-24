@@ -26,7 +26,7 @@ cargo test -p baml-rt --features llm-tests -j 1
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --check
 
-# Full pre-commit checks (fmt, clippy, typos, cargo-check)
+# Full pre-commit checks (fmt, clippy, regen-fixtures when relevant paths change, typos, cargo-check)
 pre-commit run --all-files
 
 # Snapshot testing (provenance crate uses insta)
@@ -147,7 +147,7 @@ Other fixtures (stream-js-tool, stream-baml-tool, conversational-context-auto, e
 
 Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 
-- **nextest (workspace)** — `cargo nextest run --workspace --locked --profile ci` with all feature flags enabled (`http-tools`, `llm-tests`, `memory`). Uses rust-cache with shared key `ci-nextest`. JUnit report published via `mikepenz/action-junit-report`. Secrets written to `fnox.toml` from GitHub secrets.
+- **nextest (workspace)** — `cargo nextest run --workspace --locked --profile ci` with all feature flags enabled (`http-tools`, `llm-tests`, `memory`). Uses rust-cache with shared key `ci-nextest`. JUnit report published via `mikepenz/action-junit-report`. Secrets written to `fnox.toml` from GitHub secrets. **`regen_fixtures` is not run in CI**; generated `agents/**` and `tests/fixtures/agents/**` outputs stay committed, refreshed locally via `just regen-fixtures` / the pre-commit `regen-fixtures` hook.
 - Toolchain: stable for build/test, nightly for `cargo fmt --check` only.
 
 ## Testing Conventions
