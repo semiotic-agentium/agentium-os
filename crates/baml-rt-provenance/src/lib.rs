@@ -25,10 +25,16 @@ pub mod id_semantics;
 pub mod interceptors;
 pub mod mermaid_cache;
 pub mod normalizer;
+pub(crate) mod payload_record;
+pub(crate) mod payload_storage;
+pub(crate) mod prov_write_semantics;
 pub mod spans;
 pub mod store;
 pub mod surreal_config;
+pub(crate) mod surreal_sql;
 pub mod surreal_store;
+pub(crate) mod surreal_tables;
+pub(crate) mod surreal_write_batch;
 pub mod tool_index;
 pub mod types;
 pub mod vocabulary;
@@ -37,7 +43,10 @@ pub use a2a_graph_event_recorder::{
     A2aGraphEventRecorder, ArtifactUpdateContext, StatusUpdateContext, record_artifact_update,
     record_status_update,
 };
-pub use baml_rt_vocabulary::{A2aGraphStore, TaskSubgraphNode, TaskSubgraphUpdateNode};
+pub use baml_rt_vocabulary::{
+    A2aGraphStore, A2aGraphStoreError, A2aGraphStoreResult, TaskSubgraphNode,
+    TaskSubgraphUpdateNode,
+};
 pub use bus_subscriber::ProvenanceBusSubscriber;
 pub use conversation_projection::provenance_item_to_projection_item;
 pub use effect_subscriber::ProvenanceEffectSubscriber;

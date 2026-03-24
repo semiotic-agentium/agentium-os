@@ -61,6 +61,14 @@ define_prov_id_type!(
     ProvConstantEntitySemantics
 );
 
+#[cfg(test)]
+impl ProvEntityId {
+    /// Construct a raw id for unit tests (large synthetic [`crate::normalizer::NormalizedProv`] graphs, etc.).
+    pub fn test_only(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+}
+
 define_prov_id_type!(
     /// Provenance activity identifier.
     ProvActivityId,

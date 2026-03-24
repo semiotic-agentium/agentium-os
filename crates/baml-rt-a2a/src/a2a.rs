@@ -602,7 +602,7 @@ mod tests {
             };
         "#;
         tracing::info!("setup_agent_with_js_inner: Creating builder");
-        let store = baml_rt_provenance::SurrealStoreBuilder::in_memory()
+        let store = baml_rt_provenance::SurrealStoreBuilder::in_memory_isolated()
             .build()
             .await
             .expect("test store");

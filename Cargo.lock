@@ -1708,6 +1708,7 @@ dependencies = [
  "paste",
  "serde",
  "serde_json",
+ "sha2",
  "surrealdb",
  "tempfile",
  "test-support",
@@ -1834,6 +1835,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
