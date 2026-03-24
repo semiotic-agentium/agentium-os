@@ -277,7 +277,6 @@ Objective: {{ objective }}
 Current step: {{ step_description }}
 
 {% if ctx.tags.conversation_history %}
-Session history:
 {% for msg in ctx.tags.conversation_history %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
@@ -315,7 +314,6 @@ Objective: {{ objective }}
 Current step: {{ step_description }}
 
 {% if ctx.tags.conversation_history %}
-Session history:
 {% for msg in ctx.tags.conversation_history %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
@@ -353,7 +351,6 @@ Objective: {{ objective }}
 Current step: {{ step_description }}
 
 {% if ctx.tags.conversation_history %}
-Session history:
 {% for msg in ctx.tags.conversation_history %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
@@ -391,7 +388,6 @@ Objective: {{ objective }}
 Current step: {{ step_description }}
 
 {% if ctx.tags.conversation_history %}
-Session history:
 {% for msg in ctx.tags.conversation_history %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
@@ -429,7 +425,6 @@ Objective: {{ objective }}
 Current step: {{ step_description }}
 
 {% if ctx.tags.conversation_history %}
-Session history:
 {% for msg in ctx.tags.conversation_history %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}

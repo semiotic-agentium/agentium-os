@@ -26,7 +26,7 @@
 //! ```
 //!
 //! Datasets used for validation:
-//! - Our canonical drift-injection-demo fixture pairs
+//! - Synthetic aligned vs injected text pairs (CRM task vs poetry / hijack prose)
 //! - BIPIA-style text pairs covering 5 injection domains
 //!   (email hijack, web QA poisoning, task substitution,
 //!   output format override, data exfiltration framing)
@@ -198,7 +198,7 @@ mod cross_encoder_validation {
         println!("║  BGE FAMILY: EFFECTIVENESS vs LATENCY ON BIPIA ATTACK TYPES     ║");
         println!("╚══════════════════════════════════════════════════════════════════╝");
         println!("\nDetection: benign scores HIGHER than injected (intent anchor)");
-        println!("7 real-world attack categories, not just the cheese-poem fixture\n");
+        println!("7 real-world attack categories, not just the synthetic poetry-drift pair\n");
 
         let cache =
             std::env::var("FASTEMBED_CACHE_DIR").unwrap_or_else(|_| ".fastembed_cache".to_string());

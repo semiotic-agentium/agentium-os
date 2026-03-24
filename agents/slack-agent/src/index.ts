@@ -1,6 +1,7 @@
 /// <reference path="./baml-runtime.d.ts" />
 
 import type {
+  ReplyPart,
   RunContext,
   SessionResult,
   SlackPlanStep,
@@ -12,6 +13,11 @@ const MAX_REACT_STEPS = 10;
 const MAX_CLARIFY = 2;
 const PKG_RETRIEVE = "slack-retrieve";
 const PKG_SYNTH = "slack-synthesize";
+
+function textReply(text: string): StructuredReply {
+  const parts: ReplyPart[] = [{ type: "text", text }];
+  return { parts, citations: [] };
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object";
@@ -169,10 +175,10 @@ async function runSlackStructuredPlan(
           { max_steps: MAX_REACT_STEPS },
         );
       } else if (pkg === PKG_SYNTH) {
-        const finalMessage = (await ReactToSlackResults({
+        const finalMessage = await ReactToSlackResults({
           goal: `${goal}\nSynthesis brief: ${step.sub_message}`,
           user_message: userText,
-        })) as StructuredReply;
+        });
         if (executable) await executable.completeStep?.(stepId);
         if (executable) await executable.finish?.();
         return { message: finalMessage };
@@ -184,7 +190,7 @@ async function runSlackStructuredPlan(
     }
 
     if (executable) await executable.finish?.();
-    return { message: "Slack plan completed without a synthesize step." };
+    return { message: textReply("Slack plan completed without a synthesize step.") };
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
     try {
@@ -211,7 +217,9 @@ __chat_register({
         break;
       }
       if (isNotRelevant(intentResult)) {
-        return { message: `This doesn't look like a Slack request — ${intentResult.reason}` };
+        return {
+          message: textReply(`This doesn't look like a Slack request — ${intentResult.reason}`),
+        };
       }
       if (isNeedClarification(intentResult) && i < MAX_CLARIFY) {
         const reply = await ctx.emit.awaitInput(intentResult.question);

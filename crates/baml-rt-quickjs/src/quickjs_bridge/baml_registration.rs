@@ -839,6 +839,7 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
     // __run_step_executor: Rust-hosted step executor loop.
     // Takes (function_name, args_json, options_json?) from JS, runs the multi-hop
     // FSM loop entirely in Rust, returns StepExecutorResult as JSON string.
+    // That payload is execution telemetry only; the canonical user reply is SessionResult.message.
     let manager_clone4 = bridge.baml_manager().clone();
     let registry_clone = bridge.invocation_context_registry().clone();
     bridge

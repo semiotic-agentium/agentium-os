@@ -157,6 +157,9 @@ pub fn render_ts_declarations(
             }
         );
         tokens.line();
+        let step_run_result_comment = "/**\n * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.\n * User-facing replies are synthesized once at session completion (and recorded there).\n */";
+        quote_in!(tokens => $(step_run_result_comment));
+        tokens.line();
         quote_in!(
             tokens =>
             export interface StepExecutorRunResult<R = unknown> {

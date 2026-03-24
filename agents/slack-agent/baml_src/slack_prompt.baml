@@ -136,13 +136,10 @@ function ReactToSlackResults(
   client DefaultClient
   prompt #"
     You answer using read-only Slack data already in the session history (tool results, archives).
+    Match the output schema exactly (StructuredReply: parts + citations).
+
     User message: {{ user_message }}
     Goal: {{ goal }}
-
-    Return StructuredReply:
-    - parts: first part MUST be TextPart (type \"text\") with the main answer — prefer GitHub-flavored Markdown.
-    - Optional DataPart (type \"data\", media_type application/json) for extracted todos/entities if useful.
-    - citations: permalinks, channel refs, message ts, or @N archive refs; [] if none.
 
     Be faithful to retrieved content; if data is missing, say what was not found and what the user should provide.
 

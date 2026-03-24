@@ -1,5 +1,6 @@
 /// <reference path="./baml-runtime.d.ts" />
 import type {
+  ReplyPart,
   RunContext,
   SessionResult,
   StructuredReply,
@@ -7,6 +8,11 @@ import type {
 
 const MAX_REACT_STEPS = 8;
 const MAX_CLARIFY = 2;
+
+function textReply(text: string): StructuredReply {
+  const parts: ReplyPart[] = [{ type: "text", text }];
+  return { parts, citations: [] };
+}
 
 type NeedClarification = { question: string };
 type NotRelevant = { reason: string };
@@ -245,14 +251,14 @@ async function runNotionPlan(
       await executable.startStep?.(synthesizeStep.id);
     }
 
-    let finalMessage: string | StructuredReply;
+    let finalMessage: StructuredReply;
     try {
-      finalMessage = (await ReactToNotionResults({
+      finalMessage = await ReactToNotionResults({
         goal,
         user_message: userText,
-      })) as StructuredReply;
+      });
     } catch (_) {
-      finalMessage = "Notion returned no usable content for this request.";
+      finalMessage = textReply("Notion returned no usable content for this request.");
     }
 
     if (synthesizeStep && executable) {
@@ -260,9 +266,6 @@ async function runNotionPlan(
     }
     if (executable) await executable.finish?.();
 
-    if (typeof finalMessage === "string") {
-      return { message: finalMessage };
-    }
     return { message: finalMessage };
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
@@ -290,7 +293,9 @@ __chat_register({
         break;
       }
       if (isNotRelevant(intentResult)) {
-        return { message: `This doesn't look like a Notion question — ${intentResult.reason}` };
+        return {
+          message: textReply(`This doesn't look like a Notion question — ${intentResult.reason}`),
+        };
       }
       if (isNeedClarification(intentResult) && i < MAX_CLARIFY) {
         const reply = await ctx.emit.awaitInput(intentResult.question);

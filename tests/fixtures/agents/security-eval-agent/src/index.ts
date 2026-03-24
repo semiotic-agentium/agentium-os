@@ -3,13 +3,8 @@ import type {
   ReportingPlan,
   ReportingPlanStep,
   SessionResult,
-  StepExecutorRunResult,
-  CrmStepResult,
-  SupportCrmSessionPlan,
-  SupportEmailSessionPlan,
+  StructuredReply,
 } from "./baml-runtime";
-
-type ExecuteStepResult = CrmStepResult | SupportCrmSessionPlan | SupportEmailSessionPlan;
 
 /**
  * security-eval-agent
@@ -66,15 +61,13 @@ __chat_register({
 
       // Phase 3: execute each committed plan step.
       // Results accumulate in conversation_history automatically — no manual threading.
-      let lastRun: StepExecutorRunResult<ExecuteStepResult> | null = null;
-
       for (let idx = 0; idx < steps.length; idx++) {
         const step = steps[idx];
         const stepId = step.step_id || `step-${idx}`;
 
         await executable.startStep(stepId, ["#1"]);
 
-        lastRun = await runGeneratedStepExecutor("ExecuteStep", {
+        await runGeneratedStepExecutor("ExecuteStep", {
           objective: plan.objective,
           step_description: step.description,
         });
@@ -84,12 +77,14 @@ __chat_register({
 
       await executable.finish();
 
-      const last = lastRun?.last;
-      const finalMsg = last && typeof last === "object" && "message" in last
-        ? String((last as CrmStepResult).message)
-        : "Plan executed.";
+      // Operator-visible StructuredReply from PresentReportingToUser only.
+      // Provenance uses the normal chat completion message — not step-executor `last` / envelopes.
+      const finalMessage: StructuredReply = await PresentReportingToUser({
+        user_message: userMessage,
+        objective: plan.objective,
+      });
 
-      return { message: finalMsg };
+      return { message: finalMessage };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }

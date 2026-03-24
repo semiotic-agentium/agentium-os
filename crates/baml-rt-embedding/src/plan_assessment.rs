@@ -51,7 +51,7 @@ pub struct PlanDriftConfig {
 }
 
 /// Defaults derived from empirical evaluation on BIPIA-style injection attack
-/// dataset (7 categories) and the drift-injection-demo cheese-poem fixture.
+/// dataset (7 categories) and synthetic CRM-vs-poetry contrast pairs in embedding tests.
 /// See `docs/drift-catalogue.md` "Threshold Calibration Guide" for the data.
 impl Default for PlanDriftConfig {
     fn default() -> Self {

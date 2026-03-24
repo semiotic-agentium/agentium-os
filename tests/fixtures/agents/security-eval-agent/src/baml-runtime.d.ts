@@ -120,6 +120,8 @@ declare function ExecuteStep(args: { objective: string; step_description: string
 
 declare function PlanReportingWork(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<ReportingPlan>;
 
+declare function PresentReportingToUser(args: { user_message: string; objective: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
+
 }
 
 /** Runtime interaction API: A2A task FSM (message-first, typestate rails). */
@@ -456,6 +458,11 @@ export interface StepExecutorStateInput {
 export interface StepExecutorRunOptions {
     max_steps?: number;
 }
+
+/**
+ * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
+ * User-facing replies are synthesized once at session completion (and recorded there).
+ */
 
 export interface StepExecutorRunResult<R = unknown> {
     last: R;

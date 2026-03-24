@@ -136,15 +136,10 @@ function ReactToNotionResults(
   client OpenRouterGPT
   prompt #"
     You retrieved content from Notion. Now respond to the user directly.
+    Match the output schema exactly (StructuredReply: parts + citations).
 
     The user asked: {{ user_message }}
     Goal: {{ goal }}
-
-    Return StructuredReply:
-    - parts: first part MUST be TextPart (type "text") with the main answer. Prefer GitHub-flavored Markdown (headings, bullet lists, **bold**, `code`, links).
-    - Optionally append DataPart (type "data", media_type ApplicationJson) with a JSON string (e.g. page ids, titles) if it helps the UI; otherwise omit the data part.
-    - metadata: usually omit.
-    - citations: URLs, page titles, or #N / @N history refs; [] if none.
 
     The session history below contains the Read results from Notion. React appropriately:
     - If the content directly answers the question, lead with the answer — don't pad.

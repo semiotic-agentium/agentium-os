@@ -156,6 +156,11 @@ Use TS to orchestrate intent/Plan Artifact lifecycle and evidence, not to reimpl
 - Treat Step Executor outputs as strict envelopes (`status`, `output`) and parse conservatively.
 - On terminal status, consume final output and complete the corresponding execution step.
 
+**Provenance note:** operator‑visible prose is **not** copied from step‑executor
+`last`/`steps` into provenance as a second “reply.” The recorded user message is
+the chat completion `SessionResult.message` (e.g. `StructuredReply` from a final
+synthesis function). Step envelopes are execution evidence only.
+
 ## Iterative Plan-Step Solver (Reference Pattern)
 
 An iterative solver should execute one committed step at a time, while each Execution Hop emits exactly one FSM step.

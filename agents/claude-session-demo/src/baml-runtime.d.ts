@@ -48,7 +48,7 @@ export interface ClaudeToolOpenInput { workspace: string | null;
  }
 
 export interface ClaudeToolSendInput { prompt: string | null;
-content: ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3[] | null;
+content: (ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3)[] | null;
  }
 
 export interface ClaudeUserContentBlockDtoVariant1 { text: string;
@@ -64,15 +64,8 @@ data: string;
 kind: string;
  }
 
-export interface DataPart { type: "data";
-data: string;
-media_type: ReplyMediaType;
- }
-
 export interface NeedMoreInput { question: string;
  }
-
-export type ReplyMediaType = "TextPlain" | "TextMarkdown" | "ApplicationJson" | "TextCsv";
 
 export interface RequirementsReady { summary: string;
 requirements: string[];
@@ -87,14 +80,6 @@ status_token: string | null;
 
 export interface Spec { specification_text: string;
 validation_criteria: string[];
- }
-
-export interface StructuredReply { parts: TextPart | DataPart[];
-citations: string[];
- }
-
-export interface TextPart { type: "text";
-text: string;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
@@ -445,6 +430,11 @@ export interface StepExecutorStateInput {
 export interface StepExecutorRunOptions {
     max_steps?: number;
 }
+
+/**
+ * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
+ * User-facing replies are synthesized once at session completion (and recorded there).
+ */
 
 export interface StepExecutorRunResult<R = unknown> {
     last: R;

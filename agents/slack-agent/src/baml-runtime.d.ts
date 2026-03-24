@@ -12,11 +12,6 @@ limit: number | null;
 grep: string | null;
  }
 
-export interface DataPart { type: "data";
-data: string;
-media_type: ReplyMediaType;
- }
-
 export interface GetConversationHistoryInput { channel_id: string;
 cursor: string | null;
 limit: number | null;
@@ -58,8 +53,6 @@ export interface ReadOnlyResponse { message: string;
 next_step: string | null;
  }
 
-export type ReplyMediaType = "TextPlain" | "TextMarkdown" | "ApplicationJson" | "TextCsv";
-
 export interface ResolveUsersInput { user_ids: string[];
 auth: SlackAuthPreference | null;
  }
@@ -99,10 +92,6 @@ citations: string[] | null;
 
 export type SlackUserResolutionMode = "None" | "ResolveUsers";
 
-export interface StructuredReply { parts: TextPart | DataPart[];
-citations: string[];
- }
-
 export interface SupportSlackAbortStep { op: "Abort";
  }
 
@@ -124,10 +113,6 @@ citations: string[];
 
 export interface SupportSlackSessionPlan { step: SupportSlackOpenStep | SupportSlackSendStep | SupportSlackReadStep | SupportSlackFinishStep | SupportSlackAbortStep;
 citations: string[];
- }
-
-export interface TextPart { type: "text";
-text: string;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
@@ -478,6 +463,11 @@ export interface StepExecutorStateInput {
 export interface StepExecutorRunOptions {
     max_steps?: number;
 }
+
+/**
+ * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
+ * User-facing replies are synthesized once at session completion (and recorded there).
+ */
 
 export interface StepExecutorRunResult<R = unknown> {
     last: R;

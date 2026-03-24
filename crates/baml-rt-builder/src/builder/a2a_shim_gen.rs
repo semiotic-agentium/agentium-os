@@ -260,6 +260,10 @@ pub fn render_a2a_shim() -> Result<String> {
    * Step Executor: thin wrapper over Rust-hosted __run_step_executor.
    * All FSM state, policy resolution, polymorphic narrowing, and multi-hop
    * coordination live in the Rust host. JS is only the call-through.
+   *
+   * Return value is FSM execution telemetry (last, steps, session_context, …).
+   * Do not use it as the provenance copy of the user-visible reply — return
+   * StructuredReply (or equivalent) from the chat handler as SessionResult.message.
    */
   async function runGeneratedStepExecutor(stepExecutor, args, options) {
     if (typeof globalThis.__run_step_executor !== "function") {

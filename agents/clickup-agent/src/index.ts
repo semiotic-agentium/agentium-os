@@ -6,6 +6,7 @@ import type {
   JsonValue,
   NeedClarification,
   NotRelevant,
+  ReplyPart,
   RunContext,
   SessionResult,
   StandardAgentPlanStep,
@@ -115,6 +116,11 @@ function collectStepResultsForPriorContext(steps: unknown[]): string {
   return stringifyUnknown(steps.slice(-5), PRIOR_RESULTS_MAX_CHARS);
 }
 
+function textReply(text: string): StructuredReply {
+  const parts: ReplyPart[] = [{ type: "text", text }];
+  return { parts, citations: [] };
+}
+
 function finalResponseToStructured(fr: FinalResponse): StructuredReply {
   const msg = fr.message.trim() || "Done.";
   const parts: StructuredReply["parts"] = [{ type: "text", text: msg }];
@@ -160,20 +166,20 @@ function formatListLikeToolPayload(output: JsonObject): string {
   return response;
 }
 
-function extractFinalMessage(steps: unknown[]): string | StructuredReply {
+function extractFinalMessage(steps: unknown[]): StructuredReply {
   for (const step of [...steps].reverse()) {
     if (isFinalResponse(step)) return finalResponseToStructured(step);
     const toolLike = extractToolLikePayload(step);
-    if (toolLike) return formatListLikeToolPayload(toolLike);
+    if (toolLike) return textReply(formatListLikeToolPayload(toolLike));
     if (isJsonObject(step) && typeof step.message === "string" && step.message.trim()) {
-      return step.message.trim();
+      return textReply(step.message.trim());
     }
   }
   if (steps.length > 0) {
     const raw = stringifyUnknown(steps[steps.length - 1], 4000);
-    if (raw.trim()) return `ClickUp session produced:\n${raw}`;
+    if (raw.trim()) return textReply(`ClickUp session produced:\n${raw}`);
   }
-  return "ClickUp returned no usable response for this request.";
+  return textReply("ClickUp returned no usable response for this request.");
 }
 
 function filterPlanCitations(plan: StandardStructuredPlan): string[] {
@@ -287,16 +293,14 @@ async function runClickUpStructuredPlan(
         const finalMessage = extractFinalMessage(allStepOutputsNested.flat());
         if (executable) await executable.completeStep?.(stepId);
         if (executable) await executable.finish?.();
-        return typeof finalMessage === "string"
-          ? { message: finalMessage }
-          : { message: finalMessage };
+        return { message: finalMessage };
       } else {
         if (executable) await executable.completeStep?.(stepId);
       }
     }
 
     if (executable) await executable.finish?.();
-    return { message: "ClickUp plan completed without a format step." };
+    return { message: textReply("ClickUp plan completed without a format step.") };
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
     try { if (executable) await executable.abort?.(errMsg); } catch (_) { /* best-effort */ }
@@ -319,7 +323,9 @@ __chat_register({
         break;
       }
       if (isNotRelevant(intentResult)) {
-        return { message: `This doesn't look like a ClickUp request — ${intentResult.reason}` };
+        return {
+          message: textReply(`This doesn't look like a ClickUp request — ${intentResult.reason}`),
+        };
       }
       if (isNeedClarification(intentResult) && i < MAX_CLARIFY) {
         const reply = await ctx.emit.awaitInput(intentResult.question);

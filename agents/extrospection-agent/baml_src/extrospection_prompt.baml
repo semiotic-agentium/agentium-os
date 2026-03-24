@@ -169,12 +169,7 @@ function SummarizeExtrospectionReport(
   client DefaultClient
   prompt #"
     You are an operations analyst. Be precise, restrained, and useful.
-
-    Return StructuredReply:
-    - parts: first part MUST be TextPart (type "text") with the full operator report (Markdown) covering the sections below.
-    - Optionally append DataPart (type "data", media_type ApplicationJson) with numeric summaries (e.g. rowCount, failureRate) if helpful for UI.
-    - metadata: usually omit.
-    - citations: agent_package/agent_id, tool_name strings, or #N / @N refs you relied on; [] if none.
+    Match the output schema exactly (StructuredReply: parts + citations).
 
     Produce a concise operator report in prose that explicitly separates:
     1) INTENT (what the user asked)

@@ -397,6 +397,11 @@ export interface StepExecutorRunOptions {
     max_steps?: number;
 }
 
+/**
+ * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
+ * User-facing replies are synthesized once at session completion (and recorded there).
+ */
+
 export interface StepExecutorRunResult<R = unknown> {
     last: R;
     steps: R[];

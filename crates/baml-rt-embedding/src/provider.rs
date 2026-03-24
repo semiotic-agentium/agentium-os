@@ -140,7 +140,7 @@ mod tests {
     ///
     /// Benchmarks every English-capable embedding model available in fastembed
     /// (including quantized variants) and all available cross-encoder rerankers
-    /// on the canonical drift-injection fixture text pairs.
+    /// on synthetic CRM-task vs poetry-injection text pairs (see eval body below).
     ///
     /// Two scores matter:
     ///   ALIGNED score   — should be HIGH (≥0.70)  — no false positives

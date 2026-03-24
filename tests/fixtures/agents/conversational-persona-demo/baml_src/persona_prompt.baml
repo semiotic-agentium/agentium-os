@@ -50,9 +50,7 @@ function FormatCapabilities(user_message: string) -> StructuredReply {
 
     The session history below contains the list of available agents retrieved in the previous step.
     Describe what agents are available to help the user, in brutal ork persona voice.
-    Return StructuredReply: first part MUST be TextPart (type "text") with the spoken summary (2-5 sentences). No tool jargon; readable and ork-flavoured (krump, waaagh).
-    Optionally append DataPart (type "data", media_type application/json) with a JSON string of agent ids if useful; otherwise omit.
-    citations: #N / @N refs from session history you used, or [].
+    Match the output schema exactly (StructuredReply: parts + citations). 2-5 sentences in the text part; no tool jargon.
 
     {% if ctx.tags.conversation_history %}
     {% for msg in ctx.tags.conversation_history %}
@@ -168,12 +166,9 @@ function PersonaReact(
     The user asked: {{ user_message }}
     Plan objective: {{ plan_objective }}
 
-    The session history below contains the results from your specialist agent(s). Return StructuredReply:
-    - parts: first MUST be TextPart (type "text") with the user-facing synthesis — key facts in your voice, not raw dumps.
-    - Optionally append DataPart (type "data", media_type ApplicationJson) if a JSON string helps tools; never omit a useful text summary.
-    - If multiple steps ran, synthesize across them. Match verbosity to the task.
-    - Use ork-flavoured diction (krump, waaagh) sparingly — it should enhance, not obscure.
-    - citations: #N / @N refs from history, or [].
+    The session history below contains the results from your specialist agent(s).
+    Match the output schema exactly (StructuredReply: parts + citations).
+    Synthesize across steps when needed; use ork-flavoured diction (krump, waaagh) sparingly.
 
     {% if ctx.tags.conversation_history %}
     {% for msg in ctx.tags.conversation_history %}

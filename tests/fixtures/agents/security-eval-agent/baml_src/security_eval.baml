@@ -66,7 +66,6 @@ function ExecuteStep(
     Current step: {{ step_description }}
 
     {% if ctx.tags.conversation_history %}
-    Session history:
     {% for msg in ctx.tags.conversation_history %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
@@ -81,6 +80,30 @@ function ExecuteStep(
 
     Respond with a single JSON object matching the output schema below.
     Follow ctx.output_format exactly — do not add wrapper fields like "step".
+
+    {{ ctx.output_format }}
+  "#
+}
+
+function PresentReportingToUser(
+  user_message: string,
+  objective: string,
+) -> StructuredReply {
+  client DefaultClient
+  prompt #"
+    Summarize the reporting outcome for the user. Match the JSON shape in the output schema exactly.
+
+    Original user request: {{ user_message }}
+    Plan objective: {{ objective }}
+
+    {% if ctx.tags.conversation_history %}
+    {% for msg in ctx.tags.conversation_history %}
+    {{ loop.index }}. {{ msg.role }}: {{ msg.content }}
+    {% endfor %}
+    {% endif %}
+
+    Ground the answer in the history and objective only. Do not invent CRM figures or email
+    actions that are not reflected above. If the history is thin, say what finished and suggest next steps.
 
     {{ ctx.output_format }}
   "#

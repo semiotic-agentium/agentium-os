@@ -14,11 +14,6 @@ grep: string | null;
 
 export type BlockRenderMode = "Raw" | "Enriched";
 
-export interface DataPart { type: "data";
-data: string;
-media_type: ReplyMediaType;
- }
-
 export interface NeedClarification { question: string;
  }
 
@@ -58,12 +53,6 @@ missing: string[];
 sources: string[];
  }
 
-export type ReplyMediaType = "TextPlain" | "TextMarkdown" | "ApplicationJson" | "TextCsv";
-
-export interface StructuredReply { parts: TextPart | DataPart[];
-citations: string[];
- }
-
 export interface SupportNotionAbortStep { op: "Abort";
  }
 
@@ -85,10 +74,6 @@ citations: string[];
 
 export interface SupportNotionSessionPlan { step: SupportNotionOpenStep | SupportNotionSendStep | SupportNotionReadStep | SupportNotionFinishStep | SupportNotionAbortStep;
 citations: string[];
- }
-
-export interface TextPart { type: "text";
-text: string;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
@@ -441,6 +426,11 @@ export interface StepExecutorStateInput {
 export interface StepExecutorRunOptions {
     max_steps?: number;
 }
+
+/**
+ * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
+ * User-facing replies are synthesized once at session completion (and recorded there).
+ */
 
 export interface StepExecutorRunResult<R = unknown> {
     last: R;

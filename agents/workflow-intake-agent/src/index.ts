@@ -1,5 +1,10 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { RunContext, SessionResult } from "./baml-runtime";
+import type { ReplyPart, RunContext, SessionResult, StructuredReply } from "./baml-runtime";
+
+function textReply(text: string): StructuredReply {
+  const parts: ReplyPart[] = [{ type: "text", text }];
+  return { parts, citations: [] };
+}
 
 type ToolSessionHandle = {
   send(args: Record<string, unknown>): Promise<unknown>;
@@ -933,7 +938,7 @@ async function handleInterpretationEvent(
   try {
     const decision = deriveDecision(event);
     if (decision.kind === "noop") {
-      return { message: decision.reason };
+      return { message: textReply(decision.reason) };
     }
 
     const agents = await discoverAgentsByCapabilities(decision.requiredCapabilities);
@@ -955,7 +960,7 @@ async function handleInterpretationEvent(
     const prompt = renderDownstreamPrompt(event, decision);
     const downstreamTexts = await delegateToAgent(target, prompt);
     return {
-      message: renderRouteSummary(decision, target, downstreamTexts),
+      message: textReply(renderRouteSummary(decision, target, downstreamTexts)),
     };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);

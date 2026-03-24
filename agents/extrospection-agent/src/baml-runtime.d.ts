@@ -28,11 +28,6 @@ limit: number | null;
 grep: string | null;
  }
 
-export interface DataPart { type: "data";
-data: string;
-media_type: ReplyMediaType;
- }
-
 export interface DiscoverAgentsOpenInput { reason: string | null;
  }
 
@@ -81,8 +76,6 @@ export type QueryOutcome = "Both" | "Failed_only" | "Successful_only";
 
 export type QueryResource = "Auto" | "Llm_calls" | "Tool_calls" | "Messages";
 
-export type ReplyMediaType = "TextPlain" | "TextMarkdown" | "ApplicationJson" | "TextCsv";
-
 export interface SelectedAgent { agent_package: string;
 agent_instance_id: string;
 name: string;
@@ -97,10 +90,6 @@ budgetHint: number | null;
  }
 
 export type SessionReadMode = "RetrieveRef";
-
-export interface StructuredReply { parts: TextPart | DataPart[];
-citations: string[];
- }
 
 export interface SystemDiscover_agentsAbortStep { op: "Abort";
  }
@@ -148,10 +137,6 @@ citations: string[];
 
 export interface SystemExtrospectionSessionPlan { step: SystemExtrospectionOpenStep | SystemExtrospectionSendStep | SystemExtrospectionReadStep | SystemExtrospectionFinishStep | SystemExtrospectionAbortStep;
 citations: string[];
- }
-
-export interface TextPart { type: "text";
-text: string;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
@@ -504,6 +489,11 @@ export interface StepExecutorStateInput {
 export interface StepExecutorRunOptions {
     max_steps?: number;
 }
+
+/**
+ * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
+ * User-facing replies are synthesized once at session completion (and recorded there).
+ */
 
 export interface StepExecutorRunResult<R = unknown> {
     last: R;

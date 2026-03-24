@@ -48,7 +48,7 @@ export interface ClaudeToolOpenInput { workspace: string | null;
  }
 
 export interface ClaudeToolSendInput { prompt: string | null;
-content: ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3[] | null;
+content: (ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3)[] | null;
  }
 
 export interface ClaudeUserContentBlockDtoVariant1 { text: string;
@@ -430,6 +430,11 @@ export interface StepExecutorStateInput {
 export interface StepExecutorRunOptions {
     max_steps?: number;
 }
+
+/**
+ * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
+ * User-facing replies are synthesized once at session completion (and recorded there).
+ */
 
 export interface StepExecutorRunResult<R = unknown> {
     last: R;

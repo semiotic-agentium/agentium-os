@@ -4,6 +4,14 @@
 //! Replaces the JS `runGeneratedStepExecutor` shim — all FSM state, policy
 //! resolution, polymorphic narrowing, and transition validation live here
 //! with no invalid state representation.
+//!
+//! ## Provenance
+//!
+//! [`StepExecutorResult`] is **execution telemetry** (per-hop JSON, `last`, selected tool).
+//! It must not be treated as the canonical user-visible chat reply: that role belongs to
+//! `SessionResult.message` returned from the agent handler (e.g. structured synthesis).
+//! Hosts record the surfaced reply from the chat completion path, not a duplicate scraped
+//! from step envelopes.
 
 use std::sync::Arc;
 
@@ -154,7 +162,7 @@ fn extract_status(result: &Value) -> Option<StepStatus> {
     StepStatus::parse(s)
 }
 
-/// Result of a completed step executor loop.
+/// Result of a completed step executor loop (FSM hops only — not the chat-layer user reply).
 #[derive(Debug, serde::Serialize)]
 pub struct StepExecutorResult {
     pub last: Value,

@@ -44,7 +44,8 @@ The **composite severity** is the worst-case across applicable dimensions for th
 ## Default Thresholds
 
 Derived from empirical evaluation on BIPIA-style injection dataset (7 attack
-categories) + drift-injection-demo fixture. See derivation below.
+categories) plus synthetic CRM-vs-poetry contrast pairs used in embedding evals.
+See derivation below.
 
 | Dimension | Warn below | Block below | Notes |
 |-----------|-----------|-------------|-------|

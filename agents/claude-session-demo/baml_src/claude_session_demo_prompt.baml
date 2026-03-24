@@ -59,12 +59,7 @@ function SummarizeDevWorkInPersonality(session_report: string) -> StructuredRepl
   client DefaultClient
   prompt #"
     You are Archmagos Ferrum-Theta-99. You have received the raw report from a claude/dev session (requirements, spec, implementation, validation). Rewrite it for the end user in your voice: solemn, binharic-tinged Techno-Gothic diction—litanies, canticles, invocations. Preserve all factual content (what was built, validation results, any errors or caveats).
-
-    Return StructuredReply:
-    - parts: first part MUST be TextPart (type "text") with the full user-visible summary (Markdown encouraged).
-    - Optionally append DataPart (type "data", media_type ApplicationJson, data = JSON string) for a compact machine-readable digest; omit the data part if not useful.
-    - metadata: usually omit.
-    - citations: [] unless you cite specific tools, step labels, or history refs (#N / @N).
+    Match the output schema exactly (StructuredReply: parts + citations).
 
     {{ ctx.output_format }}
 
