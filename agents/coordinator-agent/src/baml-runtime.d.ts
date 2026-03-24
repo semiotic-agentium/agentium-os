@@ -189,13 +189,22 @@ export interface IntentSubmission {
     citations?: string[];
     supersession?: "replaced" | "refined";
 }
-/** Wire shape for `submitPlan.steps`. Host deserializes camelCase or BAML snake_case (`step_id`, `depends_on`). */
-export interface PlanStepSubmission {
-    stepId: string;
-    description: string;
-    order: number;
-    dependsOn?: string[];
-}
+/** One row in `submitPlan.steps`. Use **either** `stepId` (idiomatic TS) **or** `step_id` (BAML-shaped); the host deserializes both, plus `dependsOn` / `depends_on`. */
+export type PlanStepSubmission =
+    | {
+          stepId: string;
+          description: string;
+          order: number;
+          dependsOn?: string[];
+          depends_on?: string[];
+      }
+    | {
+          step_id: string;
+          description: string;
+          order: number;
+          dependsOn?: string[];
+          depends_on?: string[];
+      };
 export interface PlanSubmission {
     intentId: string;
     planId: string;
