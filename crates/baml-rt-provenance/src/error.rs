@@ -22,6 +22,8 @@ pub enum ProvenanceError {
     },
     #[error("missing required label for {kind} {node_id}")]
     MissingLabel { node_id: String, kind: String },
+    #[error("corrupt provenance_payload row: {reason}")]
+    CorruptPayloadRow { reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, ProvenanceError>;

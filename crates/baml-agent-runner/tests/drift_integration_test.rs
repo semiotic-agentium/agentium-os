@@ -2,6 +2,8 @@
 //!
 //! Run: `cargo test -p baml-agent-runner --features security-eval -- drift_integration --ignored --nocapture`
 
+#![allow(dead_code, unused_imports)] // Most of this file is `#[cfg(feature = "security-eval")]`; clippy builds without it.
+
 #[allow(dead_code, unused_imports)]
 mod common;
 

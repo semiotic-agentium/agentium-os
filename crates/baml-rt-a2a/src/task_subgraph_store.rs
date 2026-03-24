@@ -12,8 +12,8 @@ use baml_rt_core::{
     ids::{ContextId, ExternalId, TaskId},
 };
 use baml_rt_provenance::{
-    A2aGraphStore, ArtifactUpdateContext, StatusUpdateContext, TaskSubgraphNode,
-    record_artifact_update as prov_record_artifact_update,
+    A2aGraphStore, A2aGraphStoreError, ArtifactUpdateContext, StatusUpdateContext,
+    TaskSubgraphNode, record_artifact_update as prov_record_artifact_update,
     record_status_update as prov_record_status_update,
 };
 
@@ -82,9 +82,9 @@ fn status_to_string(status: &TaskStatus) -> Option<String> {
     })
 }
 
-fn map_store_err(e: String) -> BamlRtError {
+fn map_store_err(e: A2aGraphStoreError) -> BamlRtError {
     BamlRtError::ProvenanceContextRead {
-        source: Box::new(std::io::Error::other(e)),
+        source: Box::new(e),
     }
 }
 

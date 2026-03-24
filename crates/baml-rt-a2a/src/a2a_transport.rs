@@ -2152,7 +2152,7 @@ mod tests {
 
     #[tokio::test]
     async fn js_tool_can_be_called_via_baml_tool_registry() {
-        let store = baml_rt_provenance::SurrealStoreBuilder::in_memory()
+        let store = baml_rt_provenance::SurrealStoreBuilder::in_memory_isolated()
             .build()
             .await
             .expect("test store");
@@ -2194,7 +2194,7 @@ mod tests {
 
     #[tokio::test]
     async fn surreal_runtime_store_insert_message_records_provenance_message_event() {
-        let provenance = baml_rt_provenance::SurrealStoreBuilder::in_memory()
+        let provenance = baml_rt_provenance::SurrealStoreBuilder::in_memory_isolated()
             .build()
             .await
             .expect("build store");
@@ -2244,7 +2244,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_send_stream_rejects_concurrent_turn_for_same_context() {
-        let store = baml_rt_provenance::SurrealStoreBuilder::in_memory()
+        let store = baml_rt_provenance::SurrealStoreBuilder::in_memory_isolated()
             .build()
             .await
             .expect("test store");

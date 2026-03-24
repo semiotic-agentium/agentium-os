@@ -1,6 +1,22 @@
 use async_trait::async_trait;
+use thiserror::Error;
 
-pub type A2aGraphStoreResult<T> = std::result::Result<T, String>;
+/// Errors from [`A2aGraphStore`] implementations (Surreal, mocks, etc.).
+#[derive(Debug, Error)]
+pub enum A2aGraphStoreError {
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error("graph store operation failed")]
+    Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl A2aGraphStoreError {
+    pub fn backend(e: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self::Backend(Box::new(e))
+    }
+}
+
+pub type A2aGraphStoreResult<T> = std::result::Result<T, A2aGraphStoreError>;
 
 #[derive(Debug, Clone)]
 pub struct TaskSubgraphNode {

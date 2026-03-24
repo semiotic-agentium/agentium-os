@@ -72,7 +72,7 @@ pub mod provenance {
     /// Build in-memory shared SurrealDB store. Used to isolate file-backend vs in-memory behavior.
     #[allow(dead_code)] // shared test helper; used by other test binaries
     pub async fn build_surreal_in_memory_store() -> Arc<SurrealProvenanceStore> {
-        SurrealStoreBuilder::in_memory()
+        SurrealStoreBuilder::in_memory_isolated()
             .build()
             .await
             .expect("build in-memory surreal store")

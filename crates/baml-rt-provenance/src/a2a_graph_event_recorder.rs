@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use baml_rt_core::ids::{ContextId, TaskId};
-use baml_rt_vocabulary::{A2aGraphStore, A2aGraphStoreResult};
+use baml_rt_vocabulary::{A2aGraphStore, A2aGraphStoreError, A2aGraphStoreResult};
 use serde_json::Value;
 
 /// Context for a status update: scoped (task + context) or task-only. Distinct semantics.
@@ -125,7 +125,7 @@ pub async fn record_status_update(
         "task_id": task_id_str,
         "status": serde_json::from_str::<Value>(status_json).unwrap_or(Value::Null)
     }))
-    .map_err(|e| e.to_string())?;
+    .map_err(A2aGraphStoreError::from)?;
     let node_id = format!("{task_id_str}:update:{seq}");
     graph
         .insert_update_node(&node_id, task_id_str, seq, "status", &payload_json)
@@ -154,7 +154,7 @@ pub async fn record_artifact_update(
         "append": append,
         "artifact": serde_json::from_str::<Value>(artifact_json).unwrap_or(Value::Null)
     }))
-    .map_err(|e| e.to_string())?;
+    .map_err(A2aGraphStoreError::from)?;
     let node_id = format!("{task_id_str}:update:{seq}");
     graph
         .insert_update_node(&node_id, task_id_str, seq, "artifact", &payload_json)

@@ -21,7 +21,8 @@
 //! |-------|---------|
 //! | `prov_node` | All graph nodes (entities, activities, agents) with `label` + `props` |
 //! | `prov_edge` | All graph edges (Used, WasGeneratedBy, etc.) with `rel_type` + `props` |
-//! | `provenance_payload` | Payload side-table (prompt/result blobs) |
+//! | `provenance_payload` | Payload pointers + `search_text` for BM25 |
+//! | `provenance_payload_blob` | Content-addressed JSON bodies (large tool/LLM results) |
 //! | `a2a_task` | A2A task subgraph nodes |
 //! | `a2a_message` | A2A task message nodes |
 //! | `a2a_update` | A2A task update nodes |
@@ -38,9 +39,9 @@ use baml_rt_core::{
     ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_vocabulary::{
-    A2aGraphStore, A2aGraphStoreResult, TaskSubgraphNode, TaskSubgraphUpdateNode,
+    A2aGraphStore, A2aGraphStoreError, A2aGraphStoreResult, TaskSubgraphNode,
+    TaskSubgraphUpdateNode,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use surrealdb::{
     Surreal,
@@ -51,12 +52,13 @@ use tokio::sync::Mutex;
 use crate::{
     error::{ProvenanceError, Result},
     events::ProvEventData,
-    graph_model::GraphNodeLabel,
     mermaid_cache::MermaidCache,
     normalizer::{
-        A2aRelationType, DefaultProvNormalizer, NormalizeContext, NormalizedProv, ProvNormalizer,
-        task_entity_id_string, validate_event,
+        DefaultProvNormalizer, NormalizeContext, ProvNormalizer, task_entity_id_string,
+        validate_event,
     },
+    payload_record::{PayloadRecord, StorageKind},
+    payload_storage,
     store::{
         ActivityRef, ArchiveRef, ConversationItemContent, PayloadRef, PlanningIntentRecord,
         PlanningPlanRecord, PlanningPlanStepRecord, ProvenanceArchivePayload,
@@ -66,6 +68,11 @@ use crate::{
         ProvenanceQueryApi, ProvenanceResponseProfile, ProvenanceWriter, SessionStepContent,
         SessionStepOp, ToolCallContent, ToolOutcome, ToolResultContent, ToolSessionPhase,
     },
+    surreal_tables::{
+        FTS_PAYLOAD_ACTIVITY_WHERE, PAYLOAD_ROW_SELECT, TBL_A2A_MESSAGE, TBL_A2A_TASK,
+        TBL_A2A_UPDATE, TBL_EDGE, TBL_NODE, TBL_PAYLOAD, TBL_PAYLOAD_BLOB,
+    },
+    surreal_write_batch::call_activity_id_from_normalized,
     vocabulary::semantic_labels,
 };
 
@@ -75,27 +82,6 @@ use crate::{
 
 const NS: &str = "provenance";
 const DB: &str = "store";
-
-// Table names
-const TBL_NODE: &str = "prov_node";
-const TBL_EDGE: &str = "prov_edge";
-const TBL_PAYLOAD: &str = "provenance_payload";
-const TBL_A2A_TASK: &str = "a2a_task";
-const TBL_A2A_MESSAGE: &str = "a2a_message";
-const TBL_A2A_UPDATE: &str = "a2a_update";
-
-// ---------------------------------------------------------------------------
-// Record types for SurrealDB serde
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PayloadRecord {
-    payload_id: String,
-    activity_anchor_id: String,
-    activity_id: Option<String>,
-    payload_kind: String,
-    payload_json: String,
-}
 
 // ---------------------------------------------------------------------------
 // Backend enum + builder
@@ -296,6 +282,7 @@ async fn init_schema(db: &Surreal<Db>) -> Result<()> {
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_id ON {TBL_PAYLOAD} FIELDS payload_id UNIQUE"),
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_activity_anchor ON {TBL_PAYLOAD} FIELDS activity_anchor_id"),
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_activity ON {TBL_PAYLOAD} FIELDS activity_id, payload_kind"),
+        format!("DEFINE INDEX IF NOT EXISTS idx_payload_blob_hash ON {TBL_PAYLOAD_BLOB} FIELDS content_hash UNIQUE"),
         // A2A task table
         format!("DEFINE INDEX IF NOT EXISTS idx_a2a_task_id ON {TBL_A2A_TASK} FIELDS task_id UNIQUE"),
         format!("DEFINE INDEX IF NOT EXISTS idx_a2a_task_ctx ON {TBL_A2A_TASK} FIELDS context_id"),
@@ -305,9 +292,9 @@ async fn init_schema(db: &Surreal<Db>) -> Result<()> {
         // A2A update table
         format!("DEFINE INDEX IF NOT EXISTS idx_a2a_upd_id ON {TBL_A2A_UPDATE} FIELDS update_id UNIQUE"),
         format!("DEFINE INDEX IF NOT EXISTS idx_a2a_upd_task ON {TBL_A2A_UPDATE} FIELDS task_id, seq"),
-        // Full-text search on payload_json for payload text search parity
+        // Full-text search on denormalized search_text (blob-backed bodies are not indexed in-table)
         "DEFINE ANALYZER IF NOT EXISTS payload_analyzer TOKENIZERS blank, class FILTERS snowball(english)".to_string(),
-        format!("DEFINE INDEX IF NOT EXISTS idx_payload_fts ON {TBL_PAYLOAD} FIELDS payload_json FULLTEXT ANALYZER payload_analyzer BM25"),
+        format!("DEFINE INDEX IF NOT EXISTS idx_payload_search_fts ON {TBL_PAYLOAD} FIELDS search_text FULLTEXT ANALYZER payload_analyzer BM25"),
     ];
     for query in &schema_queries {
         db.query(query).await.map_err(map_surreal_error)?;
@@ -339,6 +326,15 @@ impl SurrealProvenanceStore {
 
 fn map_surreal_error(e: surrealdb::Error) -> ProvenanceError {
     ProvenanceError::Storage(Box::new(e))
+}
+
+/// Deserialize SurrealDB [`surrealdb::IndexedResults`] statement `0` as JSON object rows.
+#[inline]
+fn query_take_zero<E>(
+    response: &mut surrealdb::IndexedResults,
+    map_err: impl FnOnce(surrealdb::Error) -> E,
+) -> std::result::Result<Vec<Value>, E> {
+    response.take(0).map_err(map_err)
 }
 
 fn payload_id_for(anchor: &str, payload_kind: &str) -> String {
@@ -430,61 +426,83 @@ fn decode_depends_on(raw: Option<String>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn label_from_prov_type(prov_type: Option<&str>, default: &str) -> String {
-    prov_type
-        .map(|t| {
-            // Strip namespace prefix if present (e.g. "a2a:LlmCall" → "LlmCall")
-            t.rsplit_once(':')
-                .map(|(_, suffix)| suffix)
-                .unwrap_or(t)
-                .to_string()
-        })
-        .unwrap_or_else(|| default.to_string())
-}
-
 // ---------------------------------------------------------------------------
 // Payload extraction from events
 // ---------------------------------------------------------------------------
 
-fn payload_records_from_event(event: &crate::events::ProvEvent) -> Vec<PayloadRecord> {
+fn merge_result_error_metadata(result: Option<Value>, error: Option<Value>) -> Value {
+    match (result, error) {
+        (Some(result), Some(error)) => serde_json::json!({ "result": result, "error": error }),
+        (Some(result), None) => result,
+        (None, Some(error)) => serde_json::json!({ "error": error }),
+        (None, None) => Value::Null,
+    }
+}
+
+fn payload_records_from_event(event: &crate::events::ProvEvent) -> Result<Vec<PayloadRecord>> {
     let activity_anchor_id = event.id().as_str().to_string();
     match event.data() {
-        ProvEventData::LlmCallStarted { prompt, .. } => vec![PayloadRecord {
-            payload_id: payload_id_for(&activity_anchor_id, "llm_call"),
-            activity_anchor_id,
-            activity_id: None,
-            payload_kind: "llm_call".to_string(),
-            payload_json: serde_json::to_string(prompt).unwrap_or_else(|_| "null".to_string()),
-        }],
+        ProvEventData::LlmCallStarted { prompt, .. } => {
+            let payload_json =
+                serde_json::to_string(prompt).map_err(|e| ProvenanceError::InvalidEvent {
+                    activity_anchor: activity_anchor_id.clone(),
+                    reason: format!("serialize llm_call prompt: {e}"),
+                })?;
+            let search_text = payload_storage::search_text_snippet(&payload_json);
+            Ok(vec![PayloadRecord {
+                payload_id: payload_id_for(&activity_anchor_id, "llm_call"),
+                activity_anchor_id,
+                activity_id: None,
+                payload_kind: "llm_call".to_string(),
+                payload_json,
+                content_hash: None,
+                storage_kind: StorageKind::Inline,
+                file_key: None,
+                search_text,
+            }])
+        }
         ProvEventData::LlmCallCompleted {
             prompt, metadata, ..
         } => {
+            let llm_call_json =
+                serde_json::to_string(prompt).map_err(|e| ProvenanceError::InvalidEvent {
+                    activity_anchor: activity_anchor_id.clone(),
+                    reason: format!("serialize llm_call: {e}"),
+                })?;
+            let llm_call_st = payload_storage::search_text_snippet(&llm_call_json);
             let mut out = vec![PayloadRecord {
                 payload_id: payload_id_for(&activity_anchor_id, "llm_call"),
                 activity_anchor_id: activity_anchor_id.clone(),
                 activity_id: None,
                 payload_kind: "llm_call".to_string(),
-                payload_json: serde_json::to_string(prompt).unwrap_or_else(|_| "null".to_string()),
+                payload_json: llm_call_json,
+                content_hash: None,
+                storage_kind: StorageKind::Inline,
+                file_key: None,
+                search_text: llm_call_st,
             }];
-            let result = metadata.get("result").cloned();
-            let error = metadata.get("error").cloned();
-            let payload = match (result, error) {
-                (Some(result), Some(error)) => {
-                    serde_json::json!({ "result": result, "error": error })
-                }
-                (Some(result), None) => result,
-                (None, Some(error)) => serde_json::json!({ "error": error }),
-                (None, None) => Value::Null,
-            };
+            let payload = merge_result_error_metadata(
+                metadata.get("result").cloned(),
+                metadata.get("error").cloned(),
+            );
+            let lr_json =
+                serde_json::to_string(&payload).map_err(|e| ProvenanceError::InvalidEvent {
+                    activity_anchor: activity_anchor_id.clone(),
+                    reason: format!("serialize llm_result: {e}"),
+                })?;
+            let lr_st = payload_storage::search_text_snippet(&lr_json);
             out.push(PayloadRecord {
                 payload_id: payload_id_for(&activity_anchor_id, "llm_result"),
                 activity_anchor_id,
                 activity_id: None,
                 payload_kind: "llm_result".to_string(),
-                payload_json: serde_json::to_string(&payload)
-                    .unwrap_or_else(|_| "null".to_string()),
+                payload_json: lr_json,
+                content_hash: None,
+                storage_kind: StorageKind::Inline,
+                file_key: None,
+                search_text: lr_st,
             });
-            out
+            Ok(out)
         }
         ProvEventData::ToolCallStarted {
             tool_name,
@@ -504,37 +522,49 @@ fn payload_records_from_event(event: &crate::events::ProvEvent) -> Vec<PayloadRe
                 "args": args,
                 "phase": phase
             });
+            let tc_json =
+                serde_json::to_string(&tool_call).map_err(|e| ProvenanceError::InvalidEvent {
+                    activity_anchor: activity_anchor_id.clone(),
+                    reason: format!("serialize tool_call: {e}"),
+                })?;
+            let tc_st = payload_storage::search_text_snippet(&tc_json);
             let mut out = vec![PayloadRecord {
                 payload_id: payload_id_for(&activity_anchor_id, "tool_call"),
                 activity_anchor_id: activity_anchor_id.clone(),
                 activity_id: None,
                 payload_kind: "tool_call".to_string(),
-                payload_json: serde_json::to_string(&tool_call)
-                    .unwrap_or_else(|_| "null".to_string()),
+                payload_json: tc_json,
+                content_hash: None,
+                storage_kind: StorageKind::Inline,
+                file_key: None,
+                search_text: tc_st,
             }];
             if matches!(event.data(), ProvEventData::ToolCallCompleted { .. }) {
-                let result = metadata.get("result").cloned();
-                let error = metadata.get("error").cloned();
-                let payload = match (result, error) {
-                    (Some(result), Some(error)) => {
-                        serde_json::json!({ "result": result, "error": error })
-                    }
-                    (Some(result), None) => result,
-                    (None, Some(error)) => serde_json::json!({ "error": error }),
-                    (None, None) => Value::Null,
-                };
+                let payload = merge_result_error_metadata(
+                    metadata.get("result").cloned(),
+                    metadata.get("error").cloned(),
+                );
+                let tr_json =
+                    serde_json::to_string(&payload).map_err(|e| ProvenanceError::InvalidEvent {
+                        activity_anchor: activity_anchor_id.clone(),
+                        reason: format!("serialize tool_result: {e}"),
+                    })?;
+                let tr_st = payload_storage::search_text_snippet(&tr_json);
                 out.push(PayloadRecord {
                     payload_id: payload_id_for(&activity_anchor_id, "tool_result"),
                     activity_anchor_id,
                     activity_id: None,
                     payload_kind: "tool_result".to_string(),
-                    payload_json: serde_json::to_string(&payload)
-                        .unwrap_or_else(|_| "null".to_string()),
+                    payload_json: tr_json,
+                    content_hash: None,
+                    storage_kind: StorageKind::Inline,
+                    file_key: None,
+                    search_text: tr_st,
                 });
             }
-            out
+            Ok(out)
         }
-        _ => Vec::new(),
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -616,476 +646,72 @@ fn parse_archive_ref(archive_ref: &str) -> Option<ParsedArchiveRef<'_>> {
     None
 }
 
+fn decode_payload_row(v: Value) -> Result<PayloadRecord> {
+    serde_json::from_value(v).map_err(|e| ProvenanceError::CorruptPayloadRow {
+        reason: e.to_string(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // NormalizedProv → SurrealDB write
 // ---------------------------------------------------------------------------
 
 impl SurrealProvenanceStore {
-    /// Write a normalized provenance document to SurrealDB.
-    ///
-    /// Translates entities, activities, agents → `prov_node` records,
-    /// Map raw PROV-DM edge types to semantic labels for graph export/rendering parity.
-    /// The normalization layer performs this mapping at write time.
-    fn semantic_used_label(from_label: &str, role: Option<&str>) -> &'static str {
-        use crate::vocabulary::a2a_roles;
-        match role {
-            Some(r) if r == a2a_roles::INPUT_MESSAGE => match from_label {
-                l if l == GraphNodeLabel::TaskExecution.as_str() => semantic_labels::WAS_SPAWNED_BY,
-                l if l == GraphNodeLabel::MessageProcessing.as_str() => {
-                    semantic_labels::WAS_RECEIVED_BY
-                }
-                l if l == GraphNodeLabel::LlmCall.as_str() => semantic_labels::WAS_CONSUMED_BY,
-                l if l == GraphNodeLabel::ToolCall.as_str() => semantic_labels::WAS_CONSUMED_BY,
-                _ => semantic_labels::WAS_USED_BY,
-            },
-            Some(r) if r == a2a_roles::TASK_STATE => semantic_labels::WAS_UPDATED_BY,
-            Some(r) if r == a2a_roles::PROMPT => semantic_labels::WAS_USED_BY,
-            Some(r) if r == a2a_roles::ARGS => semantic_labels::WAS_USED_BY,
-            Some(r) if r == a2a_roles::ARCHIVE => semantic_labels::WAS_BOOTSTRAPPED_BY,
-            Some(r) if r == a2a_roles::REJECTED_OUTPUT => semantic_labels::WAS_USED_BY,
-            Some(r) if r == a2a_roles::DELEGATION_TARGET => semantic_labels::WAS_DELEGATED_TO,
-            Some(r)
-                if r == a2a_roles::FAILURE_CLASSIFICATION || r == a2a_roles::FAILURE_EVIDENCE =>
-            {
-                semantic_labels::WAS_USED_BY
-            }
-            _ => semantic_labels::WAS_USED_BY,
-        }
-    }
-
-    fn semantic_generated_by_label(from_label: &str, to_label: &str) -> &'static str {
-        match (from_label, to_label) {
-            (f, t)
-                if f == GraphNodeLabel::Message.as_str()
-                    && t == GraphNodeLabel::MessageProcessing.as_str() =>
-            {
-                semantic_labels::WAS_EMITTED_BY
-            }
-            (f, t)
-                if f == GraphNodeLabel::Artifact.as_str()
-                    && t == GraphNodeLabel::TaskExecution.as_str() =>
-            {
-                semantic_labels::WAS_GENERATED_BY
-            }
-            (f, t)
-                if f == GraphNodeLabel::Task.as_str()
-                    && t == GraphNodeLabel::TaskExecution.as_str() =>
-            {
-                semantic_labels::WAS_CREATED_BY
-            }
-            (f, t)
-                if f == GraphNodeLabel::AgentRuntimeInstance.as_str()
-                    && t == GraphNodeLabel::AgentBoot.as_str() =>
-            {
-                semantic_labels::WAS_SPAWNED_BY
-            }
-            _ => semantic_labels::WAS_GENERATED_BY,
-        }
-    }
-
-    fn semantic_associated_with_label(role: Option<&str>) -> &'static str {
-        use crate::vocabulary::prov_roles;
-        match role {
-            Some(r) if r == prov_roles::EXECUTING_AGENT => semantic_labels::WAS_EXECUTED_BY,
-            Some(r) if r == prov_roles::INVOKING_AGENT => semantic_labels::WAS_INVOKED_BY,
-            Some(r) if r == prov_roles::CALLING_AGENT => semantic_labels::WAS_CALLED_BY,
-            _ => crate::vocabulary::prov_relations::WAS_ASSOCIATED_WITH,
-        }
-    }
-
-    fn semantic_derived_from_label(prov_type: Option<&str>) -> &'static str {
-        use crate::vocabulary::{a2a_relation_types, a2a_relations};
-        match prov_type {
-            Some(t) if t == a2a_relation_types::STATUS_TRANSITION => {
-                semantic_labels::WAS_TRANSITIONED_FROM
-            }
-            Some(t) if t == a2a_relations::INFORMED_BY_OBSERVATION => {
-                semantic_labels::WAS_INFORMED_BY
-            }
-            _ => crate::vocabulary::prov_relations::WAS_DERIVED_FROM,
-        }
-    }
-
-    /// and relations → `prov_edge` records.
-    async fn write_normalized(
+    /// Run one SurrealQL statement with no binds; return statement `0` as JSON rows.
+    async fn query_sql_rows_mapped<E>(
         &self,
-        normalized: &NormalizedProv,
-        context_id: Option<&str>,
-    ) -> Result<()> {
-        // Collect label maps for nodes
-        let mut entity_labels = HashMap::new();
-        for (id, entity) in normalized.document.entities() {
-            let label = label_from_prov_type(entity.prov_type.as_deref(), "ProvEntity");
-            entity_labels.insert(id.as_str().to_string(), label);
-        }
-        let mut activity_labels = HashMap::new();
-        for (id, activity) in normalized.document.activities() {
-            let label = label_from_prov_type(activity.prov_type.as_deref(), "ProvActivity");
-            activity_labels.insert(id.as_str().to_string(), label);
-        }
-        let mut agent_labels = HashMap::new();
-        for (id, agent) in normalized.document.agents() {
-            let label = label_from_prov_type(agent.prov_type.as_deref(), "ProvAgent");
-            agent_labels.insert(id.as_str().to_string(), label);
-        }
-        for (id, label) in &normalized.agent_labels {
-            agent_labels
-                .entry(id.clone())
-                .or_insert_with(|| label.clone());
-        }
-
-        // Upsert entity nodes
-        for (id, entity) in normalized.document.entities() {
-            let label = entity_labels
-                .get(id.as_str())
-                .map(String::as_str)
-                .unwrap_or("ProvEntity");
-            let mut props = entity.attributes.clone();
-            if let Some(ref pt) = entity.prov_type {
-                props.insert("prov_type".to_string(), Value::String(pt.clone()));
-            }
-            // Use storage-safe underscore keys
-            self.upsert_node(id.as_str(), label, &props).await?;
-        }
-
-        // Upsert activity nodes
-        for (id, activity) in normalized.document.activities() {
-            let label = activity_labels
-                .get(id.as_str())
-                .map(String::as_str)
-                .unwrap_or("ProvActivity");
-            let mut props = activity.attributes.clone();
-            if let Some(ref pt) = activity.prov_type {
-                props.insert("prov_type".to_string(), Value::String(pt.clone()));
-            }
-            if let Some(start) = activity.start_time_ms {
-                props.insert("prov_startTime".to_string(), Value::from(start));
-            }
-            if let Some(end) = activity.end_time_ms {
-                props.insert("prov_endTime".to_string(), Value::from(end));
-            }
-            self.upsert_node(id.as_str(), label, &props).await?;
-        }
-
-        // Upsert agent nodes
-        for (id, agent) in normalized.document.agents() {
-            let label = agent_labels
-                .get(id.as_str())
-                .map(String::as_str)
-                .unwrap_or("ProvAgent");
-            let mut props = agent.attributes.clone();
-            if let Some(ref pt) = agent.prov_type {
-                props.insert("prov_type".to_string(), Value::String(pt.clone()));
-            }
-            self.upsert_node(id.as_str(), label, &props).await?;
-        }
-
-        // Insert edges: Used → semantic labels
-        for (_, used) in normalized.document.used() {
-            let mut edge_props: HashMap<String, Value> = HashMap::new();
-            if let Some(ref role) = used.role {
-                edge_props.insert("prov_role".to_string(), Value::String(role.clone()));
-            }
-            let activity_label = activity_labels
-                .get(used.activity.as_str())
-                .map(String::as_str)
-                .unwrap_or("ProvActivity");
-            let entity_label = entity_labels
-                .get(used.entity.as_str())
-                .map(String::as_str)
-                .unwrap_or("ProvEntity");
-            let rel_type = Self::semantic_used_label(activity_label, used.role.as_deref());
-            self.upsert_edge(
-                used.activity.as_str(),
-                activity_label,
-                rel_type,
-                used.entity.as_str(),
-                entity_label,
-                &edge_props,
-            )
-            .await?;
-        }
-
-        // Insert edges: WasGeneratedBy
-        for (_, generated) in normalized.document.was_generated_by() {
-            let edge_props: HashMap<String, Value> = HashMap::new();
-            let entity_id = generated.entity.id();
-            let entity_label = match &generated.entity {
-                crate::types::ProvNodeRef::Entity(eid) => entity_labels
-                    .get(eid.as_str())
-                    .map(String::as_str)
-                    .unwrap_or("ProvEntity"),
-                crate::types::ProvNodeRef::Activity(aid) => activity_labels
-                    .get(aid.as_str())
-                    .map(String::as_str)
-                    .unwrap_or("ProvActivity"),
-                crate::types::ProvNodeRef::Agent(agid) => agent_labels
-                    .get(agid.as_str())
-                    .map(String::as_str)
-                    .unwrap_or("ProvAgent"),
-            };
-            let activity_label = activity_labels
-                .get(generated.activity.as_str())
-                .map(String::as_str)
-                .unwrap_or("ProvActivity");
-            let rel_type = Self::semantic_generated_by_label(entity_label, activity_label);
-            self.upsert_edge(
-                entity_id,
-                entity_label,
-                rel_type,
-                generated.activity.as_str(),
-                activity_label,
-                &edge_props,
-            )
-            .await?;
-        }
-
-        // Insert edges: QualifiedGeneration
-        for (_, generation) in normalized.document.qualified_generation() {
-            let edge_props: HashMap<String, Value> = HashMap::new();
-            let entity_id = generation.entity.id();
-            let entity_label = match &generation.entity {
-                crate::types::ProvNodeRef::Entity(eid) => entity_labels
-                    .get(eid.as_str())
-                    .map(String::as_str)
-                    .unwrap_or("ProvEntity"),
-                crate::types::ProvNodeRef::Activity(aid) => activity_labels
-                    .get(aid.as_str())
-                    .map(String::as_str)
-                    .unwrap_or("ProvActivity"),
-                crate::types::ProvNodeRef::Agent(agid) => agent_labels
-                    .get(agid.as_str())
-                    .map(String::as_str)
-                    .unwrap_or("ProvAgent"),
-            };
-            let activity_label = activity_labels
-                .get(generation.activity.as_str())
-                .map(String::as_str)
-                .unwrap_or("ProvActivity");
-            self.upsert_edge(
-                entity_id,
-                entity_label,
-                crate::vocabulary::prov_relations::QUALIFIED_GENERATION,
-                generation.activity.as_str(),
-                activity_label,
-                &edge_props,
-            )
-            .await?;
-        }
-
-        // Insert edges: WasAssociatedWith → semantic labels (WAS_EXECUTED_BY, WAS_INVOKED_BY, etc.)
-        for (_, assoc) in normalized.document.was_associated_with() {
-            let mut edge_props: HashMap<String, Value> = HashMap::new();
-            if let Some(ref role) = assoc.role {
-                edge_props.insert("prov_role".to_string(), Value::String(role.clone()));
-            }
-            let activity_label = activity_labels
-                .get(assoc.activity.as_str())
-                .map(String::as_str)
-                .unwrap_or("ProvActivity");
-            let agent_label = agent_labels
-                .get(assoc.agent.as_str())
-                .map(String::as_str)
-                .unwrap_or("ProvAgent");
-            let rel_type = Self::semantic_associated_with_label(assoc.role.as_deref());
-            self.upsert_edge(
-                assoc.activity.as_str(),
-                activity_label,
-                rel_type,
-                assoc.agent.as_str(),
-                agent_label,
-                &edge_props,
-            )
-            .await?;
-        }
-
-        // Insert edges: WasDerivedFrom → semantic labels
-        for (_, derived) in normalized.document.was_derived_from() {
-            let mut edge_props: HashMap<String, Value> = HashMap::new();
-            if let Some(ref pt) = derived.prov_type {
-                edge_props.insert("prov_type".to_string(), Value::String(pt.clone()));
-            }
-            let generated_label = entity_labels
-                .get(derived.generated_entity.as_str())
-                .map(String::as_str)
-                .unwrap_or("ProvEntity");
-            let used_label = entity_labels
-                .get(derived.used_entity.as_str())
-                .map(String::as_str)
-                .unwrap_or("ProvEntity");
-            let rel_type = Self::semantic_derived_from_label(derived.prov_type.as_deref());
-            self.upsert_edge(
-                derived.generated_entity.as_str(),
-                generated_label,
-                rel_type,
-                derived.used_entity.as_str(),
-                used_label,
-                &edge_props,
-            )
-            .await?;
-        }
-
-        // Insert derived relations (supersession edges for Intent/Plan)
-        for relation in &normalized.derived_relations {
-            let mut edge_props: HashMap<String, Value> = HashMap::new();
-            for (k, v) in &relation.attributes {
-                edge_props.insert(k.clone(), v.clone());
-            }
-            let (from_label, to_label) = match relation.relation {
-                A2aRelationType::IntentReplacedBy | A2aRelationType::IntentRefinedBy => (
-                    GraphNodeLabel::Intent.as_str(),
-                    GraphNodeLabel::Intent.as_str(),
-                ),
-                A2aRelationType::PlanReplacedBy | A2aRelationType::PlanRefinedBy => {
-                    (GraphNodeLabel::Plan.as_str(), GraphNodeLabel::Plan.as_str())
-                }
-                _ => continue,
-            };
-            let rel_type = match relation.relation {
-                A2aRelationType::IntentReplacedBy | A2aRelationType::PlanReplacedBy => {
-                    semantic_labels::WAS_REPLACED_BY
-                }
-                A2aRelationType::IntentRefinedBy | A2aRelationType::PlanRefinedBy => {
-                    semantic_labels::WAS_REFINED_BY
-                }
-                _ => continue,
-            };
-            self.upsert_edge(
-                relation.from.id(),
-                from_label,
-                rel_type,
-                relation.to.id(),
-                to_label,
-                &edge_props,
-            )
-            .await?;
-        }
-
-        // Context scoping: create a Context node and SCOPED_TO edges
-        if let Some(ctx_id) = context_id {
-            let ctx_node_id = format!("context:{ctx_id}");
-            let ctx_props: HashMap<String, Value> = HashMap::new();
-            self.upsert_node(&ctx_node_id, "Context", &ctx_props)
-                .await?;
-
-            // Scope all nodes in this event to the context
-            for (id, _) in normalized.document.entities() {
-                let label = entity_labels
-                    .get(id.as_str())
-                    .map(String::as_str)
-                    .unwrap_or("ProvEntity");
-                self.upsert_edge(
-                    id.as_str(),
-                    label,
-                    crate::vocabulary::context_scope::SCOPED_TO,
-                    &ctx_node_id,
-                    "Context",
-                    &HashMap::new(),
-                )
-                .await?;
-            }
-            for (id, _) in normalized.document.activities() {
-                let label = activity_labels
-                    .get(id.as_str())
-                    .map(String::as_str)
-                    .unwrap_or("ProvActivity");
-                self.upsert_edge(
-                    id.as_str(),
-                    label,
-                    crate::vocabulary::context_scope::SCOPED_TO,
-                    &ctx_node_id,
-                    "Context",
-                    &HashMap::new(),
-                )
-                .await?;
-            }
-            for (id, _) in normalized.document.agents() {
-                let label = agent_labels
-                    .get(id.as_str())
-                    .map(String::as_str)
-                    .unwrap_or("ProvAgent");
-                self.upsert_edge(
-                    id.as_str(),
-                    label,
-                    crate::vocabulary::context_scope::SCOPED_TO,
-                    &ctx_node_id,
-                    "Context",
-                    &HashMap::new(),
-                )
-                .await?;
-            }
-        }
-
-        Ok(())
+        sql: &str,
+        map_err: impl Fn(surrealdb::Error) -> E + Copy,
+    ) -> std::result::Result<Vec<Value>, E> {
+        let mut response = self.db.query(sql).await.map_err(map_err)?;
+        query_take_zero(&mut response, map_err)
     }
 
-    /// Upsert a single node into prov_node table.
-    ///
-    /// Uses an atomic `UPSERT ... WHERE` that creates when no match exists and updates
-    /// when one does. Individual `props.field` SET clauses merge properties into the
-    /// existing record (UPSERT semantics) rather than replacing the entire `props`
-    /// object — this preserves attributes written by prior events for the same node.
-    async fn upsert_node(
+    async fn query_sql_rows(&self, sql: &str) -> Result<Vec<Value>> {
+        self.query_sql_rows_mapped(sql, map_surreal_error).await
+    }
+
+    async fn run_event_write_plan(
         &self,
-        node_id: &str,
-        label: &str,
-        props: &HashMap<String, Value>,
+        plan: impl crate::surreal_write_batch::ExecutableSurrealPlan,
     ) -> Result<()> {
-        let safe_props = storage_safe_props(props);
-        // Build SET clauses that merge individual props fields.
-        let mut set_clauses = vec![
-            "node_id = $node_id".to_string(),
-            "label = $label".to_string(),
-        ];
-        for (i, (k, _)) in safe_props.iter().enumerate() {
-            set_clauses.push(format!("props.{k} = $prop_{i}"));
+        let (sql, binds) = plan.into_sql_and_binds();
+        if sql.trim().is_empty() {
+            return Ok(());
         }
-        let set_clause = set_clauses.join(", ");
-        let query = format!("UPSERT {TBL_NODE} SET {set_clause} WHERE node_id = $node_id");
-        let mut q = self
-            .db
-            .query(&query)
-            .bind(("node_id", node_id.to_string()))
-            .bind(("label", label.to_string()));
-        for (i, (_, v)) in safe_props.iter().enumerate() {
-            q = q.bind((format!("prop_{i}"), v.clone()));
+        let mut q = self.db.query(&sql);
+        for crate::surreal_write_batch::TxBind { name, value } in binds {
+            q = q.bind((name, value));
         }
         q.await.map_err(map_surreal_error)?;
         Ok(())
     }
 
-    /// Upsert an edge into prov_edge table.
-    ///
-    /// Atomic `UPSERT ... WHERE` keyed on (from_id, rel_type, to_id). Edge props are
-    /// replaced entirely on update (edges carry small metadata, not accumulated state).
-    async fn upsert_edge(
-        &self,
-        from_id: &str,
-        from_label: &str,
-        rel_type: &str,
-        to_id: &str,
-        to_label: &str,
-        props: &HashMap<String, Value>,
-    ) -> Result<()> {
-        let safe_props = storage_safe_props(props);
-        let props_value: Value =
-            Value::Object(safe_props.into_iter().collect::<Map<String, Value>>());
-        let query = format!(
-            "UPSERT {TBL_EDGE} SET from_id = $from_id, from_label = $from_label, \
-             to_id = $to_id, to_label = $to_label, rel_type = $rel_type, props = $props \
-             WHERE from_id = $from_id AND rel_type = $rel_type AND to_id = $to_id"
-        );
-        self.db
+    async fn read_payload_blob_body(&self, content_hash: &str) -> Result<Option<String>> {
+        let query = format!("SELECT body FROM {TBL_PAYLOAD_BLOB} WHERE content_hash = $h LIMIT 1");
+        let mut response = self
+            .db
             .query(&query)
-            .bind(("from_id", from_id.to_string()))
-            .bind(("from_label", from_label.to_string()))
-            .bind(("to_id", to_id.to_string()))
-            .bind(("to_label", to_label.to_string()))
-            .bind(("rel_type", rel_type.to_string()))
-            .bind(("props", props_value))
+            .bind(("h", content_hash.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        Ok(())
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        Ok(rows.into_iter().next().and_then(|row| {
+            row.get("body")
+                .and_then(Value::as_str)
+                .map(std::string::ToString::to_string)
+        }))
+    }
+
+    async fn hydrate_payload_record(&self, mut p: PayloadRecord) -> Result<PayloadRecord> {
+        if let Some(ref h) = p.content_hash
+            && !h.is_empty()
+            && p.payload_json.is_empty()
+            && let Some(body) = self.read_payload_blob_body(h).await?
+        {
+            p.payload_json = body;
+        }
+        Ok(p)
     }
 
     // -----------------------------------------------------------------------
@@ -1112,7 +738,7 @@ impl SurrealProvenanceStore {
             q = q.bind((format!("filter_{i}"), value.to_string()));
         }
         let mut response = q.await.map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
         Ok(rows)
     }
 
@@ -1125,7 +751,7 @@ impl SurrealProvenanceStore {
             .bind(("node_id", node_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
         Ok(rows.into_iter().next())
     }
 
@@ -1156,7 +782,7 @@ impl SurrealProvenanceStore {
             q = q.bind(("to_id", tid.to_string()));
         }
         let mut response = q.await.map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
         Ok(rows)
     }
 
@@ -1164,29 +790,9 @@ impl SurrealProvenanceStore {
     // Payload operations
     // -----------------------------------------------------------------------
 
-    /// Atomic payload upsert keyed on payload_id.
-    async fn upsert_payload(&self, payload: PayloadRecord) -> Result<()> {
-        let query = format!(
-            "UPSERT {TBL_PAYLOAD} SET payload_id = $payload_id, activity_anchor_id = $activity_anchor_id, \
-             activity_id = $activity_id, payload_kind = $payload_kind, \
-             payload_json = $payload_json \
-             WHERE payload_id = $payload_id"
-        );
-        self.db
-            .query(&query)
-            .bind(("payload_id", payload.payload_id))
-            .bind(("activity_anchor_id", payload.activity_anchor_id))
-            .bind(("activity_id", payload.activity_id))
-            .bind(("payload_kind", payload.payload_kind))
-            .bind(("payload_json", payload.payload_json))
-            .await
-            .map_err(map_surreal_error)?;
-        Ok(())
-    }
-
     async fn read_payload_by_id(&self, payload_id: &str) -> Result<Option<PayloadRecord>> {
         let query = format!(
-            "SELECT payload_id, activity_anchor_id, activity_id, payload_kind, payload_json FROM {TBL_PAYLOAD} WHERE payload_id = $payload_id LIMIT 1"
+            "SELECT {PAYLOAD_ROW_SELECT} FROM {TBL_PAYLOAD} WHERE payload_id = $payload_id LIMIT 1"
         );
         let mut response = self
             .db
@@ -1194,11 +800,12 @@ impl SurrealProvenanceStore {
             .bind(("payload_id", payload_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
-        Ok(rows
-            .into_iter()
-            .next()
-            .and_then(|v| serde_json::from_value(v).ok()))
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let Some(v) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        let rec = decode_payload_row(v)?;
+        Ok(Some(self.hydrate_payload_record(rec).await?))
     }
 
     async fn read_payload_by_activity_anchor_kind(
@@ -1207,7 +814,7 @@ impl SurrealProvenanceStore {
         payload_kind: &str,
     ) -> Result<Option<PayloadRecord>> {
         let query = format!(
-            "SELECT payload_id, activity_anchor_id, activity_id, payload_kind, payload_json FROM {TBL_PAYLOAD} WHERE activity_anchor_id = $activity_anchor_id AND payload_kind = $payload_kind LIMIT 1"
+            "SELECT {PAYLOAD_ROW_SELECT} FROM {TBL_PAYLOAD} WHERE activity_anchor_id = $activity_anchor_id AND payload_kind = $payload_kind LIMIT 1"
         );
         let mut response = self
             .db
@@ -1216,16 +823,17 @@ impl SurrealProvenanceStore {
             .bind(("payload_kind", payload_kind.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
-        Ok(rows
-            .into_iter()
-            .next()
-            .and_then(|v| serde_json::from_value(v).ok()))
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let Some(v) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        let rec = decode_payload_row(v)?;
+        Ok(Some(self.hydrate_payload_record(rec).await?))
     }
 
     async fn read_payloads_by_activity(&self, activity_id: &str) -> Result<Vec<PayloadRecord>> {
         let query = format!(
-            "SELECT payload_id, activity_anchor_id, activity_id, payload_kind, payload_json FROM {TBL_PAYLOAD} WHERE activity_id = $activity_id ORDER BY payload_kind"
+            "SELECT {PAYLOAD_ROW_SELECT} FROM {TBL_PAYLOAD} WHERE activity_id = $activity_id ORDER BY payload_kind"
         );
         let mut response = self
             .db
@@ -1233,11 +841,13 @@ impl SurrealProvenanceStore {
             .bind(("activity_id", activity_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|v| serde_json::from_value(v).ok())
-            .collect())
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let mut out = Vec::new();
+        for v in rows {
+            let rec = decode_payload_row(v)?;
+            out.push(self.hydrate_payload_record(rec).await?);
+        }
+        Ok(out)
     }
 
     /// Payload text search via SurrealDB BM25 full-text index.
@@ -1250,7 +860,7 @@ impl SurrealProvenanceStore {
         }
 
         let query = format!(
-            "SELECT DISTINCT activity_id FROM {TBL_PAYLOAD} WHERE payload_json @@ $query_text AND activity_id IS NOT NONE"
+            "SELECT DISTINCT activity_id FROM {TBL_PAYLOAD} WHERE {FTS_PAYLOAD_ACTIVITY_WHERE}"
         );
         let mut response = self
             .db
@@ -1258,7 +868,7 @@ impl SurrealProvenanceStore {
             .bind(("query_text", normalized))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
         Ok(rows
             .iter()
             .filter_map(|row| {
@@ -1270,25 +880,6 @@ impl SurrealProvenanceStore {
     }
 }
 
-/// Convert property keys from colon-style (a2a:context_id) to underscore-style (a2a_context_id)
-/// for storage-safe access in SurrealDB property paths.
-fn storage_safe_props(props: &HashMap<String, Value>) -> HashMap<String, Value> {
-    props
-        .iter()
-        .map(|(k, v)| {
-            let safe_key = k.replace(':', "_");
-            // Serialize nested objects/arrays to JSON strings for storage compatibility
-            let safe_value = match v {
-                Value::Array(_) | Value::Object(_) => {
-                    Value::String(serde_json::to_string(v).unwrap_or_else(|_| "null".to_string()))
-                }
-                _ => v.clone(),
-            };
-            (safe_key, safe_value)
-        })
-        .collect()
-}
-
 // ---------------------------------------------------------------------------
 // Trait implementations
 // ---------------------------------------------------------------------------
@@ -1298,7 +889,7 @@ impl ProvenanceWriter for SurrealProvenanceStore {
     async fn add_event(&self, event: crate::events::ProvEvent) -> Result<()> {
         validate_event(&event)?;
         self.enforce_step_completion_gate(&event).await?;
-        let mut payload_records = payload_records_from_event(&event);
+        let mut payload_records = payload_records_from_event(&event)?;
         let context = match event.task_id() {
             Some(tid) => {
                 let task_agent_id = self.get_task_agent_id(tid).await?;
@@ -1310,19 +901,62 @@ impl ProvenanceWriter for SurrealProvenanceStore {
             .normalizer
             .normalize_with_context(&event, Some(&context))?;
         let context_id_opt = event.context_id_opt().map(|c| c.as_str().to_string());
-        self.write_normalized(&normalized, context_id_opt.as_deref())
-            .await?;
+        let anchor = event.id().as_str().to_string();
+        let activity_id = call_activity_id_from_normalized(&normalized, &anchor);
 
-        if !payload_records.is_empty() {
-            let activity_id = self
-                .resolve_call_activity_id_for_anchor(event.id().as_str())
-                .await?;
-            for payload in &mut payload_records {
-                if let Some(ref activity_id) = activity_id {
-                    payload.activity_id = Some(activity_id.clone());
-                }
-                self.upsert_payload(payload.clone()).await?;
+        let mut blob_bodies: Vec<(String, String)> = Vec::new();
+        let mut inline_payload_bytes: usize = 0;
+        for p in &mut payload_records {
+            if let Some(ref a) = activity_id {
+                p.activity_id = Some(a.clone());
             }
+            if payload_storage::should_offload_payload(&p.payload_kind, p.payload_json.len()) {
+                let v: Value = serde_json::from_str(&p.payload_json).map_err(|e| {
+                    ProvenanceError::InvalidEvent {
+                        activity_anchor: anchor.clone(),
+                        reason: format!("payload json for offload: {e}"),
+                    }
+                })?;
+                let canon = payload_storage::canonical_json_string(&v).map_err(|e| {
+                    ProvenanceError::InvalidEvent {
+                        activity_anchor: anchor.clone(),
+                        reason: format!("canonical json for offload: {e}"),
+                    }
+                })?;
+                let hash = payload_storage::sha256_hex_utf8(&canon);
+                p.search_text = payload_storage::search_text_snippet(&canon);
+                p.content_hash = Some(hash.clone());
+                p.storage_kind = StorageKind::Blob;
+                p.file_key = Some(payload_storage::logical_file_key_for_tool_archive(&hash));
+                p.payload_json.clear();
+                blob_bodies.push((hash, canon));
+            } else {
+                inline_payload_bytes = inline_payload_bytes.saturating_add(p.payload_json.len());
+                p.search_text = payload_storage::search_text_snippet(&p.payload_json);
+            }
+        }
+
+        let plans = crate::surreal_write_batch::build_event_write_plans(
+            &normalized,
+            context_id_opt.as_deref(),
+            &payload_records,
+            &blob_bodies,
+        );
+        let total_stmts: usize = plans.iter().map(|p| p.statement_count).sum();
+        let total_binds: usize = plans.iter().map(|p| p.binds.len()).sum();
+        tracing::debug!(
+            target: "baml_rt_provenance::surreal",
+            anchor = %anchor,
+            txn_parts = plans.len(),
+            statements = total_stmts,
+            bind_count = total_binds,
+            payload_rows = payload_records.len(),
+            blob_rows = blob_bodies.len(),
+            inline_payload_bytes,
+            "provenance add_event write txn"
+        );
+        for plan in plans {
+            self.run_event_write_plan(plan).await?;
         }
 
         if let (Some(cache), Some(ctx)) = (&self.mermaid_cache, context_id_opt.as_deref()) {
@@ -1349,7 +983,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
             .bind(("ctx", ctx.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
 
         let mut messages: Vec<ProvenanceContextMessage> = Vec::new();
         for row in &rows {
@@ -1417,7 +1051,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
             .bind(("ctx", ctx.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let msg_rows: Vec<Value> = msg_response.take(0).map_err(map_surreal_error)?;
+        let msg_rows: Vec<Value> = query_take_zero(&mut msg_response, map_surreal_error)?;
 
         // Fetch tool call items with proper edge topology.
         // Expected pattern: ToolCall -[WAS_USED_BY]-> ToolArgs
@@ -1433,7 +1067,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
             .bind(("ctx", ctx.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let tool_rows: Vec<Value> = tool_response.take(0).map_err(map_surreal_error)?;
+        let tool_rows: Vec<Value> = query_take_zero(&mut tool_response, map_surreal_error)?;
 
         // Step 2: Find edges from ToolCall to ToolArgs nodes
         // and collect their prov_role/prov_type for contract validation.
@@ -1442,21 +1076,11 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
             "SELECT from_id, to_id, props OMIT id FROM {TBL_EDGE} WHERE rel_type = '{}'",
             semantic_labels::WAS_USED_BY
         );
-        let mut edge_response = self
-            .db
-            .query(&edge_query)
-            .await
-            .map_err(map_surreal_error)?;
-        let edge_rows: Vec<Value> = edge_response.take(0).map_err(map_surreal_error)?;
+        let edge_rows: Vec<Value> = self.query_sql_rows(&edge_query).await?;
 
         // Step 3: Find ToolArgs nodes to verify target type
         let args_query = format!("SELECT node_id, props FROM {TBL_NODE} WHERE label = 'ToolArgs'");
-        let mut args_response = self
-            .db
-            .query(&args_query)
-            .await
-            .map_err(map_surreal_error)?;
-        let args_rows: Vec<Value> = args_response.take(0).map_err(map_surreal_error)?;
+        let args_rows: Vec<Value> = self.query_sql_rows(&args_query).await?;
 
         // Build set of ToolArgs node_ids
         let tool_args_node_ids: HashSet<String> = args_rows
@@ -1680,7 +1304,13 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
             .bind(("ctx", ctx.to_string()))
             .await
         {
-            Ok(mut resp) => resp.take(0).unwrap_or_default(),
+            Ok(mut resp) => match query_take_zero(&mut resp, map_surreal_error) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    tracing::warn!(error = %e, context_id = %ctx, "SessionStep take failed, omitting steps");
+                    Vec::new()
+                }
+            },
             Err(e) => {
                 tracing::warn!(error = %e, context_id = %ctx, "SessionStep query failed, omitting steps");
                 Vec::new()
@@ -1839,7 +1469,7 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
             .bind(("task_id", task_id.as_str().to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
 
         let (intent_incoming, intent_outgoing) =
             self.query_supersession_maps("Intent", task_id).await?;
@@ -1896,7 +1526,7 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
             .bind(("task_id", task_id.as_str().to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
 
         let (plan_incoming, plan_outgoing) = self.query_supersession_maps("Plan", task_id).await?;
 
@@ -1946,25 +1576,6 @@ impl SurrealProvenanceStore {
     // Graph traversal helpers
     // -----------------------------------------------------------------------
 
-    async fn resolve_call_activity_id_for_anchor(
-        &self,
-        activity_anchor: &str,
-    ) -> Result<Option<String>> {
-        let query = format!(
-            "SELECT node_id FROM {TBL_NODE} WHERE (label = 'LlmCall' OR label = 'ToolCall') AND props.a2a_activity_anchor = $activity_anchor LIMIT 1"
-        );
-        let mut response = self
-            .db
-            .query(&query)
-            .bind(("activity_anchor", activity_anchor.to_string()))
-            .await
-            .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
-        Ok(rows
-            .first()
-            .and_then(|row| row.get("node_id").and_then(Value::as_str).map(String::from)))
-    }
-
     async fn get_task_agent_id(&self, task_id: &TaskId) -> Result<Option<AgentId>> {
         let task_entity_id = task_entity_id_string(task_id);
         let edges = self
@@ -1994,9 +1605,9 @@ impl SurrealProvenanceStore {
         UuidId::parse_str(agent_id_str)
             .map(AgentId::from_uuid)
             .map(Some)
-            .map_err(|_| ProvenanceError::InvalidEvent {
+            .map_err(|e| ProvenanceError::InvalidEvent {
                 activity_anchor: String::new(),
-                reason: format!("task agent instance id invalid UUID: {agent_id_str:?}"),
+                reason: format!("task agent instance id invalid UUID: {agent_id_str:?}: {e}"),
             })
     }
 
@@ -2067,7 +1678,7 @@ impl SurrealProvenanceStore {
             .bind(("step_id", step_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
         let Some(row) = rows.first() else {
             return Ok(Vec::new());
         };
@@ -2087,7 +1698,7 @@ impl SurrealProvenanceStore {
             .bind(("step_id", step_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
         let Some(row) = rows.first() else {
             return Ok(false);
         };
@@ -2117,7 +1728,7 @@ impl SurrealProvenanceStore {
             .bind(("step_id", step_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
         Ok(!rows.is_empty())
     }
 
@@ -2140,7 +1751,7 @@ impl SurrealProvenanceStore {
             .bind(("plan_id", plan_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
 
         let mut steps = Vec::new();
         for row in &rows {
@@ -2239,7 +1850,7 @@ impl SurrealProvenanceStore {
             .bind(("task_id", task_id.as_str().to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
 
         let mut results = Vec::new();
         for row in &rows {
@@ -2303,8 +1914,7 @@ impl SurrealProvenanceStore {
             "SELECT node_id, props.a2a_agent_type AS agent_package, props.a2a_agent_version AS agent_version \
              FROM {TBL_NODE} WHERE label = 'AgentRuntimeInstance'"
         );
-        let mut response = self.db.query(&query).await.map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = self.query_sql_rows(&query).await?;
 
         let mut out: HashMap<String, (String, String)> = HashMap::new();
         for row in rows {
@@ -2335,8 +1945,7 @@ impl SurrealProvenanceStore {
             "SELECT node_id, props.a2a_failure_class AS failure_class, props.a2a_failure_evidence AS failure_evidence \
              FROM {TBL_NODE} WHERE label = 'FailureClassification'"
         );
-        let mut fc_response = self.db.query(&fc_query).await.map_err(map_surreal_error)?;
-        let fc_rows: Vec<Value> = fc_response.take(0).map_err(map_surreal_error)?;
+        let fc_rows: Vec<Value> = self.query_sql_rows(&fc_query).await?;
 
         // Build FC node_id -> (class, evidence) map
         let mut fc_map: HashMap<String, (String, String)> = HashMap::new();
@@ -2367,12 +1976,7 @@ impl SurrealProvenanceStore {
         // Step 2: Get all LlmCall and ToolCall node_ids (the only valid sources for FC edges)
         let call_query =
             format!("SELECT node_id FROM {TBL_NODE} WHERE label = 'LlmCall' OR label = 'ToolCall'");
-        let mut call_response = self
-            .db
-            .query(&call_query)
-            .await
-            .map_err(map_surreal_error)?;
-        let call_rows: Vec<Value> = call_response.take(0).map_err(map_surreal_error)?;
+        let call_rows: Vec<Value> = self.query_sql_rows(&call_query).await?;
         let call_ids: HashSet<String> = call_rows
             .iter()
             .filter_map(|r| r.get("node_id").and_then(Value::as_str).map(String::from))
@@ -2388,12 +1992,7 @@ impl SurrealProvenanceStore {
             "SELECT from_id, to_id OMIT id FROM {TBL_EDGE} WHERE rel_type = '{}'",
             semantic_labels::WAS_USED_BY
         );
-        let mut edge_response = self
-            .db
-            .query(&edge_query)
-            .await
-            .map_err(map_surreal_error)?;
-        let edge_rows: Vec<Value> = edge_response.take(0).map_err(map_surreal_error)?;
+        let edge_rows: Vec<Value> = self.query_sql_rows(&edge_query).await?;
 
         let mut out: HashMap<String, (String, String)> = HashMap::new();
         for row in edge_rows {
@@ -2455,7 +2054,7 @@ impl SurrealProvenanceStore {
             .bind(("context_id", context_id.as_str().to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
 
         let mut out: HashMap<String, u64> = HashMap::new();
         for row in rows {
@@ -2492,7 +2091,7 @@ impl SurrealProvenanceStore {
             .bind(("context_id", context_id.as_str().to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
 
         let mut out: HashMap<String, u64> = HashMap::new();
         for row in rows {
@@ -2993,7 +2592,7 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
             q = q.bind((k, v));
         }
         let mut response = q.await.map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
 
         // Canonicalize rows to the public ops shape.
         let mut ops_rows: Vec<Map<String, Value>> = rows
@@ -3749,8 +3348,9 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
 impl A2aGraphStore for SurrealProvenanceStore {
     async fn max_task_ord(&self) -> A2aGraphStoreResult<i64> {
         let query = format!("SELECT ord FROM {TBL_A2A_TASK} ORDER BY ord DESC LIMIT 1");
-        let mut response = self.db.query(&query).await.map_err(|e| e.to_string())?;
-        let rows: Vec<Value> = response.take(0).map_err(|e| e.to_string())?;
+        let rows: Vec<Value> = self
+            .query_sql_rows_mapped(&query, A2aGraphStoreError::backend)
+            .await?;
         Ok(rows
             .first()
             .and_then(|r| r.get("ord").and_then(Value::as_i64))
@@ -3766,8 +3366,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .query(&query)
             .bind(("task_id", task_id.to_string()))
             .await
-            .map_err(|e| e.to_string())?;
-        let rows: Vec<Value> = response.take(0).map_err(|e| e.to_string())?;
+            .map_err(A2aGraphStoreError::backend)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, A2aGraphStoreError::backend)?;
         Ok(rows
             .first()
             .and_then(|r| r.get("seq").and_then(Value::as_i64))
@@ -3783,8 +3383,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .query(&query)
             .bind(("task_id", task_id.to_string()))
             .await
-            .map_err(|e| e.to_string())?;
-        let rows: Vec<Value> = response.take(0).map_err(|e| e.to_string())?;
+            .map_err(A2aGraphStoreError::backend)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, A2aGraphStoreError::backend)?;
         Ok(rows
             .first()
             .and_then(|r| r.get("seq").and_then(Value::as_i64))
@@ -3799,8 +3399,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .query(&query)
             .bind(("task_id", id.to_string()))
             .await
-            .map_err(|e| e.to_string())?;
-        let rows: Vec<Value> = response.take(0).map_err(|e| e.to_string())?;
+            .map_err(A2aGraphStoreError::backend)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, A2aGraphStoreError::backend)?;
         Ok(rows.first().and_then(|row| {
             Some(TaskSubgraphNode {
                 id: row.get("task_id")?.as_str()?.to_string(),
@@ -3854,8 +3454,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
         if let Some(cid) = context_id {
             q = q.bind(("context_id", cid.to_string()));
         }
-        let mut response = q.await.map_err(|e| e.to_string())?;
-        let rows: Vec<Value> = response.take(0).map_err(|e| e.to_string())?;
+        let mut response = q.await.map_err(A2aGraphStoreError::backend)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, A2aGraphStoreError::backend)?;
         Ok(rows
             .iter()
             .filter_map(|row| {
@@ -3915,7 +3515,7 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .bind(("artifacts_json", node.artifacts_json.clone()))
             .bind(("ord", ord_if_create))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(A2aGraphStoreError::backend)?;
         Ok(())
     }
 
@@ -3944,7 +3544,7 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .bind(("context_id", context_id.to_string()))
             .bind(("ord", ord_if_create))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(A2aGraphStoreError::backend)?;
         Ok(())
     }
 
@@ -3965,7 +3565,7 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .bind(("seq", seq))
             .bind(("message_json", message_json.to_string()))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(A2aGraphStoreError::backend)?;
         Ok(())
     }
 
@@ -3978,8 +3578,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .query(&query)
             .bind(("task_id", task_id.to_string()))
             .await
-            .map_err(|e| e.to_string())?;
-        let rows: Vec<Value> = response.take(0).map_err(|e| e.to_string())?;
+            .map_err(A2aGraphStoreError::backend)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, A2aGraphStoreError::backend)?;
         Ok(rows
             .iter()
             .filter_map(|row| {
@@ -3999,7 +3599,7 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .bind(("task_id", id.to_string()))
             .bind(("status_json", status_json.to_string()))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(A2aGraphStoreError::backend)?;
         Ok(())
     }
 
@@ -4022,7 +3622,7 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .bind(("kind", kind.to_string()))
             .bind(("payload_json", payload_json.to_string()))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(A2aGraphStoreError::backend)?;
         Ok(())
     }
 
@@ -4038,8 +3638,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .query(&query)
             .bind(("task_id", task_id.to_string()))
             .await
-            .map_err(|e| e.to_string())?;
-        let rows: Vec<Value> = response.take(0).map_err(|e| e.to_string())?;
+            .map_err(A2aGraphStoreError::backend)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, A2aGraphStoreError::backend)?;
         Ok(rows
             .iter()
             .filter_map(|row| {
@@ -4058,7 +3658,7 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .query(&query)
             .bind(("update_id", id.to_string()))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(A2aGraphStoreError::backend)?;
         Ok(())
     }
 }

@@ -20,6 +20,7 @@ baml-rt-vocabulary = { path = "../baml-rt-vocabulary" }
 dashmap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
