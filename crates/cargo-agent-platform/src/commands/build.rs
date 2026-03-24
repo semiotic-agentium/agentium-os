@@ -3,7 +3,7 @@
 //! This wraps the `baml-agent-builder package` functionality with a more
 //! ergonomic CLI that supports building by agent name, path, or current directory.
 
-use std::path::{Path, PathBuf};
+use std::{path::{Path, PathBuf}, process::Command};
 
 use anyhow::{Context, Result, bail};
 use baml_rt_builder::builder::{
@@ -174,12 +174,63 @@ async fn build_agent(agent_dir: &Path, output: &Path) -> Result<()> {
         "{} Generating types and compiling TypeScript...",
         style("[3/4]").bold().dim()
     );
-    builder_service
+    let build_result = builder_service
         .build_package(&agent_dir, &build_dir, output)
-        .await
-        .context("Build failed")?;
+        .await;
+
+    if let Err(err) = build_result {
+        let msg = err.to_string();
+        let local_fallback_disabled = std::env::var_os("CARGO_AGENT_PLATFORM_NO_LOCAL_FALLBACK")
+            .is_some();
+
+        if msg.contains("Tool metadata missing for:") && !local_fallback_disabled {
+            println!(
+                "{} Missing in-process tool metadata; falling back to workspace-local build...",
+                style("Note:").yellow()
+            );
+            run_local_build_fallback(agent_dir.as_path(), output)?;
+            return Ok(());
+        }
+
+        return Err(err).context("Build failed");
+    }
 
     println!("{} Packaging complete.", style("[4/4]").bold().dim());
 
     Ok(())
+}
+
+fn run_local_build_fallback(agent_path: &Path, output_path: &Path) -> Result<()> {
+    let workspace_root = find_workspace_root()?;
+
+    let status = Command::new("cargo")
+        .current_dir(&workspace_root)
+        .arg("run")
+        .arg("-p")
+        .arg("cargo-agent-platform")
+        .arg("--")
+        .arg("build")
+        .arg("--path")
+        .arg(agent_path)
+        .arg("--output")
+        .arg(
+            output_path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("Output path has no parent directory"))?,
+        )
+        .env("CARGO_AGENT_PLATFORM_NO_LOCAL_FALLBACK", "1")
+        .status()
+        .context(
+            "Failed to launch local `cargo run -p cargo-agent-platform -- build` fallback command",
+        )?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        bail!(
+            "Fallback build command failed with status {status}. \
+Hint: run `cargo run -p cargo-agent-platform -- build --path {}` manually from the workspace root.",
+            agent_path.display()
+        )
+    }
 }

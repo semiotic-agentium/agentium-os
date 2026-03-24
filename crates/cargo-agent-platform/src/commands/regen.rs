@@ -2,7 +2,7 @@
 
 use std::{collections::HashSet, path::Path};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use console::style;
 
 use crate::{generated_baml::sync_generated_baml_files, workspace::find_workspace_root};
@@ -26,6 +26,7 @@ pub fn run(names: &[String]) -> Result<()> {
     ];
 
     let mut total_count = 0;
+    let mut failed_count = 0;
     let mut not_found: HashSet<&str> = filter.clone();
 
     for (label, dir) in roots {
@@ -92,6 +93,7 @@ pub fn run(names: &[String]) -> Result<()> {
                 Err(e) => {
                     println!("{}", style("failed").red());
                     eprintln!("     Error: {}", e);
+                    failed_count += 1;
                 }
             }
         }
@@ -117,6 +119,10 @@ pub fn run(names: &[String]) -> Result<()> {
         style("Done!").green().bold(),
         total_count
     );
+
+    if failed_count > 0 {
+        bail!("Regen failed for {failed_count} agent(s). Fix reported errors and retry.");
+    }
 
     Ok(())
 }

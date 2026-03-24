@@ -9,9 +9,10 @@ use console::style;
 
 use crate::{
     patchers::{
-        Patcher, builder_toml::BuilderTomlPatcher, runner_toml::RunnerTomlPatcher,
-        tool_links_lib::ToolLinksLibPatcher, tool_links_toml::ToolLinksTomlPatcher,
-        workspace_toml::WorkspaceTomlPatcher,
+        Patcher, builder_main_rs::BuilderMainRsPatcher, builder_toml::BuilderTomlPatcher,
+        regen_fixtures_rs::RegenFixturesRsPatcher, runner_main_rs::RunnerMainRsPatcher,
+        runner_toml::RunnerTomlPatcher, tool_links_lib::ToolLinksLibPatcher,
+        tool_links_toml::ToolLinksTomlPatcher, workspace_toml::WorkspaceTomlPatcher,
     },
     templates::{tool_cargo_toml, tool_lib_rs},
     transaction::TransactionalWriter,
@@ -87,6 +88,15 @@ pub fn run(
 
     // 6. Patch baml-rt-builder/Cargo.toml
     patch_file(&mut writer, &workspace_root, &BuilderTomlPatcher, name)?;
+
+    // 7. Patch baml-agent-runner/src/main.rs force-link imports
+    patch_file(&mut writer, &workspace_root, &RunnerMainRsPatcher, name)?;
+
+    // 8. Patch baml-rt-builder/src/baml-agent-builder.rs force-link imports
+    patch_file(&mut writer, &workspace_root, &BuilderMainRsPatcher, name)?;
+
+    // 9. Patch baml-rt-builder/src/bin/regen_fixtures.rs force-link imports
+    patch_file(&mut writer, &workspace_root, &RegenFixturesRsPatcher, name)?;
 
     // Show summary (for interactive or dry-run mode)
     if interactive || dry_run {

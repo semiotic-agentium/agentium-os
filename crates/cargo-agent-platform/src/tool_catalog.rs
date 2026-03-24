@@ -22,7 +22,13 @@ pub fn load_cli_tools() -> Result<Vec<CliTool>> {
 
     // Workspace-defined tools should override inventory metadata so new tools appear immediately
     // even when the installed cargo subcommand binary is stale.
+    //
+    // Limit overlay to support/* for now, because `new-tool` currently scaffolds support tools
+    // and non-support/test-only tool bundles may not be linkable in standard CLI builds.
     for tool in workspace_tools()? {
+        if !tool.id.starts_with("support/") {
+            continue;
+        }
         merged.insert(tool.id.clone(), tool);
     }
 

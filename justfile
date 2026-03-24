@@ -23,6 +23,10 @@ build-release:
     cargo build -p baml-agent-runner --all-features
     cargo build -p baml-rt-provenance --bin graph_exporter --features cli
 
+# Build the runner in debug mode (fast local iteration).
+build:
+    cargo build -p baml-agent-runner --all-features
+
 # Rebuilds clickup-agent package and runs it via a2a stdio. Requires: just build-release
 clickup-agent: build-release
     {{builder_bin}} package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
