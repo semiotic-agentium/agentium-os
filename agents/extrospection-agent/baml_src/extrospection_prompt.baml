@@ -62,8 +62,8 @@ function DetermineExtrospectionIntent(user_message: string) -> NeedClarification
 
     {{ ctx.output_format }}
 
-    {% if ctx.tags.conversation_history %}
-    {% for message in ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
+    {% for message in ctx.tags['conversation_history'] %}
     {{ _.role(message.role) }}
     {{ message.content }}
     {% endfor %}
@@ -85,9 +85,9 @@ function GetDiscoverAgentsPlan(
 
     Context: {{ user_message }}
 
-    {% if ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
     Session history:
-    {% for msg in ctx.tags.conversation_history %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     {% endif %}
@@ -113,8 +113,8 @@ function SelectAgentFocus(
     Never invent agents. Only return one from the provided list.
     {{ ctx.output_format }}
 
-    {% if ctx.tags.conversation_history %}
-    {% for message in ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
+    {% for message in ctx.tags['conversation_history'] %}
     {{ _.role(message.role) }}
     {{ message.content }}
     {% endfor %}
@@ -145,9 +145,9 @@ function BuildExtrospectionPlan(
     intent: {{ intent }}
     selected_agent: {{ selected_agent }}
 
-    {% if ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
     Session history:
-    {% for msg in ctx.tags.conversation_history %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     {% endif %}
@@ -204,8 +204,8 @@ function SummarizeExtrospectionReport(
 
         {{ ctx.output_format }}
 
-    {% if ctx.tags.conversation_history %}
-    {% for message in ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
+    {% for message in ctx.tags['conversation_history'] %}
     {{ _.role(message.role) }}
     {{ message.content }}
     {% endfor %}

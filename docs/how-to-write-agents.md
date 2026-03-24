@@ -129,8 +129,8 @@ function ExecuteStep(
     Objective: {{ objective }}
     Current step: {{ step_description }}
 
-    {% if ctx.tags.conversation_history %}
-    {% for msg in ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     {% endif %}
@@ -367,7 +367,7 @@ Understanding **citable history** and the **citation vocabulary** is necessary t
 
 ### 6.1 Ref-table vocabulary (canonical)
 
-The stack uses a **unified citation contract** tied to a **ref table** built when projecting context into BAML (`ctx.tags.conversation_history`). Allocation is **1-based** for both namespaces: first citable history line is **`#1`**, first archive slot is **`@1`** (see `RefTable` / `insert_history` in `crates/baml-rt-tools/src/archive_refs.rs` and rendering in `prompt_projection.rs`).
+The stack uses a **unified citation contract** tied to a **ref table** built when projecting context into BAML (`ctx.tags['conversation_history']` in Jinja). Allocation is **1-based** for both namespaces: first citable history line is **`#1`**, first archive slot is **`@1`** (see `RefTable` / `insert_history` in `crates/baml-rt-tools/src/archive_refs.rs` and rendering in `prompt_projection.rs`).
 
 | Form | Canonical meaning |
 |------|-------------------|
@@ -381,7 +381,7 @@ Full rationale vs PUD-style evidence strings: [citable-history-and-checked-citat
 
 ### 6.2 Worked example: projected history for the reporting agent
 
-Continuing from §3. The user asked *"Get Q3 revenue data by region."* The agent planned two steps: (1) query CRM, (2) summarise for the user. During step 1, `runGeneratedStepExecutor("ExecuteStep", …)` ran through **select → act → continue → finish**. By the time step 2 (or the final `PresentReportingToUser`) fires, the model sees this in **`ctx.tags.conversation_history`**:
+Continuing from §3. The user asked *"Get Q3 revenue data by region."* The agent planned two steps: (1) query CRM, (2) summarise for the user. During step 1, `runGeneratedStepExecutor("ExecuteStep", …)` ran through **select → act → continue → finish**. By the time step 2 (or the final `PresentReportingToUser`) fires, the model sees this in **`ctx.tags['conversation_history']`**:
 
 ```text
 user: #1 Get Q3 revenue data by region.

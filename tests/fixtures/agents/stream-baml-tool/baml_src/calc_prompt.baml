@@ -5,9 +5,9 @@ function ChooseCalcTool(user_message: string, session_context: SessionContext?) 
     Evaluate this calculation: {{ user_message }}
     For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
-    {% if ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
     Session history:
-    {% for msg in ctx.tags.conversation_history %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     {% endif %}

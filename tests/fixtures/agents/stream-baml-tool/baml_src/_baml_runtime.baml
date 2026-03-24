@@ -179,9 +179,9 @@ function ChooseCalcTool__select(
   prompt #"[OPEN] Open a session with: support/calculate.\n\nEvaluate this calculation: {{ user_message }}
 For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -200,9 +200,9 @@ function ChooseCalcTool__act__support_calculate(
   prompt #"[SEND] A support/calculate session is open. Emit Send with your query.\n\nEvaluate this calculation: {{ user_message }}
 For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -221,9 +221,9 @@ function ChooseCalcTool__continue__support_calculate(
   prompt #"[CONTINUE] support/calculate result is archived.\nCheck session history:\n- See \"@N support/calculate\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/calculate\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/calculate\" with no content yet → emit Read archive_ref=\"@N\"\n\nEvaluate this calculation: {{ user_message }}
 For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}

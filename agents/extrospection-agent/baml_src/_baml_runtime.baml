@@ -345,9 +345,9 @@ function BuildExtrospectionPlan__select(
 intent: {{ intent }}
 selected_agent: {{ selected_agent }}
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -376,9 +376,9 @@ function BuildExtrospectionPlan__act__system_extrospection(
 intent: {{ intent }}
 selected_agent: {{ selected_agent }}
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -407,9 +407,9 @@ function BuildExtrospectionPlan__continue__system_extrospection(
 intent: {{ intent }}
 selected_agent: {{ selected_agent }}
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -430,9 +430,9 @@ For Send: use empty input {} to list all agents.
 
 Context: {{ user_message }}
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -453,9 +453,9 @@ For Send: use empty input {} to list all agents.
 
 Context: {{ user_message }}
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}
@@ -476,9 +476,9 @@ For Send: use empty input {} to list all agents.
 
 Context: {{ user_message }}
 
-{% if ctx.tags.conversation_history %}
+{% if ctx.tags['conversation_history'] %}
 Session history:
-{% for msg in ctx.tags.conversation_history %}
+{% for msg in ctx.tags['conversation_history'] %}
 {{ msg.role }}: {{ msg.content }}
 {% endfor %}
 {% endif %}

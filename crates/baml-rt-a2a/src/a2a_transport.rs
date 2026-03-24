@@ -2302,7 +2302,7 @@ mod tests {
     /// Full-pipeline history test: events → provenance store → conversation_context
     /// → to_projection_item → project_prompt_context → rendered JSON.
     ///
-    /// This exercises the exact path used by `ctx.tags.conversation_history` in BAML
+    /// This exercises the exact path used by `ctx.tags['conversation_history']` in BAML
     /// prompts: the same call sequence as `ProjectingConversationContextProvider::conversation_history_json`.
     #[tokio::test]
     async fn session_history_renders_correctly_through_full_pipeline() {

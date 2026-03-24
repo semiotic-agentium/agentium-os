@@ -1,7 +1,7 @@
 //! Convert provenance conversation rows into [`baml_rt_tools::prompt_projection`] items.
 //!
 //! Shared with the A2A transport path so citation resolution rebuilds the same
-//! `#N` / `@N` [`baml_rt_tools::archive_refs::RefTable`] the LLM saw in `ctx.tags.conversation_history`.
+//! `#N` / `@N` [`baml_rt_tools::archive_refs::RefTable`] the LLM saw in `ctx.tags['conversation_history']`.
 
 use baml_rt_tools::prompt_projection::{
     PromptProjectionContent, PromptProjectionItem, SessionStepProjection,

@@ -48,20 +48,11 @@ export interface ClaudeToolOpenInput { workspace: string | null;
  }
 
 export interface ClaudeToolSendInput { prompt: string | null;
-content: (ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3)[] | null;
+content: ClaudeToolSendInputContent | ClaudeToolSendInputContent[] | null;
  }
 
-export interface ClaudeUserContentBlockDtoVariant1 { text: string;
-kind: string;
- }
-
-export interface ClaudeUserContentBlockDtoVariant2 { url: string;
-kind: string;
- }
-
-export interface ClaudeUserContentBlockDtoVariant3 { media_type: string;
-data: string;
-kind: string;
+export interface ClaudeToolSendInputContent { kind: string;
+text: string;
  }
 
 export interface NeedMoreInput { question: string;

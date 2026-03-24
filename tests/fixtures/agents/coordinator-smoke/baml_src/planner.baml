@@ -79,9 +79,9 @@ function PlanCoordinatorWorkflow(
     {{ available_agents }}
     ---END AVAILABLE AGENTS---
 
-    {% if ctx.tags.conversation_history %}
+    {% if ctx.tags['conversation_history'] %}
     ---CONVERSATION CONTEXT---
-    {% for msg in ctx.tags.conversation_history %}
+    {% for msg in ctx.tags['conversation_history'] %}
     {{ msg.role }}: {{ msg.content }}
     {% endfor %}
     ---END CONVERSATION CONTEXT---
