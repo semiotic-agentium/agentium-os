@@ -1,7 +1,7 @@
 /// <reference path="./baml-runtime.d.ts" />
 import type {
+  ProvenancePlanStep,
   ReportingPlan,
-  ReportingPlanStep,
   SessionResult,
   StructuredReply,
 } from "./baml-runtime";
@@ -30,7 +30,7 @@ __chat_register({
     try {
       // Phase 1: LLM synthesises the plan.
       const plan: ReportingPlan = await PlanReportingWork({ user_message: userMessage });
-      const steps: ReportingPlanStep[] = Array.isArray(plan.steps) ? plan.steps : [];
+      const steps: ProvenancePlanStep[] = Array.isArray(plan.steps) ? plan.steps : [];
 
       if (steps.length === 0) {
         return { message: "No plan steps generated." };
@@ -51,12 +51,23 @@ __chat_register({
       const executable = await intentPhase.submitPlan({
         intentId,
         planId,
-        steps: steps.map((s, idx) => ({
-          stepId: s.step_id || `step-${idx}`,
-          description: s.description,
-          order: s.order ?? idx,
-          dependsOn: idx === 0 ? [] : [steps[idx - 1].step_id || `step-${idx - 1}`],
-        })),
+        steps: steps.map((s, idx) => {
+          const sid = s.step_id || `step-${idx}`;
+          const prevId =
+            idx > 0 ? steps[idx - 1]!.step_id || `step-${idx - 1}` : null;
+          const dependsOn =
+            Array.isArray(s.depends_on) && s.depends_on.length > 0
+              ? s.depends_on
+              : prevId
+                ? [prevId]
+                : [];
+          return {
+            step_id: sid,
+            description: s.description,
+            order: s.order ?? idx,
+            depends_on: dependsOn,
+          };
+        }),
       });
 
       // Phase 3: execute each committed plan step.

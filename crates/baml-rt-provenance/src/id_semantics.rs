@@ -259,6 +259,11 @@ impl ProvDerivedIdTemplate for TaskEntityId {
 }
 
 /// Entity representing a resolved intent within a task scope.
+///
+/// **`intent_id` in [`IntentEntityInput`] is not a global provenance identifier.** It is the
+/// session-scoped planning alias supplied by agent/LLM on the execution-session wire (and echoed in
+/// query records). Canonical graph identity is always this template’s **derived** id from
+/// `(task_id, intent_id)` — the same alias string in another task is a different entity.
 pub struct IntentEntityId;
 impl DerivedConstructible for IntentEntityId {}
 impl ProvIdSemantics for IntentEntityId {
@@ -284,6 +289,10 @@ impl ProvDerivedIdTemplate for IntentEntityId {
 }
 
 /// Entity representing a generated plan within a task scope.
+///
+/// **`plan_id` in [`PlanEntityInput`] is not a global provenance identifier.** It is a
+/// task-scoped planning alias from the agent/LLM. Canonical identity is the derived entity id
+/// from `(task_id, plan_id)`.
 pub struct PlanEntityId;
 impl DerivedConstructible for PlanEntityId {}
 impl ProvIdSemantics for PlanEntityId {
@@ -309,6 +318,10 @@ impl ProvDerivedIdTemplate for PlanEntityId {
 }
 
 /// Entity representing a plan step within a plan.
+///
+/// **`step_id` in [`PlanStepEntityInput`] is not a global provenance identifier.** It is a
+/// planning alias unique within the committed plan for that task; the host may accept LLM-authored
+/// slugs here, but durable graph identity is the derived id from `(task_id, plan_id, step_id)`.
 pub struct PlanStepEntityId;
 impl DerivedConstructible for PlanStepEntityId {}
 impl ProvIdSemantics for PlanStepEntityId {

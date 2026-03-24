@@ -15,8 +15,10 @@ function PlanReportingWork(user_message: string) -> ReportingPlan {
     Rules:
     - intent_description: one sentence capturing the user's goal.
     - objective: one sentence describing the deliverable.
-    - steps: ordered list of concrete actions. Each step has a
-      step_id (short slug), a description (what to do), and an order.
+    - steps: ordered list of concrete actions (ProvenancePlanStep). Each step has
+      step_id (short slug), description, order, and optional depends_on listing
+      prerequisite step_ids for a DAG (omit depends_on or use [] for independent roots;
+      linear plans can leave depends_on empty — the agent may chain by order).
     - Available tools: CRM (query accounts/revenue), email (send messages).
     - A typical plan: (1) query CRM data, (2) analyse/summarise results,
       (3) present findings to user.
@@ -29,16 +31,10 @@ function PlanReportingWork(user_message: string) -> ReportingPlan {
   "#
 }
 
-class ReportingPlanStep {
-  step_id string
-  description string
-  order int
-}
-
 class ReportingPlan {
   intent_description string
   objective string
-  steps ReportingPlanStep[]
+  steps ProvenancePlanStep[]
 }
 
 /// Hop 2: execute a plan step. Has access to ALL tools — CRM for data

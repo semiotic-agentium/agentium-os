@@ -126,6 +126,11 @@ export interface A2aSessionClosed {
  * The Rust host binds execution-session lineage from the **invocation scope only**; it is not part of this
  * TypeScript contract and any `derivedFromMessageIds` in JSON is ignored.
  * `supersession` accepts replaced|refined and snake_case/camelCase aliases (see host parser).
+ *
+ * **Planning ids are not global provenance identifiers:** `intentId`, `planId`, and per-step `stepId`
+ * are task-scoped **aliases** (often agent-chosen or LLM slugs). The host derives canonical graph
+ * entity ids by compounding them with the active task scope — never treat these strings as durable
+ * global keys.
  */
 export interface IntentSubmission {
     intentId: string;
@@ -135,12 +140,22 @@ export interface IntentSubmission {
     supersession?: "replaced" | "refined";
 }
 
-export interface PlanStepSubmission {
-    stepId: string;
-    description: string;
-    order: number;
-    dependsOn?: string[];
-}
+/** One row in `submitPlan.steps`. Use **either** `stepId` (idiomatic TS) **or** `step_id` (BAML-shaped); the host deserializes both, plus `dependsOn` / `depends_on`. */
+export type PlanStepSubmission =
+    | {
+          stepId: string;
+          description: string;
+          order: number;
+          dependsOn?: string[];
+          depends_on?: string[];
+      }
+    | {
+          step_id: string;
+          description: string;
+          order: number;
+          dependsOn?: string[];
+          depends_on?: string[];
+      };
 
 export interface PlanSubmission {
     intentId: string;
