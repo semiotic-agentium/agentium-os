@@ -102,9 +102,9 @@ impl QuickJSBridge {
                                 );
                             }
                         } else {
-                            tracing::warn!(
+                            tracing::error!(
                                 %sid,
-                                "yield host: session not found in active route map"
+                                "yield host: session not found in active route map (chunk may be lost)"
                             );
                         }
                     } else {
@@ -117,9 +117,9 @@ impl QuickJSBridge {
                                 "stream_yield_route: no active session; scope={scope:?}; in_flight={in_flight_sessions}; chunk={chunk_json}"
                             );
                         }
-                        tracing::warn!(
+                        tracing::error!(
                             chunk_json = %chunk_json,
-                            "yield host: no active session for routing"
+                            "yield host: no active session for routing (chunk may be lost)"
                         );
                     }
                     Ok(JsValueFacade::Undefined)
@@ -246,7 +246,7 @@ impl QuickJSBridge {
             let task_id = scope.task_id_opt();
             let mgr = self.baml_manager.lock().await;
             if let Err(e) = mgr.close_sessions_for_scope(cid, task_id).await {
-                tracing::warn!(
+                tracing::error!(
                     error = %e,
                     %session_id,
                     context_id = %cid,

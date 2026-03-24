@@ -48,7 +48,8 @@ pub fn load_manifest_tools(baml_src: &Path) -> Result<Vec<String>> {
 /// Generate TypeScript declarations for BAML runtime: typed function signatures and supporting types.
 pub fn render_ts_declarations(
     ir_signature: &IRSignature,
-    session_plan_functions: &std::collections::HashMap<String, String>,
+    tool_names: &[String],
+    session_plan_functions: &baml_rt_tools::SessionPlanFunctionsMap,
 ) -> Result<String> {
     let header = "/**
  * BAML runtime TypeScript declarations.
@@ -95,7 +96,8 @@ pub fn render_ts_declarations(
         "/** Runtime interaction API: A2A task FSM (message-first, typestate rails). */";
     quote_in!(tokens => $(tool_comment));
     tokens.line();
-    let tool_ts = render_tool_typescript()?;
+    let _ = tool_names;
+    let tool_ts = render_tool_typescript(&[])?;
     for line in tool_ts.lines() {
         quote_in!(tokens => $(line));
         tokens.push();
@@ -122,7 +124,6 @@ pub fn render_ts_declarations(
             export interface SessionContext {
                 contract_version: "session_context";
                 session_open: boolean;
-                allowed_ops: ("Open" | "Send" | "Read" | "Finish" | "Abort")[];
                 scope_ref: string | null;
                 output_ref: string | null;
                 evidence_ref: string | null;
@@ -156,6 +157,9 @@ pub fn render_ts_declarations(
             }
         );
         tokens.line();
+        let step_run_result_comment = "/**\n * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.\n * User-facing replies are synthesized once at session completion (and recorded there).\n */";
+        quote_in!(tokens => $(step_run_result_comment));
+        tokens.line();
         quote_in!(
             tokens =>
             export interface StepExecutorRunResult<R = unknown> {
@@ -163,6 +167,7 @@ pub fn render_ts_declarations(
                 steps: R[];
                 session_context: SessionContext;
                 history_context: HistoryContext | null;
+                selected_tool: string | null;
             }
         );
         tokens.line();

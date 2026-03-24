@@ -6,6 +6,8 @@
 use anyhow::Error as AnyhowError;
 use thiserror::Error;
 
+use crate::semantics::{ErrorDisposition, Retryability};
+
 /// Typed lifecycle failures for stream/tool sessions.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum SessionLifecycleError {
@@ -144,8 +146,8 @@ pub enum BamlRtError {
     #[error("Session lifecycle error: {0}")]
     SessionLifecycle(#[from] SessionLifecycleError),
 
-    /// Function execution failed
-    #[error("Function execution failed")]
+    /// BAML `call_function` / step-executor hop failed (cause is the wrapped anyhow chain).
+    #[error("Function execution failed: {source}")]
     ExecutionFailed {
         #[source]
         source: AnyhowError,
@@ -185,6 +187,119 @@ pub enum BamlRtError {
         #[source]
         source: AnyhowError,
     },
+}
+
+/// Classify how this error should be surfaced for host retries vs LLM correction.
+pub fn baml_error_disposition(err: &BamlRtError) -> ErrorDisposition {
+    match err {
+        BamlRtError::InvalidArgument(_)
+        | BamlRtError::InvalidArgumentWithSource { .. }
+        | BamlRtError::InvalidOpenInput { .. }
+        | BamlRtError::Json(_)
+        | BamlRtError::JsonWithRaw { .. }
+        | BamlRtError::FunctionNotFound(_)
+        | BamlRtError::TypeConversion(_) => ErrorDisposition::LlmCorrectable,
+        BamlRtError::AgentNotFound(_) => ErrorDisposition::InformAndContinue,
+        BamlRtError::Conflict(_) => ErrorDisposition::HostRetriable,
+        BamlRtError::SessionLifecycle(
+            SessionLifecycleError::ToolSessionNotFound { .. }
+            | SessionLifecycleError::ToolSessionClosed { .. },
+        ) => ErrorDisposition::InformAndContinue,
+        BamlRtError::SessionLifecycle(
+            SessionLifecycleError::StreamSessionNotFound { .. }
+            | SessionLifecycleError::StreamSessionClosed { .. }
+            | SessionLifecycleError::InvocationContextMissing,
+        ) => ErrorDisposition::InformAndContinue,
+        BamlRtError::SessionLifecycle(SessionLifecycleError::InvocationCancelled) => {
+            ErrorDisposition::HostRetriable
+        }
+        BamlRtError::ToolExecution(msg) => disposition_from_tool_execution_message(msg),
+        BamlRtError::ExecutionFailed { source } => disposition_from_anyhow_chain(source),
+        BamlRtError::ParsedResultFailed { source } => disposition_from_anyhow_chain(source),
+        BamlRtError::Io(_)
+        | BamlRtError::QuickJs(_)
+        | BamlRtError::QuickJsWithSource { .. }
+        | BamlRtError::ProvenanceContextRead { .. } => ErrorDisposition::HostRetriable,
+        BamlRtError::RequestBuildFailed { .. } => ErrorDisposition::LlmCorrectable,
+        BamlRtError::ClientRegistryBuild { .. }
+        | BamlRtError::RuntimeLoadFailed { .. }
+        | BamlRtError::FunctionStreamCreation { .. }
+        | BamlRtError::BamlRuntime(_)
+        | BamlRtError::Initialization(_)
+        | BamlRtError::Configuration(_)
+        | BamlRtError::SchemaLoading(_)
+        | BamlRtError::ToolRegistration(_) => ErrorDisposition::Fatal,
+    }
+}
+
+/// JSON-RPC / client retry hint derived from [`baml_error_disposition`].
+pub fn retryability_for_a2a(err: &BamlRtError) -> Retryability {
+    match baml_error_disposition(err) {
+        ErrorDisposition::HostRetriable => Retryability::Retryable,
+        ErrorDisposition::LlmCorrectable
+        | ErrorDisposition::InformAndContinue
+        | ErrorDisposition::Fatal => Retryability::Permanent,
+    }
+}
+
+fn disposition_from_tool_execution_message(msg: &str) -> ErrorDisposition {
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("rate limit")
+        || lower.contains("rate_limited")
+        || lower.contains("429")
+        || lower.contains("timeout")
+        || lower.contains("temporarily unavailable")
+        || lower.contains("503")
+        || lower.contains("connection reset")
+    {
+        return ErrorDisposition::HostRetriable;
+    }
+    if lower.contains("401")
+        || lower.contains("unauthorized")
+        || lower.contains("403")
+        || lower.contains("forbidden")
+        || lower.contains("not found")
+        || lower.contains("404")
+        || lower.contains("invalid_argument")
+    {
+        return ErrorDisposition::InformAndContinue;
+    }
+    ErrorDisposition::InformAndContinue
+}
+
+fn disposition_from_anyhow_chain(source: &AnyhowError) -> ErrorDisposition {
+    let chain = format!("{source:#}");
+    let lower = chain.to_ascii_lowercase();
+    if lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("too many requests")
+        || lower.contains("503")
+        || lower.contains("502")
+        || lower.contains("504")
+        || lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("connection reset")
+        || lower.contains("broken pipe")
+    {
+        return ErrorDisposition::HostRetriable;
+    }
+    if lower.contains("401")
+        || lower.contains("unauthorized")
+        || lower.contains("403")
+        || lower.contains("forbidden")
+        || lower.contains("404")
+        || lower.contains("not found")
+    {
+        return ErrorDisposition::InformAndContinue;
+    }
+    if lower.contains("invalid")
+        || lower.contains("argument")
+        || lower.contains("schema")
+        || lower.contains("parse")
+    {
+        return ErrorDisposition::LlmCorrectable;
+    }
+    ErrorDisposition::Fatal
 }
 
 /// Result type alias for convenience

@@ -22,7 +22,7 @@ pub mod traits;
 pub mod ts_gen;
 pub mod types;
 
-pub use compiler::{RuntimeTypeGenerator, TSCONFIG_JSON, TscCompiler};
+pub use compiler::{RuntimeTypeGenerator, TSCONFIG_JSON, TscCompiler, write_canonical_tsconfig};
 pub use filesystem::StdFileSystem;
 pub use packager::StdPackager;
 pub use service::BuilderService;

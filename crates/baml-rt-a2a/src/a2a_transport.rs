@@ -2,20 +2,18 @@
 
 use std::{
     collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDispatchAck, AgentDispatchRequest,
-    BamlRtError, Result,
+    A2aJsChatHost, A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDispatchAck,
+    AgentDispatchRequest, BamlRtError, Result,
     bus::{BusStream, EffectEmitter},
     context::{self, InvocationScope, OutcomeInvocationContext, RequestScope},
     correlation,
+    dispatch::invocation_scope_for_agent_dispatch,
     ids::{AgentId, ContextId, ExternalId, MessageId, TaskId},
     stream_completion::StreamCompletion,
 };
@@ -26,7 +24,8 @@ use baml_rt_provenance::{
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, BridgeHandle, QuickJSBridge, QuickJSConfig,
-    baml_execution::ConversationContextProvider, invoke_tool_handover,
+    baml_execution::ConversationContextProvider, invoke_optional_js_function_handover,
+    invoke_tool_handover,
 };
 use baml_rt_tools::{
     ToolFailure, ToolHandler, ToolName, ToolRegistry, ToolSession, ToolSessionError, ToolTypeSpec,
@@ -41,9 +40,9 @@ use tracing::Span;
 use crate::{
     a2a,
     a2a_store::{
-        ConversationContextSource, ProvenanceTaskStore, TaskChunkApplier, TaskEventRecorder,
-        TaskRepository, TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue, message_role_string,
-        metadata_string_map, validated_message_content,
+        ConversationContextSource, ProvenanceTaskStore, ProvenanceWriterConversationSource,
+        TaskChunkApplier, TaskEventRecorder, TaskRepository, TaskStoreBackend, TaskUpdateEvent,
+        TaskUpdateQueue, message_role_string, metadata_string_map, validated_message_content,
     },
     a2a_types::{
         JSONRPCId, Message, ROLE_USER, StreamChunkView, TaskArtifactUpdateEvent,
@@ -71,16 +70,16 @@ type LiveStreamSpawnPayload = (
     async_channel::Receiver<TurnInput>,
 );
 
-/// Single concrete backing store for GraphQLite mode.
+/// Single concrete backing store for SurrealDB mode.
 /// One instance is built from the builder's store Arc and reused as TaskStoreBackend and
 /// ProvenanceWriter; create-stream and tasks.subscribe use this same instance (cardinality one).
-struct GraphqliteRuntimeStore {
-    task_store: Arc<crate::graphqlite_task_subgraph_store::GraphqliteTaskSubgraphStore>,
-    provenance: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+struct SurrealRuntimeStore {
+    task_store: Arc<crate::task_subgraph_store::TaskSubgraphStore>,
+    provenance: Arc<baml_rt_provenance::SurrealProvenanceStore>,
     agent_id: baml_rt_core::ids::AgentId,
 }
 
-impl GraphqliteRuntimeStore {
+impl SurrealRuntimeStore {
     fn now_millis() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -88,22 +87,16 @@ impl GraphqliteRuntimeStore {
             .unwrap_or(0)
     }
 
-    /// Single construction point: one GraphqliteTaskSubgraphStore over the same provenance Arc,
-    /// so pipeline and handler share the same graph/connection. agent_id is required for
+    /// Single construction point: one TaskSubgraphStore over the same provenance Arc,
+    /// so pipeline and handler share the same store/connection. agent_id is required for
     /// message provenance (a message is always sent to/from an agent).
     fn new(
-        provenance: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+        provenance: Arc<baml_rt_provenance::SurrealProvenanceStore>,
         agent_id: baml_rt_core::ids::AgentId,
     ) -> Arc<Self> {
         let graph: Arc<dyn A2aGraphStore> = provenance.clone();
-        let context_reader: Arc<dyn ProvenanceContextReader> = provenance.clone();
         Arc::new(Self {
-            task_store: Arc::new(
-                crate::graphqlite_task_subgraph_store::GraphqliteTaskSubgraphStore::new(
-                    graph,
-                    context_reader,
-                ),
-            ),
+            task_store: Arc::new(crate::task_subgraph_store::TaskSubgraphStore::new(graph)),
             provenance,
             agent_id,
         })
@@ -178,7 +171,7 @@ impl GraphqliteRuntimeStore {
 }
 
 #[async_trait]
-impl TaskRepository for GraphqliteRuntimeStore {
+impl TaskRepository for SurrealRuntimeStore {
     async fn upsert(&self, task: crate::a2a_types::Task) -> Result<Option<crate::a2a_types::Task>> {
         self.task_store.upsert(task).await
     }
@@ -204,14 +197,14 @@ impl TaskRepository for GraphqliteRuntimeStore {
         self.task_store.cancel(id).await
     }
     async fn insert_message(&self, message: &crate::a2a_types::Message) -> Result<()> {
-        self.emit_message_lifecycle_event(message, "graphqlite insert_message")
+        self.emit_message_lifecycle_event(message, "surreal insert_message")
             .await?;
         self.task_store.insert_message(message).await
     }
 }
 
 #[async_trait]
-impl TaskEventRecorder for GraphqliteRuntimeStore {
+impl TaskEventRecorder for SurrealRuntimeStore {
     async fn record_status_update(
         &self,
         task_id: baml_rt_core::ids::TaskId,
@@ -237,14 +230,14 @@ impl TaskEventRecorder for GraphqliteRuntimeStore {
 }
 
 #[async_trait]
-impl TaskUpdateQueue for GraphqliteRuntimeStore {
+impl TaskUpdateQueue for SurrealRuntimeStore {
     async fn drain_updates(&self, task_id: &str) -> Vec<TaskUpdateEvent> {
         self.task_store.drain_updates(task_id).await
     }
 }
 
 #[async_trait]
-impl TaskChunkApplier for GraphqliteRuntimeStore {
+impl TaskChunkApplier for SurrealRuntimeStore {
     async fn apply_task_delta(
         &self,
         task: Option<crate::a2a_types::Task>,
@@ -259,20 +252,7 @@ impl TaskChunkApplier for GraphqliteRuntimeStore {
 }
 
 #[async_trait]
-impl ConversationContextSource for GraphqliteRuntimeStore {
-    async fn conversation_context(
-        &self,
-        context_id: &baml_rt_core::ids::ContextId,
-        limit: Option<usize>,
-    ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.task_store
-            .conversation_context(context_id, limit)
-            .await
-    }
-}
-
-#[async_trait]
-impl ProvenanceContextReader for GraphqliteRuntimeStore {
+impl ProvenanceContextReader for SurrealRuntimeStore {
     async fn context_messages(
         &self,
         context_id: &baml_rt_core::ids::ContextId,
@@ -297,7 +277,7 @@ impl ProvenanceContextReader for GraphqliteRuntimeStore {
 }
 
 #[async_trait]
-impl ProvenanceWriter for GraphqliteRuntimeStore {
+impl ProvenanceWriter for SurrealRuntimeStore {
     async fn add_event(
         &self,
         event: ProvEvent,
@@ -306,37 +286,45 @@ impl ProvenanceWriter for GraphqliteRuntimeStore {
     }
 }
 
-/// Conversation context from the unified task store (single source of truth).
-/// No separate provenance read path; store view and provenance write are one concept.
-struct TaskStoreConversationContextProvider {
-    store: Arc<dyn ConversationContextSource>,
+/// Projects [`ProvenanceConversationContextItem`] rows into BAML `conversation_history` JSON.
+///
+/// The `source` is always [`ProvenanceWriterConversationSource`] (graph-backed).
+struct ProjectingConversationContextProvider {
+    source: Arc<dyn ConversationContextSource>,
     tool_registry: Arc<ToolRegistry>,
+    /// Archive tables for re-deriving cat-n Read output in history.
+    archive_ref_tables: Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>,
 }
 
-impl TaskStoreConversationContextProvider {
-    fn new(store: Arc<dyn ConversationContextSource>, tool_registry: Arc<ToolRegistry>) -> Self {
+impl ProjectingConversationContextProvider {
+    fn new(
+        source: Arc<dyn ConversationContextSource>,
+        tool_registry: Arc<ToolRegistry>,
+        archive_ref_tables: Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>,
+    ) -> Self {
         Self {
-            store,
+            source,
             tool_registry,
+            archive_ref_tables,
         }
     }
 }
 
 #[async_trait]
-impl ConversationContextProvider for TaskStoreConversationContextProvider {
+impl ConversationContextProvider for ProjectingConversationContextProvider {
     async fn conversation_history_json(
         &self,
         scope: &context::RuntimeScope,
     ) -> Result<Option<Value>> {
         let context_id = scope.context_id();
         let items = self
-            .store
+            .source
             .conversation_context(context_id, Some(40))
             .await?;
         tracing::debug!(
             context_id = %context_id,
             item_count = items.len(),
-            "conversation_history_json: store returned items"
+            "conversation_history_json: context source returned items"
         );
         if items.is_empty() {
             return Ok(None);
@@ -344,20 +332,84 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
 
         let projection_items = items
             .into_iter()
-            .map(|item| PromptProjectionItem {
-                timestamp_ms: item.timestamp_ms,
-                event_id: item.event_id.as_str().to_string(),
-                role: item.role,
-                source: item.source,
-                content: item.content,
-            })
+            .filter_map(to_projection_item)
             .collect::<Vec<_>>();
+        if projection_items.is_empty() {
+            return Ok(None);
+        }
+
+        // Build an archive reader closure if tables are available.
+        // Closure re-derives cat-n output from the archive deterministically.
+        let context_id_str = context_id.as_str().to_string();
+        let tables = self.archive_ref_tables.clone();
+        let reader: Option<Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>>> =
+            tables.map(|t| {
+                let ctx = context_id_str.clone();
+                let boxed: Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>> =
+                    Box::new(move |archive_ref_str, grep_str, offset, limit| {
+                        let short_ref = baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
+                        let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
+                        let entry = ref_table.get(short_ref)?;
+                        let grep = grep_str
+                            .filter(|s| !s.is_empty())
+                            .and_then(|s| baml_rt_tools::archive_read::GrepPattern::parse(s).ok());
+                        let page = baml_rt_tools::archive_read::grep_paginate(
+                            &entry.content,
+                            grep.as_ref(),
+                            baml_rt_tools::archive_read::LineOffset(offset),
+                            baml_rt_tools::archive_read::PageLimit::new(limit),
+                        );
+                        let formatted = baml_rt_tools::archive_read::format_cat_n(&page.lines);
+                        // CLI invocation without $ — role attribution is handled by the
+                        // separate history entry that carries this as content.
+                        let cmd = match grep_str.filter(|s| !s.is_empty()) {
+                            Some(pat) => format!("grep -n '{pat}' {archive_ref_str}"),
+                            None      => format!("cat -n {archive_ref_str}"),
+                        };
+                        if page.lines.is_empty() {
+                            return Some(format!("{cmd}\n# no matches"));
+                        }
+                        let first = page.lines.first().map(|l| l.original_line_number).unwrap_or(1);
+                        let last  = page.lines.last().map(|l| l.original_line_number).unwrap_or(1);
+                        let range_comment = if page.has_more {
+                            format!(
+                                "  # lines {first}-{last} of {} ({} more — offset={} for next page)",
+                                page.total_matched,
+                                page.total_matched - page.next_offset,
+                                page.next_offset,
+                            )
+                        } else if first == 1 && last == page.total_matched {
+                            String::new()
+                        } else {
+                            format!("  # lines {first}-{last} of {}", page.total_matched)
+                        };
+                        Some(format!("{cmd}{range_comment}\n{formatted}"))
+                    });
+                boxed
+            });
+
+        // Get or create the ref table for this context so #N refs can be allocated
+        // for messages and tool-call descriptions during projection.
+        let ref_table_arc = self
+            .archive_ref_tables
+            .as_deref()
+            .map(|t| baml_rt_tools::archive_refs::get_or_create_ref_table(t, &context_id_str))
+            .unwrap_or_else(|| std::sync::Arc::new(baml_rt_tools::archive_refs::RefTable::new()));
+
         Ok(Some(project_prompt_context(
-            context_id.as_str(),
             projection_items,
             self.tool_registry.as_ref(),
+            &ref_table_arc,
+            reader.as_deref(),
         )))
     }
+}
+
+/// Convert a provenance conversation item to a projection item.
+pub(crate) fn to_projection_item(
+    item: ProvenanceConversationContextItem,
+) -> Option<PromptProjectionItem> {
+    baml_rt_provenance::provenance_item_to_projection_item(item)
 }
 
 /// Top-level agent type that owns runtime, JS bridge, and A2A comms.
@@ -469,12 +521,12 @@ impl A2aAgent {
             access: None,
             tags: Vec::new(),
             secret_requests: Vec::new(),
+            event_sources: Vec::new(),
             config: None,
             config_bundle: None,
             origin: baml_rt_tools::ToolOrigin::Guest,
             projection_semantics: None,
             session_policy: baml_rt_tools::SessionPolicy::default(),
-            event_sources: Vec::new(),
         };
 
         let handler: Arc<dyn ToolHandler> = Arc::new(JsToolHandler {
@@ -491,32 +543,6 @@ impl A2aAgent {
         registry.register_dynamic(metadata, handler)?;
 
         Ok(())
-    }
-
-    /// Invoke the JS `onDispatch` handler registered by `__chat_register({ onDispatch })`.
-    ///
-    /// Returns `FunctionNotFound("onDispatch")` when the agent did not register a handler.
-    pub async fn handle_dispatch(&self, request: AgentDispatchRequest) -> Result<AgentDispatchAck> {
-        // Dispatch scope is carried explicitly into the handover lane. We intentionally do not
-        // rely on a caller-side task-local here: native callbacks resolve scope from the bridge's
-        // invocation registry once the eval starts, and async BAML/tool work re-enters
-        // `context::with_scope` inside the bridge.
-        let scope = scope_from_dispatch_request(&request, self.agent_id.clone());
-        let args = serde_json::to_value(&request).map_err(BamlRtError::Json)?;
-        let response = baml_rt_quickjs::invoke_optional_js_function_handover(
-            self.bridge_handle.as_ref(),
-            scope,
-            "onDispatch",
-            args,
-        )
-        .await?
-        .ok_or_else(|| BamlRtError::FunctionNotFound("onDispatch".to_string()))?;
-
-        serde_json::from_value(response).map_err(|source| BamlRtError::InvalidArgumentWithSource {
-            message: "dispatch handler must return { accepted: boolean, detail?: string }"
-                .to_string(),
-            source: Box::new(source),
-        })
     }
 
     pub async fn register_a2a_session_tool(&self) -> Result<()> {
@@ -540,6 +566,27 @@ impl A2aAgent {
         };
         registry.register_bundle(bundle)?;
         Ok(())
+    }
+
+    /// Deliver a deterministic host dispatch to the agent's optional `onDispatch` handler.
+    ///
+    /// Uses the bridge handover lane so this future is [`Send`] (required by `async_trait` HTTP
+    /// registries); see [`baml_rt_quickjs::invoke_optional_js_function_handover`].
+    pub async fn handle_dispatch(&self, request: AgentDispatchRequest) -> Result<AgentDispatchAck> {
+        let scope = invocation_scope_for_agent_dispatch(self.agent_id().clone(), &request);
+        let js_payload = serde_json::to_value(&request).map_err(BamlRtError::Json)?;
+
+        let result = invoke_optional_js_function_handover(
+            self.bridge_handle().as_ref(),
+            scope,
+            "onDispatch",
+            js_payload,
+        )
+        .await?;
+        let Some(value) = result else {
+            return Err(BamlRtError::FunctionNotFound("onDispatch".into()));
+        };
+        serde_json::from_value(value).map_err(BamlRtError::Json)
     }
 }
 
@@ -589,11 +636,12 @@ enum TaskStoreConfig {
     Default,
 }
 
-/// Provenance writer configuration: either provided, default (InMemory), or GraphQLite (task + provenance in same DB).
+/// Provenance graph configuration. A writer is **always** mounted at build time.
 enum ProvenanceWriterConfig {
     Provided(Arc<dyn ProvenanceWriter>),
-    /// Task state and provenance in the same GraphQLite DB; build() creates [ProvenanceTaskStore] over [crate::graphqlite_unified_store::GraphqliteUnifiedStore].
-    Graphqlite(Arc<baml_rt_provenance::GraphqliteProvenanceStore>),
+    /// Task state and provenance in the same SurrealDB store (ProvenanceTaskStore over SurrealRuntimeStore).
+    Surreal(Arc<baml_rt_provenance::SurrealProvenanceStore>),
+    /// Opens a dedicated **in-memory** SurrealDB graph (tests and local defaults). Not optional: no agent without a database.
     Default,
 }
 
@@ -642,8 +690,7 @@ impl A2aAgentBuilder {
     /// - `quickjs_config`: `QuickJSConfig::default()`
     /// - `register_baml_functions`: `true`
     /// - `init_js`: Empty vec
-    /// - `task_store`: `ProvenanceTaskStore` (no provenance writer)
-    /// - `provenance_writer`: None
+    /// - `task_store` / `provenance_writer`: default pair mounts an **in-memory Surreal** graph
     /// - `agent_id`: Auto-generated UUID
     ///
     /// **REQUIRED**: Call `with_effect_emitter()` before `build()`.
@@ -711,12 +758,12 @@ impl A2aAgentBuilder {
         self
     }
 
-    /// Use GraphQLite for task state and provenance (same DB).
-    pub fn with_graphqlite_store(
+    /// Use SurrealDB for task state and provenance (same DB).
+    pub fn with_surreal_store(
         mut self,
-        store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+        store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
     ) -> Self {
-        self.provenance_writer = ProvenanceWriterConfig::Graphqlite(store);
+        self.provenance_writer = ProvenanceWriterConfig::Surreal(store);
         self
     }
 
@@ -815,12 +862,12 @@ impl A2aAgentBuilderWithEffectEmitter {
         self
     }
 
-    /// Use GraphQLite for task state and provenance (same DB).
-    pub fn with_graphqlite_store(
+    /// Use SurrealDB for task state and provenance (same DB).
+    pub fn with_surreal_store(
         mut self,
-        store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+        store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
     ) -> Self {
-        self.provenance_writer = ProvenanceWriterConfig::Graphqlite(store);
+        self.provenance_writer = ProvenanceWriterConfig::Surreal(store);
         self
     }
 
@@ -978,39 +1025,55 @@ impl A2aAgentBuilderWithEffectEmitter {
         // live_result_pipeline, and request_router (create-stream writes and tasks.subscribe reads
         // see the same backend instance).
         let (task_store, provenance_writer) = match (self.task_store, self.provenance_writer) {
+            (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Default) => {
+                return Err(BamlRtError::InvalidArgument(
+                    "A2aAgentBuilder: a provenance graph is required. \
+                     With a custom task store you must call .with_provenance_writer(...) or .with_surreal_store(...); \
+                     you cannot combine with_task_store_backend alone with the default writer."
+                        .into(),
+                ));
+            }
             (TaskStoreConfig::Provided(task_store), ProvenanceWriterConfig::Provided(writer)) => {
                 (task_store, Some(writer))
             }
-            (TaskStoreConfig::Provided(task_store), ProvenanceWriterConfig::Default) => {
-                (task_store, None)
-            }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Provided(writer)) => {
-                let store: Arc<dyn TaskStoreBackend> = Arc::new(ProvenanceTaskStore::new(
-                    Some(writer.clone()),
-                    agent_id.clone(),
-                ));
+                let store: Arc<dyn TaskStoreBackend> =
+                    Arc::new(ProvenanceTaskStore::new(writer.clone(), agent_id.clone()));
                 (store, Some(writer))
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Default) => {
-                let store: Arc<dyn TaskStoreBackend> =
-                    Arc::new(ProvenanceTaskStore::new(None, agent_id.clone()));
-                (store, None)
+                let prov = baml_rt_provenance::SurrealStoreBuilder::in_memory_isolated()
+                    .build()
+                    .await
+                    .map_err(|e| {
+                        BamlRtError::InvalidArgument(format!(
+                            "A2aAgentBuilder: failed to open default in-memory provenance store: {e}"
+                        ))
+                    })?;
+                let runtime_store = SurrealRuntimeStore::new(prov, agent_id.clone());
+                let w: Arc<dyn ProvenanceWriter> = runtime_store.clone();
+                let task_store: Arc<dyn TaskStoreBackend> = Arc::new(
+                    ProvenanceTaskStore::with_backend(runtime_store, w.clone(), agent_id.clone()),
+                );
+                (task_store, Some(w))
             }
-            (TaskStoreConfig::Default, ProvenanceWriterConfig::Graphqlite(store))
-            | (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Graphqlite(store)) => {
-                // Single construction: one GraphqliteRuntimeStore from the provided store Arc;
+            (TaskStoreConfig::Default, ProvenanceWriterConfig::Surreal(store))
+            | (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Surreal(store)) => {
+                // Single construction: one SurrealRuntimeStore from the provided store Arc;
                 // same instance used as TaskStoreBackend and ProvenanceWriter for pipeline and handler.
-                let runtime_store = GraphqliteRuntimeStore::new(store, agent_id.clone());
+                let runtime_store = SurrealRuntimeStore::new(store, agent_id.clone());
                 let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store.clone();
                 let task_store: Arc<dyn TaskStoreBackend> =
                     Arc::new(ProvenanceTaskStore::with_backend(
                         runtime_store,
-                        Some(provenance_writer.clone()),
+                        provenance_writer.clone(),
                         agent_id.clone(),
                     ));
                 (task_store, Some(provenance_writer))
             }
         };
+
+        let writer = provenance_writer.expect("build always mounts a ProvenanceWriter");
 
         let emitter: Arc<dyn EventEmitter> =
             Arc::new(BroadcastEventEmitter::new(update_tx.clone()));
@@ -1051,11 +1114,21 @@ impl A2aAgentBuilderWithEffectEmitter {
         // Provenance: effect bus is the source of truth for LLM/tool completion (including deferred
         // plan failures). Interceptors only see trace-based completion; when execute_tool_from_baml_result
         // fails (e.g. empty steps), handle.complete(Failure) emits via effect bus.
-        if let Some(ref writer) = provenance_writer {
+        {
+            let mut subscriber = ProvenanceEffectSubscriber::new(writer.clone());
+            // Wire tool-action describer so drift scoring produces natural language
+            // ("searching Notion for 'squigs'") instead of raw JSON for tool-call payloads.
+            let registry = runtime.lock().await.tool_registry();
+            let registry_for_citations = registry.clone();
+            subscriber.set_tool_registry(registry_for_citations);
+            subscriber.set_action_describer(Arc::new(
+                move |tool_name: Option<&str>, content: &serde_json::Value| {
+                    let s = registry.describe_invocation_with_hint(tool_name, content);
+                    if s.is_empty() { None } else { Some(s) }
+                },
+            ));
             effect_emitter
-                .subscribe_effect_subscriber(Arc::new(ProvenanceEffectSubscriber::new(
-                    writer.clone(),
-                )))
+                .subscribe_effect_subscriber(Arc::new(subscriber))
                 .await;
         }
         let request_router: Arc<dyn RequestRouter> = Arc::new(MethodBasedRouter::new(
@@ -1078,14 +1151,19 @@ impl A2aAgentBuilderWithEffectEmitter {
                     )
                 })?;
             let tool_registry = runtime_guard.tool_registry();
+            let archive_ref_tables = Some(runtime_guard.archive_ref_tables());
+            let conversation_source: Arc<dyn ConversationContextSource> =
+                Arc::new(ProvenanceWriterConversationSource::new(writer.clone()));
             runtime_guard.set_conversation_context_provider(Arc::new(
-                TaskStoreConversationContextProvider::new(task_store.clone(), tool_registry),
+                ProjectingConversationContextProvider::new(
+                    conversation_source,
+                    tool_registry,
+                    archive_ref_tables,
+                ),
             ));
-            if provenance_writer.is_some() {
-                tracing::debug!(
-                    "A2aAgentBuilder::build: provenance lifecycle uses effect subscriber only"
-                );
-            }
+            tracing::debug!(
+                "A2aAgentBuilder::build: conversation context wired to provenance graph"
+            );
         }
         tracing::debug!("A2aAgentBuilder::build: runtime context/interceptors wired");
         // live_result_pipeline uses the same task_store as repository (inner_pipeline wraps task_store).
@@ -1096,7 +1174,7 @@ impl A2aAgentBuilderWithEffectEmitter {
             task_store,
             result_pipeline,
             live_result_pipeline: inner_pipeline,
-            provenance_writer,
+            provenance_writer: Some(writer),
             response_formatter,
             request_router,
             error_classifier,
@@ -1166,39 +1244,6 @@ fn build_stream_sessions_and_relay(
     let pusher = Arc::new(WorkingChunkPusher::new(stream_sessions.clone()));
     let relay = Arc::new(LiveStreamWorkingRelay::new(pusher));
     (stream_sessions, relay)
-}
-
-static DISPATCH_MSG_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-/// Build an invocation scope from a dispatch request, threading context/task/message IDs
-/// from the inbound event so tracing and provenance link to the dispatch origin.
-fn scope_from_dispatch_request(
-    request: &AgentDispatchRequest,
-    agent_id: baml_rt_core::ids::AgentId,
-) -> InvocationScope {
-    let Some(context_id) = request.context_id.clone() else {
-        return InvocationScope::synthetic_message(agent_id);
-    };
-
-    let message_id = request
-        .message_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| MessageId::from_external(ExternalId::new(value.to_string())))
-        .unwrap_or_else(|| {
-            let seq = DISPATCH_MSG_COUNTER.fetch_add(1, Ordering::Relaxed);
-            MessageId::from_external(ExternalId::new(format!("dispatch-msg-{seq}")))
-        });
-
-    match request.task_id.clone() {
-        Some(task_id) => InvocationScope::new(context::RuntimeScope::task_scope(
-            context_id, agent_id, message_id, task_id,
-        )),
-        None => InvocationScope::new(context::RuntimeScope::message_scope(
-            context_id, agent_id, message_id,
-        )),
-    }
 }
 
 /// Scope resolution for outcome handling. No optionality; branching is on the typed invocation context.
@@ -1298,6 +1343,8 @@ impl A2aRequestHandler for A2aAgent {
         }))
     }
 }
+
+impl A2aJsChatHost for A2aAgent {}
 
 impl A2aAgent {
     async fn handle_live_message_stream(
@@ -2069,17 +2116,14 @@ mod tests {
     use std::sync::Arc;
 
     use baml_rt_core::{
-        AgentDispatchRequest, AgentDispatchRoutingKey, BamlRtError, EventSchemaVersion,
+        BamlRtError,
         context::InvocationScope,
         ids::{ContextId, ExternalId, MessageId, TaskId},
     };
     use baml_rt_provenance::ProvenanceContextReader;
     use serde_json::json;
 
-    use super::{
-        A2aAgent, GraphqliteRuntimeStore, TaskRepository, scope_from_dispatch_request,
-        synthesized_live_task_id,
-    };
+    use super::{A2aAgent, SurrealRuntimeStore, TaskRepository, synthesized_live_task_id};
     use crate::a2a_types::{A2aMessageId, Message, MessageRole, Part};
 
     #[test]
@@ -2108,12 +2152,13 @@ mod tests {
 
     #[tokio::test]
     async fn js_tool_can_be_called_via_baml_tool_registry() {
-        let store = baml_rt_provenance::GraphqliteStoreBuilder::in_memory()
+        let store = baml_rt_provenance::SurrealStoreBuilder::in_memory()
             .build()
+            .await
             .expect("test store");
         let agent = A2aAgent::builder()
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
-            .with_graphqlite_store(store)
+            .with_surreal_store(store)
             .build()
             .await
             .expect("agent build");
@@ -2148,14 +2193,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn graphqlite_runtime_store_insert_message_records_provenance_message_event() {
-        let provenance = baml_rt_provenance::GraphqliteStoreBuilder::in_memory()
+    async fn surreal_runtime_store_insert_message_records_provenance_message_event() {
+        let provenance = baml_rt_provenance::SurrealStoreBuilder::in_memory()
             .build()
+            .await
             .expect("build store");
         let agent_id = baml_rt_core::ids::AgentId::from_uuid(
             baml_rt_core::ids::UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
         );
-        let runtime_store = GraphqliteRuntimeStore::new(provenance.clone(), agent_id);
+        let runtime_store = SurrealRuntimeStore::new(provenance.clone(), agent_id);
         let context_id = ContextId::new(99, 1);
         let task_id = TaskId::from_external(ExternalId::new("task-ctx-99-1"));
         runtime_store
@@ -2198,12 +2244,13 @@ mod tests {
 
     #[tokio::test]
     async fn live_send_stream_rejects_concurrent_turn_for_same_context() {
-        let store = baml_rt_provenance::GraphqliteStoreBuilder::in_memory()
+        let store = baml_rt_provenance::SurrealStoreBuilder::in_memory()
             .build()
+            .await
             .expect("test store");
         let agent = A2aAgent::builder()
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
-            .with_graphqlite_store(store)
+            .with_surreal_store(store)
             .build()
             .await
             .expect("agent build");
@@ -2252,101 +2299,175 @@ mod tests {
         }
     }
 
-    fn test_agent_id() -> baml_rt_core::ids::AgentId {
-        baml_rt_core::ids::AgentId::from_uuid(
-            baml_rt_core::ids::UuidId::parse_str("00000000-0000-0000-0000-000000000122").unwrap(),
-        )
-    }
+    /// Full-pipeline history test: events → provenance store → conversation_context
+    /// → to_projection_item → project_prompt_context → rendered JSON.
+    ///
+    /// This exercises the exact path used by `ctx.tags.conversation_history` in BAML
+    /// prompts: the same call sequence as `ProjectingConversationContextProvider::conversation_history_json`.
+    #[tokio::test]
+    async fn session_history_renders_correctly_through_full_pipeline() {
+        use baml_rt_core::ids::{AgentId, ExternalId, MessageId, UuidId};
+        use baml_rt_provenance::{
+            CallScope, ProvEvent, ProvenanceContextReader, ProvenanceWriter, SurrealStoreBuilder,
+            store::SessionStepOp,
+        };
+        use baml_rt_tools::{
+            ToolRegistry,
+            archive_read::{ShortRef, render_to_lines},
+            archive_refs::ArchiveEntry,
+            prompt_projection::project_prompt_context,
+        };
 
-    fn test_dispatch_request(
-        context_id: Option<ContextId>,
-        task_id: Option<TaskId>,
-        message_id: Option<&str>,
-    ) -> AgentDispatchRequest {
-        AgentDispatchRequest {
-            routing_key: AgentDispatchRoutingKey::parse("slack:intake").expect("routing key"),
-            message_type: EventSchemaVersion::parse("task-daemon.interpretation.v1")
-                .expect("schema version"),
-            messages: vec![],
-            context_id,
-            task_id,
-            message_id: message_id.map(String::from),
-            metadata: None,
-        }
-    }
+        // build() returns Arc<SurrealProvenanceStore> — do not double-wrap.
+        let store = SurrealStoreBuilder::in_memory_isolated()
+            .build()
+            .await
+            .expect("build isolated test store");
+        let context_id = ContextId::new(1, 1);
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
 
-    #[test]
-    fn dispatch_scope_threads_context_task_and_message_ids() {
-        let agent_id = test_agent_id();
-        let context_id = ContextId::new(122, 1);
-        let task_id = TaskId::from_external(ExternalId::new("dispatch-task-122"));
-        let request = test_dispatch_request(
-            Some(context_id.clone()),
-            Some(task_id.clone()),
-            Some("dispatch-msg-122"),
+        // User message — mirrors what arrives via A2A task handling.
+        store
+            .add_event(ProvEvent::message_received_global(
+                context_id.clone(),
+                MessageId::from_external(ExternalId::new("msg-1")),
+                "user".into(),
+                vec!["what can you do".into()],
+                None,
+                agent_id.clone(),
+                1_700_000_000_000,
+            ))
+            .await
+            .expect("message_received");
+
+        let scope = CallScope::Message {
+            message_id: MessageId::from_external(ExternalId::new("msg-1")),
+        };
+        let session_id = "session-abc123".to_string();
+        let tool_name = "system/discover_agents".to_string();
+
+        // Open — LLM chose to open the discover_agents session.
+        store
+            .add_event(ProvEvent::tool_session_step(
+                context_id.clone(),
+                scope.clone(),
+                tool_name.clone(),
+                session_id.clone(),
+                &SessionStepOp::Open,
+            ))
+            .await
+            .expect("session open");
+
+        // SendDone — blocking Send completed; result archived at @1.
+        // Header is derived the same way production code does it: via ArchiveEntry::display_header.
+        let short_ref = ShortRef::new(1);
+        let archive_ref = short_ref.to_string(); // "@1"
+        let result_payload = serde_json::json!([
+            {"name": "crm-agent", "description": "Business reporting agent"},
+            {"name": "dev-agent", "description": "Code generation agent"},
+        ]);
+        let entry = ArchiveEntry::new(
+            render_to_lines(&result_payload),
+            tool_name.clone(),
+            "found 2 agents".into(),
+            String::new(),
+            "tool_result".to_string(),
         );
+        let header = entry.display_header(short_ref);
+        store
+            .add_event(ProvEvent::tool_session_step(
+                context_id.clone(),
+                scope.clone(),
+                tool_name.clone(),
+                session_id.clone(),
+                &SessionStepOp::SendDone {
+                    archive_ref: archive_ref.clone(),
+                    header: header.clone(),
+                },
+            ))
+            .await
+            .expect("session send_done");
 
-        let scope = scope_from_dispatch_request(&request, agent_id.clone());
+        // Read — LLM requested a grep of the archived result.
+        store
+            .add_event(ProvEvent::tool_session_step(
+                context_id.clone(),
+                scope.clone(),
+                tool_name.clone(),
+                session_id.clone(),
+                &SessionStepOp::Read {
+                    archive_ref: archive_ref.clone(),
+                    grep: Some("name description".into()),
+                    offset: 0,
+                    limit: 200,
+                },
+            ))
+            .await
+            .expect("session read");
 
+        // --- Pipeline: store → to_projection_item → project_prompt_context ---
+        let raw_items = store
+            .conversation_context(&context_id, None)
+            .await
+            .expect("conversation_context");
+
+        let projection_items: Vec<_> = raw_items
+            .into_iter()
+            .filter_map(super::to_projection_item)
+            .collect();
+
+        let registry = ToolRegistry::new();
+        let ref_table = baml_rt_tools::archive_refs::RefTable::new();
+        // No archive reader — Read step shows the grep/cat analogue (`grep -n '…' @1`), pud-squashed.
+        let history = project_prompt_context(projection_items, &registry, &ref_table, None);
+        let items = history.as_array().expect("array");
+
+        // 4 items: user message + Open + SendDone + Read
+        // (no ToolCall/ToolResult — only the user line plus three session steps)
+        assert_eq!(items.len(), 4, "expected 4 history items, got: {history}");
+
+        // Roles come from the graph in canonical form (ROLE_USER / assistant).
+        // [0] user message — citation-aware projection allocates `#1` for the first history line
+        // (see `prompt_projection::render_content` Message branch).
+        let user_role = items[0]["role"].as_str().unwrap();
+        assert!(
+            user_role.contains("USER") || user_role == "user",
+            "expected user role, got: {user_role}"
+        );
         assert_eq!(
-            scope.as_scope(),
-            &baml_rt_core::context::RuntimeScope::task_scope(
-                context_id,
-                agent_id,
-                MessageId::from_external(ExternalId::new("dispatch-msg-122")),
-                task_id,
-            )
+            items[0]["content"].as_str().unwrap(),
+            "#1 what can you do",
+            "user content should be history-ref prefixed for drift/citation resolution"
         );
-    }
 
-    #[test]
-    fn dispatch_scope_without_task_id_uses_message_scope() {
-        let agent_id = test_agent_id();
-        let context_id = ContextId::new(123, 1);
-        let request =
-            test_dispatch_request(Some(context_id.clone()), None, Some("dispatch-msg-123"));
+        // [1] Open: describes the session being opened
+        assert_eq!(items[1]["role"], "assistant");
+        let open_content = items[1]["content"].as_str().unwrap();
+        assert!(
+            open_content.contains("discover_agents"),
+            "Open should mention tool name, got: {open_content}"
+        );
 
-        let scope = scope_from_dispatch_request(&request, agent_id.clone());
-
+        // [2] SendDone: the header IS the display ("@1 tool 'summary' [...]")
+        // No double @1 prefix — header already starts with the archive ref.
+        assert_eq!(items[2]["role"], "assistant");
+        let send_content = items[2]["content"].as_str().unwrap();
         assert_eq!(
-            scope.as_scope(),
-            &baml_rt_core::context::RuntimeScope::message_scope(
-                context_id,
-                agent_id,
-                MessageId::from_external(ExternalId::new("dispatch-msg-123")),
-            )
-        );
-    }
-
-    #[test]
-    fn dispatch_scope_without_context_id_returns_synthetic() {
-        let agent_id = test_agent_id();
-        let request = test_dispatch_request(None, None, None);
-
-        let scope = scope_from_dispatch_request(&request, agent_id);
-
-        assert!(
-            scope.as_scope().task_id_opt().is_none(),
-            "synthetic scope should have no task_id"
+            send_content, header,
+            "SendDone content should be exactly the header, got: {send_content}"
         );
         assert!(
-            scope.context_id().as_str().starts_with("ctx-"),
-            "synthetic scope should have a generated context_id prefix"
+            send_content.starts_with("@1"),
+            "SendDone must start with archive ref, got: {send_content}"
         );
-    }
 
-    #[test]
-    fn dispatch_scope_generates_message_id_when_absent() {
-        let agent_id = test_agent_id();
-        let context_id = ContextId::new(124, 1);
-        let request = test_dispatch_request(Some(context_id), None, None);
-
-        let scope = scope_from_dispatch_request(&request, agent_id);
-        let msg_id = scope.as_scope().message_id().as_str();
-
-        assert!(
-            msg_id.starts_with("dispatch-msg-"),
-            "expected generated dispatch-msg- prefix, got: {msg_id}"
+        // [3] Read: grep/cat analogue (pud-squashed); with reader would be paginated output only.
+        assert_eq!(items[3]["role"], "assistant");
+        let read_content = items[3]["content"].as_str().unwrap();
+        assert_eq!(
+            read_content, "grep -n 'name description' @1",
+            "Read without archive_reader must show grep command line"
         );
     }
 }

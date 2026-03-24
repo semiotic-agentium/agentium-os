@@ -10,6 +10,7 @@ pub mod deferred;
 pub mod dispatch;
 pub mod error;
 pub mod event_subscription;
+pub mod function_id;
 pub mod ids;
 pub mod json;
 pub mod package;
@@ -17,12 +18,15 @@ pub mod semantics;
 pub mod stream_completion;
 pub mod types;
 
-pub use a2a_handler::{A2aRequestHandler, collect_a2a_stream, collect_a2a_stream_until};
+pub use a2a_handler::{
+    A2aJsChatHost, A2aRequestHandler, collect_a2a_stream, collect_a2a_stream_until,
+};
 pub use a2a_wire::{A2aStreamChunk, A2aWireRequest};
 pub use agent_routing::{
     AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentListCatalogueHolder, AgentLister,
     AgentPackageName, AgentRouteKey, route_key_from_request,
 };
+pub use baml_rt_citation::Citation;
 pub use bus::{
     A2aEffectMetadata, A2aKind, Bus, BusApi, BusStream, BusWithEffects, Command, DomainEvent,
     EffectEmitter, EffectEvent, EffectKind, EffectLiveness, EffectRuntime, EffectStartToken,
@@ -35,19 +39,22 @@ pub use context::{
 };
 pub use deferred::DeferredHolder;
 pub use dispatch::{
-    AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey, DispatchMetadata,
+    AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey,
+    invocation_scope_for_agent_dispatch,
 };
-pub use error::{BamlRtError, Result, SessionLifecycleError};
+pub use error::{
+    BamlRtError, Result, SessionLifecycleError, baml_error_disposition, retryability_for_a2a,
+};
 pub use event_subscription::{
-    EventSchemaVersion, EventSourceKey, EventSourceKeyPrefix, EventSourceKind, EventSubscription,
-    EventSubscriptionFilter, PublishedEvent, subscriptions_match_filter,
-    subscriptions_match_published_event,
+    EventSchemaVersion, EventSourceKind, EventSubscription, EventSubscriptionFilter,
+    subscriptions_match_filter,
 };
+pub use function_id::{BamlFunctionId, BamlPromptName, VariantPhase};
 pub use ids::{
-    AgentId, ArtifactId, ContextId, CorrelationId, EventId, ExecutionSessionId, IntentId,
+    ActivityAnchorId, AgentId, ArtifactId, ContextId, CorrelationId, ExecutionSessionId, IntentId,
     MessageId, PlanId, PlanStepId, TaskId,
 };
 pub use json::to_json_value;
 pub use package::AgentManifest;
-pub use semantics::{ActivityOutcome, InvocationKind, Outcome, Retryability};
+pub use semantics::{ActivityOutcome, ErrorDisposition, InvocationKind, Outcome, Retryability};
 pub use stream_completion::{StreamCompletion, StreamResult};

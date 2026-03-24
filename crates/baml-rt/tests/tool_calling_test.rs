@@ -57,7 +57,7 @@ impl LLMInterceptor for StubChooseCalcToolStrictInterceptor {
         &self,
         context: &LLMCallContext,
     ) -> baml_rt_core::Result<InterceptorDecision> {
-        if context.function_name == STREAM_BAML_TOOL_FUNCTION {
+        if context.function_id.prompt_name().as_str() == STREAM_BAML_TOOL_FUNCTION {
             Ok(InterceptorDecision::Substitute(json!({
                 "step": {
                     "op": "Send",
@@ -165,6 +165,11 @@ async fn test_llm_tool_calling_js() {
     #[ts(export)]
     struct ReverseInput {
         text: String,
+    }
+    impl baml_rt_tools::DescribeAction for ReverseInput {
+        fn describe(&self) -> String {
+            format!("Reverse text: {}", self.text)
+        }
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]

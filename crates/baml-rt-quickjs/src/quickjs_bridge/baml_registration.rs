@@ -48,7 +48,7 @@ use std::{
 };
 
 use baml_rt_core::{
-    BamlRtError, Result,
+    BamlRtError, Citation, Result,
     bus::PlanningSupersessionKind,
     context::{self, InvocationScope},
     correlation,
@@ -69,6 +69,7 @@ use super::{
 };
 use crate::{
     execution_session_types::ExecutionSessionCommand, js_value_converter::value_to_js_value_facade,
+    planning::IntentSubmission as PlanningIntentSubmission,
 };
 
 /// Base scope owned by every execution session variant.
@@ -90,7 +91,7 @@ struct StepTransitionEvent {
     step_id: String,
     old_status: String,
     new_status: String,
-    evidence_text: String,
+    citations: Vec<Citation>,
     epoch: LineageEpoch,
 }
 
@@ -101,6 +102,7 @@ struct StepAbortEvent {
     scope: context::RuntimeScope,
     step_id: String,
     old_status: String,
+    #[allow(dead_code)]
     reason: String,
     epoch: LineageEpoch,
 }
@@ -219,7 +221,7 @@ impl ExecutionSession {
     fn apply_start_step(
         self,
         step_id: &str,
-        evidence_text: &str,
+        citations: Vec<Citation>,
     ) -> std::result::Result<(Self, StepTransitionEvent), quickjs_runtime::jsutils::JsError> {
         let Self::Executable {
             base,
@@ -278,7 +280,7 @@ impl ExecutionSession {
             step_id: step_id.to_string(),
             old_status,
             new_status: "in_progress".to_string(),
-            evidence_text: evidence_text.to_string(),
+            citations,
             epoch,
         };
         Ok((new_session, event))
@@ -289,7 +291,7 @@ impl ExecutionSession {
     fn apply_complete_step(
         self,
         step_id: &str,
-        evidence_text: &str,
+        citations: Vec<Citation>,
     ) -> std::result::Result<(Self, StepTransitionEvent), quickjs_runtime::jsutils::JsError> {
         let Self::Executable {
             base,
@@ -346,7 +348,7 @@ impl ExecutionSession {
             step_id: step_id.to_string(),
             old_status,
             new_status: "completed".to_string(),
-            evidence_text: evidence_text.to_string(),
+            citations,
             epoch,
         };
         Ok((new_session, event))
@@ -465,39 +467,6 @@ fn ensure_execution_session_scope_matches(
         )));
     }
     Ok(())
-}
-
-/// Compute the set of legal step-executor ops for the current FSM position.
-///
-/// Policy is resolved from tool metadata (not from function names). Both known
-/// policies produce identical sequences for `sent` → `Read`; they differ only
-/// in whether `done` allows re-sends (`MultiSend`) or gates to `Finish` only
-/// (`Strict`).  `Strict` is the safe default and correct for every tool
-/// currently in the system.
-fn step_executor_allowed_ops(
-    session_open: bool,
-    last_status: Option<&str>,
-    policy: baml_rt_tools::SessionPolicy,
-) -> Vec<&'static str> {
-    if !session_open {
-        return vec!["Open"];
-    }
-    match policy {
-        baml_rt_tools::SessionPolicy::Strict => match last_status {
-            Some("open") => vec!["Send"],
-            Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
-            Some("done") => vec!["Finish", "Read"],
-            Some("aborted") => vec!["Abort"],
-            _ => vec!["Read"],
-        },
-        baml_rt_tools::SessionPolicy::MultiSend => match last_status {
-            Some("open") => vec!["Send"],
-            Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
-            Some("done") => vec!["Read", "Send", "Finish"],
-            Some("aborted") => vec!["Abort"],
-            _ => vec!["Read"],
-        },
-    }
 }
 
 fn validate_step_executor_transition(
@@ -719,17 +688,19 @@ pub(super) async fn register_await_helper(bridge: &QuickJSBridge) -> Result<()> 
     Ok(())
 }
 
-/// Resolve the `SessionPolicy` for a BAML step-executor function name.
+/// Resolve the `SessionPolicy` for the current step executor context.
 ///
-/// Delegates to `BamlRuntimeManager::resolve_session_policy_for_function`.
-/// Returns `Strict` (the safe default) when the manager lock cannot be
-/// acquired or the function is not in the session-plan-functions manifest.
+/// When `selected_tool` is provided (after Open), resolves directly from the tool's
+/// metadata — unified path for both single-tool and polymorphic functions.
+/// Falls back to function-level resolution when `selected_tool` is not yet known.
+/// Returns `Strict` (the safe default) when resolution fails.
 fn resolve_session_policy(
     manager: &crate::baml::BamlRuntimeManager,
     step_executor: Option<&str>,
+    selected_tool: Option<&str>,
 ) -> baml_rt_tools::SessionPolicy {
     match step_executor {
-        Some(f) => manager.resolve_session_policy_for_function(f),
+        Some(f) => manager.resolve_session_policy_for_step_executor(f, selected_tool),
         None => baml_rt_tools::SessionPolicy::default(),
     }
 }
@@ -762,11 +733,12 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
                     .unwrap_or(false);
                 let last_status = payload.get("last_status").and_then(Value::as_str);
                 let step_executor = payload.get("step_executor").and_then(Value::as_str);
+                let selected_tool = payload.get("selected_tool").and_then(Value::as_str);
                 let policy = manager_clone
                     .try_lock()
-                    .map(|guard| resolve_session_policy(&guard, step_executor))
+                    .map(|guard| resolve_session_policy(&guard, step_executor, selected_tool))
                     .unwrap_or_default();
-                let allowed = step_executor_allowed_ops(session_open, last_status, policy);
+                let allowed = policy.step_executor_allowed_ops(session_open, last_status);
                 let json = serde_json::to_string(&allowed).map_err(|e| {
                     quickjs_runtime::jsutils::JsError::new_str(&format!(
                         "Failed to encode allowed ops JSON: {e}"
@@ -830,6 +802,119 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
         )
         .map_err(|e| BamlRtError::QuickJsWithSource {
             context: "Failed to register __step_executor_validate_transition helper".to_string(),
+            source: Box::new(e),
+        })?;
+
+    // Resolve tool_name → single-tool step executor for polymorphic auto-narrowing.
+    // Returns the executor function name (String) or null if not found.
+    let manager_clone3 = bridge.baml_manager().clone();
+    bridge
+        .runtime()
+        .set_function(
+            &[],
+            "__resolve_tool_step_executor",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<
+                JsValueFacade,
+                quickjs_runtime::jsutils::JsError,
+            > {
+                if args.is_empty() || !args[0].is_string() {
+                    return Ok(JsValueFacade::Null);
+                }
+                let tool_name = args[0].get_str();
+                let result = manager_clone3
+                    .try_lock()
+                    .ok()
+                    .and_then(|guard| guard.resolve_tool_step_executor(tool_name));
+                match result {
+                    Some(executor) => Ok(JsValueFacade::new_string(executor)),
+                    None => Ok(JsValueFacade::Null),
+                }
+            },
+        )
+        .map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __resolve_tool_step_executor helper".to_string(),
+            source: Box::new(e),
+        })?;
+
+    // __run_step_executor: Rust-hosted step executor loop.
+    // Takes (function_name, args_json, options_json?) from JS, runs the multi-hop
+    // FSM loop entirely in Rust, returns StepExecutorResult as JSON string.
+    // That payload is execution telemetry only; the canonical user reply is SessionResult.message.
+    let manager_clone4 = bridge.baml_manager().clone();
+    let registry_clone = bridge.invocation_context_registry().clone();
+    bridge
+        .runtime()
+        .set_function(
+            &[],
+            "__run_step_executor",
+            move |_realm: &QuickJsRealmAdapter,
+                  args: Vec<JsValueFacade>|
+                  -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                if args.len() < 2 || !args[0].is_string() || !args[1].is_string() {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str(
+                        "__run_step_executor expects (function_name: string, args_json: string, options_json?: string)",
+                    ));
+                }
+                let function_name = args[0].get_str().to_string();
+                let args_json = args[1].get_str().to_string();
+                let options_json = args
+                    .get(2)
+                    .filter(|v| v.is_string())
+                    .map(|v| v.get_str().to_string());
+
+                let scope =
+                    crate::quickjs_bridge::scope::resolve_scope_from_active_context(
+                        &registry_clone,
+                    )?;
+
+                let manager = manager_clone4.clone();
+
+                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(
+                    async move {
+                        let base_args: Value =
+                            serde_json::from_str(&args_json).map_err(|e| {
+                                quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                    "__run_step_executor: invalid args JSON: {e}"
+                                ))
+                            })?;
+
+                        let max_steps = options_json
+                            .as_deref()
+                            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                            .and_then(|v| v.get("max_steps").and_then(Value::as_u64))
+                            .map(|n| n as usize)
+                            .unwrap_or(8);
+
+                        let result =
+                            crate::step_executor_loop::run_step_executor_loop(
+                                &manager,
+                                &scope,
+                                &function_name,
+                                base_args,
+                                max_steps,
+                            )
+                            .await;
+
+                        match result {
+                            Ok(step_result) => {
+                                let json =
+                                    serde_json::to_string(&step_result).map_err(|e| {
+                                        quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                            "__run_step_executor: serialize error: {e}"
+                                        ))
+                                    })?;
+                                Ok(JsValueFacade::new_string(json))
+                            }
+                            Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(
+                                &format!("__run_step_executor: {e}"),
+                            )),
+                        }
+                    },
+                ))
+            },
+        )
+        .map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __run_step_executor helper".to_string(),
             source: Box::new(e),
         })?;
 
@@ -989,14 +1074,23 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                                     (scope, epoch)
                                 };
 
+                                // Message UUID lineage is host-only: agent / JS is adversarial and must not
+                                // supply `derivedFromMessageIds` (ignored on wire if present).
+                                let derived_from_message_ids =
+                                    vec![emit_scope.message_id().as_str().to_string()];
+                                let planning_submission = PlanningIntentSubmission {
+                                    intent_id: intent.intent_id.clone(),
+                                    description: intent.description.clone(),
+                                    citations: intent.citations.clone(),
+                                    derived_from_message_ids,
+                                    supersession,
+                                };
+
                                 let manager = manager_for_promise.lock().await;
                                 manager
                                     .emit_planning_intent_resolved(
                                         &emit_scope,
-                                        intent.intent_id.as_str().to_string(),
-                                        intent.description.clone(),
-                                        intent.derived_from_message_ids.clone(),
-                                        supersession,
+                                        planning_submission,
                                         Some(epoch),
                                     )
                                     .await
@@ -1147,8 +1241,16 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                                     })?,
                                 ))
                             }
-                            ExecutionSessionCommand::StartStep { session_id, step_id, evidence_text }
-                            | ExecutionSessionCommand::CompleteStep { session_id, step_id, evidence_text } => {
+                            ExecutionSessionCommand::StartStep {
+                                session_id,
+                                step_id,
+                                citations,
+                            }
+                            | ExecutionSessionCommand::CompleteStep {
+                                session_id,
+                                step_id,
+                                citations,
+                            } => {
                                 let is_start = matches!(&cmd_for_run, ExecutionSessionCommand::StartStep { .. });
                                 let step_id_str = step_id.as_str().to_string();
                                 let event = {
@@ -1173,9 +1275,9 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                                     )?;
                                     drop(epoch_guard);
                                     let (session, event) = if is_start {
-                                        session.apply_start_step(&step_id_str, evidence_text)?
+                                        session.apply_start_step(&step_id_str, citations.to_vec())?
                                     } else {
-                                        session.apply_complete_step(&step_id_str, evidence_text)?
+                                        session.apply_complete_step(&step_id_str, citations.to_vec())?
                                     };
                                     state_store.insert(session_id.as_str().to_string(), session);
                                     event
@@ -1190,7 +1292,7 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                                         event.step_id,
                                         Some(event.old_status),
                                         event.new_status,
-                                        event.evidence_text,
+                                        event.citations,
                                         Some(event.epoch),
                                     )
                                     .await
@@ -1321,7 +1423,7 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                                                 evt.step_id,
                                                 Some(evt.old_status),
                                                 "aborted".to_string(),
-                                                evt.reason,
+                                                vec![],
                                                 Some(evt.epoch),
                                             )
                                             .await

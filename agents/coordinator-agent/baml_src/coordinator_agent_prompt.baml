@@ -1,13 +1,13 @@
 class ActionableGoal {
-  goal string
+  goal string @description("Concise action statement. Markdown is allowed when it aids scannability (e.g. **bold** for actors, `backticks` for ids).")
   owner string?
   due_date string?
 }
 
 class CoordinatorAnswer {
-  answer string
+  answer string @description("Primary user-visible synthesis. Prefer GitHub-flavored Markdown (short headings, bullet lists, **bold** for key facts, `code` for identifiers and URLs) over one long plain-text paragraph.")
   actionable_goals ActionableGoal[]
-  sources string[]
+  sources string[] @description("Evidence URLs or source labels from the transcript; UI may surface these as citations.")
   confidence float
   gaps string[]
   clarification_question string?
@@ -48,7 +48,7 @@ function SynthesizeCoordinatorResponse(
     {% endif %}
 
     Return JSON matching CoordinatorAnswer with these rules:
-    - answer: direct response in 2-5 sentences.
+    - answer: direct response in 2-5 sentences as the main user-visible body; use GitHub-flavored Markdown when it improves clarity (not raw HTML).
     - actionable_goals:
       - list concrete actions inferred from evidence as objects.
       - fields:

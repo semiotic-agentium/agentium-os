@@ -18,7 +18,7 @@ expression: artifacts
 
 === baml_src/calculator_agent_prompt.baml ===
 // Agent prompt with tool choice
-// (generated_tools.baml is loaded from the same directory by the runtime)
+// (_baml_runtime.baml is loaded from the same directory by the runtime)
 
 function ChooseCalculatoragentTool(user_message: string) -> SupportCalculateSessionPlan {
   client DefaultClient
@@ -66,6 +66,12 @@ __chat_register({ onChatMessage });
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface ArchiveReadInput { archive_ref: string;
+offset: number | null;
+limit: number | null;
+grep: string | null;
+ }
+
 export interface CalculatorInput { expression: Expression;
  }
 
@@ -83,17 +89,20 @@ export interface SupportCalculateFinishStep { op: "Finish";
  }
 
 export interface SupportCalculateOpenStep { op: "Open";
+tool_name: "support/calculate";
  }
 
 export interface SupportCalculateReadStep { op: "Read";
-input: CalculatorInput;
+input: ArchiveReadInput;
  }
 
 export interface SupportCalculateSendStep { op: "Send";
 input: CalculatorInput;
+citations: string[];
  }
 
 export interface SupportCalculateSessionPlan { step: SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep;
+citations: string[];
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
@@ -201,11 +210,17 @@ export interface A2aSessionClosed {
  * 1) submitIntent(...)
  * 2) submitPlan(...)
  * 3) execute and complete steps with strict evidence references
+ *
+ * Agent code is an **adversarial** trust boundary: it must not supply sensitive identifiers (e.g. message UUIDs).
+ * The Rust host binds execution-session lineage from the **invocation scope only**; it is not part of this
+ * TypeScript contract and any `derivedFromMessageIds` in JSON is ignored.
+ * `supersession` accepts replaced|refined and snake_case/camelCase aliases (see host parser).
  */
 export interface IntentSubmission {
     intentId: string;
     description: string;
-    derivedFromMessageIds: string[];
+    /** Citation refs grounding this intent — pass the \`citations\` field from the BAML planning function's return value. #N = session history lines, @N = archive refs. Optional: the provenance system captures LLM-produced citations automatically from BAML return types. */
+    citations?: string[];
     supersession?: "replaced" | "refined";
 }
 export interface PlanStepSubmission {
@@ -232,8 +247,9 @@ export interface A2aExecutionSessionAwaitPlan {
 }
 export interface A2aExecutionSessionExecutable {
     sessionId: string;
-    startStep(stepId: string, evidenceText: string): Promise<void>;
-    completeStep(stepId: string, evidenceText: string): Promise<void>;
+    /** citations are optional — LLM-produced citations are captured automatically by the provenance system from BAML return types. Only pass explicitly if the agent has out-of-band provenance to record. */
+    startStep(stepId: string, citations?: string[]): Promise<void>;
+    completeStep(stepId: string, citations?: string[]): Promise<void>;
     finish(): Promise<A2aSessionClosed>;
     abort(reason?: string): Promise<A2aSessionClosed>;
 }
@@ -248,18 +264,34 @@ export interface Message {
   text?(): string;
 }
 export type ChatMessage = Message;
+/** Media type for a structured reply data part. */
+export type ReplyMediaType = "text/plain" | "text/markdown" | "application/json" | "text/csv";
+/** A prose text part of a structured reply. */
+export interface TextPart { type: "text"; text: string; }
+/** A structured data part of a structured reply (e.g. JSON, CSV). */
+export interface DataPart { type: "data"; data: string; media_type: ReplyMediaType; }
+/** One part of a structured reply: text or typed data. */
+export type ReplyPart = TextPart | DataPart;
+/**
+ * Structured reply from a synthesis function.
+ * Contains ordered reply parts and citations referencing the history entries (#N, @N) this reply was derived from.
+ */
+export interface StructuredReply {
+  parts: ReplyPart[];
+  citations: string[];
+}
 /**
  * Result shape for session.run() callback. Return { message } on success (runtime emits message and completed);
  * return { error } on failure (runtime emits failed with that error). No need to call emit helpers yourself.
  */
-export type SessionResult = { message: string } | { error: string };
+export type SessionResult = { message: string } | { message: StructuredReply } | { error: string };
 /**
  * Emitter passed into run(emit => ...) for intermediate emissions (working message, artifact, status).
  * Use when you need to stream artifacts or status before returning the final SessionResult.
  */
 export interface SessionEmitter {
-  /** Emit a working message (task state remains WORKING). */
-  message(text: string): void;
+  /** Emit a working message (task state remains WORKING). Accepts plain string or StructuredReply. */
+  message(content: string | StructuredReply): void;
   /** Emit an artifact chunk (append/lastChunk optional). */
   artifact(artifact: JsonValue, append?: boolean, lastChunk?: boolean): void;
   /** Emit a status transition (e.g. TASK_STATE_WORKING). */
@@ -304,26 +336,29 @@ export interface RunContext {
   /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
   emit: SessionEmitter;
 }
-/**
- * Host-to-agent dispatch request. Delivered by the host when an external event
- * matches this agent's subscriptions. Fields mirror the Rust AgentDispatchRequest.
- */
+/** Host-to-agent deterministic dispatch request (non-conversational workloads). */
 export interface HostDispatchRequest {
+  /** Stable route label for the receiving entrypoint (e.g. "slack:intake"). */
   routing_key: string;
+  /** Message family / schema identifier for the payload batch. */
   message_type: string;
-  messages: JsonValue[];
-  context_id?: string;
-  task_id?: string;
-  message_id?: string;
-  /** Structured transport metadata (source, schema version, content type). Use `messages` for arbitrary event payloads. */
-  metadata?: JsonObject;
+  /** Opaque payloads delivered to the agent. */
+  messages: JsonObject[];
+  /** Optional existing context to continue under. */
+  context_id?: string | null;
+  /** Optional existing task to continue under. */
+  task_id?: string | null;
+  /** Optional caller-supplied message id for provenance continuity. */
+  message_id?: string | null;
+  /** Optional transport metadata for the receiving agent. */
+  metadata?: JsonObject | null;
 }
-/**
- * Acknowledgement returned by an agent's onDispatch handler.
- */
+/** Buffered acknowledgement for deterministic host delivery. */
 export interface HostDispatchAck {
+  /** True when the receiving agent accepted the delivery. */
   accepted: boolean;
-  detail?: string;
+  /** Optional operator-facing detail string. */
+  detail?: string | null;
 }
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
@@ -331,7 +366,7 @@ export interface BamlAgent {
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  /** Optional: handle host-delivered events matched by this agent's subscriptions. */
+  /** Optional: handler for deterministic host dispatch (non-conversational). */
   onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
@@ -360,15 +395,15 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
-  /**
-   * Extract all payloads from a host dispatch request.
-   * Batch-safe helper: returns a shallow copy of request.messages, or [] if absent.
-   */
-  function extractDispatchMessages(request: HostDispatchRequest | null | undefined): JsonValue[];
   /** Emit a stream chunk following A2A wire format. */
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
   function openA2aExecutionSession(token: string): Promise<A2aExecutionSessionAwaitIntent>;
+  /**
+   * Extract typed messages from a HostDispatchRequest.
+   * Returns the messages array cast to T[]; each element's schema matches message_type.
+   */
+  function extractDispatchMessages<T = JsonObject>(request: HostDispatchRequest): T[];
 }
 export type ToolFailureKind =
     | "InvalidInput"
@@ -385,12 +420,11 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseCalculatoragentTool";
+export type StepExecutorFunctionName = "ChooseCalculatoragentTool" | "ChooseCalculatoragentTool__act__support_calculate" | "ChooseCalculatoragentTool__continue__support_calculate" | "ChooseCalculatoragentTool__select";
 
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    allowed_ops: ("Open" | "Send" | "Read" | "Finish" | "Abort")[];
     scope_ref: string | null;
     output_ref: string | null;
     evidence_ref: string | null;
@@ -414,15 +448,24 @@ export interface StepExecutorRunOptions {
     max_steps?: number;
 }
 
+/**
+ * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
+ * User-facing replies are synthesized once at session completion (and recorded there).
+ */
+
 export interface StepExecutorRunResult<R = unknown> {
     last: R;
     steps: R[];
     session_context: SessionContext;
     history_context: HistoryContext | null;
+    selected_tool: string | null;
 }
 
 export interface StepExecutorFunctionMap {
   ChooseCalculatoragentTool: { args: Parameters<typeof ChooseCalculatoragentTool>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool>>; };
+  ChooseCalculatoragentTool__act__support_calculate: { args: Parameters<typeof ChooseCalculatoragentTool__act__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool__act__support_calculate>>; };
+  ChooseCalculatoragentTool__continue__support_calculate: { args: Parameters<typeof ChooseCalculatoragentTool__continue__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool__continue__support_calculate>>; };
+  ChooseCalculatoragentTool__select: { args: Parameters<typeof ChooseCalculatoragentTool__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool__select>>; };
 }
 
 declare global {
@@ -446,35 +489,35 @@ declare global {
     "skipLibCheck": true,
     "declaration": false,
     "sourceMap": false,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "rootDir": "./src"
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"]
 }
 
 
-=== baml_src/generated_tools.baml ===
+=== baml_src/_baml_runtime.baml ===
 // Auto-generated tool interfaces
 // This file is auto-generated - do not edit manually
 
 // FSM (Finite State Machine) Tool Session Protocol:
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
-// 2. Send: Can occur AFTER Open, including multiple times across a session
-// 3. Read: Retrieves output/progress using explicit read input
+// 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
+// 3. Read: Deref a prior Send result. Requires archive_ref (e.g. '@1'). Supports grep/paginate.
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
-// - Open MUST come before any Send step
-// - Open may include 'initial_input' only when the step schema defines that field
-// - Send uses 'input' field (for subsequent inputs)
-// - Use Read to fetch pending output/chunks; Read may repeat between Send steps
+// - Open MUST come before Send
+// - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
+// - Read requires archive_ref from a prior Send. Use it to paginate or grep the output.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
 class StandardAgentPlanStep {
-  agent_package string
-  agent_instance_id string
+  agent_package string @description("Exact agent_package from discovery results (e.g. 'extrospection-agent'). Copy verbatim — do not truncate or reformat.")
+  agent_instance_id string @description("Agent instance ID, usually 'default'. Copy from discovery results.")
   sub_message string
 }
 
@@ -482,15 +525,7 @@ class StandardStructuredPlan {
   intent_description string
   objective string
   plan_steps StandardAgentPlanStep[]
-}
-
-class SessionContext {
-  contract_version string
-  session_open bool
-  allowed_ops string[]
-  scope_ref string?
-  output_ref string?
-  evidence_ref string?
+  citations string[]? @description("Optional checked refs (#N, @N) grounding this plan for observability; omit or use [] when none.")
 }
 
 class HistoryContext {
@@ -502,13 +537,62 @@ class HistoryContext {
   payload string?
 }
 
-// Domain types generated from #[derive(BamlType)]
-class Expression {
-  left int
-  operation MathOperation
-  right int
+/// Runtime session state injected by the step-executor loop.
+/// Do not construct manually — values come from the FSM.
+class SessionContext {
+  contract_version string
+  session_open bool
+  allowed_ops string[]? @description("Deprecated: per-phase step-executor functions narrow the output schema. Host may omit.")
+  selected_tool string?
+  status_token string?
 }
 
+// Structured reply types for synthesis functions
+enum ReplyMediaType {
+  TextPlain @alias("text/plain")
+  TextMarkdown @alias("text/markdown")
+  ApplicationJson @alias("application/json")
+  TextCsv @alias("text/csv")
+}
+
+class TextPart {
+  type "text"
+  text string
+}
+
+class DataPart {
+  type "data"
+  data string @description("Serialised content (e.g. JSON string, CSV string).")
+  media_type ReplyMediaType @description("MIME type of the data field.")
+}
+
+type ReplyPart = TextPart | DataPart
+
+// Canonical synthesis + wire shape: same type in BAML and TypeScript (SessionResult.message, emitters).
+class StructuredReply {
+  parts ReplyPart[] @description("Ordered parts: start with TextPart (type \"text\") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type \"data\", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.")
+  citations string[] @description("History refs this reply was derived from. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence. Do not use # for archives or @ for history—these prefixes are different namespaces.")
+}
+
+/// Archive deref input for Read steps.
+/// archive_ref is required: use the @N ref from the Send result.
+class ArchiveReadInput {
+  archive_ref string @description("Required archive ref e.g. '@1'. Use the ref returned by the preceding Send step.")
+  offset int? @description("Line offset for pagination (0-based). Omit to start from the beginning.")
+  limit int? @description("Maximum lines to return. Omit for default page size.")
+  grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
+}
+// Domain types generated from #[derive(BamlType)]
+/// A binary arithmetic expression: left OP right.
+/// Provide integer operands and choose one of the four arithmetic operations.
+class Expression {
+  left int @description("Left-hand integer operand.")
+  operation MathOperation @description("Arithmetic operation to apply.")
+  right int @description("Right-hand integer operand. Must not be 0 when operation is Divide.")
+}
+
+/// Arithmetic operation for a binary expression.
+/// Accepted as the variant name (e.g. 'Add') or its symbolic alias ('+', '-', '*', '/').
 enum MathOperation {
   Add @alias("+")
   Subtract @alias("-")
@@ -516,8 +600,9 @@ enum MathOperation {
   Divide @alias("/")
 }
 
+/// Input to the calculator tool. Construct an Expression and submit it to evaluate.
 class CalculatorInput {
-  expression Expression
+  expression Expression @description("The binary expression to evaluate.")
 }
 
 class CalculatorOutput {
@@ -525,19 +610,29 @@ class CalculatorOutput {
   result float
   formatted string
 }
+/// Tool card for support/calculate: metadata for polymorphic Open selection.
+class SupportCalculateToolCard {
+  tool_name "support/calculate"
+  description "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division."
+  session_policy "Strict"
+  input_summary "{ expression: any }"
+  tags string[] @description("Tool tags: support, calculate")
+}
 
 class SupportCalculateOpenStep {
   op "Open"
+  tool_name "support/calculate" @description("Tool to open")
 }
 
 class SupportCalculateSendStep {
   op "Send"
   input CalculatorInput @description("Payload for this step.")
+  citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
 }
 
 class SupportCalculateReadStep {
   op "Read"
-  input CalculatorInput @description("Read payload for this step.")
+  input ArchiveReadInput @description("Archive ref and optional pagination/grep params.")
 }
 
 class SupportCalculateFinishStep {
@@ -551,5 +646,64 @@ class SupportCalculateAbortStep {
 type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep
 
 class SupportCalculateSessionPlan {
-  step SupportCalculateSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
+  step SupportCalculateSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
+  citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
+}
+
+
+
+// ── builder: per-phase step executors (from IR) ──
+
+// Auto-generated per-phase step executor functions.
+// Each phase narrows the return type to only the legal FSM ops.
+
+/// Phase: select — open a tool session.
+function ChooseCalculatoragentTool__select(
+  user_message: string,
+  session_context: SessionContext
+) -> SupportCalculateOpenStep {
+
+  client DefaultClient
+  prompt #"[OPEN] Open a session with: support/calculate.\n\nThe user said: { user_message }
+Decide whether to use a tool and produce a session plan.
+
+{ ctx.output_format }
+
+{ _.role('user') }
+{ user_message }"#
+
+}
+
+/// Phase: act — send query to support/calculate.
+function ChooseCalculatoragentTool__act__support_calculate(
+  user_message: string,
+  session_context: SessionContext
+) -> SupportCalculateSendStep {
+
+  client DefaultClient
+  prompt #"[SEND] A support/calculate session is open. Emit Send with your query.\n\nThe user said: { user_message }
+Decide whether to use a tool and produce a session plan.
+
+{ ctx.output_format }
+
+{ _.role('user') }
+{ user_message }"#
+
+}
+
+/// Phase: continue — read, send again, or finish support/calculate.
+function ChooseCalculatoragentTool__continue__support_calculate(
+  user_message: string,
+  session_context: SessionContext
+) -> SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep {
+
+  client DefaultClient
+  prompt #"[CONTINUE] support/calculate result is archived.\nCheck session history:\n- See \"@N support/calculate\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/calculate\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/calculate\" with no content yet → emit Read archive_ref=\"@N\"\n\nThe user said: { user_message }
+Decide whether to use a tool and produce a session plan.
+
+{ ctx.output_format }
+
+{ _.role('user') }
+{ user_message }"#
+
 }

@@ -30,7 +30,7 @@ pub fn render_a2a_shim() -> Result<String> {
 /**
  * A2A runtime shim (library code). Prepended to agent dist/index.js.
  * Public surface: session(message) and __chat_register. Host sets __chat_yield for stream requests.
- * Session lifecycle: run(fn) executes fn(); { message } -> emit message + completed; { error } or throw -> emit failed.
+ * Session lifecycle: run(fn) executes fn(); { message: string | StructuredReply | wire parts } -> emit message + completed; { error } or throw -> emit failed.
  * Await-input rail: emit.awaitInput(prompt) emits INPUT_REQUIRED, suspends, and resumes on next message with same task/context.
  * Defaults: missing text part yields ""; rejected promise is treated as { error: err.message }.
  */
@@ -43,12 +43,61 @@ pub fn render_a2a_shim() -> Result<String> {
     __chat_yield_host(chunk);
   };
 
-  function newMessage(text) {
-    return { parts: [{ text: text }] };
+  function newMessage(content) {
+    if (content !== null && typeof content === 'object' && Array.isArray(content.parts)) {
+      return content;
+    }
+    return { parts: [{ text: String(content) }] };
   }
 
-  function emitMessage(text) {
-    var msg = newMessage(text);
+  function isStructuredReplyPayload(content) {
+    if (content == null || typeof content !== 'object') return false;
+    if (!Array.isArray(content.parts) || content.parts.length === 0) return false;
+    for (var i = 0; i < content.parts.length; i++) {
+      var p = content.parts[i];
+      if (p == null || typeof p !== 'object') return false;
+      if (p.type !== 'text' && p.type !== 'data') return false;
+    }
+    return true;
+  }
+
+  function structuredReplyToWireMessage(sr) {
+    var parts = [];
+    for (var i = 0; i < sr.parts.length; i++) {
+      var p = sr.parts[i];
+      if (p.type === 'text') {
+        parts.push({ text: String(p.text != null ? p.text : '') });
+      } else if (p.type === 'data') {
+        var raw = String(p.data != null ? p.data : '');
+        var wirePart = { media_type: p.media_type || 'application/json' };
+        try {
+          wirePart.data = JSON.parse(raw);
+        } catch (e) {
+          wirePart.data = raw;
+        }
+        parts.push(wirePart);
+      }
+    }
+    var msg = { parts: parts };
+    var meta = {};
+    if (Array.isArray(sr.citations) && sr.citations.length > 0) {
+      meta.citations = sr.citations;
+    }
+    if (Object.keys(meta).length > 0) {
+      msg.metadata = meta;
+    }
+    return msg;
+  }
+
+  function normalizeEmitPayload(content) {
+    if (isStructuredReplyPayload(content)) {
+      return structuredReplyToWireMessage(content);
+    }
+    return content;
+  }
+
+  function emitMessage(content) {
+    var msg = newMessage(normalizeEmitPayload(content));
     globalThis.__chat_yield({ message: msg, task: { status: { state: "TASK_STATE_WORKING", message: msg } } });
   }
 
@@ -148,13 +197,44 @@ pub fn render_a2a_shim() -> Result<String> {
         };
         var work = (typeof fn.length === 'number' && fn.length >= 1) ? function () { return fn(emit); } : fn;
         return Promise.resolve().then(work).then(function (out) {
-          if (out != null && typeof out === 'object' && 'message' in out && typeof out.message === 'string') {
-            if (typeof onCompletedCb === 'function') onCompletedCb(out.message);
-            emitMessage(out.message);
-            emitCompleted();
+          if (out != null && typeof out === 'object' && 'error' in out) {
+            var errEarly = String(out.error);
+            if (typeof onFailedCb === 'function') {
+              return Promise.resolve(onFailedCb(errEarly)).catch(function () {}).then(function () {
+                emitFailed(errEarly, false);
+              });
+            }
+            emitFailed(errEarly, false);
             return;
           }
-          var err = (out != null && typeof out === 'object' && 'error' in out) ? String(out.error) : 'Unknown error';
+          if (out != null && typeof out === 'object' && 'message' in out) {
+            var m = out.message;
+            if (typeof m === 'string') {
+              if (typeof onCompletedCb === 'function') onCompletedCb(m);
+              emitMessage(m);
+              emitCompleted();
+              return;
+            }
+            if (m != null && typeof m === 'object') {
+              if (isStructuredReplyPayload(m)) {
+                var wire = structuredReplyToWireMessage(m);
+                if (typeof onCompletedCb === 'function') {
+                  var summary = messageText(wire);
+                  onCompletedCb(summary.length > 0 ? summary : JSON.stringify(m.parts));
+                }
+                emitMessage(wire);
+                emitCompleted();
+                return;
+              }
+              if (Array.isArray(m.parts)) {
+                if (typeof onCompletedCb === 'function') onCompletedCb(messageText(m) || '');
+                emitMessage(m);
+                emitCompleted();
+                return;
+              }
+            }
+          }
+          var err = 'session.run() must return { message: string | StructuredReply | wire message } or { error: string }';
           if (typeof onFailedCb === 'function') {
             return Promise.resolve(onFailedCb(err)).catch(function () {}).then(function () {
               emitFailed(err, false);
@@ -176,161 +256,23 @@ pub fn render_a2a_shim() -> Result<String> {
   globalThis.session = session;
   globalThis.messageText = messageText;
 
-  function extractStepExecutorStatus(raw) {
-    if (raw != null && typeof raw === "object") {
-      if (typeof raw.status === "string") return raw.status;
-      if (raw.output != null && typeof raw.output === "object" && typeof raw.output.status === "string") {
-        return raw.output.status;
-      }
-    }
-    return null;
-  }
-
-  function executionStatusKeepsSessionOpen(status) {
-    return status === "open"
-      || status === "sent"
-      || status === "streaming"
-      || status === "suspended";
-  }
-
-  function executionStatusTerminal(status) {
-    return status === "done" || status === "finished" || status === "aborted";
-  }
-
-  function canonicalizeStepExecutorValue(value) {
-    if (value == null || typeof value !== "object") return value;
-    if (Array.isArray(value)) {
-      var arr = [];
-      for (var i = 0; i < value.length; i++) {
-        arr.push(canonicalizeStepExecutorValue(value[i]));
-      }
-      return arr;
-    }
-    var out = {};
-    var keys = Object.keys(value).sort();
-    for (var j = 0; j < keys.length; j++) {
-      var key = keys[j];
-      out[key] = canonicalizeStepExecutorValue(value[key]);
-    }
-    return out;
-  }
-
-  function allowedStepExecutorOps(sessionOpen, lastStatus, stepExecutor) {
-    if (typeof globalThis.__step_executor_allowed_ops !== "function") {
-      throw new Error("__step_executor_allowed_ops host helper is not registered");
-    }
-    var payload = {
-      session_open: !!sessionOpen,
-      last_status: lastStatus == null ? null : String(lastStatus),
-      step_executor: stepExecutor == null ? "unknown_step_executor" : String(stepExecutor)
-    };
-    var encoded = globalThis.__step_executor_allowed_ops(JSON.stringify(payload));
-    var parsed = JSON.parse(encoded);
-    return Array.isArray(parsed) ? parsed : ["Read"];
-  }
-
-  function validateStepExecutorTransition(sessionOpenBeforeHop, lastStatusBeforeHop, op, status, stepExecutor) {
-    if (typeof globalThis.__step_executor_validate_transition !== "function") {
-      throw new Error("__step_executor_validate_transition host helper is not registered");
-    }
-    var payload = {
-      session_open_before_hop: !!sessionOpenBeforeHop,
-      last_status_before_hop: lastStatusBeforeHop == null ? null : String(lastStatusBeforeHop),
-      op: op == null ? null : String(op),
-      status: status == null ? "" : String(status),
-      step_executor: stepExecutor == null ? "unknown_step_executor" : String(stepExecutor)
-    };
-    globalThis.__step_executor_validate_transition(JSON.stringify(payload));
-  }
-
-  function buildSessionContext(sessionOpen, allowedOps) {
-    return {
-      contract_version: "session_context",
-      session_open: !!sessionOpen,
-      allowed_ops: allowedOps
-    };
-  }
-
-  function extractStepExecutorOp(raw) {
-    if (raw != null && typeof raw === "object") {
-      if (typeof raw.op === "string") return raw.op;
-      if (raw.step != null && typeof raw.step === "object" && typeof raw.step.op === "string") {
-        return raw.step.op;
-      }
-    }
-    return null;
-  }
-
   /**
-   * Generated Step Executor runtime helper.
-   * Calls a step-executor function repeatedly under strict single-fragment mode and
-   * threads runtime-owned `session_context` only.
+   * Step Executor: thin wrapper over Rust-hosted __run_step_executor.
+   * All FSM state, policy resolution, polymorphic narrowing, and multi-hop
+   * coordination live in the Rust host. JS is only the call-through.
+   *
+   * Return value is FSM execution telemetry (last, steps, session_context, …).
+   * Do not use it as the provenance copy of the user-visible reply — return
+   * StructuredReply (or equivalent) from the chat handler as SessionResult.message.
    */
   async function runGeneratedStepExecutor(stepExecutor, args, options) {
-    var stepExecutorFn = globalThis[stepExecutor];
-    if (typeof stepExecutorFn !== "function") {
-      throw new Error("Step Executor function '" + String(stepExecutor) + "' is not registered on globalThis");
+    if (typeof globalThis.__run_step_executor !== "function") {
+      throw new Error("__run_step_executor host helper is not registered");
     }
-    var baseArgs = canonicalizeStepExecutorValue((args != null && typeof args === "object") ? args : {});
-    var maxSteps = 8;
-    if (options != null && typeof options === "object" && Number.isFinite(options.max_steps)) {
-      var requested = Math.trunc(options.max_steps);
-      if (requested > 0) maxSteps = requested;
-    }
-    var sessionOpen = false;
-    var lastStatus = null;
-    var history = [];
-    var last = null;
-    var finalContext = buildSessionContext(sessionOpen, ["Open"]);
-
-    for (var i = 0; i < maxSteps; i++) {
-      var allowedOps = allowedStepExecutorOps(sessionOpen, lastStatus, stepExecutor);
-      finalContext = buildSessionContext(
-        sessionOpen,
-        allowedOps
-      );
-      var stepExecutorArgs = Object.assign({}, baseArgs, {
-        session_context: finalContext
-      });
-      stepExecutorArgs = canonicalizeStepExecutorValue(stepExecutorArgs);
-      var stepRaw = await stepExecutorFn(stepExecutorArgs);
-      var step = canonicalizeStepExecutorValue(stepRaw);
-      last = step;
-      history.push(step);
-      var op = extractStepExecutorOp(step);
-      if (op != null && allowedOps.indexOf(op) < 0) {
-        throw new Error(
-          "runtime step executor contract violation (" + String(stepExecutor)
-          + "): expected op in [" + allowedOps.join(",") + "], got '" + String(op) + "'"
-        );
-      }
-
-      var status = extractStepExecutorStatus(step);
-      if (status != null) {
-        validateStepExecutorTransition(sessionOpen, lastStatus, op, status, stepExecutor);
-      }
-      if (status == null) {
-        break;
-      }
-      lastStatus = status;
-      if (executionStatusKeepsSessionOpen(status)) {
-        sessionOpen = true;
-      }
-      if (executionStatusTerminal(status)) {
-        break;
-      }
-    }
-
-    finalContext = buildSessionContext(
-      sessionOpen,
-      allowedStepExecutorOps(sessionOpen, lastStatus, stepExecutor)
-    );
-
-    return {
-      last: last,
-      steps: history,
-      session_context: finalContext
-    };
+    var argsJson = JSON.stringify((args != null && typeof args === "object") ? args : {});
+    var optionsJson = (options != null && typeof options === "object") ? JSON.stringify(options) : null;
+    var resultJson = await globalThis.__run_step_executor(String(stepExecutor), argsJson, optionsJson);
+    return JSON.parse(resultJson);
   }
   globalThis.runGeneratedStepExecutor = runGeneratedStepExecutor;
 
@@ -356,6 +298,10 @@ pub fn render_a2a_shim() -> Result<String> {
     var api = {
       sessionId: sessionId,
       submitIntent: async function(intent) {
+        // Message UUID lineage is host-bound in Rust from the invocation scope; agent/JS is untrusted.
+        if (intent == null || typeof intent !== "object") {
+          throw new Error("submitIntent: intent must be an object");
+        }
         await invokeExecutionSession({
           action: "submit_intent",
           session_id: sessionId,
@@ -371,20 +317,20 @@ pub fn render_a2a_shim() -> Result<String> {
         });
         return this;
       },
-      startStep: async function(stepId, evidenceText) {
+      startStep: async function(stepId, citations) {
         await invokeExecutionSession({
           action: "start_step",
           session_id: sessionId,
           step_id: stepId,
-          evidence_text: evidenceText
+          citations: Array.isArray(citations) ? citations : []
         });
       },
-      completeStep: async function(stepId, evidenceText) {
+      completeStep: async function(stepId, citations) {
         await invokeExecutionSession({
           action: "complete_step",
           session_id: sessionId,
           step_id: stepId,
-          evidence_text: evidenceText
+          citations: Array.isArray(citations) ? citations : []
         });
       },
       finish: async function() {
@@ -409,18 +355,7 @@ pub fn render_a2a_shim() -> Result<String> {
   }
   globalThis.openA2aExecutionSession = openA2aExecutionSession;
 
-  function extractDispatchMessages(request) {
-    if (request == null || typeof request !== 'object') return [];
-    var messages = request.messages;
-    if (!Array.isArray(messages)) return [];
-    return messages.slice();
-  }
-  globalThis.extractDispatchMessages = extractDispatchMessages;
-
   function __chat_register(agent) {
-    if (agent.onDispatch != null && typeof agent.onDispatch === 'function') {
-      globalThis.onDispatch = async function (request) { return agent.onDispatch.call(agent, request); };
-    }
     if (agent.run != null && typeof agent.run === 'function') {
       globalThis.onChatMessage = async function (message) {
         var s = session(message);
@@ -437,7 +372,18 @@ pub fn render_a2a_shim() -> Result<String> {
           if (tasks.length === 0) return Promise.resolve();
           return Promise.all(tasks).then(function() {});
         };
+        var prevMessageId = globalThis.__a2a_current_message_id;
         try {
+          if (message != null && typeof message === "object") {
+            var mid = message.message_id != null ? message.message_id : message.messageId;
+            if (mid != null && String(mid).trim().length > 0) {
+              globalThis.__a2a_current_message_id = String(mid);
+            } else {
+              delete globalThis.__a2a_current_message_id;
+            }
+          } else {
+            delete globalThis.__a2a_current_message_id;
+          }
           s.onFailed(function(err) {
             var reason = (typeof err === "string" && err.trim().length > 0) ? err : "chat run failed";
             return abortExecutionSessions("runtime enforced abort: " + reason);
@@ -446,6 +392,11 @@ pub fn render_a2a_shim() -> Result<String> {
             return agent.run({ text: s.text() || '', message: message, emit: emit });
           });
         } finally {
+          if (typeof prevMessageId === "undefined") {
+            delete globalThis.__a2a_current_message_id;
+          } else {
+            globalThis.__a2a_current_message_id = prevMessageId;
+          }
           if (globalThis.__a2a_current_execution_sessions === executionSessions) {
             delete globalThis.__a2a_current_execution_sessions;
           }
@@ -453,6 +404,9 @@ pub fn render_a2a_shim() -> Result<String> {
       };
     } else if (agent.onChatMessage != null) {
       globalThis.onChatMessage = agent.onChatMessage;
+    }
+    if (agent.onDispatch != null && typeof agent.onDispatch === 'function') {
+      globalThis.onDispatch = agent.onDispatch;
     }
     if (agent.tools != null && typeof agent.tools === 'object') {
       globalThis.__js_tools = globalThis.__js_tools || {};
@@ -464,6 +418,16 @@ pub fn render_a2a_shim() -> Result<String> {
     }
   }
   globalThis.__chat_register = __chat_register;
+
+  // extractDispatchMessages: return the messages array from a HostDispatchRequest.
+  // Declared in baml-runtime.d.ts; implemented here as a QuickJS global.
+  function extractDispatchMessages(request) {
+    if (request == null) return [];
+    var msgs = request.messages;
+    if (!Array.isArray(msgs)) return [];
+    return msgs;
+  }
+  globalThis.extractDispatchMessages = extractDispatchMessages;
 })();
 "#;
 

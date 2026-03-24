@@ -25,7 +25,7 @@ impl LLMInterceptor for StubChooseCalcToolStreamInterceptor {
         &self,
         context: &LLMCallContext,
     ) -> baml_rt_core::Result<InterceptorDecision> {
-        if context.function_name == "ChooseCalcToolStream" {
+        if context.function_id.prompt_name().as_str() == "ChooseCalcToolStream" {
             Ok(InterceptorDecision::Substitute(Value::String("5".into())))
         } else {
             Ok(InterceptorDecision::Allow)
@@ -59,12 +59,12 @@ async fn test_js_stream_baml_function() {
         .register_llm_interceptor(StubChooseCalcToolStreamInterceptor)
         .await;
 
-    let store = test_support::common::test_graphqlite_store();
+    let store = test_support::common::test_surreal_store().await;
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(45_000)))
-        .with_graphqlite_store(store)
+        .with_surreal_store(store)
         .build()
         .await
         .unwrap();

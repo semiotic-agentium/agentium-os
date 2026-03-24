@@ -1,7 +1,8 @@
 //! Bootstrap a new BAML agent package with interactive TUI.
 //!
 //! Creates skeletal manifest, BAML prompt, and index.ts; then runs the
-//! runtime type generator to produce generated_tools.baml and baml-runtime.d.ts.
+//! runtime type generator to produce `_baml_runtime.baml` (shared types incl. StructuredReply,
+//! plus tool interfaces when manifest lists tools) and baml-runtime.d.ts.
 //!
 //! **Tool catalogue:** The lib does not compose the tool list. The binary
 //! (e.g. `baml-agent-builder`) is responsible for building the list of available
@@ -113,8 +114,7 @@ pub async fn run_bootstrap(
     let generator = RuntimeTypeGenerator::new();
     generator.generate(&agent_dir, &build_dir).await?;
 
-    // Copy generated BAML (e.g. generated_tools.baml, generated_session_coordination.baml)
-    // from build_dir/baml_src into the bootstrapped agent's baml_src.
+    // Copy generated BAML from build_dir/baml_src (includes `_baml_runtime.baml` prelude).
     let baml_src_build = build_dir.join("baml_src");
     if baml_src_build.exists() {
         for entry in fs::read_dir(&baml_src_build).map_err(BamlBuilderError::Io)? {
@@ -182,7 +182,7 @@ fn prompt_template_with_tools(prompt_name: &str, session_plan_type: &str) -> Str
     );
     format!(
         r##"// Agent prompt with tool choice
-// (generated_tools.baml is loaded from the same directory by the runtime)
+// (_baml_runtime.baml is loaded from the same directory by the runtime)
 
 function {fn_name}(user_message: string) -> {session_plan_type} {{
   client DefaultClient

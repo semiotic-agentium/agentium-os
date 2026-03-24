@@ -72,6 +72,47 @@ impl ToolHandler for A2aSessionToolHandler {
         ToolCapability::Streaming
     }
 
+    fn describe_invocation(&self, content: &Value) -> String {
+        let step = content.get("step").unwrap_or(content);
+        let op = match step.get("op").and_then(Value::as_str) {
+            Some(op) => op,
+            None => return "delegated agent: call".to_string(),
+        };
+        match op {
+            "Open" => {
+                if let Some(open) = step
+                    .get("input")
+                    .and_then(|v| serde_json::from_value::<InternalA2aOpenInput>(v.clone()).ok())
+                {
+                    format!("delegating to agent '{}'", open.target.agent_package)
+                } else {
+                    "delegating to agent".to_string()
+                }
+            }
+            "Send" => {
+                if let Some(send) = step
+                    .get("input")
+                    .and_then(|v| serde_json::from_value::<InternalA2aSendInput>(v.clone()).ok())
+                {
+                    let text = send.parts.first().and_then(|p| p.text.as_deref());
+                    match text {
+                        Some(t) if t.len() > 60 => {
+                            format!("sending message to delegated agent: '{}...'", &t[..57])
+                        }
+                        Some(t) => format!("sending message to delegated agent: '{t}'"),
+                        None => "sending message to delegated agent".to_string(),
+                    }
+                } else {
+                    "sending message to delegated agent".to_string()
+                }
+            }
+            "Read" => "reading delegated agent output".to_string(),
+            "Finish" => "finished delegated agent session".to_string(),
+            "Abort" => "aborted delegated agent session".to_string(),
+            other => format!("delegated agent: {other}"),
+        }
+    }
+
     async fn open_session(
         &self,
         ctx: ToolSessionContext,

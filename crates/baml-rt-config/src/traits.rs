@@ -4,8 +4,9 @@
 //! **Internal config** is key-value storage for runtime configuration (e.g. secret link state),
 //! not tied to tool bundles.
 
+use async_trait::async_trait;
 use baml_rt_core::Result;
-use baml_rt_tools::{BundleName, ConfigResolver};
+use baml_rt_tools::BundleName;
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -13,13 +14,15 @@ use serde_json::Value;
 // ---------------------------------------------------------------------------
 
 /// Read internal configuration by string key (e.g. secret link state). Not a tool bundle.
+#[async_trait]
 pub trait InternalConfigReader: Send + Sync {
-    fn get_internal(&self, key: &str) -> Result<Option<Value>>;
+    async fn get_internal(&self, key: &str) -> Result<Option<Value>>;
 }
 
 /// Write internal configuration by string key.
+#[async_trait]
 pub trait InternalConfigWriter: Send + Sync {
-    fn set_internal(&self, key: &str, value: Value) -> Result<()>;
+    async fn set_internal(&self, key: &str, value: Value) -> Result<()>;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,34 +78,32 @@ pub struct ConfigVersion {
 }
 
 /// Read-only config access (used by registry, session open, provenance).
+#[async_trait]
 pub trait ConfigReader: Send + Sync {
-    /// Get current config for a bundle, if any.
-    fn get(&self, bundle_name: &BundleName) -> Result<Option<Value>>;
-
-    /// Get current config with version, if any.
-    fn get_with_version(&self, bundle_name: &BundleName) -> Result<Option<StoredConfig>>;
-
-    /// List bundles that have stored config.
-    fn list_with_config(&self) -> Result<Vec<BundleName>>;
+    async fn get(&self, bundle_name: &BundleName) -> Result<Option<Value>>;
+    async fn get_with_version(&self, bundle_name: &BundleName) -> Result<Option<StoredConfig>>;
+    async fn list_with_config(&self) -> Result<Vec<BundleName>>;
 }
 
 /// Write config (used by provisioning/admin paths).
+#[async_trait]
 pub trait ConfigWriter: Send + Sync {
-    /// Set config for a bundle; creates new version.
-    fn set(&self, bundle_name: &BundleName, config: Value) -> Result<ConfigVersion>;
-
-    /// Remove stored config for a bundle.
-    fn delete(&self, bundle_name: &BundleName) -> Result<()>;
-
-    /// Get config at a specific version.
-    fn get_version(&self, bundle_name: &BundleName, version: u64) -> Result<Option<ConfigVersion>>;
-
-    /// List version history for a bundle.
-    fn list_versions(&self, bundle_name: &BundleName) -> Result<Vec<ConfigVersion>>;
+    async fn set(&self, bundle_name: &BundleName, config: Value) -> Result<ConfigVersion>;
+    async fn delete(&self, bundle_name: &BundleName) -> Result<()>;
+    async fn get_version(
+        &self,
+        bundle_name: &BundleName,
+        version: u64,
+    ) -> Result<Option<ConfigVersion>>;
+    async fn list_versions(&self, bundle_name: &BundleName) -> Result<Vec<ConfigVersion>>;
 }
 
-/// Combined read-write config service (bundle config + internal config). Also implements ConfigResolver for registry use.
+/// Combined read-write config service (bundle config + internal config).
 pub trait ConfigService:
-    ConfigReader + ConfigWriter + ConfigResolver + InternalConfigReader + InternalConfigWriter
+    ConfigReader
+    + ConfigWriter
+    + baml_rt_tools::ConfigResolver
+    + InternalConfigReader
+    + InternalConfigWriter
 {
 }

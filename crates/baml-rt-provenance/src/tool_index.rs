@@ -1,32 +1,21 @@
-//! Tool metadata indexing for GraphQLite-backed provenance store.
+//! Tool metadata indexing via the SurrealDB provenance store.
 //!
-//! Node identity uses GraphQLite's built-in `id` property (see [vocabulary::graph::NODE_ID])
-//! so the extension can index and match on identity.
-//!
-//! **GraphQLite MERGE and parameters:** The extension's MERGE executor only applies
-//! pattern properties that are AST literals; it does not resolve `$param` from the
-//! params JSON. So we put the identity value in the MERGE pattern as an escaped literal.
-//! Remaining properties are set via a separate MATCH+SET query, which uses the
-//! transform path and param binding. See upstream executor_merge.c / find_node_by_pattern.
-
-use std::path::Path;
+//! Indexes `ToolFunction` records into `prov_node` so they can be queried for
+//! discovery, capability matching, and schema lookup.
 
 use baml_rt_tools::ToolFunctionMetadataExport;
-use graphqlite::{Connection, escape_string};
-use serde_json::json;
 
-use crate::{error::Result, vocabulary::graph};
+use crate::{error::Result, surreal_store::SurrealProvenanceStore};
 
 const TOOL_LABEL: &str = "ToolFunction";
 
 #[derive(Debug, Clone)]
 pub struct ToolIndexConfig {
-    /// Path to the GraphQLite database file (or ":memory:" for in-memory).
     pub path: String,
 }
 
 impl ToolIndexConfig {
-    pub fn new(path: impl AsRef<Path>) -> Self {
+    pub fn new(path: impl AsRef<std::path::Path>) -> Self {
         Self {
             path: path
                 .as_ref()
@@ -36,7 +25,6 @@ impl ToolIndexConfig {
         }
     }
 
-    /// In-memory store for tests.
     pub fn in_memory() -> Self {
         Self {
             path: ":memory:".to_string(),
@@ -44,35 +32,25 @@ impl ToolIndexConfig {
     }
 }
 
+/// Index tools into an existing SurrealDB provenance store.
 pub async fn index_tools(
-    config: &ToolIndexConfig,
+    store: &SurrealProvenanceStore,
     tools: &[ToolFunctionMetadataExport],
 ) -> Result<()> {
-    crate::graphqlite_store::ensure_extension_path();
-    let conn = Connection::open(&config.path)
-        .map_err(|e| crate::error::ProvenanceError::Storage(Box::new(e)))?;
     for tool in tools {
-        upsert_tool_sync(&conn, tool)?;
+        upsert_tool(store, tool).await?;
     }
     Ok(())
 }
 
-/// Index tools and return the open connection so the caller can query within the same connection
-/// (avoids cross-connection visibility issues in tests).
-pub async fn index_tools_into_connection(
-    config: &ToolIndexConfig,
-    tools: &[ToolFunctionMetadataExport],
-) -> Result<Connection> {
-    crate::graphqlite_store::ensure_extension_path();
-    let conn = Connection::open(&config.path)
-        .map_err(|e| crate::error::ProvenanceError::Storage(Box::new(e)))?;
-    for tool in tools {
-        upsert_tool_sync(&conn, tool)?;
-    }
-    Ok(conn)
+fn surreal_err(e: surrealdb::Error) -> crate::error::ProvenanceError {
+    crate::error::ProvenanceError::Storage(Box::new(e))
 }
 
-fn upsert_tool_sync(conn: &Connection, tool: &ToolFunctionMetadataExport) -> Result<()> {
+async fn upsert_tool(
+    store: &SurrealProvenanceStore,
+    tool: &ToolFunctionMetadataExport,
+) -> Result<()> {
     let name = tool.name.to_string();
     let description = tool.description.to_string();
     let tags = tool.tags.join(" ");
@@ -84,47 +62,39 @@ fn upsert_tool_sync(conn: &Connection, tool: &ToolFunctionMetadataExport) -> Res
     let secret_requirements = serde_json::to_string(&tool.secret_requests).unwrap_or_default();
     let is_host_tool = tool.origin == baml_rt_tools::ToolOrigin::Host;
 
-    // MERGE with literal id only: extension's MERGE path does not resolve $param in pattern
-    // (executor_merge.c uses only AST_NODE_LITERAL). Literal id gives us built-in identity/index.
-    let id_literal = escape_string(&name);
-    let merge_query = format!(
-        "MERGE (t:{label} {{{id_key}: '{id_escaped}'}})",
-        label = TOOL_LABEL,
-        id_key = graph::NODE_ID,
-        id_escaped = id_literal,
-    );
-    conn.cypher(&merge_query)
-        .map_err(|e| crate::error::ProvenanceError::Storage(Box::new(e)))?;
+    // Use individual prop fields (same pattern as surreal_store's write_normalized)
+    // rather than binding a JSON object to `props`, which SurrealDB's bind API
+    // does not reliably persist on schemaless tables.
+    store
+        .db()
+        .query(
+            "UPSERT prov_node SET \
+            node_id = $node_id, \
+            label = $label, \
+            props.description = $description, \
+            props.tags = $tags, \
+            props.bundle = $bundle, \
+            props.input_type = $input_type, \
+            props.output_type = $output_type, \
+            props.input_schema = $input_schema, \
+            props.output_schema = $output_schema, \
+            props.secret_requirements = $secret_requirements, \
+            props.is_host_tool = $is_host_tool \
+            WHERE node_id = $node_id",
+        )
+        .bind(("node_id", name))
+        .bind(("label", TOOL_LABEL))
+        .bind(("description", description))
+        .bind(("tags", tags))
+        .bind(("bundle", bundle))
+        .bind(("input_type", input_type))
+        .bind(("output_type", output_type))
+        .bind(("input_schema", input_schema))
+        .bind(("output_schema", output_schema))
+        .bind(("secret_requirements", secret_requirements))
+        .bind(("is_host_tool", is_host_tool))
+        .await
+        .map_err(surreal_err)?;
 
-    let set_params = json!({
-        "id": name,
-        "description": description,
-        "tags": tags,
-        "bundle": bundle,
-        "input_type": input_type,
-        "output_type": output_type,
-        "input_schema": input_schema,
-        "output_schema": output_schema,
-        "secret_requirements": secret_requirements,
-        "is_host_tool": is_host_tool,
-    });
-    let set_query = format!(
-        "MATCH (t:{label}) WHERE t.{id_key} = $id\n\
-         SET t.description = $description,\n\
-             t.tags = $tags,\n\
-             t.bundle = $bundle,\n\
-             t.input_type = $input_type,\n\
-             t.output_type = $output_type,\n\
-             t.input_schema = $input_schema,\n\
-             t.output_schema = $output_schema,\n\
-             t.secret_requirements = $secret_requirements,\n\
-             t.is_host_tool = $is_host_tool",
-        label = TOOL_LABEL,
-        id_key = graph::NODE_ID,
-    );
-    conn.cypher_builder(&set_query)
-        .params(&set_params)
-        .run()
-        .map(|_| ())
-        .map_err(|e| crate::error::ProvenanceError::Storage(Box::new(e)))
+    Ok(())
 }

@@ -5,16 +5,17 @@ use baml_rt_core::{
     ids::{AgentId, ArtifactId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, GraphExporter, GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceWriter,
+    AgentType, GraphExporter, LlmUsage, ProvEvent, ProvenanceWriter, SurrealStoreBuilder,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
     normalize_event,
 };
 use insta::assert_snapshot;
 use serde_json::json;
 
-fn build_isolated_store(_test_name: &str) -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
-    GraphqliteStoreBuilder::in_memory_isolated()
+async fn build_isolated_store(_test_name: &str) -> Arc<baml_rt_provenance::SurrealProvenanceStore> {
+    SurrealStoreBuilder::in_memory_isolated()
         .build()
+        .await
         .expect("build isolated in-memory store")
 }
 
@@ -51,13 +52,13 @@ async fn test_normalize_event_snapshot_for_tool_call_started() {
     });
     insta::assert_json_snapshot!("tool_call_started_normalized_summary", summary);
 
-    let store = build_isolated_store("normalize-event");
+    let store = build_isolated_store("normalize-event").await;
     store.add_event(event).await.expect("persist event");
 }
 
 #[tokio::test]
 async fn test_snapshot_exemplary_mermaid_agent_flow() {
-    let store = build_isolated_store("exemplary-agent-flow");
+    let store = build_isolated_store("exemplary-agent-flow").await;
 
     let context_id = ContextId::new(1_771_470_000_000, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-sequence-1"));
@@ -168,7 +169,7 @@ async fn test_snapshot_exemplary_mermaid_agent_flow() {
 
 #[tokio::test]
 async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
-    let store = build_isolated_store("multiturn-lifecycle");
+    let store = build_isolated_store("multiturn-lifecycle").await;
 
     let context_id = ContextId::new(1_771_470_111_000, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-lifecycle-1"));
@@ -340,7 +341,7 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
 
 #[tokio::test]
 async fn task_scoped_messages_without_agent_metadata_still_render_sequence_activity() {
-    let store = build_isolated_store("task-scoped-message-agent-link");
+    let store = build_isolated_store("task-scoped-message-agent-link").await;
 
     let context_id = ContextId::new(1_771_470_222_000, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-message-link-1"));

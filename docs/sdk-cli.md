@@ -270,6 +270,6 @@ The following commands are planned for Phase 2:
 
 - `new-agent <name>` - Create a new agent package with templates
 - `list-agents` - List all agent packages
-- `regen` - Regenerate `generated_tools.baml` and `baml-runtime.d.ts`
+- `regen` - Regenerate `_baml_runtime.baml` and `baml-runtime.d.ts`
 
 See `sdk_cli_plan.md` for the full implementation roadmap.

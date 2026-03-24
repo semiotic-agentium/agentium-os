@@ -1,8 +1,21 @@
 //! Typed execution-session command and response models for the JS↔Rust boundary.
 //!
 //! Replaces ad-hoc JSON parsing with serde-tagged enums for strict contract enforcement.
+//!
+//! **`IntentSubmissionWire` / `PlanSubmissionWire`:** JSON DTOs from `__execution_session_invoke`.
+//! The host maps wire → [`crate::planning::IntentSubmission`] / [`crate::planning::PlanSubmission`]
+//! (parsed supersession, etc.) before resolver and effects.
+//!
+//! **Trust boundary:** agent / QuickJS code is treated as **adversarial**. Sensitive identifiers such as
+//! execution-session **message UUID lineage** are **not** accepted from the wire; the host binds
+//! [`crate::planning::IntentSubmission`]'s `derived_from_message_ids` solely from the active Rust
+//! invocation scope (see `baml_registration`). A legacy `derivedFromMessageIds`
+//! JSON key, if present, is **ignored** by serde.
 
-use baml_rt_core::ids::{ExecutionSessionId, IntentId, PlanId, PlanStepId};
+use baml_rt_core::{
+    Citation,
+    ids::{ExecutionSessionId, IntentId, PlanId, PlanStepId},
+};
 use serde::{Deserialize, Serialize};
 
 /// Serde-tagged command envelope for `__execution_session_invoke` payloads.
@@ -12,21 +25,23 @@ pub enum ExecutionSessionCommand {
     Open,
     SubmitIntent {
         session_id: ExecutionSessionId,
-        intent: IntentSubmission,
+        intent: IntentSubmissionWire,
     },
     SubmitPlan {
         session_id: ExecutionSessionId,
-        plan: PlanSubmission,
+        plan: PlanSubmissionWire,
     },
     StartStep {
         session_id: ExecutionSessionId,
         step_id: PlanStepId,
-        evidence_text: String,
+        #[serde(default)]
+        citations: Vec<Citation>,
     },
     CompleteStep {
         session_id: ExecutionSessionId,
         step_id: PlanStepId,
-        evidence_text: String,
+        #[serde(default)]
+        citations: Vec<Citation>,
     },
     Finish {
         session_id: ExecutionSessionId,
@@ -39,10 +54,12 @@ pub enum ExecutionSessionCommand {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct IntentSubmission {
+pub struct IntentSubmissionWire {
     pub intent_id: IntentId,
     pub description: String,
-    pub derived_from_message_ids: Vec<String>,
+    /// Citation refs (`#N` / `@N`) for the history entries this intent was derived from.
+    #[serde(default)]
+    pub citations: Vec<Citation>,
     /// "replaced"|"replaced_by"|"replacedBy" -> ReplacedBy, "refined"|"refined_by"|"refinedBy" -> RefinedBy
     #[serde(default)]
     pub supersession: Option<String>,
@@ -50,7 +67,7 @@ pub struct IntentSubmission {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PlanSubmission {
+pub struct PlanSubmissionWire {
     pub intent_id: IntentId,
     pub plan_id: PlanId,
     pub steps: Vec<PlanStepSubmission>,
@@ -88,6 +105,8 @@ mod tests {
     //! the Rust host. Any rename of a field or variant causes a snapshot diff, making
     //! accidental protocol breaks visible immediately.
 
+    use std::str::FromStr;
+
     use super::*;
 
     fn session_id() -> ExecutionSessionId {
@@ -119,10 +138,13 @@ mod tests {
     fn snapshot_submit_intent() {
         let cmd = ExecutionSessionCommand::SubmitIntent {
             session_id: session_id(),
-            intent: IntentSubmission {
+            intent: IntentSubmissionWire {
                 intent_id: intent_id(),
                 description: "Investigate the anomaly".to_string(),
-                derived_from_message_ids: vec!["msg-1".to_string(), "msg-2".to_string()],
+                citations: vec![
+                    Citation::from_str("#1").unwrap(),
+                    Citation::from_str("#2").unwrap(),
+                ],
                 supersession: None,
             },
         };
@@ -136,10 +158,10 @@ mod tests {
     fn snapshot_submit_intent_with_supersession() {
         let cmd = ExecutionSessionCommand::SubmitIntent {
             session_id: session_id(),
-            intent: IntentSubmission {
+            intent: IntentSubmissionWire {
                 intent_id: intent_id(),
                 description: "Refined intent".to_string(),
-                derived_from_message_ids: vec!["msg-3".to_string()],
+                citations: vec![Citation::from_str("#3").unwrap()],
                 supersession: Some("replaced_by".to_string()),
             },
         };
@@ -153,7 +175,7 @@ mod tests {
     fn snapshot_submit_plan() {
         let cmd = ExecutionSessionCommand::SubmitPlan {
             session_id: session_id(),
-            plan: PlanSubmission {
+            plan: PlanSubmissionWire {
                 intent_id: intent_id(),
                 plan_id: plan_id(),
                 steps: vec![
@@ -184,7 +206,7 @@ mod tests {
         let cmd = ExecutionSessionCommand::StartStep {
             session_id: session_id(),
             step_id: step_id(),
-            evidence_text: "Beginning execution".to_string(),
+            citations: vec![Citation::from_str("#1").unwrap()],
         };
         insta::assert_json_snapshot!(
             "execution_session_command_start_step",
@@ -197,7 +219,10 @@ mod tests {
         let cmd = ExecutionSessionCommand::CompleteStep {
             session_id: session_id(),
             step_id: step_id(),
-            evidence_text: "Step completed successfully".to_string(),
+            citations: vec![
+                Citation::from_str("#1").unwrap(),
+                Citation::from_str("@4:2").unwrap(),
+            ],
         };
         insta::assert_json_snapshot!(
             "execution_session_command_complete_step",
@@ -235,7 +260,7 @@ mod tests {
             ("open", r#"{"action":"open"}"#),
             (
                 "submit_intent",
-                r#"{"action":"submit_intent","session_id":"s","intent":{"intentId":"i","description":"d","derivedFromMessageIds":[]}}"#,
+                "{\"action\":\"submit_intent\",\"session_id\":\"s\",\"intent\":{\"intentId\":\"i\",\"description\":\"d\",\"citations\":[\"#1\"]}}",
             ),
             (
                 "submit_plan",
@@ -243,11 +268,11 @@ mod tests {
             ),
             (
                 "start_step",
-                r#"{"action":"start_step","session_id":"s","step_id":"x","evidence_text":"e"}"#,
+                "{\"action\":\"start_step\",\"session_id\":\"s\",\"step_id\":\"x\",\"citations\":[\"#1\"]}",
             ),
             (
                 "complete_step",
-                r#"{"action":"complete_step","session_id":"s","step_id":"x","evidence_text":"e"}"#,
+                "{\"action\":\"complete_step\",\"session_id\":\"s\",\"step_id\":\"x\",\"citations\":[\"#1\"]}",
             ),
             ("finish", r#"{"action":"finish","session_id":"s"}"#),
             (
@@ -269,5 +294,28 @@ mod tests {
                 "action tag mismatch for {name}"
             );
         }
+    }
+
+    #[test]
+    fn deserialize_rejects_non_ref_citation() {
+        let json =
+            r#"{"action":"start_step","session_id":"s","step_id":"x","citations":["not-a-ref"]}"#;
+        assert!(
+            serde_json::from_str::<ExecutionSessionCommand>(json).is_err(),
+            "invalid citation must fail serde deserialize"
+        );
+    }
+
+    /// Adversarial agent JSON may include `derivedFromMessageIds`; it must not deserialize into wire state.
+    #[test]
+    fn deserialize_submit_intent_ignores_derived_from_message_ids() {
+        let json = r##"{"action":"submit_intent","session_id":"s","intent":{"intentId":"i","description":"d","derivedFromMessageIds":["fake-uuid"],"citations":["#1"]}}"##;
+        let cmd: ExecutionSessionCommand = serde_json::from_str(json).expect("must parse");
+        let ExecutionSessionCommand::SubmitIntent { intent, .. } = cmd else {
+            panic!("expected SubmitIntent");
+        };
+        assert_eq!(intent.intent_id.as_str(), "i");
+        assert_eq!(intent.description, "d");
+        assert_eq!(intent.citations.len(), 1);
     }
 }

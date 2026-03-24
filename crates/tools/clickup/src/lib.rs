@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
+use baml_rt_core::{BamlRtError, Result, semantics::ErrorDisposition};
+use baml_rt_tools::{ClassifiedToolError, baml_tool, bundles::Support, tools::BamlTool};
 /// ClickUp v2 REST API base URL.
 pub use integrations_clickup_client::BASE_URL;
 use integrations_clickup_client::{ClickUpClient, ClickUpClientError};
@@ -16,37 +16,6 @@ use ts_rs::TS;
 
 fn option_is_empty(opt: &Option<String>) -> bool {
     opt.as_ref().is_none_or(|s| s.is_empty())
-}
-
-const GET_TASK_DESCRIPTION_MAX_CHARS: usize = 120;
-const SINGLE_TASK_DESCRIPTION_MAX_CHARS: usize = 1200;
-
-fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
-    let mut out = String::with_capacity(input.len().min(max_chars) + 3);
-    for (i, ch) in input.chars().enumerate() {
-        if i >= max_chars {
-            out.push_str("...");
-            return out;
-        }
-        out.push(ch);
-    }
-    out
-}
-
-fn normalize_optional_description(desc: &mut Option<String>, max_chars: usize) {
-    let Some(current) = desc.as_ref() else {
-        return;
-    };
-    let trimmed = current.trim();
-    if trimmed.is_empty() {
-        *desc = None;
-        return;
-    }
-    if trimmed.chars().count() > max_chars {
-        *desc = Some(truncate_chars_with_ellipsis(trimmed, max_chars));
-    } else if trimmed.len() != current.len() {
-        *desc = Some(trimmed.to_string());
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -59,35 +28,39 @@ fn normalize_optional_description(desc: &mut Option<String>, max_chars: usize) {
 #[ts(export)]
 pub struct ListTeamsInput {}
 
-/// List spaces in a team.
+/// List spaces in a team. Call ListTeams first to get the team_id.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ListSpacesInput {
+    #[baml(description = "ClickUp team (workspace) ID — obtain from ListTeams.")]
     pub team_id: String,
 }
 
-/// List task-lists in a space.
+/// List task-lists in a space. Call ListSpaces first to get the space_id.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ListListsInput {
+    #[baml(description = "ClickUp space ID — obtain from ListSpaces.")]
     pub space_id: String,
 }
 
-/// List tasks in a list.
+/// List tasks in a list. Call ListLists first to get the list_id.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ListTasksInput {
+    #[baml(description = "ClickUp list ID — obtain from ListLists.")]
     pub list_id: String,
 }
 
-/// Get details of a specific task.
+/// Get full details of a specific task (description, status, priority, assignees).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct GetTaskInput {
+    #[baml(description = "ClickUp task ID — obtain from ListTasks.")]
     pub task_id: String,
 }
 
@@ -96,11 +69,14 @@ pub struct GetTaskInput {
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct CreateTaskInput {
+    #[baml(
+        description = "ClickUp list ID where the task will be created — obtain from ListLists."
+    )]
     pub list_id: String,
+    #[baml(description = "Task title / name.")]
     pub name: String,
-    /// The task description.
+    #[baml(description = "Optional long-form task description (Markdown supported).")]
     pub description: Option<String>,
-    /// ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
     #[baml(description = "ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")]
     pub priority: Option<u8>,
 }
@@ -110,40 +86,30 @@ pub struct CreateTaskInput {
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct UpdateTaskInput {
+    #[baml(description = "ClickUp task ID to update — obtain from ListTasks or GetTask.")]
     pub task_id: String,
-    /// Task status string (e.g. "in progress").
-    #[baml(description = "Task status string (e.g. in progress).")]
+    #[baml(description = "New task status string (e.g. 'in progress', 'complete').")]
     pub status: Option<String>,
-    /// The task description.
+    #[baml(description = "Updated task description (Markdown supported).")]
     pub description: Option<String>,
-    /// ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
     #[baml(description = "ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")]
     pub priority: Option<u8>,
 }
 
-/// Delete a task from the workspace.
+/// Permanently delete a task. Confirm with the user before proceeding.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct DeleteTaskInput {
+    #[baml(description = "ClickUp task ID to delete — obtain from ListTasks.")]
     pub task_id: String,
-    /// Must be `true` for the deletion to proceed. The LLM should first
-    /// confirm with the user before setting this to `true`.
+    #[baml(description = "Must be true to proceed. Always confirm deletion with the user first.")]
     pub confirm_delete: bool,
 }
 
-/// Union of all ClickUp action inputs.
-///
-/// The LLM picks the appropriate variant based on the desired action.
-/// In generated BAML this becomes:
-/// `type ClickUpInput = ListTeamsInput | ListSpacesInput | … | DeleteTaskInput`
-///
-/// **Variant order matters**: `serde(untagged)` tries variants top-down and
-/// takes the first successful match. Ordering invariants:
-/// - `GetTask` must precede `UpdateTask` so that `{ "task_id": "..." }`
-///   (without optional update fields) resolves to `GetTask`, not `UpdateTask`.
-/// - `DeleteTask` has `confirm_delete: bool` which disambiguates it from
-///   `GetTask`, so its position is flexible.
+/// ClickUp tool — navigate teams → spaces → lists → tasks.
+/// ListTeams → ListSpaces → ListLists → ListTasks → GetTask/CreateTask/UpdateTask/DeleteTask.
+/// IDs must come from prior navigation results, not invented.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[baml(union)]
 #[serde(untagged)]
@@ -157,6 +123,21 @@ pub enum ClickUpInput {
     CreateTask(CreateTaskInput),
     UpdateTask(UpdateTaskInput),
     DeleteTask(DeleteTaskInput),
+}
+
+impl baml_rt_tools::DescribeAction for ClickUpInput {
+    fn describe(&self) -> String {
+        match self {
+            ClickUpInput::ListTeams(_) => "listing ClickUp teams".to_string(),
+            ClickUpInput::ListSpaces(_) => "listing ClickUp spaces".to_string(),
+            ClickUpInput::ListLists(_) => "listing ClickUp task lists".to_string(),
+            ClickUpInput::ListTasks(_) => "listing ClickUp tasks".to_string(),
+            ClickUpInput::GetTask(_) => "retrieving ClickUp task details".to_string(),
+            ClickUpInput::CreateTask(p) => format!("creating ClickUp task '{}'", p.name),
+            ClickUpInput::UpdateTask(_) => "updating ClickUp task".to_string(),
+            ClickUpInput::DeleteTask(_) => "deleting ClickUp task".to_string(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +310,7 @@ impl From<ClickUpError> for BamlRtError {
     fn from(err: ClickUpError) -> Self {
         match err {
             ClickUpError::Client(inner) => match inner {
-                ClickUpClientError::MissingApiKey(_) | ClickUpClientError::Unauthorized { .. } => {
+                ClickUpClientError::MissingApiKey | ClickUpClientError::Unauthorized { .. } => {
                     BamlRtError::Configuration(inner.to_string())
                 }
                 ClickUpClientError::NotFound { .. } => {
@@ -361,6 +342,13 @@ impl ClickUpTool {
         }
     }
 
+    /// Same as [`Self::new`] but targets a custom ClickUp API base URL (fixture / proxy).
+    pub fn with_base_url(base: impl Into<String>) -> Self {
+        Self {
+            client: ClickUpClient::with_base_url(base),
+        }
+    }
+
     fn api_key() -> std::result::Result<String, ClickUpError> {
         ClickUpClient::api_key().map_err(ClickUpError::Client)
     }
@@ -388,10 +376,14 @@ impl ClickUpTool {
             .collect();
 
         let count = items.len();
+        let next_hint = items
+            .first()
+            .map(|t| format!(" Next: ListSpacesInput with team_id: {}", t.id))
+            .unwrap_or_default();
         Ok(ClickUpOutput {
             tasks: vec![],
             items,
-            message: format!("Found {count} team(s)"),
+            message: format!("Found {count} team(s).{next_hint}"),
             operation: Some(ClickUpOperation::ListTeams),
         })
     }
@@ -419,10 +411,14 @@ impl ClickUpTool {
             .collect();
 
         let count = items.len();
+        let next_hint = items
+            .first()
+            .map(|s| format!(" Next: ListListsInput with space_id: {}", s.id))
+            .unwrap_or_default();
         Ok(ClickUpOutput {
             tasks: vec![],
             items,
-            message: format!("Found {count} space(s) in team {team_id}"),
+            message: format!("Found {count} space(s) in team {team_id}.{next_hint}"),
             operation: Some(ClickUpOperation::ListSpaces),
         })
     }
@@ -451,10 +447,14 @@ impl ClickUpTool {
             .collect();
 
         let count = items.len();
+        let next_hint = items
+            .first()
+            .map(|l| format!(" Next: ListTasksInput with list_id: {}", l.id))
+            .unwrap_or_default();
         Ok(ClickUpOutput {
             tasks: vec![],
             items,
-            message: format!("Found {count} list(s) in space {space_id}"),
+            message: format!("Found {count} list(s) in space {space_id}.{next_hint}"),
             operation: Some(ClickUpOperation::ListLists),
         })
     }
@@ -622,51 +622,6 @@ impl ClickUpTool {
             operation: Some(ClickUpOperation::DeleteTask),
         })
     }
-
-    fn compact_clickup_output(output: &mut ClickUpOutput) {
-        match output.operation {
-            Some(ClickUpOperation::ListTasks) => {
-                for task in &mut output.tasks {
-                    task.description = None;
-                }
-            }
-            Some(ClickUpOperation::GetTask) => {
-                for task in &mut output.tasks {
-                    normalize_optional_description(
-                        &mut task.description,
-                        GET_TASK_DESCRIPTION_MAX_CHARS,
-                    );
-                }
-            }
-            Some(ClickUpOperation::CreateTask) | Some(ClickUpOperation::UpdateTask) => {
-                for task in &mut output.tasks {
-                    task.description = None;
-                }
-            }
-            _ => {
-                for task in &mut output.tasks {
-                    normalize_optional_description(
-                        &mut task.description,
-                        SINGLE_TASK_DESCRIPTION_MAX_CHARS,
-                    );
-                }
-            }
-        }
-
-        // Internal host metadata is useful in raw provenance but unnecessary in
-        // prompt-projection context.
-        output.operation = None;
-    }
-
-    fn compact_tool_result_payload(content: &mut serde_json::Value) {
-        let Ok(mut output) = serde_json::from_value::<ClickUpOutput>(content.clone()) else {
-            return;
-        };
-        Self::compact_clickup_output(&mut output);
-        if let Ok(compacted) = serde_json::to_value(output) {
-            *content = compacted;
-        }
-    }
 }
 
 #[baml_tool(
@@ -686,6 +641,7 @@ impl ClickUpTool {
 impl BamlTool for ClickUpTool {
     type Bundle = Support;
     const LOCAL_NAME: &'static str = "clickup";
+    const SESSION_POLICY: baml_rt_tools::SessionPolicy = baml_rt_tools::SessionPolicy::MultiSend;
     type OpenInput = ();
     type Input = ClickUpInput;
     type Output = ClickUpOutput;
@@ -709,7 +665,7 @@ impl BamlTool for ClickUpTool {
         tracing::Span::current().record("action", action);
 
         let api_key = Self::api_key()?;
-        match args {
+        let mut output = match args {
             ClickUpInput::ListTeams(_) => self.list_teams(&api_key).await,
             ClickUpInput::ListSpaces(input) => self.list_spaces(&api_key, &input.team_id).await,
             ClickUpInput::ListLists(input) => self.list_lists(&api_key, &input.space_id).await,
@@ -750,17 +706,43 @@ impl BamlTool for ClickUpTool {
                     self.delete_task(&api_key, &input.task_id).await
                 }
             }
+        }?;
+        output.operation = None;
+        Ok(output)
+    }
+
+    fn describe_result(&self, output: &Self::Output) -> String {
+        let task_count = output.tasks.len();
+        let item_count = output.items.len();
+        if task_count > 0 {
+            format!("returned {} ClickUp task(s)", task_count)
+        } else if item_count > 0 {
+            format!("returned {} ClickUp item(s)", item_count)
+        } else {
+            output.message.clone()
         }
     }
 
-    fn compact_result(&self, content: &mut serde_json::Value) {
-        // Provider-side tool_result content usually has envelope shape:
-        // {"tool_name":"support/clickup","fsm_phase":"send","result":{...}}
-        // Compact the nested result when present; otherwise compact the value directly.
-        if let Some(result) = content.get_mut("result") {
-            Self::compact_tool_result_payload(result);
-        } else {
-            Self::compact_tool_result_payload(content);
+    fn describe_open(&self) -> String {
+        "using ClickUp for workspace navigation and task management".to_string()
+    }
+
+    fn classify_execution_error(err: &BamlRtError) -> ClassifiedToolError {
+        let mut c = ClassifiedToolError::from_baml_error(err);
+        if let BamlRtError::ToolExecution(msg) = err {
+            let lower = msg.to_ascii_lowercase();
+            if lower.contains("404") || lower.contains("not found") {
+                c.disposition = ErrorDisposition::InformAndContinue;
+                c.code = "clickup_not_found".to_string();
+                c.hint = Some(
+                    "Verify team_id, space_id, list_id, or task_id exist in the workspace."
+                        .to_string(),
+                );
+            } else if lower.contains("429") {
+                c.disposition = ErrorDisposition::HostRetriable;
+                c.code = "clickup_rate_limited".to_string();
+            }
         }
+        c
     }
 }

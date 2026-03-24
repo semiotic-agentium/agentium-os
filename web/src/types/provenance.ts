@@ -99,11 +99,100 @@ export interface PlanningStepSummary {
   pending: number;
 }
 
+export type DriftSeverity = "acceptable" | "warn" | "block";
+
+/** One resolved citation: the raw ref the LLM emitted plus the actual evidence text. */
+export interface CitationDetail {
+  /** Exact string the LLM emitted, e.g. `"#1"`, `"@2:3-5"`, `"!@1"`. */
+  raw: string;
+  n: number;
+  /** `true` = history ref (`#N`), `false` = archive ref (`@N`). */
+  isHistory: boolean;
+  /** Counter-evidence (`!` prefix) — LLM marked this as contradicting evidence. */
+  negated: boolean;
+  /** Cosine similarity between the decision text and this citation's content. */
+  similarity: number;
+  /** Stable provenance event ID for graph lookup. */
+  activityAnchor: string;
+  /** The actual evidence text the LLM was citing (up to 400 chars). */
+  contentPreview: string;
+}
+
+/** Per-citation similarity entry on each row's `drift.citation.perCitation` array. */
+export interface CitationSimilarityOnRow {
+  n: number;
+  isHistory: boolean;
+  negated: boolean;
+  similarity: number;
+  raw?: string;
+  activityAnchor?: string;
+  contentPreview?: string;
+}
+
+/** Citation-grounded drift block on an LLM call row. */
+export interface CitationDriftOnRow {
+  perCitation: CitationSimilarityOnRow[];
+  meanSimilarity: number;
+  coverage: number;
+  totalDecisions: number;
+  citedDecisions: number;
+}
+
+export interface DriftedCallDetail {
+  functionName: string;
+  severity: string;
+  intentAlignment: number;
+  stepAlignment: number | null;
+  crossEncoderStepScore: number | null;
+  intentTextPreview: string;
+  responseTextPreview: string;
+  stepTextPreview?: string;
+  /** Resolved citations with full evidence text. Empty when no citations were scored. */
+  citations?: CitationDetail[];
+}
+
+export interface TaskPlanDriftSummary {
+  compositeSeverity: DriftSeverity | null;
+  intentAlignment: number | null;
+  stepAlignment: number | null;
+  crossEncoderStepScore: number | null;
+  trajectoryDrift: number | null;
+  planAdherenceScore: number | null;
+  scoredCallCount: number;
+  warnCount: number;
+  blockCount: number;
+  driftedCalls?: DriftedCallDetail[];
+}
+
+export interface PlanDriftOnRow {
+  intentAlignment?: number;
+  stepAlignment?: number;
+  /** Cross-encoder logit for (step_description, response). Always present when stepAlignment present. */
+  crossEncoderStepScore?: number;
+  trajectoryDrift?: number;
+  planAdherenceScore?: number;
+  compositeSeverity?: DriftSeverity;
+}
+
+export interface DriftOnRow {
+  score?: number;
+  severity?: string;
+  mode?: string;
+  warnMinScore?: number;
+  blockMinScore?: number;
+  intentTextPreview?: string;
+  responseTextPreview?: string;
+  plan?: PlanDriftOnRow;
+  /** Citation-grounded drift block. Present when the LLM emitted citations and scoring succeeded. */
+  citation?: CitationDriftOnRow;
+}
+
 export interface ContextPlanningTaskSnapshot {
   taskId: string;
   currentIntent: PlanningIntentView | null;
   currentPlan: PlanningPlanView | null;
   stepSummary: PlanningStepSummary;
+  drift?: TaskPlanDriftSummary;
 }
 
 export interface ContextPlanningResponse {

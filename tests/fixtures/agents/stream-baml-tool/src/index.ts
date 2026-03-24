@@ -4,28 +4,40 @@
  * -------------------------
  * Tests async streaming of a BAML tool (FSM) result driven by message.sendStream.
  *
- * What this demonstrates:
- * - Using __chat_register({ run }) so the entrypoint is run(ctx); ctx.text and ctx.message.
- * - Returning `{ message }` or `{ error }` from tool result.
- *
- * Flow: any message → ChooseCalcTool(user_message) → stream with sum=... → COMPLETED.
+ * Flow: any message → ChooseCalcTool(user_message) → Open → Send (blocking) → Finish.
+ * The blocking Send result carries `result: { result, expression, formatted }`.
  */
 
 __chat_register({
   run: async (ctx) => {
     const text = ctx.text || "unknown";
-    // Use the step-executor loop: auto-Open → Send (with expression) → Read (get result) → Finish
     const run = await runGeneratedStepExecutor("ChooseCalcTool", { user_message: text }, { max_steps: 6 });
-    // Find the Read step result that has the calculator output.
-    // Done steps have the form { status: "done", output: { result, expression, formatted } }.
+
+    // Blocking Send result: { status:"done", output:"@1 header", archive_ref:"@1", result:{result,expression,...} }
+    // Scan steps in reverse for the first step that carries a numeric `result.result`.
     for (const step of [...run.steps].reverse()) {
-      const s = step as { status?: string; output?: { result?: number; expression?: string; formatted?: string }; result?: number; expression?: string; formatted?: string };
-      // Accept nested output (session-plan Done step) or flat result (direct tool call).
-      const result = s.output?.result ?? s.result;
-      if (typeof result === "number") {
-        return { message: `BAML tool result: sum=${result}` };
+      const s = step as unknown as Record<string, unknown>;
+      // New path: blocking Send puts raw tool JSON in `result`
+      const rawResult = s.result as Record<string, unknown> | undefined;
+      if (rawResult && typeof rawResult.result === "number") {
+        return { message: `BAML tool result: sum=${rawResult.result}` };
+      }
+      // Legacy path: output object with direct result field
+      const out = s.output as Record<string, unknown> | undefined;
+      if (out && typeof out.result === "number") {
+        return { message: `BAML tool result: sum=${out.result}` };
       }
     }
+
+    // Fallback: check run.last directly
+    const last = run.last as unknown as Record<string, unknown> | null;
+    if (last) {
+      const rawResult = last.result as Record<string, unknown> | undefined;
+      if (rawResult && typeof rawResult.result === "number") {
+        return { message: `BAML tool result: sum=${rawResult.result}` };
+      }
+    }
+
     return { error: "BAML tool returned no output" };
   },
 });

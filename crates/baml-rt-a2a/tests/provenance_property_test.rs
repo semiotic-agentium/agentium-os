@@ -1,4 +1,4 @@
-//! Provenance attribution test using GraphQLite in-memory store.
+//! Provenance attribution test using SurrealDB in-memory store.
 
 #![recursion_limit = "256"]
 
@@ -25,7 +25,7 @@ async fn collect_responses(
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_scope_attribution_without_cross_contamination() {
-    let writer = common::provenance::build_graphqlite_test_store();
+    let writer = common::provenance::build_surreal_test_store().await;
     let js = r#"
         globalThis.onChatMessage = async function(message) {
             const text = message?.parts?.[0]?.text || "";

@@ -1,5 +1,12 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { ChatMessage, RunContext, SessionEmitter, SessionResult } from "./baml-runtime";
+import type {
+  ChatMessage,
+  ReplyPart,
+  RunContext,
+  SessionEmitter,
+  SessionResult,
+  StructuredReply,
+} from "./baml-runtime";
 
 type DelegatedChunk = {
   message?: {
@@ -31,6 +38,28 @@ type CoordinatorGoal = {
   owner?: string | null;
   due_date?: string | null;
 };
+
+function textReply(text: string): StructuredReply {
+  const parts: ReplyPart[] = [{ type: "text", text }];
+  return { parts, citations: [] };
+}
+
+function coordinatorAnswerToStructured(answer: CoordinatorAnswer): StructuredReply {
+  const citations = answer.sources
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && s !== "None");
+  const meta = {
+    actionable_goals: answer.actionable_goals,
+    confidence: answer.confidence,
+    gaps: answer.gaps,
+    clarification_question: answer.clarification_question,
+  };
+  const parts: ReplyPart[] = [
+    { type: "text", text: answer.answer || "No answer available." },
+    { type: "data", data: JSON.stringify(meta), media_type: "application/json" },
+  ];
+  return { parts, citations };
+}
 
 type TaskDaemonCoordinatorHandoff = {
   schema_version: string;
@@ -182,14 +211,6 @@ function slugToken(value: string, fallback: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
   return normalized.length > 0 ? normalized : fallback;
-}
-
-function executionMessageId(message: unknown): string {
-  if (isObject(message)) {
-    if (typeof message.messageId === "string" && message.messageId.trim().length > 0) return message.messageId;
-    if (typeof message.id === "string" && message.id.trim().length > 0) return message.id;
-  }
-  return "msg-coordinator-fallback";
 }
 
 function normalizeOptionalString(value: unknown): string | null {
@@ -1407,55 +1428,6 @@ function toCoordinatorAnswer(value: unknown): CoordinatorAnswer | null {
   };
 }
 
-function goalHasOwnerOrDate(goal: CoordinatorGoal): boolean {
-  return Boolean(
-    (goal.owner && goal.owner.length > 0) || (goal.due_date && goal.due_date.length > 0),
-  );
-}
-
-function renderCoordinatorAnswer(answer: CoordinatorAnswer): string {
-  const lines: string[] = [];
-  lines.push("Answer:");
-  lines.push(answer.answer || "No answer available.");
-  lines.push("");
-
-  const hasOwnerOrDate = answer.actionable_goals.some(goalHasOwnerOrDate);
-  lines.push(
-    hasOwnerOrDate
-      ? "Actionable Goals (Owner/Date Present):"
-      : "Actionable Goals (Owner/Date Missing In Evidence):",
-  );
-  for (const goal of answer.actionable_goals) {
-    if (!goalHasOwnerOrDate(goal)) {
-      lines.push(`- ${goal.goal}`);
-      continue;
-    }
-    const tags: string[] = [];
-    if (goal.owner) tags.push(`owner: ${goal.owner}`);
-    if (goal.due_date) tags.push(`due: ${goal.due_date}`);
-    lines.push(`- ${goal.goal} (${tags.join("; ")})`);
-  }
-  if (!hasOwnerOrDate) {
-    lines.push("- Owner/date details were not explicit in the current sources.");
-  }
-  lines.push("");
-  lines.push("Sources:");
-  for (const source of answer.sources) lines.push(`- ${source}`);
-  lines.push("");
-  lines.push(`Confidence: ${answer.confidence.toFixed(2)}`);
-  lines.push("");
-  lines.push("Gaps:");
-  for (const gap of answer.gaps) lines.push(`- ${gap}`);
-
-  if (answer.clarification_question) {
-    lines.push("");
-    lines.push("Clarification:");
-    lines.push(`- ${answer.clarification_question}`);
-  }
-
-  return lines.join("\n");
-}
-
 // ---------------------------------------------------------------------------
 // Evidence collection (single target)
 // ---------------------------------------------------------------------------
@@ -1486,7 +1458,7 @@ async function synthesize(
   userText: string,
   transcript: string,
   conversationSummary: string | null,
-): Promise<string> {
+): Promise<StructuredReply> {
   let synthesizedRaw: unknown;
   try {
     synthesizedRaw = await SynthesizeCoordinatorResponse({
@@ -1496,47 +1468,51 @@ async function synthesize(
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    return [
-      "Answer:",
-      "I gathered delegated evidence but synthesis failed this turn.",
-      "",
-      "Actionable Goals (Owner/Date Missing In Evidence):",
-      "- None identified from current evidence",
-      "- Owner/date details were not explicit in the current sources.",
-      "",
-      "Sources:",
-      "- None",
-      "",
-      "Confidence: 0.35",
-      "",
-      "Gaps:",
-      `- Synthesis failure: ${reason}`,
-      "",
-      "Clarification:",
-      "- Which exact source should I prioritize?",
-    ].join("\n");
+    return textReply(
+      [
+        "Answer:",
+        "I gathered delegated evidence but synthesis failed this turn.",
+        "",
+        "Actionable Goals (Owner/Date Missing In Evidence):",
+        "- None identified from current evidence",
+        "- Owner/date details were not explicit in the current sources.",
+        "",
+        "Sources:",
+        "- None",
+        "",
+        "Confidence: 0.35",
+        "",
+        "Gaps:",
+        `- Synthesis failure: ${reason}`,
+        "",
+        "Clarification:",
+        "- Which exact source should I prioritize?",
+      ].join("\n"),
+    );
   }
 
   const synthesized = toCoordinatorAnswer(synthesizedRaw);
   if (!synthesized) {
-    return [
-      "Answer:",
-      "I collected evidence but could not produce a structured synthesis.",
-      "",
-      "Evidence snapshot:",
-      `- ${transcript.slice(0, 1200)}`,
-      "",
-      "Confidence: 0.40",
-      "",
-      "Gaps:",
-      "- Structured synthesis unavailable for this turn.",
-      "",
-      "Clarification:",
-      "- Which specific source should I prioritize?",
-    ].join("\n");
+    return textReply(
+      [
+        "Answer:",
+        "I collected evidence but could not produce a structured synthesis.",
+        "",
+        "Evidence snapshot:",
+        `- ${transcript.slice(0, 1200)}`,
+        "",
+        "Confidence: 0.40",
+        "",
+        "Gaps:",
+        "- Structured synthesis unavailable for this turn.",
+        "",
+        "Clarification:",
+        "- Which specific source should I prioritize?",
+      ].join("\n"),
+    );
   }
 
-  return renderCoordinatorAnswer(synthesized);
+  return coordinatorAnswerToStructured(synthesized);
 }
 
 // ---------------------------------------------------------------------------
@@ -2628,11 +2604,29 @@ async function executeWorkflowPlanPhase3(
   finalizeUnresolvedNodes(plan, artifacts);
   const summary = summarizeWorkflowExecution(plan, artifacts);
 
-  const appendExecutionNotes = (message: string): SessionResult => {
+  const appendExecutionNotes = (base: StructuredReply): SessionResult => {
     if (summary.failed > 0 || summary.skipped > 0 || summary.unresolved > 0) {
-      return { message: `${message}\n\n${renderWorkflowExecutionNotes(summary)}` };
+      const notes = renderWorkflowExecutionNotes(summary);
+      const first = base.parts[0];
+      if (first?.type === "text") {
+        return {
+          message: {
+            ...base,
+            parts: [
+              { type: "text", text: `${first.text}\n\n${notes}` },
+              ...base.parts.slice(1),
+            ] as ReplyPart[],
+          },
+        };
+      }
+      return {
+        message: {
+          parts: [{ type: "text", text: notes }, ...base.parts] as ReplyPart[],
+          citations: base.citations,
+        },
+      };
     }
-    return { message };
+    return { message: base };
   };
 
   const finalNode = findFinalWorkflowNode(plan);
@@ -2643,7 +2637,10 @@ async function executeWorkflowPlanPhase3(
       (finalNode.kind === "call_agent" || finalNode.kind === "direct_answer") &&
       finalArtifact.output_text
     ) {
-      return { kind: "final", result: appendExecutionNotes(finalArtifact.output_text) };
+      return {
+        kind: "final",
+        result: appendExecutionNotes(textReply(finalArtifact.output_text)),
+      };
     }
 
     if (finalNode.kind === "synthesize") {
@@ -2674,10 +2671,10 @@ async function executeWorkflowPlanPhase3(
     if (!message) {
       return {
         kind: "final",
-        result: { message: "No direct response was produced by the workflow plan." },
+        result: { message: textReply("No direct response was produced by the workflow plan.") },
       };
     }
-    return { kind: "final", result: appendExecutionNotes(message) };
+    return { kind: "final", result: appendExecutionNotes(textReply(message)) };
   }
 
   const transcript = buildWorkflowTranscript(plan, artifacts);
@@ -2685,7 +2682,9 @@ async function executeWorkflowPlanPhase3(
     return {
       kind: "final",
       result: appendExecutionNotes(
-        "I delegated according to the workflow plan, but received no usable evidence.",
+        textReply(
+          "I delegated according to the workflow plan, but received no usable evidence.",
+        ),
       ),
     };
   }
@@ -2698,13 +2697,12 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   const plannerUserText = buildPlannerUserTextFromTaskDaemonHandoff(ctx.message, rawUserText);
   const baseUserText = plannerUserText.userText;
   if (!baseUserText) {
-    return { message: "Please share what you want me to coordinate." };
+    return { message: textReply("Please share what you want me to coordinate.") };
   }
   const executionSession = typeof openA2aExecutionSession === "function"
     ? await openA2aExecutionSession("coordinator-" + Date.now().toString())
     : null;
   const rootIntentId = "intent-" + slugToken(baseUserText, "coordinate-request");
-  const rootMessageId = executionMessageId(ctx.message);
   let executionExecutable: { finish(): Promise<unknown> } | null = null;
 
   ctx.emit.statusChanged("TASK_STATE_WORKING");
@@ -2720,7 +2718,7 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
     agents = await discoverAgents(baseUserText);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    return { message: `Agent discovery failed: ${reason}` };
+    return { message: textReply(`Agent discovery failed: ${reason}`) };
   }
 
   for (let iteration = 0; iteration < MAX_WORKFLOW_ITERATIONS; iteration++) {
@@ -2769,7 +2767,6 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
       const intentPhase = await executionSession.submitIntent({
         intentId: rootIntentId,
         description: plan.goal || "Coordinate specialists to satisfy user request.",
-        derivedFromMessageIds: [rootMessageId],
       });
       executionExecutable = await intentPhase.submitPlan({
         intentId: rootIntentId,
@@ -2797,21 +2794,29 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
 
     if (iteration >= MAX_WORKFLOW_ITERATIONS - 1) {
       return {
-        message: `${outcome.prompt}\n\nReached clarification iteration limit. Please send a more specific request.`,
+        message: textReply(
+          `${outcome.prompt}\n\nReached clarification iteration limit. Please send a more specific request.`,
+        ),
       };
     }
 
     const nextMessage = await ctx.emit.awaitInput(outcome.prompt);
     const userReply = normalizeOptionalString(getChatMessageText(nextMessage));
     if (!userReply) {
-      return { message: "No clarification was provided. Please resend your request with details." };
+      return {
+        message: textReply(
+          "No clarification was provided. Please resend your request with details.",
+        ),
+      };
     }
 
     clarificationTurns.push(`- ${sanitizeUntrustedBlockContent(userReply)}`);
   }
 
   return {
-    message: "Workflow iteration limit reached before completion. Please narrow the request.",
+    message: textReply(
+      "Workflow iteration limit reached before completion. Please narrow the request.",
+    ),
   };
 }
 

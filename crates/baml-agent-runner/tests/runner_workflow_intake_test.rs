@@ -22,7 +22,7 @@ use common::e2e_serial_gate;
 use serde_json::{Value, json};
 use test_support::common::{
     TempDirCleanup, build_agent_package_archive_to_temp, build_agent_package_to_temp,
-    chunks_from_responses, message_texts_from_chunks, test_graphqlite_store, workspace_fnox_path,
+    chunks_from_responses, message_texts_from_chunks, test_surreal_store, workspace_fnox_path,
     workspace_root,
 };
 use tokio::{sync::Mutex, time::sleep};
@@ -292,7 +292,7 @@ async fn setup_workflow_intake_agent(
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_graphqlite_store(test_graphqlite_store())
+        .with_surreal_store(test_surreal_store().await)
         .build()
         .await
         .expect("build workflow-intake agent");

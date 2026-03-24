@@ -26,8 +26,10 @@ use ts_rs::TS;
 use crate::{
     bundles::BundleType,
     config_resolver::ConfigResolver,
+    tool_catalog::{InventoryCatalog, ToolCatalog},
+    tool_error_classify::{ClassifiedToolError, ToolExecutionClassifier},
     tool_fsm::{SessionPhase, ToolFailure, ToolSession, ToolSessionError, ToolSessionId, ToolStep},
-    tool_schema::{ToolType, json_schema_value},
+    tool_schema::{DescribeAction, ToolType, json_schema_value},
     ts_gen::render_tool_typescript,
 };
 
@@ -135,7 +137,7 @@ pub fn parse_tool_name_and_class(name: &str) -> Result<(ToolName, String)> {
 ///
 /// # Example
 /// ```rust,no_run
-/// use baml_rt_tools::{BamlTool, Support};
+/// use baml_rt_tools::{BamlTool, DescribeAction, Support};
 /// use baml_rt_core::Result;
 /// use serde::{Deserialize, Serialize};
 /// use schemars::JsonSchema;
@@ -155,6 +157,12 @@ pub fn parse_tool_name_and_class(name: &str) -> Result<(ToolName, String)> {
 /// struct WeatherOutput {
 ///     temperature: String,
 ///     location: String,
+/// }
+///
+/// impl DescribeAction for WeatherInput {
+///     fn describe(&self) -> String {
+///         format!("weather for {}", self.location)
+///     }
 /// }
 ///
 /// #[async_trait]
@@ -186,15 +194,22 @@ pub trait BamlTool: Send + Sync + 'static {
     /// The full tool name will be derived as "{Bundle::NAME}/{LOCAL_NAME}"
     const LOCAL_NAME: &'static str;
 
-    /// Typed input for opening the session (initial_input in Open step)
-    /// Use `()` for tools that don't need args when opening
-    type OpenInput: ToolType + Serialize + for<'de> Deserialize<'de>;
+    /// Session policy: Strict (one Send per session) or MultiSend (multiple Sends).
+    /// Override to MultiSend for tools where a typical workflow requires multiple
+    /// different queries in one session (e.g. search pages then read blocks).
+    const SESSION_POLICY: SessionPolicy = SessionPolicy::Strict;
 
-    /// Typed input for sending to an open session (input in Send step)
-    type Input: ToolType + Serialize + for<'de> Deserialize<'de>;
+    /// Typed input for opening the session (initial_input in Open step).
+    /// Use `()` for tools that don't need args when opening.
+    type OpenInput: ToolType + Serialize + for<'de> Deserialize<'de> + DescribeAction;
 
-    /// Typed output for this tool
-    type Output: ToolType + Serialize;
+    /// Typed input for sending to an open session (input in Send step).
+    /// Must implement `DescribeAction` to produce natural language prose
+    /// for drift scoring and context summarisation.
+    type Input: ToolType + Serialize + for<'de> Deserialize<'de> + DescribeAction;
+
+    /// Typed output for this tool.
+    type Output: ToolType + Serialize + for<'de> Deserialize<'de>;
 
     /// The unique qualified name of this tool (derived from Bundle::NAME and LOCAL_NAME)
     fn name() -> String {
@@ -239,11 +254,42 @@ pub trait BamlTool: Send + Sync + 'static {
     /// Typed output for the tool
     async fn execute(&self, args: Self::Input) -> Result<Self::Output>;
 
-    /// Compact a tool result for prompt-context projection in place.
+    /// Compact a tool result and produce a natural language summary.
     ///
-    /// Default behavior is identity (no-op), so existing tools do not need to
-    /// implement this unless they want domain-specific compaction.
-    fn compact_result(&self, _content: &mut Value) {}
+    /// Mutates the output for token-efficient context projection (truncation,
+    /// One-line natural language description of what the tool result contains.
+    /// Used as the archive header summary and as the `tool_result` history item.
+    ///
+    /// Default returns a generic fallback. Tools override with a specific
+    /// description like `"found 3 records matching 'bob'"` or
+    /// `"message sent, waiting for response"`.
+    fn describe_result(&self, _output: &Self::Output) -> String {
+        format!("{} result", Self::LOCAL_NAME)
+    }
+
+    /// Describe what engaging this tool means, returned for Open FSM steps.
+    /// Used for intent drift detection at session boundaries.
+    fn describe_open(&self) -> String {
+        format!("using {}", Self::LOCAL_NAME)
+    }
+
+    /// Describe the typed open-input for a richer Open step description.
+    /// Default ignores the input and delegates to `describe_open`.
+    fn describe_open_input(&self, _input: &Self::OpenInput) -> String {
+        self.describe_open()
+    }
+
+    /// Describe a specific tool action as natural language prose (present
+    /// participle), for Send FSM steps.
+    /// Default delegates to `DescribeAction::describe` on the Input type.
+    fn describe_invocation(&self, input: &Self::Input) -> String {
+        input.describe()
+    }
+
+    /// Classify execution failures for host retry policy and LLM-visible `tool_error` payloads.
+    fn classify_execution_error(err: &BamlRtError) -> ClassifiedToolError {
+        ClassifiedToolError::from_baml_error(err)
+    }
 }
 
 /// Type of secret required by a tool (determines provisioning UX and validation).
@@ -525,6 +571,11 @@ impl ToolName {
     pub fn local(&self) -> &LocalToolName {
         &self.local
     }
+
+    /// Derived slug for codegen identifiers: `"support_calculate"` from `"support/calculate"`.
+    pub fn slug(&self) -> ToolSlug {
+        ToolSlug(format!("{}_{}", self.bundle, self.local))
+    }
 }
 
 impl std::fmt::Display for ToolName {
@@ -566,6 +617,146 @@ impl From<ToolName> for String {
     }
 }
 
+/// Codegen-safe identifier derived from a `ToolName`: `"support/calculate"` -> `"support_calculate"`.
+///
+/// Used in generated BAML function names (`__act__support_calculate`) and as keys in
+/// phase function mappings. Constructed only via `ToolName::slug()`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ToolSlug(String);
+
+impl ToolSlug {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ToolSlug {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Newtype for a session plan type name (e.g. `"SupportCalculateSessionPlan"`).
+///
+/// Wraps the BAML class name that the builder generates for each tool's session plan.
+/// Invariant: the inner string must end with `"SessionPlan"`.
+/// `class_name()` strips the suffix — infallible by construction.
+/// Lives in `baml-rt-tools` so both the builder and runtime crates can use the same type.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SessionPlanTypeName(String);
+
+impl SessionPlanTypeName {
+    /// Construct a validated `SessionPlanTypeName`.
+    /// Rejects values that do not end with `"SessionPlan"`.
+    pub fn new(name: impl Into<String>) -> Result<Self> {
+        let name = name.into();
+        if !name.ends_with("SessionPlan") {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "SessionPlanTypeName '{name}' must end with 'SessionPlan'"
+            )));
+        }
+        Ok(Self(name))
+    }
+
+    /// Derive the tool class name: `"SupportCalculateSessionPlan"` → `"SupportCalculate"`.
+    /// Infallible — the suffix invariant is guaranteed by construction.
+    pub fn class_name(&self) -> &str {
+        self.0.strip_suffix("SessionPlan").unwrap()
+    }
+
+    /// Borrow the inner type name as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SessionPlanTypeName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for SessionPlanTypeName {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionPlanTypeName {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let name = String::deserialize(deserializer)?;
+        SessionPlanTypeName::new(name).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Map from BAML function name to candidate session plan types.
+///
+/// Length 1 = single-tool (existing behavior).
+/// Length >1 = polymorphic Open — the LLM selects a tool via `tool_name` on the Open step.
+pub type SessionPlanFunctionsMap = std::collections::HashMap<String, Vec<SessionPlanTypeName>>;
+
+/// The role a BAML function plays in the step executor pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionRole {
+    /// User-authored root step executor (e.g. `ExecuteStep`).
+    Root,
+    /// Generated tool-selection phase function (`__select`).
+    Select,
+    /// Generated post-Open action phase function (`__act__<slug>`).
+    Act,
+    /// Generated output-consumption phase function (`__consume__<slug>`).
+    Consume,
+    /// Generated done/continue phase function (`__continue__<slug>`).
+    Continue,
+}
+
+/// Enriched binding for a function in the session plan manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionPlanBinding {
+    pub plan_types: Vec<SessionPlanTypeName>,
+    pub role: FunctionRole,
+}
+
+/// Canonical naming conventions for generated session types and phase functions.
+///
+/// Single source of truth for the suffix patterns used by the builder (codegen)
+/// and the step executor loop (runtime phase function selection).
+pub struct SessionTypeNames;
+
+impl SessionTypeNames {
+    pub fn select(base: &str) -> String {
+        format!("{base}__select")
+    }
+
+    pub fn act(base: &str, slug: &ToolSlug) -> String {
+        format!("{base}__act__{slug}")
+    }
+
+    pub fn consume(base: &str, slug: &ToolSlug) -> String {
+        format!("{base}__consume__{slug}")
+    }
+
+    pub fn r#continue(base: &str, slug: &ToolSlug) -> String {
+        format!("{base}__continue__{slug}")
+    }
+
+    pub fn open_step(class_name: &str) -> String {
+        format!("{class_name}OpenStep")
+    }
+
+    pub fn session_plan(class_name: &str) -> String {
+        format!("{class_name}SessionPlan")
+    }
+}
+
 /// How the step executor schedules Send/Read ops for a tool session.
 ///
 /// `Strict` (the default) enforces a single Send per hop: after a Send the
@@ -594,6 +785,39 @@ pub enum SessionPolicy {
     Strict,
     /// Open → Send* → Read → Finish, multiple Sends allowed per session.
     MultiSend,
+}
+
+impl SessionPolicy {
+    /// Legal FSM op labels for the step-executor LLM at this session position.
+    ///
+    /// `last_status` is the **raw** `status` string from the previous hop's tool
+    /// result (e.g. `"open"`, `"sent"`, `"done"`). When `session_open` is false,
+    /// only `Open` is offered regardless of `last_status`.
+    pub fn step_executor_allowed_ops(
+        self,
+        session_open: bool,
+        last_status: Option<&str>,
+    ) -> Vec<&'static str> {
+        if !session_open {
+            return vec!["Open"];
+        }
+        match self {
+            SessionPolicy::Strict => match last_status {
+                Some("open") => vec!["Send"],
+                Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
+                Some("done") => vec!["Finish", "Read"],
+                Some("aborted") => vec!["Abort"],
+                _ => vec!["Read"],
+            },
+            SessionPolicy::MultiSend => match last_status {
+                Some("open") => vec!["Send"],
+                Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
+                Some("done") => vec!["Read", "Send", "Finish"],
+                Some("aborted") => vec!["Abort"],
+                _ => vec!["Read"],
+            },
+        }
+    }
 }
 
 /// Metadata describing a tool function
@@ -1007,6 +1231,8 @@ pub struct ToolSessionContext {
     pub config_version: Option<u64>,
     /// Invocation scope task_id when available.
     pub task_id: Option<TaskId>,
+    /// Optional per-tool classifier for execution errors (set when opening via [`ToolWrapper`]).
+    pub execution_classifier: Option<ToolExecutionClassifier>,
 }
 
 /// Generic explicit read request envelope for Send steps.
@@ -1057,10 +1283,33 @@ pub trait ToolHandler: Send + Sync {
     fn capability(&self) -> ToolCapability {
         ToolCapability::OneShot
     }
-    /// Compact a tool result for prompt-context projection in place.
-    ///
-    /// Default behavior is identity (no-op).
-    fn compact_result(&self, _content: &mut Value) {}
+    /// One-line natural language description of what the tool result contains.
+    /// Used as the archive header summary and `tool_result` history item.
+    /// Returns `None` when no meaningful description is available.
+    fn describe_result_value(&self, _output: &Value) -> Option<String> {
+        None
+    }
+
+    /// Produce a natural language description of a tool action from its
+    /// BAML-parsed result payload (the session step JSON). Dispatches on the
+    /// FSM `op` field and deserialises the typed input where applicable.
+    /// Every implementor must return a non-empty string; `Option` is intentionally
+    /// absent so silent history deletion cannot occur.
+    fn describe_invocation(&self, content: &Value) -> String {
+        let step = content.get("step").unwrap_or(content);
+        match step.get("op").and_then(Value::as_str) {
+            Some(op) => format!("{}: {op}", self.metadata().name),
+            None => String::new(),
+        }
+    }
+
+    /// Semantic description of what opening this tool session means.
+    /// Used by the drift gate to compare against the plan step intent
+    /// *before* the session is actually opened.
+    fn describe_open_action(&self) -> Option<String> {
+        None
+    }
+
     async fn open_session(
         &self,
         ctx: ToolSessionContext,
@@ -1088,13 +1337,35 @@ struct ToolRegistryInner {
     config_resolver: Option<Arc<dyn ConfigResolver>>,
 }
 
+/// Extract the tool name from a BAML-parsed result payload.
+/// Handles two shapes:
+/// - Direct: `{"tool_name": "support/notion", ...}`
+/// - Wrapped variant: `{"SupportNotion": {"tool_name": "support/notion", ...}}`
+fn extract_tool_name_from_payload(content: &Value) -> Option<String> {
+    let obj = content.as_object()?;
+    if let Some(name) = obj.get("tool_name").and_then(Value::as_str) {
+        return Some(name.to_string());
+    }
+    if obj.len() == 1 {
+        let (_, inner) = obj.iter().next()?;
+        if let Some(name) = inner.get("tool_name").and_then(Value::as_str) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
 fn map_session_error(error: ToolSessionError) -> BamlRtError {
     match error {
         ToolSessionError::Transport(err) => err,
-        ToolSessionError::Tool(failure) => BamlRtError::InvalidArgument(format!(
-            "Tool failure ({:?}): {}",
-            failure.kind, failure.message
-        )),
+        ToolSessionError::Tool(failure) => {
+            let payload = serde_json::json!({
+                "tool_error": failure.classified.to_tool_error_json(),
+                "failure_kind": format!("{:?}", failure.kind),
+                "summary": failure.message,
+            });
+            BamlRtError::ToolExecution(payload.to_string())
+        }
     }
 }
 
@@ -1358,6 +1629,7 @@ pub fn create_tool_handler<T: BamlTool>(
         T::class_name(),
         description_str.clone(),
     )
+    .with_session_policy(T::SESSION_POLICY)
     .build_metadata();
     let handler: Arc<dyn ToolHandler> = Arc::new(ToolWrapper {
         tool: Arc::new(tool),
@@ -1372,17 +1644,59 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
         &self.metadata
     }
 
-    fn compact_result(&self, content: &mut Value) {
-        self.tool.compact_result(content)
+    fn describe_result_value(&self, output: &Value) -> Option<String> {
+        let raw = output.get("output").unwrap_or(output);
+        let typed: T::Output = serde_json::from_value(raw.clone()).ok()?;
+        let desc = self.tool.describe_result(&typed);
+        if desc.is_empty() { None } else { Some(desc) }
+    }
+
+    fn describe_invocation(&self, content: &Value) -> String {
+        // Single JSON parse point for the entire tool family.
+        // Payload arrives in two shapes:
+        //   wrapped:   {"step": {"op": "Send", "input": {...}}}
+        //   unwrapped: {"op": "Send", "input": {...}}
+        // After op extraction, the typed inputs are passed to the concrete tool's
+        // ToolSession methods — no JSON parsing happens in those methods.
+        let step = content
+            .get("step")
+            .and_then(|s| s.as_object())
+            .map(|_| content.get("step").unwrap())
+            .unwrap_or(content);
+        let op = match step.get("op").and_then(Value::as_str) {
+            Some(op) => op,
+            None => return self.tool.describe_open(),
+        };
+        let input_val = step.get("input");
+        match op {
+            "Open" => input_val
+                .and_then(|v| serde_json::from_value::<T::OpenInput>(v.clone()).ok())
+                .map(|typed| self.tool.describe_open_input(&typed))
+                .unwrap_or_else(|| self.tool.describe_open()),
+            "Send" => input_val
+                .and_then(|v| serde_json::from_value::<T::Input>(v.clone()).ok())
+                .map(|typed| self.tool.describe_invocation(&typed))
+                .unwrap_or_else(|| format!("{}: send", self.metadata().name)),
+            // Read shows up as a SessionStep with archive content; Finish/Abort are terminal.
+            // Neither adds semantic value as a ToolCall entry in the LLM's conversation history.
+            "Read" | "Finish" | "Abort" => String::new(),
+            other => format!("{}: {other}", self.metadata().name),
+        }
+    }
+
+    fn describe_open_action(&self) -> Option<String> {
+        Some(self.tool.describe_open())
     }
 
     async fn open_session(
         &self,
-        ctx: ToolSessionContext,
+        mut ctx: ToolSessionContext,
         open_input: Value,
     ) -> Result<Box<dyn ToolSession>> {
         // Parse and validate open_input if needed
         validate_open_input::<T::OpenInput>(open_input)?;
+
+        ctx.execution_classifier = Some(Arc::new(|err| T::classify_execution_error(err)));
 
         let tool = self.tool.clone();
         let executor: Box<dyn ToolExecutor> = Box::new(ExecutorAdapter::new(move |input| {
@@ -1398,9 +1712,8 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
 }
 
 struct MultiSendSession {
-    /// Reserved for session-scoped tracing/abort; not yet used. In production, allow(dead_code) is a smell—revisit when adding session-scoped ops.
+    /// Reserved for session-scoped tracing/abort; not yet used. Revisit when adding session-scoped ops.
     #[allow(dead_code)]
-    // ctx reserved for executor/session-scoped ops; not read by this type yet
     ctx: ToolSessionContext,
     executor: Box<dyn ToolExecutor>,
     last_send: Option<Value>,
@@ -1438,7 +1751,12 @@ impl ToolSession for MultiSendSession {
         }
         let output = match self.executor.execute(merged).await {
             Ok(value) => value,
-            Err(err) => return Err(ToolSessionError::Tool(ToolFailure::from_error(&err))),
+            Err(err) => {
+                return Err(ToolSessionError::Tool(ToolFailure::from_error_in_session(
+                    &self.ctx.execution_classifier,
+                    &err,
+                )));
+            }
         };
         Ok(ToolStep::Done {
             output: Some(output),
@@ -1506,7 +1824,7 @@ impl ToolRegistry {
     ///
     /// # Example
     /// ```rust,no_run
-    /// use baml_rt_tools::{ToolRegistry, BamlTool, Support};
+    /// use baml_rt_tools::{BamlTool, DescribeAction, Support, ToolRegistry};
     /// use baml_rt_core::Result;
     /// use serde::{Deserialize, Serialize};
     /// use schemars::JsonSchema;
@@ -1522,6 +1840,12 @@ impl ToolRegistry {
     /// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
     /// #[ts(export)]
     /// struct MyOutput {}
+    ///
+    /// impl DescribeAction for MyInput {
+    ///     fn describe(&self) -> String {
+    ///         "my_tool".to_string()
+    ///     }
+    /// }
     ///
     /// #[async_trait]
     /// impl BamlTool for MyTool {
@@ -1664,11 +1988,69 @@ impl ToolRegistry {
             .map(|(metadata, _)| metadata.clone())
     }
 
+    /// Get tool metadata by parsed `ToolName` — no re-parsing overhead.
+    pub fn get_metadata_by_name(&self, name: &ToolName) -> Option<ToolFunctionMetadata> {
+        let inner = self.inner.lock().unwrap();
+        inner.tools.get(name).map(|(metadata, _)| metadata.clone())
+    }
+
     /// Get a registered tool handler by name.
     pub fn get_handler(&self, name: &str) -> Option<Arc<dyn ToolHandler>> {
         let parsed = ToolName::parse(name).ok()?;
         let inner = self.inner.lock().unwrap();
         inner.tools.get(&parsed).map(|(_, handler)| handler.clone())
+    }
+
+    /// Produce a natural language description of a tool-action payload,
+    /// routed by tool name to the correct handler. No trial deserialization.
+    pub fn describe_invocation_for(&self, tool_name: &str, content: &Value) -> Option<String> {
+        let parsed = ToolName::parse(tool_name).ok()?;
+        let inner = self.inner.lock().unwrap();
+        let (_, handler) = inner.tools.get(&parsed)?;
+        Some(handler.describe_invocation(content))
+    }
+
+    /// Get a one-line description of what a tool result contains.
+    /// Used to populate the archive header summary at `ToolStep::Done`.
+    pub fn describe_result_for(&self, tool_name: &str, output: &Value) -> Option<String> {
+        let parsed = ToolName::parse(tool_name).ok()?;
+        let inner = self.inner.lock().unwrap();
+        let (_, handler) = inner.tools.get(&parsed)?;
+        handler.describe_result_value(output)
+    }
+
+    /// Get the `describe_open()` text for a tool by name.
+    /// Used by the drift gate to produce the action description before opening a session.
+    pub fn describe_open_for(&self, tool_name: &str) -> Option<String> {
+        let parsed = ToolName::parse(tool_name).ok()?;
+        let inner = self.inner.lock().unwrap();
+        let (_, handler) = inner.tools.get(&parsed)?;
+        handler.describe_open_action()
+    }
+
+    /// Try to extract the tool name from a BAML-parsed result payload
+    /// (looks for `tool_name` or `{variant}.tool_name` fields), then route
+    /// to the named handler's `describe_invocation`.
+    pub fn describe_invocation(&self, content: &Value) -> Option<String> {
+        let tool_name = extract_tool_name_from_payload(content)?;
+        self.describe_invocation_for(&tool_name, content)
+    }
+
+    /// Describe an invocation by tool name from the LlmEffectMetadata,
+    /// falling back to payload extraction if the tool name isn't provided.
+    /// Returns the handler's description when a matching tool is registered.
+    /// Returns empty string when no tool matches — callers that need a non-empty
+    /// value must provide their own fallback. Empty string is explicitly preferred
+    /// over a synthetic "{tool}: call" fallback because that leaks meaningless text
+    /// into provenance, drift scoring, and UI.
+    pub fn describe_invocation_with_hint(
+        &self,
+        tool_name_hint: Option<&str>,
+        content: &Value,
+    ) -> String {
+        let from_hint = tool_name_hint.and_then(|n| self.describe_invocation_for(n, content));
+        let from_payload = || self.describe_invocation(content);
+        from_hint.or_else(from_payload).unwrap_or_default()
     }
 
     /// List all registered tool names
@@ -1733,7 +2115,38 @@ impl ToolRegistry {
     }
 
     pub fn typescript_declarations(&self) -> Result<String> {
-        render_tool_typescript()
+        let catalog = InventoryCatalog::new();
+        self.typescript_declarations_with_catalog(&catalog)
+    }
+
+    pub fn typescript_declarations_with_catalog<C: ToolCatalog>(
+        &self,
+        catalog: &C,
+    ) -> Result<String> {
+        let allowlist = {
+            let inner = self.inner.lock().unwrap();
+            inner.allowlist.clone()
+        };
+        let tools = if let Some(allowlist) = &allowlist {
+            let mut tools = Vec::with_capacity(allowlist.len());
+            let mut missing = Vec::new();
+            for name in allowlist {
+                match catalog.by_name(name) {
+                    Some(metadata) => tools.push(metadata.clone()),
+                    None => missing.push(name.to_string()),
+                }
+            }
+            if !missing.is_empty() {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Tool metadata missing for: {}",
+                    missing.join(", ")
+                )));
+            }
+            tools
+        } else {
+            self.export_metadata()
+        };
+        render_tool_typescript(&tools)
     }
 
     pub fn write_typescript_declarations(&self, path: &std::path::Path) -> Result<()> {
@@ -1791,13 +2204,13 @@ impl ToolRegistry {
         };
 
         let (config, config_version) = {
-            let inner = self.inner.lock().unwrap();
-            let resolver = inner.config_resolver.as_ref();
+            let resolver = self.inner.lock().unwrap().config_resolver.clone();
             let config_key = metadata.config_bundle.as_ref();
             match (resolver, &metadata.config, config_key) {
                 (Some(r), Some(config_meta), Some(bundle_name)) => {
                     let opt = r
                         .get_config_with_version(bundle_name)
+                        .await
                         .ok()
                         .flatten()
                         .or_else(|| Some((config_meta.default.clone(), 0u64)));
@@ -1816,6 +2229,7 @@ impl ToolRegistry {
             config,
             config_version,
             task_id: task_id.cloned(),
+            execution_classifier: None,
         };
         let session = handler.open_session(ctx, open_input).await?;
         self.sessions
@@ -2099,8 +2513,14 @@ pub fn create_multi_send_session_tool_from_async<OI, I, O, F>(
     executor: F,
 ) -> Arc<dyn ToolHandler>
 where
-    OI: for<'de> Deserialize<'de> + Send + Sync + 'static,
-    I: crate::tool_schema::ToolType + Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static,
+    OI: for<'de> Deserialize<'de> + DescribeAction + Send + Sync + 'static,
+    I: crate::tool_schema::ToolType
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + DescribeAction
+        + Send
+        + Sync
+        + 'static,
     O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
     F: Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync + 'static,
 {
@@ -2121,13 +2541,44 @@ struct MultiSendSessionToolFromAsync<OI, I, O, F> {
 #[async_trait]
 impl<OI, I, O, F> ToolHandler for MultiSendSessionToolFromAsync<OI, I, O, F>
 where
-    OI: for<'de> Deserialize<'de> + Send + Sync + 'static,
-    I: crate::tool_schema::ToolType + Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static,
+    OI: for<'de> Deserialize<'de> + DescribeAction + Send + Sync + 'static,
+    I: crate::tool_schema::ToolType
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + DescribeAction
+        + Send
+        + Sync
+        + 'static,
     O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
     F: Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ToolFunctionMetadata {
         &self.metadata
+    }
+
+    fn describe_invocation(&self, content: &Value) -> String {
+        // Accept both wrapped { step: { op, input } } and unwrapped { op, input }.
+        let step = content.get("step").unwrap_or(content);
+        let tool_name = self.metadata.name.to_string();
+        let op = match step.get("op").and_then(Value::as_str) {
+            Some(op) => op,
+            None => return format!("using {tool_name}"),
+        };
+        match op {
+            "Open" => step
+                .get("input")
+                .and_then(|v| serde_json::from_value::<OI>(v.clone()).ok())
+                .map(|oi| oi.describe())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("using {tool_name}")),
+            "Send" => step
+                .get("input")
+                .and_then(|v| serde_json::from_value::<I>(v.clone()).ok())
+                .map(|typed| typed.describe())
+                .unwrap_or_else(|| format!("{tool_name}: send")),
+            "Read" | "Finish" | "Abort" => String::new(),
+            other => format!("{tool_name}: {other}"),
+        }
     }
 
     async fn open_session(
@@ -2202,11 +2653,10 @@ impl ToolSession for OneShotSession {
             Ok(value) => value,
             Err(err) => {
                 return Ok(ToolStep::Error {
-                    error: ToolFailure::from_error(&err),
+                    error: ToolFailure::from_error_in_session(&self.ctx.execution_classifier, &err),
                 });
             }
         };
-        self.state.close();
         Ok(ToolStep::Done {
             output: Some(output),
         })
@@ -2284,5 +2734,72 @@ mod tool_config_metadata_tests {
             type_name: None,
         };
         assert_eq!(meta.default, json!({ "k": "from_schema" }));
+    }
+}
+
+#[cfg(test)]
+mod session_plan_type_name_tests {
+    use super::*;
+
+    #[test]
+    fn new_accepts_valid_suffix() {
+        let name = SessionPlanTypeName::new("SupportCalculateSessionPlan").unwrap();
+        assert_eq!(name.as_str(), "SupportCalculateSessionPlan");
+        assert_eq!(name.class_name(), "SupportCalculate");
+    }
+
+    #[test]
+    fn new_rejects_missing_suffix() {
+        let result = SessionPlanTypeName::new("SupportCalculate");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn new_rejects_empty_string() {
+        let result = SessionPlanTypeName::new("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn class_name_strips_suffix() {
+        let name = SessionPlanTypeName::new("SystemInternalA2aSessionPlan").unwrap();
+        assert_eq!(name.class_name(), "SystemInternalA2a");
+    }
+
+    #[test]
+    fn display_matches_inner() {
+        let name = SessionPlanTypeName::new("FooSessionPlan").unwrap();
+        assert_eq!(format!("{name}"), "FooSessionPlan");
+    }
+
+    #[test]
+    fn serde_roundtrip() {
+        let name = SessionPlanTypeName::new("XSessionPlan").unwrap();
+        let json = serde_json::to_string(&name).unwrap();
+        assert_eq!(json, "\"XSessionPlan\"");
+        let back: SessionPlanTypeName = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, name);
+    }
+
+    #[test]
+    fn serde_rejects_invalid_on_deserialize() {
+        let result = serde_json::from_str::<SessionPlanTypeName>("\"NotAPlan\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn session_plan_functions_map_serde_roundtrip() {
+        let mut map = SessionPlanFunctionsMap::new();
+        map.insert(
+            "ChooseAction".to_string(),
+            vec![
+                SessionPlanTypeName::new("SupportCalcSessionPlan").unwrap(),
+                SessionPlanTypeName::new("SystemA2aSessionPlan").unwrap(),
+            ],
+        );
+        let json = serde_json::to_string(&map).unwrap();
+        let back: SessionPlanFunctionsMap = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back["ChooseAction"].len(), 2);
     }
 }

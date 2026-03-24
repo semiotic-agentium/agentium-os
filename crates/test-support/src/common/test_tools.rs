@@ -15,6 +15,11 @@ pub struct WeatherTool;
 pub struct WeatherInput {
     location: String,
 }
+impl baml_rt_tools::DescribeAction for WeatherInput {
+    fn describe(&self) -> String {
+        format!("checking weather for '{}'", self.location)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
@@ -65,6 +70,11 @@ pub struct UppercaseTool;
 pub struct UppercaseInput {
     text: String,
 }
+impl baml_rt_tools::DescribeAction for UppercaseInput {
+    fn describe(&self) -> String {
+        "converting text to uppercase".to_string()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
@@ -101,6 +111,11 @@ pub struct DelayedResponseTool;
 pub struct DelayedInput {
     message: String,
 }
+impl baml_rt_tools::DescribeAction for DelayedInput {
+    fn describe(&self) -> String {
+        "processing delayed response".to_string()
+    }
+}
 
 /// Test-only bundle used by A2A error/streaming tests.
 pub struct Test;
@@ -120,6 +135,11 @@ pub struct AddNumbersTool;
 pub struct AddNumbersInput {
     pub a: f64,
     pub b: f64,
+}
+impl baml_rt_tools::DescribeAction for AddNumbersInput {
+    fn describe(&self) -> String {
+        format!("adding {} + {}", self.a, self.b)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]

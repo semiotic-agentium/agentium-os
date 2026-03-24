@@ -1,15 +1,15 @@
-//! Tool index tests using GraphQLite (temp path per test).
+//! Tool index tests using SurrealDB in-memory store.
 
-use baml_rt_provenance::{ToolIndexConfig, index_tools_into_connection};
+use baml_rt_provenance::{SurrealStoreBuilder, index_tools};
 use baml_rt_tools::{SecretRequest, ToolFunctionMetadataExport, ToolName, ToolTypeSpec};
-use serde_json::json;
-use tempfile::tempdir;
+use serde_json::{Value, json};
 
 #[tokio::test]
 async fn tool_index_creates_tool_nodes() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.keep().join("provenance.db");
-    let config = ToolIndexConfig::new(&path);
+    let store = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("build store");
 
     let name = ToolName::parse("support/get_weather").expect("valid tool name");
     let tools = vec![ToolFunctionMetadataExport {
@@ -46,26 +46,29 @@ async fn tool_index_creates_tool_nodes() {
         event_sources: Vec::new(),
     }];
 
-    let conn = index_tools_into_connection(&config, &tools)
+    index_tools(&store, &tools).await.expect("index tools");
+
+    let mut result = store
+        .db()
+        .query("SELECT node_id OMIT id FROM prov_node WHERE label = 'ToolFunction' LIMIT 5")
         .await
-        .expect("index tools");
-    let all: graphqlite::CypherResult = conn
-        .cypher("MATCH (t:ToolFunction) RETURN t.id AS tool_id LIMIT 5")
         .expect("query all");
-    let rows: Vec<_> = all.iter().collect();
+    let rows: Vec<Value> = result.take(0).unwrap_or_default();
     assert!(
         !rows.is_empty(),
         "expected at least one ToolFunction node after index_tools"
     );
-    let result = conn
-        .cypher_builder("MATCH (t:ToolFunction) WHERE t.id = $id RETURN t LIMIT 1")
-        .params(&serde_json::json!({ "id": "support/get_weather" }))
-        .run()
+
+    let mut by_id = store
+        .db()
+        .query("SELECT * OMIT id FROM prov_node WHERE label = 'ToolFunction' AND node_id = $id LIMIT 1")
+        .bind(("id", "support/get_weather"))
+        .await
         .expect("query by id");
+    let id_rows: Vec<Value> = by_id.take(0).unwrap_or_default();
     assert_eq!(
-        result.iter().count(),
+        id_rows.len(),
         1,
-        "expected one ToolFunction node for support/get_weather; first node id: {:?}",
-        rows[0].get::<String>("tool_id")
+        "expected one ToolFunction node for support/get_weather"
     );
 }

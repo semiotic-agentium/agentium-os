@@ -1,5 +1,5 @@
 use baml_rt_core::{
-    Outcome,
+    Citation, Outcome,
     bus::PlanningSupersessionKind,
     ids::{AgentId, ContextId, ExternalId, IntentId, MessageId, PlanId, TaskId, UuidId},
 };
@@ -30,7 +30,6 @@ fn normalize_status_change_includes_derived_relation() {
 fn normalize_intent_and_plan_revisions_emit_replaced_by_relations() {
     let context_id = ContextId::new(2, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-revision-1"));
-    let message_id = MessageId::from_external(ExternalId::new("msg-revision-1"));
     let normalizer = DefaultProvNormalizer::default();
 
     normalizer
@@ -39,7 +38,8 @@ fn normalize_intent_and_plan_revisions_emit_replaced_by_relations() {
             task_id.clone(),
             IntentId::from("intent-v1".to_string()),
             "v1".to_string(),
-            vec![message_id.clone()],
+            vec![Citation::try_new("#1").expect("citation")],
+            None,
             None,
         ))
         .expect("intent v1");
@@ -49,7 +49,8 @@ fn normalize_intent_and_plan_revisions_emit_replaced_by_relations() {
             task_id.clone(),
             IntentId::from("intent-v2".to_string()),
             "v2".to_string(),
-            vec![message_id.clone()],
+            vec![Citation::try_new("#1").expect("citation")],
+            None,
             None,
         ))
         .expect("intent v2");
@@ -92,7 +93,6 @@ fn normalize_intent_and_plan_revisions_emit_replaced_by_relations() {
 fn normalize_intent_and_plan_revisions_emit_refined_by_relations() {
     let context_id = ContextId::new(3, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-refine-1"));
-    let message_id = MessageId::from_external(ExternalId::new("msg-refine-1"));
     let normalizer = DefaultProvNormalizer::default();
 
     normalizer
@@ -101,7 +101,8 @@ fn normalize_intent_and_plan_revisions_emit_refined_by_relations() {
             task_id.clone(),
             IntentId::from("intent-v1".to_string()),
             "v1".to_string(),
-            vec![message_id.clone()],
+            vec![Citation::try_new("#1").expect("citation")],
+            None,
             None,
         ))
         .expect("intent v1");
@@ -111,8 +112,9 @@ fn normalize_intent_and_plan_revisions_emit_refined_by_relations() {
             task_id.clone(),
             IntentId::from("intent-v2".to_string()),
             "v2".to_string(),
-            vec![message_id.clone()],
+            vec![Citation::try_new("#1").expect("citation")],
             Some(PlanningSupersessionKind::RefinedBy),
+            None,
         ))
         .expect("intent v2");
     assert!(

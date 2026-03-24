@@ -70,7 +70,6 @@ type AgentCandidate = {
 declare function PlanCoordinatorWorkflow(args: {
   user_message: string;
   available_agents: AgentCandidate[];
-  conversation_context?: string | null;
 }): Promise<unknown>;
 
 declare function openToolSession(
@@ -80,7 +79,6 @@ declare function openToolSession(
 
 const MAX_FANOUT_CONCURRENCY = 3;
 const MAX_TRANSCRIPT_CHARS = 12_000;
-const MAX_CONVERSATION_CONTEXT_CHARS = 4_000;
 const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
 const MAX_DELEGATION_CONTINUE_STEPS = 128;
 const MAX_WORKFLOW_NODES = 30;
@@ -700,7 +698,6 @@ function buildAgentRegistry(agents: DiscoveredAgent[]): Set<string> {
 async function planWorkflow(
   userText: string,
   agents: DiscoveredAgent[],
-  conversationSummary: string | null,
 ): Promise<WorkflowPlan> {
   const candidates = buildAgentCandidates(agents);
   const agentRegistry = buildAgentRegistry(agents);
@@ -709,7 +706,6 @@ async function planWorkflow(
     const rawPlan = await PlanCoordinatorWorkflow({
       user_message: userText,
       available_agents: candidates,
-      conversation_context: conversationSummary || null,
     });
     const parsed = parseWorkflowPlan(rawPlan);
     if (!parsed) {
@@ -726,14 +722,6 @@ async function planWorkflow(
 // ---------------------------------------------------------------------------
 // Conversation context
 // ---------------------------------------------------------------------------
-
-function getConversationSummary(ctx: RunContext): string | null {
-  const tags = (ctx as unknown as { tags?: unknown }).tags;
-  if (!isObject(tags)) return null;
-  const history = tags.conversation_history;
-  if (typeof history !== "string" || history.trim().length === 0) return null;
-  return history.slice(0, MAX_CONVERSATION_CONTEXT_CHARS);
-}
 
 // ---------------------------------------------------------------------------
 // Synthesis and rendering
@@ -867,14 +855,12 @@ async function collectEvidence(
 async function synthesize(
   userText: string,
   transcript: string,
-  _conversationSummary: string | null,
 ): Promise<string> {
   let synthesizedRaw: unknown;
   try {
     synthesizedRaw = await SynthesizeCoordinatorResponse({
       user_message: userText,
       delegated_transcript: transcript,
-      conversation_context: _conversationSummary,
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -1468,7 +1454,6 @@ function renderWorkflowExecutionNotes(summary: WorkflowExecutionSummary): string
 async function executeWorkflowPlanPhase3(
   plan: WorkflowPlan,
   userText: string,
-  conversationSummary: string | null,
   emit?: SessionEmitter,
 ): Promise<WorkflowExecutionOutcome> {
   const artifacts = new Map<string, NodeArtifact>();
@@ -1565,7 +1550,7 @@ async function executeWorkflowPlanPhase3(
           userText,
           finalNode.synthesis_template,
         );
-        const base = await synthesize(synthesisUserMessage, transcript, conversationSummary);
+        const base = await synthesize(synthesisUserMessage, transcript);
         return { kind: "final", result: appendExecutionNotes(base) };
       }
     }
@@ -1599,7 +1584,7 @@ async function executeWorkflowPlanPhase3(
       ),
     };
   }
-  const base = await synthesize(userText, transcript, conversationSummary);
+  const base = await synthesize(userText, transcript);
   return { kind: "final", result: appendExecutionNotes(base) };
 }
 
@@ -1610,7 +1595,6 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   }
 
   ctx.emit.statusChanged("TASK_STATE_WORKING");
-  const baseConversationSummary = getConversationSummary(ctx);
   const clarificationTurns: string[] = [];
 
   let agents: DiscoveredAgent[];
@@ -1623,16 +1607,6 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   }
 
   for (let iteration = 0; iteration < MAX_WORKFLOW_ITERATIONS; iteration++) {
-    const conversationSummary = [
-      baseConversationSummary,
-      clarificationTurns.length > 0
-        ? clarificationTurns.join("\n").slice(0, MAX_CONVERSATION_CONTEXT_CHARS)
-        : null,
-    ]
-      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-      .join("\n\n")
-      .slice(0, MAX_CONVERSATION_CONTEXT_CHARS);
-
     const effectiveUserText =
       clarificationTurns.length === 0
         ? baseUserText
@@ -1641,11 +1615,7 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
     let plan: WorkflowPlan;
     try {
       ctx.emit.message(`Planning workflow (iteration ${iteration + 1})...`);
-      plan = await planWorkflow(
-        effectiveUserText,
-        agents,
-        conversationSummary.length > 0 ? conversationSummary : null,
-      );
+      plan = await planWorkflow(effectiveUserText, agents);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       ctx.emit.message("Planner returned an invalid workflow; using direct-answer fallback.");
@@ -1664,12 +1634,7 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
       };
     }
 
-    const outcome = await executeWorkflowPlanPhase3(
-      plan,
-      effectiveUserText,
-      conversationSummary.length > 0 ? conversationSummary : null,
-      ctx.emit,
-    );
+    const outcome = await executeWorkflowPlanPhase3(plan, effectiveUserText, ctx.emit);
     if (outcome.kind === "final") {
       return outcome.result;
     }

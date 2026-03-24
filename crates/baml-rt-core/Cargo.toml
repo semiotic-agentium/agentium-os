@@ -9,6 +9,7 @@ publish = false
 proptest = { workspace = true }
 
 [dependencies]
+baml-rt-citation = { path = "../baml-rt-citation" }
 baml-rt-id = { path = "../baml-rt-id" }
 # baml-runtime = { workspace = true }
 # baml-types = { workspace = true }

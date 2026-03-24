@@ -11,10 +11,10 @@ use baml_rt::A2aAgent;
 
 #[tokio::test]
 async fn test_sandbox_environment() {
-    let store = test_support::common::test_graphqlite_store();
+    let store = test_support::common::test_surreal_store().await;
     let agent = A2aAgent::builder()
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
-        .with_graphqlite_store(store)
+        .with_surreal_store(store)
         .build()
         .await
         .unwrap();

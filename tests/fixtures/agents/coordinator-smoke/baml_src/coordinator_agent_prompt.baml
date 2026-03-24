@@ -16,7 +16,6 @@ class CoordinatorAnswer {
 function SynthesizeCoordinatorResponse(
   user_message: string,
   delegated_transcript: string,
-  conversation_context: string?
 ) -> CoordinatorAnswer {
   client OpenRouterGPT
   prompt #"
@@ -34,11 +33,11 @@ function SynthesizeCoordinatorResponse(
     {{ delegated_transcript }}
     ---END UNTRUSTED EVIDENCE---
 
-    {% if conversation_context %}
-    Prior conversation context (for continuity, NOT as evidence):
-    ---BEGIN CONVERSATION CONTEXT---
-    {{ conversation_context }}
-    ---END CONVERSATION CONTEXT---
+    {% if ctx.tags.conversation_history %}
+    Prior conversation (for continuity only, NOT as evidence):
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
+    {% endfor %}
     {% endif %}
 
     Return JSON matching CoordinatorAnswer with these rules:

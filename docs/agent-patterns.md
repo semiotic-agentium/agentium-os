@@ -9,6 +9,17 @@ Tools return structured data. Agents render user‑facing output.
 This separation keeps the runtime/tool layer stable while allowing the agent
 layer to own UX. It avoids stringly‑typed contracts and makes tests reliable.
 
+**Step executor vs chat reply (provenance)**
+`runGeneratedStepExecutor(...)` returns **FSM execution telemetry** (`last`, `steps`,
+`session_context`, …): tool choice, per‑hop envelopes, and structured tool output.
+It is **not** the canonical operator‑visible reply for provenance or UX.
+
+The **single** user‑facing artifact the platform surfaces and records is the agent
+chat handler’s return value: `SessionResult.message` (typically `StructuredReply`
+with `parts` + `citations`). Do **not** duplicate that reply onto step records or
+scrape `run.last` as a substitute—synthesize once at session completion (or emit
+streaming chunks via `ctx.emit` when the product requires mid‑turn text).
+
 **Why This Matters**
 1. Determinism: Structured outputs can be validated and unit‑tested.
 2. Observability: Tool results can be traced independently of formatting.

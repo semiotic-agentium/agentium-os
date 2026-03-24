@@ -1,6 +1,5 @@
 ---
 source: crates/baml-rt-provenance/tests/surreal_snapshot_test.rs
-assertion_line: 632
 expression: result
 ---
 {
@@ -9,7 +8,9 @@ expression: result
     {
       "role": "ROLE_USER",
       "source": "message",
-      "content_keys": [],
+      "content_keys": [
+        "text"
+      ],
       "tool_name": null,
       "tool_phase": null,
       "has_result": false,
@@ -18,7 +19,9 @@ expression: result
     {
       "role": "ROLE_AGENT",
       "source": "message",
-      "content_keys": [],
+      "content_keys": [
+        "text"
+      ],
       "tool_name": null,
       "tool_phase": null,
       "has_result": false,
@@ -28,10 +31,12 @@ expression: result
       "role": "assistant",
       "source": "tool_call",
       "content_keys": [
-        "tool_call"
+        "args",
+        "fsm_phase",
+        "tool_name"
       ],
       "tool_name": "calculator",
-      "tool_phase": "send",
+      "tool_phase": "execute",
       "has_result": false,
       "has_error": false
     },
@@ -40,11 +45,11 @@ expression: result
       "source": "tool_result",
       "content_keys": [
         "fsm_phase",
-        "result",
+        "outcome",
         "tool_name"
       ],
       "tool_name": "calculator",
-      "tool_phase": "send",
+      "tool_phase": "execute",
       "has_result": true,
       "has_error": false
     },
@@ -52,10 +57,12 @@ expression: result
       "role": "assistant",
       "source": "tool_call",
       "content_keys": [
-        "tool_call"
+        "args",
+        "fsm_phase",
+        "tool_name"
       ],
       "tool_name": "divide",
-      "tool_phase": "send",
+      "tool_phase": "execute",
       "has_result": false,
       "has_error": false
     },
@@ -63,14 +70,13 @@ expression: result
       "role": "tool",
       "source": "tool_result",
       "content_keys": [
-        "error",
         "fsm_phase",
-        "result",
+        "outcome",
         "tool_name"
       ],
       "tool_name": "divide",
-      "tool_phase": "send",
-      "has_result": true,
+      "tool_phase": "execute",
+      "has_result": false,
       "has_error": true
     }
   ]

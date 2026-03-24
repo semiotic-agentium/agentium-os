@@ -28,7 +28,7 @@ impl LLMInterceptor for StubSimpleGreetingInterceptor {
         &self,
         context: &LLMCallContext,
     ) -> baml_rt_core::Result<InterceptorDecision> {
-        if context.function_name == "SimpleGreeting" {
+        if context.function_id.prompt_name().as_str() == "SimpleGreeting" {
             Ok(InterceptorDecision::Substitute(serde_json::Value::String(
                 "Hello, Test!".to_string(),
             )))

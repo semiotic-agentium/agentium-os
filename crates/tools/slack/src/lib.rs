@@ -12,8 +12,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
+use baml_rt_core::{BamlRtError, Result, semantics::ErrorDisposition};
+use baml_rt_tools::{ClassifiedToolError, baml_tool, bundles::Support, tools::BamlTool};
 use integrations_slack_read::{self as slack_read, SlackReadClient, SlackReadError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -21,34 +21,6 @@ use ts_rs::TS;
 
 /// Slack API base URL.
 pub const BASE_URL: &str = "https://slack.com/api";
-
-const HISTORY_TEXT_MAX_CHARS: usize = 300;
-const THREAD_TEXT_MAX_CHARS: usize = 500;
-const SEARCH_TEXT_MAX_CHARS: usize = 200;
-
-fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
-    let mut out = String::with_capacity(input.len().min(max_chars) + 3);
-    for (i, ch) in input.chars().enumerate() {
-        if i >= max_chars {
-            out.push_str("...");
-            return out;
-        }
-        out.push(ch);
-    }
-    out
-}
-
-fn truncate_string(text: &mut String, max_chars: usize) {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    if trimmed.chars().count() > max_chars {
-        *text = truncate_chars_with_ellipsis(trimmed, max_chars);
-    } else if trimmed.len() != text.len() {
-        *text = trimmed.to_string();
-    }
-}
 
 #[cfg(test)]
 const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
@@ -67,6 +39,9 @@ fn backoff_delay(retries: usize) -> std::time::Duration {
 // Input types
 // ---------------------------------------------------------------------------
 
+/// Which Slack API token to use.
+/// Auto selects bot for most calls, user token for search (required in most orgs).
+/// Bot forces the bot token (xoxb-...). User forces the user token (xoxp-...).
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, BamlType,
 )]
@@ -74,18 +49,36 @@ fn backoff_delay(retries: usize) -> std::time::Duration {
 #[serde(rename_all = "snake_case")]
 pub enum SlackAuthPreference {
     #[default]
+    #[serde(alias = "Auto")]
+    #[baml(alias = "auto")]
     Auto,
+    #[serde(alias = "Bot")]
+    #[baml(alias = "bot")]
     Bot,
+    #[serde(alias = "User")]
+    #[baml(alias = "user")]
     User,
 }
 
+/// Slack conversation type.
+/// Im = direct message (1:1 DM). Mpim = multi-person DM (group DM).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackConversationKind {
+    #[serde(alias = "PublicChannel")]
+    #[baml(alias = "public_channel")]
     PublicChannel,
+    #[serde(alias = "PrivateChannel")]
+    #[baml(alias = "private_channel")]
     PrivateChannel,
+    #[baml(description = "Direct message (1:1 DM).")]
+    #[serde(alias = "Im")]
+    #[baml(alias = "im")]
     Im,
+    #[baml(description = "Multi-person direct message (group DM).")]
+    #[serde(alias = "Mpim")]
+    #[baml(alias = "mpim")]
     Mpim,
 }
 
@@ -100,115 +93,215 @@ impl SlackConversationKind {
     }
 }
 
+/// Message sort order. LatestFirst is the default (newest messages first).
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackHistoryOrder {
     #[default]
+    #[serde(alias = "LatestFirst")]
+    #[baml(alias = "latest_first")]
     LatestFirst,
+    #[serde(alias = "OldestFirst")]
+    #[baml(alias = "oldest_first")]
     OldestFirst,
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+/// Controls whether Slack user IDs in results are resolved to display names.
+/// ResolveUsers (default) fetches profiles for each unique user_id found.
+/// None skips resolution — user_id only, no display name lookup.
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, BamlType,
+)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackUserResolutionMode {
+    /// LLMs often emit TypeScript-style `None` / `ResolveUsers`; accept those at the JSON boundary.
+    #[serde(alias = "None")]
+    #[baml(alias = "none")]
     None,
     #[default]
+    #[serde(alias = "ResolveUsers")]
+    #[baml(alias = "resolve_users")]
     ResolveUsers,
 }
 
+/// Sort field for search results. Score ranks by relevance; Timestamp by time.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackSearchSort {
     #[default]
+    #[serde(alias = "Score")]
+    #[baml(alias = "score")]
     Score,
+    #[serde(alias = "Timestamp")]
+    #[baml(alias = "timestamp")]
     Timestamp,
 }
 
+/// Sort direction for search results.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackSearchDirection {
+    #[serde(alias = "Asc")]
+    #[baml(alias = "asc")]
     Asc,
     #[default]
+    #[serde(alias = "Desc")]
+    #[baml(alias = "desc")]
     Desc,
 }
 
-/// List conversations available to the authorized token.
+/// List channels and DMs available to the token.
+/// Returns channel_id values to use in GetConversationHistory and GetThreadReplies.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ListConversationsInput {
-    /// Slack conversation kinds to include.
+    #[baml(description = "Conversation types to include. Pass empty list to include all types.")]
     pub kinds: Vec<SlackConversationKind>,
+    #[baml(description = "Pagination cursor from a previous response's next_cursor.")]
     pub cursor: Option<String>,
+    #[baml(description = "Max conversations to return (1–1000, default 100).")]
     pub limit: Option<u16>,
+    #[baml(description = "Exclude archived conversations (default true).")]
     pub exclude_archived: Option<bool>,
+    #[baml(description = "Include member count in results.")]
     pub include_num_members: Option<bool>,
+    #[baml(
+        description = "Token: `auto`, `bot`, or `user` (snake_case). PascalCase also accepted."
+    )]
     pub auth: Option<SlackAuthPreference>,
 }
 
-/// Retrieve messages from a channel conversation history.
+/// Retrieve messages from a channel's history.
+/// Use ListConversations to find the channel_id.
+/// Timestamps use Slack's float format: '1609459200.000001' (Unix seconds with microseconds).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct GetConversationHistoryInput {
+    #[baml(description = "Slack channel ID (e.g. C01234ABCDE) — obtain from ListConversations.")]
     pub channel_id: String,
+    #[baml(description = "Pagination cursor from a previous call's next_cursor.")]
     pub cursor: Option<String>,
+    #[baml(description = "Max messages to return (1–1000, default 100).")]
     pub limit: Option<u16>,
+    #[baml(
+        description = "Return messages after this timestamp (Slack format: '1609459200.000001')."
+    )]
     pub oldest: Option<String>,
+    #[baml(
+        description = "Return messages before this timestamp (Slack format: '1609459200.000001')."
+    )]
     pub latest: Option<String>,
+    #[baml(description = "Include messages exactly at oldest/latest boundaries.")]
     pub inclusive: Option<bool>,
+    #[baml(
+        description = "Sort order: JSON string `latest_first` or `oldest_first` (snake_case). `LatestFirst` / `OldestFirst` also accepted."
+    )]
     pub order: Option<SlackHistoryOrder>,
+    #[baml(
+        description = "User enrichment: prefer snake_case `none` or `resolve_users`; PascalCase `None` / `ResolveUsers` also accepted."
+    )]
     pub resolve_users: Option<SlackUserResolutionMode>,
+    #[baml(
+        description = "Token: prefer snake_case `auto`, `bot`, or `user`; PascalCase also accepted."
+    )]
     pub auth: Option<SlackAuthPreference>,
 }
 
-/// Retrieve replies in a thread.
+/// Retrieve all replies in a thread.
+/// thread_ts is the timestamp of the root message (found in message.thread_ts or message.ts).
+/// Timestamps use Slack's float format: '1609459200.000001' (Unix seconds with microseconds).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct GetThreadRepliesInput {
+    #[baml(
+        description = "Slack channel ID containing the thread — obtain from ListConversations."
+    )]
     pub channel_id: String,
+    #[baml(
+        description = "Timestamp of the root message of the thread (Slack format: '1609459200.000001'). Use message.thread_ts or message.ts from a history/search result."
+    )]
     pub thread_ts: String,
+    #[baml(description = "Pagination cursor from a previous call's next_cursor.")]
     pub cursor: Option<String>,
+    #[baml(description = "Max replies to return (1–1000, default 100).")]
     pub limit: Option<u16>,
+    #[baml(
+        description = "Return replies after this timestamp (Slack format: '1609459200.000001')."
+    )]
     pub oldest: Option<String>,
+    #[baml(
+        description = "Return replies before this timestamp (Slack format: '1609459200.000001')."
+    )]
     pub latest: Option<String>,
+    #[baml(description = "Include messages exactly at oldest/latest boundaries.")]
     pub inclusive: Option<bool>,
+    #[baml(
+        description = "Sort order: JSON string `latest_first` or `oldest_first` (snake_case). `LatestFirst` / `OldestFirst` also accepted."
+    )]
     pub order: Option<SlackHistoryOrder>,
+    #[baml(
+        description = "User enrichment: `none` or `resolve_users` (snake_case). Prefer snake_case; PascalCase (`None`, `ResolveUsers`) is tolerated."
+    )]
     pub resolve_users: Option<SlackUserResolutionMode>,
+    #[baml(
+        description = "Token: `auto`, `bot`, or `user` (snake_case). PascalCase also accepted."
+    )]
     pub auth: Option<SlackAuthPreference>,
 }
 
-/// Resolve specific Slack user IDs to display data.
+/// Resolve a list of Slack user IDs to display names and profile data.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ResolveUsersInput {
+    #[baml(description = "List of Slack user IDs to resolve (e.g. ['U01234ABCDE']).")]
     pub user_ids: Vec<String>,
+    #[baml(
+        description = "Token: `auto`, `bot`, or `user` (snake_case). PascalCase also accepted."
+    )]
     pub auth: Option<SlackAuthPreference>,
 }
 
-/// Search Slack messages.
-///
-/// Requires a user token (`SLACK_USER_TOKEN`) in most Slack orgs.
+/// Search Slack messages across all conversations.
+/// Requires a user token (SLACK_USER_TOKEN) in most orgs — use auth: User.
+/// Supports Slack search modifiers: in:#channel, from:@user, before:YYYY-MM-DD, after:YYYY-MM-DD.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct SearchMessagesInput {
+    #[baml(
+        description = "Search query. Supports modifiers: in:#channel, from:@user, before:YYYY-MM-DD, after:YYYY-MM-DD. Example: 'deploy in:#eng-releases after:2026-01-01'."
+    )]
     pub query: String,
+    #[baml(description = "Results per page (1–100, default 20).")]
     pub count: Option<u16>,
+    #[baml(description = "Page number (1-based).")]
     pub page: Option<u16>,
+    #[baml(
+        description = "`score` or `timestamp` (snake_case). `Score` / `Timestamp` also accepted."
+    )]
     pub sort: Option<SlackSearchSort>,
+    #[baml(description = "`asc` or `desc` (snake_case). `Asc` / `Desc` also accepted.")]
     pub direction: Option<SlackSearchDirection>,
+    #[baml(description = "`none` or `resolve_users` (snake_case). PascalCase also accepted.")]
     pub resolve_users: Option<SlackUserResolutionMode>,
+    #[baml(description = "Token preference — most orgs require User for search.")]
     pub auth: Option<SlackAuthPreference>,
 }
 
-/// Typed action union for `support/slack`.
+/// Slack tool — five operations for reading workspace conversations.
+/// ListConversations → find channel_ids.
+/// GetConversationHistory → read channel messages.
+/// GetThreadReplies → read a thread (requires thread_ts from a message).
+/// SearchMessages → full-text search (requires user token in most orgs).
+/// ResolveUsers → look up user display names from IDs.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[baml(union)]
 #[serde(untagged)]
@@ -219,6 +312,27 @@ pub enum SlackInput {
     SearchMessages(SearchMessagesInput),
     ResolveUsers(ResolveUsersInput),
     ListConversations(ListConversationsInput),
+}
+
+impl baml_rt_tools::DescribeAction for SlackInput {
+    fn describe(&self) -> String {
+        match self {
+            SlackInput::ListConversations(_) => "listing Slack conversations".to_string(),
+            SlackInput::GetConversationHistory(_) => {
+                "retrieving Slack conversation history".to_string()
+            }
+            SlackInput::GetThreadReplies(p) => format!(
+                "retrieving Slack thread replies channel_id={} thread_ts={}",
+                p.channel_id, p.thread_ts
+            ),
+            SlackInput::ResolveUsers(p) => {
+                format!("resolving {} Slack user(s)", p.user_ids.len())
+            }
+            SlackInput::SearchMessages(p) => {
+                format!("searching Slack messages for '{}'", p.query)
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1374,31 +1488,6 @@ impl SlackTool {
     }
 }
 
-fn compact_slack_output(output: &mut SlackOutput) {
-    let max_chars = match output.operation {
-        Some(SlackOperation::GetConversationHistory) => Some(HISTORY_TEXT_MAX_CHARS),
-        Some(SlackOperation::GetThreadReplies) => Some(THREAD_TEXT_MAX_CHARS),
-        Some(SlackOperation::SearchMessages) => Some(SEARCH_TEXT_MAX_CHARS),
-        _ => None,
-    };
-    if let Some(limit) = max_chars {
-        for msg in &mut output.messages {
-            truncate_string(&mut msg.text, limit);
-        }
-    }
-    output.operation = None;
-}
-
-fn compact_slack_payload(content: &mut serde_json::Value) {
-    let Ok(mut output) = serde_json::from_value::<SlackOutput>(content.clone()) else {
-        return;
-    };
-    compact_slack_output(&mut output);
-    if let Ok(compacted) = serde_json::to_value(output) {
-        *content = compacted;
-    }
-}
-
 #[baml_tool(
     name = "support/slack",
     description = "Read-only Slack integration for conversation retrieval and source-backed analysis.",
@@ -1439,7 +1528,7 @@ impl BamlTool for SlackTool {
             SlackInput::SearchMessages(_) => "SearchMessages",
         };
         tracing::Span::current().record("action", action);
-        match args {
+        let mut output = match args {
             SlackInput::ListConversations(input) => self.client.list_conversations(input).await,
             SlackInput::GetConversationHistory(input) => {
                 self.client.get_conversation_history(input).await
@@ -1447,15 +1536,44 @@ impl BamlTool for SlackTool {
             SlackInput::GetThreadReplies(input) => self.client.get_thread_replies(input).await,
             SlackInput::ResolveUsers(input) => self.client.resolve_users(input).await,
             SlackInput::SearchMessages(input) => self.client.search_messages(input).await,
+        }?;
+        // Internal discriminator; omit from host / LLM-facing payloads.
+        output.operation = None;
+        Ok(output)
+    }
+
+    fn describe_result(&self, output: &Self::Output) -> String {
+        let msg_count = output.messages.len();
+        let conv_count = output.conversations.len();
+        if msg_count > 0 {
+            format!("returned {} Slack message(s)", msg_count)
+        } else if conv_count > 0 {
+            format!("returned {} Slack conversation(s)", conv_count)
+        } else {
+            "Slack query returned no results".to_string()
         }
     }
 
-    fn compact_result(&self, content: &mut serde_json::Value) {
-        if let Some(result) = content.get_mut("result") {
-            compact_slack_payload(result);
-        } else {
-            compact_slack_payload(content);
+    fn describe_open(&self) -> String {
+        "using Slack for conversation retrieval and analysis".to_string()
+    }
+
+    fn classify_execution_error(err: &BamlRtError) -> ClassifiedToolError {
+        let mut c = ClassifiedToolError::from_baml_error(err);
+        if let BamlRtError::ToolExecution(msg) = err {
+            let m = msg.as_str();
+            if m.contains("rate_limited") || m.to_ascii_lowercase().contains("ratelimited") {
+                c.code = "slack_rate_limited".to_string();
+                c.disposition = ErrorDisposition::HostRetriable;
+            } else if m.contains("not_in_channel") || m.contains("channel_not_found") {
+                c.disposition = ErrorDisposition::LlmCorrectable;
+                c.hint = Some(
+                    "Check channel membership or invite the app; the token may lack access."
+                        .to_string(),
+                );
+            }
         }
+        c
     }
 }
 
@@ -1482,7 +1600,8 @@ mod tests {
     use super::{
         BASE_URL, GetConversationHistoryInput, ListConversationsInput, RetryAfter,
         SlackApiErrorClass, SlackClient, SlackConversationKind, SlackInput, SlackTool,
-        backoff_delay, map_slack_api_error, should_warn_on_insecure_base_url,
+        SlackUserResolutionMode, backoff_delay, map_slack_api_error,
+        should_warn_on_insecure_base_url,
     };
 
     fn slack_env_lock() -> &'static tokio::sync::Mutex<()> {
@@ -1515,6 +1634,22 @@ mod tests {
             SlackClient::parse_retry_after(None),
             RetryAfter::Missing
         ));
+    }
+
+    /// LLMs often emit TypeScript / BAML-style PascalCase for enum JSON values; serde must accept it.
+    #[test]
+    fn slack_input_accepts_pascal_case_resolve_users_on_get_thread_replies() {
+        let raw = r#"{"channel_id":"C12345678","thread_ts":"1735689600.000000","inclusive":true,"limit":1000,"resolve_users":"ResolveUsers"}"#;
+        let parsed: SlackInput =
+            serde_json::from_str(raw).expect("untagged SlackInput should deserialize");
+        match parsed {
+            SlackInput::GetThreadReplies(t) => {
+                assert_eq!(t.channel_id, "C12345678");
+                assert_eq!(t.thread_ts, "1735689600.000000");
+                assert_eq!(t.resolve_users, Some(SlackUserResolutionMode::ResolveUsers));
+            }
+            other => panic!("expected GetThreadReplies, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1767,212 +1902,5 @@ mod tests {
         assert_eq!(state.rate_limit_hits.load(Ordering::SeqCst), 2);
         let hits = state.snapshot().await;
         assert_eq!(hits.len(), 2, "expected two hits due to retry: {hits:?}");
-    }
-}
-
-#[cfg(test)]
-mod compaction_tests {
-    use super::*;
-
-    // -----------------------------------------------------------------------
-    // truncate_chars_with_ellipsis
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn truncate_below_limit_unchanged() {
-        assert_eq!(truncate_chars_with_ellipsis("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_at_limit_unchanged() {
-        assert_eq!(truncate_chars_with_ellipsis("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_above_limit_adds_ellipsis() {
-        assert_eq!(truncate_chars_with_ellipsis("hello world", 5), "hello...");
-    }
-
-    #[test]
-    fn truncate_multi_byte_chars() {
-        assert_eq!(truncate_chars_with_ellipsis("héllo", 2), "hé...");
-    }
-
-    // -----------------------------------------------------------------------
-    // truncate_string
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn truncate_string_empty_is_noop() {
-        let mut val = String::new();
-        truncate_string(&mut val, 10);
-        assert_eq!(val, "");
-    }
-
-    #[test]
-    fn truncate_string_within_limit_unchanged() {
-        let mut val = "short".to_string();
-        truncate_string(&mut val, 10);
-        assert_eq!(val, "short");
-    }
-
-    #[test]
-    fn truncate_string_at_boundary_unchanged() {
-        let mut val = "12345".to_string();
-        truncate_string(&mut val, 5);
-        assert_eq!(val, "12345");
-    }
-
-    #[test]
-    fn truncate_string_over_boundary_truncates() {
-        let mut val = "x".repeat(400);
-        truncate_string(&mut val, 10);
-        assert!(val.ends_with("..."));
-        assert_eq!(val.chars().count(), 13);
-    }
-
-    #[test]
-    fn truncate_string_multi_byte() {
-        let mut val = "ñ".repeat(20);
-        truncate_string(&mut val, 5);
-        assert!(val.ends_with("..."));
-        assert_eq!(val.chars().count(), 8); // 5 + "..."
-    }
-
-    // -----------------------------------------------------------------------
-    // compact_slack_output — GetConversationHistory
-    // -----------------------------------------------------------------------
-
-    fn make_message(text: &str) -> SlackMessageSummary {
-        SlackMessageSummary {
-            channel_id: "C123".to_string(),
-            ts: "1700000000.000000".to_string(),
-            thread_ts: None,
-            user_id: None,
-            user_name: None,
-            text: text.to_string(),
-            subtype: None,
-            source_ref: "slack://channel/C123/p1700000000000000".to_string(),
-            permalink: None,
-        }
-    }
-
-    #[test]
-    fn compact_history_truncates_long_messages() {
-        let long_text = "x".repeat(500);
-        let mut output = SlackOutput {
-            conversations: vec![],
-            messages: vec![make_message(&long_text)],
-            users: vec![],
-            next_cursor: None,
-            has_more: false,
-            sources: vec![],
-            message: "test".to_string(),
-            operation: Some(SlackOperation::GetConversationHistory),
-        };
-        compact_slack_output(&mut output);
-        assert!(output.messages[0].text.ends_with("..."));
-        assert!(output.messages[0].text.chars().count() <= HISTORY_TEXT_MAX_CHARS + 3);
-        assert!(output.operation.is_none());
-    }
-
-    #[test]
-    fn compact_thread_replies_truncates_long_messages() {
-        let long_text = "x".repeat(700);
-        let mut output = SlackOutput {
-            conversations: vec![],
-            messages: vec![make_message(&long_text)],
-            users: vec![],
-            next_cursor: None,
-            has_more: false,
-            sources: vec![],
-            message: "test".to_string(),
-            operation: Some(SlackOperation::GetThreadReplies),
-        };
-        compact_slack_output(&mut output);
-        assert!(output.messages[0].text.ends_with("..."));
-        assert!(output.messages[0].text.chars().count() <= THREAD_TEXT_MAX_CHARS + 3);
-        assert!(output.operation.is_none());
-    }
-
-    #[test]
-    fn compact_search_truncates_long_messages() {
-        let long_text = "x".repeat(400);
-        let mut output = SlackOutput {
-            conversations: vec![],
-            messages: vec![make_message(&long_text)],
-            users: vec![],
-            next_cursor: None,
-            has_more: false,
-            sources: vec![],
-            message: "test".to_string(),
-            operation: Some(SlackOperation::SearchMessages),
-        };
-        compact_slack_output(&mut output);
-        assert!(output.messages[0].text.ends_with("..."));
-        assert!(output.messages[0].text.chars().count() <= SEARCH_TEXT_MAX_CHARS + 3);
-        assert!(output.operation.is_none());
-    }
-
-    #[test]
-    fn compact_list_conversations_leaves_messages_unchanged() {
-        let mut output = SlackOutput {
-            conversations: vec![],
-            messages: vec![make_message("hello")],
-            users: vec![],
-            next_cursor: None,
-            has_more: false,
-            sources: vec![],
-            message: "test".to_string(),
-            operation: Some(SlackOperation::ListConversations),
-        };
-        compact_slack_output(&mut output);
-        assert_eq!(output.messages[0].text, "hello");
-        assert!(output.operation.is_none());
-    }
-
-    #[test]
-    fn compact_resolve_users_leaves_messages_unchanged() {
-        let mut output = SlackOutput {
-            conversations: vec![],
-            messages: vec![],
-            users: vec![],
-            next_cursor: None,
-            has_more: false,
-            sources: vec![],
-            message: "test".to_string(),
-            operation: Some(SlackOperation::ResolveUsers),
-        };
-        compact_slack_output(&mut output);
-        assert!(output.operation.is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // compact_slack_payload — envelope handling
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn compact_payload_via_result_envelope() {
-        let long_text = "y".repeat(500);
-        let output = SlackOutput {
-            conversations: vec![],
-            messages: vec![make_message(&long_text)],
-            users: vec![],
-            next_cursor: None,
-            has_more: false,
-            sources: vec![],
-            message: "test".to_string(),
-            operation: Some(SlackOperation::GetConversationHistory),
-        };
-        let mut content = serde_json::json!({
-            "tool_name": "support/slack",
-            "result": serde_json::to_value(&output).unwrap(),
-        });
-        let tool = SlackTool::new();
-        tool.compact_result(&mut content);
-        let result: SlackOutput =
-            serde_json::from_value(content.get("result").unwrap().clone()).unwrap();
-        assert!(result.messages[0].text.ends_with("..."));
-        assert!(result.messages[0].text.chars().count() <= HISTORY_TEXT_MAX_CHARS + 3);
     }
 }

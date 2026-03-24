@@ -74,34 +74,24 @@ function DetermineExtrospectionIntent(user_message: string) -> NeedClarification
   "#
 }
 
+// FSM phase instructions are injected by codegen — this prompt carries goal context only.
 function GetDiscoverAgentsPlan(
   user_message: string,
-  session_context: SessionContext?,
 ) -> SystemDiscover_agentsSessionPlan {
   client DefaultClient
   prompt #"
-    Output ONLY one JSON object with exactly one session `step`.
-    No prose. No markdown. No explanation.
-    Runtime enforces FSM transitions and rejects invalid step progression.
-    Runtime state contract (authoritative):
-    - Read required operation from session_context.allowed_ops.
-    - Emit exactly one step whose op is one of allowed_ops.
-    - If allowed_ops has a single entry, emit that op exactly.
-    - Use status_token/last_status only as diagnostics, never to override allowed_ops.
-    If any schema hint in ctx.output_format conflicts with allowed_ops, follow allowed_ops.
-    Your only domain constraint in this planner:
-    - when emitting Send, input MUST be {} exactly for this function.
+    Discover available agents relevant to the user's request.
+    For Send: use empty input {} to list all agents.
 
-    Allowed literal outputs (choose exactly one object; no extra keys):
-    - {"step":{"op":"Open"}}
-    - {"step":{"op":"Send","input":{}}}
-    - {"step":{"op":"Next"}}
-    - {"step":{"op":"Finish"}}
-    - {"step":{"op":"Abort"}}
+    Context: {{ user_message }}
 
-    Context only (do not answer here): {{ user_message }}
-    Runtime state:
-    - session_context: {{ session_context }}
+    {% if ctx.tags.conversation_history %}
+    Session history:
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
+    {% endfor %}
+    {% endif %}
+
     {{ ctx.output_format }}
   "#
 }
@@ -136,49 +126,37 @@ function SelectAgentFocus(
   "#
 }
 
+// FSM phase instructions are injected by codegen — this prompt carries goal context only.
 function BuildExtrospectionPlan(
   intent: QueryIntent,
   selected_agent: SelectedAgent | null,
-  session_context: SessionContext?,
 ) -> SystemExtrospectionSessionPlan {
   client DefaultClient
   prompt #"
-    Output ONLY one JSON object with exactly one session `step`.
-    No prose. No markdown.
-    Runtime enforces FSM transitions and rejects invalid step progression.
-
-    Runtime state contract (authoritative):
-    - Read required operation from session_context.allowed_ops.
-    - Emit exactly one step whose op is one of allowed_ops.
-    - If allowed_ops has a single entry, emit that op exactly.
-    - Use status_token/last_status only as diagnostics, never to override allowed_ops.
-    If any schema hint in ctx.output_format conflicts with allowed_ops, follow allowed_ops.
-
-    Send.input must include:
+    Query provenance data matching the intent. For Send, populate input fields:
     - resource: llm_calls | tool_calls | messages
-      - If intent.resource is Auto: use llm_calls when sort is total_tokens, messages when intent reason is message-focused, otherwise llm_calls.
+      (if Auto: use llm_calls for token queries, messages for message-focused)
     - outcome: both | failed_only | successful_only
-    - groupBy:
-      - llm_calls -> ["agent_id","provider","model"]
-      - tool_calls -> ["agent_id","tool_name"]
-      - messages -> ["agent_id"]
-    - sortBy from intent.priority_sort
-    - sortDir "desc"
-    - pageSize from intent.page_size
-    - topK from intent.top_k
-
-    Agent targeting:
-    - Do NOT set agentId from selected_agent package/name/instance.
-    - Set agentId only if user explicitly provided canonical provenance agent_id.
-
-    {{ ctx.output_format }}
+    - groupBy: llm_calls→["agent_id","provider","model"], tool_calls→["agent_id","tool_name"], messages→["agent_id"]
+    - sortBy from intent.priority_sort, sortDir "desc"
+    - pageSize from intent.page_size, topK from intent.top_k
+    - Do NOT set agentId from selected_agent — only if user gave an explicit provenance agent_id.
 
     intent: {{ intent }}
     selected_agent: {{ selected_agent }}
-    Runtime state:
-    - session_context: {{ session_context }}
+
+    {% if ctx.tags.conversation_history %}
+    Session history:
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
+    {% endfor %}
+    {% endif %}
+
+    {{ ctx.output_format }}
   "#
 }
+
+// StructuredReply: see _baml_runtime.baml (builder prelude).
 
 function SummarizeExtrospectionReport(
   user_message: string,
@@ -187,12 +165,13 @@ function SummarizeExtrospectionReport(
   agents: AgentCardDto[],
   primary_payload_json: string,
   secondary_payload_json: string,
-) -> string {
+) -> StructuredReply {
   client DefaultClient
   prompt #"
     You are an operations analyst. Be precise, restrained, and useful.
+    Match the output schema exactly (StructuredReply: parts + citations).
 
-    Produce a concise operator report that explicitly separates:
+    Produce a concise operator report in prose that explicitly separates:
     1) INTENT (what the user asked)
     2) EXECUTION (what query actually ran)
     3) OBSERVATIONS (what the data actually shows)
@@ -208,7 +187,7 @@ function SummarizeExtrospectionReport(
 
     Output rules:
     - Ground every claim in provided payload fields.
-    - Use concise markdown with 5 short sections:
+    - Use concise Markdown with 5 short sections:
       - Intent
       - Execution
       - Findings

@@ -146,7 +146,8 @@ fn dot_node_attrs(label: &str) -> (&'static str, &'static str) {
             | GraphNodeLabel::AgentArchive
             | GraphNodeLabel::PromptRejected
             | GraphNodeLabel::FailureClassificationActivity
-            | GraphNodeLabel::FailureClassification,
+            | GraphNodeLabel::FailureClassification
+            | GraphNodeLabel::SessionStep,
         ) => ("box", "#ecfeff"),
         None => ("box", "#f1f5f9"),
     }
@@ -157,96 +158,4 @@ fn escape_dot_label(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use super::*;
-    use crate::graph_export::{ExportScope, ExportedEdge, ExportedGraph, ExportedNode};
-
-    fn node(id: &str, label: &str, display: &str) -> ExportedNode {
-        ExportedNode {
-            id: id.to_string(),
-            label: label.to_string(),
-            display_name: display.to_string(),
-            properties: HashMap::new(),
-            event_order: None,
-        }
-    }
-
-    fn edge(from: &str, rel: &str, to: &str) -> ExportedEdge {
-        ExportedEdge {
-            from: from.to_string(),
-            to: to.to_string(),
-            relation: rel.to_string(),
-            properties: HashMap::new(),
-        }
-    }
-
-    #[test]
-    fn render_empty_graph() {
-        let graph = ExportedGraph {
-            nodes: vec![],
-            edges: vec![],
-            scope: ExportScope::Full,
-        };
-        let output = render_dot(&graph, &DotOptions::default());
-        assert!(output.contains("digraph provenance"));
-        assert!(output.contains("layout=dot"));
-    }
-
-    #[test]
-    fn render_simple_graph() {
-        let graph = ExportedGraph {
-            nodes: vec![
-                node("msg-1", "Message", "user: Hello"),
-                node("tc-1", "ToolCall", "Tool clickup"),
-            ],
-            edges: vec![edge("msg-1", "WAS_RECEIVED_BY", "tc-1")],
-            scope: ExportScope::Full,
-        };
-        let output = render_dot(&graph, &DotOptions::default());
-        assert!(output.contains("\"msg-1\""));
-        assert!(output.contains("\"tc-1\""));
-        assert!(output.contains("\"msg-1\" -> \"tc-1\""));
-        assert!(output.contains("WAS_RECEIVED_BY"));
-    }
-
-    #[test]
-    fn render_clustered() {
-        let graph = ExportedGraph {
-            nodes: vec![
-                node("tc-1", "ToolCall", "Tool a"),
-                node("tc-2", "ToolCall", "Tool b"),
-                node("msg-1", "Message", "msg"),
-            ],
-            edges: vec![],
-            scope: ExportScope::Full,
-        };
-        let opts = DotOptions {
-            cluster_by_type: true,
-            ..DotOptions::default()
-        };
-        let output = render_dot(&graph, &opts);
-        assert!(output.contains("subgraph cluster_"));
-        assert!(output.contains("label=\"ToolCall\""));
-    }
-
-    #[test]
-    fn render_dot_escapes_ids_and_edge_labels() {
-        let graph = ExportedGraph {
-            nodes: vec![
-                node("msg\"1\nline", "Message", "user: Hello"),
-                node("tc\"2", "ToolCall", "Tool clickup"),
-            ],
-            edges: vec![edge("msg\"1\nline", "WAS_\"RECEIVED\"\nBY", "tc\"2")],
-            scope: ExportScope::Full,
-        };
-        let output = render_dot(&graph, &DotOptions::default());
-        assert!(output.contains("\"msg\\\"1\\nline\""));
-        assert!(output.contains("\"tc\\\"2\""));
-        assert!(output.contains("label=\"WAS_\\\"RECEIVED\\\"\\nBY\""));
-    }
 }

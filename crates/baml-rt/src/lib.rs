@@ -97,7 +97,7 @@ pub mod tracing_setup {
 }
 
 #[cfg(feature = "a2a")]
-pub use baml_rt_a2a::{A2aAgent, A2aAgentBuilder, A2aRequestHandler};
+pub use baml_rt_a2a::{A2aAgent, A2aAgentBuilder, A2aJsChatHost, A2aRequestHandler};
 #[cfg(feature = "a2a")]
 pub use baml_rt_a2a::{A2aMethod, A2aOutcome, A2aRequest};
 #[cfg(feature = "interceptor")]

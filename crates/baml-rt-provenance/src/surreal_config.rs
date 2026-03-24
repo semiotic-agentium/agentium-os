@@ -1,7 +1,6 @@
 //! Configuration types for the SurrealDB provenance backend.
 //!
-//! Mirrors the ergonomics of [`GraphqliteStoreConfig`](crate::graphqlite_config::GraphqliteStoreConfig)
-//! while respecting SurrealDB's different storage semantics:
+//! Respects SurrealDB's storage semantics:
 //!
 //! - **File mode** uses a directory path (SurrealKV embedded storage), not a single `.db` file.
 //! - **In-memory modes** use `mem://` internally; shared vs isolated is handled by the store builder.
@@ -13,7 +12,7 @@ use std::path::PathBuf;
 /// Configuration for a file-backed SurrealDB store.
 ///
 /// The `path` is a **directory** (SurrealKV stores data across multiple files within a directory).
-/// This differs from GraphQLite which uses a single `.db` file.
+/// SurrealKV stores data across multiple files within a directory.
 #[derive(Clone, Debug)]
 pub struct SurrealStoreConfig {
     /// Directory path for SurrealKV embedded storage.

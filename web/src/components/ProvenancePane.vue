@@ -4,6 +4,8 @@ import { useTheme } from "../composables/useTheme";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useProvenanceOps } from "../composables/useProvenanceOps";
 import type {
+  CitationDetail,
+  CitationSimilarityOnRow,
   ContextPlanningResponse,
   ContextPlanningTaskSnapshot,
   ProvenanceOutcome,
@@ -20,7 +22,7 @@ const props = defineProps<{
 }>();
 
 const isOpen = ref(typeof window !== "undefined" ? window.innerWidth >= 1280 : true);
-const activeTab = ref<"live" | "failures" | "anomalies" | "explore">("live");
+const activeTab = ref<"live" | "failures" | "anomalies" | "drift" | "explore">("live");
 
 const { theme } = useTheme();
 const sources = computed(() => props.diagrams ?? []);
@@ -66,6 +68,7 @@ const exploreQuery = createQuery("messages", {
 const exploreForm = ref<{
   resource: ProvenanceResource;
   outcome: ProvenanceOutcome;
+  taskId: string;
   provider: string;
   model: string;
   toolName: string;
@@ -77,6 +80,7 @@ const exploreForm = ref<{
 }>({
   resource: "messages",
   outcome: "both",
+  taskId: "",
   provider: "",
   model: "",
   toolName: "",
@@ -130,6 +134,10 @@ async function refreshForActiveTab() {
         ...scope,
         outcome: "both",
       });
+      return;
+    }
+    if (activeTab.value === "drift") {
+      await refreshPlanning();
     }
   } finally {
     pollInFlight.value = false;
@@ -378,6 +386,133 @@ function stepStatusClass(status: string): string {
   return "step-status-pending";
 }
 
+function driftSeverityClass(severity: string | null | undefined): string {
+  if (!severity) return "";
+  const normalized = severity.toLowerCase();
+  if (normalized === "block") return "drift-severity-block";
+  if (normalized === "warn") return "drift-severity-warn";
+  if (normalized === "acceptable") return "drift-severity-ok";
+  return "";
+}
+
+function driftSeverityLabel(severity: string | null | undefined): string {
+  if (!severity) return "";
+  return severity.toLowerCase();
+}
+
+function formatDriftScore(score: number | null | undefined): string {
+  if (score == null) return "—";
+  return score.toFixed(2);
+}
+
+function taskHasDrift(task: ContextPlanningTaskSnapshot): boolean {
+  return task.drift != null && task.drift.compositeSeverity != null;
+}
+
+function citationRefLabel(c: CitationDetail | CitationSimilarityOnRow): string {
+  const raw = "raw" in c && c.raw ? c.raw : (c.isHistory ? `#${c.n}` : `@${c.n}`);
+  return raw;
+}
+
+function citationSimClass(sim: number, negated: boolean): string {
+  if (negated) return "cite-sim-counter";
+  if (sim >= 0.65) return "cite-sim-high";
+  if (sim >= 0.40) return "cite-sim-mid";
+  return "cite-sim-low";
+}
+
+function citationSimLabel(sim: number, negated: boolean): string {
+  if (negated) return "counter";
+  if (sim >= 0.65) return "strong";
+  if (sim >= 0.40) return "moderate";
+  return "weak";
+}
+
+/** Normalize one citation row from API (camelCase or legacy snake_case). */
+function normalizePerCitationItem(item: Record<string, unknown>): CitationSimilarityOnRow {
+  const raw = typeof item.raw === "string" ? item.raw : undefined;
+  const n = typeof item.n === "number" ? item.n : Number(item.n ?? 0);
+  let isHistory = true;
+  if (item.isHistory === true || item.is_history === true) isHistory = true;
+  else if (item.isHistory === false || item.is_history === false) isHistory = false;
+  const negated = Boolean(item.negated);
+  const similarity = typeof item.similarity === "number" ? item.similarity : Number(item.similarity ?? 0);
+  const activityAnchor =
+    typeof item.activityAnchor === "string"
+      ? item.activityAnchor
+      : typeof item.activity_anchor === "string"
+        ? item.activity_anchor
+        : undefined;
+  const contentPreview =
+    typeof item.contentPreview === "string"
+      ? item.contentPreview
+      : typeof item.content_preview === "string"
+        ? item.content_preview
+        : undefined;
+  return { n, isHistory, negated, similarity, raw, activityAnchor, contentPreview };
+}
+
+function rowCitationDrift(row: ProvenanceRowBase): { perCitation: CitationSimilarityOnRow[]; meanSimilarity: number } | null {
+  const drift = row.drift as Record<string, unknown> | undefined;
+  const citRaw = drift?.citation as Record<string, unknown> | undefined;
+  if (!citRaw) return null;
+  const arr = (citRaw.perCitation ?? citRaw.per_citation) as unknown[] | undefined;
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const perCitation = arr
+    .map((x) =>
+      x && typeof x === "object" ? normalizePerCitationItem(x as Record<string, unknown>) : null,
+    )
+    .filter((x): x is CitationSimilarityOnRow => x != null);
+  if (perCitation.length === 0) return null;
+  const meanRaw = citRaw.meanSimilarity ?? citRaw.mean_similarity;
+  const meanSimilarity = typeof meanRaw === "number" ? meanRaw : Number(meanRaw ?? 1.0);
+  return { perCitation, meanSimilarity };
+}
+
+/** Mean similarity over non-negated cites; falls back to all cites if none positive. */
+function meanPositiveSimilarity(citations: CitationDetail[]): number {
+  const pos = citations.filter((c) => !c.negated);
+  const use = pos.length > 0 ? pos : citations;
+  if (use.length === 0) return 0;
+  return use.reduce((s, c) => s + c.similarity, 0) / use.length;
+}
+
+function groundingCallCount(task: ContextPlanningTaskSnapshot): number {
+  const calls = task.drift?.driftedCalls;
+  if (!calls?.length) return 0;
+  return calls.filter((c) => (c.citations?.length ?? 0) > 0).length;
+}
+
+function drillToDriftCalls(taskId: string) {
+  exploreForm.value.resource = "llm_calls";
+  exploreForm.value.outcome = "both";
+  exploreForm.value.taskId = taskId;
+  exploreForm.value.model = "";
+  exploreForm.value.toolName = "";
+  exploreForm.value.bamlPrompt = "";
+  exploreForm.value.provider = "";
+  exploreForm.value.sortBy = "timestamp_ms";
+  exploreForm.value.sortDir = "desc";
+  activeTab.value = "explore";
+  applyExploreQuery(true);
+}
+
+const driftHelp = {
+  intent: "How closely the LLM response aligns with the declared intent. Measures whether the agent is still working on what the user originally asked for.",
+  step: "How closely the LLM response matches the current plan step description. Detects when the agent does the wrong step or overshoots scope.",
+  trajectory: "Running average of all responses vs the original intent. Detects gradual cumulative drift that individual call scores miss — the 'boiling frog' signal.",
+  adherence: "Weighted composite of intent and step alignment. Early plan steps are weighted more heavily because they anchor the entire downstream execution.",
+  composite: "Worst-case severity across all four dimensions. If any single dimension crosses a threshold, the composite reflects it.",
+  planDriftTab:
+    "Plan alignment (intent, step, trajectory, adherence) for this task. Expand each call to see grounding: how much the response resembles each cited history/archive snippet. Grounding is embedding similarity — not proof the facts are correct.",
+  tactical:
+    "Cosine similarity between the prompt's user message and the LLM response. Only meaningful when the prompt includes a user message.",
+  grounding:
+    "Each score compares the model's answer to the text of the ref it cited (#N history, @N archive). ≥0.65 strong, 0.40–0.65 moderate, <0.40 weak. Counter-evidence (!# / !@) is shown but excluded from the mean. See docs/drift-catalogue.md for full calibration.",
+  groundingEmpty:
+    "No resolved citation grounding on this row: the model may not have emitted citations, refs could not be resolved, or embedding scoring did not run.",
+} as const;
+
 const exploreRows = computed(() => exploreQuery.state.value.response?.rows ?? []);
 const exploreColumns = computed(() => {
   if (exploreRows.value.length === 0) return [];
@@ -387,30 +522,83 @@ const exploreColumns = computed(() => {
     ),
   );
   const preferred = [
+    "baml_prompt",
+    "model",
+    "agent_display",
+    "duration_ms",
+    "total_tokens",
+    "activity_outcome",
+    "drift",
+    "failure_class",
+    "failure_evidence",
+    "tool_name",
+    "provider",
+    "timestamp_ms",
+    "task_id",
     "activity_kind",
     "activity_id",
-    "timestamp_ms",
     "context_id",
-    "task_id",
-    "agent_display",
     "agent_package",
     "agent_version",
     "agent_id",
     "message_id",
-    "provider",
-    "model",
-    "tool_name",
-    "baml_prompt",
-    "failure_class",
-    "failure_evidence",
-    "duration_ms",
-    "total_tokens",
     "cached_input_tokens",
   ];
+  const hidden = new Set([
+    "llm_call", "llm_result", "llm_result_raw", "llm_call_ref",
+    "llm_result_ref", "activity_ref", "llm_call_payload_id",
+  ]);
   const ordered = preferred.filter((k) => keys.includes(k));
-  const extra = keys.filter((k) => !ordered.includes(k));
-  return [...ordered, ...extra].slice(0, 10);
+  const extra = keys.filter((k) => !ordered.includes(k) && !hidden.has(k));
+  return [...ordered, ...extra].slice(0, 12);
 });
+
+function formatCellValue(col: string, value: unknown): string {
+  if (value == null) return "";
+  if (col === "drift" && typeof value === "object") {
+    const d = value as Record<string, unknown>;
+    const plan = d.plan as Record<string, unknown> | undefined;
+    if (plan?.compositeSeverity) {
+      const score = typeof plan.planAdherenceScore === "number"
+        ? (plan.planAdherenceScore as number).toFixed(2)
+        : "?";
+      return `${score} ${plan.compositeSeverity}`;
+    }
+    if (typeof d.score === "number") {
+      return `${(d.score as number).toFixed(2)} ${d.severity ?? ""}`;
+    }
+    return "";
+  }
+  if (col === "duration_ms" && typeof value === "number") {
+    return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${value}ms`;
+  }
+  if (col === "total_tokens" && typeof value === "number") {
+    return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value);
+  }
+  if (col === "timestamp_ms" && typeof value === "number" && value > 0) {
+    const d = new Date(value);
+    return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}:${d.getSeconds().toString().padStart(2, "0")}`;
+  }
+  const s = String(value);
+  return s.length > 48 ? s.slice(0, 45) + "..." : s;
+}
+
+function formatColumnHeader(col: string): string {
+  const labels: Record<string, string> = {
+    baml_prompt: "Function",
+    agent_display: "Agent",
+    duration_ms: "Duration",
+    total_tokens: "Tokens",
+    activity_outcome: "Outcome",
+    activity_kind: "Kind",
+    activity_id: "Activity ID",
+    cached_input_tokens: "Cached",
+    failure_class: "Failure",
+    failure_evidence: "Evidence",
+    timestamp_ms: "Time",
+  };
+  return labels[col] ?? col;
+}
 
 type SelectedRowEntry = {
   key: string;
@@ -616,6 +804,12 @@ function downloadSvg(svg: string, index: number) {
 
 const activeFilterChips = computed(() => {
   const chips: Array<{ key: string; label: string }> = [];
+  if (exploreForm.value.taskId) {
+    const short = exploreForm.value.taskId.length > 24
+      ? exploreForm.value.taskId.slice(0, 20) + "..."
+      : exploreForm.value.taskId;
+    chips.push({ key: "taskId", label: `task:${short}` });
+  }
   const params = exploreQuery.state.value.params;
   if (params.provider) chips.push({ key: "provider", label: `provider:${params.provider}` });
   if (params.model) chips.push({ key: "model", label: `model:${params.model}` });
@@ -780,6 +974,7 @@ function applyExploreQuery(resetCursor = true) {
   void exploreQuery.run({
     ...baseScope(),
     outcome: exploreForm.value.outcome,
+    taskId: exploreForm.value.taskId || undefined,
     provider: exploreForm.value.provider || undefined,
     model: exploreForm.value.model || undefined,
     toolName: exploreForm.value.toolName || undefined,
@@ -826,6 +1021,7 @@ function anomalyLabel(anomaly: { groupKey: string; groupValues?: Array<string | 
 }
 
 function removeChip(key: string) {
+  if (key === "taskId") exploreForm.value.taskId = "";
   if (key === "provider") exploreForm.value.provider = "";
   if (key === "model") exploreForm.value.model = "";
   if (key === "toolName") exploreForm.value.toolName = "";
@@ -836,6 +1032,7 @@ function removeChip(key: string) {
 }
 
 function clearAllFilters() {
+  exploreForm.value.taskId = "";
   exploreForm.value.provider = "";
   exploreForm.value.model = "";
   exploreForm.value.toolName = "";
@@ -911,6 +1108,14 @@ onUnmounted(() => {
         <button class="provenance-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">Live</button>
         <button class="provenance-tab" :class="{ active: activeTab === 'failures' }" @click="activeTab = 'failures'">Failures</button>
         <button class="provenance-tab" :class="{ active: activeTab === 'anomalies' }" @click="activeTab = 'anomalies'">Anomalies</button>
+        <button
+          class="provenance-tab"
+          :class="{ active: activeTab === 'drift' }"
+          :title="driftHelp.planDriftTab"
+          @click="activeTab = 'drift'"
+        >
+          Drift
+        </button>
         <button class="provenance-tab" :class="{ active: activeTab === 'explore' }" @click="activeTab = 'explore'">Explore</button>
       </div>
 
@@ -981,6 +1186,25 @@ onUnmounted(() => {
                     :style="{ width: `${planProgressPercent(task)}%` }"
                   />
                 </div>
+
+                <template v-if="taskHasDrift(task)">
+                  <div class="planning-labeled-row">
+                    <span class="planning-row-label">Drift</span>
+                    <span class="planning-row-value">
+                      <span :class="['planning-step-pill', driftSeverityClass(task.drift?.compositeSeverity)]">
+                        {{ formatDriftScore(task.drift?.planAdherenceScore) }} {{ driftSeverityLabel(task.drift?.compositeSeverity) }}
+                      </span>
+                    </span>
+                  </div>
+                  <div class="planning-progress-track drift-gauge">
+                    <div
+                      class="planning-progress-fill"
+                      :class="driftSeverityClass(task.drift?.compositeSeverity)"
+                      :style="{ width: `${Math.round((task.drift?.planAdherenceScore ?? 0) * 100)}%` }"
+                    />
+                  </div>
+                </template>
+
                 <ul
                   v-if="task.currentPlan && task.currentPlan.steps && task.currentPlan.steps.length > 0"
                   class="planning-step-list"
@@ -1106,6 +1330,208 @@ onUnmounted(() => {
           </div>
         </template>
 
+        <template v-else-if="activeTab === 'drift'">
+          <div class="provenance-section-title drift-section-title">
+            Plan drift
+            <span class="drift-help drift-tab-help" :data-tooltip="driftHelp.planDriftTab">ⓘ</span>
+          </div>
+          <p class="drift-tab-lede">
+            Task-level <strong>plan alignment</strong> below; each call can include <strong>grounding</strong> (answer vs cited snippet — not factual verification).
+          </p>
+          <div v-if="planningTasks.length === 0" class="provenance-empty">
+            No planning data available. Drift analysis requires committed intents and plans.
+          </div>
+          <div v-else-if="planningTasks.filter(taskHasDrift).length === 0" class="provenance-empty">
+            No drift data collected yet. Drift scores appear after LLM calls within a committed plan.
+          </div>
+          <div v-else class="drift-task-list">
+            <article
+              v-for="task in planningTasks.filter(taskHasDrift)"
+              :key="`drift:${task.taskId}`"
+              class="drift-task-card"
+            >
+              <!-- Header: task name + composite severity -->
+              <div class="drift-task-header">
+                <span class="group-key">{{ planningTaskTitle(task) }}</span>
+                <button
+                  :class="['planning-step-pill', 'drift-count-link', driftSeverityClass(task.drift?.compositeSeverity)]"
+                  @click="drillToDriftCalls(task.taskId)"
+                  title="View all LLM calls for this task in Explore"
+                >{{ driftSeverityLabel(task.drift?.compositeSeverity) }}</button>
+              </div>
+              <div class="drift-task-intent">{{ planningIntentLabel(task) }}</div>
+
+              <!-- Summary: single adherence gauge + call counts -->
+              <div class="drift-call-summary">
+                <span>{{ task.drift?.scoredCallCount ?? 0 }} calls scored</span>
+                <button
+                  v-if="(task.drift?.warnCount ?? 0) > 0"
+                  class="drift-count-link drift-warn-count"
+                  @click="drillToDriftCalls(task.taskId)"
+                  title="View LLM calls for this task"
+                >{{ task.drift?.warnCount }} warn</button>
+                <button
+                  v-if="(task.drift?.blockCount ?? 0) > 0"
+                  class="drift-count-link drift-block-count"
+                  @click="drillToDriftCalls(task.taskId)"
+                  title="View LLM calls for this task"
+                >{{ task.drift?.blockCount }} block</button>
+              </div>
+
+              <div v-if="groundingCallCount(task) > 0" class="drift-grounding-summary">
+                <strong>Grounding:</strong> {{ groundingCallCount(task) }} call(s) with resolved citations
+              </div>
+
+              <div class="drift-bar-row">
+                <span class="drift-bar-label drift-help" :data-tooltip="driftHelp.adherence">Adherence</span>
+                <div class="drift-bar-track">
+                  <div
+                    class="drift-bar-fill"
+                    :class="driftSeverityClass(task.drift?.compositeSeverity)"
+                    :style="{ width: `${Math.round((task.drift?.planAdherenceScore ?? 0) * 100)}%` }"
+                  />
+                </div>
+                <span class="drift-bar-value">{{ formatDriftScore(task.drift?.planAdherenceScore) }}</span>
+              </div>
+
+              <!-- Evidence: inline cards for each warn/block call -->
+              <div
+                v-if="task.drift?.driftedCalls && task.drift.driftedCalls.length > 0"
+                class="drift-evidence-list"
+              >
+                <div
+                  v-for="(call, ci) in task.drift.driftedCalls"
+                  :key="`evidence:${task.taskId}:${ci}`"
+                  class="drift-evidence"
+                >
+                  <div class="drift-evidence-header">
+                    <span :class="['planning-step-pill', driftSeverityClass(call.severity)]">
+                      {{ call.severity }}
+                    </span>
+                    <span class="drift-evidence-fn">{{ call.functionName }}</span>
+                  </div>
+                  <div class="drift-preview-pair">
+                    <div class="drift-preview">
+                      <div class="drift-preview-label">{{ call.stepTextPreview ? 'Step' : 'Intent' }}</div>
+                      <div class="drift-preview-text">{{ call.stepTextPreview || call.intentTextPreview || '—' }}</div>
+                    </div>
+                    <div class="drift-preview">
+                      <div class="drift-preview-label">Response</div>
+                      <div class="drift-preview-text">{{ call.responseTextPreview || '—' }}</div>
+                    </div>
+                  </div>
+                  <div class="drift-evidence-scores">
+                    <span v-if="call.stepAlignment != null">step={{ call.stepAlignment.toFixed(2) }}</span>
+                    <span>intent={{ call.intentAlignment.toFixed(2) }}</span>
+                    <span v-if="call.crossEncoderStepScore != null">XE={{ call.crossEncoderStepScore.toFixed(1) }}</span>
+                    <button class="drift-count-link" @click="drillToDriftCalls(task.taskId)">View in Explore</button>
+                  </div>
+
+                  <div
+                    v-if="call.citations && call.citations.length > 0"
+                    class="drift-grounding-compact"
+                  >
+                    {{ call.citations.length }} citation(s) · mean {{ meanPositiveSimilarity(call.citations).toFixed(2) }}
+                    <span class="drift-help drift-inline-help" :data-tooltip="driftHelp.grounding">ⓘ</span>
+                  </div>
+
+                  <!-- Inline citation evidence for this call -->
+                  <div v-if="call.citations && call.citations.length > 0" class="drift-cite-section">
+                    <div class="drift-cite-header">
+                      Grounding — cited snippets
+                      <span class="drift-help drift-inline-help" :data-tooltip="driftHelp.grounding">ⓘ</span>
+                    </div>
+                    <p class="drift-cite-explainer">
+                      Similarity measures how much the response resembles each cited entry (not whether facts are true). Calibrated bands: ≥0.65 strong, 0.40–0.65 moderate, &lt;0.40 weak. Full reference: <code>docs/drift-catalogue.md</code> in the repo.
+                    </p>
+                    <details class="cite-threshold-legend">
+                      <summary>Threshold legend</summary>
+                      <ul class="cite-threshold-list">
+                        <li><strong>Strong (≥0.65):</strong> answer closely paraphrases the cited snippet.</li>
+                        <li><strong>Moderate (0.40–0.65):</strong> same domain, partial overlap.</li>
+                        <li><strong>Weak (&lt;0.40):</strong> likely wrong ref or weak tie to cited text.</li>
+                        <li><strong>Counter:</strong> model flagged contradicting evidence; excluded from mean.</li>
+                      </ul>
+                    </details>
+                    <div class="cite-list cite-list-compact">
+                      <div
+                        v-for="(c, ci) in call.citations"
+                        :key="`dcite-${ci}`"
+                        class="cite-entry"
+                        :class="{ 'cite-entry-negated': c.negated }"
+                      >
+                        <div class="cite-header">
+                          <span class="cite-ref-tag" :class="c.isHistory ? 'cite-ref-history' : 'cite-ref-archive'">
+                            {{ c.raw }}
+                          </span>
+                          <span v-if="c.negated" class="cite-negated-badge">counter</span>
+                          <span class="cite-sim-pill" :class="citationSimClass(c.similarity, c.negated)">
+                            {{ c.similarity.toFixed(2) }}
+                          </span>
+                        </div>
+                        <div class="cite-content cite-content-compact">{{ c.contentPreview || '—' }}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- No scored calls -->
+              <div
+                v-else-if="(task.drift?.scoredCallCount ?? 0) === 0"
+                class="drift-clean-msg"
+              >
+                No calls scored yet.
+              </div>
+
+              <!-- Dimensions: collapsible, default closed -->
+              <details class="drift-dimensions-toggle">
+                <summary class="drift-dimensions-summary">Dimensions</summary>
+                <div class="drift-scores-grid">
+                  <div class="drift-score-item">
+                    <span class="drift-score-label drift-help" :data-tooltip="driftHelp.intent">Intent</span>
+                    <span class="drift-score-value">{{ formatDriftScore(task.drift?.intentAlignment) }}</span>
+                  </div>
+                  <div class="drift-score-item">
+                    <span class="drift-score-label drift-help" :data-tooltip="driftHelp.step">Step</span>
+                    <span class="drift-score-value">{{ formatDriftScore(task.drift?.stepAlignment) }}</span>
+                  </div>
+                  <div class="drift-score-item" v-if="task.drift?.crossEncoderStepScore != null">
+                    <span class="drift-score-label drift-help" data-tooltip="Cross-encoder (JINA) logit for step vs response. Higher = more relevant. Combined with cosine.">XE</span>
+                    <span class="drift-score-value">{{ (task.drift.crossEncoderStepScore as number).toFixed(2) }}</span>
+                  </div>
+                  <div class="drift-score-item">
+                    <span class="drift-score-label drift-help" :data-tooltip="driftHelp.trajectory">Trajectory</span>
+                    <span class="drift-score-value">{{ formatDriftScore(task.drift?.trajectoryDrift) }}</span>
+                  </div>
+                  <div class="drift-score-item">
+                    <span class="drift-score-label drift-help" :data-tooltip="driftHelp.adherence">Adherence</span>
+                    <span class="drift-score-value">{{ formatDriftScore(task.drift?.planAdherenceScore) }}</span>
+                  </div>
+                </div>
+                <div class="drift-dimension-bars">
+                  <div class="drift-bar-row">
+                    <span class="drift-bar-label">Intent</span>
+                    <div class="drift-bar-track"><div class="drift-bar-fill drift-severity-ok" :style="{ width: `${Math.round((task.drift?.intentAlignment ?? 0) * 100)}%` }" /></div>
+                  </div>
+                  <div class="drift-bar-row">
+                    <span class="drift-bar-label">Step</span>
+                    <div class="drift-bar-track"><div class="drift-bar-fill drift-severity-ok" :style="{ width: `${Math.round((task.drift?.stepAlignment ?? 0) * 100)}%` }" /></div>
+                  </div>
+                  <div class="drift-bar-row">
+                    <span class="drift-bar-label">Trajectory</span>
+                    <div class="drift-bar-track"><div class="drift-bar-fill drift-severity-ok" :style="{ width: `${Math.round((task.drift?.trajectoryDrift ?? 0) * 100)}%` }" /></div>
+                  </div>
+                  <div class="drift-bar-row">
+                    <span class="drift-bar-label">Adherence</span>
+                    <div class="drift-bar-track"><div class="drift-bar-fill" :class="driftSeverityClass(task.drift?.compositeSeverity)" :style="{ width: `${Math.round((task.drift?.planAdherenceScore ?? 0) * 100)}%` }" /></div>
+                  </div>
+                </div>
+              </details>
+            </article>
+          </div>
+        </template>
+
         <template v-else>
           <div class="explore-controls">
             <select v-model="exploreForm.resource">
@@ -1189,7 +1615,7 @@ onUnmounted(() => {
             <table class="explore-table">
               <thead>
                 <tr>
-                  <th v-for="col in exploreColumns" :key="col">{{ col }}</th>
+                  <th v-for="col in exploreColumns" :key="col">{{ formatColumnHeader(col) }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1199,7 +1625,7 @@ onUnmounted(() => {
                   @click="selectRow(row)"
                 >
                   <td v-for="col in exploreColumns" :key="col">
-                    {{ String(row[col] ?? "") }}
+                    {{ formatCellValue(col, row[col]) }}
                   </td>
                 </tr>
               </tbody>
@@ -1256,6 +1682,136 @@ onUnmounted(() => {
                   >{{ entry.display }}</pre>
                   <div v-else class="row-inspector-value">{{ entry.display }}</div>
                 </div>
+              </section>
+
+              <section
+                v-if="
+                  exploreForm.resource === 'llm_calls' &&
+                  selectedRow?.drift &&
+                  ((selectedRow.drift as any).score != null || (selectedRow.drift as any).severity)
+                "
+                class="row-inspector-section"
+              >
+                <div class="row-inspector-section-title">
+                  Tactical drift
+                  <span class="drift-help section-title-hint" :data-tooltip="driftHelp.tactical">ⓘ</span>
+                </div>
+                <div class="drift-scores-grid inspector-drift-grid">
+                  <div class="drift-score-item">
+                    <span class="drift-score-label">Score</span>
+                    <span class="drift-score-value">{{ formatDriftScore((selectedRow.drift as any)?.score) }}</span>
+                  </div>
+                  <div class="drift-score-item">
+                    <span class="drift-score-label">Severity</span>
+                    <span class="drift-score-value">{{ (selectedRow.drift as any)?.severity ?? "—" }}</span>
+                  </div>
+                </div>
+              </section>
+
+              <section
+                v-if="selectedRow?.drift && (selectedRow.drift as any)?.plan"
+                class="row-inspector-section"
+              >
+                <div class="row-inspector-section-title">
+                  Plan alignment
+                  <span class="drift-help section-title-hint" :data-tooltip="driftHelp.adherence">ⓘ</span>
+                </div>
+                <div class="drift-scores-grid inspector-drift-grid">
+                  <div class="drift-score-item">
+                    <span class="drift-score-label drift-help" :data-tooltip="driftHelp.intent">Intent align.</span>
+                    <span class="drift-score-value">{{ formatDriftScore((selectedRow.drift as any)?.plan?.intentAlignment) }}</span>
+                  </div>
+                  <div class="drift-score-item">
+                    <span class="drift-score-label drift-help" :data-tooltip="driftHelp.step">Step align.</span>
+                    <span class="drift-score-value">{{ formatDriftScore((selectedRow.drift as any)?.plan?.stepAlignment) }}</span>
+                  </div>
+                  <div class="drift-score-item" v-if="(selectedRow.drift as any)?.plan?.crossEncoderStepScore != null">
+                    <span class="drift-score-label drift-help" data-tooltip="Cross-encoder step logit. Logit scale — always present in PlanCommitted scoring. Catches injections cosine misses.">XE step logit</span>
+                    <span class="drift-score-value">{{ ((selectedRow.drift as any)?.plan?.crossEncoderStepScore as number)?.toFixed(2) }}</span>
+                  </div>
+                  <div class="drift-score-item">
+                    <span class="drift-score-label drift-help" :data-tooltip="driftHelp.trajectory">Trajectory</span>
+                    <span class="drift-score-value">{{ formatDriftScore((selectedRow.drift as any)?.plan?.trajectoryDrift) }}</span>
+                  </div>
+                  <div class="drift-score-item">
+                    <span class="drift-score-label drift-help" :data-tooltip="driftHelp.adherence">Adherence</span>
+                    <span class="drift-score-value">{{ formatDriftScore((selectedRow.drift as any)?.plan?.planAdherenceScore) }}</span>
+                  </div>
+                  <div class="drift-score-item">
+                    <span class="drift-score-label drift-help" :data-tooltip="driftHelp.composite">Composite</span>
+                    <span :class="['planning-step-pill', driftSeverityClass((selectedRow.drift as any)?.plan?.compositeSeverity)]">
+                      {{ driftSeverityLabel((selectedRow.drift as any)?.plan?.compositeSeverity) }}
+                    </span>
+                  </div>
+                </div>
+                <div v-if="(selectedRow.drift as any)?.intentTextPreview" class="drift-preview-pair">
+                  <div class="drift-preview">
+                    <div class="drift-preview-label">Intent</div>
+                    <div class="drift-preview-text">{{ (selectedRow.drift as any).intentTextPreview }}</div>
+                  </div>
+                  <div class="drift-preview">
+                    <div class="drift-preview-label">Response</div>
+                    <div class="drift-preview-text">{{ (selectedRow.drift as any).responseTextPreview }}</div>
+                  </div>
+                </div>
+              </section>
+
+              <section
+                v-if="
+                  exploreForm.resource === 'llm_calls' &&
+                  selectedRow &&
+                  (rowCitationDrift(selectedRow) || selectedRow.drift)
+                "
+                class="row-inspector-section"
+              >
+                <template v-if="rowCitationDrift(selectedRow)">
+                  <div class="row-inspector-section-title">
+                    Grounding
+                    <span class="cite-mean-badge" :class="citationSimClass(rowCitationDrift(selectedRow)!.meanSimilarity, false)">
+                      mean {{ rowCitationDrift(selectedRow)!.meanSimilarity.toFixed(2) }}
+                    </span>
+                    <span class="drift-help section-title-hint" :data-tooltip="driftHelp.grounding">ⓘ</span>
+                  </div>
+                  <p class="inspector-grounding-lede">
+                    Embedding similarity between the response and each cited snippet. Not a factual truth check.
+                    <span class="drift-help drift-inline-help" :data-tooltip="driftHelp.grounding">ⓘ</span>
+                  </p>
+                  <div class="cite-list">
+                    <div
+                      v-for="(c, i) in rowCitationDrift(selectedRow)!.perCitation"
+                      :key="`cite-${i}`"
+                      class="cite-entry"
+                      :class="{ 'cite-entry-negated': c.negated }"
+                    >
+                      <div class="cite-header">
+                        <span class="cite-ref-tag" :class="c.isHistory ? 'cite-ref-history' : 'cite-ref-archive'">
+                          {{ citationRefLabel(c) }}
+                        </span>
+                        <span v-if="c.negated" class="cite-negated-badge">counter-evidence</span>
+                        <span class="cite-sim-pill" :class="citationSimClass(c.similarity, c.negated)">
+                          {{ c.similarity.toFixed(2) }} · {{ citationSimLabel(c.similarity, c.negated) }}
+                        </span>
+                        <span v-if="c.isHistory" class="cite-kind-label">history</span>
+                        <span v-else class="cite-kind-label">archive</span>
+                      </div>
+                      <pre v-if="c.contentPreview" class="cite-content">{{ c.contentPreview }}</pre>
+                      <div v-else class="cite-content-empty">content not resolved</div>
+                    </div>
+                  </div>
+                  <details class="cite-threshold-legend">
+                    <summary>Threshold legend</summary>
+                    <ul class="cite-threshold-list">
+                      <li><strong>Strong (≥0.65):</strong> answer closely paraphrases the cited snippet.</li>
+                      <li><strong>Moderate (0.40–0.65):</strong> same domain, partial overlap.</li>
+                      <li><strong>Weak (&lt;0.40):</strong> likely wrong ref or weak tie to cited text.</li>
+                      <li><strong>Counter:</strong> model flagged contradicting evidence; excluded from mean.</li>
+                    </ul>
+                  </details>
+                </template>
+                <template v-else-if="selectedRow.drift">
+                  <div class="row-inspector-section-title">Grounding</div>
+                  <p class="inspector-grounding-empty">{{ driftHelp.groundingEmpty }}</p>
+                </template>
               </section>
             </div>
           </section>

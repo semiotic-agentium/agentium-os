@@ -366,6 +366,8 @@ impl QuickJSBridge {
         // Register tool functions
         self.register_tool_functions().await?;
 
+        self.verify_a2a_chat_host_surface().await?;
+
         Ok(())
     }
 
@@ -484,6 +486,24 @@ impl QuickJSBridge {
     /// For concurrent-safe async invocations use [`invoke_js_function_nonblocking`](Self::invoke_js_function_nonblocking).
     pub async fn eval_sync(&mut self, code: &str) -> Result<Value> {
         self.evaluate(None, code).await
+    }
+
+    /// Fail fast if the realm is missing any name in [`crate::a2a_chat_surface::A2A_CHAT_HOST_GLOBALS`]
+    /// or a name is not a JS function (execution-session + step-executor wiring drift guard).
+    pub async fn verify_a2a_chat_host_surface(&mut self) -> Result<()> {
+        let expr = crate::a2a_chat_surface::host_surface_probe_expression();
+        let v = self.eval_sync(&expr).await?;
+        let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
+        if !ok {
+            let bad = v
+                .get("bad")
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            return Err(BamlRtError::InvalidArgument(format!(
+                "QuickJS A2A chat host surface incomplete (missing or non-function globals): {bad}"
+            )));
+        }
+        Ok(())
     }
 
     /// Execute JavaScript code that may return a promise, with an explicit invocation scope.
@@ -734,10 +754,7 @@ impl QuickJSBridge {
         }
     }
 
-    /// Invoke an optional JS global function with the brief-lock pattern.
-    ///
-    /// Returns `Ok(None)` when the JS function is absent and `Ok(Some(value))` when it exists.
-    /// Any thrown/returned JS error is surfaced as `Err(BamlRtError::QuickJs(...))`.
+    /// Invoke an optional JS function with the brief-lock pattern — returns None when not registered.
     pub async fn invoke_optional_js_function_nonblocking(
         bridge: Arc<Mutex<Self>>,
         scope: &InvocationScope,
@@ -755,6 +772,29 @@ impl QuickJSBridge {
                 .await?
         };
         Self::parse_optional_js_function_result(function_name, result)
+    }
+
+    /// Parse the result of an optional JS function invocation.
+    /// Returns None when the function was not registered (indicated by `__absent: true`).
+    fn parse_optional_js_function_result(
+        function_name: &str,
+        result: Value,
+    ) -> Result<Option<Value>> {
+        if let Value::Object(map) = &result {
+            if map
+                .get("__absent")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                return Ok(None);
+            }
+            if let Some(error) = map.get("error").and_then(Value::as_str) {
+                return Err(BamlRtError::QuickJs(format!(
+                    "JS function invocation error ({function_name}): {error}"
+                )));
+            }
+        }
+        Ok(Some(result))
     }
 
     /// Invoke a JS tool with the brief-lock pattern.
@@ -977,7 +1017,24 @@ impl QuickJSBridge {
             })
             .await?
         };
-        Self::parse_optional_js_function_result(function_name, result)
+
+        if let Value::Object(map) = &result {
+            if map
+                .get("__absent")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                return Ok(None);
+            }
+            if let Some(error) = map.get("error").and_then(Value::as_str) {
+                return Err(BamlRtError::QuickJs(format!(
+                    "JS function invocation error ({}): {}",
+                    function_name, error
+                )));
+            }
+        }
+
+        Ok(Some(result))
     }
 
     /// Invoke a streaming JavaScript or BAML function by name.
@@ -1012,27 +1069,5 @@ impl QuickJSBridge {
             ))),
             other => Ok(vec![other]),
         }
-    }
-
-    fn parse_optional_js_function_result(
-        function_name: &str,
-        result: Value,
-    ) -> Result<Option<Value>> {
-        if let Value::Object(map) = &result {
-            if map
-                .get("__absent")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                return Ok(None);
-            }
-            if let Some(error) = map.get("error").and_then(Value::as_str) {
-                return Err(BamlRtError::QuickJs(format!(
-                    "JS function invocation error ({function_name}): {error}"
-                )));
-            }
-        }
-
-        Ok(Some(result))
     }
 }

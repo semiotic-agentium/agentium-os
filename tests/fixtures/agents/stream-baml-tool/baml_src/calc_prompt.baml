@@ -1,26 +1,22 @@
-// Fixture: BAML tool streaming. Prompt returns a calculation session plan (2+3 default).
+// Fixture: BAML tool streaming. FSM phase instructions injected by codegen.
 function ChooseCalcTool(user_message: string, session_context: SessionContext?) -> SupportCalculateSessionPlan {
   client DefaultClient
   prompt #"
-    The user says: {{ user_message }}
-    Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
+    Evaluate this calculation: {{ user_message }}
+    For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
-    DECISION LADDER — choose the FIRST matching rule:
-    1. session_context is null or allowed_ops contains only "Open"  → emit Open (empty initial_input).
-    2. allowed_ops contains "Send"   → emit Send with input.expression set to the calculation.
-    3. allowed_ops contains "Read"   → emit Read with empty input {}.
-    4. allowed_ops contains "Finish" → emit Finish.
+    {% if ctx.tags.conversation_history %}
+    Session history:
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
+    {% endfor %}
+    {% endif %}
 
-    IMPORTANT: Return a top-level JSON object with a `step` field (and optional `reason`), never a bare JSON array.
-    Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.
     {{ ctx.output_format }}
-    {% if session_context %}Allowed ops: {{ session_context.allowed_ops }}{% endif %}
-    {{ _.role('user') }}
-    {{ user_message }}
   "#
 }
 
-// Streaming variant for JS invoke/stream tests (replaces voidship-rites SimpleGreetingStream).
+// Streaming variant for JS invoke/stream tests.
 function ChooseCalcToolStream(user_message: string) -> string {
   client DefaultClient
   prompt #"

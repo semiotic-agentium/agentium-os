@@ -29,10 +29,7 @@ schemars = { workspace = true }
 ts-rs = { workspace = true }
 
 [dev-dependencies]
-opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tracing-subscriber = { workspace = true }
-tracing-opentelemetry = { workspace = true }
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
 insta = { workspace = true }

@@ -1,38 +1,19 @@
-// Discovery session driver.
-// CRITICAL: This function controls a host-managed FSM session for system/discover_agents.
-// The ONLY valid output is a single FSM step object — NEVER the agents list itself.
-// The host runtime executes the step; this function only declares the next op.
-//
-// Op lifecycle (follow in order):
-//   1. Open  — first call only, no session yet
-//   2. Send  — pass the discovery query; the host calls discover_agents
-//   3. Finish — immediately after Send when session status is "done" or "streaming"
-//              (the host already has the agents; you do NOT need a Read step)
-//   4. If status is NOT done/streaming after Send, emit Read once, then Finish.
-//
-// STOP RULE: If `allowed_ops` includes "Finish", emit Finish. Do not loop.
+// Discover which agents are available to handle the user's request.
+// FSM phase instructions are injected by codegen — this prompt carries goal context only.
 function GetDiscoverAgentsPlan(
   inferred_intent: string,
-  session_context: SessionContext?,
 ) -> SystemDiscover_agentsSessionPlan {
   client DefaultClient
   prompt #"
-    You are driving a discovery session FSM. Your ONLY output is one FSM step.
-    DO NOT output the agents list. DO NOT output JSON with "agents" or "done" keys.
-    Output EXACTLY ONE step object matching the schema below.
-
-    Step selection rules (apply in order):
-    1. If session is not open yet (no allowed_ops, or allowed_ops = ["Open"]): emit Open.
-    2. If allowed_ops = ["Send"]: emit Send with the discovery query derived from the inferred intent.
-    3. If allowed_ops includes "Finish": emit Finish immediately. You are DONE.
-    4. If allowed_ops = ["Read"]: emit Read once (use empty input). Then on next call, Finish.
-    5. Default: emit Finish if in doubt.
-
-    Current session state:
-    - session_open: {{ session_context.session_open }}
-    - allowed_ops: {{ session_context.allowed_ops }}
-
+    Discover available agents to match the user's intent.
     Inferred intent: {{ inferred_intent }}
+
+    {% if ctx.tags.conversation_history %}
+    Session history:
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
+    {% endfor %}
+    {% endif %}
 
     {{ ctx.output_format }}
   "#
@@ -57,117 +38,127 @@ class SelectedAgent {
   agent_instance_id string
 }
 
+// StructuredReply: shared synthesis shape in `_baml_runtime.baml` (builder prelude).
+
 // Persona-voiced summary of what agents can do (no delegation).
-function FormatCapabilities(user_message: string, agents: AgentCardDto[]) -> string {
+// Capability summary: describe available agents in persona voice.
+// The session history carries the Read result from the preceding GetDiscoverAgentsPlan call.
+function FormatCapabilities(user_message: string) -> StructuredReply {
   client DefaultClient
   prompt #"
     You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns if present in ctx.tags.conversation_history for continuity.
-    Given the list of available agents (name, description, capabilities), reply in your persona with a short, brutal summary of what you can offer—what agents are available and what they do. No tool jargon; keep it readable and ork-flavoured (krump, waaagh). 2-5 sentences.
-    {% for message in ctx.tags.conversation_history %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
+
+    The session history below contains the list of available agents retrieved in the previous step.
+    Describe what agents are available to help the user, in brutal ork persona voice.
+    Match the output schema exactly (StructuredReply: parts + citations). 2-5 sentences in the text part; no tool jargon.
+
+    {% if ctx.tags.conversation_history %}
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
     {% endfor %}
+    {% endif %}
+
     {{ _.role('user') }}
     {{ user_message }}
-    Agents: {{ agents }}
+
     {{ ctx.output_format }}
   "#
 }
 
 // Pick one agent that can handle the user's request, or none. Exclude conversational-persona-demo (self).
-function SelectAgentForMessage(user_message: string, agents: AgentCardDto[]) -> SelectedAgent | null {
+// The session history carries the Read result from the preceding GetDiscoverAgentsPlan call.
+function SelectAgentForMessage(user_message: string) -> SelectedAgent | null {
   client DefaultClient
   prompt #"
     You do NOT perform the user's task. You only choose which specialist agent will do it. Return only the structured selection (agent_package, agent_instance_id) or null. Never generate code, scripts, or the answer yourself.
-    Given the user message and the list of available agents (each has agent_package, agent_instance_id, name, description, capabilities), pick the single best agent that can handle the request. Use prior turns in ctx.tags.conversation_history when present (e.g. follow-ups like "use the argument one").
+
+    The session history below contains the list of available agents retrieved in the previous step.
+    Pick the single best agent for the user's request. Use prior turns in ctx.tags.conversation_history when present (e.g. follow-ups like "use the argument one").
     Return that agent's agent_package and agent_instance_id only. If no agent fits, or the user just wants to know capabilities, return null. Never select conversational-persona-demo (that is this router itself).
+
     {{ ctx.output_format }}
-    {% for message in ctx.tags.conversation_history %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
+
+    {% if ctx.tags.conversation_history %}
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
     {% endfor %}
+    {% endif %}
+
     {{ _.role('user') }}
     {{ user_message }}
-    Agents: {{ agents }}
   "#
 }
 
-// Planning step: output a structured plan. You do NOT perform the task; you only produce the plan.
+// Planning step: output a structured plan against discovered agents.
+// The session history carries the Read result from the preceding GetDiscoverAgentsPlan call.
 // Never plan a step for conversational-persona-demo. For capability/meta requests, return plan_steps as [].
-function MakeStructuredPlan(user_message: string, agents: AgentCardDto[]) -> StandardStructuredPlan {
+function MakeStructuredPlan(user_message: string) -> StandardStructuredPlan {
   client DefaultClient
   prompt #"
-    You are PLANNING what to do; you do not perform the task yourself. Given the user message and the list of available agents (name, description, capabilities), output a structured plan:
+    You are PLANNING what to do; you do not perform the task yourself.
+    The session history below contains the list of available agents retrieved in the previous step.
+
+    Output a structured plan:
     (1) intent_description — one sentence describing the user's high-level intent in concrete terms (not generic "delegate request").
     (2) objective — one sentence describing what we are achieving for the user.
-    (3) plan_steps — an ordered list of agent chats. Each step is one conversation with one agent: which agent (agent_package, agent_instance_id from the list) and what to send (sub_message). Use only agents from the list. Output the key as "plan_steps" (never "step").
+    (3) plan_steps — an ordered list of agent chats. Each step is one conversation with one agent: which agent (agent_package, agent_instance_id from the list) and what to send (sub_message). Use only agents from the history. Output the key as "plan_steps" (never "step").
     Intent/plan separation contract:
     - intent_description and objective MUST stay goal-level (user outcome), not execution mechanics.
     - plan_steps/sub_message MUST contain the execution mechanics.
     - Do not repeat the same sentence across intent_description, objective, and step descriptions.
     CRITICAL sub_message quality rules:
     - sub_message is a GOAL DESCRIPTION for the conversation with the specialist agent — it guides what the conversation should achieve, NOT a verbatim message to forward.
-    - Write it as a plain-English goal: what information to get, what action to perform, what answer to produce.
     - Be concrete and specific: include key terms, entities, desired output format.
-    - The driver (ExecutePlanStepWithDelegate) will craft the actual messages from this goal.
-    - Never include persona-voice diction, roleplay language, or "Delegate to X:" prefixes.
-    - If the user asked for a script, state that requirement explicitly.
+    - Never include persona-voice diction or "Delegate to X:" prefixes.
     Capability/meta rule:
-    - If the user is asking what is available, what you can do, greetings/help, casual social chat, or any request without a concrete actionable work item for a specialist agent, set plan_steps to [].
-    - In that case, intent_description/objective should describe answering with capabilities or engaging in conversation.
-    A task may need one agent chat (one step) or multiple agent chats (multiple steps; e.g. first call one specialist to gather context, then call another specialist to act on that context). Order matters; later steps can refer to results of earlier ones in sub_message. Never plan a step for conversational-persona-demo. Output only the structured plan (intent_description, objective, and plan_steps).
-    Single-shot: no conversation_history. Planning uses only the current user message and agents list; including history would inject prior tool_call/tool_result and confuse the planner.
+    - If the user is asking what is available, what you can do, greetings/help, casual social chat, set plan_steps to [].
+    A task may need one agent chat (one step) or multiple (multiple steps). Never plan a step for conversational-persona-demo. Output only the structured plan.
+
     {{ ctx.output_format }}
+
+    {% if ctx.tags.conversation_history %}
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
+    {% endfor %}
+    {% endif %}
+
     {{ _.role('user') }}
     {{ user_message }}
-    Agents: {{ agents }}
   "#
 }
 
-/// Decide what to do next in a delegation conversation.
-/// Returns the message to send to the specialist agent, or null if the goal is achieved.
+/// Coordinate with a specialist agent to achieve a goal.
+/// FSM phase instructions are injected by codegen — this prompt carries goal context only.
 function DecideDelegationAction(
   goal: string,
-  agent: string,
-  prior_response: string?,
-) -> string? {
+  agent_package: string,
+  agent_instance_id: string,
+) -> SystemInternal_a2aSessionPlan | string? {
   client DefaultClient
   prompt #"
-    You are coordinating a conversation with a specialist agent to achieve a goal.
+    Coordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
 
-    Goal: {{ goal }}
-    Agent: {{ agent }}
+    For Open: set initial_input.target to { agent_package: "{{ agent_package }}", agent_instance_id: "{{ agent_instance_id }}" }.
+    For Send: write the message that will achieve the goal.
+    Return null (string?) when the goal is satisfied or after 2+ exchanges.
 
-    {% if prior_response %}
-    The agent's last response:
-    {{ prior_response }}
-
-    Has the response satisfied the goal?
-    - If YES: return null (empty string signals completion).
-    - If NO or partially: return the follow-up message to send to the agent.
-    {% else %}
-    No response yet. Return the opening message to send to the agent.
+    {% if ctx.tags.conversation_history %}
+    Session history:
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
+    {% endfor %}
     {% endif %}
 
-    Return ONLY the message text to send, or null if done. No wrappers, no class names — just the message string or null.
-
     {{ ctx.output_format }}
-
-    {% for message in ctx.tags.conversation_history %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
   "#
 }
 
 // React to the results of one or more delegation steps.
-// The persona decides how to respond based on what was asked and what came back —
-// sometimes a direct relay, sometimes a synthesis, sometimes a short reaction.
+// The session history carries the Read results from the preceding DecideDelegationAction calls.
 function PersonaReact(
   user_message: string,
   plan_objective: string,
-  a2a_output: InternalA2aNextOutput,
-) -> string {
+) -> StructuredReply {
   client DefaultClient
   prompt #"
     You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns in ctx.tags.conversation_history when present for continuity.
@@ -175,24 +166,17 @@ function PersonaReact(
     The user asked: {{ user_message }}
     Plan objective: {{ plan_objective }}
 
-    Your specialist agent(s) completed the work and returned the output below.
+    The session history below contains the results from your specialist agent(s).
+    Match the output schema exactly (StructuredReply: parts + citations).
+    Synthesize across steps when needed; use ork-flavoured diction (krump, waaagh) sparingly.
 
-    React appropriately:
-    - If the output already directly answers the user's question, relay the key facts in your voice.
-    - If the output is a list or structured data, present the highlights concisely.
-    - If multiple steps ran, synthesize across them rather than repeating each.
-    - Match verbosity to the task: brief for simple lookups, fuller for complex results.
-    - Never dump raw JSON or tool payloads. Deliver the useful content.
-    - Use ork-flavoured diction (krump, waaagh) sparingly — it should enhance, not obscure.
-
-    {% for message in ctx.tags.conversation_history %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
+    {% if ctx.tags.conversation_history %}
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
     {% endfor %}
+    {% endif %}
 
     {{ ctx.output_format }}
-
-    Delegated output: {{ a2a_output }}
   "#
 }
 

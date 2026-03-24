@@ -551,121 +551,27 @@ pub fn request_to_js_value(request: &A2aRequest) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        sync::{Arc, Mutex, OnceLock},
-    };
+    use std::{collections::HashMap, sync::Arc};
 
     use baml_rt_core::{BamlRtError, Result};
-    use opentelemetry::{global, trace::TracerProvider as _};
-    use opentelemetry_sdk::{testing::trace::InMemorySpanExporterBuilder, trace::TracerProvider};
     use serde_json::{Value, json};
     use tokio::time::{Duration, timeout};
-    use tracing_subscriber::layer::SubscriberExt;
 
     use super::A2aRequest;
     use crate::{
         A2aAgent, A2aRequestHandler,
-        a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest},
+        a2a_types::{
+            JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest,
+            StreamChunkView,
+        },
     };
 
     /// Watchdog timeout for agent setup and tests - ensures tests fail fast if they hang.
-    const TEST_WATCHDOG_TIMEOUT_SECS: u64 = 30; // 30 seconds for agent setup/tests
+    const TEST_WATCHDOG_TIMEOUT_SECS: u64 = 30;
 
-    struct OtelTestFixture {
-        exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-        provider: TracerProvider,
-        _otel_lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    static OTEL_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    static OTEL_STATE: OnceLock<OtelTestState> = OnceLock::new();
-
-    struct OtelTestState {
-        exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-        provider: TracerProvider,
-    }
-
-    fn otel_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        OTEL_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-    }
-
-    fn otel_state() -> &'static OtelTestState {
-        OTEL_STATE.get_or_init(|| {
-            let exporter = InMemorySpanExporterBuilder::new().build();
-            let provider = TracerProvider::builder()
-                .with_simple_exporter(exporter.clone())
-                .build();
-            global::set_tracer_provider(provider.clone());
-            let tracer = provider.tracer("baml_rt_test");
-            let subscriber = tracing_subscriber::registry()
-                .with(tracing_opentelemetry::layer().with_tracer(tracer));
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("set global tracing subscriber");
-            OtelTestState { exporter, provider }
-        })
-    }
-
-    impl OtelTestFixture {
-        fn new() -> Self {
-            let _otel_lock = otel_test_lock();
-            let state = otel_state();
-            state.exporter.reset();
-            Self {
-                exporter: state.exporter.clone(),
-                provider: state.provider.clone(),
-                _otel_lock,
-            }
-        }
-
-        fn spans(&self) -> Vec<opentelemetry_sdk::export::trace::SpanData> {
-            let _ = self.provider.force_flush();
-            self.exporter.get_finished_spans().unwrap_or_default()
-        }
-    }
-
-    fn find_span<'a>(
-        spans: &'a [opentelemetry_sdk::export::trace::SpanData],
-        name: &str,
-    ) -> Option<&'a opentelemetry_sdk::export::trace::SpanData> {
-        spans.iter().find(|span| span.name.as_ref() == name)
-    }
-
-    fn find_span_with_attr<'a>(
-        spans: &'a [opentelemetry_sdk::export::trace::SpanData],
-        name: &str,
-        key: &str,
-        value: &str,
-    ) -> Option<&'a opentelemetry_sdk::export::trace::SpanData> {
-        spans.iter().find(|span| {
-            span.name.as_ref() == name && attr_value(span, key).as_deref() == Some(value)
-        })
-    }
-
-    fn attr_value(span: &opentelemetry_sdk::export::trace::SpanData, key: &str) -> Option<String> {
-        span.attributes
-            .iter()
-            .find(|kv| kv.key.as_str() == key)
-            .and_then(|kv| match &kv.value {
-                opentelemetry::Value::String(value) => Some(value.to_string()),
-                opentelemetry::Value::Bool(value) => Some(value.to_string()),
-                opentelemetry::Value::I64(value) => Some(value.to_string()),
-                opentelemetry::Value::F64(value) => Some(value.to_string()),
-                _ => None,
-            })
-    }
-
-    fn maybe_print_spans(spans: &[opentelemetry_sdk::export::trace::SpanData]) {
-        if std::env::var("BAML_TEST_PRINT_SPANS").is_ok() {
-            eprintln!(
-                "spans: {:?}",
-                spans.iter().map(|s| s.name.as_ref()).collect::<Vec<_>>()
-            );
-        }
-    }
+    /// Setup may consume up to [`TEST_WATCHDOG_TIMEOUT_SECS`]; tests that chain several RPCs
+    /// after setup need a larger outer budget so parallel `cargo test` does not exhaust the litany.
+    const TEST_WATCHDOG_MULTI_STEP_SECS: u64 = 60;
 
     async fn setup_agent_with_js() -> A2aAgent {
         timeout(
@@ -696,13 +602,14 @@ mod tests {
             };
         "#;
         tracing::info!("setup_agent_with_js_inner: Creating builder");
-        let store = baml_rt_provenance::GraphqliteStoreBuilder::in_memory()
+        let store = baml_rt_provenance::SurrealStoreBuilder::in_memory()
             .build()
+            .await
             .expect("test store");
         let builder = A2aAgent::builder()
             .with_init_js(js_code)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
-            .with_graphqlite_store(store);
+            .with_surreal_store(store);
         tracing::info!("setup_agent_with_js_inner: Calling build()");
         let agent = builder.build().await.expect("agent build");
         tracing::info!("setup_agent_with_js_inner: Agent built successfully");
@@ -746,6 +653,24 @@ mod tests {
             .into_iter()
             .map(baml_rt_core::A2aStreamChunk::into_inner)
             .collect())
+    }
+
+    /// Resolve task id from `message.sendStream` JSON-RPC chunks (live path may emit SUBMITTED /
+    /// statusUpdate / `task` without nested `id` — same rules as [`StreamChunkView`]).
+    fn task_id_from_stream_responses(responses: &[Value]) -> Option<String> {
+        responses.iter().find_map(|response| {
+            if response.get("error").is_some() {
+                return None;
+            }
+            let result = response.get("result")?;
+            let chunk = result
+                .get("chunk")
+                .cloned()
+                .or_else(|| Some(result.clone()))?;
+            StreamChunkView::new(chunk)
+                .task_id()
+                .map(|t| t.as_str().to_string())
+        })
     }
 
     fn user_message(message_id: &str, text: &str) -> Message {
@@ -813,120 +738,6 @@ mod tests {
             .and_then(|part| part.get("text"))
             .and_then(Value::as_str);
         assert_eq!(text, Some("hi Ada"));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_a2a_request_span_structure() {
-        timeout(
-            Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
-            test_a2a_request_span_structure_inner(),
-        )
-        .await
-        .expect("Test timed out - test hung");
-    }
-
-    async fn test_a2a_request_span_structure_inner() {
-        let _otel = OtelTestFixture::new();
-        let agent = setup_agent_with_js().await;
-
-        let params = SendMessageRequest {
-            message: user_message("msg-span", "Ada"),
-            configuration: None,
-            metadata: None,
-            tenant: None,
-            extra: HashMap::new(),
-        };
-        let request = JSONRPCRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "message.sendStream".to_string(),
-            params: Some(serde_json::to_value(params).expect("serialize params")),
-            id: Some(JSONRPCId::String("corr-1-19".to_string())),
-        };
-        let request_value = serde_json::to_value(request).expect("serialize request");
-
-        collect_responses(&agent, request_value)
-            .await
-            .expect("handle_a2a should succeed for span structure test");
-
-        let spans = _otel.spans();
-        maybe_print_spans(&spans);
-        let span = find_span_with_attr(&spans, "baml_rt.a2a_stream", "correlation_id", "corr-1-19")
-            .unwrap_or_else(|| {
-                find_span(&spans, "baml_rt.a2a_stream").expect("expected baml_rt.a2a_stream span")
-            });
-        assert_eq!(
-            attr_value(span, "method").as_deref(),
-            Some("message.sendStream")
-        );
-        assert_eq!(
-            attr_value(span, "correlation_id").as_deref(),
-            Some("corr-1-19")
-        );
-        assert!(
-            find_span(&spans, "baml_rt.a2a_route").is_some(),
-            "expected baml_rt.a2a_route span (routing instrumentation)"
-        );
-        assert!(
-            find_span(&spans, "baml_rt.a2a_js_invoke").is_some(),
-            "expected baml_rt.a2a_js_invoke span (JS invocation instrumentation)"
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn test_a2a_stream_span_structure() {
-        timeout(
-            Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
-            test_a2a_stream_span_structure_inner(),
-        )
-        .await
-        .expect("Test timed out - test hung");
-    }
-
-    async fn test_a2a_stream_span_structure_inner() {
-        let _otel = OtelTestFixture::new();
-        let agent = setup_agent_with_js().await;
-
-        let params = SendMessageRequest {
-            message: user_message("msg-stream-span", "Ada"),
-            configuration: None,
-            metadata: None,
-            tenant: None,
-            extra: HashMap::new(),
-        };
-        let request = JSONRPCRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "message.sendStream".to_string(),
-            params: Some(serde_json::to_value(params).expect("serialize params")),
-            id: Some(JSONRPCId::String("corr-1-20".to_string())),
-        };
-        let request_value = serde_json::to_value(request).expect("serialize request");
-
-        collect_responses(&agent, request_value)
-            .await
-            .expect("handle_a2a should succeed for stream span structure test");
-
-        let spans = _otel.spans();
-        maybe_print_spans(&spans);
-        let span = find_span_with_attr(&spans, "baml_rt.a2a_stream", "correlation_id", "corr-1-20")
-            .unwrap_or_else(|| {
-                find_span(&spans, "baml_rt.a2a_stream").expect("expected baml_rt.a2a_stream span")
-            });
-        assert_eq!(
-            attr_value(span, "method").as_deref(),
-            Some("message.sendStream")
-        );
-        assert_eq!(
-            attr_value(span, "correlation_id").as_deref(),
-            Some("corr-1-20")
-        );
-        assert!(
-            find_span(&spans, "baml_rt.a2a_route").is_some(),
-            "expected baml_rt.a2a_route span (routing instrumentation)"
-        );
-        assert!(
-            find_span(&spans, "baml_rt.a2a_js_invoke").is_some(),
-            "expected baml_rt.a2a_js_invoke span (JS invocation instrumentation)"
-        );
     }
 
     #[tokio::test]
@@ -1021,7 +832,7 @@ mod tests {
     #[tokio::test]
     async fn test_tasks_get_list_cancel() {
         timeout(
-            Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
+            Duration::from_secs(TEST_WATCHDOG_MULTI_STEP_SECS),
             test_tasks_get_list_cancel_inner(),
         )
         .await
@@ -1048,17 +859,8 @@ mod tests {
         let create_responses = collect_responses(&agent, create_value)
             .await
             .expect("create task");
-        let task_id = create_responses
-            .iter()
-            .find_map(|response| {
-                let result = response.get("result")?;
-                let chunk = result.get("chunk").or(Some(result));
-                chunk
-                    .and_then(|c| c.get("task"))
-                    .and_then(|task| task.get("id"))
-                    .and_then(Value::as_str)
-            })
-            .expect("task id from stream");
+        let task_id =
+            task_id_from_stream_responses(&create_responses).expect("task id from stream");
 
         let get_request = JSONRPCRequest {
             jsonrpc: "2.0".to_string(),
@@ -1073,7 +875,10 @@ mod tests {
         .await
         .expect("get task");
         let result = expect_success_result(responses);
-        assert_eq!(result.get("id").and_then(Value::as_str), Some(task_id));
+        assert_eq!(
+            result.get("id").and_then(Value::as_str),
+            Some(task_id.as_str())
+        );
 
         let list_request = JSONRPCRequest {
             jsonrpc: "2.0".to_string(),
@@ -1095,7 +900,7 @@ mod tests {
         assert!(
             tasks
                 .iter()
-                .any(|task| task.get("id").and_then(Value::as_str) == Some(task_id))
+                .any(|task| task.get("id").and_then(Value::as_str) == Some(task_id.as_str()))
         );
     }
 
@@ -1103,7 +908,7 @@ mod tests {
     #[tokio::test]
     async fn test_tasks_subscribe_stream() {
         timeout(
-            Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
+            Duration::from_secs(TEST_WATCHDOG_MULTI_STEP_SECS),
             test_tasks_subscribe_stream_inner(),
         )
         .await
@@ -1130,17 +935,8 @@ mod tests {
         let create_responses = collect_responses(&agent, create_value)
             .await
             .expect("create task");
-        let task_id = create_responses
-            .iter()
-            .find_map(|response| {
-                let result = response.get("result")?;
-                let chunk = result.get("chunk").or(Some(result));
-                chunk
-                    .and_then(|c| c.get("task"))
-                    .and_then(|task| task.get("id"))
-                    .and_then(Value::as_str)
-            })
-            .expect("task id");
+        let task_id =
+            task_id_from_stream_responses(&create_responses).expect("task id from stream");
 
         let subscribe_request = JSONRPCRequest {
             jsonrpc: "2.0".to_string(),

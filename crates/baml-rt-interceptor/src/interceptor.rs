@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, Result, context::RuntimeScope};
+use baml_rt_core::{BamlFunctionId, BamlRtError, Result, context::RuntimeScope};
 use serde_json::Value;
 
 /// Result of an interception decision
@@ -33,8 +33,9 @@ pub struct LLMCallContext {
     /// The model name
     pub model: String,
 
-    /// The function name that triggered this LLM call
-    pub function_name: String,
+    /// The structured function identity — carries both the logical prompt name
+    /// and the narrowed variant phase (if an FSM step executor variant).
+    pub function_id: BamlFunctionId,
 
     /// Typed runtime scope for this call.
     pub runtime_scope: RuntimeScope,

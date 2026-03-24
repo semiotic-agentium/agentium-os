@@ -8,7 +8,8 @@ use std::{path::Path, sync::Arc};
 
 use baml_rt_a2a::A2aRequestHandler;
 use baml_rt_core::{
-    AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey, BamlRtError, Result,
+    AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey, BamlFunctionId, BamlRtError,
+    Result,
 };
 use baml_rt_provenance::ToolIndexConfig;
 use serde_json::Value;
@@ -89,10 +90,22 @@ impl RunnerBuilder<Loading> {
             .await?;
         let manifest = package.manifest().clone();
         // Capture BAML function names from the bridge's runtime manager at boot time.
+        // Filter to logical prompt names only (deduplicate FSM variants like __select, __act__, __continue__).
         let baml_functions: Vec<String> = {
             let bridge_arc = agent.bridge();
             let bridge = bridge_arc.lock().await;
-            bridge.list_baml_functions().await
+            let all = bridge.list_baml_functions().await;
+            // Parse each name and keep only base (non-variant) prompt names, deduplicated.
+            let mut seen = std::collections::HashSet::new();
+            all.into_iter()
+                .map(|name| {
+                    BamlFunctionId::parse(&name)
+                        .prompt_name()
+                        .as_str()
+                        .to_string()
+                })
+                .filter(|name| seen.insert(name.clone()))
+                .collect()
         };
         let booted = BootedAgent {
             agent,

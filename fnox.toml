@@ -14,22 +14,24 @@ description = "OpenRouter API key — LLM backend for all agents"
 if_missing = "warn"
 # default = "sk-or-v1-..."
 
+# Optional integration secrets: `ignore` avoids stderr noise when running workspace tests or
+# agents that do not register those tools. Use `default = "..."` locally when you need the tool.
 [secrets.CLICKUP_API_KEY]
-description = "ClickUp personal API token (pk_...) — support/clickup tool"
-if_missing = "warn"
-# default = "pk_..."
+description = "ClickUp personal API token (pk_...) — support/clickup tool; also used by integrations-clickup-client (env first, then this store)"
+if_missing = "ignore"
+# default = "pk_..."  # uncomment for local clickup-agent E2E / task-daemon without exporting env
 
 [secrets.NOTION_API_TOKEN]
 description = "Notion integration token — support/notion* tools"
-if_missing = "warn"
+if_missing = "ignore"
 # default = "secret_..."
 
 [secrets.SLACK_BOT_TOKEN]
 description = "Slack bot token (xoxb-...) — support/slack tool, bot-scoped reads"
-if_missing = "warn"
+if_missing = "ignore"
 # default = "xoxb-..."
 
 [secrets.SLACK_USER_TOKEN]
 description = "Slack user token (xoxp-...) — support/slack tool, user-scoped search"
-if_missing = "warn"
+if_missing = "ignore"
 # default = "xoxp-..."

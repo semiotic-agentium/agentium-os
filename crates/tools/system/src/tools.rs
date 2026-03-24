@@ -103,6 +103,12 @@ pub struct DiscoverAgentsOpenInput {
     pub reason: Option<String>,
 }
 
+impl baml_rt_tools::DescribeAction for DiscoverAgentsOpenInput {
+    fn describe(&self) -> String {
+        "discovering available agents".to_string()
+    }
+}
+
 /// Requests one page of agents, optionally filtered by text, capability, or event subscription.
 /// Send = one list request. Multiple Send/Read = multiple pages.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
@@ -125,6 +131,15 @@ pub struct DiscoverAgentsSendInput {
     pub limit: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<u32>,
+}
+
+impl baml_rt_tools::DescribeAction for DiscoverAgentsSendInput {
+    fn describe(&self) -> String {
+        match &self.query {
+            Some(q) if !q.is_empty() => format!("discovering agents matching '{q}'"),
+            _ => "listing all available agents".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -180,6 +195,12 @@ pub struct DiscoverToolsOpenInput {
     pub reason: Option<String>,
 }
 
+impl baml_rt_tools::DescribeAction for DiscoverToolsOpenInput {
+    fn describe(&self) -> String {
+        "discovering available tools".to_string()
+    }
+}
+
 /// Send = one search request. Multiple Send/Read cycles = multiple queries per session.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
@@ -193,6 +214,15 @@ pub struct DiscoverToolsSendInput {
     /// Use a small value when you want compact, token-efficient results.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+}
+
+impl baml_rt_tools::DescribeAction for DiscoverToolsSendInput {
+    fn describe(&self) -> String {
+        match &self.query {
+            Some(q) if !q.is_empty() => format!("discovering tools matching '{q}'"),
+            _ => "listing all available tools".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -225,6 +255,12 @@ pub struct ToolDiscoveryRecordDto {
 pub struct ProvenanceQueryOpenInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+impl baml_rt_tools::DescribeAction for ProvenanceQueryOpenInput {
+    fn describe(&self) -> String {
+        "querying provenance records".to_string()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
@@ -272,6 +308,12 @@ pub struct ProvenanceQuerySendInput {
     pub cursor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<u32>,
+}
+
+impl baml_rt_tools::DescribeAction for ProvenanceQuerySendInput {
+    fn describe(&self) -> String {
+        format!("querying provenance {}", self.resource)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]

@@ -6,19 +6,17 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface ArchiveReadInput { archive_ref: string;
+offset: number | null;
+limit: number | null;
+grep: string | null;
+ }
+
 export interface DiscoverToolsOpenInput { reason: string | null;
  }
 
 export interface DiscoverToolsSendInput { query: string | null;
 limit: number | null;
- }
-
-export interface SessionContext { contract_version: string;
-session_open: boolean;
-allowed_ops: string[];
-scope_ref: string | null;
-output_ref: string | null;
-evidence_ref: string | null;
  }
 
 export interface SystemDiscover_toolsAbortStep { op: "Abort";
@@ -28,25 +26,28 @@ export interface SystemDiscover_toolsFinishStep { op: "Finish";
  }
 
 export interface SystemDiscover_toolsOpenStep { op: "Open";
+tool_name: "system/discover_tools";
 initial_input: DiscoverToolsOpenInput | null;
  }
 
 export interface SystemDiscover_toolsReadStep { op: "Read";
-input: DiscoverToolsSendInput;
+input: ArchiveReadInput;
  }
 
 export interface SystemDiscover_toolsSendStep { op: "Send";
 input: DiscoverToolsSendInput;
+citations: string[];
  }
 
 export interface SystemDiscover_toolsSessionPlan { step: SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep;
+citations: string[];
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
-declare function ChooseDiscoverToolsQuery(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SystemDiscover_toolsSessionPlan>;
+declare function ChooseDiscoverToolsQuery(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_toolsSessionPlan>;
 
 }
 
@@ -147,11 +148,17 @@ export interface A2aSessionClosed {
  * 1) submitIntent(...)
  * 2) submitPlan(...)
  * 3) execute and complete steps with strict evidence references
+ *
+ * Agent code is an **adversarial** trust boundary: it must not supply sensitive identifiers (e.g. message UUIDs).
+ * The Rust host binds execution-session lineage from the **invocation scope only**; it is not part of this
+ * TypeScript contract and any `derivedFromMessageIds` in JSON is ignored.
+ * `supersession` accepts replaced|refined and snake_case/camelCase aliases (see host parser).
  */
 export interface IntentSubmission {
     intentId: string;
     description: string;
-    derivedFromMessageIds: string[];
+    /** Citation refs grounding this intent — pass the \`citations\` field from the BAML planning function's return value. #N = session history lines, @N = archive refs. Optional: the provenance system captures LLM-produced citations automatically from BAML return types. */
+    citations?: string[];
     supersession?: "replaced" | "refined";
 }
 export interface PlanStepSubmission {
@@ -178,8 +185,9 @@ export interface A2aExecutionSessionAwaitPlan {
 }
 export interface A2aExecutionSessionExecutable {
     sessionId: string;
-    startStep(stepId: string, evidenceText: string): Promise<void>;
-    completeStep(stepId: string, evidenceText: string): Promise<void>;
+    /** citations are optional — LLM-produced citations are captured automatically by the provenance system from BAML return types. Only pass explicitly if the agent has out-of-band provenance to record. */
+    startStep(stepId: string, citations?: string[]): Promise<void>;
+    completeStep(stepId: string, citations?: string[]): Promise<void>;
     finish(): Promise<A2aSessionClosed>;
     abort(reason?: string): Promise<A2aSessionClosed>;
 }
@@ -194,18 +202,34 @@ export interface Message {
   text?(): string;
 }
 export type ChatMessage = Message;
+/** Media type for a structured reply data part. */
+export type ReplyMediaType = "text/plain" | "text/markdown" | "application/json" | "text/csv";
+/** A prose text part of a structured reply. */
+export interface TextPart { type: "text"; text: string; }
+/** A structured data part of a structured reply (e.g. JSON, CSV). */
+export interface DataPart { type: "data"; data: string; media_type: ReplyMediaType; }
+/** One part of a structured reply: text or typed data. */
+export type ReplyPart = TextPart | DataPart;
+/**
+ * Structured reply from a synthesis function.
+ * Contains ordered reply parts and citations referencing the history entries (#N, @N) this reply was derived from.
+ */
+export interface StructuredReply {
+  parts: ReplyPart[];
+  citations: string[];
+}
 /**
  * Result shape for session.run() callback. Return { message } on success (runtime emits message and completed);
  * return { error } on failure (runtime emits failed with that error). No need to call emit helpers yourself.
  */
-export type SessionResult = { message: string } | { error: string };
+export type SessionResult = { message: string } | { message: StructuredReply } | { error: string };
 /**
  * Emitter passed into run(emit => ...) for intermediate emissions (working message, artifact, status).
  * Use when you need to stream artifacts or status before returning the final SessionResult.
  */
 export interface SessionEmitter {
-  /** Emit a working message (task state remains WORKING). */
-  message(text: string): void;
+  /** Emit a working message (task state remains WORKING). Accepts plain string or StructuredReply. */
+  message(content: string | StructuredReply): void;
   /** Emit an artifact chunk (append/lastChunk optional). */
   artifact(artifact: JsonValue, append?: boolean, lastChunk?: boolean): void;
   /** Emit a status transition (e.g. TASK_STATE_WORKING). */
@@ -250,26 +274,29 @@ export interface RunContext {
   /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
   emit: SessionEmitter;
 }
-/**
- * Host-to-agent dispatch request. Delivered by the host when an external event
- * matches this agent's subscriptions. Fields mirror the Rust AgentDispatchRequest.
- */
+/** Host-to-agent deterministic dispatch request (non-conversational workloads). */
 export interface HostDispatchRequest {
+  /** Stable route label for the receiving entrypoint (e.g. "slack:intake"). */
   routing_key: string;
+  /** Message family / schema identifier for the payload batch. */
   message_type: string;
-  messages: JsonValue[];
-  context_id?: string;
-  task_id?: string;
-  message_id?: string;
-  /** Structured transport metadata (source, schema version, content type). Use `messages` for arbitrary event payloads. */
-  metadata?: JsonObject;
+  /** Opaque payloads delivered to the agent. */
+  messages: JsonObject[];
+  /** Optional existing context to continue under. */
+  context_id?: string | null;
+  /** Optional existing task to continue under. */
+  task_id?: string | null;
+  /** Optional caller-supplied message id for provenance continuity. */
+  message_id?: string | null;
+  /** Optional transport metadata for the receiving agent. */
+  metadata?: JsonObject | null;
 }
-/**
- * Acknowledgement returned by an agent's onDispatch handler.
- */
+/** Buffered acknowledgement for deterministic host delivery. */
 export interface HostDispatchAck {
+  /** True when the receiving agent accepted the delivery. */
   accepted: boolean;
-  detail?: string;
+  /** Optional operator-facing detail string. */
+  detail?: string | null;
 }
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
@@ -277,7 +304,7 @@ export interface BamlAgent {
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  /** Optional: handle host-delivered events matched by this agent's subscriptions. */
+  /** Optional: handler for deterministic host dispatch (non-conversational). */
   onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
@@ -306,15 +333,15 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
-  /**
-   * Extract all payloads from a host dispatch request.
-   * Batch-safe helper: returns a shallow copy of request.messages, or [] if absent.
-   */
-  function extractDispatchMessages(request: HostDispatchRequest | null | undefined): JsonValue[];
   /** Emit a stream chunk following A2A wire format. */
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
   function openA2aExecutionSession(token: string): Promise<A2aExecutionSessionAwaitIntent>;
+  /**
+   * Extract typed messages from a HostDispatchRequest.
+   * Returns the messages array cast to T[]; each element's schema matches message_type.
+   */
+  function extractDispatchMessages<T = JsonObject>(request: HostDispatchRequest): T[];
 }
 export type ToolFailureKind =
     | "InvalidInput"
@@ -331,12 +358,11 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseDiscoverToolsQuery";
+export type StepExecutorFunctionName = "ChooseDiscoverToolsQuery" | "ChooseDiscoverToolsQuery__act__system_discover_tools" | "ChooseDiscoverToolsQuery__continue__system_discover_tools" | "ChooseDiscoverToolsQuery__select";
 
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    allowed_ops: ("Open" | "Send" | "Read" | "Finish" | "Abort")[];
     scope_ref: string | null;
     output_ref: string | null;
     evidence_ref: string | null;
@@ -360,15 +386,24 @@ export interface StepExecutorRunOptions {
     max_steps?: number;
 }
 
+/**
+ * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
+ * User-facing replies are synthesized once at session completion (and recorded there).
+ */
+
 export interface StepExecutorRunResult<R = unknown> {
     last: R;
     steps: R[];
     session_context: SessionContext;
     history_context: HistoryContext | null;
+    selected_tool: string | null;
 }
 
 export interface StepExecutorFunctionMap {
   ChooseDiscoverToolsQuery: { args: Parameters<typeof ChooseDiscoverToolsQuery>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery>>; };
+  ChooseDiscoverToolsQuery__act__system_discover_tools: { args: Parameters<typeof ChooseDiscoverToolsQuery__act__system_discover_tools>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery__act__system_discover_tools>>; };
+  ChooseDiscoverToolsQuery__continue__system_discover_tools: { args: Parameters<typeof ChooseDiscoverToolsQuery__continue__system_discover_tools>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery__continue__system_discover_tools>>; };
+  ChooseDiscoverToolsQuery__select: { args: Parameters<typeof ChooseDiscoverToolsQuery__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery__select>>; };
 }
 
 declare global {

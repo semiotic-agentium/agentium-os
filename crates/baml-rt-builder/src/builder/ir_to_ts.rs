@@ -53,12 +53,12 @@ fn type_to_ts_inner(ty: &TypeNonStreaming, deps: &mut Vec<String>) -> Result<Str
         }
         T::List(inner, _) => {
             let inner_ts = recursive(inner)?;
-            let inner_ts = if needs_parentheses_for_array_suffix(&inner_ts) {
-                format!("({inner_ts})")
+            // `A | B[]` parses as `A | (B[])` — parenthesize union element types.
+            if inner_ts.contains(" | ") {
+                format!("({inner_ts})[]")
             } else {
-                inner_ts
-            };
-            format!("{inner_ts}[]")
+                format!("{inner_ts}[]")
+            }
         }
         T::Map(_k, v, _) => {
             let v_ts = recursive(v)?;
@@ -106,23 +106,33 @@ fn type_to_ts_inner(ty: &TypeNonStreaming, deps: &mut Vec<String>) -> Result<Str
     })
 }
 
-fn needs_parentheses_for_array_suffix(expr: &str) -> bool {
-    expr.contains(" | ") || expr.contains(" & ")
-}
-
 /// Collect all type names that need declarations (classes, enums, type aliases) from a fragment's deps.
 pub fn collect_type_decl_deps(frag: &TsTypeFrag) -> HashSet<String> {
     frag.deps.iter().cloned().collect()
 }
 
+/// Types defined in the bootstrap `render_tool_typescript` block (`baml_rt_tools::ts_gen`).
+/// BAML IR also contains copies from `_baml_runtime.baml`; emitting both breaks TS (duplicate
+/// `StructuredReply` and wrong `ReplyPart[]` precedence as `TextPart | DataPart[]`).
+const BOOTSTRAP_TS_RUNTIME_TYPES: &[&str] = &[
+    "StructuredReply",
+    "TextPart",
+    "DataPart",
+    "ReplyPart",
+    "ReplyMediaType",
+];
+
 /// Emit TypeScript type declarations (interfaces, enums, type aliases) for the given set of type names.
-/// Transitively collects field-type deps so nested types are always emitted alongside their parents.
-/// Returns genco tokens for embedding in the main declaration file.
+///
+/// Transitively closes over:
+/// - **class** fields (nested classes, enums, aliases in field types)
+/// - **type alias** bodies (`type A = B | C` pulls in `B`, `C`, and their fields)
+///
+/// so TS never references a BAML class/enum/alias name without a matching `export`.
 pub fn emit_type_declarations_tokens(
     ir: &IRSignature,
     needed: &HashSet<String>,
 ) -> Result<js::Tokens> {
-    // Expand `needed` transitively: for each class, collect its field type deps too.
     let mut all_needed = needed.clone();
     let mut worklist: Vec<String> = needed.iter().cloned().collect();
     while let Some(name) = worklist.pop() {
@@ -135,12 +145,24 @@ pub fn emit_type_declarations_tokens(
                     }
                 }
             }
+        } else if let Some(alias_node) = ir.type_aliases.get(&name) {
+            // Return/arg types often surface as a `RecursiveTypeAlias` name only; the nested classes
+            // live in the alias RHS and were previously never pulled into `all_needed`.
+            let frag = type_to_ts_expr(alias_node.field_type.as_ref(), ir)?;
+            for dep in frag.deps {
+                if all_needed.insert(dep.clone()) {
+                    worklist.push(dep);
+                }
+            }
         }
     }
     let mut names: Vec<&String> = all_needed.iter().collect();
     names.sort();
     let mut out: js::Tokens = quote!();
     for name in names {
+        if BOOTSTRAP_TS_RUNTIME_TYPES.contains(&name.as_str()) {
+            continue;
+        }
         if let Some((_, class_details)) = ir.classes.get(name) {
             let mut fields: js::Tokens = quote!();
             for (fname, fty) in class_details.fields.iter() {

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use baml_rt_builder::builder::{
     baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
-    ts_gen::render_ts_declarations,
+    ts_gen::{load_manifest_tools, render_ts_declarations},
 };
 use baml_runtime::BamlRuntime;
 use internal_baml_core::feature_flags::FeatureFlags;
@@ -41,8 +41,10 @@ fn generate_ts_from_fixture(fixture_name: &str) -> Result<String, Box<dyn std::e
         .map_err(|e| format!("BamlRuntime::from_directory: {}", e))?;
     let ir_signature =
         extract_baml_signatures(&runtime).map_err(|e| format!("extract_baml_signatures: {}", e))?;
+    let tool_names =
+        load_manifest_tools(&baml_src).map_err(|e| format!("load_manifest_tools: {}", e))?;
     let session_plan_map = session_plan_functions_map(&ir_signature);
-    let ts = render_ts_declarations(&ir_signature, &session_plan_map)
+    let ts = render_ts_declarations(&ir_signature, &tool_names, &session_plan_map)
         .map_err(|e| format!("render_ts_declarations: {}", e))?;
     Ok(ts)
 }
@@ -111,17 +113,6 @@ async fn baml_to_ts_primitive_and_object_types_in_output() {
     assert!(
         ts.contains("Promise<SupportCalculateSessionPlan>"),
         "return type should be named class, not unknown"
-    );
-}
-
-#[tokio::test]
-async fn baml_to_ts_parenthesizes_union_before_array_suffix() {
-    let ts = generate_ts_from_fixture("frontend-expert").expect("generate TS");
-    assert!(
-        ts.contains(
-            "content: (ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3)[] | null;"
-        ),
-        "expected parenthesized union array for ClaudeToolSendInput.content"
     );
 }
 

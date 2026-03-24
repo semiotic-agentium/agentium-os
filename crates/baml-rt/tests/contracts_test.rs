@@ -17,14 +17,14 @@ use baml_rt_core::{
     bus::{BusWithEffects, EffectEmitter, EffectLiveness},
     context::{self, InvocationScope},
 };
-use baml_rt_provenance::GraphqliteStoreBuilder;
+use baml_rt_provenance::SurrealStoreBuilder;
 use serde_json::json;
 use test_support::common::{CalculatorTool, agent_fixture, ensure_fixture_runtime_types};
 
-/// In-memory GraphQLite store for contract tests (persistent mode required).
-fn test_graphqlite_store() -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
-    GraphqliteStoreBuilder::in_memory()
+async fn test_surreal_store() -> Arc<baml_rt_provenance::SurrealProvenanceStore> {
+    SurrealStoreBuilder::in_memory()
         .build()
+        .await
         .expect("in-memory provenance store for contract test")
 }
 
@@ -37,7 +37,7 @@ impl LLMInterceptor for StubChooseCalcToolInterceptor {
         &self,
         context: &LLMCallContext,
     ) -> baml_rt_core::Result<InterceptorDecision> {
-        if context.function_name == "ChooseCalcTool" {
+        if context.function_id.prompt_name().as_str() == "ChooseCalcTool" {
             Ok(InterceptorDecision::Substitute(json!({
                 "steps": [
                     {
@@ -102,7 +102,7 @@ async fn test_baml_function_returns_actual_result() {
         .with_runtime_manager(baml_manager)
         .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(test_graphqlite_store())
+        .with_surreal_store(test_surreal_store().await)
         .build()
         .await
         .unwrap();
@@ -197,7 +197,7 @@ async fn test_js_function_invocation_returns_actual_result() {
         .with_init_js(agent_code)
         .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(test_graphqlite_store())
+        .with_surreal_store(test_surreal_store().await)
         .build()
         .await
         .unwrap();
@@ -292,7 +292,7 @@ async fn test_invoke_function_api_contract() {
         .with_init_js(agent_code)
         .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(test_graphqlite_store())
+        .with_surreal_store(test_surreal_store().await)
         .build()
         .await
         .unwrap();
@@ -401,7 +401,7 @@ async fn test_loaded_agent_invoke_function_contract() {
         .with_init_js(agent_code)
         .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(test_graphqlite_store())
+        .with_surreal_store(test_surreal_store().await)
         .build()
         .await
         .unwrap();

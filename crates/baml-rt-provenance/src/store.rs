@@ -29,7 +29,7 @@
 use async_trait::async_trait;
 use baml_rt_core::{
     bus::PlanningSupersessionKind,
-    ids::{AgentId, ContextId, EventId, MessageId, TaskId},
+    ids::{ActivityAnchorId, AgentId, ContextId, MessageId, TaskId},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -62,13 +62,104 @@ pub struct ProvenanceContextMessage {
     pub content: Vec<String>,
 }
 
+/// Tool invocation content — the step args the LLM produced.
+/// `args` is the BAML step payload: `{"op":"Send","input":{...}}` forwarded
+/// directly to `ToolHandler::describe_invocation`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ToolCallContent {
+    pub tool_name: String,
+    pub args: Value,
+    pub fsm_phase: ToolSessionPhase,
+}
+
+/// Whether the tool result carries meaningful data or is a status-only FSM event.
+/// `StatusOnly` items are discarded at the conversion boundary; they never reach rendering.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum ToolOutcome {
+    Result(Value),
+    Error(Value),
+    /// FSM bookkeeping (Open/Finish/Abort/sent) — no data to project.
+    StatusOnly,
+}
+
+/// Tool result content.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ToolResultContent {
+    pub tool_name: String,
+    pub fsm_phase: ToolSessionPhase,
+    pub outcome: ToolOutcome,
+}
+
+/// A session-step operation recorded for conversation history.
+/// Mirrors `baml_rt_core::bus::SessionStepOp` — re-exported here so provenance
+/// doesn't depend on `baml-rt-core`. Keep in sync.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum SessionStepOp {
+    Open,
+    /// `archive_ref` is the canonical identifier, e.g. `"@1"`.
+    SendDone {
+        archive_ref: String,
+        header: String,
+    },
+    /// Parameters that deterministically reproduce the cat-n output from the archive.
+    Read {
+        archive_ref: String,
+        grep: Option<String>,
+        offset: usize,
+        limit: usize,
+    },
+}
+
+/// Step content for a ToolSessionStep provenance event.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionStepContent {
+    pub tool_name: String,
+    pub op: SessionStepOp,
+}
+
+/// Typed discriminated content for a conversation history item.
+/// Replaces `content: Value` + `source: String` — the source IS the variant.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum ConversationItemContent {
+    Message(String),
+    ToolCall(ToolCallContent),
+    ToolResult(ToolResultContent),
+    /// An individual session step — Open/SendDone/Read within an in-progress session.
+    SessionStep(SessionStepContent),
+}
+
+impl ConversationItemContent {
+    /// Whether this item carries meaningful content worth projecting into a prompt.
+    /// `StatusOnly` tool results return false.
+    pub fn is_meaningful(&self) -> bool {
+        match self {
+            Self::Message(s) => !s.trim().is_empty(),
+            Self::ToolCall(_) => true,
+            Self::ToolResult(tr) => !matches!(tr.outcome, ToolOutcome::StatusOnly),
+            Self::SessionStep(_) => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProvenanceConversationContextItem {
     pub timestamp_ms: u64,
-    pub event_id: EventId,
+    /// Correlates this history line with graph `a2a_activity_anchor` / provenance emission ([`ActivityAnchorId`]).
+    pub activity_anchor: ActivityAnchorId,
     pub role: String,
-    pub content: Value,
-    pub source: String,
+    pub content: ConversationItemContent,
+}
+
+impl ProvenanceConversationContextItem {
+    /// Returns a string label for the content variant — used in tests and diagnostics.
+    pub fn source_name(&self) -> &'static str {
+        match &self.content {
+            ConversationItemContent::Message(_) => "message",
+            ConversationItemContent::ToolCall(_) => "tool_call",
+            ConversationItemContent::ToolResult(_) => "tool_result",
+            ConversationItemContent::SessionStep(_) => "session_step",
+        }
+    }
 }
 
 /// Intent for a provenance read: enforces which guarantee the caller gets.
@@ -84,18 +175,33 @@ pub enum ProvenanceReadIntent {
     Api,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ToolSessionPhase {
+    /// Non-session tool invocation.
     Execute,
+    /// FSM phase: session opened.
     Open,
+    /// FSM phase: input sent to session; result archived.
     Send,
+    /// FSM phase: archived result fetched by archive ref.
+    Read,
+    /// FSM phase: session continued (deprecated name for Send).
     Next,
+    /// FSM phase: session closed gracefully.
     Finish,
+    /// FSM phase: session closed with error.
     Abort,
     Unknown(String),
 }
 
 impl ToolSessionPhase {
+    /// True for any FSM session phase (Open/Send/Read/Next/Finish/Abort).
+    /// These tool calls are represented in history by `SessionStep` events — the
+    /// raw ToolCall/ToolResult entries are suppressed to enforce the universal Read interface.
+    pub fn is_session_phase(&self) -> bool {
+        !matches!(self, Self::Execute | Self::Unknown(_))
+    }
+
     pub fn from_metadata(metadata: &Value) -> Self {
         let phase = metadata
             .get("phase")
@@ -105,6 +211,7 @@ impl ToolSessionPhase {
             "execute" => Self::Execute,
             "open" => Self::Open,
             "send" => Self::Send,
+            "read" => Self::Read,
             "next" => Self::Next,
             "finish" => Self::Finish,
             "abort" => Self::Abort,
@@ -117,6 +224,7 @@ impl ToolSessionPhase {
             Self::Execute => "execute".to_string(),
             Self::Open => "open".to_string(),
             Self::Send => "send".to_string(),
+            Self::Read => "read".to_string(),
             Self::Next => "next".to_string(),
             Self::Finish => "finish".to_string(),
             Self::Abort => "abort".to_string(),
@@ -177,7 +285,7 @@ pub trait ProvenanceQueryApi: Send + Sync {
 pub struct PlanningIntentRecord {
     pub context_id: ContextId,
     pub task_id: TaskId,
-    pub event_id: EventId,
+    pub activity_anchor_id: ActivityAnchorId,
     pub intent_id: String,
     pub description: String,
     /// Relation kind from the previous revision to this record, if any.
@@ -199,7 +307,7 @@ pub struct PlanningPlanStepRecord {
 pub struct PlanningPlanRecord {
     pub context_id: ContextId,
     pub task_id: TaskId,
-    pub event_id: EventId,
+    pub activity_anchor_id: ActivityAnchorId,
     pub intent_id: String,
     pub plan_id: String,
     pub steps: Vec<PlanningPlanStepRecord>,
@@ -393,8 +501,7 @@ pub trait ProvenanceOpsQuery: Send + Sync {
 
     /// Resolve an opaque archive reference into its persisted payload.
     ///
-    /// Supported refs are implementation-defined, but the canonical Graphqlite
-    /// contract is:
+    /// Supported refs are implementation-defined. The canonical contract is:
     /// - `prov:v1:payload:<payload_id>`
     /// - `prov:v1:activity:<activity_id>`
     async fn resolve_archive_ref(

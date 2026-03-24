@@ -39,7 +39,7 @@ So we need **AgentRuntimeInstance** in the exported graph. `RunnerRuntimeInstanc
 
 The export query is:
 
-```cypher
+```sql
 MATCH (ctx:Context {id: '...'})-[:SCOPED_TO]->(a), (a)-[r]->(b), (ctx)-[:SCOPED_TO]->(b)
 RETURN ...
 ```
@@ -48,7 +48,7 @@ Both `a` and `b` must have `SCOPED_TO` from the Context. If AgentRuntimeInstance
 
 ### 4. SCOPED_TO is written only from the normalized document
 
-In `cypher_build.rs`:
+In the store write path:
 
 ```rust
 let scoped_node_ids = normalized.document
@@ -105,7 +105,7 @@ We do not assert that the write path produces SCOPED_TO for all expected nodes. 
 
 Sequence unit tests use `graph(nodes, edges)` directly. They never run:
 
-`add_event → normalizer → cypher_build → SCOPED_TO → export → parse → simplify → render`
+`add_event → normalizer → store write → SCOPED_TO → export → parse → simplify → render`
 
 So they cannot catch SCOPED_TO or export-scoping bugs.
 
@@ -120,7 +120,7 @@ We have no test that:
 
 ## Recommended Test Additions
 
-1. **`scoped_to_covers_all_document_nodes`** – Add events, run Cypher to count SCOPED_TO edges from Context, assert count ≥ expected (entities + activities + agents, minus exempt).
+1. **`scoped_to_covers_all_document_nodes`** – Add events, run SurrealQL to count SCOPED_TO edges from Context, assert count ≥ expected (entities + activities + agents, minus exempt).
 
 2. **`sequence_without_agent_booted_shows_tools_only`** – Add MessageReceived, LlmCall, ToolCall, MessageSent **without** AgentBooted. Export and render. Assert:
    - Tools appear as participants
@@ -135,7 +135,7 @@ We have no test that:
 
 **Export query change:** Only require the source node (a) to be scoped; the target (b) is reached via the relation. AgentRuntimeInstance has no context, but it is reachable via MessageProcessing -[WAS_EXECUTED_BY]-> AgentRuntimeInstance and TaskExecution -[WAS_EXECUTED_BY]-> AgentRuntimeInstance.
 
-```cypher
+```sql
 -- Before: both a and b must be scoped
 MATCH (ctx)-[:SCOPED_TO]->(a), (a)-[r]->(b), (ctx)-[:SCOPED_TO]->(b)
 

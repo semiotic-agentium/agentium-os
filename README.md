@@ -14,7 +14,7 @@ the `baml-rt` facade crate, which re-exports feature-gated subcrates.
 - `baml-rt-observability`: Tracing setup, spans, and metrics helpers.
 - `baml-rt-quickjs`: QuickJS runtime host, schema loading, JS bridge, and async stream execution.
 - `baml-rt-a2a`: Agent-to-agent protocol types, stream-first transport, and cross-turn request handling.
-- `baml-rt-provenance`: Graph-native provenance normalization, persistence, and export (GraphQLite-backed).
+- `baml-rt-provenance`: Graph-native provenance normalization, persistence, and export (SurrealDB-backed).
 - `baml-rt-builder`: Agent build pipeline and `baml-agent-builder` CLI.
 - `baml-agent-runner`: Binary that loads packaged agents and serves A2A requests.
 - `baml-rt`: Facade crate that re-exports the above via feature flags.
@@ -22,7 +22,7 @@ the `baml-rt` facade crate, which re-exports feature-gated subcrates.
 
 ### Provenance Architecture (Corrected)
 
-- In GraphQLite mode, runtime wiring uses a **single concrete provenance store** projected into narrow trait interfaces for A2A/task/context/provenance needs.
+- In SurrealDB mode, runtime wiring uses a **single concrete provenance store** projected into narrow trait interfaces for A2A/task/context/provenance needs.
 - Task/message/status/artifact writes and provenance events share the same underlying persistence instance (no split concrete stores).
 - Conversation context and Mermaid sequence exports are graph-backed reads from persisted provenance data.
 
@@ -136,6 +136,19 @@ the short timeout (warm-up window). To isolate locally, run with
 `RUST_LOG=baml_rt_quickjs=trace` and check for “LlmStarted emitting” vs
 “poll_promise: effect-gated timeout sample” timing (see `crates/baml-rt/tests/llm_test.rs`).
 
+### Tracing defaults (`RUST_LOG`)
+
+Binaries that call `baml_rt_observability::init_tracing()` merge defaults such as
+`baml_rt=info`, **`baml_rt_quickjs=info`**, and `baml_agent_runner=info` with
+`RUST_LOG` from the environment.
+
+- **`RUST_LOG=error`** — only `ERROR` events; `WARN` diagnostics (e.g. some
+  pre-change paths) are hidden. Use **`error` or explicit crate targets** when
+  debugging “silent” tool/BAML failures.
+- **`RUST_LOG=baml_rt_quickjs=error,baml_rt=info`** — ERROR+ from the QuickJS/BAML
+  bridge while keeping other `baml_rt*` namespaces at info.
+- **`RUST_LOG=baml_rt_quickjs=trace`** — verbose bridge tracing (high volume).
+
 ## Conversation Handling (A2A DSL)
 
 The **best reference** for multi-turn conversation and task lifecycle is the
@@ -179,7 +192,7 @@ The project uses [just](https://github.com/casey/just) as a command runner. A `.
 | `just test-build` | `just test-build` | Compile-only (no execution) — useful as a quick pre-push sanity check. |
 | `just test-crate <crate>` | `just test-crate baml-rt-provenance` | Run tests for a single crate with the same CI feature flags. |
 | `just test-unit` | `just test-unit` | Run only unit tests that need neither FalkorDB nor API keys. |
-| `just clickup-agent` | `just clickup-agent` | Build and run the ClickUp agent: packages it via `baml-agent-builder` then launches the runner in A2A stdio mode. Uses in-memory SQLite provenance by default. |
+| `just clickup-agent` | `just clickup-agent` | Build and run the ClickUp agent: packages it via `baml-agent-builder` then launches the runner in A2A stdio mode. Uses in-memory provenance (embedded SurrealDB) by default. |
 | `just clickup-agent-provenance` | `just clickup-agent-provenance` | Same as `clickup-agent`, but persists provenance to `provenance.db` and exposes HTTP API endpoints (including Mermaid and context metrics). |
 | `just notion-agent` | `just notion-agent` | Build and run the Notion agent in A2A stdio mode (HTTP tools enabled). Uses in-memory provenance by default. |
 | `just notion-agent-provenance` | `just notion-agent-provenance` | Same as `notion-agent`, but persists provenance to `provenance.db`. |

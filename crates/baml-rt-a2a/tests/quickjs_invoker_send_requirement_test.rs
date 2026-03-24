@@ -1,16 +1,17 @@
 //! **Purpose:** Enforce that the real QuickJS stream handover remains live under
 //! concurrent collection, including INPUT_REQUIRED turn boundaries.
 
-use std::sync::Arc;
-
-use baml_rt::{QuickJSConfig, baml::BamlRuntimeManager};
 use baml_rt_core::{A2aRequestHandler, collect_a2a_stream};
-use test_support::common::{chunks_from_responses, message_texts_from_chunks, send_stream_request};
+use test_support::common::{
+    build_minimal_a2a_agent_with_stream_idle_secs, chunks_from_responses,
+    message_texts_from_chunks, send_stream_request,
+};
 use tokio::time::{Duration, timeout};
 
-fn init_trace() {
+/// stderr logging: honors `RUST_LOG` when set; otherwise only errors (see `EnvFilter::from_default_env`).
+fn init_tracing() {
     let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .with_target(true)
         .try_init();
@@ -68,11 +69,9 @@ async fn collect_with_agent(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_stream_phase_matrix_regression_under_load() {
-    init_trace();
+    init_tracing();
 
-    let agent = baml_rt_a2a::A2aAgent::builder()
-        .with_runtime_manager(BamlRuntimeManager::builder().build().unwrap())
-        .with_init_js(
+    let agent = build_minimal_a2a_agent_with_stream_idle_secs(
         r#"
         globalThis.onChatMessage = async function(message) {
             const text = (message && message.parts && message.parts[0] && message.parts[0].text) || "unknown";
@@ -95,40 +94,32 @@ async fn concurrent_stream_phase_matrix_regression_under_load() {
             __chat_yield({ final: true });
         };
     "#,
-        )
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
-        .with_quickjs_config(
-            QuickJSConfig::new()
-                .with_max_attempts_ms(Some(15_000))
-                .with_stream_concurrency(Some(12))
-                .with_stream_collector_idle_secs(Some(5)),
-        )
-        .build()
-        .await
-        .unwrap();
+        1,
+    )
+    .await;
 
     let cases = [
         StreamCase {
             tag: "alpha",
-            request_text: "alpha:16:final",
+            request_text: "alpha:32:final",
             expect: CompletionKind::Final,
             min_chunks: 1,
         },
         StreamCase {
             tag: "beta",
-            request_text: "beta:12:input",
+            request_text: "beta:24:input",
             expect: CompletionKind::InputRequired,
             min_chunks: 1,
         },
         StreamCase {
             tag: "gamma",
-            request_text: "gamma:8:final",
+            request_text: "gamma:16:final",
             expect: CompletionKind::Final,
             min_chunks: 1,
         },
         StreamCase {
             tag: "delta",
-            request_text: "delta:6:final",
+            request_text: "delta:8:final",
             expect: CompletionKind::Final,
             min_chunks: 1,
         },
@@ -153,7 +144,7 @@ async fn concurrent_stream_phase_matrix_regression_under_load() {
 
         let mut outputs = Vec::new();
         for (case, join) in joins {
-            let responses = timeout(Duration::from_secs(12), join)
+            let responses = timeout(Duration::from_secs(8), join)
                 .await
                 .expect("each stream in wave must finish")
                 .expect("collect task must not panic");

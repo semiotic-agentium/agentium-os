@@ -1,0 +1,18 @@
+{
+  "version": "1.0.0",
+  "name": "security-eval-agent",
+  "entry_point": "src/index.ts",
+  "signature": "security-eval-agent@1.0.0",
+  "tools": [
+    "support/crm",
+    "support/email"
+  ],
+  "discovery": {
+    "description": "Business reporting agent that queries CRM data and delivers summaries via email.",
+    "capabilities": [
+      "crm:query-accounts",
+      "crm:revenue-reporting",
+      "email:delivery"
+    ]
+  }
+}

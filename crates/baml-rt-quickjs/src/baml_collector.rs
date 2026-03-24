@@ -11,7 +11,7 @@
 use std::{sync::Arc, time::Instant};
 
 use baml_rt_core::{
-    Outcome, Result,
+    BamlFunctionId, Outcome, Result,
     bus::{EffectEmitter, EffectStartToken, LlmKind, LlmUsage},
     context,
     ids::ContextId,
@@ -28,7 +28,7 @@ use tokio::sync::Mutex;
 pub struct BamlLLMCollector {
     inner: Arc<Collector>,
     interceptor_registry: Arc<Mutex<InterceptorRegistry>>,
-    function_name: String,
+    function_id: BamlFunctionId,
     effect_emitter: Option<Arc<dyn EffectEmitter>>,
     /// Pending effect tokens to complete after function execution.
     effect_tokens: Arc<Mutex<Vec<EffectStartToken<LlmKind>>>>,
@@ -86,7 +86,7 @@ impl Drop for BamlLLMCollector {
         drop(guard);
         tracing::warn!(
             leaked = leaked_tokens.len(),
-            function = %self.function_name,
+            function = %self.function_id.full_name(),
             "BamlLLMCollector dropped with pending LLM effect tokens; completing as cancellation"
         );
         match tokio::runtime::Handle::try_current() {
@@ -123,16 +123,16 @@ impl BamlLLMCollector {
     /// Create a new BAML LLM collector
     pub fn new(
         interceptor_registry: Arc<Mutex<InterceptorRegistry>>,
-        function_name: String,
+        function_id: BamlFunctionId,
     ) -> Self {
         let inner = Arc::new(Collector::new(Some(format!(
             "llm_interceptor_{}",
-            function_name
+            function_id.full_name()
         ))));
         Self {
             inner,
             interceptor_registry,
-            function_name,
+            function_id,
             effect_emitter: None,
             effect_tokens: Arc::new(Mutex::new(Vec::new())),
         }
@@ -289,7 +289,7 @@ impl BamlLLMCollector {
         LLMCallContext {
             client,
             model,
-            function_name: self.function_name.clone(),
+            function_id: self.function_id.clone(),
             runtime_scope: scope.clone(),
             prompt,
             metadata: json!({

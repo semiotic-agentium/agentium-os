@@ -1,7 +1,7 @@
 //! Provenance capture and storage.
 //!
 //! This crate provides event types and interceptors for provenance recording,
-//! along with a pluggable storage interface and GraphQLite-backed implementation.
+//! along with a pluggable storage interface and SurrealDB-backed implementation.
 //!
 //! ## Design: No heuristics in projection
 //!
@@ -10,30 +10,24 @@
 //! the graph construction (write path) is incorrect. Fix the write path.
 
 pub mod a2a_graph_event_recorder;
-pub mod a2a_graph_store;
 pub mod builders;
 pub mod bus_subscriber;
-pub mod cypher_build;
-pub use cypher_build::{CypherStatement, KeyStyle};
+pub mod citation_queries;
 pub mod context_metrics_queries;
+pub mod conversation_projection;
 pub mod document;
 pub mod effect_subscriber;
 pub mod error;
 pub mod events;
 pub mod graph_export;
 pub mod graph_model;
-pub mod graph_store;
-pub mod graphqlite_config;
-pub mod graphqlite_store;
 pub mod id_semantics;
 pub mod interceptors;
 pub mod mermaid_cache;
 pub mod normalizer;
 pub mod spans;
 pub mod store;
-#[cfg(feature = "surreal-backend")]
 pub mod surreal_config;
-#[cfg(feature = "surreal-backend")]
 pub mod surreal_store;
 pub mod tool_index;
 pub mod types;
@@ -43,8 +37,9 @@ pub use a2a_graph_event_recorder::{
     A2aGraphEventRecorder, ArtifactUpdateContext, StatusUpdateContext, record_artifact_update,
     record_status_update,
 };
-pub use baml_rt_vocabulary::{A2aGraphStore, GraphStore, TaskSubgraphNode, TaskSubgraphUpdateNode};
+pub use baml_rt_vocabulary::{A2aGraphStore, TaskSubgraphNode, TaskSubgraphUpdateNode};
 pub use bus_subscriber::ProvenanceBusSubscriber;
+pub use conversation_projection::provenance_item_to_projection_item;
 pub use effect_subscriber::ProvenanceEffectSubscriber;
 pub use error::ProvenanceError;
 pub use events::{
@@ -59,11 +54,6 @@ pub use graph_model::{
     EDGE_WAS_TRANSITIONED_FROM, EDGE_WAS_UPDATED_BY, EDGE_WAS_USED_BY, EventGraphKind,
     EventGraphMapping, GraphNodeLabel, TOOL_CALL_ARGS_EDGE, event_kind_from_data,
     mapping_for_event_data, mapping_for_event_kind,
-};
-pub use graphqlite_config::{GraphqliteStoreConfig, StorePath};
-pub use graphqlite_store::{
-    GraphCypherResult, GraphQueryParams, GraphRow, GraphqliteBackend, GraphqliteProvenanceStore,
-    GraphqliteStoreBuilder,
 };
 pub use interceptors::ProvenanceInterceptor;
 pub use mermaid_cache::MermaidCache;
@@ -80,9 +70,7 @@ pub use store::{
     ProvenancePlanningQuery, ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceResponseProfile,
     ProvenanceWriter, ToolSessionPhase,
 };
-#[cfg(feature = "surreal-backend")]
 pub use surreal_config::SurrealStoreConfig;
-#[cfg(feature = "surreal-backend")]
 pub use surreal_store::{SurrealBackend, SurrealProvenanceStore, SurrealStoreBuilder};
-pub use tool_index::{ToolIndexConfig, index_tools, index_tools_into_connection};
+pub use tool_index::{ToolIndexConfig, index_tools};
 pub use types::{ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef};

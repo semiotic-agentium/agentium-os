@@ -5,8 +5,11 @@ import type {
   ChatMessage,
   ContentBlock,
   ContextMetricsResponse,
+  DataContentBlock,
   JSONRPCResponse,
   ChunkPayload,
+  Part,
+  TextContentBlock,
   ToolCompletion,
   ToolEvent,
   ToolNotificationBlock,
@@ -136,11 +139,62 @@ function getOrCreatePhaseBlockForAppend(msg: ChatMessage): ToolNotificationBlock
 function pushTextBlock(msg: ChatMessage, text: string): void {
   const blocks = msg.contentBlocks!;
   blocks.push({ type: "text", text });
-  // Keep msg.text in sync for backward compat / fallback
+  syncMsgTextFromTextBlocks(msg);
+}
+
+/** Map A2A wire parts to UI blocks (prose + optional structured data parts). */
+function partsToContentBlocks(parts: Part[]): Array<TextContentBlock | DataContentBlock> {
+  const out: Array<TextContentBlock | DataContentBlock> = [];
+  for (const p of parts) {
+    const rawText = p.text;
+    if (typeof rawText === "string" && rawText.trim() !== "") {
+      out.push({ type: "text", text: rawText });
+    }
+    const mediaHint = p.media_type ?? p.mediaType;
+    const hasData = p.data !== undefined;
+    if (hasData || mediaHint) {
+      out.push({
+        type: "data",
+        mediaType: mediaHint ?? "application/octet-stream",
+        data: hasData ? p.data : null,
+      });
+    }
+  }
+  return out;
+}
+
+function syncMsgTextFromTextBlocks(msg: ChatMessage): void {
+  const blocks = msg.contentBlocks ?? [];
   msg.text = blocks
-    .filter((b) => b.type === "text")
-    .map((b) => (b as { text: string }).text)
+    .filter((b): b is TextContentBlock => b.type === "text")
+    .map((b) => b.text)
     .join("\n\n");
+}
+
+/** Append structured part blocks (text + data) in order; keeps msg.text as joined text blocks only. */
+function pushStructuredBlocks(msg: ChatMessage, blocks: Array<TextContentBlock | DataContentBlock>): void {
+  const arr = msg.contentBlocks!;
+  for (const b of blocks) {
+    arr.push(b);
+  }
+  syncMsgTextFromTextBlocks(msg);
+}
+
+function tryApplyStructuredMessage(msg: ChatMessage, wire: A2aMessage): boolean {
+  const parts = wire.parts;
+  if (!parts?.length) return false;
+  const structBlocks = partsToContentBlocks(parts);
+  const useStructured =
+    structBlocks.length > 1 ||
+    structBlocks.some((b) => b.type === "data") ||
+    parts.length > 1;
+  if (!useStructured || structBlocks.length === 0) return false;
+  ensureContentBlocks(msg);
+  pushStructuredBlocks(msg, structBlocks);
+  if (wire.metadata && typeof wire.metadata === "object") {
+    msg.metadata = { ...(msg.metadata ?? {}), ...wire.metadata };
+  }
+  return true;
 }
 
 export function useA2aClient() {
@@ -189,7 +243,7 @@ export function useA2aClient() {
 
   function updateWorkflowPhase(text: string): void {
     if (/discovering available/i.test(text)) {
-      workflowProgress.value = { phase: "discovery", nodes: [], completedNodes: workflowProgress.value.completedNodes };
+      workflowProgress.value = { phase: "discovery", nodes: [], completedNodes: workflowProgress.value.completedNodes, pipelineActive: true };
     } else if (/planning workflow/i.test(text)) {
       const iterMatch = text.match(/iteration\s+(\d+)/i);
       workflowProgress.value = {
@@ -197,6 +251,7 @@ export function useA2aClient() {
         iteration: iterMatch ? parseInt(iterMatch[1]!, 10) : undefined,
         nodes: [],
         completedNodes: workflowProgress.value.completedNodes,
+        pipelineActive: true,
       };
     } else if (/executing\s+\d+\s+workflow\s+node/i.test(text)) {
       const nodeListMatch = text.match(/node\(s\):\s*(.+)/i);
@@ -436,21 +491,34 @@ export function useA2aClient() {
         });
       }
     } else {
-      // Normal text from message / task / statusUpdate
-      const text =
-        extractText(chunk.message) ??
-        extractText(chunk.task?.status?.message) ??
-        extractText(chunk.statusUpdate?.status?.message) ??
-        extractTextFromStatusUpdate(chunk);
+      // Structured multi-part assistant messages (text + media_type/data + metadata.citations)
+      let appliedStructured = false;
+      updateMessage(messages, agentMsgId, (msg) => {
+        if (chunk.message && tryApplyStructuredMessage(msg, chunk.message)) {
+          appliedStructured = true;
+          return;
+        }
+        if (chunk.task?.status?.message && tryApplyStructuredMessage(msg, chunk.task.status.message)) {
+          appliedStructured = true;
+        }
+      });
 
-      if (text) {
-        updateMessage(messages, agentMsgId, (msg) => {
-          if (msg.contentBlocks) {
-            pushTextBlock(msg, text);
-          } else {
-            msg.text = msg.text ? `${msg.text}\n\n${text}` : text;
-          }
-        });
+      if (!appliedStructured) {
+        const text =
+          extractText(chunk.message) ??
+          extractText(chunk.task?.status?.message) ??
+          extractText(chunk.statusUpdate?.status?.message) ??
+          extractTextFromStatusUpdate(chunk);
+
+        if (text) {
+          updateMessage(messages, agentMsgId, (msg) => {
+            if (msg.contentBlocks) {
+              pushTextBlock(msg, text);
+            } else {
+              msg.text = msg.text ? `${msg.text}\n\n${text}` : text;
+            }
+          });
+        }
       }
     }
 

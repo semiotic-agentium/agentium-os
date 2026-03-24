@@ -12,7 +12,8 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use baml_rt_core::{
     AgentDiscoveryEntry, AgentDispatchAck, AgentDispatchRequest, AgentInstanceId, AgentPackageName,
-    AgentRouteKey, PublishedEvent, subscriptions_match_published_event,
+    AgentRouteKey,
+    event_subscription::{PublishedEvent, subscriptions_match_published_event},
 };
 use integrations_clickup_client::ClickUpClient;
 use integrations_github_client::GitHubClient;
@@ -731,20 +732,12 @@ impl DispatchSink {
                 .as_ref()
                 .and_then(|value| value.task_id.clone()),
             message_id: Some(format!("task-daemon-{}", uuid_v4())),
-            metadata: {
-                let mut meta = baml_rt_core::DispatchMetadata::new();
-                meta.insert("source".into(), json!("baml-task-daemon"));
-                meta.insert(
-                    "event_schema_version".into(),
-                    json!(dispatch.result_event.schema_version),
-                );
-                meta.insert(
-                    "content_type".into(),
-                    json!(INTERPRETATION_RESULT_CONTENT_TYPE),
-                );
-                meta.insert("prompt".into(), json!(prompt));
-                Some(meta)
-            },
+            metadata: Some(json!({
+                "source": "baml-task-daemon",
+                "event_schema_version": dispatch.result_event.schema_version,
+                "content_type": INTERPRETATION_RESULT_CONTENT_TYPE,
+                "prompt": prompt,
+            })),
         }
     }
 
@@ -1471,21 +1464,21 @@ mod tests {
         assert_eq!(
             body.metadata
                 .as_ref()
-                .and_then(|meta| meta.get("content_type"))
+                .and_then(|value| value.pointer("/content_type"))
                 .and_then(Value::as_str),
             Some(INTERPRETATION_RESULT_CONTENT_TYPE)
         );
         assert_eq!(
             body.metadata
                 .as_ref()
-                .and_then(|meta| meta.get("event_schema_version"))
+                .and_then(|value| value.pointer("/event_schema_version"))
                 .and_then(Value::as_str),
             Some(crate::contract::INTERPRETATION_EVENT_SCHEMA_VERSION)
         );
         assert!(
             body.metadata
                 .as_ref()
-                .and_then(|meta| meta.get("prompt"))
+                .and_then(|value| value.pointer("/prompt"))
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.is_empty())
         );

@@ -55,13 +55,13 @@ Large production files in the commit and proposed splits, with pub interface con
 
 ## 4. `crates/baml-rt-a2a/src/a2a_transport.rs` (~1126 lines)
 
-**Current:** TaskStoreConversationContextProvider, A2aAgent, LiveStreamSession, A2aAgentBuilder, A2aAgentBuilderWithEffectEmitter, RuntimeConfig/BridgeConfig/TaskStoreConfig/ProvenanceWriterConfig/AgentIdConfig, JsToolHandler, JsToolSession, impl A2aRequestHandler, impl A2aAgent (large).
+**Current:** ProjectingConversationContextProvider, A2aAgent, LiveStreamSession, A2aAgentBuilder, A2aAgentBuilderWithEffectEmitter, RuntimeConfig/BridgeConfig/TaskStoreConfig/ProvenanceWriterConfig/AgentIdConfig, JsToolHandler, JsToolSession, impl A2aRequestHandler, impl A2aAgent (large).
 
 **Proposed split:**
 
 | New module | Contents | Pub at crate | Notes |
 |------------|----------|--------------|--------|
-| `a2a_transport/context_provider.rs` | TaskStoreConversationContextProvider | private | Conversation context |
+| `a2a_transport/context_provider.rs` | ProjectingConversationContextProvider | private | Conversation context |
 | `a2a_transport/agent.rs` | A2aAgent struct, LiveStreamSession, core impl A2aAgent | A2aAgent pub | Agent type and core methods |
 | `a2a_transport/builder.rs` | A2aAgentBuilder, A2aAgentBuilderWithEffectEmitter, *Config enums, impls | Builder types pub | Builder pattern |
 | `a2a_transport/request_handler.rs` | impl A2aRequestHandler for A2aAgent | — | Trait impl |

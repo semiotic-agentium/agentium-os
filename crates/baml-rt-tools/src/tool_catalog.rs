@@ -123,7 +123,7 @@ pub fn resolve_manifest_tools_with_catalog<C: ToolCatalog>(
 
     if !missing.is_empty() {
         return Err(BamlRtError::InvalidArgument(format!(
-            "Tool metadata missing for: {}",
+            "Tool metadata missing for: {}. Rebuild the binary with matching Cargo features so those crates link and register metadata (e.g. `cargo run -p baml-rt-builder --all-features --bin baml-agent-builder` or `--features http-tools` for support/crm, support/email, ClickUp, Notion, Slack).",
             missing.join(", ")
         )));
     }

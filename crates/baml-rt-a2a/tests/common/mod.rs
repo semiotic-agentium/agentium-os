@@ -35,17 +35,17 @@ pub mod provenance {
 
     use baml_rt::QuickJSConfig;
     use baml_rt_a2a::A2aAgent;
-    use baml_rt_provenance::{GraphqliteProvenanceStore, GraphqliteStoreBuilder};
+    use baml_rt_provenance::{SurrealProvenanceStore, SurrealStoreBuilder};
 
-    /// Builds an A2aAgent with a provenance writer (e.g. GraphQLite in-memory).
+    /// Builds an A2aAgent with a provenance writer (e.g. SurrealDB in-memory).
     /// Used by provenance_context_test and provenance_property_test (other test binaries).
     #[allow(dead_code)] // shared test helper; used by other test binaries
     pub async fn build_provenance_agent(
-        store: Arc<GraphqliteProvenanceStore>,
+        store: Arc<SurrealProvenanceStore>,
         init_js: &str,
     ) -> A2aAgent {
         A2aAgent::builder()
-            .with_graphqlite_store(store)
+            .with_surreal_store(store)
             .with_init_js(init_js)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
             .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
@@ -54,7 +54,7 @@ pub mod provenance {
             .expect("build provenance agent")
     }
 
-    /// Build an isolated file-backed GraphQLite store for integration tests.
+    /// Build an isolated SurrealDB store for integration tests.
     /// Avoids shared global in-memory state across test binaries.
     ///
     /// When one store is passed to a single agent, the same store (and connection) is used for
@@ -62,22 +62,19 @@ pub mod provenance {
     /// (repository.get); create-stream vs subscribe failures are then due to A2A messaging
     /// (task id on write path vs id in tasks.subscribe params), not connection scope.
     #[allow(dead_code)] // shared test helper; used by other test binaries
-    pub fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
-        let path = std::env::temp_dir().join(format!(
-            "baml-rt-a2a-provenance-{pid}-{unique}.db",
-            pid = std::process::id(),
-            unique = uuid::Uuid::new_v4(),
-        ));
-        GraphqliteStoreBuilder::file(path)
+    pub async fn build_surreal_test_store() -> Arc<SurrealProvenanceStore> {
+        SurrealStoreBuilder::in_memory_isolated()
             .build()
-            .expect("build isolated graphqlite store")
+            .await
+            .expect("build isolated surreal store")
     }
 
-    /// Build in-memory shared GraphQLite store. Used to isolate file-backend vs in-memory behavior.
+    /// Build in-memory shared SurrealDB store. Used to isolate file-backend vs in-memory behavior.
     #[allow(dead_code)] // shared test helper; used by other test binaries
-    pub fn build_graphqlite_in_memory_store() -> Arc<GraphqliteProvenanceStore> {
-        GraphqliteStoreBuilder::in_memory()
+    pub async fn build_surreal_in_memory_store() -> Arc<SurrealProvenanceStore> {
+        SurrealStoreBuilder::in_memory()
             .build()
-            .expect("build in-memory graphqlite store")
+            .await
+            .expect("build in-memory surreal store")
     }
 }

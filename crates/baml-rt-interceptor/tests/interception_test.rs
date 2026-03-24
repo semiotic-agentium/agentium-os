@@ -20,7 +20,7 @@ struct StubSimpleGreetingInterceptor;
 #[async_trait::async_trait]
 impl LLMInterceptor for StubSimpleGreetingInterceptor {
     async fn intercept_llm_call(&self, context: &LLMCallContext) -> Result<InterceptorDecision> {
-        if context.function_name == "SimpleGreeting" {
+        if context.function_id.prompt_name().as_str() == "SimpleGreeting" {
             Ok(InterceptorDecision::Substitute(Value::String(
                 "Hello, Test!".into(),
             )))
@@ -62,7 +62,7 @@ impl LLMInterceptor for PreExecutionTracker {
             "Pre-execution interception: client={}, model={}, function={}",
             context.client,
             context.model,
-            context.function_name
+            context.function_id.prompt_name().as_str()
         );
         Ok(InterceptorDecision::Allow)
     }
@@ -114,7 +114,7 @@ impl LLMInterceptor for PostExecutionTracker {
             "Post-execution interception: client={}, model={}, function={}, success={}, duration_ms={}",
             context.client,
             context.model,
-            context.function_name,
+            context.function_id.prompt_name().as_str(),
             success,
             duration_ms
         );
@@ -265,7 +265,8 @@ async fn test_pre_execution_interception_integration() {
     // Verify we got proper context from build_request
     for call in pre_calls_guard.iter() {
         assert_eq!(
-            call.function_name, "SimpleGreeting",
+            call.function_id.prompt_name().as_str(),
+            "SimpleGreeting",
             "Function name should match"
         );
         // Client and model should be extracted from the HTTPRequest
@@ -273,7 +274,7 @@ async fn test_pre_execution_interception_integration() {
             "  ✅ Pre-execution call: client='{}', model='{}', function='{}'",
             call.client,
             call.model,
-            call.function_name
+            call.function_id.prompt_name().as_str()
         );
     }
 
@@ -326,7 +327,8 @@ async fn test_post_execution_interception_integration() {
 
         for (idx, (context, success, duration_ms)) in post_calls_guard.iter().enumerate() {
             assert_eq!(
-                context.function_name, "SimpleGreeting",
+                context.function_id.prompt_name().as_str(),
+                "SimpleGreeting",
                 "Function name should match"
             );
             // duration_ms is u64, so it's always >= 0
@@ -470,7 +472,7 @@ async fn test_pre_and_post_execution_together_integration() {
             pre_calls_guard.len()
         );
         for call in pre_calls_guard.iter() {
-            assert_eq!(call.function_name, "SimpleGreeting");
+            assert_eq!(call.function_id.prompt_name().as_str(), "SimpleGreeting");
         }
     }
 
@@ -481,7 +483,7 @@ async fn test_pre_and_post_execution_together_integration() {
             post_calls_guard.len()
         );
         for (context, _success, _duration_ms) in post_calls_guard.iter() {
-            assert_eq!(context.function_name, "SimpleGreeting");
+            assert_eq!(context.function_id.prompt_name().as_str(), "SimpleGreeting");
         }
     }
 
@@ -562,7 +564,8 @@ async fn test_multiple_interceptors_integration() {
     // Verify both interceptors received the same context
     if !pre_calls1_guard.is_empty() {
         assert_eq!(
-            pre_calls1_guard[0].function_name, pre_calls2_guard[0].function_name,
+            pre_calls1_guard[0].function_id.prompt_name().as_str(),
+            pre_calls2_guard[0].function_id.prompt_name().as_str(),
             "Both interceptors should receive the same function name"
         );
         tracing::info!(
@@ -601,7 +604,7 @@ impl LLMInterceptor for E2ELLMLoggingInterceptor {
         tracing::info!(
             client = context.client,
             model = context.model,
-            function = context.function_name,
+            function = context.function_id.prompt_name().as_str(),
             "LLM interceptor: intercepting LLM call"
         );
         Ok(InterceptorDecision::Allow)
@@ -619,7 +622,7 @@ impl LLMInterceptor for E2ELLMLoggingInterceptor {
         tracing::info!(
             client = context.client,
             model = context.model,
-            function = context.function_name,
+            function = context.function_id.prompt_name().as_str(),
             success = success,
             duration_ms = duration_ms,
             "LLM interceptor: call completed"

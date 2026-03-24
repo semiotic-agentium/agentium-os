@@ -5,7 +5,7 @@
 //! Single tool calls still resolve by input schema when exactly one tool matches.
 
 use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::ToolRegistry as ConcreteToolRegistry;
+use baml_rt_tools::{ToolName, ToolRegistry as ConcreteToolRegistry};
 use serde_json::Value;
 
 /// Derive the tool class name from a session plan type string (e.g. `SupportCalculateSessionPlan` → `SupportCalculate`).
@@ -20,29 +20,29 @@ fn class_name_from_plan_type(plan_type: &str) -> Option<&str> {
 pub(crate) fn resolve_tool_name_from_plan_type_with_registry(
     registry: &ConcreteToolRegistry,
     plan_type: &str,
-) -> Result<String> {
-    let class_name = class_name_from_plan_type(plan_type)
-        .map(String::from)
-        .unwrap_or_else(|| plan_type.to_string());
+) -> Result<ToolName> {
+    let class_name = class_name_from_plan_type(plan_type).unwrap_or(plan_type);
 
-    let matches: Vec<String> = registry
+    let matches: Vec<ToolName> = registry
         .all_metadata()
         .into_iter()
         .filter(|metadata| metadata.class_name == class_name)
-        .map(|metadata| metadata.name.to_string())
+        .map(|metadata| metadata.name.clone())
         .collect();
 
     match matches.len() {
+        // SAFETY: len == 1 verified by match guard above.
         1 => Ok(matches.into_iter().next().unwrap()),
         0 => Err(BamlRtError::InvalidArgument(format!(
-            "No registered tool has class_name {:?} (from plan type {:?}). Ensure the tool is registered.",
-            class_name, plan_type
+            "No registered tool has class_name {class_name:?} (from plan type {plan_type:?}). Ensure the tool is registered."
         ))),
-        _ => Err(BamlRtError::InvalidArgument(format!(
-            "Multiple tools match session plan class {:?}: {}.",
-            class_name,
-            matches.join(", ")
-        ))),
+        _ => {
+            let names: Vec<String> = matches.iter().map(|n| n.to_string()).collect();
+            Err(BamlRtError::InvalidArgument(format!(
+                "Multiple tools match session plan class {class_name:?}: {}.",
+                names.join(", ")
+            )))
+        }
     }
 }
 
@@ -107,28 +107,31 @@ pub(crate) fn extract_tool_call(result: &Value) -> Result<Option<ToolCall>> {
 pub(crate) fn resolve_tool_name_from_input_with_registry(
     registry: &ConcreteToolRegistry,
     input: &Value,
-) -> Result<String> {
-    let mut matches = registry
+) -> Result<ToolName> {
+    let mut matches: Vec<ToolName> = registry
         .all_metadata()
         .into_iter()
         .filter_map(|metadata| {
             if input_matches_schema(input, &metadata.input_schema) {
-                Some(metadata.name.to_string())
+                Some(metadata.name.clone())
             } else {
                 None
             }
         })
-        .collect::<Vec<_>>();
+        .collect();
     match matches.len() {
+        // SAFETY: len == 1 verified by match guard above.
         1 => Ok(matches.pop().unwrap()),
         0 => Err(BamlRtError::InvalidArgument(format!(
-            "No tool input schema matched input: {}",
-            input
+            "No tool input schema matched input: {input}"
         ))),
-        _ => Err(BamlRtError::InvalidArgument(format!(
-            "Multiple tools matched input schema: {}",
-            matches.join(", ")
-        ))),
+        _ => {
+            let names: Vec<String> = matches.iter().map(|n| n.to_string()).collect();
+            Err(BamlRtError::InvalidArgument(format!(
+                "Multiple tools matched input schema: {}",
+                names.join(", ")
+            )))
+        }
     }
 }
 
@@ -173,7 +176,10 @@ pub enum ToolSessionOp {
         reason: Option<String>,
     },
     Read {
-        input: Value,
+        archive_ref: baml_rt_tools::archive_read::ShortRef,
+        offset: baml_rt_tools::archive_read::LineOffset,
+        limit: baml_rt_tools::archive_read::PageLimit,
+        grep: Option<baml_rt_tools::archive_read::GrepPattern>,
         reason: Option<String>,
     },
     Finish {
@@ -184,10 +190,28 @@ pub enum ToolSessionOp {
     },
 }
 
+impl ToolSessionOp {
+    /// FSM op label for tracing and plan coercion (`Open`, `Send`, …).
+    #[allow(dead_code)] // Used by upcoming trace / coercion paths; kept when `baml` is split by module.
+    pub(crate) fn op_name(&self) -> &'static str {
+        match self {
+            ToolSessionOp::Open { .. } => "Open",
+            ToolSessionOp::Send { .. } => "Send",
+            ToolSessionOp::Read { .. } => "Read",
+            ToolSessionOp::Finish { .. } => "Finish",
+            ToolSessionOp::Abort { .. } => "Abort",
+        }
+    }
+}
+
 /// Plan-level result of extracting a single tool session fragment plus optional plan reason.
 #[derive(Debug, Clone)]
 pub(crate) struct ToolSessionPlan {
     pub step: ToolSessionOp,
+    /// Explicit tool selection for polymorphic Open.
+    /// Set when the Open step contains a `tool_name` field, validated as a `ToolName`.
+    /// `None` for single-tool functions where tool identity is bound by plan type.
+    pub selected_tool: Option<ToolName>,
 }
 
 /// Extract and convert a JSON tool session fragment into one typed operation and optional plan-level reason.
@@ -196,19 +220,27 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
         Some(obj) => obj,
         None => return Ok(None),
     };
-    let step_value = match obj.get("step") {
-        Some(value) => value,
-        None => return Ok(None),
+    // Support both wrapped `{"step": {"op": ...}}` and flat `{"op": ...}` step objects.
+    // Flat form is produced by per-phase functions that return bare step types
+    // (e.g. SupportCrmOpenStep) without a SessionPlan wrapper.
+    let step_obj = if let Some(step_value) = obj.get("step") {
+        step_value.as_object().ok_or_else(|| {
+            BamlRtError::InvalidArgument("ToolSessionPlan.step must be an object".to_string())
+        })?
+    } else if obj.contains_key("op") {
+        obj
+    } else {
+        return Ok(None);
     };
-    let step_obj = step_value.as_object().ok_or_else(|| {
-        BamlRtError::InvalidArgument("ToolSessionPlan.step must be an object".to_string())
-    })?;
-    if step_obj.contains_key("tool_name") {
-        return Err(BamlRtError::InvalidArgument(
-            "ToolSessionPlan step must not include tool_name; tool identity is bound by plan type"
-                .to_string(),
-        ));
-    }
+    // Extract optional tool_name for polymorphic Open (tool selection).
+    // Parsed as ToolName to validate format ("bundle/local"). For single-tool
+    // functions the caller validates that this is None.
+    let selected_tool = step_obj
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .map(ToolName::parse)
+        .transpose()?;
+
     let op_str = match step_obj.get("op").and_then(|v| v.as_str()) {
         Some(s) => s.to_ascii_lowercase(),
         None => {
@@ -258,7 +290,39 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
                 .get("input")
                 .cloned()
                 .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-            ToolSessionOp::Read { input, reason }
+            let archive_ref = input
+                .get("archive_ref")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .and_then(baml_rt_tools::archive_read::ShortRef::parse)
+                .ok_or_else(|| {
+                    BamlRtError::InvalidArgument(
+                        "Read step: missing required archive_ref field (expected e.g. \"@1\")"
+                            .to_string(),
+                    )
+                })?;
+            let offset = input
+                .get("offset")
+                .and_then(|v| v.as_u64())
+                .map(|n| baml_rt_tools::archive_read::LineOffset(n as usize))
+                .unwrap_or_default();
+            let limit = input
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|n| baml_rt_tools::archive_read::PageLimit::new(n as usize))
+                .unwrap_or_default();
+            let grep = input
+                .get("grep")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .and_then(|s| baml_rt_tools::archive_read::GrepPattern::parse(s).ok());
+            ToolSessionOp::Read {
+                archive_ref,
+                offset,
+                limit,
+                grep,
+                reason,
+            }
         }
         "finish" => ToolSessionOp::Finish { reason },
         "abort" => ToolSessionOp::Abort { reason },
@@ -270,7 +334,10 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
         }
     };
 
-    Ok(Some(ToolSessionPlan { step }))
+    Ok(Some(ToolSessionPlan {
+        step,
+        selected_tool,
+    }))
 }
 
 /// Normalize plan input (string JSON → parsed Value).
@@ -377,7 +444,7 @@ mod tests {
         #[test]
         fn prop_extract_plan_step_valid(v in valid_step_object()) {
             let plan = extract_tool_session_plan(&v).unwrap().expect("plan");
-            // Parsed step must exist and encode one valid variant.
+            assert!(plan.selected_tool.is_none(), "steps without tool_name must have selected_tool=None");
             match plan.step {
                 ToolSessionOp::Open { .. }
                 | ToolSessionOp::Send { .. }
@@ -385,6 +452,104 @@ mod tests {
                 | ToolSessionOp::Finish { .. }
                 | ToolSessionOp::Abort { .. } => {}
             }
+        }
+    }
+
+    #[test]
+    fn extract_tool_session_plan_polymorphic_open_parses_selected_tool() {
+        let json: Value = serde_json::json!({
+            "step": {
+                "op": "Open",
+                "tool_name": "support/calculate",
+                "initial_input": { "expression": "2 + 3" }
+            }
+        });
+        let plan = extract_tool_session_plan(&json)
+            .unwrap()
+            .expect("should extract plan");
+        assert_eq!(
+            plan.selected_tool.as_ref().map(|t| t.to_string()),
+            Some("support/calculate".to_string())
+        );
+        match plan.step {
+            ToolSessionOp::Open { initial_input, .. } => {
+                assert!(initial_input.is_some());
+            }
+            _ => panic!("expected Open step"),
+        }
+    }
+
+    #[test]
+    fn extract_tool_session_plan_open_without_tool_name_has_none() {
+        let json: Value = serde_json::json!({
+            "step": { "op": "Open" }
+        });
+        let plan = extract_tool_session_plan(&json)
+            .unwrap()
+            .expect("should extract plan");
+        assert!(plan.selected_tool.is_none());
+    }
+
+    #[test]
+    fn extract_tool_session_plan_invalid_tool_name_format_rejected() {
+        let json: Value = serde_json::json!({
+            "step": {
+                "op": "Open",
+                "tool_name": "no_slash_here"
+            }
+        });
+        let result = extract_tool_session_plan(&json);
+        assert!(result.is_err(), "invalid tool_name format must be rejected");
+    }
+
+    #[test]
+    fn extract_tool_session_plan_send_step_selected_tool_is_none() {
+        let json: Value = serde_json::json!({
+            "step": {
+                "op": "Send",
+                "input": { "expression": "7 * 8" }
+            }
+        });
+        let plan = extract_tool_session_plan(&json)
+            .unwrap()
+            .expect("should extract plan");
+        assert!(plan.selected_tool.is_none());
+        match plan.step {
+            ToolSessionOp::Send { input, .. } => {
+                assert_eq!(input, serde_json::json!({ "expression": "7 * 8" }));
+            }
+            _ => panic!("expected Send step"),
+        }
+    }
+
+    fn polymorphic_open_step(tool_name: &str) -> impl Strategy<Value = Value> {
+        let tn = tool_name.to_string();
+        Just(()).prop_map(move |_| {
+            serde_json::json!({
+                "step": {
+                    "op": "Open",
+                    "tool_name": tn,
+                    "__type": "SomeStep"
+                }
+            })
+        })
+    }
+
+    proptest! {
+        #![proptest_config(proptest_cfg(16))]
+
+        /// Invariant: polymorphic Open steps with valid tool_name always produce Some(selected_tool).
+        #[test]
+        fn prop_polymorphic_open_preserves_selected_tool(
+            v in prop_oneof![
+                polymorphic_open_step("support/calculate"),
+                polymorphic_open_step("system/internal_a2a"),
+                polymorphic_open_step("claude/dev"),
+            ]
+        ) {
+            let plan = extract_tool_session_plan(&v).unwrap().expect("plan");
+            assert!(plan.selected_tool.is_some(), "polymorphic Open must have selected_tool");
+            matches!(plan.step, ToolSessionOp::Open { .. });
         }
     }
 }

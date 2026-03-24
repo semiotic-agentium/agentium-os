@@ -1,4 +1,4 @@
-use baml_rt_core::ids::{AgentId, ArtifactId, ContextId, EventId, MessageId, TaskId};
+use baml_rt_core::ids::{ActivityAnchorId, AgentId, ArtifactId, ContextId, MessageId, TaskId};
 use baml_rt_id::{
     ConstantConstructible, ConstantId, DerivedConstructible, DerivedId, ProvActivitySemantics,
     ProvAgentSemantics, ProvConstantAgentSemantics, ProvConstantIdTemplate,
@@ -472,30 +472,30 @@ impl ProvDerivedIdTemplate for ArtifactByTypeEntityId {
     }
 }
 
-/// Entity representing an artifact by task id + event id.
-pub struct ArtifactByEventEntityId;
-impl DerivedConstructible for ArtifactByEventEntityId {}
-impl ProvIdSemantics for ArtifactByEventEntityId {
+/// Entity representing an artifact keyed by task id + activity anchor.
+pub struct ArtifactByActivityAnchorEntityId;
+impl DerivedConstructible for ArtifactByActivityAnchorEntityId {}
+impl ProvIdSemantics for ArtifactByActivityAnchorEntityId {
     const KIND: ProvKind = ProvKind::Entity;
 }
-impl ProvEntitySemantics for ArtifactByEventEntityId {}
-impl ProvDerivedEntitySemantics for ArtifactByEventEntityId {}
-impl ProvVocabularyType for ArtifactByEventEntityId {
+impl ProvEntitySemantics for ArtifactByActivityAnchorEntityId {}
+impl ProvDerivedEntitySemantics for ArtifactByActivityAnchorEntityId {}
+impl ProvVocabularyType for ArtifactByActivityAnchorEntityId {
     const VOCAB_TYPE: &'static str = a2a_types::ARTIFACT;
 }
 
-pub struct ArtifactByEventEntityInput<'a> {
+pub struct ArtifactByActivityAnchorEntityInput<'a> {
     pub task_id: &'a TaskId,
-    pub event_id: &'a EventId,
+    pub activity_anchor: &'a ActivityAnchorId,
 }
 
-impl ProvDerivedIdTemplate for ArtifactByEventEntityId {
-    type Input<'a> = ArtifactByEventEntityInput<'a>;
+impl ProvDerivedIdTemplate for ArtifactByActivityAnchorEntityId {
+    type Input<'a> = ArtifactByActivityAnchorEntityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
         DerivedId::from_parts(
             "artifact",
-            [input.task_id.as_str(), input.event_id.as_str()],
+            [input.task_id.as_str(), input.activity_anchor.as_str()],
         )
     }
 }
@@ -506,9 +506,9 @@ pub enum ArtifactIdentity<'a> {
         task_id: &'a TaskId,
         artifact_type: &'a str,
     },
-    ByEvent {
+    ByActivityAnchor {
         task_id: &'a TaskId,
-        event_id: &'a EventId,
+        activity_anchor: &'a ActivityAnchorId,
     },
 }
 

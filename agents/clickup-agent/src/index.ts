@@ -1,29 +1,29 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { RunContext, SessionResult } from "./baml-runtime";
+import type {
+  ClickUpIntent,
+  FinalResponse,
+  JsonObject,
+  JsonValue,
+  NeedClarification,
+  NotRelevant,
+  ReplyPart,
+  RunContext,
+  SessionResult,
+  StandardAgentPlanStep,
+  StandardStructuredPlan,
+  StructuredReply,
+} from "./baml-runtime";
 
 const MAX_REACT_STEPS = 8;
 const MAX_CLARIFY = 2;
+/** Max chars threaded into the next ChooseClickUpAction hop as `prior_results` (agentic / non-deterministic stream). */
+const PRIOR_RESULTS_MAX_CHARS = 6000;
 
-type NeedClarification = { question: string };
-type NotRelevant = { reason: string };
-type ClickUpIntent = { intent: string; operation_kind: "read" | "write" | "delete" };
-type ClickUpPlanStep = { id: string; description: string; kind: "navigate" | "execute" | "format" };
-type ClickUpPlan = { goal: string; steps: ClickUpPlanStep[] };
-type FinalResponse = { message: string };
-type ClickUpTask = { id?: string; name?: string; status?: string; url?: string };
-type ClickUpItem = { id: string; name: string; kind: string };
-type ClickUpOutput = { tasks?: ClickUpTask[]; items?: ClickUpItem[]; message?: string };
+const PKG_CLICKUP_EXECUTE = "clickup-execute";
+const PKG_CLICKUP_FORMAT = "clickup-format";
 
-function isObject(v: unknown): v is Record<string, unknown> {
-  return v != null && typeof v === "object";
-}
-
-function executionMessageId(message: unknown): string {
-  if (isObject(message)) {
-    if (typeof message.messageId === "string" && message.messageId.trim().length > 0) return message.messageId;
-    if (typeof message.id === "string" && message.id.trim().length > 0) return message.id;
-  }
-  return "msg-clickup-fallback";
+function isJsonObject(v: unknown): v is JsonObject {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
 function slugGoal(goal: string): string {
@@ -31,152 +31,276 @@ function slugGoal(goal: string): string {
 }
 
 function isNeedClarification(v: unknown): v is NeedClarification {
-  return isObject(v) && typeof v.question === "string" && v.question.trim().length > 0
+  return isJsonObject(v) && typeof v.question === "string" && v.question.trim().length > 0
     && !("message" in v) && !("intent" in v) && !("reason" in v) && !("steps" in v);
 }
 
 function isNotRelevant(v: unknown): v is NotRelevant {
-  return isObject(v) && typeof v.reason === "string" && !("question" in v) && !("intent" in v);
+  return isJsonObject(v) && typeof v.reason === "string" && !("question" in v) && !("intent" in v);
 }
 
 function isClickUpIntent(v: unknown): v is ClickUpIntent {
-  return isObject(v) && typeof v.intent === "string" && v.intent.trim().length > 0
+  return isJsonObject(v) && typeof v.intent === "string" && v.intent.trim().length > 0
     && typeof v.operation_kind === "string" && !("question" in v) && !("reason" in v);
 }
 
-function isClickUpPlan(v: unknown): v is ClickUpPlan {
-  return isObject(v) && typeof v.goal === "string" && Array.isArray(v.steps);
+/** Coordination-only: shape check after PlanClickUpWork — no TS plan synthesis. */
+function parseStandardStructuredPlanFromPlanning(v: unknown): StandardStructuredPlan | null {
+  if (!isJsonObject(v)) return null;
+  if (typeof v.intent_description !== "string" || typeof v.objective !== "string") return null;
+  if (!Array.isArray(v.plan_steps)) return null;
+  const c = v.citations;
+  if (c != null && !Array.isArray(c)) return null;
+  return v as unknown as StandardStructuredPlan;
 }
 
 function isFinalResponse(v: unknown): v is FinalResponse {
-  if (!isObject(v)) return false;
+  if (!isJsonObject(v)) return false;
   if (typeof v.message !== "string") return false;
   return !("tasks" in v || "items" in v || "steps" in v || "action" in v || "intent" in v);
 }
 
-function isToolOutput(v: unknown): v is ClickUpOutput {
-  if (!isObject(v)) return false;
-  return Array.isArray(v.tasks) || Array.isArray(v.items);
+function stringifyUnknown(value: unknown, max: number): string {
+  try {
+    const s = JSON.stringify(value, null, 2);
+    return s.length > max ? `${s.slice(0, max)}\n…` : s;
+  } catch {
+    const s = String(value);
+    return s.length > max ? `${s.slice(0, max)}…` : s;
+  }
 }
 
-function extractToolOutput(v: unknown): ClickUpOutput | null {
-  if (isToolOutput(v)) return v;
-  if (isObject(v) && isToolOutput(v.output)) return v.output;
+/**
+ * If this step wraps a list-shaped JSON body (common after a tool send), pull it for prettier lines.
+ * Steps are still **best-effort**: the model may clarify, omit fields, or return unrelated shapes.
+ */
+function extractToolLikePayload(v: unknown): JsonObject | null {
+  if (isJsonObject(v) && (Array.isArray(v.tasks) || Array.isArray(v.items))) return v;
+  if (
+    isJsonObject(v) &&
+    isJsonObject(v.output) &&
+    (Array.isArray(v.output.tasks) || Array.isArray(v.output.items))
+  ) {
+    return v.output;
+  }
   return null;
 }
 
-function collectStepResultsJson(steps: unknown[]): string {
-  const outputs: unknown[] = [];
-  for (const step of steps) {
-    const out = extractToolOutput(step);
-    if (out) outputs.push(out);
-    if (isFinalResponse(step)) outputs.push({ message: step.message });
+/**
+ * Serialize one executor step for `prior_results` — same spirit as claude-session-demo's
+ * `formatLastToolOutputFromExecutorRun`: **agentic** hops, not a fixed tool schema.
+ */
+function executorStepToPriorContextText(step: unknown): string {
+  if (step == null) return "";
+  if (isFinalResponse(step)) {
+    return `[final_response]\n${step.message}`.trim();
   }
-  try {
-    return JSON.stringify(outputs.length > 0 ? outputs : steps.slice(-3), null, 2).slice(0, 6000);
-  } catch (_) {
-    return "{}";
+  const toolLike = extractToolLikePayload(step);
+  if (toolLike) {
+    return `[tool_result]\n${formatListLikeToolPayload(toolLike)}`.trim();
   }
+  if (isJsonObject(step) && typeof step.message === "string" && step.message.trim()) {
+    return `[message]\n${step.message.trim()}`;
+  }
+  return `[raw]\n${stringifyUnknown(step, 3500)}`;
 }
 
-function formatOutput(output: ClickUpOutput): string {
-  let response = output.message || "Done.";
-  if (output.items && output.items.length > 0) {
-    response += "\n\n" + output.items.map((i) => `• [${i.kind}] ${i.name} (id: ${i.id})`).join("\n");
+function collectStepResultsForPriorContext(steps: unknown[]): string {
+  const parts: string[] = [];
+  for (const step of steps) {
+    const block = executorStepToPriorContextText(step);
+    if (block) parts.push(block);
   }
-  if (output.tasks && output.tasks.length > 0) {
-    response += "\n\n" + output.tasks
-      .map((t) => `• ${t.name || "Unnamed task"} [${t.status || "unknown"}]${t.url ? ` — ${t.url}` : ""}`)
-      .join("\n");
+  const joined = parts.join("\n\n---\n\n");
+  if (joined.trim()) return joined.slice(0, PRIOR_RESULTS_MAX_CHARS);
+  return stringifyUnknown(steps.slice(-5), PRIOR_RESULTS_MAX_CHARS);
+}
+
+function textReply(text: string): StructuredReply {
+  const parts: ReplyPart[] = [{ type: "text", text }];
+  return { parts, citations: [] };
+}
+
+function finalResponseToStructured(fr: FinalResponse): StructuredReply {
+  const msg = fr.message.trim() || "Done.";
+  const parts: StructuredReply["parts"] = [{ type: "text", text: msg }];
+  const sj = typeof fr.structured_json === "string" ? fr.structured_json.trim() : "";
+  if (sj) {
+    parts.push({ type: "data", data: sj, media_type: "application/json" });
+  }
+  const citations = Array.isArray(fr.citations)
+    ? fr.citations.filter((c): c is string => typeof c === "string")
+    : [];
+  return { parts, citations };
+}
+
+function formatLineFromClickUpItem(entry: JsonValue): string {
+  if (!isJsonObject(entry)) return "";
+  const kind = typeof entry.kind === "string" ? entry.kind : "";
+  const name = typeof entry.name === "string" ? entry.name : "";
+  const id = typeof entry.id === "string" ? entry.id : "";
+  if (!name && !id) return "";
+  return `• [${kind}] ${name} (id: ${id})`;
+}
+
+function formatLineFromClickUpTaskSummary(entry: JsonValue): string {
+  if (!isJsonObject(entry)) return "";
+  const name = typeof entry.name === "string" ? entry.name : "Unnamed task";
+  const status = typeof entry.status === "string" ? entry.status : "unknown";
+  const url = typeof entry.url === "string" ? entry.url : "";
+  return `• ${name} [${status}]${url ? ` — ${url}` : ""}`;
+}
+
+/** Optional readable view when payload has list-shaped `tasks` / `items` arrays. */
+function formatListLikeToolPayload(output: JsonObject): string {
+  const msg = output.message;
+  let response = typeof msg === "string" ? msg : "Done.";
+  const items = output.items;
+  if (Array.isArray(items) && items.length > 0) {
+    response += "\n\n" + items.map(formatLineFromClickUpItem).filter((s) => s.length > 0).join("\n");
+  }
+  const tasks = output.tasks;
+  if (Array.isArray(tasks) && tasks.length > 0) {
+    response += "\n\n" + tasks.map(formatLineFromClickUpTaskSummary).filter((s) => s.length > 0).join("\n");
   }
   return response;
 }
 
-function extractFinalMessage(steps: unknown[]): string {
+function extractFinalMessage(steps: unknown[]): StructuredReply {
   for (const step of [...steps].reverse()) {
-    if (isFinalResponse(step)) return step.message;
-    const out = extractToolOutput(step);
-    if (out) return formatOutput(out);
-    if (isObject(step) && typeof step.message === "string") return step.message;
+    if (isFinalResponse(step)) return finalResponseToStructured(step);
+    const toolLike = extractToolLikePayload(step);
+    if (toolLike) return textReply(formatListLikeToolPayload(toolLike));
+    if (isJsonObject(step) && typeof step.message === "string" && step.message.trim()) {
+      return textReply(step.message.trim());
+    }
   }
-  return "ClickUp returned no usable response for this request.";
+  if (steps.length > 0) {
+    const raw = stringifyUnknown(steps[steps.length - 1], 4000);
+    if (raw.trim()) return textReply(`ClickUp session produced:\n${raw}`);
+  }
+  return textReply("ClickUp returned no usable response for this request.");
 }
 
-/** Execute a resolved plan: open session, run per-step executors, return final message. */
-async function runClickUpPlan(
-  ctx: RunContext,
-  plan: ClickUpPlan,
+function filterPlanCitations(plan: StandardStructuredPlan): string[] {
+  const raw = plan.citations;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((c): c is string => typeof c === "string" && c.trim().length > 0);
+}
+
+/**
+ * Validate plan_steps against clickup_prompt.baml (execute → … → single format at end).
+ */
+function validateClickUpPlanForExecution(plan: StandardStructuredPlan): StandardAgentPlanStep[] | string {
+  const raw = plan.plan_steps;
+  if (raw.length === 0) return "plan_steps is empty";
+
+  const steps: StandardAgentPlanStep[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const s = raw[i];
+    if (!isJsonObject(s)) return `plan_steps[${i}] is not an object`;
+    if (typeof s.sub_message !== "string" || !s.sub_message.trim()) {
+      return `plan_steps[${i}].sub_message must be a non-empty string`;
+    }
+    const pkgRaw = s.agent_package;
+    const instRaw = s.agent_instance_id;
+    if (typeof pkgRaw !== "string" || typeof instRaw !== "string") {
+      return `plan_steps[${i}] missing agent_package or agent_instance_id`;
+    }
+    const pkg = pkgRaw.trim().toLowerCase();
+    if (pkg !== PKG_CLICKUP_EXECUTE && pkg !== PKG_CLICKUP_FORMAT) {
+      return `plan_steps[${i}] has invalid agent_package "${pkgRaw}" (expected clickup-execute or clickup-format)`;
+    }
+    steps.push({
+      agent_package: pkgRaw.trim(),
+      agent_instance_id: instRaw.trim() || "default",
+      sub_message: s.sub_message,
+    });
+  }
+
+  let executeCount = 0;
+  let formatCount = 0;
+  for (const st of steps) {
+    const p = st.agent_package.trim().toLowerCase();
+    if (p === PKG_CLICKUP_EXECUTE) executeCount++;
+    if (p === PKG_CLICKUP_FORMAT) formatCount++;
+  }
+  if (executeCount < 1) return "plan must include at least one clickup-execute step";
+  if (formatCount !== 1) return "plan must include exactly one clickup-format step";
+  const lastPkg = steps[steps.length - 1]!.agent_package.trim().toLowerCase();
+  if (lastPkg !== PKG_CLICKUP_FORMAT) return "last plan step must be clickup-format";
+
+  return steps;
+}
+
+async function runClickUpStructuredPlan(
+  _ctx: RunContext,
+  structured: StandardStructuredPlan,
+  validatedIntent: string,
   operationKind: string,
+  steps: StandardAgentPlanStep[],
 ): Promise<SessionResult> {
-  const { goal, steps } = plan;
+  const goal = structured.objective.trim() || validatedIntent;
+  const intentSlug = slugGoal(structured.intent_description || goal);
 
   const executionSession = typeof openA2aExecutionSession === "function"
     ? await openA2aExecutionSession("clickup-" + Date.now().toString())
     : null;
-  const intentId = "intent-clickup-" + slugGoal(goal);
+  const intentId = "intent-clickup-" + intentSlug;
+  const citations = filterPlanCitations(structured);
   const intentPhase = executionSession
     ? await executionSession.submitIntent({
         intentId,
-        description: goal,
-        derivedFromMessageIds: [executionMessageId(ctx.message)],
+        description: structured.intent_description || goal,
+        ...(citations.length > 0 ? { citations } : {}),
       })
     : null;
   const executable = intentPhase
     ? await intentPhase.submitPlan({
         intentId,
-        planId: "plan-clickup-" + slugGoal(goal),
+        planId: "plan-clickup-" + intentSlug,
         steps: steps.map((s, i) => ({
-          stepId: s.id,
-          description: s.description,
+          stepId: "step-" + i,
+          description: s.sub_message,
           order: i,
-          dependsOn: i > 0 ? [steps[i - 1]!.id] : [],
+          dependsOn: i > 0 ? ["step-" + (i - 1)] : [],
         })),
       })
     : null;
 
-  // Execute each plan step independently, threading prior results forward.
-  const toolSteps = steps.filter((s) => s.kind !== "format");
-  const formatStep = steps.find((s) => s.kind === "format");
-  const allStepOutputs: unknown[][] = [];
-  let priorResultsJson: string | null = null;
+  const allStepOutputsNested: unknown[][] = [];
+  let priorResultsText: string | null = null;
 
   try {
-    for (const toolStep of toolSteps) {
-      if (executable) {
-        await executable.startStep?.(toolStep.id, `Starting ${toolStep.kind}: ${toolStep.description}`);
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i]!;
+      const stepId = "step-" + i;
+      const pkg = step.agent_package.trim().toLowerCase();
+
+      if (executable) await executable.startStep?.(stepId);
+
+      if (pkg === PKG_CLICKUP_EXECUTE) {
+        const run = await runGeneratedStepExecutor("ChooseClickUpAction", {
+          goal,
+          step_description: step.sub_message,
+          operation_kind: operationKind,
+          prior_results: priorResultsText,
+        }, { max_steps: MAX_REACT_STEPS });
+        allStepOutputsNested.push(run.steps);
+        priorResultsText = collectStepResultsForPriorContext(run.steps);
+        if (executable) await executable.completeStep?.(stepId);
+      } else if (pkg === PKG_CLICKUP_FORMAT) {
+        const finalMessage = extractFinalMessage(allStepOutputsNested.flat());
+        if (executable) await executable.completeStep?.(stepId);
+        if (executable) await executable.finish?.();
+        return { message: finalMessage };
+      } else {
+        if (executable) await executable.completeStep?.(stepId);
       }
-
-      const run = await runGeneratedStepExecutor("ChooseClickUpAction", {
-        goal,
-        step_description: toolStep.description,
-        operation_kind: operationKind,
-        prior_results: priorResultsJson,
-      }, { max_steps: MAX_REACT_STEPS });
-
-      allStepOutputs.push(run.steps);
-      priorResultsJson = collectStepResultsJson(run.steps);
-
-      if (executable) {
-        await executable.completeStep?.(
-          toolStep.id,
-          `Completed ${toolStep.kind}: ${run.steps.length} result(s).`,
-        );
-      }
     }
 
-    // Format step: extract final message from all accumulated step outputs.
-    if (formatStep && executable) {
-      await executable.startStep?.(formatStep.id, `Formatting response for: ${goal}`);
-    }
-
-    const finalMessage = extractFinalMessage(allStepOutputs.flat());
-
-    if (formatStep && executable) {
-      await executable.completeStep?.(formatStep.id, "Response formatted and returned to user.");
-    }
     if (executable) await executable.finish?.();
-
-    return { message: finalMessage };
+    return { message: textReply("ClickUp plan completed without a format step.") };
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
     try { if (executable) await executable.abort?.(errMsg); } catch (_) { /* best-effort */ }
@@ -189,9 +313,7 @@ __chat_register({
     const originalText = typeof ctx.text === "string" && ctx.text.length > 0 ? ctx.text : "unknown";
     let text = originalText;
 
-    // ── Phase 1: Intent inference ────────────────────────────────────────────
-    // InferClickUpIntent classifies whether this is a valid ClickUp request,
-    // distills the intent, asks for clarification, or rejects non-ClickUp messages.
+    // ── Phase 1: Intent inference (agentic — can clarify like claude-session-demo RequirementsPhase) ──
     let resolvedIntent: ClickUpIntent | null = null;
     for (let i = 0; i <= MAX_CLARIFY; i++) {
       const intentResult = await InferClickUpIntent({ user_message: text });
@@ -201,36 +323,46 @@ __chat_register({
         break;
       }
       if (isNotRelevant(intentResult)) {
-        return { message: `This doesn't look like a ClickUp request — ${intentResult.reason}` };
+        return {
+          message: textReply(`This doesn't look like a ClickUp request — ${intentResult.reason}`),
+        };
       }
       if (isNeedClarification(intentResult) && i < MAX_CLARIFY) {
         const reply = await ctx.emit.awaitInput(intentResult.question);
         const clarifiedText = messageText(reply).trim();
         if (clarifiedText) text = clarifiedText;
       } else {
-        // Exhausted clarification rounds — treat message as-is.
         resolvedIntent = { intent: text, operation_kind: "read" };
         break;
       }
     }
     if (!resolvedIntent) return { error: "Could not determine a valid ClickUp intent." };
 
-    // ── Phase 2: Planning ────────────────────────────────────────────────────
-    // PlanClickUpWork derives an explicit step plan from the validated intent.
+    // ── Phase 2: Planning (agentic — StandardStructuredPlan from BAML only) ──
     const planResult = await PlanClickUpWork({
       intent: resolvedIntent.intent,
       operation_kind: resolvedIntent.operation_kind,
     });
-    const plan: ClickUpPlan = isClickUpPlan(planResult) ? planResult : {
-      goal: resolvedIntent.intent,
-      steps: [
-        { id: "step-navigate", description: "Navigate workspace to find required IDs.", kind: "navigate" },
-        { id: "step-execute", description: "Execute the target ClickUp operation.", kind: "execute" },
-        { id: "step-format", description: "Format results into user response.", kind: "format" },
-      ],
-    };
+    const structured = parseStandardStructuredPlanFromPlanning(planResult);
+    if (!structured) {
+      return {
+        error:
+          "Planning failed: PlanClickUpWork did not return a valid StandardStructuredPlan shape. Try rephrasing your request.",
+      };
+    }
+    const stepsOrErr = validateClickUpPlanForExecution(structured);
+    if (typeof stepsOrErr === "string") {
+      return {
+        error: `Planning output did not satisfy the ClickUp execution contract: ${stepsOrErr}`,
+      };
+    }
 
-    // ── Phase 3: Execute plan ────────────────────────────────────────────────
-    return runClickUpPlan(ctx, plan, resolvedIntent.operation_kind);
+    return runClickUpStructuredPlan(
+      ctx,
+      structured,
+      resolvedIntent.intent,
+      resolvedIntent.operation_kind,
+      stepsOrErr,
+    );
   },
 });

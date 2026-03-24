@@ -165,13 +165,13 @@ expression: snapshot
           "tags": [
             "agents"
           ],
-          "summary": "Deterministic non-conversational delivery: POST /agents/{agent_package}/{agent_instance_id}/dispatch",
+          "summary": "Deterministic host-to-agent delivery: POST /agents/{agent_package}/{agent_instance_id}/dispatch",
           "operationId": "post_dispatch",
           "parameters": [
             {
               "name": "agent_package",
               "in": "path",
-              "description": "Agent package identifier",
+              "description": "Agent package name",
               "required": true,
               "schema": {
                 "type": "string"
@@ -180,7 +180,7 @@ expression: snapshot
             {
               "name": "agent_instance_id",
               "in": "path",
-              "description": "Agent instance identifier",
+              "description": "Agent instance ID",
               "required": true,
               "schema": {
                 "type": "string"
@@ -199,7 +199,7 @@ expression: snapshot
           },
           "responses": {
             "200": {
-              "description": "Buffered delivery acknowledgement",
+              "description": "Delivery accepted",
               "content": {
                 "application/json": {
                   "schema": {
@@ -209,13 +209,10 @@ expression: snapshot
               }
             },
             "400": {
-              "description": "Malformed request"
+              "description": "Bad request (validation failed)"
             },
             "404": {
-              "description": "Agent or dispatch handler not found"
-            },
-            "500": {
-              "description": "Internal error"
+              "description": "Agent not found"
             }
           }
         }
@@ -623,7 +620,7 @@ expression: snapshot
             "mermaid"
           ],
           "summary": "Mermaid diagram by context",
-          "description": "Returns the provenance subgraph for the given A2A context ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with GraphQLite provenance.",
+          "description": "Returns the provenance subgraph for the given A2A context ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with SurrealDB provenance.",
           "operationId": "get_mermaid_context",
           "parameters": [
             {
@@ -661,7 +658,7 @@ expression: snapshot
             "provenance"
           ],
           "summary": "Context metrics by context_id",
-          "description": "Returns turn-level and session-level token/call/duration metrics for the given A2A context ID. Available when GraphQLite-backed provenance is configured.",
+          "description": "Returns turn-level and session-level token/call/duration metrics for the given A2A context ID. Available when SurrealDB-backed provenance is configured.",
           "operationId": "get_context_metrics",
           "parameters": [
             {
@@ -814,7 +811,7 @@ expression: snapshot
             "mermaid"
           ],
           "summary": "Mermaid diagram by task",
-          "description": "Returns the provenance subgraph for the given A2A task ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with GraphQLite provenance.",
+          "description": "Returns the provenance subgraph for the given A2A task ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with SurrealDB provenance.",
           "operationId": "get_mermaid_task",
           "parameters": [
             {
@@ -982,8 +979,7 @@ expression: snapshot
               }
             },
             "metadata": {
-              "type": "object",
-              "description": "Structured transport metadata (source, schema version, content type, etc.)."
+              "type": "object"
             },
             "routing_key": {
               "type": "string"
@@ -1333,7 +1329,7 @@ expression: snapshot
       },
       {
         "name": "mermaid",
-        "description": "Provenance graph as Mermaid sequence diagrams (when GraphQLite is enabled)"
+        "description": "Provenance graph as Mermaid sequence diagrams (when SurrealDB provenance is enabled)"
       },
       {
         "name": "provenance",

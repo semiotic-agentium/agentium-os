@@ -25,6 +25,8 @@ pub enum GraphNodeLabel {
     PromptRejected,
     FailureClassificationActivity,
     FailureClassification,
+    /// An individual step within a tool session (Open/SendDone/Read).
+    SessionStep,
 }
 
 impl GraphNodeLabel {
@@ -49,6 +51,7 @@ impl GraphNodeLabel {
             Self::PromptRejected => "PromptRejected",
             Self::FailureClassificationActivity => "FailureClassificationActivity",
             Self::FailureClassification => "FailureClassification",
+            Self::SessionStep => "SessionStep",
         }
     }
 
@@ -73,6 +76,7 @@ impl GraphNodeLabel {
             "PromptRejected" => Some(Self::PromptRejected),
             "FailureClassificationActivity" => Some(Self::FailureClassificationActivity),
             "FailureClassification" => Some(Self::FailureClassification),
+            "SessionStep" => Some(Self::SessionStep),
             _ => None,
         }
     }
@@ -110,9 +114,10 @@ pub enum EventGraphKind {
     TaskArtifactGenerated,
     MessageReceived,
     MessageSent,
+    ToolSessionStep,
 }
 
-pub const ALL_EVENT_KINDS: [EventGraphKind; 16] = [
+pub const ALL_EVENT_KINDS: [EventGraphKind; 17] = [
     EventGraphKind::IntentResolved,
     EventGraphKind::PlanGenerated,
     EventGraphKind::PlanStepStatusChanged,
@@ -129,6 +134,7 @@ pub const ALL_EVENT_KINDS: [EventGraphKind; 16] = [
     EventGraphKind::TaskArtifactGenerated,
     EventGraphKind::MessageReceived,
     EventGraphKind::MessageSent,
+    EventGraphKind::ToolSessionStep,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -224,6 +230,13 @@ const MAPPING_TOOL_CALL_COMPLETED: EventGraphMapping = EventGraphMapping {
     ],
 };
 
+const MAPPING_TOOL_SESSION_STEP: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::ToolSessionStep,
+    primary_node: GraphNodeLabel::SessionStep,
+    expected_edges: &[],
+    required_properties: &[a2a::TOOL_NAME],
+};
+
 const MAPPING_AGENT_BOOTED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::AgentBooted,
     primary_node: GraphNodeLabel::AgentBoot,
@@ -298,6 +311,7 @@ pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
         ProvEventData::TaskArtifactGenerated { .. } => EventGraphKind::TaskArtifactGenerated,
         ProvEventData::MessageReceived { .. } => EventGraphKind::MessageReceived,
         ProvEventData::MessageSent { .. } => EventGraphKind::MessageSent,
+        ProvEventData::ToolSessionStep { .. } => EventGraphKind::ToolSessionStep,
     }
 }
 
@@ -319,6 +333,7 @@ pub fn mapping_for_event_kind(kind: EventGraphKind) -> &'static EventGraphMappin
         EventGraphKind::TaskArtifactGenerated => &MAPPING_TASK_ARTIFACT_GENERATED,
         EventGraphKind::MessageReceived => &MAPPING_MESSAGE_RECEIVED,
         EventGraphKind::MessageSent => &MAPPING_MESSAGE_SENT,
+        EventGraphKind::ToolSessionStep => &MAPPING_TOOL_SESSION_STEP,
     }
 }
 
@@ -333,20 +348,28 @@ impl ConversationReadModel {
     pub const MESSAGE_COLUMN_COUNT: usize = 5;
     pub const TOOL_COLUMN_COUNT: usize = 7;
 
-    /// Typed parameterised message query for cypher_builder().params().run().
+    /// Typed parameterised message query.
     pub fn message_query_storage_safe_params(context: &str) -> (String, serde_json::Value) {
         let query = "MATCH (m:Message) WHERE m.a2a_context_id = $context \
-             RETURN m.a2a_event_id, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content \
-             ORDER BY m.a2a_event_id";
+             RETURN m.a2a_activity_anchor, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content \
+             ORDER BY m.a2a_activity_anchor";
         (query.to_string(), serde_json::json!({ "context": context }))
     }
 
-    /// Typed parameterised tool query for cypher_builder().params().run().
+    /// Typed parameterised tool query.
     pub fn tool_query_storage_safe_params(context: &str) -> (String, serde_json::Value) {
         let query = "MATCH (t:ToolCall) WHERE t.a2a_context_id = $context \
              MATCH (t)-[used:WAS_USED_BY]->(args:ToolArgs) \
-             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_activity_outcome \
-             ORDER BY t.a2a_event_id";
+             RETURN DISTINCT t.a2a_activity_anchor, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_activity_outcome \
+             ORDER BY t.a2a_activity_anchor";
+        (query.to_string(), serde_json::json!({ "context": context }))
+    }
+
+    /// Session-step query: individual Open/SendDone/Read events within sessions.
+    pub fn session_step_query_params(context: &str) -> (String, serde_json::Value) {
+        let query = "MATCH (s:SessionStep) WHERE s.a2a_context_id = $context \
+             RETURN s.a2a_activity_anchor, s.a2a_tool_name, s.op_kind, s.header, s.archive_ref, s.grep \
+             ORDER BY s.a2a_activity_anchor";
         (query.to_string(), serde_json::json!({ "context": context }))
     }
 }

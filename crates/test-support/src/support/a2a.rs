@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use baml_rt::{A2aRequestHandler, Result, tools::BamlTool};
+use baml_rt_core::A2aJsChatHost;
 use baml_rt_tools::bundles::Support;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,14 @@ pub struct A2aInMemoryClient {
 
 impl A2aInMemoryClient {
     pub fn new(target: Arc<dyn A2aRequestHandler>) -> Self {
+        Self { target }
+    }
+
+    /// Prefer for tests that require full HTTP parity: requires a handler that implements
+    /// [`A2aJsChatHost`] (e.g. [`baml_rt::A2aAgent`]). Registration-time verification of the
+    /// QuickJS surface runs inside `register_baml_functions` on the agent build path.
+    pub fn new_for_chat_parity(host: Arc<dyn A2aJsChatHost>) -> Self {
+        let target: Arc<dyn A2aRequestHandler> = host;
         Self { target }
     }
 
@@ -68,6 +77,11 @@ impl BamlTool for A2aRelayTool {
 pub struct A2aRelayInput {
     #[ts(type = "any")]
     request: Value,
+}
+impl baml_rt_tools::DescribeAction for A2aRelayInput {
+    fn describe(&self) -> String {
+        "relaying A2A request".to_string()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]

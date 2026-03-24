@@ -23,7 +23,7 @@ impl LLMInterceptor for StubChooseCalcToolInterceptor {
         &self,
         context: &LLMCallContext,
     ) -> baml_rt_core::Result<InterceptorDecision> {
-        if context.function_name == "ChooseCalcTool" {
+        if context.function_id.prompt_name().as_str() == "ChooseCalcTool" {
             Ok(InterceptorDecision::Substitute(json!({
                 "step": {
                     "op": "Send",
@@ -95,13 +95,16 @@ async fn test_js_invoke_baml_function() {
     let json_result = result.expect("JS evaluate should succeed");
     println!("JavaScript execution result: {:?}", json_result);
 
-    // Strict mode: stub returns one Send fragment; runtime executes it and returns sent status.
+    // Blocking Send: returns done status with archive_ref once tool session completes.
     let obj = json_result
         .as_object()
         .expect("Result should be a JSON object");
-    assert!(
-        obj.get("status").and_then(|v| v.as_str()) == Some("sent"),
-        "Result should contain strict sent status; got keys: {:?}",
+    // Either the session plan resolved an error (no manifest), or we got a done result.
+    // The key assertion: no bare "sent" status — Send now blocks until Done.
+    assert_ne!(
+        obj.get("status").and_then(|v| v.as_str()),
+        Some("sent"),
+        "Send must not return bare 'sent' status — it blocks until Done; got keys: {:?}",
         obj.keys().collect::<Vec<_>>()
     );
 }

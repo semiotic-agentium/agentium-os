@@ -1,3 +1,5 @@
+use baml_rt_llm_config::{FnoxFileSecretResolver, SecretResolver};
+
 /// ClickUp v2 REST API base URL.
 pub const BASE_URL: &str = "https://api.clickup.com/api/v2";
 
@@ -18,8 +20,10 @@ pub enum ClickUpClientError {
     #[error("ClickUp API returned {status}: {body}")]
     Api { status: u16, body: String },
 
-    #[error("CLICKUP_API_KEY environment variable not set")]
-    MissingApiKey(#[source] std::env::VarError),
+    #[error(
+        "CLICKUP_API_KEY not set in environment and not resolved from fnox (BAML_FNOX_CONFIG / fnox.toml)"
+    )]
+    MissingApiKey,
 }
 
 #[derive(Clone)]
@@ -42,12 +46,39 @@ impl ClickUpClient {
         }
     }
 
+    /// Use a fixed API base (e.g. local fixture server). Trailing slashes are stripped.
+    pub fn with_base_url(base: impl Into<String>) -> Self {
+        let raw = base.into();
+        let base_url = raw.trim().trim_end_matches('/').to_string();
+        Self {
+            client: reqwest::Client::new(),
+            base_url,
+        }
+    }
+
     pub fn base_url(&self) -> &str {
         self.base_url.as_str()
     }
 
+    /// Resolves `CLICKUP_API_KEY` from the process environment first, then from the fnox secret
+    /// store (`BAML_FNOX_CONFIG` or `fnox.toml` discovery), matching the LLM key resolution path.
     pub fn api_key() -> std::result::Result<String, ClickUpClientError> {
-        std::env::var("CLICKUP_API_KEY").map_err(ClickUpClientError::MissingApiKey)
+        if let Ok(k) = std::env::var("CLICKUP_API_KEY") {
+            let t = k.trim();
+            if !t.is_empty() {
+                return Ok(t.to_string());
+            }
+        }
+        let resolver = FnoxFileSecretResolver::default_path_resolver();
+        for key in ["env.CLICKUP_API_KEY", "CLICKUP_API_KEY"] {
+            if let Some(v) = resolver.resolve(key) {
+                let t = v.as_str().trim();
+                if !t.is_empty() {
+                    return Ok(t.to_string());
+                }
+            }
+        }
+        Err(ClickUpClientError::MissingApiKey)
     }
 
     pub fn get(&self, path: &str, api_key: &str) -> reqwest::RequestBuilder {

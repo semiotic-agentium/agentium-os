@@ -51,11 +51,14 @@ export interface ContextMetricsResponse {
   session: SessionMetrics;
 }
 
-/** A2A message part */
+/** A2A message part (wire may use snake_case media_type) */
 export interface Part {
   text?: string;
   kind?: string;
   data?: unknown;
+  /** Wire format from structured replies / shim (e.g. application/json) */
+  media_type?: string;
+  mediaType?: string;
 }
 
 /** A2A message */
@@ -150,12 +153,19 @@ export interface ToolEvent {
 
 export type ToolCompletion = "DONE" | "INPUT_REQUIRED" | "INTERRUPTED";
 
-/** Block inside an agent message (text or tool notification). */
-export type ContentBlock = TextContentBlock | ToolNotificationBlock;
+/** Block inside an agent message (text, structured data, or tool notification). */
+export type ContentBlock = TextContentBlock | DataContentBlock | ToolNotificationBlock;
 
 export interface TextContentBlock {
   type: "text";
   text: string;
+}
+
+/** Structured payload part (e.g. JSON from persona structured reply). */
+export interface DataContentBlock {
+  type: "data";
+  mediaType: string;
+  data: unknown;
 }
 
 export interface ToolNotificationBlock {
@@ -198,6 +208,8 @@ export interface WorkflowProgressState {
   iteration?: number;
   nodes: WorkflowNodeStatus[];
   completedNodes: string[];
+  /** True once the coordinator pipeline has meaningfully started (discovery or planning seen). */
+  pipelineActive?: boolean;
 }
 
 /** State transition for task timeline */

@@ -88,7 +88,7 @@ watch(
 
 <template>
   <div class="chat-window">
-    <WorkflowProgress v-if="workflowProgress && workflowProgress.phase !== 'idle'" :progress="workflowProgress" />
+    <WorkflowProgress v-if="workflowProgress && workflowProgress.phase !== 'idle' && workflowProgress.pipelineActive" :progress="workflowProgress" />
     <div ref="messagesContainer" class="messages" @scroll="onMessagesScroll">
       <div v-if="messages.length === 0" class="empty-state">
         <!-- Chat icon -->

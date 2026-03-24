@@ -1,5 +1,8 @@
 //! claude/dev tool: host-owned Claude session orchestration.
 
+// `ToolSessionError` carries rich context; `-D clippy::result_large_err` is not worth API churn here.
+#![allow(clippy::result_large_err)]
+
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,
@@ -525,6 +528,41 @@ impl ToolHandler for ClaudeSessionToolHandler {
 
     fn capability(&self) -> ToolCapability {
         ToolCapability::Streaming
+    }
+
+    fn describe_invocation(&self, content: &serde_json::Value) -> String {
+        let step = content.get("step").unwrap_or(content);
+        let op = match step.get("op").and_then(|v| v.as_str()) {
+            Some(op) => op,
+            None => return "claude dev session: call".to_string(),
+        };
+        match op {
+            "Open" => {
+                let input: ClaudeToolOpenInput = step
+                    .get("input")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                match input.workspace.as_deref() {
+                    Some(ws) => format!("opening Claude dev session in workspace '{ws}'"),
+                    None => "opening Claude dev session".to_string(),
+                }
+            }
+            "Send" => {
+                let input: ClaudeToolSendInput = step
+                    .get("input")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                match input.prompt.as_deref() {
+                    Some(p) if p.len() > 60 => format!("prompting Claude: '{}...'", &p[..57]),
+                    Some(p) => format!("prompting Claude: '{p}'"),
+                    None => "sending input to Claude dev session".to_string(),
+                }
+            }
+            "Read" => "reading Claude dev session output".to_string(),
+            "Finish" => "completed Claude dev session".to_string(),
+            "Abort" => "aborted Claude dev session".to_string(),
+            other => format!("claude dev session: {other}"),
+        }
     }
 
     async fn open_session(

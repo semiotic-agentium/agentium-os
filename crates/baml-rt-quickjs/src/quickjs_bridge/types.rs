@@ -89,13 +89,17 @@ impl Drop for InFlightGuard {
 // ---------- Eval lifecycle ----------
 
 /// Ensures evaluate() bookkeeping is cleaned up on all exits, including cancellation/drop.
-/// Also triggers tool-session teardown for this context (spawned task) so sessions are not leaked.
+///
+/// **Session cleanup is NOT performed here.** Tool sessions may outlive individual function
+/// evaluations (e.g. when the session FSM drives multiple LLM calls across the same session).
+/// Session teardown is handled by `finalize_a2a_stream_invocation` when the execution stream ends.
 pub(crate) struct EvalLifecycleGuard {
     pub(crate) eval_results_by_token: EvalResultMap,
     pub(crate) invocation_context_registry: InvocationContextRegistrySlot,
     pub(crate) eval_token: InvocationToken,
     pub(crate) context_id_to_exit: Option<InvocationContextId>,
     pub(crate) eval_slot_registered: bool,
+    #[allow(dead_code)]
     pub(crate) baml_manager: Arc<Mutex<BamlRuntimeManager>>,
 }
 
@@ -126,25 +130,6 @@ impl Drop for EvalLifecycleGuard {
     fn drop(&mut self) {
         if self.eval_slot_registered {
             self.eval_results_by_token.remove(&self.eval_token);
-        }
-
-        // Task-scoped teardown: extract the full scope (context_id + task_id) so the
-        // spawned cleanup task closes only this branch's tool sessions, not siblings'.
-        if let Some(ref id) = self.context_id_to_exit {
-            let runtime_scope = self
-                .invocation_context_registry
-                .lock()
-                .ok()
-                .and_then(|reg| reg.get_scope(id));
-            if let Some(scope) = runtime_scope {
-                let baml = self.baml_manager.clone();
-                tokio::spawn(async move {
-                    let cid = scope.context_id().clone();
-                    let task_id = scope.task_id_opt().cloned();
-                    let mgr = baml.lock().await;
-                    let _ = mgr.close_sessions_for_scope(&cid, task_id.as_ref()).await;
-                });
-            }
         }
 
         if let Some(id) = self.context_id_to_exit.as_ref()
@@ -227,7 +212,11 @@ pub(crate) fn tool_step_to_value(step: ToolStep) -> Value {
             "error": {
                 "kind": format!("{:?}", error.kind),
                 "message": error.message,
-                "retryable": bool::from(error.retryability)
+                "retryable": bool::from(error.retryability),
+                "disposition": error.classified.disposition,
+                "code": error.classified.code,
+                "hint": error.classified.hint,
+                "retry_after_ms": error.classified.retry_after_ms,
             }
         }),
     }

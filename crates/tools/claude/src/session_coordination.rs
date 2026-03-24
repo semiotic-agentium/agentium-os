@@ -9,14 +9,15 @@ pub const CLAUDE_DEV_TOOL_ID: &str = "claude/dev";
 
 /// Renders the full session coordination BAML for claude/dev: classes ClaudeDevAskUser,
 /// ClaudeDevReport, function ChooseClaudeDevAction, and the coordination prompt.
-/// ClaudeDevSessionPlan is defined in generated_tools.baml.
+/// ClaudeDevSessionPlan is defined in `_baml_runtime.baml` (builder prelude).
 pub fn render_claude_dev_session_coordination() -> Result<String> {
     let mut out = String::new();
 
     out.push_str("// Auto-generated session coordination — do not edit manually\n");
     out.push_str("// Coordinates the claude/dev session tool (Open/Send/Next/Finish/Abort).\n");
-    out.push_str("// ClaudeDevSessionPlan is defined in generated_tools.baml.\n\n");
+    out.push_str("// ClaudeDevSessionPlan is defined in _baml_runtime.baml (builder prelude).\n\n");
 
+    // SessionContext is defined in _baml_runtime.baml (shared FSM host type).
     out.push_str("class ClaudeDevAskUser {\n");
     out.push_str("  action string @description(\"Always 'AskUser'.\")\n");
     out.push_str("  prompt string @description(\"When you need the end user to supply information you do not have, state clearly what to provide; the user's reply will be sent to the Claude session as the next Send prompt.\")\n");
@@ -40,11 +41,11 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
 
     RULES:
     0. CRITICAL: Emit exactly one step object per reply (field name: step). Never return a steps array.
-    1. CRITICAL: Select step.op from allowed_ops (authoritative in output schema). If allowed_ops has one value, emit that op exactly.
+    1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
     2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
     3. Initialization is two-hop under host FSM:
-       - If allowed_ops is [Open], emit Open (initial_input may be null/default).
-       - Next hop, when Send is allowed and last_tool_output is empty, emit Send with:
+       - On the select/Open phase, emit Open (initial_input may be null/default).
+       - Next hop, on the Send phase and last_tool_output is empty, emit Send with:
          prompt = spec_text + "\n\nImplement this specification. Ask for clarification only when necessary. Keep code and technical output precise."
     4. user_approval_intent:
        - approved -> Send userInput { kind: "toolApproval", approved: true } (optional short prompt allowed)
@@ -54,7 +55,7 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
        - otherwise return Report with concise requirements/build/validation summary
     6. For active non-terminal sessions, prefer Read to consume tool output before additional Send/Finish.
     7. AskUser is only for genuine missing operator input. Keep prompt neutral and short.
-    8. Never emit Open when Open is not present in allowed_ops.
+    8. Never emit Open except on the Open/select phase (session not yet open).
     9. Never emit tool_call objects.
 
     SESSION PLAN FORMAT: one-step session fragment only (`step`). Keep reason short when present.
@@ -63,10 +64,11 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
 
     {{ ctx.output_format }}
 
-    {% if ctx.tags.event_log %}
-    Event log (most recent context):
-    {% for event in ctx.tags.event_log %}
-    - {{ event.role }} | {{ event.source }} | {{ event.content }}
+    {% if ctx.tags.conversation_history %}
+    Conversation history:
+    {% for msg in ctx.tags.conversation_history %}
+    {{ _.role(msg.role) }}
+    {{ msg.content }}
     {% endfor %}
     {% endif %}
 
@@ -82,7 +84,7 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
     user_approval_intent (approved | rejected | empty):
     {{ user_approval_intent }}
 
-    Allowed ops: {{ session_context.allowed_ops }}
+    Session open (host FSM): {{ session_context.session_open }}
   "#"##);
     out.push_str("\n}\n");
 

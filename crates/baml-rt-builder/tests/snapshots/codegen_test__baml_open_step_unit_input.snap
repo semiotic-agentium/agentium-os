@@ -4,4 +4,5 @@ expression: open_step_section
 ---
 class SupportCalculateOpenStep {
   op "Open"
+  tool_name "support/calculate" @description("Tool to open")
 }

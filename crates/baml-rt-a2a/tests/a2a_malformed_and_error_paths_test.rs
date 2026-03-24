@@ -206,6 +206,11 @@ struct FailingTool;
 struct FailingInput {
     msg: String,
 }
+impl baml_rt_tools::DescribeAction for FailingInput {
+    fn describe(&self) -> String {
+        "FailingInput".to_string()
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 struct FailingOutput {
@@ -236,7 +241,7 @@ impl BamlTool for FailingTool {
 async fn test_streaming_tool_failure_mid_stream() {
     let mut runtime = BamlRuntimeManager::builder().build().unwrap();
     runtime.register_tool(FailingTool).await.unwrap();
-    let store = common::provenance::build_graphqlite_test_store();
+    let store = common::provenance::build_surreal_test_store().await;
     let agent = A2aAgent::builder()
         .with_runtime_manager(runtime)
         .with_init_js(r#"
@@ -255,18 +260,18 @@ async fn test_streaming_tool_failure_mid_stream() {
         "#)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
-        .with_graphqlite_store(store)
+        .with_surreal_store(store)
         .build()
         .await
         .unwrap();
 
     let request = send_stream_request("fail-1", "trigger", "corr-1700000000020-1", None);
     let responses = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
+        std::time::Duration::from_secs(30),
         collect_responses(&agent, request),
     )
     .await
-    .expect("stream must complete within 60s (live stream did not finalize)")
+    .expect("stream must complete within 30s (live stream did not finalize)")
     .unwrap();
     assert!(
         !responses.is_empty(),
@@ -303,7 +308,7 @@ async fn test_allowlist_violation_during_stream() {
     allowlist.insert("test/add_numbers".to_string());
     runtime.set_tool_allowlist(allowlist).await.unwrap();
 
-    let store = common::provenance::build_graphqlite_test_store();
+    let store = common::provenance::build_surreal_test_store().await;
     let agent = A2aAgent::builder()
         .with_runtime_manager(runtime)
         .with_init_js(
@@ -322,7 +327,7 @@ async fn test_allowlist_violation_during_stream() {
             };
         "#,
         )
-        .with_graphqlite_store(store)
+        .with_surreal_store(store)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()

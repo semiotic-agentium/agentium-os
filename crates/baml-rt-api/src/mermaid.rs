@@ -1,5 +1,5 @@
 //! Narrow trait for Mermaid diagram serving. Implemented by the runtime when
-//! provenance (GraphQLite) is enabled; the API consumes this trait only.
+//! provenance (SurrealDB) is enabled; the API consumes this trait only.
 
 use std::{error::Error, fmt};
 
@@ -27,7 +27,7 @@ impl fmt::Display for MermaidError {
 impl Error for MermaidError {}
 
 /// Service that can produce a Mermaid diagram string for a given context or task.
-/// The runtime implements this when provenance (GraphQLite) is enabled.
+/// The runtime implements this when provenance (SurrealDB) is enabled.
 #[async_trait::async_trait]
 pub trait MermaidService: Send + Sync {
     /// Return a Mermaid diagram (e.g. sequenceDiagram) for the given context id.

@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)] // `ToolSessionError` is large by design; matches session tool patterns.
+
 use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
@@ -11,7 +13,7 @@ use baml_rt_tools::{
     ToolCapability, ToolFailure, ToolHandler, ToolSession, ToolSessionError, ToolStep,
     tools::{HistoryContextV1, SessionReadMode, ToolFunctionMetadata, ToolSessionContext},
 };
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::{
     metadata::{system_extrospection_metadata, system_introspection_metadata},
@@ -25,8 +27,6 @@ use crate::{
 const RETRIEVAL_CALLS_CAP: u32 = 8;
 const RETRIEVAL_BYTES_CAP: u32 = 64 * 1024;
 const RETRIEVAL_ITEMS_CAP: u32 = 64;
-const COMPACT_ROW_SAMPLE_LIMIT: usize = 3;
-const COMPACT_JSON_TEXT_LIMIT: usize = 2048;
 
 #[derive(Debug, Clone, Copy)]
 enum ProvenanceReadProjection {
@@ -298,162 +298,6 @@ fn attach_history_context(value: &mut Value, hop: u32) {
     }
 }
 
-fn compact_json_text(value: &str) -> String {
-    if value.len() <= COMPACT_JSON_TEXT_LIMIT {
-        return value.to_string();
-    }
-    let mut out = value
-        .chars()
-        .take(COMPACT_JSON_TEXT_LIMIT)
-        .collect::<String>();
-    out.push('…');
-    out
-}
-
-fn compact_row_for_prompt(row: &Map<String, Value>) -> Map<String, Value> {
-    let mut compact = Map::new();
-    let keep = [
-        "activity_id",
-        "activity_ref",
-        "timestamp_ms",
-        "context_id",
-        "task_id",
-        "message_id",
-        "agent_id",
-        "agent_display",
-        "provider",
-        "model",
-        "baml_prompt",
-        "tool_name",
-        "duration_ms",
-        "prompt_tokens",
-        "completion_tokens",
-        "total_tokens",
-        "cached_input_tokens",
-        "activity_outcome",
-        "error_class",
-        "error_summary",
-        "failure_evidence_ref",
-        "llm_call_ref",
-        "llm_result_ref",
-        "tool_call_ref",
-        "tool_result_ref",
-        "cursor",
-    ];
-    for key in keep {
-        if let Some(value) = row.get(key) {
-            compact.insert(key.to_string(), value.clone());
-        }
-    }
-    compact
-}
-
-fn summarize_payload_json_for_prompt(payload_json: &str) -> Value {
-    let Ok(parsed) = serde_json::from_str::<Value>(payload_json) else {
-        return serde_json::json!({
-            "parseError": "invalid_json",
-            "payloadBytes": payload_json.len(),
-            "payloadPreview": compact_json_text(payload_json),
-        });
-    };
-    let Some(obj) = parsed.as_object() else {
-        return serde_json::json!({
-            "payloadType": "non_object",
-            "payloadBytes": payload_json.len(),
-        });
-    };
-    let mut summary = Map::new();
-    if let Some(resource) = obj.get("resource") {
-        summary.insert("resource".to_string(), resource.clone());
-    }
-    if let Some(cursor) = obj.get("cursor") {
-        summary.insert("cursor".to_string(), cursor.clone());
-    }
-    if let Some(total) = obj.get("total") {
-        summary.insert("total".to_string(), total.clone());
-    }
-    if let Some(aggregates) = obj.get("aggregates") {
-        summary.insert("aggregates".to_string(), aggregates.clone());
-    }
-    if let Some(rows) = obj.get("rows").and_then(Value::as_array) {
-        summary.insert(
-            "rowCount".to_string(),
-            Value::Number(serde_json::Number::from(rows.len() as u64)),
-        );
-        let sample = rows
-            .iter()
-            .take(COMPACT_ROW_SAMPLE_LIMIT)
-            .filter_map(Value::as_object)
-            .map(compact_row_for_prompt)
-            .map(Value::Object)
-            .collect::<Vec<_>>();
-        summary.insert("rowsSample".to_string(), Value::Array(sample));
-    }
-    Value::Object(summary)
-}
-
-fn compact_read_result_for_prompt(read_result: &mut Map<String, Value>) {
-    read_result.remove("archiveRecord");
-    if let Some(refs) = read_result.get("refs").and_then(Value::as_array) {
-        read_result.insert(
-            "refCount".to_string(),
-            Value::Number(serde_json::Number::from(refs.len() as u64)),
-        );
-    }
-}
-
-fn compact_provenance_content_for_prompt(content: &mut Value) {
-    let Some(content_obj) = content.as_object_mut() else {
-        return;
-    };
-    let Some(result_obj) = content_obj.get_mut("result").and_then(Value::as_object_mut) else {
-        return;
-    };
-    if let Some(payload_json) = result_obj
-        .get("payloadJson")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-    {
-        let summary = summarize_payload_json_for_prompt(payload_json.as_str());
-        result_obj.insert("payloadSummary".to_string(), summary);
-        result_obj.insert(
-            "payloadBytes".to_string(),
-            Value::Number(serde_json::Number::from(payload_json.len() as u64)),
-        );
-        result_obj.remove("payloadJson");
-    }
-    if let Some(payload_json) = result_obj
-        .get("payload_json")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-    {
-        let summary = summarize_payload_json_for_prompt(payload_json.as_str());
-        result_obj.insert("payloadSummary".to_string(), summary);
-        result_obj.insert(
-            "payloadBytes".to_string(),
-            Value::Number(serde_json::Number::from(payload_json.len() as u64)),
-        );
-        result_obj.remove("payload_json");
-    }
-    if let Some(read_result) = result_obj
-        .get_mut("readResult")
-        .and_then(Value::as_object_mut)
-    {
-        compact_read_result_for_prompt(read_result);
-    }
-    if let Some(history_context) = result_obj
-        .get_mut("historyContext")
-        .and_then(Value::as_object_mut)
-        && let Some(payload) = history_context.get("payload")
-    {
-        let payload_bytes = serde_json::to_vec(payload).map_or(0usize, |bytes| bytes.len());
-        history_context.insert(
-            "payloadBytes".to_string(),
-            Value::Number(serde_json::Number::from(payload_bytes as u64)),
-        );
-    }
-}
-
 #[async_trait]
 impl ToolSession for ProvenanceQuerySession {
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
@@ -647,8 +491,32 @@ impl ToolHandler for ProvenanceQueryTool {
         ToolCapability::Streaming
     }
 
-    fn compact_result(&self, content: &mut Value) {
-        compact_provenance_content_for_prompt(content);
+    fn describe_result_value(&self, _output: &Value) -> Option<String> {
+        Some("provenance query results".to_string())
+    }
+
+    fn describe_invocation(&self, content: &Value) -> String {
+        let step = content.get("step").unwrap_or(content);
+        let op = match step.get("op").and_then(Value::as_str) {
+            Some(op) => op,
+            None => return "provenance query: call".to_string(),
+        };
+        match op {
+            "Open" => "querying provenance records".to_string(),
+            "Send" => {
+                if let Some(input) = step.get("input").and_then(|v| {
+                    serde_json::from_value::<ProvenanceQuerySendInput>(v.clone()).ok()
+                }) {
+                    format!("querying provenance {}", input.resource)
+                } else {
+                    "querying provenance".to_string()
+                }
+            }
+            "Read" => "reading provenance query output".to_string(),
+            "Finish" => "finished provenance query".to_string(),
+            "Abort" => "aborted provenance query".to_string(),
+            other => format!("provenance query: {other}"),
+        }
     }
 
     async fn open_session(

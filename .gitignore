@@ -36,10 +36,11 @@ dist/
 *.swo
 *~
 
-# Provenance databases (created by demo scripts / --provenance-db flag)
+# Provenance and config databases (SurrealKV directories)
 provenance.db
 provenance.db-shm
 provenance.db-wal
+config.db
 
 # Fastembed model cache (downloaded ONNX models, ~130 MB)
 .fastembed_cache/

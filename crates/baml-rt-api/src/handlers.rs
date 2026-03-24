@@ -1,4 +1,4 @@
-//! HTTP handlers: discovery and A2A forward (POST and SSE).
+//! HTTP handlers: discovery, A2A forward (POST and SSE), and deterministic dispatch.
 
 use std::{
     convert::Infallible,
@@ -16,8 +16,8 @@ use axum::{
     },
 };
 use baml_rt_core::{
-    A2aWireRequest, AgentInstanceId, AgentPackageName, AgentRouteKey, BamlRtError,
-    collect_a2a_stream,
+    A2aWireRequest, AgentDispatchRequest, AgentInstanceId, AgentPackageName, AgentRouteKey,
+    BamlRtError, collect_a2a_stream,
     ids::{AgentId, ContextId, TaskId},
 };
 use baml_rt_provenance::{
@@ -33,7 +33,7 @@ use crate::{
     context_metrics::{ContextMetricsError, ContextMetricsResponseDto},
     mermaid::MermaidError,
     metrics,
-    openapi::{AgentDiscoveryEntryDto, AgentDispatchAckDto, AgentDispatchRequestDto},
+    openapi::AgentDiscoveryEntryDto,
     planning::{ContextPlanningResponse, PlanningError},
     provenance_ops::ProvenanceOpsError,
     spans,
@@ -246,67 +246,13 @@ pub async fn post_a2a_sse(
     Ok(sse)
 }
 
-/// Deterministic non-conversational delivery: POST /agents/{agent_package}/{agent_instance_id}/dispatch
-#[utoipa::path(
-    post,
-    path = "/agents/{agent_package}/{agent_instance_id}/dispatch",
-    tag = "agents",
-    params(
-        ("agent_package" = String, Path, description = "Agent package identifier"),
-        ("agent_instance_id" = String, Path, description = "Agent instance identifier")
-    ),
-    request_body = AgentDispatchRequestDto,
-    responses(
-        (status = 200, description = "Buffered delivery acknowledgement", body = AgentDispatchAckDto),
-        (status = 400, description = "Malformed request"),
-        (status = 404, description = "Agent or dispatch handler not found"),
-        (status = 500, description = "Internal error")
-    )
-)]
-pub async fn post_dispatch(
-    State(state): State<Arc<ApiState>>,
-    axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
-    Json(body): Json<AgentDispatchRequestDto>,
-) -> HttpResult<Json<AgentDispatchAckDto>> {
-    let span = spans::post_dispatch(&agent_package, &agent_instance_id);
-    let _guard = span.enter();
-    let start = Instant::now();
-    let package_name = AgentPackageName::parse(&agent_package)
-        .ok_or_else(|| problem(400, "Bad Request", "agent_package must match [A-Za-z0-9_-]"))?;
-    let instance_id = AgentInstanceId::parse(&agent_instance_id).ok_or_else(|| {
-        problem(
-            400,
-            "Bad Request",
-            "agent_instance_id must match [A-Za-z0-9_-]",
-        )
-    })?;
-    let key = AgentRouteKey::new(package_name, instance_id);
-    let request = baml_rt_core::AgentDispatchRequest::try_from(body)
-        .map_err(|message| problem(400, "Bad Request", message))?;
-
-    match state.registry.handle_dispatch(&key, request).await {
-        Ok(ack) => {
-            metrics::record_request("post_dispatch", "success", start.elapsed());
-            Ok(Json(AgentDispatchAckDto::from(ack)))
-        }
-        Err(e) => {
-            metrics::record_request(
-                "post_dispatch",
-                result_label_for_domain_error(&e),
-                start.elapsed(),
-            );
-            Err(domain_to_problem(&e, &agent_package, &agent_instance_id))
-        }
-    }
-}
-
 /// Get provenance graph as a Mermaid sequence diagram for an A2A context.
 #[utoipa::path(
     get,
     path = "/contexts/{context_id}/mermaid",
     tag = "mermaid",
     summary = "Mermaid diagram by context",
-    description = "Returns the provenance subgraph for the given A2A context ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with GraphQLite provenance.",
+    description = "Returns the provenance subgraph for the given A2A context ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with SurrealDB provenance.",
     params(("context_id" = String, Path, description = "A2A context ID")),
     responses(
         (status = 200, description = "Mermaid sequenceDiagram", content_type = "text/plain"),
@@ -371,7 +317,7 @@ pub async fn get_mermaid_context(
     path = "/tasks/{task_id}/mermaid",
     tag = "mermaid",
     summary = "Mermaid diagram by task",
-    description = "Returns the provenance subgraph for the given A2A task ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with GraphQLite provenance.",
+    description = "Returns the provenance subgraph for the given A2A task ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with SurrealDB provenance.",
     params(("task_id" = String, Path, description = "A2A task ID")),
     responses(
         (status = 200, description = "Mermaid sequenceDiagram", content_type = "text/plain"),
@@ -436,7 +382,7 @@ pub async fn get_mermaid_task(
     path = "/contexts/{context_id}/metrics",
     tag = "provenance",
     summary = "Context metrics by context_id",
-    description = "Returns turn-level and session-level token/call/duration metrics for the given A2A context ID. Available when GraphQLite-backed provenance is configured.",
+    description = "Returns turn-level and session-level token/call/duration metrics for the given A2A context ID. Available when SurrealDB-backed provenance is configured.",
     params(("context_id" = String, Path, description = "A2A context ID")),
     responses(
         (status = 200, description = "Context metrics", body = ContextMetricsResponseDto),
@@ -797,4 +743,63 @@ fn domain_to_problem(
         }
     };
     problem(status, title, detail)
+}
+
+/// Deterministic host-to-agent delivery: POST /agents/{agent_package}/{agent_instance_id}/dispatch
+#[utoipa::path(
+    post,
+    path = "/agents/{agent_package}/{agent_instance_id}/dispatch",
+    tag = "agents",
+    params(
+        ("agent_package" = String, Path, description = "Agent package name"),
+        ("agent_instance_id" = String, Path, description = "Agent instance ID"),
+    ),
+    request_body = crate::openapi::AgentDispatchRequestDto,
+    responses(
+        (status = 200, description = "Delivery accepted", body = crate::openapi::AgentDispatchAckDto),
+        (status = 400, description = "Bad request (validation failed)"),
+        (status = 404, description = "Agent not found"),
+    )
+)]
+pub async fn post_dispatch(
+    State(state): State<Arc<crate::router::ApiState>>,
+    axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
+    Json(body): Json<crate::openapi::AgentDispatchRequestDto>,
+) -> impl IntoResponse {
+    let span = spans::post_dispatch(&agent_package, &agent_instance_id);
+    let _guard = span.enter();
+
+    let package_name = match AgentPackageName::parse(&agent_package) {
+        Some(n) => n,
+        None => {
+            return (
+                AxumStatus::BAD_REQUEST,
+                format!("invalid agent_package: {agent_package}"),
+            )
+                .into_response();
+        }
+    };
+    let instance_id = match AgentInstanceId::parse(&agent_instance_id) {
+        Some(i) => i,
+        None => {
+            return (
+                AxumStatus::BAD_REQUEST,
+                format!("invalid agent_instance_id: {agent_instance_id}"),
+            )
+                .into_response();
+        }
+    };
+    let key = AgentRouteKey::new(package_name, instance_id);
+    let request: AgentDispatchRequest = match body.try_into() {
+        Ok(r) => r,
+        Err(e) => return (AxumStatus::BAD_REQUEST, e.to_string()).into_response(),
+    };
+
+    match state.registry.handle_dispatch(&key, request).await {
+        Ok(ack) => {
+            let dto: crate::openapi::AgentDispatchAckDto = ack.into();
+            Json(dto).into_response()
+        }
+        Err(e) => domain_to_problem(&e, &agent_package, &agent_instance_id).into_response(),
+    }
 }

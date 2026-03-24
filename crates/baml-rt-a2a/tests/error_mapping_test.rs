@@ -23,6 +23,10 @@ fn assert_retryable_classifier(
         Some(expected_retryable.is_retryable()),
         "data.retryable"
     );
+    assert!(
+        data.get("error_disposition").is_some(),
+        "data.error_disposition"
+    );
 }
 
 #[test]
@@ -42,6 +46,11 @@ fn error_mapping_table_driven() {
             BamlRtError::ToolExecution("timeout".into()),
             "tool_execution",
             Retryability::Retryable,
+        ),
+        (
+            BamlRtError::ToolExecution("HTTP 401 unauthorized".into()),
+            "tool_execution",
+            Retryability::Permanent,
         ),
         (
             BamlRtError::ProvenanceContextRead {

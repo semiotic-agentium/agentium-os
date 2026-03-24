@@ -42,7 +42,7 @@ fn scaled_timeout_secs(base_secs: u64) -> Duration {
 
 fn stream_collector_idle_secs() -> u64 {
     if std::env::var_os("CI").is_some() {
-        60
+        300
     } else {
         90
     }
@@ -90,7 +90,7 @@ impl LLMInterceptor for StubChooseCalcToolInterceptor {
         &self,
         context: &LLMCallContext,
     ) -> baml_rt_core::Result<InterceptorDecision> {
-        if context.function_name == "ChooseCalcTool" {
+        if context.function_id.prompt_name().as_str() == "ChooseCalcTool" {
             Ok(InterceptorDecision::Substitute(json!({
                 "step": {
                     "op": "Send",
@@ -183,7 +183,7 @@ async fn setup_interleaving_agent() -> A2aAgent {
     manager
         .register_llm_interceptor(StubChooseCalcToolInterceptor)
         .await;
-    let store = common::provenance::build_graphqlite_test_store();
+    let store = common::provenance::build_surreal_test_store().await;
     A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(interleaving_js_handler())
@@ -194,7 +194,7 @@ async fn setup_interleaving_agent() -> A2aAgent {
                 .with_max_attempts_ms(Some(45_000))
                 .with_stream_collector_idle_secs(Some(stream_collector_idle_secs())),
         )
-        .with_graphqlite_store(store)
+        .with_surreal_store(store)
         .build()
         .await
         .expect("build interleaving agent")
@@ -306,10 +306,10 @@ proptest! {
             .expect("runtime");
 
         rt.block_on(async move {
-            let store = common::provenance::build_graphqlite_test_store();
+            let store = common::provenance::build_surreal_test_store().await;
             let agent = A2aAgent::builder()
                 .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
-                .with_graphqlite_store(store)
+                .with_surreal_store(store)
                 .build()
                 .await
                 .expect("agent build");
@@ -329,10 +329,6 @@ proptest! {
             }
         });
     }
-}
-
-proptest! {
-    #![proptest_config(proptest_cfg(4))]
 
     /// PROPERTY (consolidated interleavings):
     /// ∀ concurrent requests over distinct contexts with kinds ∈ {a2a, tool, llm} and small jitter:
@@ -341,10 +337,11 @@ proptest! {
     ///   - response text is scoped to its own context (no cross-contamination)
     ///
     /// Timeout scales with ops.len() because stream handling is serialized per bridge (one permit):
-    /// the last request may not start until all earlier ones complete.
+    /// the last request may not start until all earlier ones complete. Ops capped at 7 to keep
+    /// test duration bounded: (7 ops × 6s + 20s) × CI-scale-3 = 162s < 300s nextest budget.
     #[test]
     fn prop_interleaved_a2a_tool_llm_multi_context_isolation(
-        ops in prop::collection::vec((0u8..=2u8, 0u8..=7u8), 3..=6)
+        ops in prop::collection::vec((0u8..=2u8, 0u8..=7u8), 3..=7)
     ) {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
@@ -352,6 +349,9 @@ proptest! {
             .build()
             .expect("runtime");
 
+        // Per-request timeout must allow for serialization: last request waits for (ops.len()-1)
+        // others. Base uses (ops.len() * 6) + 20s, then CI multiplies for shared-runner headroom.
+        // With ops capped at 7: worst-case = (7×6+20)×3 = 162s, well within the 300s nextest budget.
         let timeout_secs = (ops.len() as u64 * 6) + 20;
         let request_timeout = scaled_timeout_secs(timeout_secs);
 
@@ -419,10 +419,6 @@ proptest! {
             assert_eq!(completed, ops.len(), "all spawned requests must complete");
         });
     }
-}
-
-proptest! {
-    #![proptest_config(proptest_cfg(6))]
 
     /// PROPERTY (INPUT_REQUIRED):
     /// ∀ contexts c:

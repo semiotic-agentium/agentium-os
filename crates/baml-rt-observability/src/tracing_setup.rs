@@ -4,11 +4,13 @@
 ///
 /// Default directives:
 /// - `baml_rt=info`
+/// - `baml_rt_quickjs=info` (explicit; ensures QuickJS bridge logs are visible at info+)
 /// - `quickjs_runtime::quickjsrealmadapter=warn`
 /// - `quickjs_runtime::typescript=warn`
 pub fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::from_default_env()
         .add_directive("baml_rt=info".parse().unwrap_or_default())
+        .add_directive("baml_rt_quickjs=info".parse().unwrap_or_default())
         .add_directive("baml_agent_runner=info".parse().unwrap_or_default())
         .add_directive(
             "quickjs_runtime::quickjsrealmadapter=warn"

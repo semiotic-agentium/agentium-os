@@ -8,7 +8,7 @@ use std::{path::Path, sync::Arc};
 
 use axum::{Router, extract::MatchedPath, http::Request};
 use baml_rt_a2a::AgentRegistry;
-use baml_rt_config::{ConfigService, SqliteConfigStore};
+use baml_rt_config::{ConfigService, SurrealConfigStore};
 use baml_rt_llm_config::{EmptySecretResolver, RuntimeSecretStore, SecretResolver};
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use tower_http::{
@@ -46,14 +46,17 @@ async fn serve_openapi_json(
 
 /// Build a minimal API router with default config/catalog/resolver (in-memory config, empty catalog, no-op resolver).
 /// For production, use `api_router_with_services` and inject real implementations.
-pub fn api_router(
+pub async fn api_router(
     registry: Arc<dyn AgentRegistry>,
     mermaid: Option<Arc<dyn MermaidService>>,
     web_dir: Option<&Path>,
 ) -> Router {
     let tool_catalog: Arc<dyn ToolCatalog> = Arc::new(InventoryCatalog::new());
-    let config_service: Arc<dyn ConfigService> =
-        Arc::new(SqliteConfigStore::in_memory().expect("in-memory config store for API"));
+    let config_service: Arc<dyn ConfigService> = Arc::new(
+        SurrealConfigStore::in_memory()
+            .await
+            .expect("in-memory config store for API"),
+    );
     let secret_resolver: Arc<dyn SecretResolver> = Arc::new(EmptySecretResolver);
     api_router_with_services(
         registry,
@@ -131,7 +134,8 @@ pub fn api_router_with_services(
         Some("Agent discovery, deterministic dispatch, and A2A JSON-RPC".to_string());
     let mut tag_mermaid = utoipa::openapi::Tag::new("mermaid");
     tag_mermaid.description = Some(
-        "Provenance graph as Mermaid sequence diagrams (when GraphQLite is enabled)".to_string(),
+        "Provenance graph as Mermaid sequence diagrams (when SurrealDB provenance is enabled)"
+            .to_string(),
     );
     let mut tag_provenance = utoipa::openapi::Tag::new("provenance");
     tag_provenance.description =
@@ -178,8 +182,11 @@ pub async fn serve(
     web_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tool_catalog: Arc<dyn ToolCatalog> = Arc::new(InventoryCatalog::new());
-    let config_service: Arc<dyn ConfigService> =
-        Arc::new(SqliteConfigStore::in_memory().expect("in-memory config store for API"));
+    let config_service: Arc<dyn ConfigService> = Arc::new(
+        SurrealConfigStore::in_memory()
+            .await
+            .expect("in-memory config store for API"),
+    );
     let secret_resolver: Arc<dyn SecretResolver> = Arc::new(EmptySecretResolver);
     serve_with_services(
         registry,

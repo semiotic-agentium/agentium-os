@@ -2,6 +2,8 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 set dotenv-load
 
 provenance_db := "provenance.db"
+# Separate SurrealKV store dirs (provenance + sibling config.db) so this stack can run alongside another runner using `provenance.db`.
+provenance_persona_claude_notion_db := "persona-claude-notion-provenance.db"
 runner_http_bind := "127.0.0.1:8080"
 slack_channel := "agentium-eng"
 
@@ -10,6 +12,10 @@ slack_channel := "agentium-eng"
 builder_bin := "${CARGO_TARGET_DIR:-target}/debug/baml-agent-builder"
 runner_bin := "${CARGO_TARGET_DIR:-target}/debug/baml-agent-runner"
 graph_exporter_bin := "${CARGO_TARGET_DIR:-target}/debug/graph_exporter"
+
+# Regenerate `_baml_runtime.baml` + `src/baml-runtime.d.ts` for every fixture under `tests/fixtures/agents/` and agent under `agents/`. Requires all tool crates (same as build-release).
+regen-fixtures:
+    cargo run -p baml-rt-builder --all-features --bin regen_fixtures
 
 # Build release versions of builder, runner, and graph_exporter. Run once before using agent recipes.
 build-release:
@@ -79,27 +85,52 @@ persona-notion: build-release
     {{builder_bin}} package --agent-dir agents/notion-agent --output notion-agent.tar.gz
     {{runner_bin}} conversational-persona-demo.tar.gz notion-agent.tar.gz --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}} --web-dir web/dist
 
-# Rebuilds persona + claude-session + extrospection + clickup and runs them with provenance (HTTP only, no stdio).
+# Persona + Claude session + Notion, HTTP + provenance + web UI. Requires web/dist (`cd web && npm ci && npm run build`).
+persona-claude-notion: build-release
+    {{builder_bin}} package --agent-dir tests/fixtures/agents/conversational-persona-demo --output conversational-persona-demo.tar.gz
+    {{builder_bin}} package --agent-dir agents/claude-session-demo --output claude-session-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    {{runner_bin}} conversational-persona-demo.tar.gz claude-session-agent.tar.gz notion-agent.tar.gz --serve-http {{runner_http_bind}} --provenance-db {{provenance_persona_claude_notion_db}} --web-dir web/dist
+
+# Full local dev stack: all primary dev agent packages, web UI, provenance.
+# `.env` is loaded via `set dotenv-load`. HTTP only (no --a2a-stdio) so the server stays up without a stdio client.
+# Requires: web/dist (cd web && npm ci && npm run build).
+dev-all-agents: build-release
+    {{builder_bin}} package --agent-dir tests/fixtures/agents/conversational-persona-demo --output conversational-persona-demo.tar.gz
+    {{builder_bin}} package --agent-dir tests/fixtures/agents/security-eval-agent --output security-eval-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/claude-session-demo --output claude-session-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/extrospection-agent --output extrospection-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/slack-agent --output slack-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/workflow-intake-agent --output workflow-intake-agent.tar.gz
+    {{runner_bin}} conversational-persona-demo.tar.gz claude-session-agent.tar.gz clickup-agent.tar.gz coordinator-agent.tar.gz extrospection-agent.tar.gz notion-agent.tar.gz security-eval-agent.tar.gz slack-agent.tar.gz workflow-intake-agent.tar.gz --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}} --web-dir web/dist
+
+# Rebuilds persona + claude-session + extrospection + clickup + security-eval and runs them with provenance (HTTP only, no stdio).
 persona-claude-extrospection-clickup: build-release
     {{builder_bin}} package --agent-dir tests/fixtures/agents/conversational-persona-demo --output conversational-persona-demo.tar.gz
     {{builder_bin}} package --agent-dir agents/claude-session-demo --output claude-session-agent.tar.gz
     {{builder_bin}} package --agent-dir agents/extrospection-agent --output extrospection-agent.tar.gz
     {{builder_bin}} package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
-    {{runner_bin}} conversational-persona-demo.tar.gz claude-session-agent.tar.gz extrospection-agent.tar.gz clickup-agent.tar.gz --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
+    {{builder_bin}} package --agent-dir tests/fixtures/agents/security-eval-agent --output security-eval-agent.tar.gz
+    {{runner_bin}} conversational-persona-demo.tar.gz claude-session-agent.tar.gz extrospection-agent.tar.gz clickup-agent.tar.gz security-eval-agent.tar.gz --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
 
-# Rebuilds persona + claude-session + extrospection packages and runs them via a2a stdio.
+# Rebuilds persona + claude-session + extrospection + security-eval packages and runs them via a2a stdio.
 persona-claude-extrospection: build-release
     {{builder_bin}} package --agent-dir tests/fixtures/agents/conversational-persona-demo --output conversational-persona-demo.tar.gz
     {{builder_bin}} package --agent-dir agents/claude-session-demo --output claude-session-agent.tar.gz
     {{builder_bin}} package --agent-dir agents/extrospection-agent --output extrospection-agent.tar.gz
-    {{runner_bin}} conversational-persona-demo.tar.gz claude-session-agent.tar.gz extrospection-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
+    {{builder_bin}} package --agent-dir tests/fixtures/agents/security-eval-agent --output security-eval-agent.tar.gz
+    {{runner_bin}} conversational-persona-demo.tar.gz claude-session-agent.tar.gz extrospection-agent.tar.gz security-eval-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
 
 # Same as persona-claude-extrospection, but persists provenance to provenance.db.
 persona-claude-extrospection-provenance: build-release
     {{builder_bin}} package --agent-dir tests/fixtures/agents/conversational-persona-demo --output conversational-persona-demo.tar.gz
     {{builder_bin}} package --agent-dir agents/claude-session-demo --output claude-session-agent.tar.gz
     {{builder_bin}} package --agent-dir agents/extrospection-agent --output extrospection-agent.tar.gz
-    {{runner_bin}} conversational-persona-demo.tar.gz claude-session-agent.tar.gz extrospection-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
+    {{builder_bin}} package --agent-dir tests/fixtures/agents/security-eval-agent --output security-eval-agent.tar.gz
+    {{runner_bin}} conversational-persona-demo.tar.gz claude-session-agent.tar.gz extrospection-agent.tar.gz security-eval-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
 
 
 

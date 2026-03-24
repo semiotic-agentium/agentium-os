@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use baml_rt_core::BamlFunctionId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -177,13 +178,28 @@ impl LlmClientConfig {
     }
 
     /// Resolve client name for (agent_package, function_name).
-    /// Order: overrides.agent_function["agent:fn"] → overrides.agent["agent"] → default.
+    ///
+    /// Inheritance order:
+    /// 1. `overrides.agent_function["agent:variant"]` — exact FSM variant match
+    /// 2. `overrides.agent_function["agent:base_prompt"]` — base prompt (inherits to all variants)
+    /// 3. `overrides.agent["agent"]` — agent-level default
+    /// 4. `self.default` — global default
     pub fn resolve(&self, agent_package: Option<&str>, function_name: &str) -> &str {
         if let Some(agent) = agent_package {
-            let key = format!("{agent}:{function_name}");
-            if let Some(name) = self.overrides.agent_function.get(&key) {
+            // 1. Exact variant key match
+            let variant_key = format!("{agent}:{function_name}");
+            if let Some(name) = self.overrides.agent_function.get(&variant_key) {
                 return name.as_str();
             }
+            // 2. Base prompt key match (inherited by all variants)
+            let fid = BamlFunctionId::parse(function_name);
+            if fid.is_variant() {
+                let base_key = format!("{agent}:{}", fid.prompt_name());
+                if let Some(name) = self.overrides.agent_function.get(&base_key) {
+                    return name.as_str();
+                }
+            }
+            // 3. Agent-level default
             if let Some(name) = self.overrides.agent.get(agent) {
                 return name.as_str();
             }

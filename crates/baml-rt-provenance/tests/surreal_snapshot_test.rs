@@ -1,38 +1,23 @@
-//! Snapshot-based parity tests for GraphQLite and SurrealDB backends.
+//! Snapshot regression tests for the SurrealDB provenance store.
 //!
-//! These tests produce structured output that is captured via `insta` snapshots.
-//! Both backends should produce identical (or semantically equivalent) snapshots,
-//! proving true behavioral parity.
-//!
-//! ## Snapshot Strategy
-//!
-//! - Each scenario produces a normalized output structure
-//! - Snapshots are named with backend suffix: `{scenario}@graphqlite` and `{scenario}@surreal`
-//! - Outputs are normalized before snapshotting to handle:
-//!   - Timestamp differences (replaced with deterministic values)
-//!   - Ordering differences (sorted by stable keys)
-//!   - Backend-specific metadata fields (stripped)
-//!
-//! ## Running Snapshots
+//! Structured outputs are captured with `insta` after normalizing volatile fields
+//! (timestamps, ordering) so diffs stay stable across runs.
 //!
 //! ```bash
-//! # Run tests and review snapshots
-//! cargo test -p baml-rt-provenance --features surreal-backend --test surreal_snapshot_test
+//! cargo test -p baml-rt-provenance --test surreal_snapshot_test
 //! cargo insta review
 //! ```
-
-#![cfg(feature = "surreal-backend")]
 
 use std::sync::Arc;
 
 use baml_rt_core::{
     Outcome,
-    ids::{AgentId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId},
+    ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentBootedEvent, AgentType, CallScope, GraphqliteStoreBuilder, LlmUsage, ProvEvent,
-    ProvEventData, ProvenanceContextReader, ProvenanceOpsQuery, ProvenancePlanningQuery,
-    ProvenanceQueryApi, ProvenanceWriter, SurrealStoreBuilder, TaskScopedEvent,
+    AgentBootedEvent, AgentType, CallScope, LlmUsage, ProvEvent, ProvEventData,
+    ProvenanceContextReader, ProvenanceOpsQuery, ProvenancePlanningQuery, ProvenanceQueryApi,
+    ProvenanceWriter, SurrealStoreBuilder, TaskScopedEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -67,12 +52,6 @@ impl<T> SnapshotStore for T where
 // Store factories
 // ---------------------------------------------------------------------------
 
-fn build_graphqlite_store() -> Arc<dyn SnapshotStore> {
-    GraphqliteStoreBuilder::in_memory_isolated()
-        .build()
-        .expect("build GraphQLite isolated store")
-}
-
 async fn build_surreal_store() -> Arc<dyn SnapshotStore> {
     SurrealStoreBuilder::in_memory_isolated()
         .build()
@@ -101,7 +80,7 @@ async fn bootstrap(store: &dyn SnapshotStore, context_id: &ContextId, task_id: &
 
     store
         .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
-            id: EventId::from_counter(base),
+            id: ActivityAnchorId::from_counter(base),
             timestamp_ms: 1_700_000_000_000 + base,
             data: ProvEventData::AgentBooted {
                 agent_id: agent_id.clone(),
@@ -115,7 +94,7 @@ async fn bootstrap(store: &dyn SnapshotStore, context_id: &ContextId, task_id: &
 
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(base + 1),
+            id: ActivityAnchorId::from_counter(base + 1),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_000_000 + base + 1,
@@ -129,7 +108,7 @@ async fn bootstrap(store: &dyn SnapshotStore, context_id: &ContextId, task_id: &
 
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(base + 2),
+            id: ActivityAnchorId::from_counter(base + 2),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_000_000 + base + 2,
@@ -149,7 +128,7 @@ async fn bootstrap(store: &dyn SnapshotStore, context_id: &ContextId, task_id: &
 
 /// Normalize ops query response for snapshot comparison.
 /// - Sorts rows by activity_id for deterministic ordering
-/// - Removes volatile fields (timestamps that vary by backend)
+/// - Removes volatile fields (timestamps that vary by run)
 /// - Normalizes null vs missing fields
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct NormalizedOpsRow {
@@ -272,45 +251,44 @@ struct NormalizedContextItem {
 fn normalize_context_item(
     item: &baml_rt_provenance::store::ProvenanceConversationContextItem,
 ) -> NormalizedContextItem {
-    let content_keys: Vec<String> = if let Value::Object(map) = &item.content {
-        let mut keys: Vec<_> = map.keys().cloned().collect();
-        keys.sort();
-        keys
-    } else {
-        vec![]
-    };
+    use baml_rt_provenance::store::{ConversationItemContent, ToolOutcome};
 
-    let (tool_name, tool_phase) = if item.source == "tool_call" {
-        let tc = item.content.get("tool_call");
-        (
-            tc.and_then(|t| t.get("name"))
-                .and_then(Value::as_str)
-                .map(String::from),
-            tc.and_then(|t| t.get("fsm_phase"))
-                .and_then(Value::as_str)
-                .map(String::from),
-        )
-    } else if item.source == "tool_result" {
-        (
-            item.content
-                .get("tool_name")
-                .and_then(Value::as_str)
-                .map(String::from),
-            item.content
-                .get("fsm_phase")
-                .and_then(Value::as_str)
-                .map(String::from),
-        )
-    } else {
-        (None, None)
+    let (content_keys, tool_name, tool_phase, has_result, has_error) = match &item.content {
+        ConversationItemContent::Message(_) => (vec!["text".to_string()], None, None, false, false),
+        ConversationItemContent::ToolCall(tc) => (
+            vec![
+                "args".to_string(),
+                "fsm_phase".to_string(),
+                "tool_name".to_string(),
+            ],
+            Some(tc.tool_name.clone()),
+            Some(tc.fsm_phase.label()),
+            false,
+            false,
+        ),
+        ConversationItemContent::ToolResult(tr) => (
+            vec![
+                "fsm_phase".to_string(),
+                "outcome".to_string(),
+                "tool_name".to_string(),
+            ],
+            Some(tr.tool_name.clone()),
+            Some(tr.fsm_phase.label()),
+            matches!(&tr.outcome, ToolOutcome::Result(_)),
+            matches!(&tr.outcome, ToolOutcome::Error(_)),
+        ),
+        ConversationItemContent::SessionStep(ss) => (
+            vec!["op".to_string(), "tool_name".to_string()],
+            Some(ss.tool_name.clone()),
+            None,
+            false,
+            false,
+        ),
     };
-
-    let has_result = item.content.get("result").is_some();
-    let has_error = item.content.get("error").is_some();
 
     NormalizedContextItem {
         role: item.role.clone(),
-        source: item.source.clone(),
+        source: item.source_name().to_string(),
         content_keys,
         tool_name,
         tool_phase,
@@ -329,7 +307,7 @@ fn normalize_conversation_context(
     items: &[baml_rt_provenance::store::ProvenanceConversationContextItem],
 ) -> NormalizedConversationContext {
     let normalized: Vec<NormalizedContextItem> = items.iter().map(normalize_context_item).collect();
-    // Don't sort - preserve insertion order which should match between backends
+    // Don't sort — preserve insertion order from the store read.
 
     NormalizedConversationContext {
         item_count: normalized.len(),
@@ -344,17 +322,6 @@ fn normalize_conversation_context(
 macro_rules! snapshot_test {
     ($name:ident, $setup:expr, $query:expr) => {
         paste::paste! {
-            #[tokio::test]
-            async fn [<graphqlite_snapshot_ $name>]() {
-                let store = build_graphqlite_store();
-                $setup(&*store).await;
-                let result = $query(&*store).await;
-                insta::assert_json_snapshot!(
-                    concat!(stringify!($name), "@graphqlite"),
-                    result
-                );
-            }
-
             #[tokio::test]
             async fn [<surreal_snapshot_ $name>]() {
                 let store = build_surreal_store().await;
@@ -383,7 +350,7 @@ async fn setup_failed_call_with_classification(store: &dyn SnapshotStore) {
     // Failed LLM call
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(10010),
+            id: ActivityAnchorId::from_counter(10010),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_010_010,
@@ -406,7 +373,7 @@ async fn setup_failed_call_with_classification(store: &dyn SnapshotStore) {
 
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(10011),
+            id: ActivityAnchorId::from_counter(10011),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_010_015,
@@ -427,6 +394,7 @@ async fn setup_failed_call_with_classification(store: &dyn SnapshotStore) {
                 duration_ms: 500,
                 outcome: Outcome::Failure,
                 drift: None,
+                citations: vec![],
             },
         }))
         .await
@@ -510,7 +478,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
     // User message
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(20010),
+            id: ActivityAnchorId::from_counter(20010),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_020_010,
@@ -525,7 +493,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
         .await
         .expect("MessageReceived");
 
-    // Successful tool call
+    // Successful tool call (phase=execute so it appears in conversation_context)
     store
         .add_event(ProvEvent::tool_call_started_task(
             context_id.clone(),
@@ -534,7 +502,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
             Some("add".to_string()),
             serde_json::json!({"a": 2, "b": 3}),
             serde_json::json!({
-                "phase": "send",
+                "phase": "execute",
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str()
             }),
@@ -551,7 +519,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
             Some("add".to_string()),
             serde_json::json!({"a": 2, "b": 3}),
             serde_json::json!({
-                "phase": "send",
+                "phase": "execute",
                 "result": 5,
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str()
@@ -563,7 +531,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
         .await
         .expect("tool_call_completed");
 
-    // Failed tool call
+    // Failed tool call (phase=execute so it appears in conversation_context)
     store
         .add_event(ProvEvent::tool_call_started_task(
             context_id.clone(),
@@ -572,7 +540,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
             None,
             serde_json::json!({"a": 10, "b": 0}),
             serde_json::json!({
-                "phase": "send",
+                "phase": "execute",
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str()
             }),
@@ -589,7 +557,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
             None,
             serde_json::json!({"a": 10, "b": 0}),
             serde_json::json!({
-                "phase": "send",
+                "phase": "execute",
                 "error": "division by zero",
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str()
@@ -604,7 +572,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
     // Assistant message
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(20020),
+            id: ActivityAnchorId::from_counter(20020),
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_020_100,

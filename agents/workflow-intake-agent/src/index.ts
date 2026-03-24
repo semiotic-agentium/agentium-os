@@ -1,5 +1,32 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { ChatMessage, HostDispatchAck, HostDispatchRequest, RunContext, SessionResult } from "./baml-runtime";
+import type { ReplyPart, RunContext, SessionResult, StructuredReply } from "./baml-runtime";
+
+function textReply(text: string): StructuredReply {
+  const parts: ReplyPart[] = [{ type: "text", text }];
+  return { parts, citations: [] };
+}
+
+/** Plain text for dispatch ack / logging — handles legacy string or StructuredReply. */
+function plainTextFromSessionMessage(
+  message: string | StructuredReply | undefined,
+): string | null {
+  if (message == null) return null;
+  if (typeof message === "string") {
+    const t = message.trim();
+    return t.length > 0 ? t : null;
+  }
+  const parts = message.parts;
+  if (!Array.isArray(parts)) return null;
+  const texts: string[] = [];
+  for (const p of parts) {
+    if (p != null && typeof p === "object" && p.type === "text" && typeof p.text === "string") {
+      const t = p.text.trim();
+      if (t.length > 0) texts.push(t);
+    }
+  }
+  if (texts.length === 0) return null;
+  return texts.join("\n");
+}
 
 type ToolSessionHandle = {
   send(args: Record<string, unknown>): Promise<unknown>;
@@ -85,6 +112,21 @@ type TaskDaemonInterpretationEvent = {
   messages_scanned?: number;
   interpretation: TaskDaemonInterpretation;
   derived_tasks: TaskDaemonDerivedTask[];
+};
+
+type TaskDaemonDispatchRequest = {
+  routing_key: string;
+  message_type: string;
+  messages: unknown[];
+  context_id?: string;
+  task_id?: string;
+  message_id?: string;
+  metadata?: Record<string, unknown>;
+};
+
+type TaskDaemonDispatchAck = {
+  accepted: boolean;
+  detail?: string;
 };
 
 type IntakeDecisionKind =
@@ -585,7 +627,7 @@ function extractInterpretationEvent(
 }
 
 function extractInterpretationEventFromDispatch(
-  request: HostDispatchRequest | null | undefined,
+  request: TaskDaemonDispatchRequest | null | undefined,
 ): TaskDaemonInterpretationEvent | null {
   if (!request || !Array.isArray(request.messages)) return null;
   for (const message of request.messages) {
@@ -918,7 +960,7 @@ async function handleInterpretationEvent(
   try {
     const decision = deriveDecision(event);
     if (decision.kind === "noop") {
-      return { message: decision.reason };
+      return { message: textReply(decision.reason) };
     }
 
     const agents = await discoverAgentsByCapabilities(decision.requiredCapabilities);
@@ -940,7 +982,7 @@ async function handleInterpretationEvent(
     const prompt = renderDownstreamPrompt(event, decision);
     const downstreamTexts = await delegateToAgent(target, prompt);
     return {
-      message: renderRouteSummary(decision, target, downstreamTexts),
+      message: textReply(renderRouteSummary(decision, target, downstreamTexts)),
     };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
@@ -961,8 +1003,8 @@ async function run(ctx: RunContext): Promise<SessionResult> {
 }
 
 async function onDispatch(
-  request: HostDispatchRequest,
-): Promise<HostDispatchAck> {
+  request: TaskDaemonDispatchRequest,
+): Promise<TaskDaemonDispatchAck> {
   const routingKey = normalizeOptionalString(request.routing_key);
   const messageType = normalizeOptionalString(request.message_type);
   if (messageType !== TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION) {
@@ -1004,9 +1046,14 @@ async function onDispatch(
   return {
     accepted: true,
     detail:
-      normalizeOptionalString(result.message) ??
+      plainTextFromSessionMessage(result.message) ??
       `workflow-intake-agent accepted ${expectedRoutingKey}.`,
   };
 }
 
-__chat_register({ run, onDispatch });
+const dispatchGlobal = globalThis as typeof globalThis & {
+  onDispatch?: (request: TaskDaemonDispatchRequest) => Promise<TaskDaemonDispatchAck>;
+};
+dispatchGlobal.onDispatch = onDispatch;
+
+__chat_register({ run });

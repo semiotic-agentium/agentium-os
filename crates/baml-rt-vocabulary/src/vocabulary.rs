@@ -36,13 +36,15 @@ pub mod a2a {
     pub const PHASE: &str = "a2a:phase";
     pub const RESULT: &str = "a2a:result";
     pub const ERROR: &str = "a2a:error";
-    pub const EVENT_ID: &str = "a2a:event_id";
+    pub const ACTIVITY_ANCHOR: &str = "a2a:activity_anchor";
     pub const RELATION: &str = "a2a:relation";
     pub const FROM: &str = "a2a:from";
     pub const TO: &str = "a2a:to";
     pub const CLIENT: &str = "a2a:client";
     pub const MODEL: &str = "a2a:model";
     pub const FUNCTION_NAME: &str = "a2a:function_name";
+    /// The logical prompt name (base name without FSM phase suffix). Stable identity for display and config.
+    pub const PROMPT_NAME: &str = "a2a:prompt_name";
     pub const PROMPT: &str = "a2a:prompt";
     pub const USAGE_PROMPT_TOKENS: &str = "a2a:usage_prompt_tokens";
     pub const USAGE_COMPLETION_TOKENS: &str = "a2a:usage_completion_tokens";
@@ -56,6 +58,18 @@ pub mod a2a {
     pub const DRIFT_BLOCK_MIN_SCORE: &str = "a2a:drift_block_min_score";
     pub const INTENT_TEXT_PREVIEW: &str = "a2a:intent_text_preview";
     pub const RESPONSE_TEXT_PREVIEW: &str = "a2a:response_text_preview";
+    pub const STEP_TEXT_PREVIEW: &str = "a2a:step_text_preview";
+    pub const PLAN_DRIFT_INTENT_ALIGNMENT: &str = "a2a:plan_drift_intent_alignment";
+    pub const PLAN_DRIFT_STEP_ALIGNMENT: &str = "a2a:plan_drift_step_alignment";
+    pub const PLAN_DRIFT_TRAJECTORY: &str = "a2a:plan_drift_trajectory";
+    pub const PLAN_DRIFT_ADHERENCE: &str = "a2a:plan_drift_adherence";
+    pub const PLAN_DRIFT_COMPOSITE_SEVERITY: &str = "a2a:plan_drift_composite_severity";
+    pub const PLAN_DRIFT_CROSS_ENCODER_STEP: &str = "a2a:plan_drift_cross_encoder_step";
+    /// JSON blob: citation-grounded drift (`LlmCitationDriftInfo`) when present.
+    pub const CITATION_DRIFT: &str = "a2a:citation_drift";
+    /// Cosine similarity between the previous intent embedding and the new one
+    /// at a supersession boundary. Present only on revised IntentResolved events.
+    pub const REVISION_INTENT_DRIFT: &str = "a2a:revision_intent_drift";
     /// Tri-state outcome inferred from (1) activity having an end time and (2) outcome.
     /// InProgress when no end time; Success | Failed when completed, from outcome.
     pub const ACTIVITY_OUTCOME: &str = "a2a:activity_outcome";
@@ -122,6 +136,8 @@ pub mod a2a_types {
 
 pub mod a2a_relation_types {
     pub const STATUS_TRANSITION: &str = "a2a:status_transition";
+    /// `WasDerivedFrom.prov_type` for archive (`@N`) citation lineage: decision grounded in observed data.
+    pub const INFORMED_BY_OBSERVATION: &str = "a2a:informed_by_observation";
 }
 
 /// Structural relation: Context node to nodes scoped to that context.
@@ -151,6 +167,8 @@ pub mod semantic_labels {
     pub const WAS_CALLED_BY: &str = "WAS_CALLED_BY";
     pub const WAS_TRANSITIONED_FROM: &str = "WAS_TRANSITIONED_FROM";
     pub const WAS_TRANSITIONED_TO: &str = "WAS_TRANSITIONED_TO";
+    /// Archive / observation citation lineage (contrast `prov_relations::WAS_DERIVED_FROM` for `#N` intent history).
+    pub const WAS_INFORMED_BY: &str = "WAS_INFORMED_BY";
     pub const WAS_REPLACED_BY: &str = "WAS_REPLACED_BY";
     pub const WAS_REFINED_BY: &str = "WAS_REFINED_BY";
     pub const WAS_RELATED_TO: &str = "WAS_RELATED_TO";
@@ -200,6 +218,8 @@ pub mod a2a_relations {
     pub const TASK_CALL: &str = "A2A_TASK_CALL";
     pub const TASK_STATUS_TRANSITION: &str = "A2A_TASK_STATUS_TRANSITION";
     pub const MESSAGE_CALL: &str = "A2A_MESSAGE_CALL";
+    /// Reserved for derived-relation emission when linking an LLM/decision node to an observation source (`@N`).
+    pub const INFORMED_BY_OBSERVATION: &str = "A2A_INFORMED_BY_OBSERVATION";
 }
 
 pub mod graph {
@@ -236,13 +256,14 @@ pub mod storage_safe {
     pub const A2A_PHASE: &str = "a2a_phase";
     pub const A2A_RESULT: &str = "a2a_result";
     pub const A2A_ERROR: &str = "a2a_error";
-    pub const A2A_EVENT_ID: &str = "a2a_event_id";
+    pub const A2A_ACTIVITY_ANCHOR: &str = "a2a_activity_anchor";
     pub const A2A_RELATION: &str = "a2a_relation";
     pub const A2A_FROM: &str = "a2a_from";
     pub const A2A_TO: &str = "a2a_to";
     pub const A2A_CLIENT: &str = "a2a_client";
     pub const A2A_MODEL: &str = "a2a_model";
     pub const A2A_FUNCTION_NAME: &str = "a2a_function_name";
+    pub const A2A_PROMPT_NAME: &str = "a2a_prompt_name";
     pub const A2A_PROMPT: &str = "a2a_prompt";
     pub const A2A_USAGE_PROMPT_TOKENS: &str = "a2a_usage_prompt_tokens";
     pub const A2A_USAGE_COMPLETION_TOKENS: &str = "a2a_usage_completion_tokens";
@@ -256,6 +277,14 @@ pub mod storage_safe {
     pub const A2A_DRIFT_BLOCK_MIN_SCORE: &str = "a2a_drift_block_min_score";
     pub const A2A_INTENT_TEXT_PREVIEW: &str = "a2a_intent_text_preview";
     pub const A2A_RESPONSE_TEXT_PREVIEW: &str = "a2a_response_text_preview";
+    pub const A2A_STEP_TEXT_PREVIEW: &str = "a2a_step_text_preview";
+    pub const A2A_PLAN_DRIFT_INTENT_ALIGNMENT: &str = "a2a_plan_drift_intent_alignment";
+    pub const A2A_PLAN_DRIFT_STEP_ALIGNMENT: &str = "a2a_plan_drift_step_alignment";
+    pub const A2A_PLAN_DRIFT_TRAJECTORY: &str = "a2a_plan_drift_trajectory";
+    pub const A2A_PLAN_DRIFT_ADHERENCE: &str = "a2a_plan_drift_adherence";
+    pub const A2A_PLAN_DRIFT_COMPOSITE_SEVERITY: &str = "a2a_plan_drift_composite_severity";
+    pub const A2A_PLAN_DRIFT_CROSS_ENCODER_STEP: &str = "a2a_plan_drift_cross_encoder_step";
+    pub const A2A_CITATION_DRIFT: &str = "a2a_citation_drift";
     pub const A2A_ACTIVITY_OUTCOME: &str = "a2a_activity_outcome";
     pub const A2A_TOOL_NAME: &str = "a2a_tool_name";
     pub const A2A_ARGS: &str = "a2a_args";

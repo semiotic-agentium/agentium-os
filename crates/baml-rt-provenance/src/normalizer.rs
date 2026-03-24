@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
 use baml_rt_core::{
+    BamlFunctionId,
     bus::PlanningSupersessionKind,
     ids::{
-        AgentId, ArtifactId, ContextId, EventId, ExternalId, IntentId, MessageId, PlanId,
+        ActivityAnchorId, AgentId, ArtifactId, ContextId, ExternalId, IntentId, MessageId, PlanId,
         PlanStepId, ProvVocabularyType, TaskId, UuidId,
     },
 };
@@ -15,10 +16,11 @@ use crate::{
     events::{CallScope, ProvEvent, ProvEventData},
     id_semantics::{
         AgentBootActivityId, AgentBootActivityInput, AgentRuntimeInstanceId,
-        AgentRuntimeInstanceInput, ArchiveEntityId, ArchiveEntityInput, ArtifactByEventEntityId,
-        ArtifactByEventEntityInput, ArtifactByIdEntityId, ArtifactByIdEntityInput,
-        ArtifactByTypeEntityId, ArtifactByTypeEntityInput, ArtifactIdentity,
-        DelegationTargetEntityId, DelegationTargetEntityInput, FailureClassificationActivityId,
+        AgentRuntimeInstanceInput, ArchiveEntityId, ArchiveEntityInput,
+        ArtifactByActivityAnchorEntityId, ArtifactByActivityAnchorEntityInput,
+        ArtifactByIdEntityId, ArtifactByIdEntityInput, ArtifactByTypeEntityId,
+        ArtifactByTypeEntityInput, ArtifactIdentity, DelegationTargetEntityId,
+        DelegationTargetEntityInput, FailureClassificationActivityId,
         FailureClassificationActivityInput, FailureClassificationEntityId,
         FailureClassificationEntityInput, IntentEntityId, IntentEntityInput, LlmCallActivityId,
         LlmCallActivityInput, LlmPromptEntityId, LlmPromptEntityInput, MessageEntityId,
@@ -50,7 +52,7 @@ fn parse_agent_id(event: &ProvEvent, raw: &str) -> Result<AgentId> {
     UuidId::parse_str(raw)
         .map(AgentId::from_uuid)
         .map_err(|_| ProvenanceError::InvalidEvent {
-            event_id: event.id().as_str().to_string(),
+            activity_anchor: event.id().as_str().to_string(),
             reason: format!("invalid agent_id '{}' (expected UUID)", raw),
         })
 }
@@ -59,7 +61,7 @@ fn canonical_message_role(event: &ProvEvent, role: &str) -> Result<&'static str>
     let normalized = role.trim();
     if normalized.is_empty() {
         return Err(ProvenanceError::InvalidEvent {
-            event_id: event.id().as_str().to_string(),
+            activity_anchor: event.id().as_str().to_string(),
             reason: "message role must be non-empty".to_string(),
         });
     }
@@ -74,7 +76,7 @@ fn canonical_message_role(event: &ProvEvent, role: &str) -> Result<&'static str>
         return Ok("ROLE_AGENT");
     }
     Err(ProvenanceError::InvalidEvent {
-        event_id: event.id().as_str().to_string(),
+        activity_anchor: event.id().as_str().to_string(),
         reason: format!("invalid message role '{normalized}'"),
     })
 }
@@ -112,7 +114,7 @@ pub trait ProvNormalizer: Send + Sync {
 pub struct CallOrdinalState {
     /// scope_key -> count of Started events seen (ordinal for next Started).
     pub call_counts: HashMap<String, u64>,
-    /// event_id.as_str() -> (scope_key, ordinal) for completed LLM calls; used by PromptRejected.
+    /// activity_anchor.as_str() -> (scope_key, ordinal) for completed LLM calls; used by PromptRejected.
     pub llm_event_to_scope_ordinal: HashMap<String, (String, u64)>,
     /// task_id.as_str() -> latest canonical intent entity id.
     pub latest_intent_entity_by_task: HashMap<String, ProvEntityId>,
@@ -160,6 +162,8 @@ pub enum A2aRelationType {
     IntentRefinedBy,
     PlanReplacedBy,
     PlanRefinedBy,
+    /// Citation from archive / observation (`@N`); maps to `WAS_INFORMED_BY` when persisted as a derived edge.
+    InformedByObservation,
 }
 
 impl A2aRelationType {
@@ -174,6 +178,7 @@ impl A2aRelationType {
             A2aRelationType::IntentRefinedBy => a2a_relations::INTENT_REFINED_BY,
             A2aRelationType::PlanReplacedBy => a2a_relations::PLAN_REPLACED_BY,
             A2aRelationType::PlanRefinedBy => a2a_relations::PLAN_REFINED_BY,
+            A2aRelationType::InformedByObservation => a2a_relations::INFORMED_BY_OBSERVATION,
         }
     }
 }
@@ -266,7 +271,7 @@ fn canonicalize_llm_client_model(
                     .map(ToString::to_string)
             })
             .ok_or_else(|| ProvenanceError::MissingField {
-                event_id: event.id().as_str().to_string(),
+                activity_anchor: event.id().as_str().to_string(),
                 field: "a2a:client (BAML provider type)".to_string(),
             })?
     } else {
@@ -281,7 +286,7 @@ fn canonicalize_llm_client_model(
                     .map(ToString::to_string)
             })
             .ok_or_else(|| ProvenanceError::MissingField {
-                event_id: event.id().as_str().to_string(),
+                activity_anchor: event.id().as_str().to_string(),
                 field: "a2a:model".to_string(),
             })?
     } else {
@@ -375,7 +380,7 @@ fn build_call_scope_key(event: &ProvEvent, scope: &CallScope, metadata: &Value) 
         .get("agent_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ProvenanceError::MissingField {
-            event_id: event.id().as_str().to_string(),
+            activity_anchor: event.id().as_str().to_string(),
             field: "metadata.agent_id".to_string(),
         })?;
     let scope_id = match scope {
@@ -384,12 +389,12 @@ fn build_call_scope_key(event: &ProvEvent, scope: &CallScope, metadata: &Value) 
             let tid = event
                 .task_id()
                 .ok_or_else(|| ProvenanceError::InvalidEvent {
-                    event_id: event.id().as_str().to_string(),
+                    activity_anchor: event.id().as_str().to_string(),
                     reason: "task-scoped call requires task_id on event".to_string(),
                 })?;
             if tid != task_id {
                 return Err(ProvenanceError::InvalidEvent {
-                    event_id: event.id().as_str().to_string(),
+                    activity_anchor: event.id().as_str().to_string(),
                     reason: "scope task_id does not match event task_id".to_string(),
                 });
             }
@@ -454,15 +459,22 @@ fn normalize_event_with_registry(
                 canonicalize_llm_client_model(event, client, model, prompt, metadata)?;
             attrs.insert(a2a::CLIENT.to_string(), Value::String(resolved_client));
             attrs.insert(a2a::MODEL.to_string(), Value::String(resolved_model));
-            attrs.insert(
-                a2a::FUNCTION_NAME.to_string(),
-                Value::String(function_name.clone()),
-            );
+            {
+                let fid = BamlFunctionId::parse(function_name);
+                attrs.insert(
+                    a2a::FUNCTION_NAME.to_string(),
+                    Value::String(fid.full_name()),
+                );
+                attrs.insert(
+                    a2a::PROMPT_NAME.to_string(),
+                    Value::String(fid.prompt_name().as_str().to_string()),
+                );
+            }
             let agent_id = metadata
                 .get("agent_id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| ProvenanceError::MissingField {
-                    event_id: event.id().as_str().to_string(),
+                    activity_anchor: event.id().as_str().to_string(),
                     field: "metadata.agent_id".to_string(),
                 })?;
             attrs.insert(
@@ -542,6 +554,7 @@ fn normalize_event_with_registry(
             duration_ms,
             outcome,
             drift,
+            citations,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
             let ordinal = get_ordinal_for_call(call_state, &scope_key, false);
@@ -555,15 +568,22 @@ fn normalize_event_with_registry(
                 canonicalize_llm_client_model(event, client, model, prompt, metadata)?;
             attrs.insert(a2a::CLIENT.to_string(), Value::String(resolved_client));
             attrs.insert(a2a::MODEL.to_string(), Value::String(resolved_model));
-            attrs.insert(
-                a2a::FUNCTION_NAME.to_string(),
-                Value::String(function_name.clone()),
-            );
+            {
+                let fid = BamlFunctionId::parse(function_name);
+                attrs.insert(
+                    a2a::FUNCTION_NAME.to_string(),
+                    Value::String(fid.full_name()),
+                );
+                attrs.insert(
+                    a2a::PROMPT_NAME.to_string(),
+                    Value::String(fid.prompt_name().as_str().to_string()),
+                );
+            }
             let agent_id = metadata
                 .get("agent_id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| ProvenanceError::MissingField {
-                    event_id: event.id().as_str().to_string(),
+                    activity_anchor: event.id().as_str().to_string(),
                     field: "metadata.agent_id".to_string(),
                 })?;
             attrs.insert(
@@ -653,6 +673,66 @@ fn normalize_event_with_registry(
                 attrs.insert(
                     a2a::RESPONSE_TEXT_PREVIEW.to_string(),
                     Value::String(drift.response_text_preview.clone()),
+                );
+                if !drift.step_text_preview.is_empty() {
+                    attrs.insert(
+                        a2a::STEP_TEXT_PREVIEW.to_string(),
+                        Value::String(drift.step_text_preview.clone()),
+                    );
+                }
+                if let Some(ref plan_drift) = drift.plan_drift {
+                    use crate::events::LlmPlanDriftInfo;
+                    attrs.insert(
+                        a2a::PLAN_DRIFT_INTENT_ALIGNMENT.to_string(),
+                        serde_json::json!(plan_drift.intent_alignment()),
+                    );
+                    attrs.insert(
+                        a2a::PLAN_DRIFT_TRAJECTORY.to_string(),
+                        serde_json::json!(plan_drift.trajectory_drift()),
+                    );
+                    attrs.insert(
+                        a2a::PLAN_DRIFT_ADHERENCE.to_string(),
+                        serde_json::json!(plan_drift.plan_adherence_score()),
+                    );
+                    attrs.insert(
+                        a2a::PLAN_DRIFT_COMPOSITE_SEVERITY.to_string(),
+                        Value::String(plan_drift.composite_severity().to_string()),
+                    );
+                    // PlanCommitted-only fields: step alignment and XE score.
+                    if let LlmPlanDriftInfo::PlanCommitted {
+                        step_alignment,
+                        cross_encoder_step_score,
+                        ..
+                    } = plan_drift
+                    {
+                        attrs.insert(
+                            a2a::PLAN_DRIFT_STEP_ALIGNMENT.to_string(),
+                            serde_json::json!(step_alignment),
+                        );
+                        attrs.insert(
+                            a2a::PLAN_DRIFT_CROSS_ENCODER_STEP.to_string(),
+                            serde_json::json!(cross_encoder_step_score),
+                        );
+                    }
+                }
+                if let Some(ref cd) = drift.citation_drift
+                    && let Ok(v) = serde_json::to_value(cd)
+                {
+                    attrs.insert(a2a::CITATION_DRIFT.to_string(), v);
+                }
+            }
+            // Store raw citations on the activity for query API + future Phase 3 WAS_DERIVED_FROM edges.
+            // Full edge creation (resolving #N/@N → activity_anchor via RefTable) is deferred until
+            // the step executor passes resolved anchors alongside each citation.
+            if !citations.is_empty() {
+                attrs.insert(
+                    "citations".to_string(),
+                    serde_json::Value::Array(
+                        citations
+                            .iter()
+                            .map(|c| serde_json::Value::String(c.as_str().to_string()))
+                            .collect(),
+                    ),
                 );
             }
             let is_success = bool::from(*outcome);
@@ -744,14 +824,14 @@ fn normalize_event_with_registry(
         }
         ProvEventData::PromptRejected {
             scope,
-            llm_call_event_id,
+            llm_call_activity_anchor,
             reason,
         } => {
             let (scope_key, ordinal) = call_state
                 .llm_event_to_scope_ordinal
-                .get(llm_call_event_id.as_str())
+                .get(llm_call_activity_anchor.as_str())
                 .ok_or_else(|| ProvenanceError::InvalidEvent {
-                    event_id: event.id().as_str().to_string(),
+                    activity_anchor: event.id().as_str().to_string(),
                     reason:
                         "PromptRejected requires prior LlmCallCompleted in same normalizer session"
                             .to_string(),
@@ -863,7 +943,7 @@ fn normalize_event_with_registry(
                 .get("agent_id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| ProvenanceError::MissingField {
-                    event_id: event.id().as_str().to_string(),
+                    activity_anchor: event.id().as_str().to_string(),
                     field: "metadata.agent_id".to_string(),
                 })?;
             attrs.insert(
@@ -981,7 +1061,7 @@ fn normalize_event_with_registry(
                 .get("agent_id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| ProvenanceError::MissingField {
-                    event_id: event.id().as_str().to_string(),
+                    activity_anchor: event.id().as_str().to_string(),
                     field: "metadata.agent_id".to_string(),
                 })?;
             attrs.insert(
@@ -1433,7 +1513,7 @@ fn normalize_event_with_registry(
                     } else if artifact_type.is_some() {
                         prov_type::<ArtifactByTypeEntityId>()
                     } else {
-                        prov_type::<ArtifactByEventEntityId>()
+                        prov_type::<ArtifactByActivityAnchorEntityId>()
                     }),
                     attributes: artifact_attrs,
                 },
@@ -1455,8 +1535,9 @@ fn normalize_event_with_registry(
             task_id,
             intent_id,
             description,
-            derived_from_messages,
+            citations,
             supersession,
+            revision_intent_drift,
         } => {
             let _task_entity = ensure_task_entity(&mut doc, task_id);
             let intent_entity = intent_entity_id(task_id, intent_id);
@@ -1470,6 +1551,24 @@ fn normalize_event_with_registry(
                 Value::String("resolved".to_string()),
             );
             intent_attrs.insert(prov::LABEL.to_string(), Value::String(description.clone()));
+            if let Some(drift_score) = revision_intent_drift {
+                intent_attrs.insert(
+                    a2a::REVISION_INTENT_DRIFT.to_string(),
+                    serde_json::json!(drift_score),
+                );
+            }
+            // Store raw citation strings on the entity for downstream resolution (Phase 2).
+            if !citations.is_empty() {
+                intent_attrs.insert(
+                    "citations".to_string(),
+                    serde_json::Value::Array(
+                        citations
+                            .iter()
+                            .map(|c| serde_json::Value::String(c.as_str().to_string()))
+                            .collect(),
+                    ),
+                );
+            }
             doc.insert_entity(
                 intent_entity.clone(),
                 Entity {
@@ -1477,30 +1576,6 @@ fn normalize_event_with_registry(
                     attributes: intent_attrs,
                 },
             );
-
-            for message_id in derived_from_messages {
-                let msg_entity = message_entity_id(event.context_id(), message_id);
-                let mut msg_attrs = doc
-                    .entity(&msg_entity)
-                    .map(|entity| entity.attributes.clone())
-                    .unwrap_or_default();
-                msg_attrs.insert(
-                    a2a::CONTEXT_ID.to_string(),
-                    Value::String(event.context_id().as_str().to_string()),
-                );
-                msg_attrs.insert(
-                    a2a::MESSAGE_ID.to_string(),
-                    Value::String(message_id.as_str().to_string()),
-                );
-                doc.insert_entity(
-                    msg_entity.clone(),
-                    Entity {
-                        prov_type: Some(prov_type::<MessageEntityId>()),
-                        attributes: msg_attrs,
-                    },
-                );
-                insert_was_derived_from(&mut doc, intent_entity.clone(), msg_entity, None, None);
-            }
 
             let task_key = task_id.as_str().to_string();
             if let Some(previous) = call_state
@@ -1632,7 +1707,7 @@ fn normalize_event_with_registry(
             step_id,
             old_status,
             new_status,
-            evidence_text,
+            citations,
         } => {
             let _task_entity = ensure_task_entity(&mut doc, task_id);
             let step_entity = plan_step_entity_id(task_id, plan_id, step_id);
@@ -1647,10 +1722,18 @@ fn normalize_event_with_registry(
             step_attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id.to_string()));
             step_attrs.insert(a2a::STEP_ID.to_string(), Value::String(step_id.to_string()));
             step_attrs.insert(a2a::STATUS.to_string(), Value::String(new_status.clone()));
-            step_attrs.insert(
-                a2a::REASON.to_string(),
-                Value::String(evidence_text.clone()),
-            );
+            // Store raw citation strings on the step entity for downstream resolution (Phase 2).
+            if !citations.is_empty() {
+                step_attrs.insert(
+                    "citations".to_string(),
+                    serde_json::Value::Array(
+                        citations
+                            .iter()
+                            .map(|c| serde_json::Value::String(c.as_str().to_string()))
+                            .collect(),
+                    ),
+                );
+            }
             if let Some(old) = old_status {
                 step_attrs.insert(a2a::OLD_STATUS.to_string(), Value::String(old.clone()));
             }
@@ -1811,6 +1894,43 @@ fn normalize_event_with_registry(
                 });
             }
         }
+        ProvEventData::ToolSessionStep {
+            tool_name,
+            session_id,
+            op_kind,
+            header,
+            archive_ref,
+            grep,
+            offset: _,
+            limit: _,
+            ..
+        } => {
+            let step_id = format!("session-step:{}", event.id().as_str());
+            let mut attrs = base_attrs(event);
+            attrs.insert(a2a::TOOL_NAME.to_string(), Value::String(tool_name.clone()));
+            attrs.insert("session_id".to_string(), Value::String(session_id.clone()));
+            attrs.insert("op_kind".to_string(), Value::String(op_kind.clone()));
+            if let Some(h) = header {
+                attrs.insert("header".to_string(), Value::String(h.clone()));
+            }
+            if let Some(r) = archive_ref {
+                attrs.insert("archive_ref".to_string(), Value::String(r.clone()));
+            }
+            if let Some(g) = grep {
+                attrs.insert("grep".to_string(), Value::String(g.clone()));
+            }
+            // Use serde round-trip to construct ProvEntityId from a raw string.
+            let entity_id: ProvEntityId =
+                serde_json::from_value(serde_json::Value::String(step_id.clone()))
+                    .expect("ProvEntityId serde is transparent String");
+            doc.insert_entity(
+                entity_id,
+                Entity {
+                    prov_type: Some("SessionStep".to_string()),
+                    attributes: attrs,
+                },
+            );
+        }
     }
 
     Ok(NormalizedProv {
@@ -1850,7 +1970,7 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
             validate_task_scoped_event(event, task_id, "TaskExists")?;
             if event.context_id() != context_id {
                 return Err(ProvenanceError::InvalidEvent {
-                    event_id: event.id().as_str().to_string(),
+                    activity_anchor: event.id().as_str().to_string(),
                     reason: "TaskExists context_id must match event context_id".to_string(),
                 });
             }
@@ -1863,7 +1983,7 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
             validate_task_scoped_event(event, task_id, "TaskExecutionStarted")?;
             if event.context_id() != context_id {
                 return Err(ProvenanceError::InvalidEvent {
-                    event_id: event.id().as_str().to_string(),
+                    activity_anchor: event.id().as_str().to_string(),
                     reason: "TaskExecutionStarted context_id must match event context_id"
                         .to_string(),
                 });
@@ -1876,7 +1996,7 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
             validate_task_scoped_event(event, task_id, "TaskExecutionEnded")?;
             if event.context_id() != context_id {
                 return Err(ProvenanceError::InvalidEvent {
-                    event_id: event.id().as_str().to_string(),
+                    activity_anchor: event.id().as_str().to_string(),
                     reason: "TaskExecutionEnded context_id must match event context_id".to_string(),
                 });
             }
@@ -1891,7 +2011,7 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
             canonical_message_role(event, role)?;
             if content.iter().all(|line| line.trim().is_empty()) {
                 return Err(ProvenanceError::InvalidEvent {
-                    event_id: event.id().as_str().to_string(),
+                    activity_anchor: event.id().as_str().to_string(),
                     reason: "message content must include at least one non-empty text part"
                         .to_string(),
                 });
@@ -1906,16 +2026,16 @@ fn validate_task_scoped_event(event: &ProvEvent, task_id: &TaskId, event_kind: &
     let event_id = event.id().as_str().to_string();
     match event {
         ProvEvent::Global(_) => Err(ProvenanceError::InvalidEvent {
-            event_id,
+            activity_anchor: event_id,
             reason: format!("{event_kind} must be task-scoped (event is global)"),
         }),
         ProvEvent::AgentBooted(_) => Err(ProvenanceError::InvalidEvent {
-            event_id,
+            activity_anchor: event_id,
             reason: format!("{event_kind} cannot be AgentBooted (has no context)"),
         }),
         ProvEvent::Task(e) if &e.task_id == task_id => Ok(()),
         ProvEvent::Task(_) => Err(ProvenanceError::InvalidEvent {
-            event_id,
+            activity_anchor: event_id,
             reason: format!("{event_kind} task_id must match event task_id"),
         }),
     }
@@ -1926,12 +2046,12 @@ fn validate_call_scope(event: &ProvEvent, scope: &CallScope, call_kind: &str) ->
     match (event, scope) {
         (ProvEvent::Global(_), CallScope::Message { .. }) => Ok(()),
         (ProvEvent::Global(_), CallScope::Task { .. }) => Err(ProvenanceError::InvalidEvent {
-            event_id: event_id.clone(),
+            activity_anchor: event_id.clone(),
             reason: format!("{call_kind} is task-scoped but event is global"),
         }),
         (ProvEvent::Task(_event), CallScope::Message { .. }) => {
             Err(ProvenanceError::InvalidEvent {
-                event_id: event_id.clone(),
+                activity_anchor: event_id.clone(),
                 reason: format!("{call_kind} is message-scoped but event is task-scoped"),
             })
         }
@@ -1940,13 +2060,13 @@ fn validate_call_scope(event: &ProvEvent, scope: &CallScope, call_kind: &str) ->
                 Ok(())
             } else {
                 Err(ProvenanceError::InvalidEvent {
-                    event_id,
+                    activity_anchor: event_id,
                     reason: format!("{call_kind} task_id does not match event task_id"),
                 })
             }
         }
         (ProvEvent::AgentBooted(_), _) => Err(ProvenanceError::InvalidEvent {
-            event_id,
+            activity_anchor: event_id,
             reason: format!("{call_kind} cannot be AgentBooted (has no call scope)"),
         }),
     }
@@ -1962,7 +2082,7 @@ fn validate_required_call_metadata(
     let obj = metadata
         .as_object()
         .ok_or_else(|| ProvenanceError::MissingField {
-            event_id: event_id.clone(),
+            activity_anchor: event_id.clone(),
             field: "metadata".to_string(),
         })?;
 
@@ -1970,7 +2090,7 @@ fn validate_required_call_metadata(
         .get("agent_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ProvenanceError::MissingField {
-            event_id: event_id.clone(),
+            activity_anchor: event_id.clone(),
             field: "metadata.agent_id".to_string(),
         })?;
     parse_agent_id(event, agent_id)?;
@@ -1979,7 +2099,7 @@ fn validate_required_call_metadata(
         && obj.get("message_id").and_then(|v| v.as_str()).is_none()
     {
         return Err(ProvenanceError::MissingField {
-            event_id,
+            activity_anchor: event_id,
             field: format!("metadata.message_id ({call_kind})"),
         });
     }
@@ -2002,7 +2122,7 @@ fn base_attrs(event: &ProvEvent) -> HashMap<String, Value> {
         );
     }
     attrs.insert(
-        a2a::EVENT_ID.to_string(),
+        a2a::ACTIVITY_ANCHOR.to_string(),
         Value::String(event.id().as_str().to_string()),
     );
     attrs
@@ -2266,7 +2386,7 @@ fn upsert_failure_classification(
     }
 }
 
-/// LLM call activity id: derived from `EventId` to ensure per-call uniqueness.
+/// LLM call activity id: derived from `ActivityAnchorId` to ensure per-call uniqueness.
 /// LLM call activity id: deterministic composite from (scope_key, ordinal).
 fn llm_activity_id(scope_key: &str, ordinal: u64) -> ProvActivityId {
     ProvActivityId::derived::<LlmCallActivityId>(LlmCallActivityInput { scope_key, ordinal })
@@ -2452,7 +2572,7 @@ fn attach_message_context(
     derived_relations: &mut Vec<A2aDerivedRelation>,
 ) {
     let message_entity_id = message_entity_id(event.context_id(), message_id);
-    // Placeholder only: do not stamp role/content/event_id from call events.
+    // Placeholder only: do not stamp role/content/activity_anchor from call events.
     // MessageReceived/MessageSent owns semantic message fields.
     let mut message_attrs = doc
         .entity(&message_entity_id)
@@ -2629,7 +2749,7 @@ fn artifact_entity_id(
     task_id: &TaskId,
     artifact_id: &Option<ArtifactId>,
     artifact_type: &Option<String>,
-    event_id: &EventId,
+    activity_anchor: &ActivityAnchorId,
 ) -> ProvEntityId {
     let identity = if let Some(artifact_id) = artifact_id {
         ArtifactIdentity::ById(artifact_id)
@@ -2639,7 +2759,10 @@ fn artifact_entity_id(
             artifact_type,
         }
     } else {
-        ArtifactIdentity::ByEvent { task_id, event_id }
+        ArtifactIdentity::ByActivityAnchor {
+            task_id,
+            activity_anchor,
+        }
     };
     match identity {
         ArtifactIdentity::ById(artifact_id) => {
@@ -2652,12 +2775,15 @@ fn artifact_entity_id(
             task_id,
             artifact_type,
         }),
-        ArtifactIdentity::ByEvent { task_id, event_id } => {
-            ProvEntityId::derived::<ArtifactByEventEntityId>(ArtifactByEventEntityInput {
+        ArtifactIdentity::ByActivityAnchor {
+            task_id,
+            activity_anchor,
+        } => ProvEntityId::derived::<ArtifactByActivityAnchorEntityId>(
+            ArtifactByActivityAnchorEntityInput {
                 task_id,
-                event_id,
-            })
-        }
+                activity_anchor,
+            },
+        ),
     }
 }
 

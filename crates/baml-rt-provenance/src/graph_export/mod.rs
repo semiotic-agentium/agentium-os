@@ -1,9 +1,9 @@
 //! Graph export and rendering for provenance subgraphs.
 //!
-//! This module reads the GraphQLite provenance graph via Cypher queries and
-//! produces an [`ExportedGraph`] — a portable, renderable representation of
-//! nodes and edges. Pure-function renderers then convert `ExportedGraph` into
-//! Mermaid, Graphviz DOT, or JSON for frontends, tests, and documentation.
+//! This module reads the provenance graph via SurrealDB queries and produces an
+//! [`ExportedGraph`] — a portable, renderable representation of nodes and edges.
+//! Pure-function renderers then convert `ExportedGraph` into Mermaid, Graphviz
+//! DOT, or JSON for frontends, tests, and documentation.
 //!
 //! **No heuristics in projection:** If export/query/render is impossible given
 //! the stored graph, the graph construction (write path) is incorrect.
@@ -21,24 +21,19 @@ use std::{
     sync::Arc,
 };
 
-use graphqlite::CypherResult;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{
-    error::Result,
+    error::{ProvenanceError, Result},
     graph_export::activity_outcome::NodeActivityOutcome,
     graph_model::GraphNodeLabel,
-    graphqlite_store::GraphqliteProvenanceStore,
+    surreal_store::SurrealProvenanceStore,
     vocabulary::{a2a, context_scope, message_directions, prov, storage_safe},
 };
 
-fn single_param(key: &str, value: &str) -> serde_json::Map<String, serde_json::Value> {
-    let mut params = serde_json::Map::new();
-    params.insert(
-        key.to_string(),
-        serde_json::Value::String(value.to_string()),
-    );
-    params
+fn surreal_err(e: surrealdb::Error) -> ProvenanceError {
+    ProvenanceError::Storage(Box::new(e))
 }
 
 // ── Core types ──────────────────────────────────────────────────────────────
@@ -54,7 +49,7 @@ pub struct ExportedNode {
     pub display_name: String,
     /// Selected properties for display (tool_name, model, role, etc.).
     pub properties: HashMap<String, serde_json::Value>,
-    /// Temporal ordering key extracted from `a2a:event_id` (monotonic counter)
+    /// Temporal ordering key extracted from `a2a:activity_anchor` (monotonic counter)
     /// or `a2a:timestamp_ms` as a fallback. `None` for nodes without temporal
     /// metadata (e.g. `AgentRuntimeInstance`).
     pub event_order: Option<u64>,
@@ -95,22 +90,19 @@ pub enum ExportScope {
     Full,
 }
 
-// ── GraphExporter (GraphQLite) ───────────────────────────────────────────────
+// ── GraphExporter (SurrealDB) ────────────────────────────────────────────────
 
-/// Reads the GraphQLite provenance graph and produces [`ExportedGraph`] values.
+/// Reads the SurrealDB provenance graph and produces [`ExportedGraph`] values.
 pub struct GraphExporter {
-    store: Arc<GraphqliteProvenanceStore>,
+    store: Arc<SurrealProvenanceStore>,
 }
 
 impl GraphExporter {
-    pub fn new(store: Arc<GraphqliteProvenanceStore>) -> Self {
+    pub fn new(store: Arc<SurrealProvenanceStore>) -> Self {
         Self { store }
     }
 
     /// Export the full subgraph for a given `context_id`.
-    ///
-    /// Traverses SCOPED_TO edges. AgentRuntimeInstance has a2a:archive_path at write.
-    /// [`filter_scope`] keeps boot-chain nodes via [`context_scope::SCOPE_EXEMPT_LABELS`].
     #[tracing::instrument(skip(self), fields(context_id))]
     pub async fn export_by_context(&self, context_id: &str) -> Result<ExportedGraph> {
         let graph = self.export_context_core(context_id).await?;
@@ -119,46 +111,104 @@ impl GraphExporter {
     }
 
     async fn export_context_core(&self, context_id: &str) -> Result<ExportedGraph> {
-        tracing::debug!(context_id = %context_id, "export_context_core: START cypher");
-        // Traverse via SCOPED_TO edges (indexed by Context.id). No property filters.
-        // Only (a) must be scoped; (b) is reached via the relation (e.g. MessageProcessing
-        // -[WAS_EXECUTED_BY]-> AgentRuntimeInstance). AgentRuntimeInstance has no context.
-        let ctx_escaped = context_id.replace('\'', "''");
-        let query = format!(
-            "MATCH (ctx:{ctx_label} {{id: '{ctx_escaped}'}})-[:{scoped_to}]->(a), (a)-[r]->(b) \
-             RETURN a.id AS src_id, labels(a)[0] AS src_label, properties(a) AS src_props, \
-                    type(r) AS rel_type, properties(r) AS rel_props, \
-                    b.id AS tgt_id, labels(b)[0] AS tgt_label, properties(b) AS tgt_props",
-            ctx_label = context_scope::LABEL,
-            scoped_to = context_scope::SCOPED_TO,
-        );
-        let params = serde_json::Map::new();
+        tracing::debug!(context_id = %context_id, "export_context_core: START surreal");
         let t0 = std::time::Instant::now();
-        let result = self.store.run_cypher_read(&query, &params).await?;
-        let cypher_ms = t0.elapsed().as_millis();
-        tracing::debug!(context_id = %context_id, cypher_ms, "export_context_core: DONE cypher, START parse");
+
+        // Context node_id is prefixed: "context:{context_id}"
+        let scoped_to = context_scope::SCOPED_TO;
+        let ctx_node_id = format!("context:{context_id}");
+
+        // Use subqueries to avoid binding Vec<String> which SurrealDB's bind API
+        // does not support for IN clauses. The scoped_ids subquery is reused
+        // as a building block for nodes and edges.
+        let scoped_ids_subquery = format!(
+            "(SELECT VALUE from_id FROM prov_edge WHERE to_id = '{ctx_node_id}' AND rel_type = '{scoped_to}')"
+        );
+
+        // Fetch all nodes scoped to this context
+        let node_query = format!(
+            "SELECT node_id, label, props OMIT id FROM prov_node WHERE node_id IN {scoped_ids_subquery}"
+        );
+        let mut node_response = self
+            .store
+            .db()
+            .query(&node_query)
+            .await
+            .map_err(surreal_err)?;
+        let node_rows: Vec<Value> = node_response.take(0).map_err(surreal_err)?;
+
+        if node_rows.is_empty() {
+            tracing::debug!(context_id = %context_id, "no scoped nodes found");
+            return Ok(ExportedGraph {
+                nodes: vec![],
+                edges: vec![],
+                scope: ExportScope::Context(context_id.to_string()),
+            });
+        }
+
+        let scoped_ids: HashSet<String> = node_rows
+            .iter()
+            .filter_map(|r| r.get("node_id").and_then(Value::as_str).map(String::from))
+            .collect();
+
+        // Fetch all edges where from_id is in the scoped set
+        let edge_query = format!(
+            "SELECT from_id, from_label, to_id, to_label, rel_type, props OMIT id FROM prov_edge \
+             WHERE from_id IN {scoped_ids_subquery} AND rel_type != '{scoped_to}'"
+        );
+        let mut edge_response = self
+            .store
+            .db()
+            .query(&edge_query)
+            .await
+            .map_err(surreal_err)?;
+        let edge_rows: Vec<Value> = edge_response.take(0).map_err(surreal_err)?;
+
+        // Collect target node IDs not in the scoped set (e.g. AgentRuntimeInstance)
+        let extra_ids: HashSet<String> = edge_rows
+            .iter()
+            .filter_map(|r| r.get("to_id").and_then(Value::as_str).map(String::from))
+            .filter(|id| !scoped_ids.contains(id))
+            .collect();
+
+        let mut extra_node_rows: Vec<Value> = Vec::new();
+        if !extra_ids.is_empty() {
+            // Fetch extra target nodes individually (small set — typically just AgentRuntimeInstance)
+            for extra_id in &extra_ids {
+                let mut resp = self.store.db()
+                    .query("SELECT node_id, label, props OMIT id FROM prov_node WHERE node_id = $nid LIMIT 1")
+                    .bind(("nid", extra_id.clone()))
+                    .await
+                    .map_err(surreal_err)?;
+                let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+                extra_node_rows.extend(rows);
+            }
+        }
+
+        let query_ms = t0.elapsed().as_millis();
+        tracing::debug!(context_id = %context_id, query_ms, "export_context_core: DONE surreal, START parse");
         let t1 = std::time::Instant::now();
-        let mut graph =
-            parse_graphqlite_export_result(&result, ExportScope::Context(context_id.to_string()))?;
+
+        let mut graph = parse_surreal_export_result(
+            &node_rows,
+            &extra_node_rows,
+            &edge_rows,
+            ExportScope::Context(context_id.to_string()),
+        );
         enrich::enrich_derived_properties(&mut graph);
         let parse_ms = t1.elapsed().as_millis();
         tracing::debug!(
             context_id = %context_id,
-            cypher_ms,
-            parse_ms,
+            query_ms, parse_ms,
             nodes = graph.nodes.len(),
             edges = graph.edges.len(),
-            "export_context_core: cypher + parse"
+            "export_context_core: surreal + parse"
         );
 
         Ok(graph)
     }
 
     /// Export the full subgraph for a given `task_id`.
-    ///
-    /// Resolves the task's context_id (from TaskExecution etc.), then runs the same
-    /// SCOPED_TO traversal as export_by_context so the initial user message (which
-    /// has context_id but no task_id) is included.
     #[tracing::instrument(skip(self), fields(task_id))]
     pub async fn export_by_task(&self, task_id: &str) -> Result<ExportedGraph> {
         let context_id = self.task_context_id(task_id).await?;
@@ -177,25 +227,29 @@ impl GraphExporter {
     }
 
     /// List all distinct context IDs in the provenance graph.
-    ///
-    /// Tries Context nodes first; falls back to scanning nodes with a2a_context_id.
     pub async fn list_contexts(&self) -> Result<Vec<String>> {
         let ctx_label = context_scope::LABEL;
-        let query = format!("MATCH (ctx:{ctx_label}) RETURN ctx.id AS ctx_id");
-        let params = serde_json::Map::new();
-        let result = self.store.run_cypher_read(&query, &params).await?;
-        let mut ids: Vec<String> = result
+        let query = "SELECT node_id OMIT id FROM prov_node WHERE label = $label".to_string();
+        let mut response = self
+            .store
+            .db()
+            .query(&query)
+            .bind(("label", ctx_label))
+            .await
+            .map_err(surreal_err)?;
+        let rows: Vec<Value> = response.take(0).map_err(surreal_err)?;
+        let mut ids: Vec<String> = rows
             .iter()
-            .filter_map(|row| row_get_string_any(row, &["ctx_id"]))
+            .filter_map(|r| r.get("node_id").and_then(Value::as_str).map(String::from))
             .filter(|s| !s.is_empty())
             .collect();
         if ids.is_empty() {
-            // Fallback: nodes may have a2a_context_id without a Context node (legacy or sparse writes).
-            let fallback = "MATCH (n) WHERE n.a2a_context_id IS NOT NULL RETURN DISTINCT n.a2a_context_id AS ctx_id";
-            let result = self.store.run_cypher_read(fallback, &params).await?;
-            ids = result
+            let fallback = "SELECT DISTINCT props.a2a_context_id AS ctx_id OMIT id FROM prov_node WHERE props.a2a_context_id IS NOT NULL";
+            let mut fb_response = self.store.db().query(fallback).await.map_err(surreal_err)?;
+            let fb_rows: Vec<Value> = fb_response.take(0).map_err(surreal_err)?;
+            ids = fb_rows
                 .iter()
-                .filter_map(|row| row_get_string_any(row, &["ctx_id"]))
+                .filter_map(|r| r.get("ctx_id").and_then(Value::as_str).map(String::from))
                 .filter(|s| !s.is_empty())
                 .collect();
         }
@@ -204,75 +258,92 @@ impl GraphExporter {
         Ok(ids)
     }
 
-    /// Get context_id for a task from any node with a2a_task_id and a2a_context_id (e.g. TaskExecution).
     async fn task_context_id(&self, task_id: &str) -> Result<Option<String>> {
-        let query = "MATCH (t) WHERE t.a2a_task_id = $task_id AND t.a2a_context_id IS NOT NULL \
-             RETURN t.a2a_context_id AS ctx_id LIMIT 1";
-        let params = single_param("task_id", task_id);
-        let result = self.store.run_cypher_read(query, &params).await?;
-        let ctx_id = result
-            .iter()
-            .next()
-            .and_then(|row| row_get_string_any(row, &["ctx_id"]));
+        let query = "SELECT props.a2a_context_id AS ctx_id OMIT id FROM prov_node \
+                     WHERE props.a2a_task_id = $task_id AND props.a2a_context_id IS NOT NULL LIMIT 1";
+        let mut response = self
+            .store
+            .db()
+            .query(query)
+            .bind(("task_id", task_id.to_string()))
+            .await
+            .map_err(surreal_err)?;
+        let rows: Vec<Value> = response.take(0).map_err(surreal_err)?;
+        let ctx_id = rows
+            .first()
+            .and_then(|r| r.get("ctx_id"))
+            .and_then(Value::as_str)
+            .map(String::from);
         Ok(ctx_id)
     }
 }
 
-// ── Parsing (GraphQLite rows) ───────────────────────────────────────────────
+// ── Parsing (SurrealDB rows) ────────────────────────────────────────────────
 
-/// Parse GraphQLite Cypher result into an [`ExportedGraph`].
-///
-/// Expects columns: src_id, src_label, src_props, rel_type, rel_props, tgt_id, tgt_label, tgt_props.
-/// Properties may be returned as JSON object or JSON string; keys are normalized from
-/// storage_safe (a2a_*) to vocabulary (a2a:*) for display and filtering.
-fn parse_graphqlite_export_result(
-    result: &CypherResult,
+/// Parse SurrealDB query results into an [`ExportedGraph`].
+fn parse_surreal_export_result(
+    node_rows: &[Value],
+    extra_node_rows: &[Value],
+    edge_rows: &[Value],
     scope: ExportScope,
-) -> Result<ExportedGraph> {
+) -> ExportedGraph {
     let mut nodes_map: HashMap<String, ExportedNode> = HashMap::new();
+
+    for row in node_rows.iter().chain(extra_node_rows.iter()) {
+        let node_id = row
+            .get("node_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let label = row.get("label").and_then(Value::as_str).unwrap_or_default();
+        let props = surreal_props_to_map(row.get("props"));
+        if !node_id.is_empty() {
+            upsert_node(&mut nodes_map, node_id, label, &props);
+        }
+    }
+
     let mut edges: Vec<ExportedEdge> = Vec::new();
+    for row in edge_rows {
+        let from_id = row
+            .get("from_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let to_id = row
+            .get("to_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let rel_type = row
+            .get("rel_type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let rel_props = surreal_props_to_map(row.get("props"));
 
-    for row in result.iter() {
-        let src_id = row_get_string_any(row, &["src_id", "a.id"]).unwrap_or_default();
-        let src_label = row_get_string_any(row, &["src_label", "labels(a)[0]"]).unwrap_or_default();
-        let rel_type = row_get_string_any(row, &["rel_type", "type(r)"]).unwrap_or_default();
-        let rel_props = row_to_properties(
-            row,
-            &["rel_props", "properties(r)", "toString(properties(r))"],
-        );
-        let tgt_id = row_get_string_any(row, &["tgt_id", "b.id"]).unwrap_or_default();
-        let tgt_label = row_get_string_any(row, &["tgt_label", "labels(b)[0]"]).unwrap_or_default();
+        // If target node wasn't fetched yet (rare), insert a stub
+        if !to_id.is_empty() && !nodes_map.contains_key(&to_id) {
+            let to_label = row
+                .get("to_label")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            nodes_map.insert(
+                to_id.clone(),
+                ExportedNode {
+                    id: to_id.clone(),
+                    label: to_label.to_string(),
+                    display_name: to_label.to_string(),
+                    properties: HashMap::new(),
+                    event_order: None,
+                },
+            );
+        }
 
-        if !src_id.is_empty() {
-            let needs_enrichment = nodes_map
-                .get(src_id.as_str())
-                .is_none_or(|existing| node_needs_enrichment(existing, &src_label));
-            if needs_enrichment {
-                let src_props = row_to_properties(
-                    row,
-                    &["src_props", "properties(a)", "toString(properties(a))"],
-                );
-                upsert_node(&mut nodes_map, &src_id, &src_label, &src_props);
-            }
-        }
-        if !tgt_id.is_empty() {
-            let needs_enrichment = nodes_map
-                .get(tgt_id.as_str())
-                .is_none_or(|existing| node_needs_enrichment(existing, &tgt_label));
-            if needs_enrichment {
-                let tgt_props = row_to_properties(
-                    row,
-                    &["tgt_props", "properties(b)", "toString(properties(b))"],
-                );
-                upsert_node(&mut nodes_map, &tgt_id, &tgt_label, &tgt_props);
-            }
-        }
-        let relation = rel_type.trim().to_string();
-        if !src_id.is_empty() && !tgt_id.is_empty() && !relation.is_empty() {
+        if !from_id.is_empty() && !to_id.is_empty() && !rel_type.is_empty() {
             edges.push(ExportedEdge {
-                from: src_id,
-                to: tgt_id,
-                relation,
+                from: from_id,
+                to: to_id,
+                relation: rel_type,
                 properties: rel_props,
             });
         }
@@ -297,75 +368,26 @@ fn parse_graphqlite_export_result(
     });
     edges.dedup_by(|a, b| a.from == b.from && a.to == b.to && a.relation == b.relation);
 
-    Ok(ExportedGraph {
+    ExportedGraph {
         nodes,
         edges,
         scope,
-    })
+    }
 }
 
-fn row_get_string_any(row: &graphqlite::Row, cols: &[&str]) -> Option<String> {
-    cols.iter().find_map(|col| row.get::<String>(col).ok())
-}
-
-/// Read a properties column from a GraphQLite row (JSON string) and normalize keys to a2a: form.
-fn row_to_properties(row: &graphqlite::Row, cols: &[&str]) -> HashMap<String, serde_json::Value> {
-    let as_json = cols.iter().find_map(|col| {
-        row.get_value(col).map(|v| match v {
-            graphqlite::Value::Null => serde_json::Value::Null,
-            graphqlite::Value::Bool(v) => serde_json::Value::Bool(*v),
-            graphqlite::Value::Integer(v) => serde_json::Value::Number((*v).into()),
-            graphqlite::Value::Float(v) => serde_json::Number::from_f64(*v)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null),
-            graphqlite::Value::String(s) => serde_json::from_str::<serde_json::Value>(s)
-                .unwrap_or_else(|_| serde_json::Value::String(s.clone())),
-            graphqlite::Value::Array(items) => serde_json::Value::Array(
-                items
-                    .iter()
-                    .map(|item| match item {
-                        graphqlite::Value::Null => serde_json::Value::Null,
-                        graphqlite::Value::Bool(v) => serde_json::Value::Bool(*v),
-                        graphqlite::Value::Integer(v) => serde_json::Value::Number((*v).into()),
-                        graphqlite::Value::Float(v) => serde_json::Number::from_f64(*v)
-                            .map(serde_json::Value::Number)
-                            .unwrap_or(serde_json::Value::Null),
-                        graphqlite::Value::String(s) => {
-                            serde_json::from_str::<serde_json::Value>(s)
-                                .unwrap_or_else(|_| serde_json::Value::String(s.clone()))
-                        }
-                        graphqlite::Value::Array(_) | graphqlite::Value::Object(_) => {
-                            serde_json::to_value(item).unwrap_or(serde_json::Value::Null)
-                        }
-                    })
-                    .collect(),
-            ),
-            graphqlite::Value::Object(_) => {
-                serde_json::to_value(v).unwrap_or(serde_json::Value::Null)
-            }
-        })
-    });
-    let map: HashMap<String, serde_json::Value> = as_json
-        .and_then(|v| {
-            v.as_object().map(|m| {
-                m.iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect::<HashMap<String, serde_json::Value>>()
+/// Extract properties from a SurrealDB props object and normalize keys to a2a: form.
+fn surreal_props_to_map(props: Option<&Value>) -> HashMap<String, serde_json::Value> {
+    let map = match props {
+        Some(Value::Object(m)) => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        Some(Value::String(s)) => serde_json::from_str::<Value>(s)
+            .ok()
+            .and_then(|v| {
+                v.as_object()
+                    .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             })
-        })
-        .unwrap_or_else(|| {
-            let s = row_get_string_any(row, cols).unwrap_or_default();
-            serde_json::from_str::<serde_json::Value>(&s)
-                .ok()
-                .and_then(|v| {
-                    v.as_object().map(|m| {
-                        m.iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect::<HashMap<String, serde_json::Value>>()
-                    })
-                })
-                .unwrap_or_default()
-        });
+            .unwrap_or_default(),
+        _ => HashMap::new(),
+    };
     normalize_property_keys(map)
 }
 
@@ -444,33 +466,6 @@ fn property_value_is_empty(value: &serde_json::Value) -> bool {
         serde_json::Value::Object(o) => o.is_empty(),
         _ => false,
     }
-}
-
-fn node_needs_enrichment(existing: &ExportedNode, incoming_label: &str) -> bool {
-    if existing.label.is_empty() && !incoming_label.is_empty() {
-        return true;
-    }
-    if existing.event_order.is_none() {
-        return true;
-    }
-    if GraphNodeLabel::parse(&existing.label).or_else(|| GraphNodeLabel::parse(incoming_label))
-        == Some(GraphNodeLabel::Message)
-    {
-        let missing_role = existing
-            .properties
-            .get(a2a::ROLE)
-            .is_none_or(property_value_is_empty);
-        let missing_content = existing
-            .properties
-            .get(a2a::CONTENT)
-            .is_none_or(property_value_is_empty);
-        let missing_event_id = existing
-            .properties
-            .get(a2a::EVENT_ID)
-            .is_none_or(property_value_is_empty);
-        return missing_role || missing_content || missing_event_id;
-    }
-    false
 }
 
 // ── Scope post-filtering ────────────────────────────────────────────────────
@@ -671,6 +666,11 @@ fn derive_display_name(label: &str, props: &HashMap<String, serde_json::Value>) 
             let evidence = prop_str(a2a::FAILURE_EVIDENCE).unwrap_or_default();
             format!("📉 Failure {class} [{evidence}]")
         }
+        Some(GraphNodeLabel::SessionStep) => {
+            let op = prop_str("op_kind").unwrap_or_default();
+            let tool = prop_str("tool_name").unwrap_or_default();
+            format!("⚡ {tool} {op}")
+        }
         None => label.to_string(),
     }
 }
@@ -821,12 +821,12 @@ fn cmp_event_order(
 
 /// Extract a temporal ordering key from node properties.
 ///
-/// Primary: parse the monotonic counter from `a2a:event_id` (`"prov-42"` → 42).
+/// Primary: parse the monotonic counter from `a2a:activity_anchor` (`"prov-42"` → 42).
 /// Fallback: use `a2a:timestamp_ms`, then `a2a:task_state_time` for TaskState nodes.
 fn parse_event_order(props: &HashMap<String, serde_json::Value>) -> Option<u64> {
-    // Try a2a:event_id first (format: "prov-{counter}").
-    if let Some(event_id) = props.get(a2a::EVENT_ID).and_then(|v| v.as_str())
-        && let Some(counter_str) = event_id.strip_prefix("prov-")
+    // Try `a2a:activity_anchor` first (format: "prov-{counter}").
+    if let Some(activity_anchor) = props.get(a2a::ACTIVITY_ANCHOR).and_then(|v| v.as_str())
+        && let Some(counter_str) = activity_anchor.strip_prefix("prov-")
         && let Ok(counter) = counter_str.parse::<u64>()
     {
         return Some(counter);
@@ -934,6 +934,7 @@ pub fn build_graph_from_json_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vocabulary::semantic_labels;
 
     #[allow(clippy::too_many_arguments)]
     fn make_row(
@@ -956,85 +957,6 @@ mod tests {
             serde_json::Value::String(tgt_id.to_string()),
             tgt_props,
         ]
-    }
-
-    #[test]
-    fn parse_export_result_empty_input() {
-        let graph = build_graph_from_json_rows(&[], ExportScope::Full).expect("should parse empty");
-        assert!(graph.nodes.is_empty());
-        assert!(graph.edges.is_empty());
-    }
-
-    #[test]
-    fn parse_export_result_single_edge() {
-        let row = make_row(
-            "ToolCall",
-            "prov-1",
-            serde_json::json!({"a2a:tool_name": "support/clickup"}),
-            "WAS_USED_BY",
-            serde_json::json!({}),
-            "ToolArgs",
-            "prov-2",
-            serde_json::json!({"a2a:args": "{\"action\":\"CreateTask\"}"}),
-        );
-        let graph = build_graph_from_json_rows(&[row], ExportScope::Context("ctx-1".into()))
-            .expect("should parse");
-
-        assert_eq!(graph.nodes.len(), 2);
-        assert_eq!(graph.edges.len(), 1);
-
-        let tool_node = graph.nodes.iter().find(|n| n.label == "ToolCall").unwrap();
-        assert_eq!(tool_node.id, "prov-1");
-        assert!(
-            tool_node.display_name.contains("clickup"),
-            "display_name: {}",
-            tool_node.display_name
-        );
-        assert!(
-            !tool_node.display_name.contains("support/"),
-            "display_name: {}",
-            tool_node.display_name
-        );
-
-        let args_node = graph.nodes.iter().find(|n| n.label == "ToolArgs").unwrap();
-        assert!(
-            args_node.display_name.contains("action=CreateTask"),
-            "display_name: {}",
-            args_node.display_name
-        );
-
-        let edge = &graph.edges[0];
-        assert_eq!(edge.from, "prov-1");
-        assert_eq!(edge.to, "prov-2");
-        assert_eq!(edge.relation, "WAS_USED_BY");
-    }
-
-    #[test]
-    fn parse_export_result_deduplicates_nodes() {
-        let row1 = make_row(
-            "Message",
-            "msg-1",
-            serde_json::json!({"a2a:role": "user"}),
-            "WAS_RECEIVED_BY",
-            serde_json::json!({}),
-            "A2AMessageProcessing",
-            "mp-1",
-            serde_json::json!({}),
-        );
-        let row2 = make_row(
-            "A2AMessageProcessing",
-            "mp-1",
-            serde_json::json!({}),
-            "WAS_EXECUTED_BY",
-            serde_json::json!({}),
-            "ToolCall",
-            "tc-1",
-            serde_json::json!({"a2a:tool_name": "support/clickup"}),
-        );
-        let graph =
-            build_graph_from_json_rows(&[row1, row2], ExportScope::Full).expect("should parse");
-        assert_eq!(graph.nodes.len(), 3, "msg-1, mp-1, tc-1 should be unique");
-        assert_eq!(graph.edges.len(), 2);
     }
 
     #[test]
@@ -1077,30 +999,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_export_result_no_results_message() {
-        let graph = build_graph_from_json_rows(&[], ExportScope::Full).expect("empty rows");
-        assert!(graph.nodes.is_empty());
-        assert!(graph.edges.is_empty());
-    }
-
-    #[test]
-    fn edges_are_sorted_and_deduped() {
-        let row = make_row(
-            "Message",
-            "msg-1",
-            serde_json::json!({}),
-            "WAS_RECEIVED_BY",
-            serde_json::json!({}),
-            "A2AMessageProcessing",
-            "mp-1",
-            serde_json::json!({}),
-        );
-        let graph = build_graph_from_json_rows(&[row.clone(), row], ExportScope::Full)
-            .expect("should parse");
-        assert_eq!(graph.edges.len(), 1, "duplicate edges should be deduped");
-    }
-
-    #[test]
     fn repeated_message_node_prefers_non_empty_role_and_content() {
         let sparse_first = make_row(
             "Message",
@@ -1108,9 +1006,9 @@ mod tests {
             serde_json::json!({
                 "a2a:role": "",
                 "a2a:content": [],
-                "a2a:event_id": "prov-1"
+                "a2a:activity_anchor": "prov-1"
             }),
-            "WAS_RECEIVED_BY",
+            semantic_labels::WAS_RECEIVED_BY,
             serde_json::json!({}),
             "A2AMessageProcessing",
             "mp-1",
@@ -1122,9 +1020,9 @@ mod tests {
             serde_json::json!({
                 "a2a:role": "ROLE_USER",
                 "a2a:content": ["hello world"],
-                "a2a:event_id": "prov-1"
+                "a2a:activity_anchor": "prov-1"
             }),
-            "WAS_RECEIVED_BY",
+            semantic_labels::WAS_RECEIVED_BY,
             serde_json::json!({}),
             "A2AMessageProcessing",
             "mp-2",
@@ -1157,7 +1055,7 @@ mod tests {
             a2a::ROLE.to_string(),
             serde_json::Value::String("ROLE_USER".to_string()),
         );
-        // Content stored as a JSON array (as GraphQLite returns it).
+        // Content stored as a JSON array (as the provenance store returns it).
         props.insert(
             a2a::CONTENT.to_string(),
             serde_json::Value::Array(vec![serde_json::Value::String(

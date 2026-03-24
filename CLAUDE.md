@@ -36,9 +36,6 @@ cargo insta review
 cargo run -p baml-rt-builder --bin baml-agent-builder   # lint, compile, package agents
 cargo run -p baml-agent-runner                           # load packaged agents, serve A2A
 
-# Regenerate fixture and production agent type declarations (baml-runtime.d.ts + generated_*.baml)
-cargo run -p baml-rt-builder --features http-tools,memory --bin regen_fixtures
-
 # Nextest (CI-style: one run, JUnit)
 cargo install cargo-nextest        # once
 ./scripts/nextest-ci-local.sh      # full workspace + http-tools; JUnit at target/nextest/ci/junit.xml
@@ -69,7 +66,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics
 - **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations
 - **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling
-- **baml-rt-provenance** — Provenance graph: event normalization, GraphQLite persistence
+- **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence
 - **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search
 - **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors
 
@@ -122,7 +119,7 @@ Tools have two roles: **invoke** (agent calls tool via session FSM) and optional
 
 The **best example** of multi-turn conversation and task lifecycle is the **task-lifecycle-demo** fixture: `tests/fixtures/agents/task-lifecycle-demo/src/index.ts`.
 
-- **Entrypoint:** `__chat_register({ run, onDispatch })` — the agent implements `run(ctx: RunContext)` and optionally `onDispatch(request: HostDispatchRequest)`; the runtime wires both onto `globalThis`. No boilerplate `session(message).run(...)` in agent code.
+- **Entrypoint:** `__chat_register({ run })` — the agent implements `run(ctx: RunContext)`; the runtime wraps it into `onChatMessage`. No boilerplate `session(message).run(...)` in agent code.
 - **Context:** `ctx.text` (first text part), `ctx.message` (inbound message), `ctx.emit` (message, artifact, `awaitInput`).
 - **Suspension:** `await ctx.emit.awaitInput(prompt)` emits INPUT_REQUIRED and resumes when the next message is routed to the same task/context.
 - **Helpers:** `messageText(message)` for any message; `session(message).text()` for the initial message. Messages from `awaitInput` have `.text()`.
@@ -144,7 +141,7 @@ Other fixtures (stream-js-tool, stream-baml-tool, conversational-context-auto, e
 ### Test-Gating Feature Flags
 
 - `llm-tests` — LLM-dependent tests requiring API keys (on baml-rt, baml-agent-runner, task-daemon)
-- `http-tools` — HTTP-dependent tools (ClickUp, Notion, Slack; on baml-rt-tools, baml-rt-builder, baml-agent-runner)
+- `http-tools` — HTTP-dependent tools (ClickUp, Notion, Slack) plus **security-eval** mock tools (`support/crm`, `support/email`) on `baml-rt-builder` and `baml-agent-runner`. **`baml-agent-builder package`** and **`regen_fixtures`** need these features when the manifest lists those tools (use `just build-release` / `just regen-fixtures`, or `--all-features`).
 
 ## CI Structure
 
@@ -180,4 +177,4 @@ Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 
 - **BAML runtime**: git dependency from `ryan-s-roberts/baml` (`canary` branch); `baml-runtime`, `baml-types`, `internal-baml-core`, `internal-llm-client`
 - **QuickJS**: `quickjs_runtime` crate for JS execution
-- **GraphQLite**: SQLite extension for Cypher-backed provenance graph
+- **SurrealDB**: Embedded multi-model database for provenance graph persistence

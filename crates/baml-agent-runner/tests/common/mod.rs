@@ -1,3 +1,4 @@
+//! Shared helpers for HTTP / e2e tests. Many items are optional per integration test binary.
 #[cfg(any(
     feature = "clickup",
     feature = "notion",
@@ -7,13 +8,6 @@
 use std::sync::Arc;
 use std::{path::PathBuf, sync::OnceLock};
 
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
-use async_trait::async_trait;
 #[cfg(any(
     feature = "clickup",
     feature = "notion",
@@ -44,15 +38,8 @@ use baml_rt_core::{
     feature = "slack",
     feature = "llm-tests"
 ))]
-use baml_rt_provenance::GraphqliteProvenanceStore;
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
 use baml_rt_provenance::{
-    GraphExporter,
+    GraphExporter, SurrealProvenanceStore,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
 };
 #[cfg(any(
@@ -73,7 +60,10 @@ pub use test_support::common::{TempDirCleanup, TempEnvVar};
 use tokio::sync::Semaphore;
 
 pub fn init_test_tracing() {
-    test_support::common::init_test_tracing();
+    static TRACING: OnceLock<()> = OnceLock::new();
+    TRACING.get_or_init(|| {
+        baml_rt_observability::init_tracing();
+    });
 }
 
 pub fn e2e_serial_gate() -> &'static Semaphore {
@@ -127,7 +117,7 @@ impl SingleAgentRegistry {
     feature = "slack",
     feature = "llm-tests"
 ))]
-#[async_trait]
+#[::async_trait::async_trait]
 impl AgentLister for SingleAgentRegistry {
     fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
         let agent_card = AgentCard {
@@ -157,7 +147,7 @@ impl AgentLister for SingleAgentRegistry {
     feature = "slack",
     feature = "llm-tests"
 ))]
-#[async_trait]
+#[::async_trait::async_trait]
 impl AgentRegistry for SingleAgentRegistry {
     async fn handle_a2a_stream(
         &self,
@@ -179,7 +169,7 @@ impl AgentRegistry for SingleAgentRegistry {
     async fn handle_dispatch(
         &self,
         key: &AgentRouteKey,
-        request: AgentDispatchRequest,
+        _request: AgentDispatchRequest,
     ) -> baml_rt_core::Result<AgentDispatchAck> {
         if key.agent_package.as_str() != self.package
             || key.agent_instance_id.as_str() != self.instance_id
@@ -190,7 +180,9 @@ impl AgentRegistry for SingleAgentRegistry {
                 key.agent_instance_id.as_str()
             )));
         }
-        self.agent.handle_dispatch(request).await
+        Err(baml_rt_core::BamlRtError::FunctionNotFound(
+            "onDispatch".to_string(),
+        ))
     }
 }
 
@@ -201,7 +193,7 @@ impl AgentRegistry for SingleAgentRegistry {
     feature = "llm-tests"
 ))]
 pub struct TestMermaidService {
-    store: Arc<GraphqliteProvenanceStore>,
+    store: Arc<SurrealProvenanceStore>,
 }
 
 #[cfg(any(
@@ -211,7 +203,7 @@ pub struct TestMermaidService {
     feature = "llm-tests"
 ))]
 impl TestMermaidService {
-    pub fn new(store: Arc<GraphqliteProvenanceStore>) -> Self {
+    pub fn new(store: Arc<SurrealProvenanceStore>) -> Self {
         Self { store }
     }
 }
@@ -222,7 +214,7 @@ impl TestMermaidService {
     feature = "slack",
     feature = "llm-tests"
 ))]
-#[async_trait]
+#[::async_trait::async_trait]
 impl baml_rt_api::MermaidService for TestMermaidService {
     async fn mermaid_for_context(
         &self,
@@ -288,20 +280,6 @@ impl RunningHttpServer {
         }
     }
 
-    pub fn with_base_path(mut self, base_path: &str) -> Self {
-        let trimmed = base_path.trim();
-        if trimmed.is_empty() || trimmed == "/" {
-            return self;
-        }
-        if trimmed.starts_with('/') {
-            self.base_url.push_str(trimmed);
-        } else {
-            self.base_url.push('/');
-            self.base_url.push_str(trimmed);
-        }
-        self
-    }
-
     pub async fn stop(mut self) {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(());
@@ -310,6 +288,26 @@ impl RunningHttpServer {
             let _ = handle.await;
         }
     }
+}
+
+/// Single place for `http://host:port` + optional API root (e.g. `/v1`, `/api/v2`). Canonicalized once.
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+fn http_server_base_url(addr: std::net::SocketAddr, base_path: Option<&str>) -> String {
+    let root = format!("http://{addr}");
+    let Some(path) = base_path else {
+        return root;
+    };
+    let path = path.trim_matches('/');
+    if path.is_empty() {
+        return root;
+    }
+    let root = root.trim_end_matches('/');
+    format!("{root}/{path}")
 }
 
 #[cfg(any(
@@ -335,7 +333,10 @@ impl Drop for RunningHttpServer {
     feature = "slack",
     feature = "llm-tests"
 ))]
-pub async fn start_http_server(app: axum::Router) -> std::io::Result<RunningHttpServer> {
+pub async fn start_http_server(
+    app: axum::Router,
+    base_path: Option<&str>,
+) -> std::io::Result<RunningHttpServer> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -348,7 +349,7 @@ pub async fn start_http_server(app: axum::Router) -> std::io::Result<RunningHttp
     });
 
     Ok(RunningHttpServer::new(
-        format!("http://{addr}"),
+        http_server_base_url(addr, base_path),
         shutdown_tx,
         handle,
     ))
@@ -363,7 +364,7 @@ pub async fn start_http_server(app: axum::Router) -> std::io::Result<RunningHttp
 pub async fn start_runner_api_server(
     agent_package: &str,
     agent: baml_rt::A2aAgent,
-    provenance: Arc<GraphqliteProvenanceStore>,
+    provenance: Arc<SurrealProvenanceStore>,
 ) -> std::io::Result<RunningHttpServer> {
     let registry: Arc<dyn AgentRegistry> = Arc::new(SingleAgentRegistry::new(
         agent_package,
@@ -374,28 +375,12 @@ pub async fn start_runner_api_server(
     ));
     let mermaid: Option<Arc<dyn baml_rt_api::MermaidService>> =
         Some(Arc::new(TestMermaidService::new(provenance)));
-    let app = baml_rt_api::api_router(registry, mermaid, None);
-    start_http_server(app).await
-}
-
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
-pub fn contains_kv(value: &Value, key: &str, expected: &str) -> bool {
-    match value {
-        Value::Object(map) => map.iter().any(|(k, v)| {
-            (k == key && v.as_str() == Some(expected)) || contains_kv(v, key, expected)
-        }),
-        Value::Array(items) => items.iter().any(|v| contains_kv(v, key, expected)),
-        _ => false,
-    }
+    let app = baml_rt_api::api_router(registry, mermaid, None).await;
+    start_http_server(app, None).await
 }
 
 /// Builds an agent at the given path using the builder crate (in-process, no cargo subprocess).
-#[allow(dead_code)] // Shared across test binaries; not every target uses it in each build.
+#[allow(dead_code)] // Used only by optional http-tools integration tests (slack/clickup/notion).
 pub async fn build_agent_dir_to_temp_async(agent_dir: PathBuf, package_label: &str) -> PathBuf {
     test_support::common::build_agent_package_to_temp(agent_dir, package_label).await
 }

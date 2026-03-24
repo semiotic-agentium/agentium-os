@@ -1,8 +1,18 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { RunContext, SessionResult } from "./baml-runtime";
+import type {
+  ReplyPart,
+  RunContext,
+  SessionResult,
+  StructuredReply,
+} from "./baml-runtime";
 
 const MAX_REACT_STEPS = 8;
 const MAX_CLARIFY = 2;
+
+function textReply(text: string): StructuredReply {
+  const parts: ReplyPart[] = [{ type: "text", text }];
+  return { parts, citations: [] };
+}
 
 type NeedClarification = { question: string };
 type NotRelevant = { reason: string };
@@ -198,7 +208,6 @@ async function runNotionPlan(
     ? await executionSession.submitIntent({
         intentId,
         description: goal,
-        derivedFromMessageIds: [messageId],
       })
     : null;
   const executable = intentPhase
@@ -215,64 +224,45 @@ async function runNotionPlan(
     : null;
 
   // ── Execute each tool step independently (persona pattern) ──────────────
-  // Each step gets its own executor run; prior results thread forward so
-  // "read" steps can use page IDs discovered by preceding "discover" steps.
+  // Each step drives its own support/notion session: Open → Send → Read @N grep=... → Finish.
+  // Read results accumulate in intra-turn history for ReactToNotionResults.
   const toolSteps = steps.filter((s) => s.kind !== "synthesize");
   const synthesizeStep = steps.find((s) => s.kind === "synthesize");
-  const allStepOutputs: unknown[][] = [];
-  let priorResultsJson: string | null = null;
 
   try {
     for (const toolStep of toolSteps) {
       if (executable) {
-        await executable.startStep?.(
-          toolStep.id,
-          `Starting ${toolStep.kind}: ${toolStep.description}`,
-        );
+        await executable.startStep?.(toolStep.id);
       }
 
-      const run = await runGeneratedStepExecutor("ChooseNotionAction", {
+      await runGeneratedStepExecutor("ChooseNotionAction", {
         goal,
         step_description: toolStep.description,
-        prior_results: priorResultsJson,
       }, { max_steps: MAX_REACT_STEPS });
 
-      allStepOutputs.push(run.steps);
-      priorResultsJson = collectToolResultsJson(run.steps);
-
       if (executable) {
-        await executable.completeStep?.(
-          toolStep.id,
-          `Completed ${toolStep.kind}: ${run.steps.length} result(s).`,
-        );
+        await executable.completeStep?.(toolStep.id);
       }
     }
 
-    // ── Synthesize across all step outputs ──────────────────────────────
+    // ── Synthesize from conversation history ────────────────────────────
+    // History contains Read results from all ChooseNotionAction runs above.
     if (synthesizeStep && executable) {
-      await executable.startStep?.(synthesizeStep.id, `Synthesizing answer: ${goal}`);
+      await executable.startStep?.(synthesizeStep.id);
     }
 
-    const allOutputsFlat = allStepOutputs.flat();
-    const toolResultsJson = collectToolResultsJson(allOutputsFlat);
-
-    let finalMessage: string;
+    let finalMessage: StructuredReply;
     try {
-      const reaction = await ReactToNotionResults({
+      finalMessage = await ReactToNotionResults({
         goal,
         user_message: userText,
-        tool_results_json: toolResultsJson,
       });
-      finalMessage = typeof reaction === "string" ? reaction.trim()
-        : (isObject(reaction) && typeof (reaction as { content?: unknown }).content === "string"
-            ? String((reaction as { content?: unknown }).content).trim() : "");
-      if (!finalMessage) throw new Error("empty reaction");
     } catch (_) {
-      finalMessage = await renderToolOutput(allOutputsFlat, goal);
+      finalMessage = textReply("Notion returned no usable content for this request.");
     }
 
     if (synthesizeStep && executable) {
-      await executable.completeStep?.(synthesizeStep.id, "Answer synthesized and returned to user.");
+      await executable.completeStep?.(synthesizeStep.id);
     }
     if (executable) await executable.finish?.();
 
@@ -303,7 +293,9 @@ __chat_register({
         break;
       }
       if (isNotRelevant(intentResult)) {
-        return { message: `This doesn't look like a Notion question — ${intentResult.reason}` };
+        return {
+          message: textReply(`This doesn't look like a Notion question — ${intentResult.reason}`),
+        };
       }
       if (isNeedClarification(intentResult) && i < MAX_CLARIFY) {
         const reply = await ctx.emit.awaitInput(intentResult.question);

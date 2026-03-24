@@ -11,6 +11,9 @@ It focuses on:
 
 ## Core Principles
 
+- **Citations, not evidence strings:** planning intents and step transitions carry **ref-table `citations`**
+  (`#N` history, `@N` archive) so the system has **citable history** and **checked citations** in
+  provenance/drift — see `docs/citable-history-and-checked-citations.md`.
 - Keep planning intent-focused, not FSM-mechanics-focused.
 - Let runtime + generated session schemas enforce step shape and allowed operations.
 - Use an append-only event log for session continuation context.
@@ -153,6 +156,11 @@ Use TS to orchestrate intent/Plan Artifact lifecycle and evidence, not to reimpl
 - Treat Step Executor outputs as strict envelopes (`status`, `output`) and parse conservatively.
 - On terminal status, consume final output and complete the corresponding execution step.
 
+**Provenance note:** operator‑visible prose is **not** copied from step‑executor
+`last`/`steps` into provenance as a second “reply.” The recorded user message is
+the chat completion `SessionResult.message` (e.g. `StructuredReply` from a final
+synthesis function). Step envelopes are execution evidence only.
+
 ## Iterative Plan-Step Solver (Reference Pattern)
 
 An iterative solver should execute one committed step at a time, while each Execution Hop emits exactly one FSM step.
@@ -249,8 +257,8 @@ If your tool participates in session planning context, implement these pieces:
    - Use identity/summary/detail semantics for read paths where applicable.
    - Ensure summary mode stays token-cheap and detail mode is explicit/opt-in.
 
-4. **Keep event records source-tagged and ordered**
-   - Preserve `event_id`, timestamp, role, and source.
+4. **Keep activity records source-tagged and ordered**
+   - Preserve provenance `activity_anchor` (and any envelope `event_id` where that is the wire id), timestamp, role, and source.
    - Emit deterministic references instead of raw archive dumps when possible.
 
 Minimal shape:

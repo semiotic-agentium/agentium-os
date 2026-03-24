@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 use baml_rt_core::{
     BamlRtError, Result,
-    ids::{AgentId, ContextId, EventId, TaskId},
+    ids::{AgentId, ContextId, TaskId},
 };
 use baml_rt_observability::metrics;
 use baml_rt_provenance::{ProvEvent, ProvenanceConversationContextItem, ProvenanceWriter};
@@ -120,13 +120,17 @@ pub trait TaskChunkApplier: Send + Sync {
     ) -> Result<Vec<TaskUpdateEvent>>;
 }
 
-/// Single source of truth for conversation context: read from the same store that
-/// receives task/message updates. Unifies A2A task state and conversation; provenance
-/// is the write-through audit log.
+/// Source of **BAML conversation rows** (`ProvenanceConversationContextItem`) for prompt projection.
 ///
-/// For resume, the caller must use the same `context_id` as the session; scope is
-/// resolved from `OutcomeInvocationContext::LiveSessionResume` so `context_id` (and
-/// optional `task_id`) are consistent. Limit (e.g. 40) is applied by the implementation.
+/// Rows come **only** from the provenance graph ([`ProvenanceWriter::conversation_context`]).
+/// Agent startup always mounts a [`ProvenanceWriter`] (file, explicit in-memory Surreal, or the
+/// builder default in-memory graph). There is no history path without a database.
+///
+/// [`TaskStoreBackend`] deliberately does **not** include this trait — task/message mirrors are
+/// for transport and lifecycle, not for reconstructing LLM-visible history.
+///
+/// For resume, the caller must use the same `context_id` as the session. Limit (e.g. 40) is
+/// applied by the implementation.
 #[async_trait]
 pub trait ConversationContextSource: Send + Sync {
     async fn conversation_context(
@@ -136,18 +140,44 @@ pub trait ConversationContextSource: Send + Sync {
     ) -> Result<Vec<ProvenanceConversationContextItem>>;
 }
 
+/// Conversation context read **only** from the provenance writer / graph (e.g. SurrealDB).
+///
+/// Wired into the BAML runtime for every agent build: one projection, one store.
+#[derive(Clone)]
+pub struct ProvenanceWriterConversationSource {
+    writer: Arc<dyn ProvenanceWriter>,
+}
+
+impl ProvenanceWriterConversationSource {
+    pub fn new(writer: Arc<dyn ProvenanceWriter>) -> Self {
+        Self { writer }
+    }
+}
+
+#[async_trait]
+impl ConversationContextSource for ProvenanceWriterConversationSource {
+    async fn conversation_context(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        self.writer
+            .conversation_context(context_id, limit)
+            .await
+            .map_err(|source| BamlRtError::ProvenanceContextRead {
+                source: Box::new(source),
+            })
+    }
+}
+
 #[async_trait]
 pub trait TaskStoreBackend:
-    TaskRepository + TaskEventRecorder + TaskUpdateQueue + TaskChunkApplier + ConversationContextSource
+    TaskRepository + TaskEventRecorder + TaskUpdateQueue + TaskChunkApplier
 {
 }
 
 impl<T> TaskStoreBackend for T where
-    T: TaskRepository
-        + TaskEventRecorder
-        + TaskUpdateQueue
-        + TaskChunkApplier
-        + ConversationContextSource
+    T: TaskRepository + TaskEventRecorder + TaskUpdateQueue + TaskChunkApplier
 {
 }
 
@@ -242,33 +272,17 @@ impl TaskChunkApplier for Mutex<TaskStore> {
     }
 }
 
-#[async_trait]
-impl ConversationContextSource for Mutex<TaskStore> {
-    async fn conversation_context(
-        &self,
-        context_id: &ContextId,
-        limit: Option<usize>,
-    ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        let store = self.lock().await;
-        let messages = store.list_messages_in_context(context_id, limit);
-        let items = messages
-            .iter()
-            .enumerate()
-            .map(|(i, msg)| message_to_context_item(msg, i as u64 * 1000))
-            .collect();
-        Ok(items)
-    }
-}
-
 pub struct ProvenanceTaskStore {
     inner: Arc<dyn TaskStoreBackend>,
-    writer: Option<Arc<dyn ProvenanceWriter>>,
+    /// Required: all task/message side effects are mirrored into this graph for audit and for
+    /// [`ProvenanceWriter::conversation_context`]. There is no task-history path for LLM-visible rows.
+    writer: Arc<dyn ProvenanceWriter>,
     agent_id: AgentId,
 }
 
 impl ProvenanceTaskStore {
-    /// In-memory task store with optional provenance writer.
-    pub fn new(writer: Option<Arc<dyn ProvenanceWriter>>, agent_id: AgentId) -> Self {
+    /// In-memory task mirror with a provenance writer (conversation context is **only** via the graph).
+    pub fn new(writer: Arc<dyn ProvenanceWriter>, agent_id: AgentId) -> Self {
         Self {
             inner: Arc::new(Mutex::new(TaskStore::new())),
             writer,
@@ -276,11 +290,11 @@ impl ProvenanceTaskStore {
         }
     }
 
-    /// Task store backed by a persistent backend (e.g. [crate::graphqlite_task_subgraph_store::GraphqliteTaskSubgraphStore])
-    /// with optional provenance writer. Use the same store as both backend and writer for unified persistence.
+    /// Task store backed by a persistent backend (e.g. [crate::task_subgraph_store::TaskSubgraphStore])
+    /// with the same provenance writer used for graph writes and conversation reads.
     pub fn with_backend(
         inner: Arc<dyn TaskStoreBackend>,
-        writer: Option<Arc<dyn ProvenanceWriter>>,
+        writer: Arc<dyn ProvenanceWriter>,
         agent_id: AgentId,
     ) -> Self {
         Self {
@@ -291,22 +305,18 @@ impl ProvenanceTaskStore {
     }
 
     async fn record_event(&self, event: ProvEvent) {
-        if let Some(writer) = &self.writer {
-            writer
-                .add_event_with_logging(event, "task store operation")
-                .await;
-        }
+        self.writer
+            .add_event_with_logging(event, "task store operation")
+            .await;
     }
 
     async fn record_event_required(&self, event: ProvEvent, context: &str) -> Result<()> {
-        if let Some(writer) = &self.writer {
-            writer.add_event(event).await.map_err(|source| {
-                BamlRtError::InvalidArgumentWithSource {
-                    message: format!("failed to record provenance event for {context}"),
-                    source: Box::new(source),
-                }
-            })?;
-        }
+        self.writer.add_event(event).await.map_err(|source| {
+            BamlRtError::InvalidArgumentWithSource {
+                message: format!("failed to record provenance event for {context}"),
+                source: Box::new(source),
+            }
+        })?;
         Ok(())
     }
 
@@ -531,7 +541,6 @@ impl TaskRepository for ProvenanceTaskStore {
             message_id = message.message_id.as_message_id().as_str(),
             role = role.as_str(),
             content_parts = content.len(),
-            has_writer = self.writer.is_some(),
             "Storing message in provenance",
         );
 
@@ -601,7 +610,7 @@ impl TaskRepository for ProvenanceTaskStore {
         self.record_event_required(event, "insert_message message lifecycle")
             .await?;
 
-        // Task-scoped backends (e.g. GraphqliteTaskSubgraphStore) require task_id; global
+        // Task-scoped backends (e.g. TaskSubgraphStore) require task_id; global
         // messages are only in the provenance event stream and appear in context_messages.
         if message.task_id.is_some() {
             let start = Instant::now();
@@ -614,14 +623,6 @@ impl TaskRepository for ProvenanceTaskStore {
 
 pub(crate) fn message_role_string(role: &MessageRole) -> String {
     role.as_wire_str().to_string()
-}
-
-fn message_content(message: &Message) -> Vec<String> {
-    message
-        .parts
-        .iter()
-        .filter_map(|part| part.text.clone())
-        .collect()
 }
 
 /// Provenance-safe content extraction from A2A message parts.
@@ -654,27 +655,6 @@ pub(crate) fn validated_message_content(
         // Parts with none of the above fields are truly empty — skip them.
     }
     Ok(content)
-}
-
-fn message_to_context_item(
-    message: &Message,
-    timestamp_ms: u64,
-) -> ProvenanceConversationContextItem {
-    let role = message_role_string(&message.role);
-    let content_parts = message_content(message);
-    let content = Value::Array(
-        content_parts
-            .into_iter()
-            .map(Value::String)
-            .collect::<Vec<_>>(),
-    );
-    ProvenanceConversationContextItem {
-        timestamp_ms,
-        event_id: EventId::from(message.message_id.as_message_id().as_str()),
-        role,
-        content,
-        source: "message".to_string(),
-    }
 }
 
 pub(crate) fn metadata_string_map(metadata: &HashMap<String, Value>) -> HashMap<String, String> {
@@ -895,29 +875,6 @@ impl TaskChunkApplier for ProvenanceTaskStore {
     }
 }
 
-#[async_trait]
-impl ConversationContextSource for ProvenanceTaskStore {
-    async fn conversation_context(
-        &self,
-        context_id: &ContextId,
-        limit: Option<usize>,
-    ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        if let Some(writer) = &self.writer {
-            let provenance_items = writer
-                .conversation_context(context_id, limit)
-                .await
-                .map_err(|source| BamlRtError::ProvenanceContextRead {
-                    source: Box::new(source),
-                })?;
-            if !provenance_items.is_empty() {
-                return Ok(provenance_items);
-            }
-        }
-
-        self.inner.conversation_context(context_id, limit).await
-    }
-}
-
 fn status_to_string(status: &TaskStatus) -> Option<String> {
     status.state.as_ref().map(|state| match state {
         TaskState::String(value) => value.clone(),
@@ -1024,37 +981,6 @@ impl TaskStore {
             truncate_history(&mut task, limit);
         }
         Some(task)
-    }
-
-    /// Collects all messages in the given context from task histories (task order, then
-    /// history order). Single source of truth for conversation; no separate provenance read.
-    pub fn list_messages_in_context(
-        &self,
-        context_id: &ContextId,
-        limit: Option<usize>,
-    ) -> Vec<Message> {
-        let context_str = context_id.as_str();
-        let mut out: Vec<Message> = self
-            .order
-            .iter()
-            .filter_map(|id| self.tasks.get(id))
-            .filter(|task| {
-                task.context_id
-                    .as_ref()
-                    .is_some_and(|c| c.as_str() == context_str)
-            })
-            .flat_map(|task| task.history.iter().cloned())
-            .collect();
-        if let Some(n) = limit {
-            if n == 0 {
-                return Vec::new();
-            }
-            if out.len() > n {
-                let start = out.len() - n;
-                out = out.into_iter().skip(start).collect();
-            }
-        }
-        out
     }
 
     pub fn list(&self, request: &ListTasksRequest) -> ListTasksResponse {
