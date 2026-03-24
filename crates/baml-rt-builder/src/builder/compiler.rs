@@ -159,7 +159,10 @@ fn run_tsc(project_dir: &Path, extra_args: &[&str]) -> Result<()> {
     for arg in &base_args {
         cmd.arg(arg);
     }
-    cmd.arg("--project").arg(project_dir);
+    // Pass the config file path (not only the directory) so `tsc` never picks up a parent
+    // tsconfig or a stale resolution path under TS 6+ (TS5011 / rootDir).
+    let tsconfig_path = project_dir.join("tsconfig.json");
+    cmd.arg("--project").arg(&tsconfig_path);
     for arg in extra_args {
         cmd.arg(arg);
     }

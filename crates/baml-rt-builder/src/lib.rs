@@ -16,6 +16,9 @@ pub async fn build_agent_package(
     output: impl AsRef<Path>,
 ) -> Result<()> {
     let agent_dir = AgentDir::new(agent_dir.as_ref().to_path_buf())?;
+    // TS 5.6+ / TS 6: explicit rootDir in tsconfig (TS5011). Write before typegen/tsc so every
+    // package build is self-contained even if the repo copy of tsconfig.json is stale.
+    write_canonical_tsconfig(agent_dir.as_path())?;
     let build_dir = BuildDir::new()?;
 
     let filesystem = StdFileSystem;
