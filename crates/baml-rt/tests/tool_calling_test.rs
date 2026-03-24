@@ -245,7 +245,7 @@ async fn test_e2e_voidship_baml_tool_calling() {
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000b1").unwrap());
     let scope = InvocationScope::synthetic_message(agent_id);
 
-    let result = context::with_scope(scope.as_scope().clone(), async {
+    let tool_choice = context::with_scope(scope.as_scope().clone(), async {
         let manager = baml_manager.lock().await;
         manager
             .invoke_function(
@@ -255,20 +255,14 @@ async fn test_e2e_voidship_baml_tool_calling() {
             )
             .await
     })
-    .await;
+    .await
+    .expect("ChooseCalcTool with strict stub should succeed (API key optional when interceptor substitutes)");
 
-    match result {
-        Ok(tool_choice) => {
-            let manager = baml_manager.lock().await;
-            let value = execute_calc_session_strict(&manager, &scope, tool_choice)
-                .await
-                .expect("strict session execution should succeed");
-            assert_eq!(value, 5.0, "Expected 2 + 3 = 5");
-        }
-        Err(e) => {
-            tracing::warn!("BAML tool selection failed: {}", e);
-        }
-    }
+    let manager = baml_manager.lock().await;
+    let value = execute_calc_session_strict(&manager, &scope, tool_choice)
+        .await
+        .expect("strict session execution should succeed");
+    assert_eq!(value, 5.0, "Expected 2 + 3 = 5");
 }
 
 /// **Purpose:** Authoritative concurrent E2E: four requests with distinct agent IDs run

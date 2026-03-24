@@ -84,18 +84,52 @@ class ArchiveReadInput {
   grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
 }
 // Domain types generated from JSON schemas
+class ConversationPart {
+  text string | null?
+  raw string | null?
+  url string | null?
+  filename string | null?
+  media_type string | null?
+}
+
+class ConversationMessage {
+  role string | null?
+  parts ConversationPart[]
+}
+
+class ConversationChunk {
+  message ConversationMessage | null?
+  task string | null?
+  status_update string | null?
+  artifact_update string | null?
+}
+
+class HistoryContextV1 {
+  hop int
+  op string
+  status string
+  truncated bool
+  cursor string | null?
+  payload string | null?
+}
+
 class InternalA2aNextOutput {
-  chunks string[]
+  chunks ConversationChunk[]
   completion string | null?
-  history_context string | null?
+  history_context HistoryContextV1 | null?
+}
+
+class InternalA2aTarget {
+  agent_package string
+  agent_instance_id string
 }
 
 class InternalA2aOpenInput {
-  target string
+  target InternalA2aTarget
 }
 
 class InternalA2aSendInput {
-  parts string[]
+  parts ConversationPart[]
 }
 
 /// Tool card for system/internal_a2a: metadata for polymorphic Open selection.

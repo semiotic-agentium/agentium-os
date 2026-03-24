@@ -170,7 +170,7 @@ class ClickUpOutput {
 class SupportClickupToolCard {
   tool_name "support/clickup"
   description "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
-  session_policy "MultiSend"
+  session_policy "Strict"
   input_summary "{}"
   tags string[] @description("Tool tags: support, clickup")
 }

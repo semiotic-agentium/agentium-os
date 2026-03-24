@@ -138,6 +138,7 @@ fn generate_baml_type(
         // General oneOf union (non-enum): generate variant classes for object members
         // and emit a type alias union.
         let mut variants = Vec::new();
+        let alt_field_names: Vec<String> = (0..one_of.len()).map(|i| format!("Alt{}", i)).collect();
         for (idx, variant) in one_of.iter().enumerate() {
             let is_object_like = variant.as_object().is_some_and(|obj| {
                 obj.contains_key("properties")
@@ -159,10 +160,12 @@ fn generate_baml_type(
                 variants.push(variant_name);
             } else {
                 variants.push(json_schema_to_baml_type(
+                    output,
                     variant,
                     generated,
                     all_schemas,
                     type_names,
+                    Some((type_name, alt_field_names[idx].as_str())),
                 )?);
             }
         }
@@ -176,6 +179,7 @@ fn generate_baml_type(
 
     if let Some(any_of) = schema_obj.get("anyOf").and_then(|v| v.as_array()) {
         let mut variants = Vec::new();
+        let alt_field_names: Vec<String> = (0..any_of.len()).map(|i| format!("Alt{}", i)).collect();
         for (idx, variant) in any_of.iter().enumerate() {
             let is_object_like = variant.as_object().is_some_and(|obj| {
                 obj.contains_key("properties")
@@ -197,10 +201,12 @@ fn generate_baml_type(
                 variants.push(variant_name);
             } else {
                 variants.push(json_schema_to_baml_type(
+                    output,
                     variant,
                     generated,
                     all_schemas,
                     type_names,
+                    Some((type_name, alt_field_names[idx].as_str())),
                 )?);
             }
         }
@@ -332,6 +338,18 @@ fn generate_baml_class(
         Some(p) if !p.is_empty() => p,
         _ => return Ok(()),
     };
+
+    for (prop_name, prop_schema) in properties.iter() {
+        preemit_nested_inline_classes(
+            output,
+            prop_schema,
+            Some((class_name, prop_name.as_str())),
+            generated,
+            all_schemas,
+            type_names,
+        )?;
+    }
+
     write_line(output, &format!("class {} {{", class_name))?;
 
     let required = schema_obj
@@ -345,7 +363,14 @@ fn generate_baml_class(
         .unwrap_or_default();
 
     for (prop_name, prop_schema) in properties {
-        let prop_type = json_schema_to_baml_type(prop_schema, generated, all_schemas, type_names)?;
+        let prop_type = json_schema_to_baml_type(
+            output,
+            prop_schema,
+            generated,
+            all_schemas,
+            type_names,
+            Some((class_name, prop_name.as_str())),
+        )?;
         let is_optional = !required.contains(prop_name.as_str());
         let type_str = if is_optional {
             format!("{}?", prop_type)
@@ -375,15 +400,156 @@ fn generate_baml_class(
     Ok(())
 }
 
+fn is_inline_object_schema(schema_obj: &serde_json::Map<String, Value>) -> bool {
+    let Some(props) = schema_obj.get("properties").and_then(Value::as_object) else {
+        return false;
+    };
+    !props.is_empty()
+}
+
+/// Stable BAML class name for an inline `type: object` schema (nested struct fields).
+fn nested_class_name_for_inline_object(
+    schema_obj: &serde_json::Map<String, Value>,
+    inline_name_hint: Option<(&str, &str)>,
+) -> Result<String> {
+    if let Some(Value::String(title)) = schema_obj.get("title")
+        && !title.is_empty()
+    {
+        return Ok(title.clone());
+    }
+    let Some((parent, field)) = inline_name_hint else {
+        return Err(BamlBuilderError::InvalidArgument(
+            "inline object schema has no title and no parent/field hint for BAML class name"
+                .to_string(),
+        ));
+    };
+    Ok(format!("{}{}", parent, to_pascal_case(field)))
+}
+
+/// Emit nested inline object classes referenced by `schema` before the caller writes its own class.
+fn preemit_nested_inline_classes(
+    output: &mut String,
+    schema: &Value,
+    inline_name_hint: Option<(&str, &str)>,
+    generated: &mut HashSet<String>,
+    all_schemas: &HashMap<String, Value>,
+    type_names: &HashMap<String, String>,
+) -> Result<()> {
+    if schema.is_boolean() {
+        return Ok(());
+    }
+    let Some(schema_obj) = schema.as_object() else {
+        return Ok(());
+    };
+    if schema_obj.contains_key("$ref") {
+        return Ok(());
+    }
+
+    if is_inline_object_schema(schema_obj) {
+        let nested_name = nested_class_name_for_inline_object(schema_obj, inline_name_hint)?;
+        if !generated.contains(&nested_name) {
+            generate_baml_type(
+                output,
+                &nested_name,
+                schema,
+                generated,
+                all_schemas,
+                type_names,
+            )?;
+        }
+        return Ok(());
+    }
+
+    if let Some(Value::Array(type_array)) = schema_obj.get("type") {
+        for value in type_array {
+            match value {
+                Value::String(s) if s == "array" => {
+                    if let Some(items) = schema_obj.get("items") {
+                        preemit_nested_inline_classes(
+                            output,
+                            items,
+                            inline_name_hint,
+                            generated,
+                            all_schemas,
+                            type_names,
+                        )?;
+                    }
+                }
+                Value::Object(_) => {
+                    preemit_nested_inline_classes(
+                        output,
+                        value,
+                        inline_name_hint,
+                        generated,
+                        all_schemas,
+                        type_names,
+                    )?;
+                }
+                _ => {}
+            }
+        }
+        return Ok(());
+    }
+
+    if schema_obj
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|t| t == "array")
+        && let Some(items) = schema_obj.get("items")
+    {
+        preemit_nested_inline_classes(
+            output,
+            items,
+            inline_name_hint,
+            generated,
+            all_schemas,
+            type_names,
+        )?;
+        return Ok(());
+    }
+
+    if let Some(any_of) = schema_obj.get("anyOf").and_then(Value::as_array) {
+        for variant in any_of {
+            preemit_nested_inline_classes(
+                output,
+                variant,
+                inline_name_hint,
+                generated,
+                all_schemas,
+                type_names,
+            )?;
+        }
+    }
+    if let Some(one_of) = schema_obj.get("oneOf").and_then(Value::as_array) {
+        for variant in one_of {
+            preemit_nested_inline_classes(
+                output,
+                variant,
+                inline_name_hint,
+                generated,
+                all_schemas,
+                type_names,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Convert JSON schema type to BAML type string.
 ///
 /// Handles both scalar `"type": "string"` and nullable array
 /// `"type": ["string", "null"]` forms produced by schemars 1.x for `Option<T>`.
+///
+/// For inline object schemas with `properties`, emits a nested BAML `class` first
+/// (named from `"title"` or `parent_field` hint).
 fn json_schema_to_baml_type(
+    output: &mut String,
     schema: &Value,
-    _generated: &mut HashSet<String>,
-    _all_schemas: &HashMap<String, Value>,
-    _type_names: &HashMap<String, String>,
+    generated: &mut HashSet<String>,
+    all_schemas: &HashMap<String, Value>,
+    type_names: &HashMap<String, String>,
+    inline_name_hint: Option<(&str, &str)>,
 ) -> Result<String> {
     // Schemars may emit boolean schemas (`true`/`false`) for fully open/closed forms,
     // especially when serializing untyped JSON payloads.
@@ -402,6 +568,22 @@ fn json_schema_to_baml_type(
         }
     }
 
+    // Inline object with properties (BamlType nested structs embed full object schema).
+    if is_inline_object_schema(schema_obj) {
+        let nested_name = nested_class_name_for_inline_object(schema_obj, inline_name_hint)?;
+        if !generated.contains(&nested_name) {
+            generate_baml_type(
+                output,
+                &nested_name,
+                schema,
+                generated,
+                all_schemas,
+                type_names,
+            )?;
+        }
+        return Ok(nested_name);
+    }
+
     // Handle nullable types represented as type: ["string", "null"]
     if let Some(Value::Array(type_array)) = schema_obj.get("type") {
         let mut mapped = Vec::new();
@@ -416,14 +598,36 @@ fn json_schema_to_baml_type(
                         "integer" => "int".to_string(),
                         "number" => "float".to_string(),
                         "boolean" => "bool".to_string(),
-                        "object" => "string".to_string(),
+                        "object" => {
+                            if is_inline_object_schema(schema_obj) {
+                                let nested_name = nested_class_name_for_inline_object(
+                                    schema_obj,
+                                    inline_name_hint,
+                                )?;
+                                if !generated.contains(&nested_name) {
+                                    generate_baml_type(
+                                        output,
+                                        &nested_name,
+                                        schema,
+                                        generated,
+                                        all_schemas,
+                                        type_names,
+                                    )?;
+                                }
+                                nested_name
+                            } else {
+                                "string".to_string()
+                            }
+                        }
                         "array" => {
                             if let Some(items) = schema_obj.get("items") {
                                 let item_type = json_schema_to_baml_type(
+                                    output,
                                     items,
-                                    _generated,
-                                    _all_schemas,
-                                    _type_names,
+                                    generated,
+                                    all_schemas,
+                                    type_names,
+                                    inline_name_hint,
                                 )?;
                                 format!("{}[]", item_type)
                             } else {
@@ -433,9 +637,14 @@ fn json_schema_to_baml_type(
                         other => format!("any /* {} */", other),
                     }
                 }
-                Value::Object(_) => {
-                    json_schema_to_baml_type(value, _generated, _all_schemas, _type_names)?
-                }
+                Value::Object(_) => json_schema_to_baml_type(
+                    output,
+                    value,
+                    generated,
+                    all_schemas,
+                    type_names,
+                    inline_name_hint,
+                )?,
                 _ => "any".to_string(),
             };
             mapped.push(mapped_type);
@@ -454,10 +663,12 @@ fn json_schema_to_baml_type(
         let mut types = Vec::new();
         for variant in any_of {
             types.push(json_schema_to_baml_type(
+                output,
                 variant,
-                _generated,
-                _all_schemas,
-                _type_names,
+                generated,
+                all_schemas,
+                type_names,
+                inline_name_hint,
             )?);
         }
         return Ok(types.join(" | "));
@@ -468,10 +679,12 @@ fn json_schema_to_baml_type(
         let mut types = Vec::new();
         for variant in one_of {
             types.push(json_schema_to_baml_type(
+                output,
                 variant,
-                _generated,
-                _all_schemas,
-                _type_names,
+                generated,
+                all_schemas,
+                type_names,
+                inline_name_hint,
             )?);
         }
         return Ok(types.join(" | "));
@@ -504,14 +717,39 @@ fn json_schema_to_baml_type(
         // Handle array
         if type_str == "array" {
             if let Some(items) = schema_obj.get("items") {
-                let item_type =
-                    json_schema_to_baml_type(items, _generated, _all_schemas, _type_names)?;
+                let item_type = json_schema_to_baml_type(
+                    output,
+                    items,
+                    generated,
+                    all_schemas,
+                    type_names,
+                    inline_name_hint,
+                )?;
                 return Ok(format!("{}[]", item_type));
             }
             return Ok("any[]".to_string());
         }
 
         // Handle scalar primitive types
+        if type_str == "object" {
+            if is_inline_object_schema(schema_obj) {
+                let nested_name =
+                    nested_class_name_for_inline_object(schema_obj, inline_name_hint)?;
+                if !generated.contains(&nested_name) {
+                    generate_baml_type(
+                        output,
+                        &nested_name,
+                        schema,
+                        generated,
+                        all_schemas,
+                        type_names,
+                    )?;
+                }
+                return Ok(nested_name);
+            }
+            return Ok("string".to_string());
+        }
+
         return Ok(match type_str {
             "string" => "string".to_string(),
             // JSON Schema "integer" is always integral; "number" is always floating-point.
@@ -521,7 +759,6 @@ fn json_schema_to_baml_type(
             "number" => "float".to_string(),
             "boolean" => "bool".to_string(),
             "null" => "null".to_string(),
-            "object" => "string".to_string(),
             _ => format!("any /* {} */", type_str),
         });
     }

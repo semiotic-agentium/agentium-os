@@ -84,165 +84,145 @@ class ArchiveReadInput {
   grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
 }
 // Domain types generated from JSON schemas
+class AgentEventSubscriptionDto {
+  schema_versions string[]
+  source_kinds string[]
+  source_keys string[]
+  source_key_prefixes string[]
+}
+
 class AgentCardDto {
   name string
   version string
-  agentPackage string
-  agentInstanceId string
+  agent_package string
+  agent_instance_id string
   tools string[]
-  description string?
+  description string | null?
   capabilities string[]
-  subscriptions AgentEventSubscriptionDto[]?
-}
-
-class AgentEventSubscriptionDto {
-  schemaVersions string[]?
-  sourceKinds string[]?
-  sourceKeys string[]?
-  sourceKeyPrefixes string[]?
-}
-
-class DiscoverAgentsNextOutput {
-  agents AgentCardDto[]
-  done bool
-  historyContext HistoryContextV1 | null?
-}
-
-class DiscoverAgentsOpenInput {
-  reason string?
-}
-
-class DiscoverAgentsSendInput {
-  query string? @description("Optional text filter over agent name, package, or description.")
-  requiredCapabilities string[]? @description("Only return agents that declare every listed capability.")
-  requiredSchemaVersions string[]? @description("Only return agents with a matching event subscription for any listed schema version.")
-  requiredSourceKinds string[]? @description("Only return agents with a matching event subscription for any listed source kind.")
-  limit int?
-  offset int?
+  subscriptions AgentEventSubscriptionDto[]
 }
 
 class HistoryContextV1 {
   hop int
   op string
   status string
-  truncated bool?
-  cursor string?
-  payload string?
+  truncated bool
+  cursor string | null?
+  payload string | null?
 }
 
-class ProvenanceArchivePayloadDtoVariant1 {
-  payload_ref string
-  activity_ref string
-  prompt_json string
-  source string
+class DiscoverAgentsNextOutput {
+  agents AgentCardDto[]
+  done bool
+  history_context HistoryContextV1 | null?
 }
 
-class ProvenanceArchivePayloadDtoVariant2 {
-  payload_ref string
-  activity_ref string
-  result_json string
-  source string
+class DiscoverAgentsOpenInput {
+  reason string | null?
 }
 
-class ProvenanceArchivePayloadDtoVariant3 {
-  payload_ref string
-  activity_ref string
-  tool_name string?
-  phase string?
-  args_json string
-  source string
-}
-
-class ProvenanceArchivePayloadDtoVariant4 {
-  payload_ref string
-  activity_ref string
-  result_json string
-  source string
-}
-
-type ProvenanceArchivePayloadDto = ProvenanceArchivePayloadDtoVariant1 | ProvenanceArchivePayloadDtoVariant2 | ProvenanceArchivePayloadDtoVariant3 | ProvenanceArchivePayloadDtoVariant4
-
-class ProvenanceArchiveRecordDto {
-  archiveRef string
-  payloads ProvenanceArchivePayloadDto[]
+class DiscoverAgentsSendInput {
+  query string | null?
+  required_capabilities string[] | null?
+  required_schema_versions string[] | null?
+  required_source_kinds string[] | null?
+  limit int | null?
+  offset int | null?
 }
 
 class ProvenanceArchiveSummaryDto {
-  archiveRef string
-  payloadCount int
-  payloadSources string[]
+  archive_ref string
+  payload_count int
+  payload_sources string[]
 }
 
-class ProvenanceQueryNextOutput {
-  payloadJson string?
-  readResult SessionReadResultDto | null?
-  retrievalBudget ProvenanceRetrievalBudgetDto | null?
-  budgetExhausted bool?
-  done bool
-  historyContext HistoryContextV1 | null?
+class ProvenancePayloadLlmCallDto {
+  payload_ref string
+  activity_ref string
+  prompt_json string
 }
 
-class ProvenanceQueryOpenInput {
-  reason string?
+class ProvenancePayloadLlmResultDto {
+  payload_ref string
+  activity_ref string
+  result_json string
 }
 
-class ProvenanceQuerySendInput {
-  read SessionReadEnvelope | null? @description("Optional runtime-general explicit read request envelope.\nWhen set, the tool resolves it and ignores resource/filter fields.")
-  resource string
-  contextId string?
-  taskId string?
-  agentId string?
-  provider string?
-  model string?
-  toolName string?
-  bamlPrompt string?
-  payloadText string?
-  groupBy string[]?
-  sortBy string?
-  sortDir string?
-  outcome string?
-  pageSize int?
-  cursor string?
-  topK int?
+class ProvenancePayloadToolCallDto {
+  payload_ref string
+  activity_ref string
+  tool_name string | null?
+  phase string | null?
+  args_json string
 }
 
-enum ProvenanceReadProjectionDto {
-  Identity
-    @alias("identity")
-  Summary
-    @alias("summary")
-  Detail
-    @alias("detail")
+class ProvenancePayloadToolResultDto {
+  payload_ref string
+  activity_ref string
+  result_json string
 }
 
-class ProvenanceRetrievalBudgetDto {
-  callsUsed int
-  callsCap int
-  bytesUsed int
-  bytesCap int
-  itemsUsed int
-  itemsCap int
-}
-
-class SessionReadEnvelope {
-  mode SessionReadMode | null?
-  refId string
-  projection string?
-  budgetHint int?
-}
-
-enum SessionReadMode {
-  RetrieveRef
-    @alias("retrieve_ref")
+class ProvenanceArchiveRecordDto {
+  archive_ref string
+  payloads ProvenancePayloadLlmCallDto | ProvenancePayloadLlmResultDto | ProvenancePayloadToolCallDto | ProvenancePayloadToolResultDto[]
 }
 
 class SessionReadResultDto {
-  mode SessionReadMode
-  refId string
-  projection ProvenanceReadProjectionDto
+  mode string
+  ref_id string
+  projection string
   refs string[]
-  archiveSummary ProvenanceArchiveSummaryDto | null?
-  archiveRecord ProvenanceArchiveRecordDto | null?
+  archive_summary ProvenanceArchiveSummaryDto | null?
+  archive_record ProvenanceArchiveRecordDto | null?
+}
+
+class ProvenanceRetrievalBudgetDto {
+  calls_used int
+  calls_cap int
+  bytes_used int
+  bytes_cap int
+  items_used int
+  items_cap int
+}
+
+class ProvenanceQueryNextOutput {
+  payload_json string | null?
+  read_result SessionReadResultDto | null?
+  retrieval_budget ProvenanceRetrievalBudgetDto | null?
+  budget_exhausted bool | null?
+  done bool
+  history_context HistoryContextV1 | null?
+}
+
+class ProvenanceQueryOpenInput {
+  reason string | null?
+}
+
+class SessionReadEnvelope {
+  mode string | null?
+  ref_id string
+  projection string | null?
+  budget_hint int | null?
+}
+
+class ProvenanceQuerySendInput {
+  read SessionReadEnvelope | null?
+  resource string
+  context_id string | null?
+  task_id string | null?
+  agent_id string | null?
+  provider string | null?
+  model string | null?
+  tool_name string | null?
+  baml_prompt string | null?
+  payload_text string | null?
+  group_by string[] | null?
+  sort_by string | null?
+  sort_dir string | null?
+  outcome string | null?
+  page_size int | null?
+  cursor string | null?
+  top_k int | null?
 }
 
 /// Tool card for system/extrospection: metadata for polymorphic Open selection.
@@ -250,7 +230,7 @@ class SystemExtrospectionToolCard {
   tool_name "system/extrospection"
   description "Queries provenance rows across contexts and agents with compact token-aware output. Open session, send filters/grouping, then read() returns one result page."
   session_policy "Strict"
-  input_summary "{ agentId?: any, bamlPrompt?: any, contextId?: any, cursor?: any, groupBy?: any, model?: any, outcome?: any, pageSize?: any, payloadText?: any, provider?: any, read?: any, resource: string, sortBy?: any, sortDir?: any, taskId?: any, toolName?: any, topK?: any }"
+  input_summary "{ agent_id?: any, baml_prompt?: any, context_id?: any, cursor?: any, group_by?: any, model?: any, outcome?: any, page_size?: any, payload_text?: any, provider?: any, read?: any, resource: string, sort_by?: any, sort_dir?: any, task_id?: any, tool_name?: any, top_k?: any }"
   tags string[] @description("Tool tags: system, discovery")
 }
 
@@ -291,7 +271,7 @@ class SystemDiscover_agentsToolCard {
   tool_name "system/discover_agents"
   description "Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents."
   session_policy "Strict"
-  input_summary "{ limit?: any, offset?: any, query?: any, requiredCapabilities?: any, requiredSchemaVersions?: any, requiredSourceKinds?: any }"
+  input_summary "{ limit?: any, offset?: any, query?: any, required_capabilities?: any, required_schema_versions?: any, required_source_kinds?: any }"
   tags string[] @description("Tool tags: system, discovery")
 }
 

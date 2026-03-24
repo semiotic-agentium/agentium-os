@@ -12,6 +12,23 @@ pub(crate) fn schema_allows_empty_open_input(schema: &Value) -> bool {
     match schema {
         Value::Null => true,
         Value::Object(map) => {
+            // `JsonSchemaType for ()` and `serde_json::Value` use `{}` — unconstrained schema
+            // that accepts any JSON including `{}` for strict auto-open before Send/Read.
+            if map.is_empty() {
+                return true;
+            }
+            // `root_json_schema::<()>` adds only `$schema` (and similar) to the inline `{}`.
+            // No structural keywords => nothing constrains the instance shape.
+            let has_structural = map.contains_key("type")
+                || map.contains_key("properties")
+                || map.contains_key("required")
+                || map.contains_key("anyOf")
+                || map.contains_key("oneOf")
+                || map.contains_key("allOf")
+                || map.contains_key("enum");
+            if !has_structural {
+                return true;
+            }
             if let Some(any_of) = map.get("anyOf").and_then(Value::as_array)
                 && any_of.iter().any(schema_allows_empty_open_input)
             {

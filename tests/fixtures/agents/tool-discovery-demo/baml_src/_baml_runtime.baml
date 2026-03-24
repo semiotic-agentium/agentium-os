@@ -112,10 +112,27 @@ class CalculatorOutput {
   formatted string
 }
 // Domain types generated from JSON schemas
+class ToolDiscoveryRecordDto {
+  name string
+  bundle string
+  description string
+  tags string[]
+  event_sources string[]
+}
+
+class HistoryContextV1 {
+  hop int
+  op string
+  status string
+  truncated bool
+  cursor string | null?
+  payload string | null?
+}
+
 class DiscoverToolsNextOutput {
-  tools string[]
+  tools ToolDiscoveryRecordDto[]
   done bool
-  history_context string | null?
+  history_context HistoryContextV1 | null?
 }
 
 class DiscoverToolsOpenInput {
