@@ -243,8 +243,9 @@ fn check_feature_forwarding(workspace_root: &Path, _errors: &mut Vec<String>) ->
         .collect();
 
     for feature in &tool_features {
-        let forward_pattern = format!("{feature} = [\"baml-tool-links/{feature}\"]");
-        let forward_pattern_alt = format!("{feature} = ['baml-tool-links/{feature}']");
+        let dep_name = format!("baml-tools-{feature}");
+        let forward_pattern = format!("{feature} = [\"dep:{dep_name}\"]");
+        let forward_pattern_alt = format!("{feature} = ['dep:{dep_name}']");
 
         // Check runner
         if runner_content.contains(&forward_pattern)

@@ -5,7 +5,7 @@
 /// # Arguments
 /// * `name` - Tool name in kebab-case (e.g., "github")
 /// * `bundle` - Bundle type (e.g., "support")
-/// * `access` - Access level (e.g., "read", "write", "delete")
+/// * `access` - Access level (e.g., "read", "write")
 pub fn generate(name: &str, bundle: &str, access: &str) -> String {
     let pascal_name = to_pascal_case(name);
     let snake_name = to_snake_case(name);
@@ -13,8 +13,8 @@ pub fn generate(name: &str, bundle: &str, access: &str) -> String {
     let bundle_type = to_pascal_case(bundle);
 
     let access_attr = match access {
-        "write" => "\n    access = Write,",
-        _ => "", // read is the default, no need to specify
+        "write" => "Write",
+        _ => "Read",
     };
 
     format!(
@@ -79,7 +79,8 @@ impl Default for {pascal_name}Tool {{
 #[baml_tool(
     name = "{bundle}/{snake_name}",
     description = "TODO: Describe what this tool does.",
-    tags = ["{bundle}", "{snake_name}"],{access_attr}
+    tags = ["{bundle}", "{snake_name}"],
+    access = {access_attr},
     // Uncomment and fill in if this tool requires API keys:
     // secrets = [
     //     {{ name = "{upper_name}_API_KEY", description = "{pascal_name} API token", reason = "Required to authenticate" }}
