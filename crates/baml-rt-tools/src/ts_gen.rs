@@ -135,6 +135,7 @@ export interface IntentSubmission {
     supersession?: "replaced" | "refined";
 }
 
+/** Wire shape for `submitPlan.steps`. Host deserializes camelCase or BAML snake_case (`step_id`, `depends_on`). */
 export interface PlanStepSubmission {
     stepId: string;
     description: string;

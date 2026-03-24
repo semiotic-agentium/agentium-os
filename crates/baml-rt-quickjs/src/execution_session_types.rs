@@ -11,6 +11,10 @@
 //! [`crate::planning::IntentSubmission`]'s `derived_from_message_ids` solely from the active Rust
 //! invocation scope (see `baml_registration`). A legacy `derivedFromMessageIds`
 //! JSON key, if present, is **ignored** by serde.
+//!
+//! **BAML interop:** `PlanSubmissionWire` / `PlanStepSubmission` also accept **snake_case** keys
+//! (`intent_id`, `plan_id`, `step_id`, `depends_on`) via serde `alias`, so nested `plan` objects can
+//! be built from BAML-shaped step structs without renaming fields in TypeScript.
 
 use baml_rt_core::{
     Citation,
@@ -55,6 +59,7 @@ pub enum ExecutionSessionCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntentSubmissionWire {
+    #[serde(alias = "intent_id")]
     pub intent_id: IntentId,
     pub description: String,
     /// Citation refs (`#N` / `@N`) for the history entries this intent was derived from.
@@ -68,7 +73,9 @@ pub struct IntentSubmissionWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanSubmissionWire {
+    #[serde(alias = "intent_id")]
     pub intent_id: IntentId,
+    #[serde(alias = "plan_id")]
     pub plan_id: PlanId,
     pub steps: Vec<PlanStepSubmission>,
     #[serde(default)]
@@ -78,10 +85,11 @@ pub struct PlanSubmissionWire {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanStepSubmission {
+    #[serde(alias = "step_id")]
     pub step_id: PlanStepId,
     pub description: String,
     pub order: u64,
-    #[serde(default)]
+    #[serde(default, alias = "depends_on")]
     pub depends_on: Vec<String>,
 }
 
@@ -317,5 +325,44 @@ mod tests {
         assert_eq!(intent.intent_id.as_str(), "i");
         assert_eq!(intent.description, "d");
         assert_eq!(intent.citations.len(), 1);
+    }
+
+    /// BAML-shaped `plan` (snake_case keys) round-trips for submit_plan — no TS rename layer required.
+    #[test]
+    fn deserialize_submit_plan_accepts_snake_case_nested_keys() {
+        let json = r##"{
+            "action":"submit_plan",
+            "session_id":"session-test-123",
+            "plan":{
+                "intent_id":"intent-i",
+                "plan_id":"plan-p",
+                "steps":[
+                    {
+                        "step_id":"a",
+                        "description":"First",
+                        "order":0,
+                        "depends_on":[]
+                    },
+                    {
+                        "step_id":"b",
+                        "description":"Second",
+                        "order":1,
+                        "depends_on":["a"]
+                    }
+                ]
+            }
+        }"##;
+        let cmd: ExecutionSessionCommand =
+            serde_json::from_str(json).expect("parse snake_case plan");
+        let ExecutionSessionCommand::SubmitPlan { plan, .. } = cmd else {
+            panic!("expected SubmitPlan");
+        };
+        assert_eq!(plan.intent_id.as_str(), "intent-i");
+        assert_eq!(plan.plan_id.as_str(), "plan-p");
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps[0].step_id.as_str(), "a");
+        assert_eq!(plan.steps[0].depends_on.len(), 0);
+        assert_eq!(plan.steps[1].step_id.as_str(), "b");
+        assert_eq!(plan.steps[1].depends_on, vec!["a".to_string()]);
     }
 }

@@ -34,6 +34,12 @@ destination: string | null;
 export interface GetContactInput { contact_id: string;
  }
 
+export interface ProvenancePlanStep { step_id: string;
+description: string;
+order: number;
+depends_on: string[] | null;
+ }
+
 export interface QueryAccountsInput { query: string | null;
 region: string | null;
 fiscal_quarter: string | null;
@@ -46,12 +52,7 @@ min_value: number | null;
 
 export interface ReportingPlan { intent_description: string;
 objective: string;
-steps: ReportingPlanStep[];
- }
-
-export interface ReportingPlanStep { step_id: string;
-description: string;
-order: number;
+steps: ProvenancePlanStep[];
  }
 
 export interface SendEmailInput { to: string;
@@ -234,6 +235,7 @@ export interface IntentSubmission {
     citations?: string[];
     supersession?: "replaced" | "refined";
 }
+/** Wire shape for `submitPlan.steps`. Host deserializes camelCase or BAML snake_case (`step_id`, `depends_on`). */
 export interface PlanStepSubmission {
     stepId: string;
     description: string;

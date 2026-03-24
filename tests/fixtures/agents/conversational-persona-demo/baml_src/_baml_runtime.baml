@@ -29,6 +29,16 @@ class StandardStructuredPlan {
   citations string[]? @description("Optional checked refs (#N, @N) grounding this plan for observability; omit or use [] when none.")
 }
 
+/// Step row for LLM-authored plans committed via execution-session `submitPlan`.
+/// `step_id` is the session-scoped alias the agent passes to `startStep` / `completeStep`.
+/// `depends_on` lists prerequisite `step_id` values (DAG). Omit or use [] when none; use `order` for display and tie-breaking.
+class ProvenancePlanStep {
+  step_id string @description("Short slug for this step; reuse in startStep/completeStep.")
+  description string @description("What this step does.")
+  order int @description("Ordinal for display and tie-breaking.")
+  depends_on string[]? @description("Prerequisite step_ids; omit or [] if none (e.g. strictly linear — agent may still default chain in TS).")
+}
+
 class HistoryContext {
   hop int
   op string
