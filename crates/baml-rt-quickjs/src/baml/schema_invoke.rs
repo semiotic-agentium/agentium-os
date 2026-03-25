@@ -53,6 +53,9 @@ impl BamlRuntimeManager {
         if let Some(ref resolver) = self.state.llm_secret_resolver {
             executor.set_llm_secret_resolver(resolver.clone());
         }
+        if let Some(ref resolver) = self.state.llm_client_resolver {
+            executor.set_llm_client_resolver(resolver.clone());
+        }
 
         // Discover functions from the BAML runtime
         let function_names = executor.list_functions();

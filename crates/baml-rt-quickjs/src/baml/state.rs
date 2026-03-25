@@ -10,6 +10,7 @@ use baml_rt_core::{
     types::FunctionSignature,
 };
 use baml_rt_interceptor::InterceptorRegistry;
+use baml_rt_llm_config::LlmClientResolver;
 use baml_rt_tools::{ToolRegistry as ConcreteToolRegistry, ToolSessionId};
 use dashmap::DashMap;
 use tokio::sync::Mutex as TokioMutex;
@@ -41,6 +42,7 @@ pub(in crate::baml) struct BamlRuntimeState {
     pub(in crate::baml) conversation_context_provider: Option<Arc<dyn ConversationContextProvider>>,
     pub(in crate::baml) pending_parse_retry_policy: Option<ParseRetryPolicy>,
     pub(in crate::baml) llm_secret_resolver: Option<Arc<dyn LlmSecretResolver>>,
+    pub(in crate::baml) llm_client_resolver: Option<Arc<dyn LlmClientResolver>>,
     pub(in crate::baml) planning_resolver: Arc<dyn PlanningResolver>,
     pub(in crate::baml) execution_sessions:
         Arc<DashMap<String, crate::quickjs_bridge::ExecutionSession>>,
@@ -64,6 +66,7 @@ impl Default for BamlRuntimeState {
             conversation_context_provider: None,
             pending_parse_retry_policy: None,
             llm_secret_resolver: None,
+            llm_client_resolver: None,
             planning_resolver: Arc::new(DefaultPlanningResolver),
             execution_sessions: Arc::new(DashMap::new()),
         }

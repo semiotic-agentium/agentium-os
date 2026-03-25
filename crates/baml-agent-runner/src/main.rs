@@ -225,6 +225,41 @@ impl AgentPackage {
         runtime_manager.set_llm_secret_resolver(Arc::new(SecretResolverToLlmAdapter::new(
             provenance_config.llm_secret_resolver(),
         )));
+
+        // Wire per-agent/per-prompt LLM client overrides from the config store.
+        {
+            use baml_rt_llm_config::{LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, StaticResolver};
+            let config_service = provenance_config.config_service();
+            let bundle = baml_rt_tools::BundleName::new(LLM_CONFIG_BUNDLE_NAME)
+                .expect("llm bundle name valid");
+            let llm_config = match config_service.get(&bundle).await {
+                Ok(Some(v)) => match LlmClientConfig::from_value(v) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "stored LLM config parse failed; using sensible default for overrides");
+                        LlmClientConfig::sensible_default()
+                    }
+                },
+                Ok(None) => LlmClientConfig::sensible_default(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load LLM config from store; using sensible default for overrides");
+                    LlmClientConfig::sensible_default()
+                }
+            };
+            tracing::info!(
+                default = %llm_config.default,
+                clients = llm_config.clients.len(),
+                agent_overrides = llm_config.overrides.agent.len(),
+                function_overrides = llm_config.overrides.agent_function.len(),
+                "LLM client config loaded for override resolution"
+            );
+            let resolver = Arc::new(StaticResolver::new(
+                Arc::new(llm_config),
+                provenance_config.llm_secret_resolver(),
+            ));
+            runtime_manager.set_llm_client_resolver(resolver);
+        }
+
         let runtime_manager_arc = Arc::new(Mutex::new(runtime_manager));
         let quickjs_config = QuickJSConfig::new().with_stream_collector_idle_secs(stream_idle_secs);
         let mut agent_builder = A2aAgent::builder()

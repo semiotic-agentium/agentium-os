@@ -10,6 +10,7 @@ use baml_rt_core::{
     BamlFunctionId, BamlRtError, InvocationKind, Outcome, Result, bus::EffectEmitter, context,
 };
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
+use baml_rt_llm_config::LlmClientResolver;
 use baml_runtime::{
     BamlRuntime, FunctionResultStream, RuntimeContextManager, client_registry::ClientRegistry,
 };
@@ -184,6 +185,9 @@ pub struct BamlExecutor {
     parse_retry_policy: ParseRetryPolicy,
     /// When set, LLM API keys are injected via ClientRegistry (not env vars).
     llm_secret_resolver: Option<Arc<dyn LlmSecretResolver>>,
+    /// When set, per-agent/per-prompt LLM client overrides are resolved from host config
+    /// instead of using the first BAML IR client as primary.
+    llm_client_resolver: Option<Arc<dyn LlmClientResolver>>,
 }
 
 impl BamlExecutor {
@@ -207,6 +211,7 @@ impl BamlExecutor {
             conversation_context_provider: None,
             parse_retry_policy: ParseRetryPolicy::default(),
             llm_secret_resolver: None,
+            llm_client_resolver: None,
         })
     }
 
@@ -215,6 +220,13 @@ impl BamlExecutor {
     /// passed to BAML as ClientRegistry, not env vars.
     pub fn set_llm_secret_resolver(&mut self, resolver: Arc<dyn LlmSecretResolver>) {
         self.llm_secret_resolver = Some(resolver);
+    }
+
+    /// Set the LLM client resolver for per-agent/per-prompt model overrides.
+    /// When set, `execute_function` uses this to resolve which LLM client (and model)
+    /// to use based on the agent and function name, instead of the IR-walk default.
+    pub fn set_llm_client_resolver(&mut self, resolver: Arc<dyn LlmClientResolver>) {
+        self.llm_client_resolver = Some(resolver);
     }
 
     /// Set the policy for retrying on parse failure (e.g. use `max_attempts: 1` in tests).
@@ -259,8 +271,27 @@ impl BamlExecutor {
         // Convert JSON args to BamlValue map
         let params = self.json_to_baml_map(&args)?;
 
-        // Build ClientRegistry from resolver; LLM keys are never passed via env vars.
+        // Build ClientRegistry: prefer config-based resolver (per-agent/per-prompt overrides),
+        // fall back to IR-walk registry (backwards compatible).
         let scope_id = scope.agent_id().as_str();
+        let config_registry = if let Some(ref resolver) = self.llm_client_resolver {
+            match resolver.resolve(scope, function_name).await {
+                Ok(Some(registry)) => Some(registry),
+                Ok(None) => {
+                    tracing::debug!(
+                        function = function_name,
+                        "LLM client resolver returned None; falling back to IR walk"
+                    );
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!(function = function_name, error = %e, "LLM client resolver failed; falling back to IR walk");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let llm_registry_result = build_llm_client_registry(
             self.runtime.as_ref(),
             self.llm_secret_resolver.as_deref(),
@@ -321,6 +352,7 @@ impl BamlExecutor {
                 env_vars.clone(),
                 session_client_registry
                     .as_ref()
+                    .or(config_registry.as_ref())
                     .or(llm_registry_result.registry()),
                 llm_registry_result.secret_keys_accessed(),
                 InvocationKind::Invoke,
@@ -415,6 +447,11 @@ impl BamlExecutor {
             } else {
                 None
             };
+            // Priority: session FSM registry > config-based override > IR-walk fallback
+            let effective_registry = session_client_registry
+                .as_ref()
+                .or(config_registry.as_ref())
+                .or(llm_registry_result.registry());
             let (result, _call_id) = self
                 .runtime
                 .call_function(
@@ -422,9 +459,7 @@ impl BamlExecutor {
                     &params,
                     &ctx_manager,
                     None, // type_builder
-                    session_client_registry
-                        .as_ref()
-                        .or(llm_registry_result.registry()),
+                    effective_registry,
                     attempt_collectors,
                     env_vars.clone(),
                     tags,
