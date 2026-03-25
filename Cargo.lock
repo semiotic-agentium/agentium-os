@@ -1977,6 +1977,7 @@ dependencies = [
  "baml-tools-internal-dev",
  "baml-tools-memory",
  "baml-tools-notion",
+ "baml-tools-security-eval",
  "baml-tools-slack",
  "baml-tools-system",
 ]
@@ -4179,7 +4180,7 @@ version = "25.12.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35f6839d7b3b98adde531effaf34f0c2badc6f4735d26fe74709d8e513a96ef3"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.0",
  "rustc_version",
  "serde",
 ]
@@ -7502,7 +7503,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
- "bitflags",
+ "bitflags 2.11.0",
 ]
 
 [[package]]

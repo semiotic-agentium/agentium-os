@@ -1116,6 +1116,8 @@ struct RunnerConfig {
     claude_workspaces_base: Option<PathBuf>,
     /// Stream collector idle timeout in seconds. No yield for this long ends the stream (Timeout). Default 900 for long-running tool sessions (e.g. claude/dev).
     stream_idle_secs: Option<u64>,
+    /// Event producer poll interval. `None` disables the poll loop.
+    event_poll_interval: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Parser)]
@@ -1154,6 +1156,12 @@ struct Cli {
     /// Stream collector idle timeout (seconds). If no chunk is yielded for this long, the stream ends with Timeout. Default 900 for long-running tool sessions (e.g. claude/dev).
     #[arg(long, value_name = "SECS", default_value = "900")]
     stream_idle_secs: u64,
+
+    /// Event producer poll interval (seconds). When non-zero, the runner polls
+    /// registered event producers and delivers events to subscribed agents.
+    /// 0 disables the poll loop (default).
+    #[arg(long, value_name = "SECS", default_value = "0")]
+    event_poll_interval_secs: u64,
 }
 
 impl Cli {
@@ -1177,6 +1185,13 @@ impl Cli {
             provenance_db,
             claude_workspaces_base: self.claude_workspaces_base,
             stream_idle_secs: Some(self.stream_idle_secs),
+            event_poll_interval: if self.event_poll_interval_secs > 0 {
+                Some(std::time::Duration::from_secs(
+                    self.event_poll_interval_secs,
+                ))
+            } else {
+                None
+            },
         })
     }
 }
@@ -2082,6 +2097,22 @@ async fn main() -> anyhow::Result<()> {
         println!("  - {}", agent_name);
     }
 
+    // --- Event producer poll loop ---
+    let dispatcher_handle = if let Some(interval) = config.event_poll_interval {
+        let registry = ready.registry();
+        let dispatcher =
+            baml_rt_a2a::EventDispatcher::new(registry as Arc<dyn baml_rt_a2a::AgentRegistry>);
+        info!(
+            interval_secs = interval.as_secs(),
+            "event producer poll loop enabled"
+        );
+        Some(tokio::spawn(async move {
+            run_event_poll_loop(dispatcher, interval).await;
+        }))
+    } else {
+        None
+    };
+
     let http_handle = if let Some(bind) = config.serve_http.clone() {
         let runner = ready.runner();
         let prov_config = runner.provenance_config();
@@ -2163,13 +2194,68 @@ async fn main() -> anyhow::Result<()> {
         }
         (false, Some(handle)) => {
             handle.await??;
-            return Ok(());
         }
-        (false, None) => {}
+        (false, None) => {
+            // No stdio, no HTTP. If the dispatcher is running, block on it.
+            if let Some(handle) = dispatcher_handle {
+                let _ = handle.await;
+                return Ok(());
+            }
+            // else: nothing to run, fall through.
+        }
+    }
+
+    // Abort event dispatcher on exit from stdio/HTTP paths.
+    if let Some(handle) = dispatcher_handle {
+        handle.abort();
     }
 
     info!("Agent Runner completed successfully");
     Ok(())
+}
+
+/// Background poll loop for registered event producers.
+///
+/// Polls all producers, delivers events to matched subscribers, and logs
+/// outcomes. Silent when no producers are registered.
+async fn run_event_poll_loop(
+    mut dispatcher: baml_rt_a2a::EventDispatcher,
+    interval: std::time::Duration,
+) {
+    loop {
+        let results = dispatcher.poll_and_deliver().await;
+        for (producer_key, outcome) in &results {
+            match outcome {
+                Ok(delivery) if delivery.failures.is_empty() => {
+                    if delivery.subscribers_matched > 0 {
+                        info!(
+                            producer_key = %producer_key,
+                            matched = delivery.subscribers_matched,
+                            accepted = delivery.subscribers_accepted,
+                            "event delivery complete"
+                        );
+                    }
+                }
+                Ok(delivery) => {
+                    warn!(
+                        producer_key = %producer_key,
+                        matched = delivery.subscribers_matched,
+                        accepted = delivery.subscribers_accepted,
+                        failures = delivery.failures.len(),
+                        "event delivery partial failure"
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        producer_key = %producer_key,
+                        error = %err,
+                        "event delivery failed"
+                    );
+                }
+            }
+        }
+        tokio::time::sleep(interval).await;
+    }
 }
 
 #[cfg(test)]
