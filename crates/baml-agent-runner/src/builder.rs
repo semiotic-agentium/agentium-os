@@ -41,6 +41,7 @@ impl RunnerBuilder<Loading> {
         tool_index: Option<ToolIndexConfig>,
         access_policy: ToolAccessPolicy,
         stream_idle_secs: Option<u64>,
+        repository_url: String,
     ) -> Self {
         let runner = Arc::new(crate::AgentRunner::new(
             provenance_config,
@@ -48,6 +49,7 @@ impl RunnerBuilder<Loading> {
             tool_index,
             access_policy,
             stream_idle_secs,
+            repository_url,
         ));
         // Wire the internal A2A router to the runner for cross-agent dispatch.
         runner.internal_a2a_router().set_runner(Arc::clone(&runner));
@@ -113,6 +115,7 @@ impl RunnerBuilder<Loading> {
             agent,
             manifest: manifest.clone(),
             baml_functions,
+            content_hash: None,
         };
         tracing::info!(agent = %name, "Agent loaded and booted successfully");
         self.runner.insert_agent(name.clone(), route_key, booted);

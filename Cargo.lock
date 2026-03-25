@@ -1311,6 +1311,7 @@ dependencies = [
  "reqwest 0.12.26",
  "serde",
  "serde_json",
+ "sha2",
  "surrealdb",
  "tar",
  "tempfile",

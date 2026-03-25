@@ -48,7 +48,7 @@ pub struct UndeployResult {
 }
 
 /// Runner-side deployment management surface.
-#[async_trait]
+#[async_trait(?Send)]
 pub trait DeploymentManager: Send + Sync {
     async fn deploy_by_hash(&self, content_hash: &DeploymentContentHash) -> Result<DeployResult>;
     async fn undeploy_by_hash(
