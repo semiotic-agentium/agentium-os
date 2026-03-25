@@ -125,6 +125,12 @@ pub struct GetByHashPath {
     pub hash: String,
 }
 
+/// PUT/GET /blobs/:hash
+#[derive(Debug, Deserialize)]
+pub struct BlobPath {
+    pub hash: String,
+}
+
 /// GET /entries/:name/:version
 #[derive(Debug, Deserialize)]
 pub struct GetByVersionPath {
@@ -203,10 +209,9 @@ pub struct LineageResponse {
     pub subgraph: LineageSubgraph,
 }
 
-/// Response for download (tar.gz blob).
-/// Not a JSON response — served as `application/gzip` with content-disposition.
-/// Represented here as a marker for the route signature.
-pub struct BlobDownload {
+/// Response metadata for blob download.
+#[derive(Debug, Serialize)]
+pub struct BlobDownloadMeta {
     pub hash: ContentHash,
-    pub data: Vec<u8>,
+    pub size_bytes: usize,
 }

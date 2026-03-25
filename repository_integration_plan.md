@@ -61,9 +61,10 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 - [x] Replace repository SQLite/FS backend with SurrealDB-only backend implementation.
 - [x] Remove old repository backend modules and wiring.
 - [x] Port repository tests to in-memory SurrealDB.
+- [x] Remove fitness domain/model/API/store concerns from MVP scope.
 
 ### Phase 2: Repository Publish/Entries/Blobs + Search Inputs
-- [ ] Implement `PUT /repository/blobs/{hash}` and `GET /repository/blobs/{hash}`.
+- [x] Implement `PUT /repository/blobs/{hash}` and `GET /repository/blobs/{hash}`.
 - [ ] Implement `POST /repository/publish` (blob-first policy enforced).
 - [ ] Implement `GET /repository/entries`.
 - [ ] Implement `GET /repository/entries/{hash}`.

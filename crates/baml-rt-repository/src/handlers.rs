@@ -5,15 +5,20 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Json, Path, Query, State};
+use axum::{
+    body::Bytes,
+    extract::{Json, Path, Query, State},
+    http::{HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
+};
 use http_api_problem::HttpApiProblem;
 
 use crate::{
     commands::{ForkCommand, PublishCommand, PublishResult},
     entry::Tag,
     http::{
-        AddTagRequest, GetByHashPath, GetByVersionPath, HttpResult, LineagePath, LineageQuery,
-        LineageResponse, ListAgentsResponse, ListVersionsPath, ListVersionsResponse,
+        AddTagRequest, BlobPath, GetByHashPath, GetByVersionPath, HttpResult, LineagePath,
+        LineageQuery, LineageResponse, ListAgentsResponse, ListVersionsPath, ListVersionsResponse,
         RemoveTagRequest, SearchResponse, TagPath,
     },
     ids::Version,
@@ -133,6 +138,41 @@ pub async fn remove_tag(
         .await
         .map_err(HttpApiProblem::from)?;
     Ok(Json(()))
+}
+
+pub async fn put_blob(
+    State(svc): State<RepoState>,
+    Path(p): Path<BlobPath>,
+    body: Bytes,
+) -> std::result::Result<StatusCode, HttpApiProblem> {
+    let hash = p.hash.parse().map_err(|e| bad_request(format!("{e}")))?;
+    svc.put_blob(&hash, &body)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    Ok(StatusCode::CREATED)
+}
+
+pub async fn get_blob(
+    State(svc): State<RepoState>,
+    Path(p): Path<BlobPath>,
+) -> std::result::Result<impl IntoResponse, HttpApiProblem> {
+    let hash = p.hash.parse().map_err(|e| bad_request(format!("{e}")))?;
+    let Some(data) = svc.get_blob(&hash).await.map_err(HttpApiProblem::from)? else {
+        return Err(not_found(format!("Blob not found for hash: {}", p.hash)));
+    };
+
+    let disposition = format!("attachment; filename=\"{hash}.tar.gz\"");
+    let mut response = Response::new(axum::body::Body::from(data));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/gzip"),
+    );
+    if let Ok(value) = HeaderValue::from_str(&disposition) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_DISPOSITION, value);
+    }
+    Ok(response)
 }
 
 fn bad_request(detail: String) -> HttpApiProblem {

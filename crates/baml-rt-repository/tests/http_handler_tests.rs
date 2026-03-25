@@ -387,6 +387,74 @@ async fn add_and_remove_tag_via_http() {
 }
 
 // -------------------------------------------------------------------------
+// Blob endpoints
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn put_and_get_blob_roundtrip() {
+    let app = setup_app().await;
+    let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let payload = b"fake-tar-gz-bytes";
+
+    let put_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/blobs/{hash}"))
+                .header("content-type", "application/gzip")
+                .body(Body::from(payload.to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put_resp.status(), StatusCode::CREATED);
+
+    let get_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/blobs/{hash}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), StatusCode::OK);
+    let ct = get_resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(ct, Some("application/gzip"));
+
+    let body = axum::body::to_bytes(get_resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body.as_ref(), payload);
+}
+
+#[tokio::test]
+async fn get_blob_not_found_returns_404() {
+    let app = setup_app().await;
+    let hash = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/blobs/{hash}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// -------------------------------------------------------------------------
 // Error responses
 // -------------------------------------------------------------------------
 

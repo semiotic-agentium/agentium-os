@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 
 use crate::{handlers, service::RepositoryService};
@@ -22,6 +22,8 @@ pub fn repository_router(service: Arc<RepositoryService>) -> Router {
         .route("/fork", post(handlers::fork))
         .route("/search", post(handlers::search))
         .route("/lineage/{hash}", get(handlers::get_lineage))
+        .route("/blobs/{hash}", put(handlers::put_blob))
+        .route("/blobs/{hash}", get(handlers::get_blob))
         .route("/entries/{hash}/tags", post(handlers::add_tag))
         .route("/entries/{hash}/tags", delete(handlers::remove_tag))
         .with_state(service)
