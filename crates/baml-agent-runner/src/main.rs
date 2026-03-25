@@ -437,7 +437,7 @@ impl BootedAgent {
 pub(crate) struct AgentRunner {
     agents: RwLock<HashMap<String, BootedAgent>>,
     provenance_config: ProvenanceConfig,
-    _deployment_state: Arc<deployment_state::DeploymentStateStore>,
+    deployment_state: Arc<deployment_state::DeploymentStateStore>,
     tool_index: Option<ToolIndexConfig>,
     access_policy: ToolAccessPolicy,
     routed_agents: std::sync::RwLock<HashMap<AgentRouteKey, A2aAgent>>,
@@ -458,13 +458,17 @@ impl AgentRunner {
         Self {
             agents: RwLock::new(HashMap::new()),
             provenance_config,
-            _deployment_state: deployment_state,
+            deployment_state,
             tool_index,
             access_policy,
             routed_agents,
             internal_a2a_router,
             stream_idle_secs,
         }
+    }
+
+    pub(crate) fn deployment_state(&self) -> &Arc<deployment_state::DeploymentStateStore> {
+        &self.deployment_state
     }
 
     pub(crate) fn provenance_config(&self) -> &ProvenanceConfig {

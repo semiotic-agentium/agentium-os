@@ -49,6 +49,7 @@ serde = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
 insta = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
 default = []

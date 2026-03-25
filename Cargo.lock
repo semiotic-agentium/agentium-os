@@ -1313,6 +1313,7 @@ dependencies = [
  "serde_json",
  "surrealdb",
  "tar",
+ "tempfile",
  "test-support",
  "tokio",
  "tracing",

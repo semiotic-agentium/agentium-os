@@ -41,7 +41,8 @@ pub use context::{
 };
 pub use deferred::DeferredHolder;
 pub use deployment::{
-    DeployResult, DeploymentManager, DeploymentRecord, DeploymentStatus, UndeployResult,
+    DeployResult, DeploymentContentHash, DeploymentManager, DeploymentRecord, DeploymentStatus,
+    UndeployResult,
 };
 pub use dispatch::{
     AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey,

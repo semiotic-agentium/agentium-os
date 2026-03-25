@@ -1,7 +1,9 @@
 use std::{path::Path, sync::Arc};
 
-use baml_rt_core::{BamlRtError, Result};
-use serde::{Deserialize, Serialize};
+use baml_rt_core::{
+    BamlRtError, DeploymentContentHash, DeploymentRecord, DeploymentStatus, Result,
+};
+use serde::Deserialize;
 #[cfg(test)]
 use surrealdb::engine::local::Mem;
 use surrealdb::{
@@ -24,24 +26,6 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE FIELD IF NOT EXISTS failure_count ON deployments TYPE int",
     "DEFINE INDEX IF NOT EXISTS idx_deploy_content_hash ON deployments FIELDS content_hash UNIQUE",
 ];
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DeploymentStatus {
-    Active,
-    Failed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeploymentRecord {
-    pub content_hash: String,
-    pub agent_name: String,
-    pub deployed_at: String,
-    pub status: DeploymentStatus,
-    pub last_error: Option<String>,
-    pub last_attempt_at: Option<String>,
-    pub failure_count: u32,
-}
 
 pub struct DeploymentStateStore {
     db: Arc<Surreal<Db>>,
@@ -75,6 +59,18 @@ impl DeploymentStateStore {
     }
 
     pub async fn save_deployment(&self, record: &DeploymentRecord) -> Result<()> {
+        let status_value = serde_json::to_value(&record.status).map_err(|e| {
+            BamlRtError::InvalidArgument(format!("failed to serialize deployment status: {e}"))
+        })?;
+        let status = status_value
+            .as_str()
+            .ok_or_else(|| {
+                BamlRtError::InvalidArgument(
+                    "serialized deployment status is not a string".to_string(),
+                )
+            })?
+            .to_string();
+
         self.db
             .query(format!(
                 "UPSERT {TBL_DEPLOYMENTS} SET \
@@ -87,16 +83,10 @@ impl DeploymentStateStore {
                     failure_count = $failure_count \
                  WHERE content_hash = $content_hash"
             ))
-            .bind(("content_hash", record.content_hash.clone()))
+            .bind(("content_hash", record.content_hash.as_str().to_string()))
             .bind(("agent_name", record.agent_name.clone()))
             .bind(("deployed_at", record.deployed_at.clone()))
-            .bind((
-                "status",
-                match record.status {
-                    DeploymentStatus::Active => "active".to_string(),
-                    DeploymentStatus::Failed => "failed".to_string(),
-                },
-            ))
+            .bind(("status", status))
             .bind(("last_error", record.last_error.clone()))
             .bind(("last_attempt_at", record.last_attempt_at.clone()))
             .bind(("failure_count", record.failure_count as i64))
@@ -105,27 +95,21 @@ impl DeploymentStateStore {
         Ok(())
     }
 
-    pub async fn remove_deployment(&self, content_hash: &str) -> Result<bool> {
+    pub async fn remove_deployment(&self, content_hash: &DeploymentContentHash) -> Result<bool> {
         let mut resp = self
             .db
             .query(format!(
-                "SELECT content_hash FROM {TBL_DEPLOYMENTS} WHERE content_hash = $content_hash LIMIT 1"
+                "DELETE FROM {TBL_DEPLOYMENTS} WHERE content_hash = $content_hash RETURN BEFORE"
             ))
-            .bind(("content_hash", content_hash.to_string()))
-            .await
-            .map_err(to_read_err)?;
-        let rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
-        if rows.is_empty() {
-            return Ok(false);
-        }
-        self.db
-            .query(format!(
-                "DELETE {TBL_DEPLOYMENTS} WHERE content_hash = $content_hash"
-            ))
-            .bind(("content_hash", content_hash.to_string()))
+            .bind(("content_hash", content_hash.as_str().to_string()))
             .await
             .map_err(to_write_err)?;
-        Ok(true)
+        let rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+        if !rows.is_empty() {
+            return Ok(true);
+        }
+        let rows_alt: Vec<serde_json::Value> = resp.take(1).map_err(to_read_err)?;
+        Ok(!rows_alt.is_empty())
     }
 
     pub async fn list_deployments(&self) -> Result<Vec<DeploymentRecord>> {
@@ -137,42 +121,37 @@ impl DeploymentStateStore {
             .await
             .map_err(to_read_err)?;
         let rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
-        rows.into_iter().map(TryInto::try_into).collect()
+        rows.into_iter().map(parse_deployment_row).collect()
     }
 }
 
-impl TryFrom<serde_json::Value> for DeploymentRecord {
-    type Error = BamlRtError;
-
-    fn try_from(row: serde_json::Value) -> std::result::Result<Self, Self::Error> {
-        #[derive(Deserialize)]
-        struct DeploymentRow {
-            content_hash: String,
-            agent_name: String,
-            deployed_at: String,
-            status: DeploymentStatus,
-            #[serde(default)]
-            last_error: Option<String>,
-            #[serde(default)]
-            last_attempt_at: Option<String>,
-            #[serde(default)]
-            failure_count: u32,
-        }
-
-        let parsed: DeploymentRow = serde_json::from_value(row).map_err(|e| {
-            BamlRtError::InvalidArgument(format!("invalid deployment row from state DB: {e}"))
-        })?;
-
-        Ok(Self {
-            content_hash: parsed.content_hash,
-            agent_name: parsed.agent_name,
-            deployed_at: parsed.deployed_at,
-            status: parsed.status,
-            last_error: parsed.last_error,
-            last_attempt_at: parsed.last_attempt_at,
-            failure_count: parsed.failure_count,
-        })
+fn parse_deployment_row(row: serde_json::Value) -> Result<DeploymentRecord> {
+    #[derive(Deserialize)]
+    struct DeploymentRow {
+        content_hash: String,
+        agent_name: String,
+        deployed_at: String,
+        status: DeploymentStatus,
+        #[serde(default)]
+        last_error: Option<String>,
+        #[serde(default)]
+        last_attempt_at: Option<String>,
+        #[serde(default)]
+        failure_count: u32,
     }
+
+    let parsed: DeploymentRow = serde_json::from_value(row)
+        .map_err(|e| BamlRtError::InvalidArgument(format!("invalid deployment row from state DB: {e}")))?;
+
+    Ok(DeploymentRecord {
+        content_hash: DeploymentContentHash::new(parsed.content_hash),
+        agent_name: parsed.agent_name,
+        deployed_at: parsed.deployed_at,
+        status: parsed.status,
+        last_error: parsed.last_error,
+        last_attempt_at: parsed.last_attempt_at,
+        failure_count: parsed.failure_count,
+    })
 }
 
 fn to_write_err(err: surrealdb::Error) -> BamlRtError {
@@ -202,7 +181,7 @@ mod tests {
     async fn save_and_remove_roundtrip() {
         let store = DeploymentStateStore::open_in_memory().await.unwrap();
         let record = DeploymentRecord {
-            content_hash: "hash-1".to_string(),
+            content_hash: DeploymentContentHash::new("hash-1"),
             agent_name: "clickup-agent".to_string(),
             deployed_at: "2026-03-25T16:30:00Z".to_string(),
             status: DeploymentStatus::Active,
@@ -216,9 +195,43 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0], record);
 
-        let removed = store.remove_deployment("hash-1").await.unwrap();
+        let removed = store
+            .remove_deployment(&DeploymentContentHash::new("hash-1"))
+            .await
+            .unwrap();
         assert!(removed);
-        let removed_again = store.remove_deployment("hash-1").await.unwrap();
+        let removed_again = store
+            .remove_deployment(&DeploymentContentHash::new("hash-1"))
+            .await
+            .unwrap();
         assert!(!removed_again);
+    }
+
+    #[tokio::test]
+    async fn persists_across_reopen_on_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+
+        let store = DeploymentStateStore::open(&path).await.unwrap();
+        let record = DeploymentRecord {
+            content_hash: DeploymentContentHash::new("hash-persist"),
+            agent_name: "persist-agent".to_string(),
+            deployed_at: "2026-03-25T17:00:00Z".to_string(),
+            status: DeploymentStatus::Failed,
+            last_error: Some("boot failed".to_string()),
+            last_attempt_at: Some("2026-03-25T17:00:00Z".to_string()),
+            failure_count: 1,
+        };
+        store.save_deployment(&record).await.unwrap();
+        drop(store);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let reopened = DeploymentStateStore::open(&path).await.unwrap();
+        let records = reopened.list_deployments().await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].content_hash.as_str(), "hash-persist");
+        assert_eq!(records[0].agent_name, "persist-agent");
+        assert_eq!(records[0].status, DeploymentStatus::Failed);
+        assert_eq!(records[0].failure_count, 1);
     }
 }
