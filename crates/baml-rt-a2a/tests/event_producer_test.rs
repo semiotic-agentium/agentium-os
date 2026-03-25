@@ -180,6 +180,16 @@ impl StubProducer {
         }
     }
 
+    /// Producer declares source_kinds=["clickup"] but emits a "slack" event.
+    fn mismatched_source_kind() -> Self {
+        Self {
+            key: "test:mismatch".into(),
+            kinds: vec![EventSourceKind::parse("clickup").unwrap()],
+            events: vec![Self::slack_event()], // slack event, but declared clickup
+            next_checkpoint: ProducerCheckpoint::some("should-not-advance"),
+        }
+    }
+
     fn empty() -> Self {
         Self {
             key: "test:empty".into(),
@@ -330,4 +340,38 @@ async fn empty_poll_returns_zero_outcome() {
     let outcome = outcome.as_ref().expect("empty poll should not error");
     assert_eq!(outcome.subscribers_matched, 0);
     assert_eq!(outcome.subscribers_accepted, 0);
+}
+
+#[tokio::test]
+async fn source_kind_mismatch_is_a_hard_error() {
+    ensure_fixture_runtime_types();
+    let (agent, built_dir) = setup_fixture_agent("dispatch-echo").await;
+    let _cleanup = TempDirCleanup::new(built_dir);
+
+    let registry: Arc<dyn AgentRegistry> = Arc::new(TestRegistry {
+        agent,
+        entries: vec![dispatch_echo_discovery_entry()],
+    });
+
+    let mut dispatcher = EventDispatcher::new(registry);
+    dispatcher
+        .register_producer(Arc::new(StubProducer::mismatched_source_kind()))
+        .expect("register producer");
+
+    let results = dispatcher.poll_and_deliver().await;
+    assert_eq!(results.len(), 1);
+
+    let (key, result) = &results[0];
+    assert_eq!(key, "test:mismatch");
+    assert!(result.is_err(), "expected source kind mismatch error");
+
+    let err_msg = result.as_ref().unwrap_err().to_string();
+    assert!(
+        err_msg.contains("source_kind=slack"),
+        "error should name the actual source kind: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("clickup"),
+        "error should name the declared kinds: {err_msg}"
+    );
 }

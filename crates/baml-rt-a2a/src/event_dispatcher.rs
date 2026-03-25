@@ -142,7 +142,26 @@ impl EventDispatcher {
             };
             let mut short_circuit_err: Option<BamlRtError> = None;
 
+            let declared_kinds = producer.source_kinds();
             for event in poll_result.events {
+                if !declared_kinds.contains(&event.source_kind) {
+                    let err = BamlRtError::InvalidArgument(format!(
+                        "producer {key} declared source_kinds {declared:?} but emitted \
+                         event with source_kind={actual}",
+                        declared = declared_kinds
+                            .iter()
+                            .map(|k| k.as_str())
+                            .collect::<Vec<_>>(),
+                        actual = event.source_kind,
+                    ));
+                    warn!(
+                        producer_key = %key,
+                        error = %err,
+                        "source kind mismatch"
+                    );
+                    short_circuit_err = Some(err);
+                    break;
+                }
                 match self.deliver_event(event).await {
                     Ok(outcome) => {
                         aggregate.subscribers_matched += outcome.subscribers_matched;
@@ -186,9 +205,19 @@ fn matching_subscribers(
         .iter()
         .filter(|entry| subscriptions_match_published_event(&entry.agent_card.subscriptions, event))
         .filter_map(|entry| {
-            let package = AgentPackageName::parse(&entry.agent_package)?;
-            let instance = AgentInstanceId::parse(&entry.agent_instance_id)?;
-            Some(AgentRouteKey::new(package, instance))
+            let package = AgentPackageName::parse(&entry.agent_package);
+            let instance = AgentInstanceId::parse(&entry.agent_instance_id);
+            match (package, instance) {
+                (Some(p), Some(i)) => Some(AgentRouteKey::new(p, i)),
+                _ => {
+                    warn!(
+                        agent_package = %entry.agent_package,
+                        agent_instance_id = %entry.agent_instance_id,
+                        "matched subscriber has invalid route key and will be skipped"
+                    );
+                    None
+                }
+            }
         })
         .collect()
 }
