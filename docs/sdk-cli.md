@@ -9,6 +9,7 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `new-tool <name>` | Create a new tool crate with all necessary patches |
 | `new-agent <name>` | Create a new agent package with templates |
 | `build [names]...` | Package agents into distributable tar.gz files |
+| `publish --package <path.tar.gz>` | Upload package blob and publish repository metadata |
 | `list-tools` | List all registered tools from the inventory |
 | `list-agents` | List all agent packages |
 | `list-event-sources` | List event source kinds declared by tools and known schema versions |
@@ -699,6 +700,63 @@ cargo agent-platform build clickup-agent
 ./target/release/baml-agent-runner \
   clickup-agent-1.0.0.tar.gz \
   --serve-http 127.0.0.1:8080
+```
+
+---
+
+### `publish`
+
+Uploads a built `.tar.gz` package to repository blob storage, then publishes metadata using the repository `PublishCommand` contract.
+
+```bash
+cargo run -p cargo-agent-platform -- publish --package <path.tar.gz> [options]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `--package <path.tar.gz>` | Path to a prebuilt package archive |
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--repository-url <url>` | `http://127.0.0.1:8080/repository` | Base URL where repository routes are mounted |
+| `--rationale <text>` | `published from package archive` | Change rationale sent in publish metadata |
+| `--origin <kind>` | `original` | Publish origin: `original` or `iteration` |
+
+**Flow:**
+
+1. Read package bytes from `--package`
+2. Compute SHA-256 over raw package bytes (used as blob hash)
+3. `PUT /repository/blobs/{hash}` with package bytes
+4. Extract manifest and source bundle from archive
+5. `POST /repository/publish` with repository `PublishCommand`
+
+**Important behavior:**
+
+- Tags are not accepted as a CLI option for publish.
+- Tags are derived from `manifest.json` inside the package and become the source of truth.
+- The repository assigns the persisted version for the published entry.
+
+**Examples:**
+
+```bash
+# Publish with defaults (origin=original)
+cargo run -p cargo-agent-platform -- publish \
+  --package ./dist/clickup-agent-1.0.0.tar.gz
+
+# Publish to another repository URL
+cargo run -p cargo-agent-platform -- publish \
+  --package ./dist/notion-agent-1.0.0.tar.gz \
+  --repository-url http://127.0.0.1:8081/repository
+
+# Publish as an iteration with explicit rationale
+cargo run -p cargo-agent-platform -- publish \
+  --package ./dist/clickup-agent-1.0.1.tar.gz \
+  --origin iteration \
+  --rationale "Improved task sync reliability"
 ```
 
 ---

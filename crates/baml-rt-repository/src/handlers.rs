@@ -15,11 +15,12 @@ use http_api_problem::HttpApiProblem;
 
 use crate::{
     commands::{ForkCommand, PublishCommand, PublishResult},
-    entry::Tag,
+    entry::{RepositoryEntry, RepositoryEntryHeader, Tag},
     http::{
-        AddTagRequest, BlobPath, GetByHashPath, GetByVersionPath, HttpResult, LineagePath,
-        LineageQuery, LineageResponse, ListAgentsResponse, ListVersionsPath, ListVersionsResponse,
-        RemoveTagRequest, SearchResponse, TagPath,
+        AddTagRequest, BlobPath, EntriesQuery, EntriesQueryMode, EntriesResponse, GetByHashPath,
+        GetByVersionPath, HttpResult, LineagePath, LineageQuery, LineageResponse,
+        ListAgentsResponse, ListVersionsPath, ListVersionsResponse, RemoveTagRequest,
+        SearchResponse, TagPath,
     },
     ids::Version,
     search::SearchQuery,
@@ -39,6 +40,36 @@ pub async fn get_by_hash(
         Some(e) => Ok(Json(e)),
         None => Err(not_found(format!("Entry not found: {}", p.hash))),
     }
+}
+
+pub async fn get_entries(
+    State(svc): State<RepoState>,
+    Query(q): Query<EntriesQuery>,
+) -> HttpResult<EntriesResponse> {
+    let mode = EntriesQueryMode::try_from(q).map_err(bad_request)?;
+    let entries = match mode {
+        EntriesQueryMode::All => svc
+            .search(&SearchQuery::default())
+            .await
+            .map_err(HttpApiProblem::from)?,
+        EntriesQueryMode::ByName(name) => svc
+            .list_versions(&name)
+            .await
+            .map_err(HttpApiProblem::from)?,
+        EntriesQueryMode::ByNameVersion { name, version } => {
+            match svc
+                .get_by_version(&name, version)
+                .await
+                .map_err(HttpApiProblem::from)?
+            {
+                Some(entry) => vec![entry_to_header(entry)],
+                None => Vec::new(),
+            }
+        }
+    };
+
+    let total = entries.len();
+    Ok(Json(EntriesResponse { entries, total }))
 }
 
 pub async fn get_by_version(
@@ -175,10 +206,41 @@ pub async fn get_blob(
     Ok(response)
 }
 
-fn bad_request(detail: String) -> HttpApiProblem {
+fn bad_request(detail: impl Into<String>) -> HttpApiProblem {
     HttpApiProblem::new(http_api_problem::StatusCode::BAD_REQUEST).detail(detail)
 }
 
 fn not_found(detail: String) -> HttpApiProblem {
     HttpApiProblem::new(http_api_problem::StatusCode::NOT_FOUND).detail(detail)
+}
+
+fn entry_to_header(entry: RepositoryEntry) -> RepositoryEntryHeader {
+    let description = entry.source.manifest.description().map(str::to_string);
+    let tools = entry
+        .source
+        .manifest
+        .tools()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let capabilities = entry
+        .source
+        .manifest
+        .capabilities()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    RepositoryEntryHeader {
+        hash: entry.hash,
+        version_ref: entry.version_ref,
+        parentage: entry.parentage,
+        generation: entry.generation,
+        change_rationale: entry.change_rationale,
+        created_at: entry.created_at,
+        tags: entry.tags,
+        description,
+        tools,
+        capabilities,
+    }
 }

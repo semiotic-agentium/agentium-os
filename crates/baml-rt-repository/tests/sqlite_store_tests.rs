@@ -677,6 +677,51 @@ async fn search_by_full_text_matches_source_content() {
 }
 
 #[tokio::test]
+async fn search_by_full_text_matches_manifest_tags() {
+    let store = setup_store().await;
+    let entry = NewEntry {
+        name: "fts-tag-hit".parse().unwrap(),
+        source: SourceBundle {
+            manifest: ManifestSource::new(serde_json::json!({
+                "name": "fts-tag-hit",
+                "version": "0.0.0",
+                "tools": ["calculator"],
+                "tags": ["needle-tag"],
+                "discovery": {
+                    "description": "Tag FTS test",
+                    "capabilities": ["compute"]
+                }
+            })),
+            ts_sources: vec![SourceFile {
+                path: SourcePath::new("src/index.ts").unwrap(),
+                content: SourceContent::new("export function run() {}"),
+            }],
+            baml_sources: vec![],
+        },
+        parentage: Parentage::Original,
+        generation: Generation::ROOT,
+        change_rationale: ChangeRationale::new("seed").unwrap(),
+        tags: vec![Tag::new("needle-tag")],
+    };
+    store.insert_entry(&entry).await.unwrap();
+    store
+        .insert_entry(&test_new_entry_unique("fts-tag-miss", "different-token"))
+        .await
+        .unwrap();
+
+    let results = store
+        .search(&SearchQuery {
+            text: Some(FullTextTerm::new("needle-tag")),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].version_ref.name.as_str(), "fts-tag-hit");
+}
+
+#[tokio::test]
 async fn search_by_lineage_descendant_of_filters_results() {
     let store = setup_store().await;
 

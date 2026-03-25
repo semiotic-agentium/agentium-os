@@ -52,6 +52,8 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE FIELD IF NOT EXISTS manifest_description ON entries TYPE option<string>",
     "DEFINE FIELD IF NOT EXISTS manifest_tools_json ON entries TYPE string",
     "DEFINE FIELD IF NOT EXISTS manifest_capabilities_json ON entries TYPE string",
+    "DEFINE FIELD IF NOT EXISTS manifest_text ON entries TYPE string",
+    "DEFINE FIELD IF NOT EXISTS source_text ON entries TYPE string",
     "DEFINE INDEX IF NOT EXISTS idx_entries_hash ON entries FIELDS hash UNIQUE",
     "DEFINE INDEX IF NOT EXISTS idx_entries_name_version ON entries FIELDS agent_name, version UNIQUE",
     "DEFINE TABLE IF NOT EXISTS tags SCHEMAFULL",
@@ -182,6 +184,55 @@ fn decode_hex(hex: &str) -> Option<Vec<u8>> {
         i += 2;
     }
     Some(out)
+}
+
+fn build_manifest_text(source: &SourceBundle) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(name) = source.manifest.name() {
+        parts.push(name.to_string());
+    }
+    if let Some(version) = source.manifest.version() {
+        parts.push(version.to_string());
+    }
+    if let Some(description) = source.manifest.description() {
+        parts.push(description.to_string());
+    }
+    parts.extend(source.manifest.tools().into_iter().map(str::to_string));
+    parts.extend(
+        source
+            .manifest
+            .capabilities()
+            .into_iter()
+            .map(str::to_string),
+    );
+    parts.extend(source.manifest.tags().into_iter().map(str::to_string));
+    parts.join("\n")
+}
+
+fn build_source_text(source: &SourceBundle) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for file in &source.ts_sources {
+        parts.push(file.path.as_str().to_string());
+        parts.push(file.content.as_str().to_string());
+    }
+    for file in &source.baml_sources {
+        parts.push(file.path.as_str().to_string());
+        parts.push(file.content.as_str().to_string());
+    }
+    parts.join("\n")
+}
+
+fn row_contains_text(row: &Value, needle: &str) -> bool {
+    let manifest_text = row
+        .get("manifest_text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let source_text = row
+        .get("source_text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let haystack = format!("{manifest_text}\n{source_text}").to_ascii_lowercase();
+    haystack.contains(needle)
 }
 
 pub struct SurrealStore {
@@ -429,31 +480,6 @@ impl SurrealStore {
         }
     }
 
-    async fn filter_by_text(
-        &self,
-        headers: &mut Vec<RepositoryEntryHeader>,
-        query: &SearchQuery,
-    ) -> Result<()> {
-        let Some(text) = &query.text else {
-            return Ok(());
-        };
-        let needle = text.as_str().to_ascii_lowercase();
-        let mut matched = Vec::new();
-        for h in headers.drain(..) {
-            let Some(entry) = self.get_by_hash(&h.hash).await? else {
-                continue;
-            };
-            let haystack = serde_json::to_string(&entry.source)
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if haystack.contains(&needle) {
-                matched.push(h);
-            }
-        }
-        *headers = matched;
-        Ok(())
-    }
-
     async fn filter_by_lineage(
         &self,
         headers: &mut Vec<RepositoryEntryHeader>,
@@ -634,6 +660,8 @@ impl MetadataStore for SurrealStore {
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_else(|_| "[]".to_string());
+        let manifest_text = build_manifest_text(&source_for_storage);
+        let source_text = build_source_text(&source_for_storage);
 
         let _ = self
             .db
@@ -649,7 +677,9 @@ impl MetadataStore for SurrealStore {
                     created_at = $created_at, \
                     manifest_description = $manifest_description, \
                     manifest_tools_json = $manifest_tools_json, \
-                    manifest_capabilities_json = $manifest_capabilities_json"
+                    manifest_capabilities_json = $manifest_capabilities_json, \
+                    manifest_text = $manifest_text, \
+                    source_text = $source_text"
             ))
             .bind(("hash", hash_str))
             .bind(("name", name))
@@ -665,6 +695,8 @@ impl MetadataStore for SurrealStore {
             .bind(("manifest_description", description))
             .bind(("manifest_tools_json", tools_json))
             .bind(("manifest_capabilities_json", capabilities_json))
+            .bind(("manifest_text", manifest_text))
+            .bind(("source_text", source_text))
             .await
             .map_err(map_surreal_write)?;
 
@@ -944,7 +976,11 @@ impl LineageStore for SurrealStore {
 #[async_trait]
 impl SearchStore for SurrealStore {
     async fn search(&self, query: &SearchQuery) -> Result<Vec<RepositoryEntryHeader>> {
-        let rows = self.all_entry_rows().await?;
+        let mut rows = self.all_entry_rows().await?;
+        if let Some(text) = &query.text {
+            let needle = text.as_str().to_ascii_lowercase();
+            rows.retain(|row| row_contains_text(row, &needle));
+        }
         let mut headers = Vec::new();
         for row in rows {
             headers.push(self.header_from_row(&row).await?);
@@ -955,7 +991,6 @@ impl SearchStore for SurrealStore {
         self.filter_by_tools(&mut headers, query);
         self.filter_by_capabilities(&mut headers, query);
         self.filter_by_generation(&mut headers, query);
-        self.filter_by_text(&mut headers, query).await?;
         self.filter_by_lineage(&mut headers, query).await?;
         self.apply_order(&mut headers, query);
         self.apply_limit(&mut headers, query);

@@ -19,11 +19,11 @@ pub enum PublishOriginArg {
     Iteration,
 }
 
-impl PublishOriginArg {
-    fn into_publish_origin(self) -> PublishOrigin {
-        match self {
-            Self::Original => PublishOrigin::Original,
-            Self::Iteration => PublishOrigin::Iteration,
+impl From<PublishOriginArg> for PublishOrigin {
+    fn from(value: PublishOriginArg) -> Self {
+        match value {
+            PublishOriginArg::Original => PublishOrigin::Original,
+            PublishOriginArg::Iteration => PublishOrigin::Iteration,
         }
     }
 }
@@ -65,7 +65,7 @@ pub fn run(
     let hash = sha256_hex(&bytes);
     let (name, source) = source_bundle_from_tar_gz(&bytes).context("Invalid package archive")?;
     let rationale = ChangeRationale::new(rationale.to_string()).context("Invalid rationale")?;
-    let origin = origin.into_publish_origin();
+    let origin: PublishOrigin = origin.into();
     let publish_cmd = PublishCommand {
         name,
         source,

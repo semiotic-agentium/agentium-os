@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     entry::RepositoryEntryHeader,
     error::RepositoryError,
-    ids::{AgentName, ContentHash},
+    ids::{AgentName, ContentHash, Version},
     lineage::LineageSubgraph,
 };
 
@@ -75,6 +75,13 @@ impl From<RepositoryError> for HttpApiProblem {
                     .detail(e.to_string())
             }
 
+            RepositoryError::BlobTooLarge { .. } => {
+                HttpApiProblem::new(ProblemStatusCode::BAD_REQUEST)
+                    .title("Blob too large")
+                    .type_url(INVALID_SOURCE)
+                    .detail(e.to_string())
+            }
+
             RepositoryError::HashMismatch { .. } => {
                 HttpApiProblem::new(ProblemStatusCode::BAD_REQUEST)
                     .title("Hash mismatch")
@@ -123,6 +130,41 @@ pub type HttpResult<T> = std::result::Result<axum::Json<T>, HttpApiProblem>;
 #[derive(Debug, Deserialize)]
 pub struct GetByHashPath {
     pub hash: String,
+}
+
+/// GET /entries?name=<name>&version=<version>
+#[derive(Debug, Deserialize)]
+pub struct EntriesQuery {
+    pub name: Option<String>,
+    pub version: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum EntriesQueryMode {
+    All,
+    ByName(AgentName),
+    ByNameVersion { name: AgentName, version: Version },
+}
+
+impl TryFrom<EntriesQuery> for EntriesQueryMode {
+    type Error = String;
+
+    fn try_from(value: EntriesQuery) -> std::result::Result<Self, Self::Error> {
+        let Some(name_raw) = value.name else {
+            if value.version.is_some() {
+                return Err("version query requires name".to_string());
+            }
+            return Ok(Self::All);
+        };
+        let name = name_raw.parse::<AgentName>().map_err(|e| e.to_string())?;
+        match value.version {
+            Some(version_raw) => {
+                let version = version_raw.parse::<Version>().map_err(|e| e.to_string())?;
+                Ok(Self::ByNameVersion { name, version })
+            }
+            None => Ok(Self::ByName(name)),
+        }
+    }
 }
 
 /// PUT/GET /blobs/:hash
@@ -187,6 +229,13 @@ pub struct RemoveTagRequest {
 #[derive(Debug, Serialize)]
 pub struct SearchResponse {
     pub results: Vec<RepositoryEntryHeader>,
+    pub total: usize,
+}
+
+/// Response for list entries endpoint.
+#[derive(Debug, Serialize)]
+pub struct EntriesResponse {
+    pub entries: Vec<RepositoryEntryHeader>,
     pub total: usize,
 }
 

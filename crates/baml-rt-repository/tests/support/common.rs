@@ -5,6 +5,7 @@ use std::sync::Arc;
 use axum::Router;
 use baml_rt_repository::{
     entry::{ManifestSource, SourceBundle, SourceContent, SourceFile, SourcePath},
+    ids::ContentHash,
     router::repository_router,
     service::RepositoryService,
     storage::{BlobStore, LineageStore, MetadataStore, SearchStore},
@@ -63,4 +64,14 @@ pub async fn setup_app() -> Router {
         store as Arc<dyn SearchStore>,
     ));
     repository_router(svc)
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn sha256_hash(bytes: &[u8]) -> ContentHash {
+    sha256_hex(bytes).parse().expect("valid sha256 hex")
 }

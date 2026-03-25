@@ -66,13 +66,13 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 ### Phase 2: Repository Publish/Entries/Blobs + Search Inputs
 - [x] Implement `PUT /repository/blobs/{hash}` and `GET /repository/blobs/{hash}`.
 - [x] Implement `POST /repository/publish` (blob-first policy enforced).
-- [ ] Implement `GET /repository/entries`.
-- [ ] Implement `GET /repository/entries/{hash}`.
-- [ ] Implement `GET /repository/entries?name=<name>&version=<version>`.
-- [ ] Enforce payload/hash validation + HTTP status mapping (`400`, `404`, `409`).
-- [ ] Enforce max blob size checks (`5 MB` default).
-- [ ] Populate `manifest_text` from manifest metadata at publish time.
-- [ ] Populate `source_text` via bounded text extraction from tarball at publish time.
+- [x] Implement `GET /repository/entries`.
+- [x] Implement `GET /repository/entries/{hash}`.
+- [x] Implement `GET /repository/entries?name=<name>&version=<version>`.
+- [x] Enforce payload/hash validation + HTTP status mapping (`400`, `404`, `409`).
+- [x] Enforce max blob size checks (`5 MB` default).
+- [x] Populate `manifest_text` from manifest metadata at publish time.
+- [x] Populate `source_text` via bounded text extraction from tarball at publish time.
 - [x] Ensure publish fails when referenced blob hash is missing.
 - [x] Implement `cargo agent-platform publish` with blob-first workflow (`package.tar.gz path -> PUT blob -> POST publish`).
 - [x] Ensure `POST /repository/publish {blob_hash}` stores and returns the same hash identity.
@@ -133,7 +133,7 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 - [x] `[MANIFEST-TAGS]` Add interactive tool-based tag suggestions in `cargo-agent-platform new-agent` (exclude generic tags).
 - [x] `[MANIFEST-TAGS]` Enforce non-empty tags and reject banned generic tags (`support`, `read`, `write`, `system`) in `new-agent`.
 - [x] `[MANIFEST-TAGS]` Enforce manifest tags contract in `cargo-agent-platform doctor` for `agents/` and fixture agents.
-- [ ] `[MANIFEST-TAGS]` Ensure publish ingests manifest tags and FTS includes tags in `manifest_text`.
+- [x] `[MANIFEST-TAGS]` Ensure publish ingests manifest tags and FTS includes tags in `manifest_text`.
 
 ---
 

@@ -1,11 +1,16 @@
 //! Tests for RepositoryService: publish → fork → search flow.
 
+use std::sync::Arc;
+
 use baml_rt_repository::{
     commands::{ForkCommand, PublishCommand, PublishOrigin},
     entry::{ChangeRationale, SourceBundle, Tag},
     ids::{AgentName, Generation, Version},
     lineage::{EdgeDescription, InfluenceRef, Parentage},
     search::{SearchQuery, TagFilter},
+    service::RepositoryService,
+    storage::{BlobStore, LineageStore, MetadataStore, SearchStore},
+    surreal_store::SurrealStore,
 };
 #[path = "support/common.rs"]
 mod common;
@@ -314,21 +319,48 @@ async fn search_finds_published_agents() {
 async fn blob_put_and_get() {
     let svc = setup_service().await;
 
-    let published = svc
-        .publish(PublishCommand {
-            name: "blob-agent".parse().unwrap(),
-            source: make_source("blob test"),
-            rationale: ChangeRationale::new("init").unwrap(),
-            origin: PublishOrigin::Original,
-        })
-        .await
-        .unwrap();
+    svc.publish(PublishCommand {
+        name: "blob-agent".parse().unwrap(),
+        source: make_source("blob test"),
+        rationale: ChangeRationale::new("init").unwrap(),
+        origin: PublishOrigin::Original,
+    })
+    .await
+    .unwrap();
 
     let blob_data = b"fake tar.gz content";
-    svc.put_blob(&published.hash, blob_data).await.unwrap();
+    let blob_hash = common::sha256_hash(blob_data);
+    svc.put_blob(&blob_hash, blob_data).await.unwrap();
 
-    let loaded = svc.get_blob(&published.hash).await.unwrap().unwrap();
+    let loaded = svc.get_blob(&blob_hash).await.unwrap().unwrap();
     assert_eq!(loaded, blob_data);
+}
+
+#[tokio::test]
+async fn blob_put_rejects_hash_mismatch() {
+    let svc = setup_service().await;
+    let wrong_hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        .parse()
+        .unwrap();
+    let err = svc.put_blob(&wrong_hash, b"mismatch").await.unwrap_err();
+    assert!(format!("{err}").contains("Canonical hash mismatch"));
+}
+
+#[tokio::test]
+async fn blob_put_rejects_too_large() {
+    let store = Arc::new(SurrealStore::open_in_memory().await.unwrap());
+    let svc = RepositoryService::new_with_max_blob_bytes(
+        store.clone() as Arc<dyn BlobStore>,
+        store.clone() as Arc<dyn MetadataStore>,
+        store.clone() as Arc<dyn LineageStore>,
+        store as Arc<dyn SearchStore>,
+        8,
+    );
+    let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        .parse()
+        .unwrap();
+    let err = svc.put_blob(&hash, b"0123456789").await.unwrap_err();
+    assert!(format!("{err}").contains("Blob too large"));
 }
 
 // -------------------------------------------------------------------------

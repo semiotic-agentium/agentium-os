@@ -33,8 +33,6 @@ serde_json = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
-flate2 = { workspace = true }
-tar = { workspace = true }
 
 # Terminal output formatting
 console = "0.15"
