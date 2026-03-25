@@ -17,7 +17,7 @@ use axum::{
 };
 use baml_rt_core::{
     A2aWireRequest, AgentDispatchRequest, AgentInstanceId, AgentPackageName, AgentRouteKey,
-    BamlRtError, collect_a2a_stream,
+    BamlRtError, DeploymentContentHash, DeploymentStatus, collect_a2a_stream,
     ids::{AgentId, ContextId, TaskId},
 };
 use baml_rt_provenance::{
@@ -33,7 +33,10 @@ use crate::{
     context_metrics::{ContextMetricsError, ContextMetricsResponseDto},
     mermaid::MermaidError,
     metrics,
-    openapi::AgentDiscoveryEntryDto,
+    openapi::{
+        AgentDiscoveryEntryDto, DeployRequestDto, DeployResponseDto, DeploymentRecordDto,
+        UndeployRequestDto, UndeployResponseDto,
+    },
     planning::{ContextPlanningResponse, PlanningError},
     provenance_ops::ProvenanceOpsError,
     spans,
@@ -42,6 +45,16 @@ use crate::{
 /// HTTP result type for handlers that return RFC 7807 problem details on error.
 type HttpResult<T> = Result<T, HttpApiProblem>;
 
+#[derive(Debug, serde::Deserialize)]
+struct RepositoryEntriesResponse {
+    entries: Vec<RepositoryEntryHeaderItem>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RepositoryEntryHeaderItem {
+    hash: String,
+}
+
 /// Build HttpApiProblem for known-valid status codes (400, 404, 409, 500 per RFC 7231).
 /// Caller must only pass these codes; unwrap is justified here with this invariant.
 fn problem(status: u16, title: &str, detail: impl Into<String>) -> HttpApiProblem {
@@ -49,6 +62,80 @@ fn problem(status: u16, title: &str, detail: impl Into<String>) -> HttpApiProble
         .expect("400, 404, 500 are valid HTTP status codes")
         .title(title)
         .detail(detail)
+}
+
+fn deployment_status_to_str(status: DeploymentStatus) -> &'static str {
+    match status {
+        DeploymentStatus::Active => "active",
+        DeploymentStatus::Failed => "failed",
+    }
+}
+
+async fn resolve_deploy_hash(state: &Arc<ApiState>, body: DeployRequestDto) -> HttpResult<String> {
+    if let Some(hash) = body.hash {
+        if hash.trim().is_empty() {
+            return Err(problem(400, "Bad Request", "hash must not be empty"));
+        }
+        return Ok(hash);
+    }
+
+    let name = body
+        .name
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| problem(400, "Bad Request", "Either hash or name+version must be provided"))?;
+    let version = body
+        .version
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| problem(400, "Bad Request", "version is required when name is provided"))?;
+    let Some(repository_url) = state.repository_url.as_ref() else {
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "repository_url is not configured for name/version deploy",
+        ));
+    };
+
+    let url = format!("{}/entries", repository_url.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .get(&url)
+        .query(&[("name", name.as_str()), ("version", version.as_str())])
+        .send()
+        .await
+        .map_err(|e| problem(500, "Internal Server Error", format!("Failed resolving name/version: {e}")))?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(problem(
+            404,
+            "Not Found",
+            format!("No repository entry found for {name}@{version}"),
+        ));
+    }
+    if !response.status().is_success() {
+        let status = response.status();
+        let body_text = response.text().await.unwrap_or_default();
+        return Err(problem(
+            500,
+            "Internal Server Error",
+            format!("Repository lookup failed ({status}): {body_text}"),
+        ));
+    }
+
+    let body_json = response
+        .json::<RepositoryEntriesResponse>()
+        .await
+        .map_err(|e| problem(500, "Internal Server Error", format!("Invalid repository response: {e}")))?;
+    let hash = body_json
+        .entries
+        .first()
+        .map(|entry| entry.hash.clone())
+        .ok_or_else(|| {
+            problem(
+                404,
+                "Not Found",
+                format!("No repository entry found for {name}@{version}"),
+            )
+        })?;
+    Ok(hash)
 }
 
 fn result_label_for_domain_error(error: &BamlRtError) -> &'static str {
@@ -88,6 +175,135 @@ pub async fn list_agents(
         .collect();
     metrics::record_request("list_agents", "success", start.elapsed());
     (AxumStatus::OK, Json(dtos))
+}
+
+/// Deploy an agent by content hash or name/version.
+#[utoipa::path(
+    post,
+    path = "/deploy",
+    tag = "deployments",
+    request_body = DeployRequestDto,
+    responses(
+        (status = 200, description = "Deployment accepted", body = DeployResponseDto),
+        (status = 400, description = "Invalid deploy payload"),
+        (status = 404, description = "Hash or version target not found"),
+        (status = 409, description = "Deployment conflict"),
+        (status = 501, description = "Deployment manager not configured"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn post_deploy(
+    State(state): State<Arc<ApiState>>,
+    Json(body): Json<DeployRequestDto>,
+) -> HttpResult<Json<DeployResponseDto>> {
+    let Some(manager) = &state.deployment_manager else {
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Deployment manager not configured",
+        ));
+    };
+
+    let hash = resolve_deploy_hash(&state, body).await?;
+    let content_hash = DeploymentContentHash::new(hash.clone());
+    let deploy_result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(manager.deploy_by_hash(&content_hash))
+    });
+    match deploy_result {
+        Ok(result) => Ok(Json(DeployResponseDto {
+            hash,
+            already_deployed: result.already_deployed,
+        })),
+        Err(BamlRtError::AgentNotFound(msg)) => Err(problem(404, "Not Found", msg)),
+        Err(BamlRtError::InvalidArgument(msg)) => Err(problem(400, "Bad Request", msg)),
+        Err(BamlRtError::Conflict(msg)) => Err(problem(409, "Conflict", msg)),
+        Err(e) => Err(problem(500, "Internal Server Error", e.to_string())),
+    }
+}
+
+/// Undeploy an active deployment by content hash.
+#[utoipa::path(
+    post,
+    path = "/undeploy",
+    tag = "deployments",
+    request_body = UndeployRequestDto,
+    responses(
+        (status = 200, description = "Undeploy accepted", body = UndeployResponseDto),
+        (status = 400, description = "Invalid undeploy payload"),
+        (status = 404, description = "Deployment not found"),
+        (status = 501, description = "Deployment manager not configured"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn post_undeploy(
+    State(state): State<Arc<ApiState>>,
+    Json(body): Json<UndeployRequestDto>,
+) -> HttpResult<Json<UndeployResponseDto>> {
+    let Some(manager) = &state.deployment_manager else {
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Deployment manager not configured",
+        ));
+    };
+
+    let content_hash = DeploymentContentHash::new(body.hash.clone());
+    let undeploy_result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(manager.undeploy_by_hash(&content_hash))
+    });
+    match undeploy_result {
+        Ok(result) if result.removed => Ok(Json(UndeployResponseDto { removed: true })),
+        Ok(_) => Err(problem(
+            404,
+            "Not Found",
+            format!("Deployment not found for hash {}", body.hash),
+        )),
+        Err(BamlRtError::InvalidArgument(msg)) => Err(problem(400, "Bad Request", msg)),
+        Err(e) => Err(problem(500, "Internal Server Error", e.to_string())),
+    }
+}
+
+/// List runner-local deployment records.
+#[utoipa::path(
+    get,
+    path = "/deployments",
+    tag = "deployments",
+    responses(
+        (status = 200, description = "Deployment records", body = [DeploymentRecordDto]),
+        (status = 501, description = "Deployment manager not configured"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_deployments(
+    State(state): State<Arc<ApiState>>,
+) -> HttpResult<Json<Vec<DeploymentRecordDto>>> {
+    let Some(manager) = &state.deployment_manager else {
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Deployment manager not configured",
+        ));
+    };
+    let deployments_result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(manager.list_deployments())
+    });
+    match deployments_result {
+        Ok(records) => Ok(Json(
+            records
+                .into_iter()
+                .map(|record| DeploymentRecordDto {
+                    content_hash: record.content_hash.as_str().to_string(),
+                    agent_name: record.agent_name,
+                    deployed_at: record.deployed_at,
+                    status: deployment_status_to_str(record.status).to_string(),
+                    last_error: record.last_error,
+                    last_attempt_at: record.last_attempt_at,
+                    failure_count: record.failure_count,
+                })
+                .collect(),
+        )),
+        Err(e) => Err(problem(500, "Internal Server Error", e.to_string())),
+    }
 }
 
 /// Forward A2A JSON-RPC request (POST /agents/{agent_package}/{agent_instance_id}/a2a).

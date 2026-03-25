@@ -67,6 +67,48 @@ pub struct AgentDispatchAckDto {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct DeployRequestDto {
+    /// Content hash to deploy directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    /// Agent name for name/version resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Agent version for name/version resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct DeployResponseDto {
+    pub hash: String,
+    pub already_deployed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct UndeployRequestDto {
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct UndeployResponseDto {
+    pub removed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct DeploymentRecordDto {
+    pub content_hash: String,
+    pub agent_name: String,
+    pub deployed_at: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt_at: Option<String>,
+    pub failure_count: u32,
+}
+
 impl From<baml_rt_core::AgentCard> for AgentCardDto {
     fn from(c: baml_rt_core::AgentCard) -> Self {
         Self {

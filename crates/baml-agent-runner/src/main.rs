@@ -52,6 +52,7 @@ use baml_rt_provenance::{
     index_tools,
 };
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
+use baml_rt_repository::{BlobStore, LineageStore, MetadataStore, RepositoryService, SearchStore, SurrealStore};
 use baml_rt_tools::{
     InventoryCatalog, ManifestToolNames, ToolAccessPolicy, parse_access_allowlist,
     register_manifest_tools,
@@ -1373,6 +1374,7 @@ enum ProvenanceDb {
 struct RunnerConfig {
     packages: Vec<PathBuf>,
     repository_url: String,
+    repository_dir: PathBuf,
     invoke: Option<(String, String, String)>,
     a2a_stdio: bool,
     serve_http: Option<String>,
@@ -1396,6 +1398,10 @@ struct Cli {
     /// Repository base URL used for hash-based deploy/restore (e.g. http://127.0.0.1:8080/repository).
     #[arg(long, value_name = "URL", default_value = "http://127.0.0.1:8080/repository")]
     repository_url: String,
+
+    /// Local repository data directory (embedded SurrealKV backing /repository routes).
+    #[arg(long, value_name = "DIR", default_value = "./.repository")]
+    repository_dir: PathBuf,
 
     /// Invoke a JS function: <agent> <function> <json-args>
     #[arg(long, num_args = 3, value_names = ["AGENT", "FUNCTION", "JSON_ARGS"])]
@@ -1446,6 +1452,7 @@ impl Cli {
         Ok(RunnerConfig {
             packages: self.packages,
             repository_url: self.repository_url,
+            repository_dir: self.repository_dir,
             invoke,
             a2a_stdio: self.a2a_stdio,
             serve_http: self.serve_http,
@@ -2317,6 +2324,27 @@ async fn main() -> anyhow::Result<()> {
                 )
             })?,
     );
+    std::fs::create_dir_all(&config.repository_dir).with_context(|| {
+        format!(
+            "Failed to create repository directory {}",
+            config.repository_dir.display()
+        )
+    })?;
+    let repository_db_path = config.repository_dir.join("repository.db");
+    let repository_store = Arc::new(
+        SurrealStore::open(&repository_db_path).await.with_context(|| {
+            format!(
+                "Failed to initialize repository DB at {}",
+                repository_db_path.display()
+            )
+        })?,
+    );
+    let repository_service = Arc::new(RepositoryService::new(
+        repository_store.clone() as Arc<dyn BlobStore>,
+        repository_store.clone() as Arc<dyn MetadataStore>,
+        repository_store.clone() as Arc<dyn LineageStore>,
+        repository_store as Arc<dyn SearchStore>,
+    ));
     let existing_deployments = deployment_state
         .list_deployments()
         .await
@@ -2324,8 +2352,10 @@ async fn main() -> anyhow::Result<()> {
     info!(
         state_dir = %config.state_dir.display(),
         state_db = %state_db_path.display(),
+        repository_dir = %config.repository_dir.display(),
+        repository_db = %repository_db_path.display(),
         existing_deployments = existing_deployments.len(),
-        "Runner deployment state backend initialized"
+        "Runner deployment + repository backends initialized"
     );
 
     let access_allowlist = parse_access_allowlist();
@@ -2448,13 +2478,16 @@ async fn main() -> anyhow::Result<()> {
         );
         let runtime_secret_store = prov_config.runtime_secret_store();
         Some(tokio::spawn(async move {
-            baml_rt_api::serve_with_services(
+            baml_rt_api::serve_with_services_and_deploy(
                 registry_impl,
                 &bind,
                 mermaid,
                 context_metrics,
                 provenance_ops,
                 planning,
+                Some(runner.clone() as Arc<dyn DeploymentManager>),
+                Some(config.repository_url.clone()),
+                Some(repository_service.clone()),
                 tool_catalog,
                 config_service,
                 secret_resolver,

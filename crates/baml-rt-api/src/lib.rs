@@ -24,4 +24,7 @@ pub use planning::{
     PlanningStepSummary, TaskPlanDriftSummary, TaskPlanningSnapshot,
 };
 pub use provenance_ops::{ProvenanceOpsError, ProvenanceOpsService};
-pub use router::{ApiState, api_router, api_router_with_services, serve, serve_with_services};
+pub use router::{
+    ApiState, api_router, api_router_with_services, api_router_with_services_and_deploy, serve,
+    serve_with_services, serve_with_services_and_deploy,
+};

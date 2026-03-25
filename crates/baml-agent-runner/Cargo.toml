@@ -15,6 +15,7 @@ baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-config = { path = "../baml-rt-config" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
+baml-rt-repository = { path = "../baml-rt-repository" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 baml-rt-tools-claude = { path = "../tools/claude" }
 baml-tools-system = { path = "../tools/system" }
