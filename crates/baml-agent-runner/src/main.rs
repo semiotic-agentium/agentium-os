@@ -448,6 +448,7 @@ pub(crate) struct AgentRunner {
     internal_a2a_router: Arc<InternalA2aRouter>,
     stream_idle_secs: Option<u64>,
     repository_url: String,
+    repository_http_client: reqwest::Client,
 }
 
 impl AgentRunner {
@@ -471,6 +472,7 @@ impl AgentRunner {
             internal_a2a_router,
             stream_idle_secs,
             repository_url,
+            repository_http_client: reqwest::Client::new(),
         }
     }
 
@@ -518,7 +520,8 @@ impl AgentRunner {
             self.repository_url.trim_end_matches('/'),
             content_hash.as_str()
         );
-        let response = reqwest::Client::new()
+        let response = self
+            .repository_http_client
             .get(&url)
             .send()
             .await
@@ -548,17 +551,6 @@ impl AgentRunner {
     }
 
     fn validate_hash_and_content(content_hash: &DeploymentContentHash, bytes: &[u8]) -> Result<()> {
-        if content_hash.as_str().len() != 64
-            || !content_hash
-                .as_str()
-                .chars()
-                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
-        {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "Invalid content hash format: {}",
-                content_hash.as_str()
-            )));
-        }
         let computed = sha256_hex(bytes);
         if computed != content_hash.as_str() {
             return Err(BamlRtError::InvalidArgument(format!(
@@ -574,16 +566,16 @@ impl AgentRunner {
         bytes: &[u8],
         content_hash: &DeploymentContentHash,
     ) -> Result<(String, AgentRouteKey, BootedAgent)> {
-        let tmp_dir = std::env::temp_dir();
-        let tmp_path = tmp_dir.join(format!(
-            "baml-deploy-{}-{}.tar.gz",
-            content_hash.as_str(),
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::write(&tmp_path, bytes).map_err(BamlRtError::Io)?;
+        let mut package_file = tempfile::Builder::new()
+            .prefix("baml-deploy-")
+            .suffix(".tar.gz")
+            .tempfile()
+            .map_err(BamlRtError::Io)?;
+        use std::io::Write as _;
+        package_file.write_all(bytes).map_err(BamlRtError::Io)?;
+        package_file.flush().map_err(BamlRtError::Io)?;
 
-        let package = AgentPackage::load_from_file(&tmp_path).await?;
-        let _ = std::fs::remove_file(&tmp_path);
+        let package = AgentPackage::load_from_file(package_file.path()).await?;
         let name = package.name().to_string();
         let package_name = AgentPackageName::parse(&name).ok_or_else(|| {
             BamlRtError::InvalidArgument(format!(
@@ -595,6 +587,8 @@ impl AgentRunner {
             route_key.clone(),
             self.internal_a2a_router().clone(),
         ));
+        // Snapshot is intentional: deploy boot only needs currently visible peers.
+        // Agents loaded later are visible on subsequent discovery calls.
         let catalogue = Arc::new(SnapshotAgentLister {
             entries: self.discovery_entries(),
         }) as Arc<dyn AgentLister>;
@@ -939,6 +933,7 @@ impl AgentLister for SnapshotAgentLister {
     }
 }
 
+// `?Send` matches core trait contract; deploy boot path is currently local-executor bound.
 #[async_trait(?Send)]
 impl DeploymentManager for AgentRunner {
     async fn deploy_by_hash(&self, content_hash: &DeploymentContentHash) -> Result<DeployResult> {
@@ -1027,7 +1022,7 @@ impl DeploymentManager for AgentRunner {
         };
 
         if removed {
-            let _ = self.deployment_state.remove_deployment(content_hash).await?;
+            self.deployment_state.remove_deployment(content_hash).await?;
         }
         Ok(UndeployResult { removed })
     }
@@ -1392,7 +1387,7 @@ struct RunnerConfig {
 #[command(about = "Load and execute one or more packaged agents", long_about = None)]
 struct Cli {
     /// Agent package tar.gz paths to load.
-    #[arg(value_name = "AGENT_PACKAGE", required = true)]
+    #[arg(value_name = "AGENT_PACKAGE")]
     packages: Vec<PathBuf>,
 
     /// Repository base URL used for hash-based deploy/restore (e.g. http://127.0.0.1:8080/repository).
@@ -2441,13 +2436,14 @@ async fn main() -> anyhow::Result<()> {
 
     let agents = ready.list_agents();
     if agents.is_empty() {
-        eprintln!("Error: No agents loaded");
-        std::process::exit(1);
-    }
-
-    println!("✅ Loaded {} agent(s):", agents.len());
-    for agent_name in &agents {
-        println!("  - {}", agent_name);
+        warn!(
+            "No agents loaded at startup (repository restore and package args both empty/failed); runner will continue and can receive deploy requests"
+        );
+    } else {
+        println!("✅ Loaded {} agent(s):", agents.len());
+        for agent_name in &agents {
+            println!("  - {}", agent_name);
+        }
     }
 
     let http_handle = if let Some(bind) = config.serve_http.clone() {

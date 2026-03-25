@@ -2,6 +2,8 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+use thiserror::Error;
 
 use crate::Result;
 
@@ -9,13 +11,28 @@ use crate::Result;
 #[serde(transparent)]
 pub struct DeploymentContentHash(String);
 
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("invalid deployment content hash: expected lowercase sha256 hex (64 chars)")]
+pub struct DeploymentContentHashParseError;
+
 impl DeploymentContentHash {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn new(value: impl Into<String>) -> std::result::Result<Self, DeploymentContentHashParseError> {
+        value.into().parse()
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl FromStr for DeploymentContentHash {
+    type Err = DeploymentContentHashParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        if s.len() == 64 && s.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)) {
+            return Ok(Self(s.to_string()));
+        }
+        Err(DeploymentContentHashParseError)
     }
 }
 
@@ -48,6 +65,9 @@ pub struct UndeployResult {
 }
 
 /// Runner-side deployment management surface.
+///
+/// `?Send` is intentional: deployment boot currently traverses runtime internals that
+/// are not `Send` across await points, so implementors are local-executor bound.
 #[async_trait(?Send)]
 pub trait DeploymentManager: Send + Sync {
     async fn deploy_by_hash(&self, content_hash: &DeploymentContentHash) -> Result<DeployResult>;

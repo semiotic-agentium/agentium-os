@@ -205,7 +205,9 @@ pub async fn post_deploy(
     };
 
     let hash = resolve_deploy_hash(&state, body).await?;
-    let content_hash = DeploymentContentHash::new(hash.clone());
+    let content_hash = hash
+        .parse::<DeploymentContentHash>()
+        .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
     let deploy_result = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(manager.deploy_by_hash(&content_hash))
     });
@@ -247,7 +249,10 @@ pub async fn post_undeploy(
         ));
     };
 
-    let content_hash = DeploymentContentHash::new(body.hash.clone());
+    let content_hash = body
+        .hash
+        .parse::<DeploymentContentHash>()
+        .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
     let undeploy_result = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(manager.undeploy_by_hash(&content_hash))
     });
