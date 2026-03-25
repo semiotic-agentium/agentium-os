@@ -9,6 +9,12 @@
     "system/discover_tools",
     "system/internal_a2a"
   ],
+  "tags": [
+    "notion",
+    "knowledge-base",
+    "documents",
+    "search"
+  ],
   "discovery": {
     "description": "Agent that reads Notion pages and blocks",
     "capabilities": ["notion:search-pages", "notion:read-page", "notion:read-blocks", "documents:summarize", "knowledge-base:query"]

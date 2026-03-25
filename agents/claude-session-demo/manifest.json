@@ -4,6 +4,12 @@
   "entry_point": "src/index.ts",
   "signature": "claude-session-demo@1.0.0",
   "tools": ["claude/dev"],
+  "tags": [
+    "development",
+    "code-generation",
+    "claude",
+    "session-tools"
+  ],
   "discovery": {
     "description": "Development agent that turns natural-language requirements into working software. Accepts requirements or specs, plans implementation, and produces code via claude/dev session tools.",
     "capabilities": [

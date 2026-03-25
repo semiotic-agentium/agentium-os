@@ -9,6 +9,12 @@
     "system/discover_tools",
     "system/internal_a2a"
   ],
+  "tags": [
+    "slack",
+    "communication",
+    "todo-extraction",
+    "threads"
+  ],
   "discovery": {
     "description": "Read-only Slack assistant that extracts source-backed todos from channels and threads",
     "capabilities": [

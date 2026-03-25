@@ -8,6 +8,12 @@
     "system/discover_tools",
     "system/internal_a2a"
   ],
+  "tags": [
+    "workflow",
+    "intake",
+    "event-driven",
+    "delegation"
+  ],
   "discovery": {
     "description": "Consumes task-daemon interpretation events and delegates follow-up work.",
     "capabilities": [

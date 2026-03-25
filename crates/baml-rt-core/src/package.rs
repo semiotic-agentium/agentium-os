@@ -35,6 +35,8 @@ pub struct AgentManifest {
     pub signature: String,
     #[serde(default)]
     pub tools: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Optional discovery card metadata (non-derivable fields).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery: Option<ManifestDiscovery>,

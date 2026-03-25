@@ -9,6 +9,12 @@
     "system/discover_tools",
     "system/internal_a2a"
   ],
+  "tags": [
+    "coordinator",
+    "routing",
+    "delegation",
+    "multi-agent"
+  ],
   "discovery": {
     "description": "Coordinator agent that delegates to specialist sub-agents and synthesises their results",
     "capabilities": ["coordination:routing", "coordination:synthesis"]

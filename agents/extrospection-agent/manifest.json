@@ -7,6 +7,12 @@
     "system/extrospection",
     "system/discover_agents"
   ],
+  "tags": [
+    "operations",
+    "observability",
+    "provenance",
+    "analysis"
+  ],
   "discovery": {
     "description": "Austere operational provenance analyst; discovers and comments on other agents, then inspects cross-agent failures, latency, and token hotspots via system/extrospection.",
     "capabilities": [
