@@ -2,12 +2,12 @@ use std::{path::Path, sync::Arc};
 
 use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use surrealdb::engine::local::Mem;
 use surrealdb::{
     Surreal,
     engine::local::{Db, SurrealKv},
 };
-#[cfg(test)]
-use surrealdb::engine::local::Mem;
 
 const NS: &str = "baml";
 const DB_NAME: &str = "runner_state";
@@ -93,9 +93,7 @@ impl TryFrom<serde_json::Value> for DeploymentRecord {
         let content_hash = row
             .get("content_hash")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                BamlRtError::InvalidArgument("deployments.content_hash missing".into())
-            })?
+            .ok_or_else(|| BamlRtError::InvalidArgument("deployments.content_hash missing".into()))?
             .to_string();
         let agent_name = row
             .get("agent_name")
@@ -105,9 +103,7 @@ impl TryFrom<serde_json::Value> for DeploymentRecord {
         let deployed_at = row
             .get("deployed_at")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                BamlRtError::InvalidArgument("deployments.deployed_at missing".into())
-            })?
+            .ok_or_else(|| BamlRtError::InvalidArgument("deployments.deployed_at missing".into()))?
             .to_string();
         let status = match row.get("status").and_then(serde_json::Value::as_str) {
             Some("active") => DeploymentStatus::Active,
