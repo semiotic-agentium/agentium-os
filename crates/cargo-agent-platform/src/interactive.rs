@@ -2,11 +2,16 @@
 //!
 //! Uses `inquire` to provide a guided experience when arguments are missing.
 
+use std::collections::BTreeSet;
+
 use anyhow::{Result, bail};
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use inquire::{Confirm, MultiSelect, Select, Text};
 
-use crate::{text::truncate_for_display, tool_catalog::load_cli_tools_for_picker};
+use crate::{
+    text::truncate_for_display,
+    tool_catalog::{load_cli_tools, load_cli_tools_for_picker},
+};
 
 /// Known schema versions for event delivery.
 ///
@@ -156,6 +161,51 @@ pub fn prompt_agent_description() -> Result<String> {
         .prompt()?;
 
     Ok(description.trim().to_string())
+}
+
+const BANNED_SUGGESTED_TAGS: &[&str] = &["support", "read", "write", "system"];
+
+/// Suggest agent tags based on selected tools.
+pub fn suggest_agent_tags(selected_tools: &[String]) -> Result<Vec<String>> {
+    let mut tags = BTreeSet::new();
+
+    let tools = load_cli_tools()?;
+    for tool_id in selected_tools {
+        if let Some(tool) = tools.iter().find(|t| t.id == *tool_id) {
+            for tag in &tool.tags {
+                let normalized = normalize_tag(tag);
+                if !normalized.is_empty() && !is_banned_suggested_tag(&normalized) {
+                    tags.insert(normalized);
+                }
+            }
+        }
+    }
+
+    Ok(tags.into_iter().collect())
+}
+
+/// Prompt for agent tags.
+pub fn prompt_agent_tags(suggested_tags: &[String]) -> Result<Option<String>> {
+    let default_tags = suggested_tags.join(",");
+    let tags = Text::new("Tags (optional, comma-separated):")
+        .with_default(&default_tags)
+        .with_help_message("e.g., support,clickup,prod")
+        .prompt()?;
+
+    let trimmed = tags.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
+}
+
+fn normalize_tag(tag: &str) -> String {
+    tag.trim().to_ascii_lowercase().replace(' ', "-")
+}
+
+fn is_banned_suggested_tag(tag: &str) -> bool {
+    BANNED_SUGGESTED_TAGS.contains(&tag)
 }
 
 /// Prompt for agent template.

@@ -86,6 +86,10 @@ enum Commands {
         #[arg(long)]
         description: Option<String>,
 
+        /// Comma-separated manifest tags (e.g., support,clickup,prod)
+        #[arg(long)]
+        tags: Option<String>,
+
         /// Event subscriptions for receiving dispatched events.
         /// Format: "schema=<version>,sources=<kind1,kind2>"
         /// Example: --subscriptions "schema=task-daemon.interpretation.v1,sources=slack,clickup"
@@ -203,6 +207,7 @@ fn main() -> anyhow::Result<()> {
             tools,
             template,
             description,
+            tags,
             subscriptions,
             output,
             dry_run,
@@ -247,6 +252,18 @@ fn main() -> anyhow::Result<()> {
                 })
                 .unwrap_or_default();
 
+            let suggested_tags = if interactive {
+                interactive::suggest_agent_tags(&tool_ids)?
+            } else {
+                Vec::new()
+            };
+
+            let tags = match tags {
+                Some(t) => Some(t),
+                None if interactive => interactive::prompt_agent_tags(&suggested_tags)?,
+                None => None,
+            };
+
             // Handle subscriptions: from CLI flag or interactive prompt
             let subscriptions = match subscriptions {
                 Some(s) => Some(s),
@@ -262,6 +279,7 @@ fn main() -> anyhow::Result<()> {
                 tools.as_deref(),
                 &template,
                 &description,
+                tags.as_deref(),
                 subscriptions.as_deref(),
                 output.as_deref(),
                 dry_run,

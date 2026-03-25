@@ -3,9 +3,14 @@
   "name": "stream-baml-tool",
   "entry_point": "src/index.ts",
   "signature": "stream-baml-tool@1.0.0",
-  "tools": ["support/calculate"],
+  "tools": [
+    "support/calculate"
+  ],
   "discovery": {
     "description": "Fixture: streams result from a BAML tool (FSM) driven by message.sendStream",
     "capabilities": []
-  }
+  },
+  "tags": [
+    "fixture"
+  ]
 }

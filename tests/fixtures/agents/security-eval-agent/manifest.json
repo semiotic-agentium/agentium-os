@@ -14,5 +14,8 @@
       "crm:revenue-reporting",
       "email:delivery"
     ]
-  }
+  },
+  "tags": [
+    "fixture"
+  ]
 }

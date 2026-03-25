@@ -2200,6 +2200,7 @@ globalThis.onChatMessage = async function(_message) {
             entry_point: "dist/index.js".to_string(),
             signature: format!("{package_name}@1.0.0"),
             tools: vec![],
+            tags: vec![],
             discovery: None,
         };
         runner.insert_agent(
@@ -2533,6 +2534,7 @@ globalThis.onChatMessage = async function(_message) {
             entry_point: "dist/index.js".to_string(),
             signature: "demo-agent@1.0.0".to_string(),
             tools: vec![],
+            tags: vec![],
             discovery: None,
         };
         runner.insert_agent(

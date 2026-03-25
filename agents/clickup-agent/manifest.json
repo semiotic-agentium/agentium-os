@@ -9,6 +9,11 @@
     "system/discover_tools",
     "system/internal_a2a"
   ],
+  "tags": [
+    "clickup",
+    "project-management",
+    "tasks"
+  ],
   "discovery": {
     "description": "Agent that interacts with ClickUp tasks and spaces",
     "capabilities": ["clickup:list-tasks", "clickup:get-task", "clickup:list-spaces", "clickup:create-task", "project-management:task-tracking", "project-management:sprint-status"]

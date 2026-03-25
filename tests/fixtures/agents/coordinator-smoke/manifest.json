@@ -11,6 +11,12 @@
   ],
   "discovery": {
     "description": "Test fixture: minimal coordinator for smoke testing workflow planning and execution",
-    "capabilities": ["coordination:routing", "coordination:synthesis"]
-  }
+    "capabilities": [
+      "coordination:routing",
+      "coordination:synthesis"
+    ]
+  },
+  "tags": [
+    "fixture"
+  ]
 }

@@ -1,1 +1,14 @@
-{"version":"1.0.0","name":"emit-plan-then-block","entry_point":"src/index.ts","signature":"emit-plan-then-block@1.0.0","tools":[],"discovery":{"description":"Fixture: emits plan chunks then blocks event loop (no yield) before returning. Tests relay flush timing.","capabilities":[]}}
+{
+  "version": "1.0.0",
+  "name": "emit-plan-then-block",
+  "entry_point": "src/index.ts",
+  "signature": "emit-plan-then-block@1.0.0",
+  "tools": [],
+  "discovery": {
+    "description": "Fixture: emits plan chunks then blocks event loop (no yield) before returning. Tests relay flush timing.",
+    "capabilities": []
+  },
+  "tags": [
+    "fixture"
+  ]
+}

@@ -371,20 +371,24 @@ fn check_agent_manifests(
             let agent_name = entry.file_name().to_string_lossy().to_string();
             let manifest_content = fs::read_to_string(&manifest_path)?;
 
-            // Parse manifest JSON to extract tools
-            if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest_content)
-                && let Some(tools) = manifest.get("tools").and_then(|t| t.as_array())
-            {
-                for tool in tools {
-                    if let Some(tool_name) = tool.as_str()
-                        && !inventory_tools.contains(tool_name)
-                    {
-                        let msg =
-                            format!("{}: tool '{}' not found in catalog", agent_name, tool_name);
-                        if warn_missing_catalog {
-                            warnings.push(msg);
-                        } else {
-                            errors.push(msg);
+            // Parse manifest JSON to extract tags/tools checks
+            if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest_content) {
+                validate_manifest_tags(&agent_name, &manifest, errors, warnings);
+
+                if let Some(tools) = manifest.get("tools").and_then(|t| t.as_array()) {
+                    for tool in tools {
+                        if let Some(tool_name) = tool.as_str()
+                            && !inventory_tools.contains(tool_name)
+                        {
+                            let msg = format!(
+                                "{}: tool '{}' not found in catalog",
+                                agent_name, tool_name
+                            );
+                            if warn_missing_catalog {
+                                warnings.push(msg);
+                            } else {
+                                errors.push(msg);
+                            }
                         }
                     }
                 }
@@ -393,4 +397,107 @@ fn check_agent_manifests(
     }
 
     Ok(())
+}
+
+fn validate_manifest_tags(
+    agent_name: &str,
+    manifest: &serde_json::Value,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(tags_val) = manifest.get("tags") else {
+        errors.push(format!("{agent_name}: missing required 'tags' field"));
+        return;
+    };
+
+    let Some(tags) = tags_val.as_array() else {
+        errors.push(format!("{agent_name}: 'tags' must be an array"));
+        return;
+    };
+
+    if tags.is_empty() {
+        errors.push(format!("{agent_name}: 'tags' must be a non-empty array"));
+        return;
+    }
+
+    let mut seen: HashSet<String> = HashSet::new();
+    for (idx, tag_val) in tags.iter().enumerate() {
+        let Some(raw_tag) = tag_val.as_str() else {
+            errors.push(format!(
+                "{agent_name}: tags[{idx}] must be a string, got {}",
+                value_type_name(tag_val)
+            ));
+            continue;
+        };
+
+        let tag = raw_tag.trim();
+        if tag.is_empty() {
+            errors.push(format!("{agent_name}: tags[{idx}] cannot be empty"));
+            continue;
+        }
+
+        if tag.chars().any(char::is_whitespace) {
+            errors.push(format!(
+                "{agent_name}: tags[{idx}] contains spaces/whitespace ('{raw_tag}')"
+            ));
+            continue;
+        }
+
+        if !is_valid_tag_shape(tag) {
+            errors.push(format!(
+                "{agent_name}: tags[{idx}] has invalid format ('{raw_tag}'); expected one-word parts separated by '-' or '_'"
+            ));
+            continue;
+        }
+
+        let tag_lc = tag.to_ascii_lowercase();
+        if !seen.insert(tag_lc.clone()) {
+            errors.push(format!(
+                "{agent_name}: duplicate tag '{raw_tag}' (case-insensitive)"
+            ));
+        }
+
+        if tag != tag_lc {
+            warnings.push(format!(
+                "{agent_name}: non-normalized tag '{raw_tag}' (prefer lowercase)"
+            ));
+        }
+    }
+}
+
+fn is_valid_tag_shape(tag: &str) -> bool {
+    // Allowed: one-word parts [a-zA-Z0-9]+ separated by '-' or '_'.
+    // Disallow leading/trailing separators and consecutive separators.
+    let mut prev_sep = false;
+    let mut saw_alnum = false;
+
+    for (idx, ch) in tag.chars().enumerate() {
+        let is_sep = ch == '-' || ch == '_';
+        if ch.is_ascii_alphanumeric() {
+            saw_alnum = true;
+            prev_sep = false;
+            continue;
+        }
+        if is_sep {
+            if idx == 0 || prev_sep {
+                return false;
+            }
+            prev_sep = true;
+            continue;
+        }
+        return false;
+    }
+
+    saw_alnum && !prev_sep
+}
+
+fn value_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
 }

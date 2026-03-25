@@ -3,9 +3,16 @@
   "name": "argument-cleese",
   "entry_point": "src/index.ts",
   "signature": "argument-cleese@1.0.0",
-  "tools": ["system/internal_a2a"],
+  "tools": [
+    "system/internal_a2a"
+  ],
   "discovery": {
     "description": "Fixture: Monty Python argument sketch agent (initiator)",
-    "capabilities": ["a2a"]
-  }
+    "capabilities": [
+      "a2a"
+    ]
+  },
+  "tags": [
+    "fixture"
+  ]
 }

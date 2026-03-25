@@ -41,6 +41,7 @@ fn capitalize_first(s: &str) -> String {
 pub fn generate_manifest(
     name: &str,
     description: &str,
+    tags: &[String],
     tool_ids: &[String],
     subscriptions: &[EventSubscription],
 ) -> String {
@@ -65,6 +66,7 @@ pub fn generate_manifest(
         entry_point: "src/index.ts".to_string(),
         signature: format!("{}@1.0.0", name),
         tools: tool_ids.to_vec(),
+        tags: tags.to_vec(),
         discovery,
     };
 

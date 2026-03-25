@@ -147,6 +147,7 @@ fn manifest_json(name: &str, description: &str, tools: &[String]) -> String {
         entry_point: "src/index.ts".to_string(),
         signature: format!("{}@1.0.0", name),
         tools: tools.to_vec(),
+        tags: Vec::new(),
         discovery,
     };
     serde_json::to_string_pretty(&manifest).expect("manifest serializes to JSON")

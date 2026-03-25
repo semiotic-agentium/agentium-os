@@ -11,6 +11,7 @@ expression: artifacts
   "tools": [
     "support/calculate"
   ],
+  "tags": [],
   "discovery": {
     "description": "Uses support/calculate"
   }

@@ -16,6 +16,8 @@ use crate::{
     workspace::find_workspace_root,
 };
 
+const BANNED_AGENT_TAGS: &[&str] = &["support", "read", "write", "system"];
+
 /// Agent template type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentTemplate {
@@ -57,6 +59,7 @@ pub fn run(
     tools: Option<&str>,
     template: &str,
     description: &str,
+    tags: Option<&str>,
     subscriptions: Option<&str>,
     output: Option<&str>,
     dry_run: bool,
@@ -82,6 +85,10 @@ pub fn run(
             tool_ids.join(", ")
         );
     }
+
+    // Parse tags
+    let tags = parse_csv_list(tags);
+    validate_tags(&tags)?;
 
     // Parse subscriptions
     let subscriptions = match subscriptions {
@@ -109,6 +116,7 @@ pub fn run(
             &tool_ids,
             template,
             description,
+            &tags,
             &subscriptions,
             &output_dir,
         );
@@ -143,7 +151,14 @@ pub fn run(
 
     match template {
         AgentTemplate::Simple | AgentTemplate::BasicTools => {
-            create_basic_agent(&output_dir, &slug, description, &tool_ids, &subscriptions)
+            create_basic_agent(
+                &output_dir,
+                &slug,
+                description,
+                &tags,
+                &tool_ids,
+                &subscriptions,
+            )
                 .map_err(|e| {
                     anyhow!(
                         "Error: failed to scaffold agent files.\nCause: {e}\nHint: check the output directory and workspace configuration, then retry with `--dry-run`."
@@ -151,23 +166,29 @@ pub fn run(
                 })?;
         }
         AgentTemplate::Planner => {
-            create_planner_agent(&output_dir, &slug, description, &tool_ids, &subscriptions)
-                .map_err(|e| {
-                    anyhow!(
-                        "Error: failed to scaffold planner template files.\nCause: {e}\nHint: verify write permissions for `{}`.",
-                        output_dir.display()
-                    )
-                })?;
+            create_planner_agent(
+                &output_dir,
+                &slug,
+                description,
+                &tags,
+                &tool_ids,
+                &subscriptions,
+            )
+            .map_err(|e| {
+                anyhow!(
+                    "Error: failed to scaffold planner template files.\nCause: {e}\nHint: verify write permissions for `{}`.",
+                    output_dir.display()
+                )
+            })?;
         }
         AgentTemplate::Coordinator => {
-            create_coordinator_agent(&output_dir, &slug, description, &subscriptions).map_err(
-                |e| {
+            create_coordinator_agent(&output_dir, &slug, description, &tags, &subscriptions)
+                .map_err(|e| {
                     anyhow!(
                         "Error: failed to scaffold coordinator template files.\nCause: {e}\nHint: verify write permissions for `{}`.",
                         output_dir.display()
                     )
-                },
-            )?;
+                })?;
         }
     }
 
@@ -392,6 +413,7 @@ fn print_summary(
     tool_ids: &[String],
     template: AgentTemplate,
     description: &str,
+    tags: &[String],
     subscriptions: &[EventSubscription],
     output_dir: &Path,
 ) {
@@ -413,6 +435,14 @@ fn print_summary(
             "(none)".to_string()
         } else {
             tool_ids.join(", ")
+        }
+    );
+    println!(
+        "  Tags:        {}",
+        if tags.is_empty() {
+            "(none)".to_string()
+        } else {
+            tags.join(", ")
         }
     );
 
@@ -452,6 +482,7 @@ fn create_basic_agent(
     output_dir: &Path,
     name: &str,
     description: &str,
+    tags: &[String],
     tool_ids: &[String],
     subscriptions: &[EventSubscription],
 ) -> Result<()> {
@@ -461,7 +492,8 @@ fn create_basic_agent(
     std::fs::create_dir_all(output_dir.join("baml_src"))?;
     std::fs::create_dir_all(output_dir.join("src"))?;
 
-    let manifest = agent_simple::generate_manifest(&slug, description, tool_ids, subscriptions);
+    let manifest =
+        agent_simple::generate_manifest(&slug, description, tags, tool_ids, subscriptions);
     std::fs::write(output_dir.join("manifest.json"), manifest)?;
 
     let baml_prompt = agent_simple::generate_baml_prompt(&prompt_name, tool_ids);
@@ -486,6 +518,7 @@ fn create_planner_agent(
     output_dir: &Path,
     name: &str,
     description: &str,
+    tags: &[String],
     tool_ids: &[String],
     subscriptions: &[EventSubscription],
 ) -> Result<()> {
@@ -497,7 +530,8 @@ fn create_planner_agent(
     std::fs::create_dir_all(output_dir.join("src"))?;
 
     // Generate manifest.json (with subscriptions)
-    let manifest = agent_planner::generate_manifest(&slug, description, tool_ids, subscriptions);
+    let manifest =
+        agent_planner::generate_manifest(&slug, description, tags, tool_ids, subscriptions);
     std::fs::write(output_dir.join("manifest.json"), manifest)?;
 
     // Generate BAML prompt file
@@ -525,6 +559,7 @@ fn create_coordinator_agent(
     output_dir: &Path,
     name: &str,
     description: &str,
+    tags: &[String],
     subscriptions: &[EventSubscription],
 ) -> Result<()> {
     let slug = name.to_string();
@@ -543,7 +578,7 @@ fn create_coordinator_agent(
 
     // Generate manifest.json (with subscriptions)
     let manifest =
-        agent_coordinator::generate_manifest(&slug, description, &tool_ids, subscriptions);
+        agent_coordinator::generate_manifest(&slug, description, tags, &tool_ids, subscriptions);
     std::fs::write(output_dir.join("manifest.json"), manifest)?;
 
     // Generate planner.baml
@@ -569,6 +604,43 @@ fn create_coordinator_agent(
     // Generate tsconfig.json
     let tsconfig = agent_simple::generate_tsconfig();
     std::fs::write(output_dir.join("tsconfig.json"), tsconfig)?;
+
+    Ok(())
+}
+
+fn parse_csv_list(input: Option<&str>) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in input.unwrap_or("").split(',') {
+        let trimmed = item.trim().to_ascii_lowercase();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if out.iter().any(|existing: &String| existing == &trimmed) {
+            continue;
+        }
+        out.push(trimmed);
+    }
+    out
+}
+
+fn validate_tags(tags: &[String]) -> Result<()> {
+    if tags.is_empty() {
+        bail!(
+            "Error: tags cannot be empty.\nHint: provide at least one specific tag with `--tags` (comma-separated), or enter tags in interactive mode."
+        );
+    }
+
+    let banned_found: Vec<String> = tags
+        .iter()
+        .filter(|tag| BANNED_AGENT_TAGS.contains(&tag.as_str()))
+        .cloned()
+        .collect();
+    if !banned_found.is_empty() {
+        bail!(
+            "Error: tags contain banned generic values: {}.\nHint: remove generic tags (`support`, `read`, `write`, `system`) and use feature/domain tags instead.",
+            banned_found.join(", ")
+        );
+    }
 
     Ok(())
 }

@@ -10,5 +10,8 @@
   "discovery": {
     "description": "Fixture: uses system/discover_tools to find tools and respond about Notion, ClickUp, or calculation.",
     "capabilities": []
-  }
+  },
+  "tags": [
+    "fixture"
+  ]
 }
