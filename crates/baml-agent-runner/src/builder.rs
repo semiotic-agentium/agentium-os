@@ -37,12 +37,14 @@ impl RunnerBuilder<Loading> {
     /// Registry is wired to the runner so discovery/A2A see agents as they are loaded.
     pub fn new(
         provenance_config: ProvenanceConfig,
+        deployment_state: Arc<crate::deployment_state::DeploymentStateStore>,
         tool_index: Option<ToolIndexConfig>,
         access_policy: ToolAccessPolicy,
         stream_idle_secs: Option<u64>,
     ) -> Self {
         let runner = Arc::new(crate::AgentRunner::new(
             provenance_config,
+            deployment_state,
             tool_index,
             access_policy,
             stream_idle_secs,

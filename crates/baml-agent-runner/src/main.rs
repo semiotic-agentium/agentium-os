@@ -437,6 +437,7 @@ impl BootedAgent {
 pub(crate) struct AgentRunner {
     agents: RwLock<HashMap<String, BootedAgent>>,
     provenance_config: ProvenanceConfig,
+    _deployment_state: Arc<deployment_state::DeploymentStateStore>,
     tool_index: Option<ToolIndexConfig>,
     access_policy: ToolAccessPolicy,
     routed_agents: std::sync::RwLock<HashMap<AgentRouteKey, A2aAgent>>,
@@ -447,6 +448,7 @@ pub(crate) struct AgentRunner {
 impl AgentRunner {
     pub(crate) fn new(
         provenance_config: ProvenanceConfig,
+        deployment_state: Arc<deployment_state::DeploymentStateStore>,
         tool_index: Option<ToolIndexConfig>,
         access_policy: ToolAccessPolicy,
         stream_idle_secs: Option<u64>,
@@ -456,6 +458,7 @@ impl AgentRunner {
         Self {
             agents: RwLock::new(HashMap::new()),
             provenance_config,
+            _deployment_state: deployment_state,
             tool_index,
             access_policy,
             routed_agents,
@@ -2037,15 +2040,17 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
     let state_db_path = config.state_dir.join("state.db");
-    let _deployment_state = deployment_state::DeploymentStateStore::open(&state_db_path)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to initialize runner deployment state DB at {}",
-                state_db_path.display()
-            )
-        })?;
-    let existing_deployments = _deployment_state
+    let deployment_state = Arc::new(
+        deployment_state::DeploymentStateStore::open(&state_db_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to initialize runner deployment state DB at {}",
+                    state_db_path.display()
+                )
+            })?,
+    );
+    let existing_deployments = deployment_state
         .list_deployments()
         .await
         .context("Failed to read runner deployment state records")?;
@@ -2063,6 +2068,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let mut builder = builder::RunnerBuilder::<builder::Loading>::new(
         provenance_config,
+        deployment_state,
         tool_index,
         access_allowlist,
         config.stream_idle_secs,
@@ -2236,6 +2242,14 @@ mod tests {
             .expect("provenance config")
     }
 
+    async fn test_deployment_state() -> Arc<deployment_state::DeploymentStateStore> {
+        Arc::new(
+            deployment_state::DeploymentStateStore::open_in_memory()
+                .await
+                .expect("in-memory deployment state"),
+        )
+    }
+
     async fn build_test_agent() -> A2aAgent {
         let manager = BamlRuntimeManager::builder()
             .build()
@@ -2287,6 +2301,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn prepare_a2a_request_defaults_to_coordinator_for_plaintext_with_multiple_agents() {
         let runner = AgentRunner::new(
             test_provenance_config().await,
+            test_deployment_state().await,
             None,
             ToolAccessPolicy::default(),
             None,
@@ -2522,6 +2537,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn prepare_a2a_request_still_errors_without_coordinator_when_multiple_agents_loaded() {
         let runner = AgentRunner::new(
             test_provenance_config().await,
+            test_deployment_state().await,
             None,
             ToolAccessPolicy::default(),
             None,
@@ -2544,6 +2560,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn internal_a2a_router_rejects_self_routing_by_route_key() {
         let runner = Arc::new(AgentRunner::new(
             test_provenance_config().await,
+            test_deployment_state().await,
             None,
             ToolAccessPolicy::default(),
             None,
@@ -2585,6 +2602,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn handle_a2a_by_key_respects_instance_id() {
         let runner = AgentRunner::new(
             test_provenance_config().await,
+            test_deployment_state().await,
             None,
             ToolAccessPolicy::default(),
             None,

@@ -85,7 +85,7 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 
 ### Phase 4: Runtime Deploy Core
 - [ ] Remove CLI package-path startup flow.
-- [ ] Add `DeploymentManager` trait in `baml-rt-core`.
+- [x] Add `DeploymentManager` trait in `baml-rt-core`.
 - [ ] Implement hash-based deploy/undeploy core in runner.
 - [ ] Implement startup restore loop (try all saved deployments).
 - [ ] Record per-deployment restore/deploy failures in local state.
