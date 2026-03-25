@@ -21,6 +21,7 @@ baml-rt-tools = {{ path = "../../baml-rt-tools" }}
 baml-derive-core = {{ path = "../../baml-derive-core" }}
 baml-derive = {{ path = "../../baml-derive" }}
 serde = {{ workspace = true }}
+serde_json = {{ workspace = true }}
 async-trait = {{ workspace = true }}
 thiserror = {{ workspace = true }}
 inventory = {{ workspace = true }}
@@ -41,6 +42,7 @@ mod tests {
         assert!(content.contains("GitHub integration tool"));
         assert!(content.contains("baml-rt-core"));
         assert!(content.contains("baml-rt-tools"));
+        assert!(content.contains("serde_json = { workspace = true }"));
         assert!(!content.contains("schemars"));
         assert!(!content.contains("ts-rs"));
     }
