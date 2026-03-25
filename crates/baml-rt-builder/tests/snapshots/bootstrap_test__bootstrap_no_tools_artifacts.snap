@@ -9,6 +9,7 @@ expression: artifacts
   "entry_point": "src/index.ts",
   "signature": "explorer-agent@1.0.0",
   "tools": [],
+  "tags": [],
   "discovery": {
     "description": "Test description for explorer"
   }
