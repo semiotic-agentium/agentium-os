@@ -78,10 +78,10 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 - [x] Ensure `POST /repository/publish {blob_hash}` stores and returns the same hash identity.
 
 ### Phase 3: Runner Local State
-- [ ] Add runner-local SurrealDB deployment table.
-- [ ] Add deployment record fields (`content_hash`, `agent_name`, `deployed_at`).
-- [ ] Add failure tracking fields (`status`, `last_error`, `last_attempt_at`, `failure_count`).
-- [ ] Wire `--state-dir` configuration and defaults.
+- [x] Add runner-local SurrealDB deployment table.
+- [x] Add deployment record fields (`content_hash`, `agent_name`, `deployed_at`).
+- [x] Add failure tracking fields (`status`, `last_error`, `last_attempt_at`, `failure_count`).
+- [x] Wire `--state-dir` configuration and defaults.
 
 ### Phase 4: Runtime Deploy Core
 - [ ] Remove CLI package-path startup flow.

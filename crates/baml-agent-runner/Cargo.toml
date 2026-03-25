@@ -29,6 +29,8 @@ async-trait = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
+surrealdb = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }

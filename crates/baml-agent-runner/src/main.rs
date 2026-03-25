@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 mod builder;
+mod deployment_state;
 mod package;
 
 use std::{
@@ -1112,6 +1113,7 @@ struct RunnerConfig {
     serve_http: Option<String>,
     web_dir: Option<PathBuf>,
     provenance_db: ProvenanceDb,
+    state_dir: PathBuf,
     /// If set, used as Claude workspaces root (overrides BAML_CLAUDE_WORKSPACES_BASE env).
     claude_workspaces_base: Option<PathBuf>,
     /// Stream collector idle timeout in seconds. No yield for this long ends the stream (Timeout). Default 900 for long-running tool sessions (e.g. claude/dev).
@@ -1147,6 +1149,10 @@ struct Cli {
     #[arg(long, value_name = "PATH", default_value = ":memory:")]
     provenance_db: String,
 
+    /// Runner-local deployment state directory (embedded SurrealKV for deployment metadata/state).
+    #[arg(long, value_name = "DIR", default_value = "./.runner-state")]
+    state_dir: PathBuf,
+
     /// Claude workspaces root directory (claude/dev session cwd base). When set, overrides BAML_CLAUDE_WORKSPACES_BASE. Use an absolute path or path relative to current working directory.
     #[arg(long, value_name = "DIR")]
     claude_workspaces_base: Option<PathBuf>,
@@ -1175,6 +1181,7 @@ impl Cli {
             serve_http: self.serve_http,
             web_dir: self.web_dir,
             provenance_db,
+            state_dir: self.state_dir,
             claude_workspaces_base: self.claude_workspaces_base,
             stream_idle_secs: Some(self.stream_idle_secs),
         })
@@ -2022,6 +2029,33 @@ async fn main() -> anyhow::Result<()> {
         .with_runtime_secret_store(Some(overlay))
         .build()
         .context("Failed to build provenance config")?;
+
+    std::fs::create_dir_all(&config.state_dir).with_context(|| {
+        format!(
+            "Failed to create runner state directory {}",
+            config.state_dir.display()
+        )
+    })?;
+    let state_db_path = config.state_dir.join("state.db");
+    let _deployment_state = deployment_state::DeploymentStateStore::open(&state_db_path)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to initialize runner deployment state DB at {}",
+                state_db_path.display()
+            )
+        })?;
+    let existing_deployments = _deployment_state
+        .list_deployments()
+        .await
+        .context("Failed to read runner deployment state records")?;
+    info!(
+        state_dir = %config.state_dir.display(),
+        state_db = %state_db_path.display(),
+        existing_deployments = existing_deployments.len(),
+        "Runner deployment state backend initialized"
+    );
+
     let access_allowlist = parse_access_allowlist();
     let tool_index = match &config.provenance_db {
         ProvenanceDb::InMemory => Some(ToolIndexConfig::in_memory()),
