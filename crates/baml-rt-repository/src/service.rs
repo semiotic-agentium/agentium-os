@@ -292,29 +292,9 @@ impl RepositoryService {
         self.search.search(query).await
     }
 
-    /// Get top entries by fitness score.
-    pub async fn top_by_fitness(
-        &self,
-        domain: &crate::entry::FitnessDomain,
-        limit: usize,
-    ) -> Result<Vec<RepositoryEntryHeader>> {
-        self.search.top_by_fitness(domain, limit).await
-    }
-
     // -----------------------------------------------------------------------
     // Metadata mutation
     // -----------------------------------------------------------------------
-
-    /// Record a fitness score for an entry.
-    pub async fn record_fitness(
-        &self,
-        hash: &ContentHash,
-        domain: crate::entry::FitnessDomain,
-        score: f64,
-    ) -> Result<()> {
-        let now = chrono_now();
-        self.metadata.record_fitness(hash, domain, score, now).await
-    }
 
     /// Add a tag to an entry.
     pub async fn add_tag(&self, hash: &ContentHash, tag: Tag) -> Result<()> {

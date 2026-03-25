@@ -20,7 +20,6 @@ static PUBLISH_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
 static FORK_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static SEARCH_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static SEARCH_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
-static FITNESS_RECORD_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static BLOB_READ_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static BLOB_WRITE_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static HASH_DURATION: OnceLock<Histogram<f64>> = OnceLock::new();
@@ -61,14 +60,6 @@ fn search_duration() -> &'static Histogram<f64> {
     SEARCH_DURATION.get_or_init(|| {
         global::meter("baml_rt_repository")
             .f64_histogram("repository.search.duration_ms")
-            .init()
-    })
-}
-
-fn fitness_record_counter() -> &'static Counter<u64> {
-    FITNESS_RECORD_COUNTER.get_or_init(|| {
-        global::meter("baml_rt_repository")
-            .u64_counter("repository.fitness.record_total")
             .init()
     })
 }
@@ -131,11 +122,6 @@ pub(crate) fn record_search(result_count: usize, duration: Duration) {
     )];
     search_counter().add(1, attrs);
     search_duration().record(duration.as_millis() as f64, attrs);
-}
-
-/// Record a fitness score recording.
-pub(crate) fn record_fitness(domain: &str) {
-    fitness_record_counter().add(1, &[KeyValue::new("domain", domain.to_string())]);
 }
 
 /// Record a blob read.

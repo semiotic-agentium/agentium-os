@@ -1,54 +1,23 @@
 //! Tests for RepositoryService: publish → fork → search flow.
 
-use std::sync::Arc;
-
 use baml_rt_repository::{
     commands::{ForkCommand, PublishCommand, PublishOrigin},
-    entry::{
-        ChangeRationale, FitnessDomain, ManifestSource, SourceBundle, SourceContent, SourceFile,
-        SourcePath, Tag,
-    },
-    fs_blob_store::FsBlobStore,
+    entry::{ChangeRationale, SourceBundle, Tag},
     ids::{AgentName, Generation, Version},
     lineage::{EdgeDescription, InfluenceRef, Parentage},
     search::{SearchQuery, TagFilter},
-    service::RepositoryService,
-    sqlite_store::SqliteStore,
-    storage::{LineageStore, MetadataStore, SearchStore},
 };
+#[path = "support/common.rs"]
+mod common;
+use common::setup_service;
 
 fn make_source(content: &str) -> SourceBundle {
-    SourceBundle {
-        manifest: ManifestSource::new(serde_json::json!({
-            "name": "test-agent",
-            "version": "1.0.0",
-            "tools": ["calculator"],
-            "discovery": {
-                "description": "A test agent",
-                "capabilities": ["compute"]
-            }
-        })),
-        ts_sources: vec![SourceFile {
-            path: SourcePath::new("src/index.ts").unwrap(),
-            content: SourceContent::new(content),
-        }],
-        baml_sources: vec![],
-    }
-}
-
-async fn setup_service() -> RepositoryService {
-    let store = SqliteStore::open_in_memory().unwrap();
-    store.init_schema().await.unwrap();
-    let store = Arc::new(store);
-
-    let tmp = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsBlobStore::new(tmp.path()).unwrap());
-
-    RepositoryService::new(
-        blobs,
-        store.clone() as Arc<dyn MetadataStore>,
-        store.clone() as Arc<dyn LineageStore>,
-        store as Arc<dyn SearchStore>,
+    common::make_source(
+        content,
+        "test-agent",
+        &["calculator"],
+        "A test agent",
+        &["compute"],
     )
 }
 
@@ -334,51 +303,6 @@ async fn search_finds_published_agents() {
     // Empty search returns all
     let all = svc.search(&SearchQuery::default()).await.unwrap();
     assert_eq!(all.len(), 2);
-}
-
-// -------------------------------------------------------------------------
-// Fitness + search
-// -------------------------------------------------------------------------
-
-#[tokio::test]
-async fn top_by_fitness_returns_ranked() {
-    let svc = setup_service().await;
-
-    let low = svc
-        .publish(PublishCommand {
-            name: "low-scorer".parse().unwrap(),
-            source: make_source("low"),
-            rationale: ChangeRationale::new("init").unwrap(),
-            origin: PublishOrigin::Original,
-            tags: vec![],
-        })
-        .await
-        .unwrap();
-
-    let high = svc
-        .publish(PublishCommand {
-            name: "high-scorer".parse().unwrap(),
-            source: make_source("high"),
-            rationale: ChangeRationale::new("init").unwrap(),
-            origin: PublishOrigin::Original,
-            tags: vec![],
-        })
-        .await
-        .unwrap();
-
-    svc.record_fitness(&low.hash, FitnessDomain::new("accuracy"), 0.30)
-        .await
-        .unwrap();
-    svc.record_fitness(&high.hash, FitnessDomain::new("accuracy"), 0.95)
-        .await
-        .unwrap();
-
-    let top = svc
-        .top_by_fitness(&FitnessDomain::new("accuracy"), 10)
-        .await
-        .unwrap();
-    assert_eq!(top.len(), 2);
-    assert_eq!(top[0].version_ref.name.as_str(), "high-scorer");
 }
 
 // -------------------------------------------------------------------------

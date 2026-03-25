@@ -4,51 +4,23 @@ use std::sync::Arc;
 
 use baml_rt_repository::{
     commands::{PublishCommand, PublishOrigin},
-    entry::{ChangeRationale, ManifestSource, SourceBundle, SourceContent, SourceFile, SourcePath},
-    fs_blob_store::FsBlobStore,
+    entry::{ChangeRationale, SourceBundle},
     ids::{AgentName, Version},
     lineage::EdgeDescription,
     service::RepositoryService,
-    sqlite_store::SqliteStore,
-    storage::{LineageStore, MetadataStore, SearchStore},
+    storage::{BlobStore, LineageStore, MetadataStore, SearchStore},
+    surreal_store::SurrealStore,
 };
 use proptest::prelude::*;
+#[path = "support/common.rs"]
+mod common;
 
 fn make_source(content: &str) -> SourceBundle {
-    SourceBundle {
-        manifest: ManifestSource::new(serde_json::json!({
-            "name": "prop-test-agent",
-            "version": "1.0.0",
-            "tools": [],
-            "discovery": {
-                "description": "property test agent",
-                "capabilities": []
-            }
-        })),
-        ts_sources: vec![SourceFile {
-            path: SourcePath::new("src/index.ts").unwrap(),
-            content: SourceContent::new(content),
-        }],
-        baml_sources: vec![],
-    }
+    common::make_source(content, "prop-test-agent", &[], "property test agent", &[])
 }
 
-fn setup_service_sync() -> (RepositoryService, tempfile::TempDir) {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let store = SqliteStore::open_in_memory().unwrap();
-    rt.block_on(store.init_schema()).unwrap();
-    let store = Arc::new(store);
-
-    let tmp = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsBlobStore::new(tmp.path()).unwrap());
-
-    let svc = RepositoryService::new(
-        blobs,
-        store.clone() as Arc<dyn MetadataStore>,
-        store.clone() as Arc<dyn LineageStore>,
-        store as Arc<dyn SearchStore>,
-    );
-    (svc, tmp)
+async fn setup_service() -> RepositoryService {
+    common::setup_service().await
 }
 
 // -------------------------------------------------------------------------
@@ -65,11 +37,11 @@ proptest! {
     #[test]
     fn version_numbers_are_monotonically_increasing(n in version_count_strategy()) {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let (svc, _tmp) = setup_service_sync();
 
         let mut versions = Vec::new();
 
         rt.block_on(async {
+            let svc = setup_service().await;
             for i in 0..n {
                 let origin = if i == 0 {
                     PublishOrigin::Original
@@ -118,11 +90,11 @@ proptest! {
     #[test]
     fn fork_chain_generation_increases(chain_len in 2..=6usize) {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let (svc, _tmp) = setup_service_sync();
 
         let mut generations = Vec::new();
 
         rt.block_on(async {
+            let svc = setup_service().await;
             // Publish original
             let mut prev = svc.publish(PublishCommand {
                 name: "chain-root".parse().unwrap(),
@@ -172,11 +144,11 @@ proptest! {
     #[test]
     fn concurrent_publishes_produce_unique_versions(n in 2..=8usize) {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let (svc, _tmp) = setup_service_sync();
 
         let mut seen_versions = std::collections::HashSet::new();
 
         rt.block_on(async {
+            let svc = setup_service().await;
             for i in 0..n {
                 let origin = if i == 0 {
                     PublishOrigin::Original
@@ -209,15 +181,11 @@ proptest! {
 
 #[tokio::test]
 async fn lineage_traversal_terminates_on_deep_chain() {
-    let store = SqliteStore::open_in_memory().unwrap();
-    store.init_schema().await.unwrap();
+    let store = SurrealStore::open_in_memory().await.unwrap();
     let store = Arc::new(store);
 
-    let tmp = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsBlobStore::new(tmp.path()).unwrap());
-
     let svc = RepositoryService::new(
-        blobs,
+        store.clone() as Arc<dyn BlobStore>,
         store.clone() as Arc<dyn MetadataStore>,
         store.clone() as Arc<dyn LineageStore>,
         store as Arc<dyn SearchStore>,
@@ -265,9 +233,8 @@ proptest! {
         // We can't publish twice with same hash (DuplicateHash error).
         // Instead, verify that computing hash from the same source yields
         // consistent results by publishing to two different names.
-        let (svc, _tmp) = setup_service_sync();
-
         rt.block_on(async {
+            let svc = setup_service().await;
             let r1 = svc.publish(PublishCommand {
                 name: "hash-test-a".parse().unwrap(),
                 source: make_source(&content),

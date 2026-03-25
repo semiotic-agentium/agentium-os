@@ -51,16 +51,16 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 ## Implementation Checklist (Cross-Session Tracking)
 
 ### Phase 0: Contracts and Config
-- [ ] Document canonical hash rule: `sha256(tar_gz_bytes)` (lowercase hex).
-- [ ] Document blob size default (`5 MB`) and config/env override (`repository.max_blob_bytes`, `BAML_REPOSITORY_MAX_BLOB_BYTES`).
-- [ ] Document deploy semantics (`already_deployed=true`, undeploy missing -> `404`, one deployment per hash per runner).
-- [ ] Document separate DB paths (`--repository-dir`, `--state-dir`).
-- [ ] Document OpenAPI/utoipa update requirement for every new endpoint/DTO.
+- [x] Document canonical hash rule: `sha256(tar_gz_bytes)` (lowercase hex).
+- [x] Document blob size default (`5 MB`) and config/env override (`repository.max_blob_bytes`, `BAML_REPOSITORY_MAX_BLOB_BYTES`).
+- [x] Document deploy semantics (`already_deployed=true`, undeploy missing -> `404`, one deployment per hash per runner).
+- [x] Document separate DB paths (`--repository-dir`, `--state-dir`).
+- [x] Document OpenAPI/utoipa update requirement for every new endpoint/DTO.
 
 ### Phase 1: SurrealDB Repository Backend
-- [ ] Replace repository SQLite/FS backend with SurrealDB-only backend implementation.
-- [ ] Remove old repository backend modules and wiring.
-- [ ] Port repository tests to in-memory SurrealDB.
+- [x] Replace repository SQLite/FS backend with SurrealDB-only backend implementation.
+- [x] Remove old repository backend modules and wiring.
+- [x] Port repository tests to in-memory SurrealDB.
 
 ### Phase 2: Repository Publish/Entries/Blobs + Search Inputs
 - [ ] Implement `PUT /repository/blobs/{hash}` and `GET /repository/blobs/{hash}`.
@@ -129,6 +129,7 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 - [x] `[MANIFEST-TAGS]` Update `cargo-agent-platform new-agent` generator to scaffold `tags: []` in new `manifest.json`.
 - [x] `[MANIFEST-TAGS]` Add interactive tool-based tag suggestions in `cargo-agent-platform new-agent` (exclude generic tags).
 - [x] `[MANIFEST-TAGS]` Enforce non-empty tags and reject banned generic tags (`support`, `read`, `write`, `system`) in `new-agent`.
+- [x] `[MANIFEST-TAGS]` Enforce manifest tags contract in `cargo-agent-platform doctor` for `agents/` and fixture agents.
 - [ ] `[MANIFEST-TAGS]` Ensure publish ingests manifest tags and FTS includes tags in `manifest_text`.
 
 ---

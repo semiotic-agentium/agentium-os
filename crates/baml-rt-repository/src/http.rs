@@ -155,12 +155,6 @@ fn default_lineage_depth() -> u32 {
     5
 }
 
-/// POST /entries/:hash/fitness
-#[derive(Debug, Deserialize)]
-pub struct RecordFitnessPath {
-    pub hash: String,
-}
-
 /// POST /entries/:hash/tags
 #[derive(Debug, Deserialize)]
 pub struct TagPath {
@@ -177,13 +171,6 @@ pub struct AddTagRequest {
 #[derive(Debug, Deserialize)]
 pub struct RemoveTagRequest {
     pub tag: String,
-}
-
-/// POST /entries/:hash/fitness — body
-#[derive(Debug, Deserialize)]
-pub struct RecordFitnessRequest {
-    pub domain: String,
-    pub score: f64,
 }
 
 // ---------------------------------------------------------------------------

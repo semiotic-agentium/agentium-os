@@ -1,8 +1,8 @@
 //! Repository entry types: the canonical representation of a stored agent.
 //!
 //! An entry is the atomic unit of the repository. It bundles immutable source
-//! content (ts + baml + manifest.json) with mutable metadata (fitness scores,
-//! tags) and structural lineage information.
+//! content (ts + baml + manifest.json) with mutable metadata (tags) and
+//! structural lineage information.
 
 use baml_rt_hash::{CanonicalHasher, ContentHash, HashInput, HashInputFile};
 use serde::{Deserialize, Serialize};
@@ -296,39 +296,6 @@ impl std::fmt::Display for Timestamp {
 }
 
 // ---------------------------------------------------------------------------
-// Fitness — evaluation scores attached to an entry
-// ---------------------------------------------------------------------------
-
-/// A single evaluation score for a specific domain/benchmark.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FitnessScore {
-    pub domain: FitnessDomain,
-    pub score: f64,
-    pub recorded_at: Timestamp,
-}
-
-/// The domain or benchmark against which an agent was evaluated.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct FitnessDomain(String);
-
-impl FitnessDomain {
-    pub fn new(domain: impl Into<String>) -> Self {
-        Self(domain.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for FitnessDomain {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // NewEntry — the caller-provided draft (version assigned by the store)
 // ---------------------------------------------------------------------------
 
@@ -370,8 +337,8 @@ pub struct NewEntry {
 /// The `version_ref.version` is assigned atomically by the store during
 /// insert — it is never provided by the caller.
 ///
-/// Source content and lineage are immutable after creation. Metadata (fitness
-/// scores, tags) may be appended but never modified in place.
+/// Source content and lineage are immutable after creation. Metadata (tags)
+/// may be appended but never modified in place.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepositoryEntry {
     // --- Identity ---
@@ -390,7 +357,6 @@ pub struct RepositoryEntry {
     pub created_at: Timestamp,
 
     // --- Mutable metadata ---
-    pub fitness_scores: Vec<FitnessScore>,
     pub tags: Vec<Tag>,
 }
 
@@ -429,7 +395,6 @@ pub struct RepositoryEntryHeader {
     pub generation: Generation,
     pub change_rationale: ChangeRationale,
     pub created_at: Timestamp,
-    pub fitness_scores: Vec<FitnessScore>,
     pub tags: Vec<Tag>,
     /// Extracted from manifest for quick display.
     pub description: Option<String>,

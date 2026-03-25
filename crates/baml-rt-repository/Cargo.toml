@@ -17,7 +17,7 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
-rusqlite = { workspace = true }
+surrealdb = { workspace = true }
 axum = { workspace = true }
 http-api-problem = { workspace = true }
 utoipa = { workspace = true }

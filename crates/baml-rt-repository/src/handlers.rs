@@ -10,11 +10,11 @@ use http_api_problem::HttpApiProblem;
 
 use crate::{
     commands::{ForkCommand, PublishCommand, PublishResult},
-    entry::{FitnessDomain, Tag},
+    entry::Tag,
     http::{
         AddTagRequest, GetByHashPath, GetByVersionPath, HttpResult, LineagePath, LineageQuery,
         LineageResponse, ListAgentsResponse, ListVersionsPath, ListVersionsResponse,
-        RecordFitnessPath, RecordFitnessRequest, RemoveTagRequest, SearchResponse, TagPath,
+        RemoveTagRequest, SearchResponse, TagPath,
     },
     ids::Version,
     search::SearchQuery,
@@ -108,19 +108,6 @@ pub async fn get_lineage(
         .await
         .map_err(HttpApiProblem::from)?;
     Ok(Json(LineageResponse { subgraph }))
-}
-
-pub async fn record_fitness(
-    State(svc): State<RepoState>,
-    Path(p): Path<RecordFitnessPath>,
-    Json(body): Json<RecordFitnessRequest>,
-) -> HttpResult<()> {
-    let hash = p.hash.parse().map_err(|e| bad_request(format!("{e}")))?;
-    let domain = FitnessDomain::new(body.domain);
-    svc.record_fitness(&hash, domain, body.score)
-        .await
-        .map_err(HttpApiProblem::from)?;
-    Ok(Json(()))
 }
 
 pub async fn add_tag(

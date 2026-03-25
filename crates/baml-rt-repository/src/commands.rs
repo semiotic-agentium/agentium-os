@@ -67,18 +67,6 @@ pub struct ForkCommand {
 }
 
 // ---------------------------------------------------------------------------
-// RecordFitness — post-evaluation score update
-// ---------------------------------------------------------------------------
-
-/// Record a fitness evaluation result for an existing entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecordFitnessCommand {
-    pub hash: ContentHash,
-    pub domain: crate::entry::FitnessDomain,
-    pub score: f64,
-}
-
-// ---------------------------------------------------------------------------
 // PublishResult — the outcome of a successful publish or fork
 // ---------------------------------------------------------------------------
 

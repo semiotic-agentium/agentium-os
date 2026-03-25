@@ -1,60 +1,27 @@
 //! HTTP handler tests using axum::test / tower::ServiceExt.
 
-use std::sync::Arc;
-
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
 use baml_rt_repository::{
     commands::{ForkCommand, PublishCommand, PublishOrigin},
-    entry::{
-        ChangeRationale, ManifestSource, SourceBundle, SourceContent, SourceFile, SourcePath, Tag,
-    },
-    fs_blob_store::FsBlobStore,
+    entry::{ChangeRationale, SourceBundle, Tag},
     lineage::EdgeDescription,
-    router::repository_router,
-    service::RepositoryService,
-    sqlite_store::SqliteStore,
-    storage::{LineageStore, MetadataStore, SearchStore},
 };
+#[path = "support/common.rs"]
+mod common;
+use common::setup_app;
 use tower::ServiceExt;
 
 fn make_source(content: &str) -> SourceBundle {
-    SourceBundle {
-        manifest: ManifestSource::new(serde_json::json!({
-            "name": "http-test-agent",
-            "version": "1.0.0",
-            "tools": ["calculator"],
-            "discovery": {
-                "description": "An agent for HTTP tests",
-                "capabilities": ["compute"]
-            }
-        })),
-        ts_sources: vec![SourceFile {
-            path: SourcePath::new("src/index.ts").unwrap(),
-            content: SourceContent::new(content),
-        }],
-        baml_sources: vec![],
-    }
-}
-
-async fn setup_app() -> axum::Router {
-    let store = SqliteStore::open_in_memory().unwrap();
-    store.init_schema().await.unwrap();
-    let store = Arc::new(store);
-
-    let tmp = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsBlobStore::new(tmp.path()).unwrap());
-
-    let svc = Arc::new(RepositoryService::new(
-        blobs,
-        store.clone() as Arc<dyn MetadataStore>,
-        store.clone() as Arc<dyn LineageStore>,
-        store as Arc<dyn SearchStore>,
-    ));
-
-    repository_router(svc)
+    common::make_source(
+        content,
+        "http-test-agent",
+        &["calculator"],
+        "An agent for HTTP tests",
+        &["compute"],
+    )
 }
 
 async fn publish_agent(app: &axum::Router, name: &str, content: &str) -> serde_json::Value {
@@ -374,37 +341,6 @@ async fn get_lineage_returns_subgraph() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(!json["subgraph"]["ancestors"].as_array().unwrap().is_empty());
-}
-
-// -------------------------------------------------------------------------
-// Fitness endpoint
-// -------------------------------------------------------------------------
-
-#[tokio::test]
-async fn post_fitness_score() {
-    let app = setup_app().await;
-    let published = publish_agent(&app, "fitness-agent", "fit code").await;
-    let hash = published["hash"].as_str().unwrap();
-
-    let body = serde_json::json!({
-        "domain": "accuracy",
-        "score": 0.92
-    });
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/entries/{hash}/fitness"))
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
 }
 
 // -------------------------------------------------------------------------
