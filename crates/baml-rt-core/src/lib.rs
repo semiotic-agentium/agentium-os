@@ -9,6 +9,7 @@ pub mod correlation;
 pub mod deferred;
 pub mod dispatch;
 pub mod error;
+pub mod event_producer;
 pub mod event_subscription;
 pub mod function_id;
 pub mod ids;
@@ -46,6 +47,7 @@ pub use error::{
     BamlRtError, ClassifiedToolError, Result, SessionLifecycleError, baml_error_disposition,
     retryability_for_a2a,
 };
+pub use event_producer::{EventDeliveryOutcome, ProducedEvent};
 pub use event_subscription::{
     EventSchemaVersion, EventSourceKind, EventSubscription, EventSubscriptionFilter,
     subscriptions_match_filter,
