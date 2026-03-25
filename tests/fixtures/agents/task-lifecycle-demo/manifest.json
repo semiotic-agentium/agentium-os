@@ -7,5 +7,8 @@
   "discovery": {
     "description": "Fixture: full task session lifecycle (WORKING, artifact, INPUT_REQUIRED, COMPLETED)",
     "capabilities": []
-  }
+  },
+  "tags": [
+    "fixture"
+  ]
 }

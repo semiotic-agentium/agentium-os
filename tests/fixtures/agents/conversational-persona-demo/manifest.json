@@ -3,9 +3,16 @@
   "name": "conversational-persona-demo",
   "entry_point": "src/index.ts",
   "signature": "conversational-persona-demo@1.0.0",
-  "tools": ["system/discover_agents", "system/discover_tools", "system/internal_a2a"],
+  "tools": [
+    "system/discover_agents",
+    "system/discover_tools",
+    "system/internal_a2a"
+  ],
   "discovery": {
     "description": "Fixture: agent-discovery demo; routes messages via discovery, delegates to suitable agents via A2A or lists capabilities in persona voice.",
     "capabilities": []
-  }
+  },
+  "tags": [
+    "fixture"
+  ]
 }

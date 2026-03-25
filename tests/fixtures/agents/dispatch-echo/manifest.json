@@ -6,12 +6,23 @@
   "tools": [],
   "discovery": {
     "description": "Fixture: echoes dispatch requests back as acknowledgements",
-    "capabilities": ["dispatch:echo"],
+    "capabilities": [
+      "dispatch:echo"
+    ],
     "subscriptions": [
       {
-        "schema_versions": ["task-daemon.interpretation.v1"],
-        "source_kinds": ["slack", "clickup", "github_issues"]
+        "schema_versions": [
+          "task-daemon.interpretation.v1"
+        ],
+        "source_kinds": [
+          "slack",
+          "clickup",
+          "github_issues"
+        ]
       }
     ]
-  }
+  },
+  "tags": [
+    "fixture"
+  ]
 }

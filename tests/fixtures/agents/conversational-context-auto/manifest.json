@@ -3,9 +3,14 @@
   "name": "conversational-context-auto",
   "entry_point": "src/index.ts",
   "signature": "conversational-context-auto@1.0.0",
-  "tools": ["support/calculate"],
+  "tools": [
+    "support/calculate"
+  ],
   "discovery": {
     "description": "Fixture: provenance-backed automatic conversation context in BAML",
     "capabilities": []
-  }
+  },
+  "tags": [
+    "fixture"
+  ]
 }

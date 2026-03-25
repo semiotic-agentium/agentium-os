@@ -3,9 +3,16 @@
   "name": "slack-smoke-tool",
   "entry_point": "src/index.ts",
   "signature": "slack-smoke-tool@1.0.0",
-  "tools": ["support/slack"],
+  "tools": [
+    "support/slack"
+  ],
   "discovery": {
     "description": "Fixture agent that exercises support/slack wiring",
-    "capabilities": ["slack:smoke"]
-  }
+    "capabilities": [
+      "slack:smoke"
+    ]
+  },
+  "tags": [
+    "fixture"
+  ]
 }
