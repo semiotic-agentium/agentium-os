@@ -23,6 +23,7 @@ pub fn make_source(
             "name": manifest_name,
             "version": "1.0.0",
             "tools": tools,
+            "tags": capabilities,
             "discovery": {
                 "description": description,
                 "capabilities": capabilities

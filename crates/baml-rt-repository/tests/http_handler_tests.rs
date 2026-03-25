@@ -30,7 +30,6 @@ async fn publish_agent(app: &axum::Router, name: &str, content: &str) -> serde_j
         source: make_source(content),
         rationale: ChangeRationale::new("test publish").unwrap(),
         origin: PublishOrigin::Original,
-        tags: vec![],
     };
 
     let response = app
@@ -177,7 +176,6 @@ async fn get_agent_versions() {
         source: make_source("v2 code"),
         rationale: ChangeRationale::new("update").unwrap(),
         origin: PublishOrigin::Iteration,
-        tags: vec![],
     };
     let response = app
         .clone()

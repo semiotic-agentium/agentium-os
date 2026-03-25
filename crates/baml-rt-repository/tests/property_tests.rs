@@ -54,7 +54,6 @@ proptest! {
                     source: make_source(&format!("version {i} code with unique content {i}")),
                     rationale: ChangeRationale::new(format!("publish #{i}")).unwrap(),
                     origin,
-                    tags: vec![],
                 }).await.unwrap();
 
                 versions.push(result.version_ref.version.as_u32());
@@ -101,7 +100,7 @@ proptest! {
                 source: make_source("root code for chain test"),
                 rationale: ChangeRationale::new("root").unwrap(),
                 origin: PublishOrigin::Original,
-                tags: vec![],
+
             }).await.unwrap();
             generations.push(prev.generation.as_u32());
 
@@ -161,7 +160,6 @@ proptest! {
                     source: make_source(&format!("unique version content #{i}")),
                     rationale: ChangeRationale::new(format!("publish #{i}")).unwrap(),
                     origin,
-                    tags: vec![],
                 }).await.unwrap();
 
                 let v = result.version_ref.version.as_u32();
@@ -207,7 +205,6 @@ async fn lineage_traversal_terminates_on_deep_chain() {
                 source: make_source(&format!("deep chain step {i}")),
                 rationale: ChangeRationale::new(format!("step {i}")).unwrap(),
                 origin,
-                tags: vec![],
             })
             .await
             .unwrap();
@@ -240,7 +237,7 @@ proptest! {
                 source: make_source(&content),
                 rationale: ChangeRationale::new("test a").unwrap(),
                 origin: PublishOrigin::Original,
-                tags: vec![],
+
             }).await;
 
             let r2 = svc.publish(PublishCommand {
@@ -248,7 +245,7 @@ proptest! {
                 source: make_source(&content),
                 rationale: ChangeRationale::new("test b").unwrap(),
                 origin: PublishOrigin::Original,
-                tags: vec![],
+
             }).await;
 
             // Both should produce the same hash, and the second should fail

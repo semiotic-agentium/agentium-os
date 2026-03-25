@@ -574,8 +574,10 @@ impl MetadataStore for SurrealStore {
             .map(|v| v as u32 + 1)
             .unwrap_or(1);
 
-        let versioned_source = entry.source.with_manifest_version(next_version);
-        let hash = versioned_source.compute_hash();
+        // Repository publish path always assigns the next version in manifest
+        // and computes the content hash from that canonical source bundle.
+        let source_for_storage = entry.source.with_manifest_version(next_version);
+        let hash = source_for_storage.compute_hash();
         let hash_str = hash.as_str().to_string();
 
         let mut dup_resp = self
@@ -607,12 +609,15 @@ impl MetadataStore for SurrealStore {
         let version = Version::new(next_version).map_err(|e| decode_err(format!("{e}")))?;
         let parentage_json = serde_json::to_string(&entry.parentage)
             .map_err(|e| decode_err(format!("parentage serialization failed: {e}")))?;
-        let source_json = serde_json::to_string(&versioned_source)
+        let source_json = serde_json::to_string(&source_for_storage)
             .map_err(|e| decode_err(format!("source serialization failed: {e}")))?;
         let created_at = crate::service::chrono_now();
-        let description = versioned_source.manifest.description().map(str::to_string);
+        let description = source_for_storage
+            .manifest
+            .description()
+            .map(str::to_string);
         let tools_json = serde_json::to_string(
-            &versioned_source
+            &source_for_storage
                 .manifest
                 .tools()
                 .into_iter()
@@ -621,7 +626,7 @@ impl MetadataStore for SurrealStore {
         )
         .unwrap_or_else(|_| "[]".to_string());
         let capabilities_json = serde_json::to_string(
-            &versioned_source
+            &source_for_storage
                 .manifest
                 .capabilities()
                 .into_iter()
@@ -680,7 +685,7 @@ impl MetadataStore for SurrealStore {
                 name: entry.name.clone(),
                 version,
             },
-            source: versioned_source,
+            source: source_for_storage,
             parentage: entry.parentage.clone(),
             generation: entry.generation,
             change_rationale: entry.change_rationale.clone(),

@@ -31,7 +31,6 @@ pub struct PublishCommand {
     pub source: SourceBundle,
     pub rationale: ChangeRationale,
     pub origin: PublishOrigin,
-    pub tags: Vec<Tag>,
 }
 
 /// How this published version relates to existing entries.

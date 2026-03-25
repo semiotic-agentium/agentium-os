@@ -121,13 +121,15 @@ impl RepositoryService {
             }
         };
 
+        let source = cmd.source;
+        let tags = manifest_tags(&source);
         let new_entry = NewEntry {
             name: cmd.name.clone(),
-            source: cmd.source,
+            source,
             parentage,
             generation,
             change_rationale: cmd.rationale,
-            tags: cmd.tags,
+            tags,
         };
 
         // Store atomically assigns version, writes it into manifest, computes hash.
@@ -319,4 +321,13 @@ pub(crate) fn chrono_now() -> Timestamp {
         .unwrap_or_default();
     let secs = duration.as_secs();
     Timestamp::new(format!("{secs}"))
+}
+
+fn manifest_tags(source: &crate::entry::SourceBundle) -> Vec<Tag> {
+    source
+        .manifest
+        .tags()
+        .into_iter()
+        .map(|tag| Tag::new(tag.to_string()))
+        .collect()
 }

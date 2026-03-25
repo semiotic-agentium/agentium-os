@@ -195,6 +195,15 @@ impl ManifestSource {
             .unwrap_or_default()
     }
 
+    /// Extract the tags list.
+    pub fn tags(&self) -> Vec<&str> {
+        self.0
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default()
+    }
+
     /// Extract capabilities from discovery metadata.
     pub fn capabilities(&self) -> Vec<&str> {
         self.0

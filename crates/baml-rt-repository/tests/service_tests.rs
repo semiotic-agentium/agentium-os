@@ -35,7 +35,6 @@ async fn publish_original_assigns_v1() {
             source: make_source("v1 code"),
             rationale: ChangeRationale::new("initial version").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -55,7 +54,6 @@ async fn publish_iteration_creates_fork_edge() {
             source: make_source("v1 code"),
             rationale: ChangeRationale::new("initial").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -68,7 +66,6 @@ async fn publish_iteration_creates_fork_edge() {
             source: make_source("v2 code"),
             rationale: ChangeRationale::new("improved accuracy").unwrap(),
             origin: PublishOrigin::Iteration,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -95,7 +92,6 @@ async fn publish_influenced_records_influence_edges() {
             source: make_source("source one code"),
             rationale: ChangeRationale::new("initial").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -106,7 +102,6 @@ async fn publish_influenced_records_influence_edges() {
             source: make_source("source two code"),
             rationale: ChangeRationale::new("initial").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -129,7 +124,6 @@ async fn publish_influenced_records_influence_edges() {
                     },
                 ],
             },
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -160,7 +154,6 @@ async fn publish_influenced_missing_source_fails() {
                     description: EdgeDescription::new("missing ref").unwrap(),
                 }],
             },
-            tags: vec![],
         })
         .await;
 
@@ -181,7 +174,6 @@ async fn fork_creates_new_lineage() {
             source: make_source("original code"),
             rationale: ChangeRationale::new("initial").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -241,7 +233,6 @@ async fn retrieval_by_hash_and_version() {
             source: make_source("retrieval test"),
             rationale: ChangeRationale::new("testing retrieval").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -271,20 +262,30 @@ async fn search_finds_published_agents() {
 
     svc.publish(PublishCommand {
         name: "searchable-one".parse().unwrap(),
-        source: make_source("first agent"),
+        source: common::make_source(
+            "first agent",
+            "searchable-one",
+            &["calculator"],
+            "First searchable agent",
+            &["stable"],
+        ),
         rationale: ChangeRationale::new("init").unwrap(),
         origin: PublishOrigin::Original,
-        tags: vec![Tag::new("stable")],
     })
     .await
     .unwrap();
 
     svc.publish(PublishCommand {
         name: "searchable-two".parse().unwrap(),
-        source: make_source("second agent"),
+        source: common::make_source(
+            "second agent",
+            "searchable-two",
+            &["calculator"],
+            "Second searchable agent",
+            &["experimental"],
+        ),
         rationale: ChangeRationale::new("init").unwrap(),
         origin: PublishOrigin::Original,
-        tags: vec![Tag::new("experimental")],
     })
     .await
     .unwrap();
@@ -319,7 +320,6 @@ async fn blob_put_and_get() {
             source: make_source("blob test"),
             rationale: ChangeRationale::new("init").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -344,7 +344,6 @@ async fn list_agents_and_versions() {
         source: make_source("a v1"),
         rationale: ChangeRationale::new("init").unwrap(),
         origin: PublishOrigin::Original,
-        tags: vec![],
     })
     .await
     .unwrap();
@@ -354,7 +353,6 @@ async fn list_agents_and_versions() {
         source: make_source("a v2"),
         rationale: ChangeRationale::new("update").unwrap(),
         origin: PublishOrigin::Iteration,
-        tags: vec![],
     })
     .await
     .unwrap();
@@ -364,7 +362,6 @@ async fn list_agents_and_versions() {
         source: make_source("b v1"),
         rationale: ChangeRationale::new("init").unwrap(),
         origin: PublishOrigin::Original,
-        tags: vec![],
     })
     .await
     .unwrap();

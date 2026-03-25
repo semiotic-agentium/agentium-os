@@ -65,7 +65,7 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 
 ### Phase 2: Repository Publish/Entries/Blobs + Search Inputs
 - [x] Implement `PUT /repository/blobs/{hash}` and `GET /repository/blobs/{hash}`.
-- [ ] Implement `POST /repository/publish` (blob-first policy enforced).
+- [x] Implement `POST /repository/publish` (blob-first policy enforced).
 - [ ] Implement `GET /repository/entries`.
 - [ ] Implement `GET /repository/entries/{hash}`.
 - [ ] Implement `GET /repository/entries?name=<name>&version=<version>`.
@@ -73,7 +73,9 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 - [ ] Enforce max blob size checks (`5 MB` default).
 - [ ] Populate `manifest_text` from manifest metadata at publish time.
 - [ ] Populate `source_text` via bounded text extraction from tarball at publish time.
-- [ ] Ensure publish fails when referenced blob hash is missing.
+- [x] Ensure publish fails when referenced blob hash is missing.
+- [x] Implement `cargo agent-platform publish` with blob-first workflow (`package.tar.gz path -> PUT blob -> POST publish`).
+- [x] Ensure `POST /repository/publish {blob_hash}` stores and returns the same hash identity.
 
 ### Phase 3: Runner Local State
 - [ ] Add runner-local SurrealDB deployment table.
@@ -196,6 +198,12 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 - No user-entered tags in deploy APIs.
 - No standalone tag mutation endpoint in MVP.
 - Publish ingests tags from manifest into repository metadata.
+
+13. Publish metadata source and origin policy (MVP simplification)
+- Publish metadata should be derived from the uploaded blob/manifest whenever possible.
+- Do not require `origin` semantics (`original`/`iteration`/`influenced`) in MVP publish workflow.
+- Treat publish as local repository registration/indexing by default (not global distribution).
+- Keep publish request minimal and avoid duplicate user-supplied manifest metadata.
 
 12. Blob size configurability
 - Default max blob size is `5 MB`.
