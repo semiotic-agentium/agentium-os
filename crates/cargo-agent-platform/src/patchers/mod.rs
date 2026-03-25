@@ -3,7 +3,10 @@
 //! Each patcher knows how to modify a specific configuration file
 //! to add a new tool crate.
 
+pub mod builder_main_rs;
 pub mod builder_toml;
+pub mod regen_fixtures_rs;
+pub mod runner_main_rs;
 pub mod runner_toml;
 pub mod tool_links_lib;
 pub mod tool_links_toml;

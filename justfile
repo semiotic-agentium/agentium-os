@@ -23,6 +23,10 @@ build-release:
     cargo build -p baml-agent-runner --all-features
     cargo build -p baml-rt-provenance --bin graph_exporter --features cli
 
+# Build the runner in debug mode (fast local iteration).
+build:
+    cargo build -p baml-agent-runner --all-features
+
 # Rebuilds clickup-agent package and runs it via a2a stdio. Requires: just build-release
 clickup-agent: build-release
     {{builder_bin}} package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
@@ -182,10 +186,11 @@ clippy:
 
 ci_features := "baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests"
 
-# CI parity: run the full nextest suite (mirrors rust-ci.yml "nextest" job).
+# CI parity: run nextest in CI order (LLM suite first, then non-LLM suite).
 # Requires: cargo-nextest and OPENROUTER_API_KEY for LLM tests.
 test:
-    cargo nextest run --workspace --features {{ci_features}}
+    cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast -j 2 --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests,baml-rt-provenance/surreal-backend
+    THREADS=$(( $(nproc) / 2 )); [ "$THREADS" -lt 2 ] && THREADS=2; cargo nextest run --workspace --locked --profile ci-non-llm --no-fail-fast -j "$THREADS" --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt-provenance/surreal-backend
 
 # Same as `test` but only compile — useful for a quick pre-push check.
 test-build:
@@ -203,3 +208,15 @@ test-unit:
 # Usage: just provenance-mermaid ctx-1771426017780-2
 provenance-mermaid context_id: build-release
     {{graph_exporter_bin}} --db {{provenance_db}} --context-id {{context_id}} --simplify --format mermaid
+
+# SDK CLI: workspace integrity check
+doctor:
+    cargo run -p cargo-agent-platform -- doctor
+
+# SDK CLI: list all registered tools
+list-tools:
+    cargo run -p cargo-agent-platform -- list-tools
+
+# SDK CLI: list all agent packages
+list-agents:
+    cargo run -p cargo-agent-platform -- list-agents

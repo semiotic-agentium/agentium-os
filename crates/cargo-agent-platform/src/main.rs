@@ -9,13 +9,23 @@
 //! # Subcommands
 //!
 //! - `new-tool <name>` — Create a new tool crate with all necessary patches
+//! - `new-agent <name>` — Create a new agent package (supports `--subscriptions` for event delivery)
+//! - `build [name]` — Package an agent into a distributable tar.gz
 //! - `list-tools` — List all registered tools from the inventory
+//! - `list-agents` — List all agent packages
+//! - `list-event-sources` — List event source kinds declared by tools and known schema versions
+//! - `regen` — Regenerate type declarations for all agents
 //! - `doctor` — Validate workspace integrity
 
 mod commands;
+mod generated_baml;
+mod interactive;
 mod patchers;
 mod templates;
+mod text;
+mod tool_catalog;
 mod transaction;
+mod workspace;
 
 use clap::{Parser, Subcommand};
 
@@ -39,24 +49,88 @@ struct Cli {
 enum Commands {
     /// Create a new tool crate with all necessary patches
     NewTool {
-        /// Tool name in kebab-case (e.g., github, jira, linear)
-        name: String,
+        /// Tool name in kebab-case (e.g., github, jira, linear). Omit for interactive mode.
+        name: Option<String>,
 
         /// Bundle type (only 'support' is currently supported)
-        #[arg(long, default_value = "support")]
-        bundle: String,
+        #[arg(long)]
+        bundle: Option<String>,
 
-        /// Access level: read, write, or delete
-        #[arg(long, default_value = "read")]
-        access: String,
+        /// Access level: read (default, query-only) or write (can mutate)
+        #[arg(long)]
+        access: Option<String>,
 
-        /// Print what would be created/modified without writing
+        /// Human-readable description for this tool
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Validate and print planned changes without writing files; exits non-zero on validation failures (non-interactive only)
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Create a new agent package
+    NewAgent {
+        /// Agent name in kebab-case (e.g., github-agent, task-manager). Omit for interactive mode.
+        name: Option<String>,
+
+        /// Comma-separated tool IDs (e.g., support/github,system/internal_a2a)
+        #[arg(long)]
+        tools: Option<String>,
+
+        /// Agent template: simple, basic-tools, planner, coordinator
+        #[arg(long)]
+        template: Option<String>,
+
+        /// Human-readable description for discovery
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Event subscriptions for receiving dispatched events.
+        /// Format: "schema=<version>,sources=<kind1,kind2>"
+        /// Example: --subscriptions "schema=task-daemon.interpretation.v1,sources=slack,clickup"
+        #[arg(long)]
+        subscriptions: Option<String>,
+
+        /// Target directory (defaults to agents/<name>)
+        #[arg(long)]
+        output: Option<String>,
+
+        /// Validate and print planned changes without writing files; exits non-zero on validation failures (non-interactive only)
         #[arg(long)]
         dry_run: bool,
     },
 
     /// List all registered tools from the inventory
     ListTools,
+
+    /// List all agent packages
+    ListAgents,
+
+    /// List event source kinds declared by tools and known schema versions
+    ListEventSources,
+
+    /// Package agents into distributable tar.gz files
+    Build {
+        /// Agent names (looks in agents/ directory). Omit to build current directory.
+        #[arg()]
+        names: Vec<String>,
+
+        /// Explicit path to agent directory (overrides name lookup, only valid with single agent)
+        #[arg(long)]
+        path: Option<String>,
+
+        /// Output directory for tar.gz files (default: current directory)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+
+    /// Regenerate generated_tools.baml and baml-runtime.d.ts for all agents
+    Regen {
+        /// Agent names to regenerate (omit for all agents)
+        #[arg()]
+        names: Vec<String>,
+    },
 
     /// Validate workspace integrity
     Doctor {
@@ -89,10 +163,125 @@ fn main() -> anyhow::Result<()> {
             name,
             bundle,
             access,
+            description,
             dry_run,
-        } => commands::new_tool::run(&name, &bundle, &access, dry_run),
+        } => {
+            // Interactive mode when name is not provided
+            let interactive = name.is_none();
+
+            let name = match name {
+                Some(n) => n,
+                None => interactive::prompt_tool_name()?,
+            };
+
+            let bundle = match bundle {
+                Some(b) => b,
+                None if interactive => interactive::prompt_bundle()?,
+                None => "support".to_string(),
+            };
+
+            let access = match access {
+                Some(a) => a,
+                None if interactive => interactive::prompt_access()?,
+                None => "read".to_string(),
+            };
+
+            let description = match description {
+                Some(d) => d,
+                None if interactive => interactive::prompt_tool_description()?,
+                None => String::new(),
+            };
+
+            // In interactive mode, ignore --dry-run (confirmation prompt replaces it)
+            let dry_run = if interactive { false } else { dry_run };
+
+            commands::new_tool::run(&name, &bundle, &access, &description, dry_run, interactive)
+        }
+
+        Commands::NewAgent {
+            name,
+            tools,
+            template,
+            description,
+            subscriptions,
+            output,
+            dry_run,
+        } => {
+            // Interactive mode when name is not provided
+            let interactive = name.is_none();
+
+            let name = match name {
+                Some(n) => n,
+                None => interactive::prompt_agent_name()?,
+            };
+
+            let description = match description {
+                Some(d) => d,
+                None if interactive => interactive::prompt_agent_description()?,
+                None => String::new(),
+            };
+
+            let template = match template {
+                Some(t) => t,
+                None if interactive => interactive::prompt_template()?,
+                None => "simple".to_string(),
+            };
+
+            // For interactive mode with basic-tools or planner, prompt for tools
+            let tools = match tools {
+                Some(t) => Some(t),
+                None if interactive && (template == "basic-tools" || template == "planner") => {
+                    interactive::prompt_tools()?
+                }
+                None => None,
+            };
+
+            // Parse tool IDs for subscription prompting
+            let tool_ids: Vec<String> = tools
+                .as_ref()
+                .map(|t| {
+                    t.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Handle subscriptions: from CLI flag or interactive prompt
+            let subscriptions = match subscriptions {
+                Some(s) => Some(s),
+                None if interactive => interactive::prompt_subscriptions(&tool_ids)?,
+                None => None,
+            };
+
+            // In interactive mode, ignore --dry-run (confirmation prompt replaces it)
+            let dry_run = if interactive { false } else { dry_run };
+
+            commands::new_agent::run(
+                &name,
+                tools.as_deref(),
+                &template,
+                &description,
+                subscriptions.as_deref(),
+                output.as_deref(),
+                dry_run,
+                interactive,
+            )
+        }
 
         Commands::ListTools => commands::list_tools::run(),
+
+        Commands::ListAgents => commands::list_agents::run(),
+
+        Commands::ListEventSources => commands::list_event_sources::run(),
+
+        Commands::Build {
+            names,
+            path,
+            output,
+        } => commands::build::run(&names, path.as_deref(), output.as_deref()),
+
+        Commands::Regen { names } => commands::regen::run(&names),
 
         Commands::Doctor {
             ci,

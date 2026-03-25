@@ -21,31 +21,29 @@ impl Patcher for ToolLinksLibPatcher {
             return Ok(content.to_string());
         }
 
-        let use_line = format!(
-            "        #[cfg(feature = \"{tool_name}\")]\n        use $crate::{crate_name} as _;"
-        );
-        let reexport_line = format!("#[cfg(feature = \"{tool_name}\")]\npub use {crate_name};");
+        let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
+        let reexport_cfg = format!("#[cfg(feature = \"{tool_name}\")]");
+        let reexport_use = format!("pub use {crate_name};");
+        let macro_cfg = format!("        #[cfg(feature = \"{tool_name}\")]");
+        let macro_use = format!("        use $crate::{crate_name} as _;");
 
-        let mut result = content.to_string();
-
-        // 1. Add re-export near the top of the file
-        // Find the last feature-gated "pub use" line and insert after it
-        if let Some(insert_pos) = find_last_feature_gated_reexport(&result) {
-            result.insert_str(insert_pos, &format!("\n{reexport_line}"));
-        } else if let Some(insert_pos) = find_last_unconditional_reexport(&result) {
-            // No feature-gated re-exports, insert after unconditional ones
-            result.insert_str(insert_pos, &format!("\n{reexport_line}"));
+        // 1. Add feature-gated re-export line pair near existing re-exports.
+        if let Some(idx) = find_reexport_insertion_index(&lines) {
+            lines.insert(idx, reexport_cfg);
+            lines.insert(idx + 1, reexport_use);
+        } else {
+            bail!("Could not find insertion point for re-export in baml-tool-links/src/lib.rs");
         }
 
-        // 2. Add use line inside the force_link_all_tools! macro
-        // Find the last feature-gated use inside the macro
-        if let Some(insert_pos) = find_macro_insertion_point(&result) {
-            result.insert_str(insert_pos, &format!("\n{use_line}"));
+        // 2. Add feature-gated force-link macro use lines inside force_link_all_tools!.
+        if let Some(idx) = find_macro_cfg_use_insertion_index(&lines) {
+            lines.insert(idx, macro_cfg);
+            lines.insert(idx + 1, macro_use);
         } else {
             bail!("Could not find insertion point in force_link_all_tools! macro");
         }
 
-        Ok(result)
+        Ok(format!("{}\n", lines.join("\n")))
     }
 
     fn tool_exists(&self, content: &str, tool_name: &str) -> bool {
@@ -54,29 +52,49 @@ impl Patcher for ToolLinksLibPatcher {
     }
 }
 
-/// Find the end position of the last feature-gated `pub use` re-export.
-fn find_last_feature_gated_reexport(content: &str) -> Option<usize> {
-    // Look for patterns like:
-    // #[cfg(feature = "...")]
-    // pub use ...;
-    let mut last_end = None;
+/// Find the line index where a new `#[cfg]` + `pub use` pair should be inserted.
+fn find_reexport_insertion_index(lines: &[String]) -> Option<usize> {
+    let mut last_feature_pair_end = None;
+    let mut last_pub_use = None;
 
-    let lines: Vec<&str> = content.lines().collect();
     let mut i = 0;
-
     while i < lines.len() {
         let line = lines[i].trim();
-        if line.starts_with("#[cfg(feature =") && line.ends_with(")]") && i + 1 < lines.len() {
-            let next_line = lines[i + 1].trim();
-            if next_line.starts_with("pub use ") && next_line.ends_with(';') {
-                // Calculate the byte position of the end of this statement
-                let mut pos = 0;
-                for (j, line) in lines.iter().enumerate() {
-                    if j <= i + 1 {
-                        pos += line.len() + 1; // +1 for newline
-                    }
-                }
-                last_end = Some(pos - 1); // -1 to position at end of line
+        if line.starts_with("#[cfg(feature =") && i + 1 < lines.len() {
+            let next = lines[i + 1].trim();
+            if next.starts_with("pub use ") && next.ends_with(';') {
+                last_feature_pair_end = Some(i + 2);
+                i += 2;
+                continue;
+            }
+        }
+        if line.starts_with("pub use ") && line.ends_with(';') {
+            last_pub_use = Some(i + 1);
+        }
+        i += 1;
+    }
+
+    last_feature_pair_end.or(last_pub_use)
+}
+
+/// Find line index where a new feature-gated macro `use` pair should be inserted.
+/// Inserts after the last existing cfg+use pair inside `force_link_all_tools!`.
+fn find_macro_cfg_use_insertion_index(lines: &[String]) -> Option<usize> {
+    let macro_start = lines
+        .iter()
+        .position(|line| line.contains("macro_rules! force_link_all_tools"))?;
+    let mut last_pair_end = None;
+
+    let mut i = macro_start;
+    while i + 1 < lines.len() {
+        let line = lines[i].trim();
+        if line == "};" {
+            break;
+        }
+        if line.starts_with("#[cfg(feature =") {
+            let next = lines[i + 1].trim();
+            if next.starts_with("use $crate::") && next.ends_with(" as _;") {
+                last_pair_end = Some(i + 2);
                 i += 2;
                 continue;
             }
@@ -84,67 +102,7 @@ fn find_last_feature_gated_reexport(content: &str) -> Option<usize> {
         i += 1;
     }
 
-    last_end
-}
-
-/// Find the end position of the last unconditional `pub use` re-export.
-fn find_last_unconditional_reexport(content: &str) -> Option<usize> {
-    let mut last_end = None;
-
-    let lines: Vec<&str> = content.lines().collect();
-    let mut pos = 0;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        // Check if it's an unconditional pub use (not preceded by #[cfg])
-        if trimmed.starts_with("pub use ") && trimmed.ends_with(';') {
-            // Make sure previous line is not a #[cfg(...)]
-            let is_conditional = i > 0 && lines[i - 1].trim().starts_with("#[cfg(");
-            if !is_conditional {
-                last_end = Some(pos + line.len());
-            }
-        }
-        pos += line.len() + 1; // +1 for newline
-    }
-
-    last_end
-}
-
-/// Find the insertion point inside the force_link_all_tools! macro.
-///
-/// We want to insert after the last feature-gated use line inside the macro.
-fn find_macro_insertion_point(content: &str) -> Option<usize> {
-    // Find the macro definition
-    let macro_start = content.find("macro_rules! force_link_all_tools")?;
-    let macro_content = &content[macro_start..];
-
-    // Find the last #[cfg(feature = "...")] use $crate::... as _; pattern inside the macro
-    let lines: Vec<&str> = macro_content.lines().collect();
-    let mut last_use_end = None;
-    let mut pos = macro_start;
-
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        let trimmed = line.trim();
-
-        // Look for feature-gated use inside macro
-        if trimmed.starts_with("#[cfg(feature =") && i + 1 < lines.len() {
-            let next_trimmed = lines[i + 1].trim();
-            if next_trimmed.starts_with("use $crate::") && next_trimmed.ends_with(" as _;") {
-                // Calculate position at end of the use line
-                pos += line.len() + 1 + lines[i + 1].len();
-                last_use_end = Some(pos);
-                i += 2;
-                continue;
-            }
-        }
-
-        pos += line.len() + 1;
-        i += 1;
-    }
-
-    last_use_end
+    last_pair_end
 }
 
 #[cfg(test)]
@@ -186,7 +144,8 @@ macro_rules! force_link_all_tools {
 }
 "#;
 
-        let pos = find_macro_insertion_point(content);
+        let lines: Vec<String> = content.lines().map(ToString::to_string).collect();
+        let pos = find_macro_cfg_use_insertion_index(&lines);
         assert!(pos.is_some());
     }
 }

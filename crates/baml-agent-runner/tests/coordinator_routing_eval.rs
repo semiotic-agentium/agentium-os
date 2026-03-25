@@ -150,7 +150,7 @@ async fn eval_coordinator_direct_answer_math() {
         base = runner_api.base_url,
     );
     let responses: Vec<Value> = timeout(
-        Duration::from_secs(120),
+        Duration::from_secs(300),
         post_a2a_sse_collect(&http_client, &url, &request_body),
     )
     .await

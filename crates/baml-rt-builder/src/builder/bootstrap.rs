@@ -54,8 +54,9 @@ fn capitalize_first(s: &str) -> String {
 
 /// Create directory layout and template files, then run the type generator.
 ///
-/// The generated index.ts includes `/// <reference path="./baml-runtime.d.ts" />` so
-/// TypeScript resolves BAML function names (e.g. ChooseCalcTool) and openToolSession.
+/// The generated index.ts includes `/// <reference path="./baml-runtime.d.ts" />` plus
+/// explicit type imports so TypeScript resolves BAML function names (e.g. ChooseCalcTool),
+/// run-context types, and openToolSession under isolated-module settings.
 pub async fn run_bootstrap(
     root: &Path,
     name: &str,
@@ -227,16 +228,14 @@ fn index_ts_template(prompt_name: &str, no_tools: bool) -> String {
     format!(
         r#"/// <reference path="./baml-runtime.d.ts" />
 // Types from baml-runtime.d.ts (bootstrap-generated). DSL-only; no protocol plumbing.
-
-async function onChatMessage(message: ChatMessage): Promise<void> {{
-  const s = session(message);
-  await s.run(async () => {{
-    const text = s.text() || 'unknown';
+import type {{ RunContext, SessionResult }} from "./baml-runtime";
+__chat_register({{
+  run: async (ctx: RunContext): Promise<SessionResult> => {{
+    const text = typeof ctx.text === "string" && ctx.text.length > 0 ? ctx.text : "unknown";
     const result = await {fn_name}({args});
     return {{ message: String(result) }};
-  }});
-}}
-__chat_register({{ onChatMessage }});
+  }},
+}});
 "#,
         fn_name = fn_name,
         args = args

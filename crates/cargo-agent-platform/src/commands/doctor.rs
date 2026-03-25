@@ -2,15 +2,13 @@
 //!
 //! Validates workspace integrity with static checks and catalog validation.
 
-use std::{
-    collections::HashSet,
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashSet, fs, path::Path};
 
 use anyhow::{Context, Result};
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use console::style;
+
+use crate::workspace::find_workspace_root;
 
 /// Run the doctor command.
 pub fn run(ci: bool, warn_missing_catalog: bool) -> Result<()> {
@@ -245,8 +243,9 @@ fn check_feature_forwarding(workspace_root: &Path, _errors: &mut Vec<String>) ->
         .collect();
 
     for feature in &tool_features {
-        let forward_pattern = format!("{feature} = [\"baml-tool-links/{feature}\"]");
-        let forward_pattern_alt = format!("{feature} = ['baml-tool-links/{feature}']");
+        let dep_name = format!("baml-tools-{feature}");
+        let forward_pattern = format!("{feature} = [\"dep:{dep_name}\"]");
+        let forward_pattern_alt = format!("{feature} = ['dep:{dep_name}']");
 
         // Check runner
         if runner_content.contains(&forward_pattern)
@@ -394,23 +393,4 @@ fn check_agent_manifests(
     }
 
     Ok(())
-}
-
-/// Find the workspace root by looking for Cargo.toml with [workspace].
-fn find_workspace_root() -> Result<PathBuf> {
-    let mut dir = std::env::current_dir()?;
-
-    loop {
-        let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            let content = fs::read_to_string(&cargo_toml)?;
-            if content.contains("[workspace]") {
-                return Ok(dir);
-            }
-        }
-
-        if !dir.pop() {
-            anyhow::bail!("Could not find workspace root");
-        }
-    }
 }

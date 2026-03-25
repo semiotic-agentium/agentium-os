@@ -1,19 +1,17 @@
 //! `list-tools` subcommand implementation.
 //!
-//! Lists all registered tools from the inventory with their metadata.
+//! Lists all registered tools with current workspace-aware metadata.
 
-use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use console::style;
 
-pub fn run() -> anyhow::Result<()> {
-    let catalog = InventoryCatalog::new();
-    let mut tools: Vec<_> = catalog.iter().collect();
+use crate::{text::truncate_for_display, tool_catalog::load_cli_tools};
 
-    // Sort by tool name for consistent output
-    tools.sort_by_key(|t| t.name.to_string());
+pub fn run() -> anyhow::Result<()> {
+    let tools = load_cli_tools()?;
+    let total = tools.len();
 
     if tools.is_empty() {
-        println!("{}", style("No tools found in inventory.").yellow());
+        println!("{}", style("No tools found.").yellow());
         return Ok(());
     }
 
@@ -28,33 +26,16 @@ pub fn run() -> anyhow::Result<()> {
 
     // Print each tool
     for tool in tools {
-        let name = tool.name.to_string();
-        let description = truncate(&tool.description, 48);
+        let name = tool.id;
+        let description = truncate_for_display(&tool.description, 48);
         let tags = format!("[{}]", tool.tags.join(", "));
-        let access = tool
-            .access
-            .as_ref()
-            .map(|a| format!("{:?}", a))
-            .unwrap_or_else(|| "None".to_string());
+        let access = tool.access;
 
         println!("{:<30} {:<50} {:<25} {}", name, description, tags, access);
     }
 
     println!();
-    println!(
-        "{} {} tool(s) registered",
-        style("Total:").bold(),
-        catalog.iter().count()
-    );
+    println!("{} {} tool(s) registered", style("Total:").bold(), total);
 
     Ok(())
-}
-
-/// Truncate a string to a maximum length, appending "..." if truncated.
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len - 3])
-    }
 }

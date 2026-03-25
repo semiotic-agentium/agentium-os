@@ -13,14 +13,12 @@ impl BamlRuntimeManager {
     /// use baml_rt_tools::DescribeAction;
     /// use baml_rt_tools::bundles::Support;
     /// use async_trait::async_trait;
-    /// use schemars::JsonSchema;
+    /// use baml_derive::BamlType;
     /// use serde::{Deserialize, Serialize};
-    /// use ts_rs::TS;
     ///
     /// struct MyTool;
     ///
     /// #[derive(Serialize, Deserialize, BamlType)]
-    /// #[ts(export)]
     /// struct MyInput {}
     ///
     /// impl DescribeAction for MyInput {
@@ -30,7 +28,6 @@ impl BamlRuntimeManager {
     /// }
     ///
     /// #[derive(Serialize, Deserialize, BamlType)]
-    /// #[ts(export)]
     /// struct MyOutput {
     ///     result: String,
     /// }

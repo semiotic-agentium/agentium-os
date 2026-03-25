@@ -5,17 +5,18 @@
 /// # Arguments
 /// * `name` - Tool name in kebab-case (e.g., "github")
 /// * `bundle` - Bundle type (e.g., "support")
-/// * `access` - Access level (e.g., "read", "write", "delete")
-pub fn generate(name: &str, bundle: &str, access: &str) -> String {
+/// * `access` - Access level (e.g., "read", "write")
+/// * `description` - Human-readable tool description
+pub fn generate(name: &str, bundle: &str, access: &str, description: &str) -> String {
     let pascal_name = to_pascal_case(name);
     let snake_name = to_snake_case(name);
     let upper_name = name.to_uppercase().replace('-', "_");
     let bundle_type = to_pascal_case(bundle);
+    let escaped_description = escape_rust_string_literal(description);
 
     let access_attr = match access {
-        "write" => "\n    access = Write,",
-        "delete" => "\n    access = Delete,",
-        _ => "", // read is the default, no need to specify
+        "write" => "Write",
+        _ => "Read",
     };
 
     format!(
@@ -37,6 +38,12 @@ use serde::{{Deserialize, Serialize}};
 pub struct {pascal_name}Input {{
     /// TODO: Define your input fields
     pub query: String,
+}}
+
+impl baml_rt_tools::DescribeAction for {pascal_name}Input {{
+    fn describe(&self) -> String {{
+        format!("query='{{}}'", self.query)
+    }}
 }}
 
 // ---------------------------------------------------------------------------
@@ -79,8 +86,9 @@ impl Default for {pascal_name}Tool {{
 
 #[baml_tool(
     name = "{bundle}/{snake_name}",
-    description = "TODO: Describe what this tool does.",
-    tags = ["{bundle}", "{snake_name}"],{access_attr}
+    description = "{description}",
+    tags = ["{bundle}", "{snake_name}"],
+    access = {access_attr},
     // Uncomment and fill in if this tool requires API keys:
     // secrets = [
     //     {{ name = "{upper_name}_API_KEY", description = "{pascal_name} API token", reason = "Required to authenticate" }}
@@ -96,7 +104,7 @@ impl BamlTool for {pascal_name}Tool {{
     type Output = {pascal_name}Output;
 
     fn description(&self) -> &'static str {{
-        "TODO: Describe what this tool does."
+        "{description}"
     }}
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {{
@@ -113,7 +121,12 @@ impl BamlTool for {pascal_name}Tool {{
         bundle = bundle,
         bundle_type = bundle_type,
         access_attr = access_attr,
+        description = escaped_description,
     )
+}
+
+fn escape_rust_string_literal(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Convert kebab-case to PascalCase.
@@ -153,16 +166,22 @@ mod tests {
 
     #[test]
     fn test_generate_lib_rs() {
-        let content = generate("github", "support", "read");
+        let content = generate("github", "support", "read", "Search and read GitHub issues");
         assert!(content.contains("GithubTool"));
         assert!(content.contains("support/github"));
         assert!(content.contains("struct GithubInput"));
         assert!(content.contains("struct GithubOutput"));
+        assert!(content.contains("Search and read GitHub issues"));
     }
 
     #[test]
     fn test_generate_lib_rs_with_write_access() {
-        let content = generate("github", "support", "write");
+        let content = generate(
+            "github",
+            "support",
+            "write",
+            "Create and edit GitHub issues",
+        );
         assert!(content.contains("access = Write,"));
     }
 }

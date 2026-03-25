@@ -17,18 +17,15 @@ impl BamlRuntimeManager {
     /// # use baml_rt::tools::BamlTool;
     /// # use baml_rt_tools::bundles::Support;
     /// # use async_trait::async_trait;
-    /// # use schemars::JsonSchema;
+    /// # use baml_derive::BamlType;
     /// # use serde::{Deserialize, Serialize};
-    /// # use ts_rs::TS;
     /// # struct WeatherTool;
     /// # #[derive(Serialize, Deserialize, BamlType)]
-    /// # #[ts(export)]
     /// # struct WeatherInput { location: String }
     /// # impl baml_rt_tools::DescribeAction for WeatherInput {
     /// #     fn describe(&self) -> String { format!("weather for {}", self.location) }
     /// # }
     /// # #[derive(Serialize, Deserialize, BamlType)]
-    /// # #[ts(export)]
     /// # struct WeatherOutput { temperature: String }
     /// # #[async_trait]
     /// # impl BamlTool for WeatherTool {

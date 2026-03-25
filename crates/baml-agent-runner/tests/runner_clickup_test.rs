@@ -470,7 +470,7 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
         );
 
         let responses: Vec<Value> = timeout(
-            Duration::from_secs(180),
+            Duration::from_secs(300),
             post_a2a_sse_collect(&http_client, &a2a_url, &request_body),
         )
         .await

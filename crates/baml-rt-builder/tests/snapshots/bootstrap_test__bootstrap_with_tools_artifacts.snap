@@ -45,16 +45,14 @@ client DefaultClient {
 === src/index.ts ===
 /// <reference path="./baml-runtime.d.ts" />
 // Types from baml-runtime.d.ts (bootstrap-generated). DSL-only; no protocol plumbing.
-
-async function onChatMessage(message: ChatMessage): Promise<void> {
-  const s = session(message);
-  await s.run(async () => {
-    const text = s.text() || 'unknown';
+import type { RunContext, SessionResult } from "./baml-runtime";
+__chat_register({
+  run: async (ctx: RunContext): Promise<SessionResult> => {
+    const text = typeof ctx.text === "string" && ctx.text.length > 0 ? ctx.text : "unknown";
     const result = await ChooseCalculatoragentTool({ user_message: text });
     return { message: String(result) };
-  });
-}
-__chat_register({ onChatMessage });
+  },
+});
 
 
 === src/baml-runtime.d.ts ===

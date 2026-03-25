@@ -216,7 +216,7 @@ async fn test_coordinator_smoke_direct_answer() {
         base = runner_api.base_url,
     );
     let responses: Vec<Value> = timeout(
-        Duration::from_secs(120),
+        Duration::from_secs(300),
         post_a2a_sse_collect(&http_client, &a2a_url, &request_body),
     )
     .await
@@ -329,7 +329,7 @@ async fn test_coordinator_accepts_data_only_task_daemon_handoff() {
         base = runner_api.base_url,
     );
     let responses: Vec<Value> = timeout(
-        Duration::from_secs(120),
+        Duration::from_secs(300),
         post_a2a_sse_collect(&http_client, &a2a_url, &request_body),
     )
     .await
