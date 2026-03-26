@@ -653,54 +653,9 @@ Agent packaged successfully!
 
 Each output file is named `<agent-name>-<version>.tar.gz`. By default, files are placed in the current working directory. Use `-o` to specify a different output directory.
 
-**Running the packaged agent:**
+**Running packaged agents:**
 
-After building, run the agent using `baml-agent-runner` directly. The runner must be built with appropriate features for the tools your agent uses:
-
-```bash
-# Build the runner with tool support (recommended for local dev)
-cargo build -p baml-agent-runner --all-features --release
-
-# Run the agent
-./target/release/baml-agent-runner \
-  clickup-agent-1.0.0.tar.gz \
-  --serve-http 127.0.0.1:8080 \
-  --provenance-db provenance.db
-```
-
-**Feature flags for baml-agent-runner:**
-
-| Feature | Required for |
-|---------|--------------|
-| `http-tools` | ClickUp, Notion, Slack tools (`support/clickup`, `support/notion`, `support/slack`) |
-| `memory` | Memory tools (`memory/add`, `memory/query`, etc.) |
-| `llm-tests` | LLM-dependent tests (not needed for running agents) |
-
-For local development, `--all-features` is the safest default to avoid "Unknown tool in manifest" errors when adding new tool crates.
-
-**Runner options:**
-
-| Option | Description |
-|--------|-------------|
-| `--serve-http <ADDR>` | Bind HTTP API on the given address (e.g., `127.0.0.1:8080`) |
-| `--a2a-stdio` | Run A2A JSON-RPC loop over stdio |
-| `--provenance-db <PATH>` | SQLite database path for provenance (default: `:memory:`) |
-| `--web-dir <DIR>` | Directory with web UI assets to serve at root path |
-
-**Typical workflow:**
-
-```bash
-# 1. Build the runner with features (once)
-cargo build -p baml-agent-runner --features http-tools,memory --release
-
-# 2. Build the agent
-cargo agent-platform build clickup-agent
-
-# 3. Run the agent
-./target/release/baml-agent-runner \
-  clickup-agent-1.0.0.tar.gz \
-  --serve-http 127.0.0.1:8080
-```
+`cargo agent-platform build` only produces package archives. Runtime execution is documented separately in [`docs/agent-runner.md`](./agent-runner.md).
 
 ---
 
