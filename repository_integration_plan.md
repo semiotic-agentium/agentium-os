@@ -86,26 +86,26 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 ### Phase 4: Runtime Deploy Core
 - [ ] Remove CLI package-path startup flow.
 - [x] Add `DeploymentManager` trait in `baml-rt-core`.
-- [ ] Implement hash-based deploy/undeploy core in runner.
-- [ ] Implement startup restore loop (try all saved deployments).
-- [ ] Record per-deployment restore/deploy failures in local state.
-- [ ] Clear failure state on successful subsequent boot.
+- [x] Implement hash-based deploy/undeploy core in runner.
+- [x] Implement startup restore loop (try all saved deployments).
+- [x] Record per-deployment restore/deploy failures in local state.
+- [x] Clear failure state on successful subsequent boot.
 - [ ] Implement graceful drain on undeploy (`503` for new requests, timeout, force-abort).
-- [ ] Apply hot-deploy lock discipline (boot outside write lock, insert/remove under short write lock).
+- [x] Apply hot-deploy lock discipline (boot outside write lock, insert/remove under short write lock).
 
 ### Phase 5: Runtime HTTP API
-- [ ] Add `POST /deploy`.
-- [ ] Add `POST /undeploy`.
-- [ ] Add `GET /deployments`.
-- [ ] Resolve `{name, version}` to hash in API layer before runner deploy call.
-- [ ] Enforce one-active-deployment-per-hash semantics (`already_deployed=true` on repeat deploy).
-- [ ] Include deployment status/error fields in deployments response.
-- [ ] Mount repository routes under `/repository`.
-- [ ] Update OpenAPI/utoipa for all new runtime and repository endpoints/DTOs.
+- [x] Add `POST /deploy`.
+- [x] Add `POST /undeploy`.
+- [x] Add `GET /deployments`.
+- [x] Resolve `{name, version}` to hash in API layer before runner deploy call.
+- [x] Enforce one-active-deployment-per-hash semantics (`already_deployed=true` on repeat deploy).
+- [x] Include deployment status/error fields in deployments response.
+- [x] Mount repository routes under `/repository`.
+- [x] Update OpenAPI/utoipa for all new runtime and repository endpoints/DTOs.
 
 ### Phase 6: Metadata Propagation
-- [ ] Enrich runner in-memory deployed-agent model with repository provenance.
-- [ ] Add provenance fields to `AgentCard` and API/system DTOs (`content_hash`, `repository_version`, `tags`).
+- [x] Enrich runner in-memory deployed-agent model with repository provenance.
+- [x] Add provenance fields to `AgentCard` and API/system DTOs (`content_hash`, `repository_version`, `tags`).
 - [ ] Verify serialization and discovery output coverage.
 
 ### Phase 7: Builder CLI

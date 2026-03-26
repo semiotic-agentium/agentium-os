@@ -19,6 +19,10 @@ pub struct AgentEventSubscriptionDto {
 pub struct AgentCardDto {
     pub name: String,
     pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_version: Option<u32>,
     pub agent_package: String,
     pub agent_instance_id: String,
     pub tools: Vec<String>,
@@ -27,6 +31,8 @@ pub struct AgentCardDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subscriptions: Vec<AgentEventSubscriptionDto>,
 }
@@ -114,12 +120,15 @@ impl From<baml_rt_core::AgentCard> for AgentCardDto {
         Self {
             name: c.name,
             version: c.version,
+            content_hash: c.content_hash,
+            repository_version: c.repository_version,
             agent_package: c.agent_package,
             agent_instance_id: c.agent_instance_id,
             tools: c.tools,
             baml_functions: c.baml_functions,
             description: c.description,
             capabilities: c.capabilities,
+            tags: c.tags,
             subscriptions: c
                 .subscriptions
                 .into_iter()

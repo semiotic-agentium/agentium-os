@@ -122,6 +122,12 @@ impl AgentRouteKey {
 pub struct AgentCard {
     pub name: String,
     pub version: String,
+    /// Repository content hash identity (sha256 tar.gz), when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    /// Repository monotonic version number, when deployed from repository metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_version: Option<u32>,
     /// Route key for A2A dispatch.
     pub agent_package: String,
     pub agent_instance_id: String,
@@ -136,6 +142,9 @@ pub struct AgentCard {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    /// Manifest tags (single source of truth).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     /// Event subscriptions declared by this agent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subscriptions: Vec<EventSubscription>,

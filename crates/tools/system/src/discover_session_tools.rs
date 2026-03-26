@@ -49,11 +49,14 @@ fn card_to_dto(c: &baml_rt_core::AgentCard) -> AgentCardDto {
     AgentCardDto {
         name: c.name.clone(),
         version: c.version.clone(),
+        content_hash: c.content_hash.clone(),
+        repository_version: c.repository_version,
         agent_package: c.agent_package.clone(),
         agent_instance_id: c.agent_instance_id.clone(),
         tools: c.tools.clone(),
         description: c.description.clone(),
         capabilities: c.capabilities.clone(),
+        tags: c.tags.clone(),
         subscriptions: c.subscriptions.iter().map(subscription_to_dto).collect(),
     }
 }

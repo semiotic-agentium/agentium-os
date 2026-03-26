@@ -407,6 +407,7 @@ pub(crate) struct BootedAgent {
     /// BAML function names captured from the runtime at boot time (synchronous copy).
     baml_functions: Vec<String>,
     content_hash: Option<DeploymentContentHash>,
+    repository_version: Option<u32>,
 }
 
 impl BootedAgent {
@@ -550,6 +551,47 @@ impl AgentRunner {
             ))))
     }
 
+    async fn fetch_repository_version(
+        &self,
+        content_hash: &DeploymentContentHash,
+    ) -> Result<Option<u32>> {
+        let url = format!(
+            "{}/entries/{}",
+            self.repository_url.trim_end_matches('/'),
+            content_hash.as_str()
+        );
+        let response = self
+            .repository_http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| BamlRtError::Io(std::io::Error::other(format!(
+                "repository GET entry failed at {url}: {e}"
+            ))))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(BamlRtError::Io(std::io::Error::other(format!(
+                "repository GET entry failed ({status}) at {url}: {body}"
+            ))));
+        }
+        let value = response.json::<serde_json::Value>().await.map_err(|e| {
+            BamlRtError::Io(std::io::Error::other(format!(
+                "invalid repository entry JSON for {}: {e}",
+                content_hash.as_str()
+            )))
+        })?;
+        let version = value
+            .get("version_ref")
+            .and_then(|v| v.get("version"))
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok());
+        Ok(version)
+    }
+
     fn validate_hash_and_content(content_hash: &DeploymentContentHash, bytes: &[u8]) -> Result<()> {
         let computed = sha256_hex(bytes);
         if computed != content_hash.as_str() {
@@ -565,6 +607,7 @@ impl AgentRunner {
         &self,
         bytes: &[u8],
         content_hash: &DeploymentContentHash,
+        repository_version: Option<u32>,
     ) -> Result<(String, AgentRouteKey, BootedAgent)> {
         let mut package_file = tempfile::Builder::new()
             .prefix("baml-deploy-")
@@ -623,6 +666,7 @@ impl AgentRunner {
             manifest,
             baml_functions,
             content_hash: Some(content_hash.clone()),
+            repository_version,
         };
         Ok((name, route_key, booted))
     }
@@ -668,6 +712,8 @@ impl AgentRunner {
                 let agent_card = AgentCard {
                     name: m.name.clone(),
                     version: version.clone(),
+                    content_hash: booted.content_hash.as_ref().map(|h| h.as_str().to_string()),
+                    repository_version: booted.repository_version,
                     agent_package: pkg.clone(),
                     agent_instance_id: AgentInstanceId::DEFAULT.to_string(),
                     tools: m.tools.clone(),
@@ -678,6 +724,7 @@ impl AgentRunner {
                         .as_ref()
                         .map(|d| d.capabilities.clone())
                         .unwrap_or_default(),
+                    tags: m.tags.clone(),
                     subscriptions: m
                         .discovery
                         .as_ref()
@@ -951,7 +998,20 @@ impl DeploymentManager for AgentRunner {
 
         let bytes = self.fetch_blob_from_repository(content_hash).await?;
         AgentRunner::validate_hash_and_content(content_hash, &bytes)?;
-        let (name, route_key, booted) = self.boot_from_blob_bytes(&bytes, content_hash).await?;
+        let repository_version = match self.fetch_repository_version(content_hash).await {
+            Ok(version) => version,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    content_hash = %content_hash.as_str(),
+                    "Failed to resolve repository version for deployment; continuing without repository_version"
+                );
+                None
+            }
+        };
+        let (name, route_key, booted) = self
+            .boot_from_blob_bytes(&bytes, content_hash, repository_version)
+            .await?;
 
         {
             let mut agents = self.agents.write().expect("RwLock poison");
@@ -2621,6 +2681,7 @@ globalThis.onChatMessage = async function(_message) {
                 manifest,
                 baml_functions: vec![],
                 content_hash: None,
+                repository_version: None,
             },
         );
     }
@@ -2964,6 +3025,7 @@ globalThis.onChatMessage = async function(_message) {
                 manifest,
                 baml_functions: vec![],
                 content_hash: None,
+                repository_version: None,
             },
         );
 
