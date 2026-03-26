@@ -310,16 +310,18 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
 /// across the entire promise-polling loop, so the second context could not enter JS
 /// until the first had fully completed — including any async tool/LLM latency.
 ///
-/// This test uses a tool with a 200ms sleep to simulate LLM-scale latency.
-/// Two invocations are launched simultaneously; if they run sequentially (bug present),
-/// total time ≥ 400ms. If they run concurrently (bug fixed), total time ≈ 200ms.
+/// Proof strategy: BarrierTool::execute() waits at a two-party Barrier.
+/// If both invocations can enter execute() concurrently the barrier unblocks immediately.
+/// If the bridge lock is held across async work, the second invocation cannot start,
+/// the barrier never unblocks, and the test times out.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_bridge_lock_not_held_across_async_work() {
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager
-        .register_tool(SlowTool)
+        .register_tool(BarrierTool(barrier))
         .await
-        .expect("register slow tool");
+        .expect("register barrier tool");
     let manager = Arc::new(Mutex::new(manager));
     let effect_bus = Arc::new(BusWithEffects::new());
     {
@@ -337,91 +339,86 @@ async fn test_bridge_lock_not_held_across_async_work() {
 
     bridge
         .register_js_tool(
-            "js/slow_tool",
+            "js/barrier_tool",
             r#"async function(args) {
-                const session = await openToolSession("test/slow");
+                const session = await openToolSession("test/barrier");
                 await session.send(args || {});
                 const step = await session.continue();
                 return step && step.output ? step.output : {};
             }"#,
         )
         .await
-        .expect("register slow js tool");
+        .expect("register barrier js tool");
 
     let bridge = Arc::new(Mutex::new(bridge));
-    let start = std::time::Instant::now();
 
-    // Launch two concurrent invocations — each tool takes ~200ms.
     // Uses invoke_js_tool_nonblocking so the bridge Mutex is released before the poll loop,
     // allowing both contexts to make progress concurrently. This is how the handover lane
     // dispatches invocations in production.
-    let (r1, r2) = tokio::join!(
-        {
-            let bridge = bridge.clone();
-            async move {
-                let context_id = ContextId::new(9, 1);
-                let agent_id = AgentId::from_uuid(
-                    UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
-                );
-                let scope = RuntimeScope::task_scope(
-                    context_id.clone(),
-                    agent_id,
-                    MessageId::from_external(ExternalId::new("msg-slow-1")),
-                    TaskId::from_external(ExternalId::new("task-slow-1")),
-                );
-                let inv = InvocationScope::new(scope.clone());
-                context::with_scope(scope, async move {
-                    QuickJSBridge::invoke_js_tool_nonblocking(
-                        bridge,
-                        &inv,
-                        "js/slow_tool",
-                        json!({}),
-                    )
+    let (r1, r2) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(
+            {
+                let bridge = bridge.clone();
+                async move {
+                    let context_id = ContextId::new(9, 1);
+                    let agent_id = AgentId::from_uuid(
+                        UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
+                    );
+                    let scope = RuntimeScope::task_scope(
+                        context_id.clone(),
+                        agent_id,
+                        MessageId::from_external(ExternalId::new("msg-barrier-1")),
+                        TaskId::from_external(ExternalId::new("task-barrier-1")),
+                    );
+                    let inv = InvocationScope::new(scope.clone());
+                    context::with_scope(scope, async move {
+                        QuickJSBridge::invoke_js_tool_nonblocking(
+                            bridge,
+                            &inv,
+                            "js/barrier_tool",
+                            json!({}),
+                        )
+                        .await
+                    })
                     .await
-                })
-                .await
-            }
-        },
-        {
-            let bridge = bridge.clone();
-            async move {
-                let context_id = ContextId::new(9, 2);
-                let agent_id = AgentId::from_uuid(
-                    UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
-                );
-                let scope = RuntimeScope::task_scope(
-                    context_id.clone(),
-                    agent_id,
-                    MessageId::from_external(ExternalId::new("msg-slow-2")),
-                    TaskId::from_external(ExternalId::new("task-slow-2")),
-                );
-                let inv = InvocationScope::new(scope.clone());
-                context::with_scope(scope, async move {
-                    QuickJSBridge::invoke_js_tool_nonblocking(
-                        bridge,
-                        &inv,
-                        "js/slow_tool",
-                        json!({}),
-                    )
+                }
+            },
+            {
+                let bridge = bridge.clone();
+                async move {
+                    let context_id = ContextId::new(9, 2);
+                    let agent_id = AgentId::from_uuid(
+                        UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
+                    );
+                    let scope = RuntimeScope::task_scope(
+                        context_id.clone(),
+                        agent_id,
+                        MessageId::from_external(ExternalId::new("msg-barrier-2")),
+                        TaskId::from_external(ExternalId::new("task-barrier-2")),
+                    );
+                    let inv = InvocationScope::new(scope.clone());
+                    context::with_scope(scope, async move {
+                        QuickJSBridge::invoke_js_tool_nonblocking(
+                            bridge,
+                            &inv,
+                            "js/barrier_tool",
+                            json!({}),
+                        )
+                        .await
+                    })
                     .await
-                })
-                .await
+                }
             }
-        }
+        )
+    })
+    .await
+    .expect(
+        "timed out after 5s: barrier never unblocked, indicating the bridge lock was held \
+         across async work (second invocation could not enter JS while first was waiting)",
     );
-
-    let elapsed = start.elapsed();
 
     r1.expect("invocation 1 must succeed");
     r2.expect("invocation 2 must succeed");
-
-    // Sequential execution would take ≥ 400ms; parallel should take ≈ 200-250ms.
-    // We use 350ms as the threshold with generous margin for CI load.
-    assert!(
-        elapsed.as_millis() < 350,
-        "concurrent contexts should overlap (elapsed {}ms ≥ 350ms — possible bridge lock held across async work)",
-        elapsed.as_millis()
-    );
 }
 
 #[derive(Debug)]
@@ -468,40 +465,42 @@ impl BamlTool for ScopeEchoTool {
     }
 }
 
-/// A tool that sleeps 200ms to simulate LLM-scale latency.
+/// BarrierTool waits at a two-party tokio Barrier. Two concurrent invocations unblock
+/// each other immediately; a sequential execution order (bridge lock held across async
+/// work) would deadlock since the second invocation can never enter execute().
 /// Used by `test_bridge_lock_not_held_across_async_work` to verify that the bridge
 /// lock is released during async work so concurrent contexts can make progress.
 #[derive(Debug)]
-struct SlowTool;
+struct BarrierTool(Arc<tokio::sync::Barrier>);
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType, Default)]
-struct SlowInput {}
-impl baml_rt_tools::DescribeAction for SlowInput {
+struct BarrierInput {}
+impl baml_rt_tools::DescribeAction for BarrierInput {
     fn describe(&self) -> String {
-        "SlowInput".to_string()
+        "BarrierInput".to_string()
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
-struct SlowOutput {
+struct BarrierOutput {
     done: bool,
 }
 
 #[async_trait]
-impl BamlTool for SlowTool {
+impl BamlTool for BarrierTool {
     type Bundle = Test;
-    const LOCAL_NAME: &'static str = "slow";
+    const LOCAL_NAME: &'static str = "barrier";
     type OpenInput = ();
-    type Input = SlowInput;
-    type Output = SlowOutput;
+    type Input = BarrierInput;
+    type Output = BarrierOutput;
 
     fn description(&self) -> &'static str {
-        "Sleeps 200ms to simulate latency."
+        "Waits at a two-party barrier to prove concurrent execution."
     }
 
     async fn execute(&self, _args: Self::Input) -> baml_rt::Result<Self::Output> {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        Ok(SlowOutput { done: true })
+        self.0.wait().await;
+        Ok(BarrierOutput { done: true })
     }
 }
 
