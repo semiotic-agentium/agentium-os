@@ -56,7 +56,8 @@ use baml_rt_repository::{
     BlobStore, LineageStore, MetadataStore, RepositoryService, SearchStore, SurrealStore,
 };
 use baml_rt_tools::{
-    InventoryCatalog, ManifestToolNames, ToolAccessPolicy, parse_access_allowlist,
+    InventoryCatalog, ManifestToolNames, ProducerCheckpoint, ToolAccessPolicy,
+    load_configured_event_producers_with_checkpoints, parse_access_allowlist,
     register_manifest_tools,
 };
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
@@ -2546,14 +2547,46 @@ async fn main() -> anyhow::Result<()> {
     // --- Event producer poll loop ---
     let dispatcher_handle = if let Some(interval) = config.event_poll_interval {
         let registry = ready.registry();
-        let dispatcher =
+        let runner = ready.runner();
+        let deployment_state = runner.deployment_state().clone();
+        let mut dispatcher =
             baml_rt_a2a::EventDispatcher::new(registry as Arc<dyn baml_rt_a2a::AgentRegistry>);
+        let persisted_checkpoints: std::collections::HashMap<String, ProducerCheckpoint> =
+            deployment_state
+                .list_event_producer_checkpoints()
+                .await
+                .context("loading persisted event producer checkpoints")?
+                .into_iter()
+                .map(|(producer_key, checkpoint)| {
+                    (producer_key, ProducerCheckpoint::some(checkpoint))
+                })
+                .collect();
+
+        let configured_producers = load_configured_event_producers_with_checkpoints(
+            &InventoryCatalog::new(),
+            Some(runner.provenance_config().config_service()),
+            persisted_checkpoints.clone(),
+        )
+        .await
+        .context("loading configured event producers")?;
+        for producer in configured_producers {
+            let producer_key = producer.producer_key().to_string();
+            let checkpoint = persisted_checkpoints
+                .get(&producer_key)
+                .cloned()
+                .unwrap_or_else(ProducerCheckpoint::none);
+            dispatcher
+                .register_producer_with_checkpoint(producer, checkpoint)
+                .with_context(|| format!("registering event producer {producer_key}"))?;
+            info!(producer_key = %producer_key, "registered event producer");
+        }
+
         info!(
             interval_secs = interval.as_secs(),
             "event producer poll loop enabled"
         );
         Some(tokio::spawn(async move {
-            run_event_poll_loop(dispatcher, interval).await;
+            run_event_poll_loop(dispatcher, deployment_state, interval).await;
         }))
     } else {
         None
@@ -2669,41 +2702,61 @@ async fn main() -> anyhow::Result<()> {
 /// outcomes. Silent when no producers are registered.
 async fn run_event_poll_loop(
     mut dispatcher: baml_rt_a2a::EventDispatcher,
+    deployment_state: Arc<deployment_state::DeploymentStateStore>,
     interval: std::time::Duration,
 ) {
     loop {
-        let results = dispatcher.poll_and_deliver().await;
-        for (producer_key, outcome) in &results {
-            match outcome {
-                Ok(delivery) if delivery.failures.is_empty() => {
-                    if delivery.subscribers_matched > 0 {
-                        info!(
-                            producer_key = %producer_key,
-                            matched = delivery.subscribers_matched,
-                            accepted = delivery.subscribers_accepted,
-                            "event delivery complete"
-                        );
-                    }
-                }
-                Ok(delivery) => {
-                    warn!(
+        // Let the rest of the runner settle before the next producer cycle.
+        tokio::time::sleep(interval).await;
+        run_event_poll_cycle(&mut dispatcher, deployment_state.as_ref()).await;
+    }
+}
+
+async fn run_event_poll_cycle(
+    dispatcher: &mut baml_rt_a2a::EventDispatcher,
+    deployment_state: &deployment_state::DeploymentStateStore,
+) {
+    let results = dispatcher.poll_and_deliver().await;
+    for (producer_key, outcome) in &results {
+        match outcome {
+            Ok(delivery) if delivery.failures.is_empty() => {
+                if delivery.subscribers_matched > 0 {
+                    info!(
                         producer_key = %producer_key,
                         matched = delivery.subscribers_matched,
                         accepted = delivery.subscribers_accepted,
-                        failures = delivery.failures.len(),
-                        "event delivery partial failure"
+                        "event delivery complete"
                     );
                 }
-                Err(err) => {
+                if let Some(checkpoint) = dispatcher.checkpoint(producer_key).value()
+                    && let Err(err) = deployment_state
+                        .save_event_producer_checkpoint(producer_key, checkpoint)
+                        .await
+                {
                     warn!(
                         producer_key = %producer_key,
                         error = %err,
-                        "event delivery failed"
+                        "failed to persist event producer checkpoint"
                     );
                 }
             }
+            Ok(delivery) => {
+                warn!(
+                    producer_key = %producer_key,
+                    matched = delivery.subscribers_matched,
+                    accepted = delivery.subscribers_accepted,
+                    failures = delivery.failures.len(),
+                    "event delivery partial failure"
+                );
+            }
+            Err(err) => {
+                warn!(
+                    producer_key = %producer_key,
+                    error = %err,
+                    "event delivery failed"
+                );
+            }
         }
-        tokio::time::sleep(interval).await;
     }
 }
 

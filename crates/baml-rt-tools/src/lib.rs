@@ -32,7 +32,11 @@ pub use access::{ToolAccessPolicy, enforce_tool_access, parse_access_allowlist};
 pub use baml_tool_derive::baml_tool;
 pub use bundles::{BundleType, Support};
 pub use config_resolver::ConfigResolver;
-pub use event_producer::{EventProducer, ProducerCheckpoint, ProducerPoll, ProducerRegistry};
+pub use event_producer::{
+    EventProducer, EventProducerBuildContext, EventProducerBuildFuture, EventProducerProvider,
+    ProducerCheckpoint, ProducerPoll, ProducerRegistry, load_configured_event_producers,
+    load_configured_event_producers_with_checkpoints,
+};
 pub use host_registration::register_manifest_tools;
 pub use session_coordination::get_session_coordination_baml_for_tools;
 pub use tool_catalog::{InventoryCatalog, ManifestToolNames, ToolCatalog};

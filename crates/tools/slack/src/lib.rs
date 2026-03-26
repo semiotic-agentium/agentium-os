@@ -8,6 +8,8 @@
 //! - user resolution by ID
 //! - message search (user-token scope)
 
+mod producer;
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use async_trait::async_trait;
@@ -15,6 +17,7 @@ use baml_derive::BamlType;
 use baml_rt_core::{BamlRtError, Result, semantics::ErrorDisposition};
 use baml_rt_tools::{ClassifiedToolError, baml_tool, bundles::Support, tools::BamlTool};
 use integrations_slack_read::{self as slack_read, SlackReadClient, SlackReadError};
+pub use producer::{RAW_SOURCE_ROUTING_KEY, RAW_SOURCE_SCHEMA_VERSION, SlackEventProducerConfig};
 use serde::{Deserialize, Serialize};
 
 /// Slack API base URL.
@@ -31,6 +34,12 @@ fn backoff_delay(retries: usize) -> std::time::Duration {
     let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
     let backoff = RATE_LIMIT_BASE_DELAY_MS.saturating_mul(multiplier);
     std::time::Duration::from_millis(backoff.min(RATE_LIMIT_MAX_DELAY_MS))
+}
+
+#[cfg(test)]
+pub(crate) fn slack_test_env_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1467,6 +1476,12 @@ impl SlackTool {
     description = "Read-only Slack integration for conversation retrieval and source-backed analysis.",
     tags = ["support", "slack", "read"],
     access = Read,
+    event_sources = ["slack"],
+    config = {
+        bundle = "support_slack",
+        schema = SlackEventProducerConfig,
+        default = SlackEventProducerConfig::default(),
+    },
     secrets = [
         { name = "SLACK_BOT_TOKEN", description = "Slack bot token (xoxb-...)", reason = "Required for read access to conversations/history for bot-authorized installs" },
         { name = "SLACK_USER_TOKEN", description = "Slack user token (xoxp-...)", reason = "Required for user-scoped reads such as message search and user-limited access" },
@@ -1555,7 +1570,7 @@ impl BamlTool for SlackTool {
 mod tests {
     use std::{
         sync::{
-            Arc, OnceLock,
+            Arc,
             atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
@@ -1577,11 +1592,6 @@ mod tests {
         SlackUserResolutionMode, backoff_delay, map_slack_api_error,
         should_warn_on_insecure_base_url,
     };
-
-    fn slack_env_lock() -> &'static tokio::sync::Mutex<()> {
-        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-    }
 
     #[test]
     fn backoff_delay_is_capped() {
@@ -1628,7 +1638,7 @@ mod tests {
 
     #[tokio::test]
     async fn slack_base_url_defaults_to_constant() {
-        let _guard = slack_env_lock().lock().await;
+        let _guard = crate::slack_test_env_lock().lock().await;
         let _env = TempEnvVar::remove("SLACK_API_BASE_URL");
         let client = SlackClient::new();
         assert_eq!(client.base_url(), BASE_URL);
@@ -1636,7 +1646,7 @@ mod tests {
 
     #[tokio::test]
     async fn slack_base_url_uses_override_and_trims_trailing_slash() {
-        let _guard = slack_env_lock().lock().await;
+        let _guard = crate::slack_test_env_lock().lock().await;
         let _env = TempEnvVar::set("SLACK_API_BASE_URL", " https://mock.slack.local/api/ ");
         let client = SlackClient::new();
         assert_eq!(client.base_url(), "https://mock.slack.local/api");
@@ -1644,7 +1654,7 @@ mod tests {
 
     #[tokio::test]
     async fn slack_base_url_is_bound_at_client_creation() {
-        let _guard = slack_env_lock().lock().await;
+        let _guard = crate::slack_test_env_lock().lock().await;
         let _env_unset = TempEnvVar::remove("SLACK_API_BASE_URL");
         let client = SlackClient::new();
         let _env_override = TempEnvVar::set("SLACK_API_BASE_URL", "https://later-change.local");
@@ -1677,7 +1687,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_token_maps_to_configuration_error() {
-        let _guard = slack_env_lock().lock().await;
+        let _guard = crate::slack_test_env_lock().lock().await;
         let _env_bot = TempEnvVar::remove("SLACK_BOT_TOKEN");
         let _env_user = TempEnvVar::remove("SLACK_USER_TOKEN");
         let tool = SlackTool::new();
@@ -1725,7 +1735,7 @@ mod tests {
 
     #[tokio::test]
     async fn pagination_cursor_is_returned_for_conversations_list() {
-        let _guard = slack_env_lock().lock().await;
+        let _guard = crate::slack_test_env_lock().lock().await;
         let state = MockState::default();
         let app = Router::new()
             .route(
@@ -1784,7 +1794,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_error_channel_not_found_maps_to_invalid_argument() {
-        let _guard = slack_env_lock().lock().await;
+        let _guard = crate::slack_test_env_lock().lock().await;
         let app = Router::new().route(
             "/api/conversations.history",
             get(|| async {
@@ -1822,7 +1832,7 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limit_retry_uses_retry_after_and_recovers() {
-        let _guard = slack_env_lock().lock().await;
+        let _guard = crate::slack_test_env_lock().lock().await;
         let state = MockState::default();
         let app = Router::new().route(
             "/api/conversations.list",

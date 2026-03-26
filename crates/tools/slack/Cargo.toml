@@ -19,6 +19,7 @@ tracing = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
 inventory = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 axum = { workspace = true }

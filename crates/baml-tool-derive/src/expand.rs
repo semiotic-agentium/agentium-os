@@ -86,6 +86,28 @@ fn event_sources_tokens(sources: &[syn::LitStr]) -> TokenStream {
     }
 }
 
+/// Emit the `with_config_bundle(...)` + `with_config(...)` builder calls.
+fn config_tokens(config: &Option<crate::parse::ConfigDef>) -> TokenStream {
+    let Some(config) = config else {
+        return TokenStream::new();
+    };
+    let bundle = &config.bundle;
+    let schema_ty = &config.schema;
+    let default_expr = &config.default;
+    quote! {
+        .with_config_bundle(
+            ::baml_rt_tools::BundleName::new(#bundle)
+                .expect("baml_tool: config bundle must be a valid bundle name"),
+        )
+        .with_config(::baml_rt_tools::ToolConfigMetadata::new(
+            ::baml_rt_tools::json_schema_value::<#schema_ty>(),
+            ::serde_json::to_value(#default_expr)
+                .expect("baml_tool: failed to serialize config default"),
+            ::core::option::Option::Some(::baml_rt_tools::ts_name::<#schema_ty>()),
+        ))
+    }
+}
+
 /// Emit the `with_extra_ts_decls(...)` builder call (or nothing if empty).
 ///
 /// Uses `TsType::ts_decl()` via `baml_rt_tools::ts_decl` which now delegates
@@ -171,6 +193,7 @@ pub(crate) fn expand_impl(attrs: &ToolAttrs, impl_block: &ItemImpl) -> syn::Resu
     let secrets = secrets_tokens(&attrs.secrets);
     let access = access_tokens(&attrs.access);
     let event_sources = event_sources_tokens(&attrs.event_sources);
+    let config = config_tokens(&attrs.config);
     let baml_decl = baml_decl_tokens(&attrs.baml_types);
     let extra_ts = extra_ts_decls_tokens(&attrs.extra_ts_types);
 
@@ -206,6 +229,7 @@ pub(crate) fn expand_impl(attrs: &ToolAttrs, impl_block: &ItemImpl) -> syn::Resu
             #tags
             #secrets
             #access
+            #config
             #event_sources
             .build_metadata()
         }
@@ -244,6 +268,7 @@ pub(crate) fn expand_struct(attrs: &ToolAttrs, item: &ItemStruct) -> syn::Result
     let secrets = secrets_tokens(&attrs.secrets);
     let access = access_tokens(&attrs.access);
     let event_sources = event_sources_tokens(&attrs.event_sources);
+    let config = config_tokens(&attrs.config);
     let baml_decl = baml_decl_tokens(&attrs.baml_types);
     let extra_ts = extra_ts_decls_tokens(&attrs.extra_ts_types);
 
@@ -273,6 +298,7 @@ pub(crate) fn expand_struct(attrs: &ToolAttrs, item: &ItemStruct) -> syn::Result
             #tags
             #secrets
             #access
+            #config
             #event_sources
             .build_metadata()
         }

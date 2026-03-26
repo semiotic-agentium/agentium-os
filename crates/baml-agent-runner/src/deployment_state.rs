@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use baml_rt_core::{
     BamlRtError, DeploymentContentHash, DeploymentRecord, DeploymentStatus, Result,
@@ -14,6 +14,7 @@ use surrealdb::{
 const NS: &str = "baml";
 const DB_NAME: &str = "runner_state";
 const TBL_DEPLOYMENTS: &str = "deployments";
+const TBL_EVENT_PRODUCER_CHECKPOINTS: &str = "event_producer_checkpoints";
 
 const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE TABLE IF NOT EXISTS deployments SCHEMAFULL",
@@ -25,6 +26,10 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE FIELD IF NOT EXISTS last_attempt_at ON deployments TYPE option<string>",
     "DEFINE FIELD IF NOT EXISTS failure_count ON deployments TYPE int",
     "DEFINE INDEX IF NOT EXISTS idx_deploy_content_hash ON deployments FIELDS content_hash UNIQUE",
+    "DEFINE TABLE IF NOT EXISTS event_producer_checkpoints SCHEMAFULL",
+    "DEFINE FIELD IF NOT EXISTS producer_key ON event_producer_checkpoints TYPE string",
+    "DEFINE FIELD IF NOT EXISTS checkpoint ON event_producer_checkpoints TYPE string",
+    "DEFINE INDEX IF NOT EXISTS idx_event_producer_checkpoint_key ON event_producer_checkpoints FIELDS producer_key UNIQUE",
 ];
 
 pub struct DeploymentStateStore {
@@ -122,6 +127,53 @@ impl DeploymentStateStore {
             .map_err(to_read_err)?;
         let rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
         rows.into_iter().map(parse_deployment_row).collect()
+    }
+
+    pub async fn save_event_producer_checkpoint(
+        &self,
+        producer_key: &str,
+        checkpoint: &str,
+    ) -> Result<()> {
+        self.db
+            .query(format!(
+                "UPSERT {TBL_EVENT_PRODUCER_CHECKPOINTS} SET \
+                    producer_key = $producer_key, \
+                    checkpoint = $checkpoint \
+                 WHERE producer_key = $producer_key"
+            ))
+            .bind(("producer_key", producer_key.to_string()))
+            .bind(("checkpoint", checkpoint.to_string()))
+            .await
+            .map_err(to_write_err)?;
+        Ok(())
+    }
+
+    pub async fn list_event_producer_checkpoints(&self) -> Result<HashMap<String, String>> {
+        #[derive(Deserialize)]
+        struct EventProducerCheckpointRow {
+            producer_key: String,
+            checkpoint: String,
+        }
+
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT producer_key,checkpoint FROM {TBL_EVENT_PRODUCER_CHECKPOINTS}"
+            ))
+            .await
+            .map_err(to_read_err)?;
+        let rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+        rows.into_iter()
+            .map(|row| {
+                let parsed: EventProducerCheckpointRow =
+                    serde_json::from_value(row).map_err(|e| {
+                        BamlRtError::InvalidArgument(format!(
+                            "invalid event producer checkpoint row from state DB: {e}"
+                        ))
+                    })?;
+                Ok((parsed.producer_key, parsed.checkpoint))
+            })
+            .collect::<Result<HashMap<_, _>>>()
     }
 }
 
@@ -269,5 +321,54 @@ mod tests {
         assert_eq!(records[0].agent_name, "persist-agent");
         assert_eq!(records[0].status, DeploymentStatus::Failed);
         assert_eq!(records[0].failure_count, 1);
+    }
+
+    /// Retry an async operation with bounded attempts and backoff.
+    ///
+    /// SurrealDB's embedded engine may hold file locks briefly after a
+    /// connection is dropped, so reopen attempts need a short retry window.
+    async fn retry_open(
+        max_attempts: usize,
+        delay_ms: u64,
+        path: &std::path::Path,
+    ) -> DeploymentStateStore {
+        for _ in 0..max_attempts {
+            match DeploymentStateStore::open(path).await {
+                Ok(store) => return store,
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+            }
+        }
+        panic!(
+            "failed to reopen deployment state store after {max_attempts} attempts"
+        );
+    }
+
+    #[tokio::test]
+    async fn event_producer_checkpoints_persist_across_reopen() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+
+        let store = DeploymentStateStore::open(&path).await.unwrap();
+        store
+            .save_event_producer_checkpoint("support/slack:C123ABC456", "cursor-42")
+            .await
+            .unwrap();
+        drop(store);
+
+        let reopened = retry_open(20, 100, &path).await;
+
+        let checkpoints = reopened
+            .list_event_producer_checkpoints()
+            .await
+            .expect("list checkpoints after reopen");
+
+        assert_eq!(
+            checkpoints
+                .get("support/slack:C123ABC456")
+                .map(String::as_str),
+            Some("cursor-42")
+        );
     }
 }

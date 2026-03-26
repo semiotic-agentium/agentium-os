@@ -114,7 +114,7 @@ Two system tools surface event-related metadata:
 
 The **task-daemon** is the first event producer. It polls external sources (Slack, ClickUp, GitHub) and produces `task-daemon.interpretation.v1` events, dispatching them to subscribed agents.
 
-Production tools do not yet declare `event_sources` in their metadata. The `internal-dev/get_weather` tool serves as the first adopter for testing the derive macro and discovery surface. As each tool gains event production capability, it declares its source kinds, and the host can discover and multiplex them.
+Production tools can now declare `event_sources` in their metadata and register host-managed producers through inventory. `support/slack` is the first production tool wired through the generic producer path, while `internal-dev/get_weather` remains the minimal metadata/discovery example.
 
 ## Adding a New Event Source
 
