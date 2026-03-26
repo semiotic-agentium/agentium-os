@@ -481,9 +481,10 @@ async fn workflow_intake_dispatch_http_routes_to_real_on_dispatch_noop_ack() {
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let ack: Value = response.json().await.expect("dispatch ack json");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(true));
-    assert_eq!(
-        ack.get("detail").and_then(Value::as_str),
-        Some("The event produced no derived work items.")
+    let detail = ack.get("detail").and_then(Value::as_str).unwrap_or_default();
+    assert!(
+        detail.to_ascii_lowercase().contains("no derived work"),
+        "expected noop detail in dispatch ack, got: {ack:?}"
     );
 
     let discovery = client

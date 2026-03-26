@@ -733,6 +733,82 @@ expression: snapshot
           }
         }
       },
+      "/deploy": {
+        "post": {
+          "tags": [
+            "deployments"
+          ],
+          "summary": "Deploy an agent by content hash or name/version.",
+          "operationId": "post_deploy",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployRequestDto"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Deployment accepted",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/DeployResponseDto"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Invalid deploy payload"
+            },
+            "404": {
+              "description": "Hash or version target not found"
+            },
+            "409": {
+              "description": "Deployment conflict"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Deployment manager not configured"
+            }
+          }
+        }
+      },
+      "/deployments": {
+        "get": {
+          "tags": [
+            "deployments"
+          ],
+          "summary": "List runner-local deployment records.",
+          "operationId": "get_deployments",
+          "responses": {
+            "200": {
+              "description": "Deployment records",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/DeploymentRecordDto"
+                    }
+                  }
+                }
+              }
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Deployment manager not configured"
+            }
+          }
+        }
+      },
       "/provenance/aggregates": {
         "get": {
           "tags": [
@@ -842,6 +918,49 @@ expression: snapshot
             }
           }
         }
+      },
+      "/undeploy": {
+        "post": {
+          "tags": [
+            "deployments"
+          ],
+          "summary": "Undeploy an active deployment by content hash.",
+          "operationId": "post_undeploy",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UndeployRequestDto"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Undeploy accepted",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/UndeployResponseDto"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Invalid undeploy payload"
+            },
+            "404": {
+              "description": "Deployment not found"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Deployment manager not configured"
+            }
+          }
+        }
       }
     },
     "components": {
@@ -878,6 +997,12 @@ expression: snapshot
                 "type": "string"
               }
             },
+            "content_hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "description": {
               "type": [
                 "string",
@@ -887,10 +1012,24 @@ expression: snapshot
             "name": {
               "type": "string"
             },
+            "repository_version": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            },
             "subscriptions": {
               "type": "array",
               "items": {
                 "$ref": "#/components/schemas/AgentEventSubscriptionDto"
+              }
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
               }
             },
             "tools": {
@@ -1145,6 +1284,88 @@ expression: snapshot
             }
           }
         },
+        "DeployRequestDto": {
+          "type": "object",
+          "properties": {
+            "hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Content hash to deploy directly."
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Agent name for name/version resolution."
+            },
+            "version": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Agent version for name/version resolution."
+            }
+          }
+        },
+        "DeployResponseDto": {
+          "type": "object",
+          "required": [
+            "hash",
+            "already_deployed"
+          ],
+          "properties": {
+            "already_deployed": {
+              "type": "boolean"
+            },
+            "hash": {
+              "type": "string"
+            }
+          }
+        },
+        "DeploymentRecordDto": {
+          "type": "object",
+          "required": [
+            "content_hash",
+            "agent_name",
+            "deployed_at",
+            "status",
+            "failure_count"
+          ],
+          "properties": {
+            "agent_name": {
+              "type": "string"
+            },
+            "content_hash": {
+              "type": "string"
+            },
+            "deployed_at": {
+              "type": "string"
+            },
+            "failure_count": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "last_attempt_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "last_error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "type": "string"
+            }
+          }
+        },
         "ProvisionSecretDto": {
           "type": "object",
           "description": "Request body for linking a secret by name (PUT /config/secrets/{name}).\nOnly link_from is accepted; secrets are stored in the secret store (fnox), never sent as raw values.",
@@ -1319,6 +1540,28 @@ expression: snapshot
               "description": "Tool name (bundle/local)."
             }
           }
+        },
+        "UndeployRequestDto": {
+          "type": "object",
+          "required": [
+            "hash"
+          ],
+          "properties": {
+            "hash": {
+              "type": "string"
+            }
+          }
+        },
+        "UndeployResponseDto": {
+          "type": "object",
+          "required": [
+            "removed"
+          ],
+          "properties": {
+            "removed": {
+              "type": "boolean"
+            }
+          }
         }
       }
     },
@@ -1334,6 +1577,10 @@ expression: snapshot
       {
         "name": "provenance",
         "description": "Provenance-backed metrics and operational query APIs."
+      },
+      {
+        "name": "deployments",
+        "description": "Runner-local deployment lifecycle APIs (deploy, undeploy, list)."
       },
       {
         "name": "config",
