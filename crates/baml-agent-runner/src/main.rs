@@ -52,7 +52,9 @@ use baml_rt_provenance::{
     index_tools,
 };
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
-use baml_rt_repository::{BlobStore, LineageStore, MetadataStore, RepositoryService, SearchStore, SurrealStore};
+use baml_rt_repository::{
+    BlobStore, LineageStore, MetadataStore, RepositoryService, SearchStore, SurrealStore,
+};
 use baml_rt_tools::{
     InventoryCatalog, ManifestToolNames, ToolAccessPolicy, parse_access_allowlist,
     register_manifest_tools,
@@ -515,7 +517,10 @@ impl AgentRunner {
         tracing::info!(agent = %name, total_agents = count, "Runner: agent inserted (discovery will see this count)");
     }
 
-    async fn fetch_blob_from_repository(&self, content_hash: &DeploymentContentHash) -> Result<Vec<u8>> {
+    async fn fetch_blob_from_repository(
+        &self,
+        content_hash: &DeploymentContentHash,
+    ) -> Result<Vec<u8>> {
         let url = format!(
             "{}/blobs/{}",
             self.repository_url.trim_end_matches('/'),
@@ -526,7 +531,11 @@ impl AgentRunner {
             .get(&url)
             .send()
             .await
-            .map_err(|e| BamlRtError::Io(std::io::Error::other(format!("repository GET failed at {url}: {e}"))))?;
+            .map_err(|e| {
+                BamlRtError::Io(std::io::Error::other(format!(
+                    "repository GET failed at {url}: {e}"
+                )))
+            })?;
 
         let status = response.status();
         if status == reqwest::StatusCode::NOT_FOUND {
@@ -541,14 +550,12 @@ impl AgentRunner {
                 "repository GET failed ({status}) at {url}: {body}"
             ))));
         }
-        response
-            .bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| BamlRtError::Io(std::io::Error::other(format!(
+        response.bytes().await.map(|b| b.to_vec()).map_err(|e| {
+            BamlRtError::Io(std::io::Error::other(format!(
                 "failed reading repository blob body for {}: {e}",
                 content_hash.as_str()
-            ))))
+            )))
+        })
     }
 
     async fn fetch_repository_version(
@@ -565,9 +572,11 @@ impl AgentRunner {
             .get(&url)
             .send()
             .await
-            .map_err(|e| BamlRtError::Io(std::io::Error::other(format!(
-                "repository GET entry failed at {url}: {e}"
-            ))))?;
+            .map_err(|e| {
+                BamlRtError::Io(std::io::Error::other(format!(
+                    "repository GET entry failed at {url}: {e}"
+                )))
+            })?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -1060,11 +1069,9 @@ impl DeploymentManager for AgentRunner {
     ) -> Result<UndeployResult> {
         let removed = {
             let mut agents = self.agents.write().expect("RwLock poison");
-            let target_name = agents
-                .iter()
-                .find_map(|(name, agent)| {
-                    (agent.content_hash.as_ref() == Some(content_hash)).then_some(name.clone())
-                });
+            let target_name = agents.iter().find_map(|(name, agent)| {
+                (agent.content_hash.as_ref() == Some(content_hash)).then_some(name.clone())
+            });
             let Some(target_name) = target_name else {
                 return Ok(UndeployResult { removed: false });
             };
@@ -1082,7 +1089,9 @@ impl DeploymentManager for AgentRunner {
         };
 
         if removed {
-            self.deployment_state.remove_deployment(content_hash).await?;
+            self.deployment_state
+                .remove_deployment(content_hash)
+                .await?;
         }
         Ok(UndeployResult { removed })
     }
@@ -1451,7 +1460,11 @@ struct Cli {
     packages: Vec<PathBuf>,
 
     /// Repository base URL used for hash-based deploy/restore (e.g. http://127.0.0.1:8080/repository).
-    #[arg(long, value_name = "URL", default_value = "http://127.0.0.1:8080/repository")]
+    #[arg(
+        long,
+        value_name = "URL",
+        default_value = "http://127.0.0.1:8080/repository"
+    )]
     repository_url: String,
 
     /// Local repository data directory (embedded SurrealKV backing /repository routes).
@@ -2386,14 +2399,14 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
     let repository_db_path = config.repository_dir.join("repository.db");
-    let repository_store = Arc::new(
-        SurrealStore::open(&repository_db_path).await.with_context(|| {
+    let repository_store = Arc::new(SurrealStore::open(&repository_db_path).await.with_context(
+        || {
             format!(
                 "Failed to initialize repository DB at {}",
                 repository_db_path.display()
             )
-        })?,
-    );
+        },
+    )?);
     let repository_service = Arc::new(RepositoryService::new(
         repository_store.clone() as Arc<dyn BlobStore>,
         repository_store.clone() as Arc<dyn MetadataStore>,
@@ -2428,7 +2441,11 @@ async fn main() -> anyhow::Result<()> {
     );
 
     for mut deployment in existing_deployments {
-        match builder.runner.deploy_by_hash(&deployment.content_hash).await {
+        match builder
+            .runner
+            .deploy_by_hash(&deployment.content_hash)
+            .await
+        {
             Ok(result) => {
                 info!(
                     content_hash = %deployment.content_hash.as_str(),
@@ -2441,7 +2458,12 @@ async fn main() -> anyhow::Result<()> {
                 deployment.last_error = Some(err.to_string());
                 deployment.last_attempt_at = Some(unix_timestamp_secs());
                 deployment.failure_count = deployment.failure_count.saturating_add(1);
-                if let Err(save_err) = builder.runner.deployment_state().save_deployment(&deployment).await {
+                if let Err(save_err) = builder
+                    .runner
+                    .deployment_state()
+                    .save_deployment(&deployment)
+                    .await
+                {
                     error!(
                         error = %save_err,
                         content_hash = %deployment.content_hash.as_str(),

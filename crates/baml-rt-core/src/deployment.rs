@@ -1,8 +1,9 @@
 //! Deployment lifecycle contracts shared across runtime components.
 
+use std::str::FromStr;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
 use thiserror::Error;
 
 use crate::Result;
@@ -16,7 +17,9 @@ pub struct DeploymentContentHash(String);
 pub struct DeploymentContentHashParseError;
 
 impl DeploymentContentHash {
-    pub fn new(value: impl Into<String>) -> std::result::Result<Self, DeploymentContentHashParseError> {
+    pub fn new(
+        value: impl Into<String>,
+    ) -> std::result::Result<Self, DeploymentContentHashParseError> {
         value.into().parse()
     }
 
@@ -29,7 +32,10 @@ impl FromStr for DeploymentContentHash {
     type Err = DeploymentContentHashParseError;
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        if s.len() == 64 && s.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)) {
+        if s.len() == 64
+            && s.chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        {
             return Ok(Self(s.to_string()));
         }
         Err(DeploymentContentHashParseError)

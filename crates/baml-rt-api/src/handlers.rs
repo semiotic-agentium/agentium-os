@@ -79,14 +79,23 @@ async fn resolve_deploy_hash(state: &Arc<ApiState>, body: DeployRequestDto) -> H
         return Ok(hash);
     }
 
-    let name = body
-        .name
-        .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| problem(400, "Bad Request", "Either hash or name+version must be provided"))?;
+    let name = body.name.filter(|v| !v.trim().is_empty()).ok_or_else(|| {
+        problem(
+            400,
+            "Bad Request",
+            "Either hash or name+version must be provided",
+        )
+    })?;
     let version = body
         .version
         .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| problem(400, "Bad Request", "version is required when name is provided"))?;
+        .ok_or_else(|| {
+            problem(
+                400,
+                "Bad Request",
+                "version is required when name is provided",
+            )
+        })?;
     let Some(repository_url) = state.repository_url.as_ref() else {
         return Err(problem(
             501,
@@ -101,7 +110,13 @@ async fn resolve_deploy_hash(state: &Arc<ApiState>, body: DeployRequestDto) -> H
         .query(&[("name", name.as_str()), ("version", version.as_str())])
         .send()
         .await
-        .map_err(|e| problem(500, "Internal Server Error", format!("Failed resolving name/version: {e}")))?;
+        .map_err(|e| {
+            problem(
+                500,
+                "Internal Server Error",
+                format!("Failed resolving name/version: {e}"),
+            )
+        })?;
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(problem(
@@ -123,7 +138,13 @@ async fn resolve_deploy_hash(state: &Arc<ApiState>, body: DeployRequestDto) -> H
     let body_json = response
         .json::<RepositoryEntriesResponse>()
         .await
-        .map_err(|e| problem(500, "Internal Server Error", format!("Invalid repository response: {e}")))?;
+        .map_err(|e| {
+            problem(
+                500,
+                "Internal Server Error",
+                format!("Invalid repository response: {e}"),
+            )
+        })?;
     let hash = body_json
         .entries
         .first()

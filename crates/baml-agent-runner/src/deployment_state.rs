@@ -140,14 +140,13 @@ fn parse_deployment_row(row: serde_json::Value) -> Result<DeploymentRecord> {
         failure_count: u32,
     }
 
-    let parsed: DeploymentRow = serde_json::from_value(row)
-        .map_err(|e| BamlRtError::InvalidArgument(format!("invalid deployment row from state DB: {e}")))?;
+    let parsed: DeploymentRow = serde_json::from_value(row).map_err(|e| {
+        BamlRtError::InvalidArgument(format!("invalid deployment row from state DB: {e}"))
+    })?;
 
     Ok(DeploymentRecord {
         content_hash: parsed.content_hash.parse().map_err(|e| {
-            BamlRtError::InvalidArgument(format!(
-                "invalid content_hash in deployment row: {e}"
-            ))
+            BamlRtError::InvalidArgument(format!("invalid content_hash in deployment row: {e}"))
         })?,
         agent_name: parsed.agent_name,
         deployed_at: parsed.deployed_at,
@@ -185,10 +184,9 @@ mod tests {
     async fn save_and_remove_roundtrip() {
         let store = DeploymentStateStore::open_in_memory().await.unwrap();
         let record = DeploymentRecord {
-            content_hash:
-                "1111111111111111111111111111111111111111111111111111111111111111"
-                    .parse()
-                    .unwrap(),
+            content_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                .parse()
+                .unwrap(),
             agent_name: "clickup-agent".to_string(),
             deployed_at: "2026-03-25T16:30:00Z".to_string(),
             status: DeploymentStatus::Active,
@@ -229,10 +227,9 @@ mod tests {
 
         let store = DeploymentStateStore::open(&path).await.unwrap();
         let record = DeploymentRecord {
-            content_hash:
-                "2222222222222222222222222222222222222222222222222222222222222222"
-                    .parse()
-                    .unwrap(),
+            content_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                .parse()
+                .unwrap(),
             agent_name: "persist-agent".to_string(),
             deployed_at: "2026-03-25T17:00:00Z".to_string(),
             status: DeploymentStatus::Failed,
