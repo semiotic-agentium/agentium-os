@@ -340,9 +340,7 @@ mod tests {
                 }
             }
         }
-        panic!(
-            "failed to reopen deployment state store after {max_attempts} attempts"
-        );
+        panic!("failed to reopen deployment state store after {max_attempts} attempts");
     }
 
     #[tokio::test]
