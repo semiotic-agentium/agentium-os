@@ -141,6 +141,8 @@ fn discovery_entry(package: &str, capabilities: &[&str]) -> AgentDiscoveryEntry 
     let card = AgentCard {
         name: package.to_string(),
         version: "1.0.0".to_string(),
+        content_hash: None,
+        repository_version: None,
         agent_package: package.to_string(),
         agent_instance_id: "default".to_string(),
         tools: Vec::new(),
@@ -150,6 +152,7 @@ fn discovery_entry(package: &str, capabilities: &[&str]) -> AgentDiscoveryEntry 
             .iter()
             .map(|value| (*value).to_string())
             .collect(),
+        tags: Vec::new(),
         subscriptions: Vec::new(),
     };
 

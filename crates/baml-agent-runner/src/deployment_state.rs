@@ -247,7 +247,10 @@ mod tests {
         let reopened = DeploymentStateStore::open(&path).await.unwrap();
         let records = reopened.list_deployments().await.unwrap();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].content_hash.as_str(), "hash-persist");
+        assert_eq!(
+            records[0].content_hash.as_str(),
+            "2222222222222222222222222222222222222222222222222222222222222222"
+        );
         assert_eq!(records[0].agent_name, "persist-agent");
         assert_eq!(records[0].status, DeploymentStatus::Failed);
         assert_eq!(records[0].failure_count, 1);
