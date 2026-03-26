@@ -196,6 +196,8 @@ struct RunningRunnerProcess {
     base_url: String,
     child: Child,
     log_path: PathBuf,
+    repository_dir: PathBuf,
+    state_dir: PathBuf,
 }
 
 impl RunningRunnerProcess {
@@ -205,6 +207,18 @@ impl RunningRunnerProcess {
         drop(reserved);
 
         let base_url = format!("http://{addr}");
+        let repository_dir = std::env::temp_dir().join(format!(
+            "workflow-intake-repository-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let state_dir = std::env::temp_dir().join(format!(
+            "workflow-intake-state-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&repository_dir).expect("create temp repository dir");
+        fs::create_dir_all(&state_dir).expect("create temp state dir");
         let log_path = std::env::temp_dir().join(format!(
             "workflow-intake-dispatch-runner-{}-{}.log",
             std::process::id(),
@@ -218,13 +232,19 @@ impl RunningRunnerProcess {
             .args(package_paths)
             .arg("--serve-http")
             .arg(addr.to_string())
+            .arg("--repository-dir")
+            .arg(&repository_dir)
+            .arg("--state-dir")
+            .arg(&state_dir)
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
 
         let mut child = command.spawn().expect("spawn baml-agent-runner");
         let client = reqwest::Client::new();
         let agents_url = format!("{base_url}/agents");
-        for _ in 0..100 {
+        // CI startup can be slower when package build + runner boot overlap.
+        // Allow up to ~60s before declaring readiness failure.
+        for _ in 0..300 {
             if let Some(status) = child.try_wait().expect("poll runner process") {
                 let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "<unreadable>".into());
                 panic!("runner exited before serving HTTP (status: {status}). Log:\n{log}");
@@ -237,10 +257,12 @@ impl RunningRunnerProcess {
                     base_url,
                     child,
                     log_path,
+                    repository_dir,
+                    state_dir,
                 };
             }
 
-            sleep(Duration::from_millis(100)).await;
+            sleep(Duration::from_millis(200)).await;
         }
 
         let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "<unreadable>".into());
@@ -255,6 +277,8 @@ impl Drop for RunningRunnerProcess {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = fs::remove_file(&self.log_path);
+        let _ = fs::remove_dir_all(&self.repository_dir);
+        let _ = fs::remove_dir_all(&self.state_dir);
     }
 }
 
