@@ -2412,6 +2412,7 @@ async fn main() -> anyhow::Result<()> {
             ))
         },
     )?;
+    info!("Storage backends initialized (config, deployment state, repository)");
 
     let fnox_resolver = Arc::new(FnoxFileSecretResolver::default_path_resolver());
     let overlay = Arc::new(OverlaySecretResolver::new(fnox_resolver.clone()));
