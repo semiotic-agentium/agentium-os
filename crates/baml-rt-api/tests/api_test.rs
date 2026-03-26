@@ -713,12 +713,15 @@ fn discovery_entry(pkg: &str, inst: &str, name: &str, version: &str) -> AgentDis
     let card = AgentCard {
         name: name.to_string(),
         version: version.to_string(),
+        content_hash: None,
+        repository_version: None,
         agent_package: pkg.to_string(),
         agent_instance_id: inst.to_string(),
         tools: vec![],
         baml_functions: vec![],
         description: None,
         capabilities: vec![],
+        tags: vec![],
         subscriptions: vec![],
     };
     AgentDiscoveryEntry {
@@ -741,6 +744,8 @@ fn discovery_entry_with_card(
     let card = AgentCard {
         name: name.to_string(),
         version: version.to_string(),
+        content_hash: None,
+        repository_version: None,
         agent_package: pkg.to_string(),
         agent_instance_id: inst.to_string(),
         tools: vec![
@@ -750,6 +755,7 @@ fn discovery_entry_with_card(
         baml_functions: vec![],
         description: description.map(str::to_string),
         capabilities: capabilities.into_iter().map(str::to_string).collect(),
+        tags: vec![],
         subscriptions: vec![],
     };
     AgentDiscoveryEntry {
@@ -771,12 +777,15 @@ fn discovery_entry_with_subscriptions(
     let card = AgentCard {
         name: name.to_string(),
         version: version.to_string(),
+        content_hash: None,
+        repository_version: None,
         agent_package: pkg.to_string(),
         agent_instance_id: inst.to_string(),
         tools: vec!["system/internal_a2a".to_string()],
         baml_functions: vec![],
         description: Some(format!("{name} subscribes to task-daemon events")),
         capabilities: vec!["a2a".to_string()],
+        tags: vec![],
         subscriptions,
     };
     AgentDiscoveryEntry {
@@ -936,6 +945,103 @@ async fn get_agents_returns_declared_subscriptions_when_present() {
             .and_then(|value| value.as_array())
             .map(Vec::len),
         Some(1)
+    );
+}
+
+#[tokio::test]
+async fn get_agents_includes_provenance_fields_when_present() {
+    let card = AgentCard {
+        name: "ClickUp Agent".to_string(),
+        version: "1.2.3".to_string(),
+        content_hash: Some(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        ),
+        repository_version: Some(7),
+        agent_package: "clickup-agent".to_string(),
+        agent_instance_id: "default".to_string(),
+        tools: vec!["support/clickup".to_string()],
+        baml_functions: vec![],
+        description: Some("ClickUp automation".to_string()),
+        capabilities: vec!["a2a".to_string()],
+        tags: vec!["clickup".to_string(), "tasks".to_string()],
+        subscriptions: vec![],
+    };
+    let entries = vec![AgentDiscoveryEntry {
+        agent_package: "clickup-agent".to_string(),
+        agent_instance_id: "default".to_string(),
+        name: "ClickUp Agent".to_string(),
+        version: "1.2.3".to_string(),
+        agent_card: card,
+    }];
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(entries));
+    let app = api_router(registry, None, None).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/agents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("valid json response");
+    assert_eq!(
+        parsed
+            .pointer("/0/agent_card/content_hash")
+            .and_then(Value::as_str),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(
+        parsed
+            .pointer("/0/agent_card/repository_version")
+            .and_then(Value::as_u64),
+        Some(7)
+    );
+    assert_eq!(
+        parsed
+            .pointer("/0/agent_card/tags")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
+}
+
+#[tokio::test]
+async fn get_agents_omits_optional_provenance_fields_when_absent() {
+    let entries = vec![discovery_entry("pkg-a", "default", "Agent A", "0.1.0")];
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(entries));
+    let app = api_router(registry, None, None).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/agents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("valid json response");
+    assert!(
+        parsed.pointer("/0/agent_card/content_hash").is_none(),
+        "content_hash should be omitted when absent"
+    );
+    assert!(
+        parsed.pointer("/0/agent_card/repository_version").is_none(),
+        "repository_version should be omitted when absent"
+    );
+    assert!(
+        parsed.pointer("/0/agent_card/tags").is_none(),
+        "tags should be omitted when empty"
     );
 }
 
