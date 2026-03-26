@@ -2346,25 +2346,73 @@ async fn main() -> anyhow::Result<()> {
             info!(path = %path.display(), "Provenance backend: SurrealKV directory")
         }
     }
-    let config_service: Arc<dyn baml_rt_config::ConfigService> = match &config.provenance_db {
-        ProvenanceDb::InMemory => Arc::new(
-            baml_rt_config::SurrealConfigStore::in_memory()
-                .await
-                .context("Failed to create in-memory config store")?,
-        ),
-        ProvenanceDb::File(path) => Arc::new(
-            baml_rt_config::SurrealConfigStore::open(
-                path.parent()
-                    .unwrap_or_else(|| {
-                        tracing::debug!(path = %path.display(), "no parent, using path as config base");
-                        path.as_ref()
-                    })
-                    .join("config.db"),
-            )
-            .await
-            .context("Failed to open config store (config.db)")?,
-        ),
-    };
+    // Pre-create directories synchronously before the parallel async DB opens.
+    std::fs::create_dir_all(&config.state_dir).with_context(|| {
+        format!(
+            "Failed to create runner state directory {}",
+            config.state_dir.display()
+        )
+    })?;
+    std::fs::create_dir_all(&config.repository_dir).with_context(|| {
+        format!(
+            "Failed to create repository directory {}",
+            config.repository_dir.display()
+        )
+    })?;
+    let state_db_path = config.state_dir.join("state.db");
+    let repository_db_path = config.repository_dir.join("repository.db");
+
+    // Open the three independent stores concurrently to reduce startup latency.
+    // provenance_config_builder depends on config_service and runs after this join.
+    let (config_service, deployment_state, repository_store) = tokio::try_join!(
+        async {
+            let svc: Arc<dyn baml_rt_config::ConfigService> = match &config.provenance_db {
+                ProvenanceDb::InMemory => Arc::new(
+                    baml_rt_config::SurrealConfigStore::in_memory()
+                        .await
+                        .context("Failed to create in-memory config store")?,
+                ),
+                ProvenanceDb::File(path) => Arc::new(
+                    baml_rt_config::SurrealConfigStore::open(
+                        path.parent()
+                            .unwrap_or_else(|| {
+                                tracing::debug!(path = %path.display(), "no parent, using path as config base");
+                                path.as_ref()
+                            })
+                            .join("config.db"),
+                    )
+                    .await
+                    .context("Failed to open config store (config.db)")?,
+                ),
+            };
+            Ok::<_, anyhow::Error>(svc)
+        },
+        async {
+            Ok::<_, anyhow::Error>(Arc::new(
+                deployment_state::DeploymentStateStore::open(&state_db_path)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to initialize runner deployment state DB at {}",
+                            state_db_path.display()
+                        )
+                    })?,
+            ))
+        },
+        async {
+            Ok::<_, anyhow::Error>(Arc::new(
+                SurrealStore::open(&repository_db_path)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to initialize repository DB at {}",
+                            repository_db_path.display()
+                        )
+                    })?,
+            ))
+        },
+    )?;
+
     let fnox_resolver = Arc::new(FnoxFileSecretResolver::default_path_resolver());
     let overlay = Arc::new(OverlaySecretResolver::new(fnox_resolver.clone()));
     // Apply persisted secret link/unlink state (internal config, not a bundle).
@@ -2390,39 +2438,6 @@ async fn main() -> anyhow::Result<()> {
         .with_runtime_secret_store(Some(overlay))
         .build()
         .context("Failed to build provenance config")?;
-
-    std::fs::create_dir_all(&config.state_dir).with_context(|| {
-        format!(
-            "Failed to create runner state directory {}",
-            config.state_dir.display()
-        )
-    })?;
-    let state_db_path = config.state_dir.join("state.db");
-    let deployment_state = Arc::new(
-        deployment_state::DeploymentStateStore::open(&state_db_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to initialize runner deployment state DB at {}",
-                    state_db_path.display()
-                )
-            })?,
-    );
-    std::fs::create_dir_all(&config.repository_dir).with_context(|| {
-        format!(
-            "Failed to create repository directory {}",
-            config.repository_dir.display()
-        )
-    })?;
-    let repository_db_path = config.repository_dir.join("repository.db");
-    let repository_store = Arc::new(SurrealStore::open(&repository_db_path).await.with_context(
-        || {
-            format!(
-                "Failed to initialize repository DB at {}",
-                repository_db_path.display()
-            )
-        },
-    )?);
     let repository_service = Arc::new(RepositoryService::new(
         repository_store.clone() as Arc<dyn BlobStore>,
         repository_store.clone() as Arc<dyn MetadataStore>,
