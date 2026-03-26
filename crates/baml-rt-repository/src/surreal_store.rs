@@ -931,7 +931,7 @@ impl LineageStore for SurrealStore {
                 out.push(node);
             }
         }
-        out.sort_by(|a, b| a.generation.as_u32().cmp(&b.generation.as_u32()));
+        out.sort_by_key(|a| a.generation.as_u32());
         Ok(out)
     }
 
