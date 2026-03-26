@@ -12,6 +12,9 @@
 //! - `new-agent <name>` — Create a new agent package (supports `--subscriptions` for event delivery)
 //! - `build [name]` — Package an agent into a distributable tar.gz
 //! - `publish --package <path.tar.gz>` — Upload package blob to repository
+//! - `deploy --hash <hash>` — Activate a deployed hash in a running runner
+//! - `undeploy --hash <hash>` — Remove an active deployed hash from a running runner
+//! - `list-deployed-instances` — List loaded agent instances from a running runner
 //! - `list-tools` — List all registered tools from the inventory
 //! - `list-agents` — List all agent packages
 //! - `list-event-sources` — List event source kinds declared by tools and known schema versions
@@ -148,6 +151,35 @@ enum Commands {
         /// Publish origin kind: original | iteration
         #[arg(long, value_enum, default_value_t = PublishOriginArg::Original)]
         origin: PublishOriginArg,
+    },
+
+    /// Deploy an agent package by content hash into a running runner
+    Deploy {
+        /// Content hash of the package blob to deploy
+        #[arg(long)]
+        hash: String,
+
+        /// Runner base URL (without /repository)
+        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        url: String,
+    },
+
+    /// Undeploy an active agent package by content hash from a running runner
+    Undeploy {
+        /// Content hash of the deployed package
+        #[arg(long)]
+        hash: String,
+
+        /// Runner base URL (without /repository)
+        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        url: String,
+    },
+
+    /// List deployed agent instances from a running runner
+    ListDeployedInstances {
+        /// Runner base URL (without /repository)
+        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        url: String,
     },
 
     /// Regenerate generated_tools.baml and baml-runtime.d.ts for all agents
@@ -326,6 +358,12 @@ fn main() -> anyhow::Result<()> {
             rationale,
             origin,
         } => commands::publish::run(&package, &repository_url, &rationale, origin),
+
+        Commands::Deploy { hash, url } => commands::deploy::run(&hash, &url),
+
+        Commands::Undeploy { hash, url } => commands::undeploy::run(&hash, &url),
+
+        Commands::ListDeployedInstances { url } => commands::list_deployed_instances::run(&url),
 
         Commands::Regen { names } => commands::regen::run(&names),
 

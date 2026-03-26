@@ -73,6 +73,95 @@ Typical flow:
 2. `cargo agent-platform publish --package ...`
 3. `POST /deploy` with `hash` or `name+version`
 
+## End-to-End Example (Publish -> Deploy -> Prompt)
+
+Start runner:
+
+```bash
+./target/debug/baml-agent-runner \
+  --a2a-stdio \
+  --serve-http 127.0.0.1:8080 \
+  --provenance-db provenance.db
+```
+
+Publish package:
+
+```bash
+cargo agent-platform publish --package clickup-agent-1.0.0.tar.gz
+```
+
+Deploy by blob hash (the hash printed in "Blob uploaded successfully"):
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/deploy \
+  -H 'content-type: application/json' \
+  -d '{"hash":"bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83"}' | jq
+```
+
+Discover routing key:
+
+```bash
+curl -sS http://127.0.0.1:8080/agents \
+  | jq '.[].agent_card | {agent_package, agent_instance_id, name}'
+```
+
+Expected shape:
+
+```json
+{
+  "agent_package": "clickup-agent",
+  "agent_instance_id": "default",
+  "name": "clickup-agent"
+}
+```
+
+Send prompt (non-stream endpoint):
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8080/agents/clickup-agent/default/a2a" \
+  -H 'content-type: application/json' \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":"1",
+    "method":"message.sendStream",
+    "params":{
+      "message":{
+        "messageId":"msg-1",
+        "contextId":"ctx-cli-1",
+        "role":"user",
+        "parts":[{"text":"hello"}]
+      }
+    }
+  }' | jq
+```
+
+Important: `message.send` is rejected. Use `message.sendStream`.
+Typical error if wrong:
+
+```json
+{
+  "error": {
+    "message": "Invalid request",
+    "data": {
+      "details": "Only message.sendStream is supported"
+    }
+  }
+}
+```
+
+Stream mode (SSE):
+
+```bash
+curl -N -X POST "http://127.0.0.1:8080/agents/clickup-agent/default/a2a/sse" \
+  -H 'content-type: application/json' \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":"2",
+    "method":"message.sendStream",
+    "params":{"message":{"messageId":"msg-2","contextId":"ctx-cli-1","role":"user","parts":[{"text":"list my pending tasks"}]}}
+  }'
+```
+
 ## Startup Restore
 
 On boot, runner:
