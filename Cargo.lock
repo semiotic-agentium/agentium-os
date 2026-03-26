@@ -1309,6 +1309,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "insta",
+ "integrations-slack-read",
  "reqwest 0.12.26",
  "serde",
  "serde_json",

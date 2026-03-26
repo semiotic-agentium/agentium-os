@@ -1,6 +1,10 @@
 //! End-to-end tests for the event-producer → dispatcher → agent pipeline.
 
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use baml_rt_a2a::{A2aAgent, AgentRegistry, EventDispatcher};
@@ -164,25 +168,6 @@ impl StubProducer {
         }
     }
 
-    fn unmatched() -> Self {
-        Self {
-            key: "test:unknown".into(),
-            kinds: vec![EventSourceKind::parse("unknown_source").unwrap()],
-            events: vec![ProducedEvent {
-                routing_key: AgentDispatchRoutingKey::parse("unknown:intake").unwrap(),
-                schema_version: EventSchemaVersion::parse("custom.v1").unwrap(),
-                source_kind: EventSourceKind::parse("unknown_source").unwrap(),
-                source_key: EventSourceKey::parse("unknown:key").unwrap(),
-                messages: vec![json!({"test": true})],
-                context_id: None,
-                task_id: None,
-                message_id: None,
-                metadata: None,
-            }],
-            next_checkpoint: ProducerCheckpoint::some("should-not-advance"),
-        }
-    }
-
     /// Producer declares source_kinds=["clickup"] but emits a "slack" event.
     fn mismatched_source_kind() -> Self {
         Self {
@@ -288,6 +273,36 @@ async fn deliver_event_errors_when_no_subscribers() {
     );
 }
 
+/// Producer that records the checkpoint it receives on each poll, so tests can
+/// directly assert on checkpoint state.
+struct RecordingProducer {
+    key: String,
+    kinds: Vec<EventSourceKind>,
+    events: Vec<ProducedEvent>,
+    next_checkpoint: ProducerCheckpoint,
+    received_checkpoints: Arc<Mutex<Vec<Option<String>>>>,
+}
+
+#[async_trait]
+impl EventProducer for RecordingProducer {
+    fn producer_key(&self) -> &str {
+        &self.key
+    }
+    fn source_kinds(&self) -> &[EventSourceKind] {
+        &self.kinds
+    }
+    async fn poll(&self, checkpoint: &ProducerCheckpoint) -> Result<ProducerPoll> {
+        self.received_checkpoints
+            .lock()
+            .unwrap()
+            .push(checkpoint.value().map(String::from));
+        Ok(ProducerPoll {
+            events: self.events.clone(),
+            checkpoint: self.next_checkpoint.clone(),
+        })
+    }
+}
+
 #[tokio::test]
 async fn checkpoint_does_not_advance_when_no_subscribers() {
     ensure_fixture_runtime_types();
@@ -299,24 +314,48 @@ async fn checkpoint_does_not_advance_when_no_subscribers() {
         entries: vec![dispatch_echo_discovery_entry()],
     });
 
+    let received = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+    let producer = RecordingProducer {
+        key: "test:unknown".into(),
+        kinds: vec![EventSourceKind::parse("unknown_source").unwrap()],
+        events: vec![ProducedEvent {
+            routing_key: AgentDispatchRoutingKey::parse("unknown:intake").unwrap(),
+            schema_version: EventSchemaVersion::parse("custom.v1").unwrap(),
+            source_kind: EventSourceKind::parse("unknown_source").unwrap(),
+            source_key: EventSourceKey::parse("unknown:key").unwrap(),
+            messages: vec![json!({"test": true})],
+            context_id: None,
+            task_id: None,
+            message_id: None,
+            metadata: None,
+        }],
+        next_checkpoint: ProducerCheckpoint::some("should-not-advance"),
+        received_checkpoints: Arc::clone(&received),
+    };
+
     let mut dispatcher = EventDispatcher::new(registry);
     dispatcher
-        .register_producer(Arc::new(StubProducer::unmatched()))
+        .register_producer(Arc::new(producer))
         .expect("register producer");
 
+    // First poll: delivery fails (no matching subscribers).
     let results = dispatcher.poll_and_deliver().await;
-    assert_eq!(results.len(), 1);
+    assert!(results[0].1.is_err(), "expected no-subscriber error");
 
-    let (key, result) = &results[0];
-    assert_eq!(key, "test:unknown");
-    assert!(
-        result.is_err(),
-        "expected delivery error for unmatched source"
+    // Second poll: checkpoint should still be None (not "should-not-advance").
+    let results2 = dispatcher.poll_and_deliver().await;
+    assert!(results2[0].1.is_err(), "second poll should also fail");
+
+    let checkpoints = received.lock().unwrap();
+    assert_eq!(checkpoints.len(), 2);
+    assert_eq!(
+        checkpoints[0], None,
+        "first poll should receive initial (empty) checkpoint"
     );
-
-    // Verify cursor did not advance: re-poll should still have no checkpoint
-    // (the dispatcher holds ProducerRegistry internally — we verify by running
-    // another poll cycle and confirming the producer is called with the same state)
+    assert_eq!(
+        checkpoints[1], None,
+        "second poll should receive same empty checkpoint (not advanced)"
+    );
 }
 
 #[tokio::test]
@@ -377,4 +416,56 @@ async fn source_kind_mismatch_is_a_hard_error() {
         err_msg.contains("clickup"),
         "error should name the declared kinds: {err_msg}"
     );
+}
+
+/// Proves that `slack.messages.v1` events (raw messages, not interpreted) deliver
+/// to agents subscribing to `source_kinds: ["slack"]` without restricting
+/// schema_version. This is the subscription shape an agent would use to receive
+/// raw Slack events from the new `SlackEventProducer`.
+#[tokio::test]
+async fn slack_messages_v1_delivers_to_slack_subscriber() {
+    ensure_fixture_runtime_types();
+    let (agent, built_dir) = setup_fixture_agent("dispatch-echo").await;
+    let _cleanup = TempDirCleanup::new(built_dir);
+
+    // Use a broader subscription (source_kind only, no schema_version constraint)
+    // to match the slack.messages.v1 schema.
+    let mut entry = dispatch_echo_discovery_entry();
+    entry.agent_card.subscriptions = vec![EventSubscription {
+        source_kinds: vec![EventSourceKind::parse("slack").unwrap()],
+        ..EventSubscription::default()
+    }];
+
+    let registry: Arc<dyn AgentRegistry> = Arc::new(TestRegistry {
+        agent,
+        entries: vec![entry],
+    });
+
+    let dispatcher = EventDispatcher::new(registry);
+
+    let event = ProducedEvent {
+        routing_key: AgentDispatchRoutingKey::parse("slack:intake").unwrap(),
+        schema_version: EventSchemaVersion::parse("slack.messages.v1").unwrap(),
+        source_kind: EventSourceKind::parse("slack").unwrap(),
+        source_key: EventSourceKey::parse("slack:C_test").unwrap(),
+        messages: vec![json!({
+            "channel_id": "C_test",
+            "channel": "test-channel",
+            "messages": [
+                { "ts": "1735689600.000001", "user": "U123", "text": "hello from slack" }
+            ]
+        })],
+        context_id: None,
+        task_id: None,
+        message_id: None,
+        metadata: None,
+    };
+
+    let outcome = dispatcher
+        .deliver_event(event)
+        .await
+        .expect("delivery should succeed");
+    assert_eq!(outcome.subscribers_matched, 1);
+    assert_eq!(outcome.subscribers_accepted, 1);
+    assert!(outcome.failures.is_empty());
 }

@@ -25,10 +25,12 @@ baml-tools-memory = { path = "../tools/memory", optional = true }
 baml-tools-notion = { path = "../tools/notion", optional = true }
 baml-tools-slack = { path = "../tools/slack", optional = true }
 baml-tools-security-eval = { path = "../tools/security-eval", optional = true }
+integrations-slack-read = { path = "../integrations/slack-read", optional = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 surrealdb = { workspace = true }
@@ -60,7 +62,7 @@ default = []
 clickup = ["dep:baml-tools-clickup"]
 memory = ["dep:baml-tools-memory"]
 notion = ["dep:baml-tools-notion"]
-slack = ["dep:baml-tools-slack"]
+slack = ["dep:baml-tools-slack", "dep:integrations-slack-read"]
 security-eval = ["dep:baml-tools-security-eval"]
 http-tools = ["clickup", "notion", "slack", "security-eval"]
 llm-tests = []

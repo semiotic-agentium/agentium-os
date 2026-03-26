@@ -9,6 +9,8 @@
 mod builder;
 mod deployment_state;
 mod package;
+#[cfg(feature = "slack")]
+mod slack_event_producer;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -1451,6 +1453,9 @@ struct RunnerConfig {
     stream_idle_secs: Option<u64>,
     /// Event producer poll interval. `None` disables the poll loop.
     event_poll_interval: Option<std::time::Duration>,
+    /// Slack channel to poll for events (name or ID). Requires event_poll_interval.
+    #[cfg(feature = "slack")]
+    slack_event_channel: Option<String>,
 }
 
 #[derive(Debug, Parser)]
@@ -1511,6 +1516,12 @@ struct Cli {
     /// 0 disables the poll loop (default).
     #[arg(long, value_name = "SECS", default_value = "0")]
     event_poll_interval_secs: u64,
+
+    /// Slack channel to poll for events (name or ID). Requires --event-poll-interval-secs.
+    /// Needs SLACK_BOT_TOKEN or SLACK_USER_TOKEN in the environment.
+    #[cfg(feature = "slack")]
+    #[arg(long, value_name = "CHANNEL")]
+    slack_event_channel: Option<String>,
 }
 
 impl Cli {
@@ -1544,6 +1555,8 @@ impl Cli {
             } else {
                 None
             },
+            #[cfg(feature = "slack")]
+            slack_event_channel: self.slack_event_channel,
         })
     }
 }
@@ -2546,8 +2559,20 @@ async fn main() -> anyhow::Result<()> {
     // --- Event producer poll loop ---
     let dispatcher_handle = if let Some(interval) = config.event_poll_interval {
         let registry = ready.registry();
-        let dispatcher =
+        let mut dispatcher =
             baml_rt_a2a::EventDispatcher::new(registry as Arc<dyn baml_rt_a2a::AgentRegistry>);
+
+        // Register Slack event producer if configured.
+        #[cfg(feature = "slack")]
+        if let Some(ref channel) = config.slack_event_channel {
+            let producer = slack_event_producer::SlackEventProducer::new(channel.clone())
+                .context("creating Slack event producer")?;
+            dispatcher
+                .register_producer(std::sync::Arc::new(producer))
+                .context("registering Slack event producer")?;
+            info!(channel = %channel, "registered Slack event producer");
+        }
+
         info!(
             interval_secs = interval.as_secs(),
             "event producer poll loop enabled"
