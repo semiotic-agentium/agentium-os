@@ -31,7 +31,6 @@ pub struct PublishCommand {
     pub source: SourceBundle,
     pub rationale: ChangeRationale,
     pub origin: PublishOrigin,
-    pub tags: Vec<Tag>,
 }
 
 /// How this published version relates to existing entries.
@@ -64,18 +63,6 @@ pub struct ForkCommand {
     pub rationale: ChangeRationale,
     pub fork_description: EdgeDescription,
     pub tags: Vec<Tag>,
-}
-
-// ---------------------------------------------------------------------------
-// RecordFitness — post-evaluation score update
-// ---------------------------------------------------------------------------
-
-/// Record a fitness evaluation result for an existing entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecordFitnessCommand {
-    pub hash: ContentHash,
-    pub domain: crate::entry::FitnessDomain,
-    pub score: f64,
 }
 
 // ---------------------------------------------------------------------------

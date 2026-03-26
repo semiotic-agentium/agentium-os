@@ -5,16 +5,22 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Json, Path, Query, State};
+use axum::{
+    body::Bytes,
+    extract::{Json, Path, Query, State},
+    http::{HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
+};
 use http_api_problem::HttpApiProblem;
 
 use crate::{
     commands::{ForkCommand, PublishCommand, PublishResult},
-    entry::{FitnessDomain, Tag},
+    entry::{RepositoryEntry, RepositoryEntryHeader, Tag},
     http::{
-        AddTagRequest, GetByHashPath, GetByVersionPath, HttpResult, LineagePath, LineageQuery,
-        LineageResponse, ListAgentsResponse, ListVersionsPath, ListVersionsResponse,
-        RecordFitnessPath, RecordFitnessRequest, RemoveTagRequest, SearchResponse, TagPath,
+        AddTagRequest, BlobPath, EntriesQuery, EntriesQueryMode, EntriesResponse, GetByHashPath,
+        GetByVersionPath, HttpResult, LineagePath, LineageQuery, LineageResponse,
+        ListAgentsResponse, ListVersionsPath, ListVersionsResponse, RemoveTagRequest,
+        SearchResponse, TagPath,
     },
     ids::Version,
     search::SearchQuery,
@@ -34,6 +40,36 @@ pub async fn get_by_hash(
         Some(e) => Ok(Json(e)),
         None => Err(not_found(format!("Entry not found: {}", p.hash))),
     }
+}
+
+pub async fn get_entries(
+    State(svc): State<RepoState>,
+    Query(q): Query<EntriesQuery>,
+) -> HttpResult<EntriesResponse> {
+    let mode = EntriesQueryMode::try_from(q).map_err(bad_request)?;
+    let entries = match mode {
+        EntriesQueryMode::All => svc
+            .search(&SearchQuery::default())
+            .await
+            .map_err(HttpApiProblem::from)?,
+        EntriesQueryMode::ByName(name) => svc
+            .list_versions(&name)
+            .await
+            .map_err(HttpApiProblem::from)?,
+        EntriesQueryMode::ByNameVersion { name, version } => {
+            match svc
+                .get_by_version(&name, version)
+                .await
+                .map_err(HttpApiProblem::from)?
+            {
+                Some(entry) => vec![entry_to_header(entry)],
+                None => Vec::new(),
+            }
+        }
+    };
+
+    let total = entries.len();
+    Ok(Json(EntriesResponse { entries, total }))
 }
 
 pub async fn get_by_version(
@@ -110,19 +146,6 @@ pub async fn get_lineage(
     Ok(Json(LineageResponse { subgraph }))
 }
 
-pub async fn record_fitness(
-    State(svc): State<RepoState>,
-    Path(p): Path<RecordFitnessPath>,
-    Json(body): Json<RecordFitnessRequest>,
-) -> HttpResult<()> {
-    let hash = p.hash.parse().map_err(|e| bad_request(format!("{e}")))?;
-    let domain = FitnessDomain::new(body.domain);
-    svc.record_fitness(&hash, domain, body.score)
-        .await
-        .map_err(HttpApiProblem::from)?;
-    Ok(Json(()))
-}
-
 pub async fn add_tag(
     State(svc): State<RepoState>,
     Path(p): Path<TagPath>,
@@ -148,10 +171,76 @@ pub async fn remove_tag(
     Ok(Json(()))
 }
 
-fn bad_request(detail: String) -> HttpApiProblem {
+pub async fn put_blob(
+    State(svc): State<RepoState>,
+    Path(p): Path<BlobPath>,
+    body: Bytes,
+) -> std::result::Result<StatusCode, HttpApiProblem> {
+    let hash = p.hash.parse().map_err(|e| bad_request(format!("{e}")))?;
+    svc.put_blob(&hash, &body)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    Ok(StatusCode::CREATED)
+}
+
+pub async fn get_blob(
+    State(svc): State<RepoState>,
+    Path(p): Path<BlobPath>,
+) -> std::result::Result<impl IntoResponse, HttpApiProblem> {
+    let hash = p.hash.parse().map_err(|e| bad_request(format!("{e}")))?;
+    let Some(data) = svc.get_blob(&hash).await.map_err(HttpApiProblem::from)? else {
+        return Err(not_found(format!("Blob not found for hash: {}", p.hash)));
+    };
+
+    let disposition = format!("attachment; filename=\"{hash}.tar.gz\"");
+    let mut response = Response::new(axum::body::Body::from(data));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/gzip"),
+    );
+    if let Ok(value) = HeaderValue::from_str(&disposition) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_DISPOSITION, value);
+    }
+    Ok(response)
+}
+
+fn bad_request(detail: impl Into<String>) -> HttpApiProblem {
     HttpApiProblem::new(http_api_problem::StatusCode::BAD_REQUEST).detail(detail)
 }
 
 fn not_found(detail: String) -> HttpApiProblem {
     HttpApiProblem::new(http_api_problem::StatusCode::NOT_FOUND).detail(detail)
+}
+
+fn entry_to_header(entry: RepositoryEntry) -> RepositoryEntryHeader {
+    let description = entry.source.manifest.description().map(str::to_string);
+    let tools = entry
+        .source
+        .manifest
+        .tools()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let capabilities = entry
+        .source
+        .manifest
+        .capabilities()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+    RepositoryEntryHeader {
+        hash: entry.hash,
+        version_ref: entry.version_ref,
+        parentage: entry.parentage,
+        generation: entry.generation,
+        change_rationale: entry.change_rationale,
+        created_at: entry.created_at,
+        tags: entry.tags,
+        description,
+        tools,
+        capabilities,
+    }
 }

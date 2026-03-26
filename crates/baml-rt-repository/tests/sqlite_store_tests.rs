@@ -1,19 +1,21 @@
-//! Tests for SqliteStore: metadata CRUD, lineage traversal, search filters.
+//! Tests for SurrealStore: metadata CRUD, lineage traversal, search filters.
 
 use baml_rt_repository::{
     entry::{
-        ChangeRationale, FitnessDomain, ManifestSource, NewEntry, SourceBundle, SourceContent,
-        SourceFile, SourcePath, Tag, Timestamp,
+        ChangeRationale, ManifestSource, NewEntry, SourceBundle, SourceContent, SourceFile,
+        SourcePath, Tag,
     },
     ids::{AgentName, Generation, LineageEdgeId, Version, VersionRef},
     lineage::{EdgeDescription, LineageEdge, LineageKind, Parentage},
     search::{
-        FitnessFilter, FullTextTerm, GenerationFilter, LineageFilter, LineageRelation, SearchOrder,
-        SearchQuery, TagFilter, ToolFilter,
+        FullTextTerm, GenerationFilter, LineageFilter, LineageRelation, SearchOrder, SearchQuery,
+        TagFilter, ToolFilter,
     },
-    sqlite_store::SqliteStore,
     storage::{LineageStore, MetadataStore, SearchStore},
 };
+#[path = "support/common.rs"]
+mod common;
+use common::setup_store;
 
 fn test_manifest() -> ManifestSource {
     ManifestSource::new(serde_json::json!({
@@ -64,12 +66,6 @@ fn test_new_entry_unique(name: &str, suffix: &str) -> NewEntry {
         change_rationale: ChangeRationale::new("initial creation").unwrap(),
         tags: vec![],
     }
-}
-
-async fn setup_store() -> SqliteStore {
-    let store = SqliteStore::open_in_memory().unwrap();
-    store.init_schema().await.unwrap();
-    store
 }
 
 // -------------------------------------------------------------------------
@@ -240,44 +236,8 @@ async fn duplicate_hash_is_rejected() {
 }
 
 // -------------------------------------------------------------------------
-// Fitness scores & tags
+// Tags
 // -------------------------------------------------------------------------
-
-#[tokio::test]
-async fn record_and_load_fitness() {
-    let store = setup_store().await;
-    let new = test_new_entry("fit-agent");
-    let stored = store.insert_entry(&new).await.unwrap();
-
-    store
-        .record_fitness(
-            &stored.hash,
-            FitnessDomain::new("accuracy"),
-            0.95,
-            Timestamp::new("2026-03-01T00:00:00Z"),
-        )
-        .await
-        .unwrap();
-
-    let loaded = store.get_by_hash(&stored.hash).await.unwrap().unwrap();
-    assert_eq!(loaded.fitness_scores.len(), 1);
-    assert_eq!(loaded.fitness_scores[0].score, 0.95);
-}
-
-#[tokio::test]
-async fn record_fitness_on_missing_entry_fails() {
-    let store = setup_store().await;
-    let fake_hash = format!("{:0>64}", "deadbeef").parse().unwrap();
-    let result = store
-        .record_fitness(
-            &fake_hash,
-            FitnessDomain::new("accuracy"),
-            0.5,
-            Timestamp::new("2026-03-01T00:00:00Z"),
-        )
-        .await;
-    assert!(result.is_err());
-}
 
 #[tokio::test]
 async fn add_and_remove_tags() {
@@ -717,6 +677,51 @@ async fn search_by_full_text_matches_source_content() {
 }
 
 #[tokio::test]
+async fn search_by_full_text_matches_manifest_tags() {
+    let store = setup_store().await;
+    let entry = NewEntry {
+        name: "fts-tag-hit".parse().unwrap(),
+        source: SourceBundle {
+            manifest: ManifestSource::new(serde_json::json!({
+                "name": "fts-tag-hit",
+                "version": "0.0.0",
+                "tools": ["calculator"],
+                "tags": ["needle-tag"],
+                "discovery": {
+                    "description": "Tag FTS test",
+                    "capabilities": ["compute"]
+                }
+            })),
+            ts_sources: vec![SourceFile {
+                path: SourcePath::new("src/index.ts").unwrap(),
+                content: SourceContent::new("export function run() {}"),
+            }],
+            baml_sources: vec![],
+        },
+        parentage: Parentage::Original,
+        generation: Generation::ROOT,
+        change_rationale: ChangeRationale::new("seed").unwrap(),
+        tags: vec![Tag::new("needle-tag")],
+    };
+    store.insert_entry(&entry).await.unwrap();
+    store
+        .insert_entry(&test_new_entry_unique("fts-tag-miss", "different-token"))
+        .await
+        .unwrap();
+
+    let results = store
+        .search(&SearchQuery {
+            text: Some(FullTextTerm::new("needle-tag")),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].version_ref.name.as_str(), "fts-tag-hit");
+}
+
+#[tokio::test]
 async fn search_by_lineage_descendant_of_filters_results() {
     let store = setup_store().await;
 
@@ -857,158 +862,6 @@ async fn search_with_limit() {
     };
     let results = store.search(&query).await.unwrap();
     assert_eq!(results.len(), 3);
-}
-
-#[tokio::test]
-async fn top_by_fitness_orders_correctly() {
-    let store = setup_store().await;
-
-    let s1 = store
-        .insert_entry(&test_new_entry("fit-high"))
-        .await
-        .unwrap();
-    let s2 = store
-        .insert_entry(&test_new_entry("fit-low"))
-        .await
-        .unwrap();
-
-    store
-        .record_fitness(
-            &s1.hash,
-            FitnessDomain::new("accuracy"),
-            0.99,
-            Timestamp::new("2026-03-01"),
-        )
-        .await
-        .unwrap();
-    store
-        .record_fitness(
-            &s2.hash,
-            FitnessDomain::new("accuracy"),
-            0.50,
-            Timestamp::new("2026-03-01"),
-        )
-        .await
-        .unwrap();
-
-    let results = store
-        .top_by_fitness(&FitnessDomain::new("accuracy"), 10)
-        .await
-        .unwrap();
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0].version_ref.name.as_str(), "fit-high");
-    assert_eq!(results[1].version_ref.name.as_str(), "fit-low");
-}
-
-#[tokio::test]
-async fn search_highest_fitness_uses_requested_domain() {
-    let store = setup_store().await;
-
-    let accuracy_best = store
-        .insert_entry(&test_new_entry("accuracy-best"))
-        .await
-        .unwrap();
-    let latency_best = store
-        .insert_entry(&test_new_entry("latency-best"))
-        .await
-        .unwrap();
-
-    store
-        .record_fitness(
-            &accuracy_best.hash,
-            FitnessDomain::new("accuracy"),
-            0.80,
-            Timestamp::new("2026-03-01T00:00:00Z"),
-        )
-        .await
-        .unwrap();
-    store
-        .record_fitness(
-            &latency_best.hash,
-            FitnessDomain::new("accuracy"),
-            0.70,
-            Timestamp::new("2026-03-01T00:00:00Z"),
-        )
-        .await
-        .unwrap();
-    store
-        .record_fitness(
-            &latency_best.hash,
-            FitnessDomain::new("latency"),
-            0.99,
-            Timestamp::new("2026-03-01T00:01:00Z"),
-        )
-        .await
-        .unwrap();
-
-    let results = store
-        .search(&SearchQuery {
-            min_fitness: Some(FitnessFilter {
-                domain: FitnessDomain::new("accuracy"),
-                min_score: 0.0,
-            }),
-            order: SearchOrder::HighestFitness,
-            limit: Some(10),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0].version_ref.name.as_str(), "accuracy-best");
-    assert_eq!(results[1].version_ref.name.as_str(), "latency-best");
-}
-
-#[tokio::test]
-async fn top_by_fitness_groups_multiple_scores_per_entry() {
-    let store = setup_store().await;
-
-    let repeated = store
-        .insert_entry(&test_new_entry("fit-repeated"))
-        .await
-        .unwrap();
-    let challenger = store
-        .insert_entry(&test_new_entry("fit-challenger"))
-        .await
-        .unwrap();
-
-    store
-        .record_fitness(
-            &repeated.hash,
-            FitnessDomain::new("accuracy"),
-            0.60,
-            Timestamp::new("2026-03-01T00:00:00Z"),
-        )
-        .await
-        .unwrap();
-    store
-        .record_fitness(
-            &repeated.hash,
-            FitnessDomain::new("accuracy"),
-            0.95,
-            Timestamp::new("2026-03-01T00:01:00Z"),
-        )
-        .await
-        .unwrap();
-    store
-        .record_fitness(
-            &challenger.hash,
-            FitnessDomain::new("accuracy"),
-            0.90,
-            Timestamp::new("2026-03-01T00:02:00Z"),
-        )
-        .await
-        .unwrap();
-
-    let results = store
-        .top_by_fitness(&FitnessDomain::new("accuracy"), 2)
-        .await
-        .unwrap();
-
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0].version_ref.name.as_str(), "fit-repeated");
-    assert_eq!(results[1].version_ref.name.as_str(), "fit-challenger");
-    assert_ne!(results[0].hash, results[1].hash);
 }
 
 #[tokio::test]

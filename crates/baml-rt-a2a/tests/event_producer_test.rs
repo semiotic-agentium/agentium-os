@@ -99,12 +99,15 @@ fn dispatch_echo_discovery_entry() -> AgentDiscoveryEntry {
         agent_card: AgentCard {
             name: "dispatch-echo".into(),
             version: "1.0.0".into(),
+            content_hash: None,
+            repository_version: None,
             agent_package: "dispatch-echo".into(),
             agent_instance_id: "default".into(),
             tools: vec![],
             baml_functions: vec![],
             description: Some("Fixture: echoes dispatch requests".into()),
             capabilities: vec!["dispatch:echo".into()],
+            tags: vec![],
             subscriptions: vec![EventSubscription {
                 schema_versions: vec![
                     EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap(),

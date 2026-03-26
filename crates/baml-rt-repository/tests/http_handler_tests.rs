@@ -1,60 +1,27 @@
 //! HTTP handler tests using axum::test / tower::ServiceExt.
 
-use std::sync::Arc;
-
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
 use baml_rt_repository::{
     commands::{ForkCommand, PublishCommand, PublishOrigin},
-    entry::{
-        ChangeRationale, ManifestSource, SourceBundle, SourceContent, SourceFile, SourcePath, Tag,
-    },
-    fs_blob_store::FsBlobStore,
+    entry::{ChangeRationale, SourceBundle, Tag},
     lineage::EdgeDescription,
-    router::repository_router,
-    service::RepositoryService,
-    sqlite_store::SqliteStore,
-    storage::{LineageStore, MetadataStore, SearchStore},
 };
+#[path = "support/common.rs"]
+mod common;
+use common::setup_app;
 use tower::ServiceExt;
 
 fn make_source(content: &str) -> SourceBundle {
-    SourceBundle {
-        manifest: ManifestSource::new(serde_json::json!({
-            "name": "http-test-agent",
-            "version": "1.0.0",
-            "tools": ["calculator"],
-            "discovery": {
-                "description": "An agent for HTTP tests",
-                "capabilities": ["compute"]
-            }
-        })),
-        ts_sources: vec![SourceFile {
-            path: SourcePath::new("src/index.ts").unwrap(),
-            content: SourceContent::new(content),
-        }],
-        baml_sources: vec![],
-    }
-}
-
-async fn setup_app() -> axum::Router {
-    let store = SqliteStore::open_in_memory().unwrap();
-    store.init_schema().await.unwrap();
-    let store = Arc::new(store);
-
-    let tmp = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsBlobStore::new(tmp.path()).unwrap());
-
-    let svc = Arc::new(RepositoryService::new(
-        blobs,
-        store.clone() as Arc<dyn MetadataStore>,
-        store.clone() as Arc<dyn LineageStore>,
-        store as Arc<dyn SearchStore>,
-    ));
-
-    repository_router(svc)
+    common::make_source(
+        content,
+        "http-test-agent",
+        &["calculator"],
+        "An agent for HTTP tests",
+        &["compute"],
+    )
 }
 
 async fn publish_agent(app: &axum::Router, name: &str, content: &str) -> serde_json::Value {
@@ -63,7 +30,6 @@ async fn publish_agent(app: &axum::Router, name: &str, content: &str) -> serde_j
         source: make_source(content),
         rationale: ChangeRationale::new("test publish").unwrap(),
         origin: PublishOrigin::Original,
-        tags: vec![],
     };
 
     let response = app
@@ -97,6 +63,58 @@ async fn post_publish_returns_ok() {
     let body = result.await;
     assert!(body.get("hash").is_some());
     assert!(body.get("version_ref").is_some());
+}
+
+#[tokio::test]
+async fn post_publish_duplicate_hash_returns_409() {
+    let app = setup_app().await;
+    let source = common::make_source(
+        "same content",
+        "dup-shared-manifest",
+        &["calculator"],
+        "shared",
+        &["stable"],
+    );
+    let cmd1 = PublishCommand {
+        name: "dup-hash-agent-a".parse().unwrap(),
+        source: source.clone(),
+        rationale: ChangeRationale::new("initial").unwrap(),
+        origin: PublishOrigin::Original,
+    };
+    let cmd2 = PublishCommand {
+        name: "dup-hash-agent-b".parse().unwrap(),
+        source,
+        rationale: ChangeRationale::new("initial").unwrap(),
+        origin: PublishOrigin::Original,
+    };
+
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/publish")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&cmd1).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let second = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/publish")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&cmd2).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::CONFLICT);
 }
 
 // -------------------------------------------------------------------------
@@ -143,7 +161,27 @@ async fn get_entry_by_hash() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/entries/hash/{hash}"))
+                .uri(format!("/entries/{hash}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn get_entry_by_hash_via_entries_route() {
+    let app = setup_app().await;
+    let published = publish_agent(&app, "hash-agent-alt", "hash test code").await;
+    let hash = published["hash"].as_str().unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/entries/{hash}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -162,7 +200,7 @@ async fn get_entry_by_hash_not_found() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/entries/hash/{fake_hash}"))
+                .uri(format!("/entries/{fake_hash}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -210,7 +248,6 @@ async fn get_agent_versions() {
         source: make_source("v2 code"),
         rationale: ChangeRationale::new("update").unwrap(),
         origin: PublishOrigin::Iteration,
-        tags: vec![],
     };
     let response = app
         .clone()
@@ -244,6 +281,91 @@ async fn get_agent_versions() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let versions = json["versions"].as_array().unwrap();
     assert_eq!(versions.len(), 2);
+}
+
+// -------------------------------------------------------------------------
+// Entries list/query endpoint
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_entries_lists_all() {
+    let app = setup_app().await;
+    publish_agent(&app, "entries-a", "alpha").await;
+    publish_agent(&app, "entries-b", "beta").await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/entries")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["total"].as_u64().unwrap(), 2);
+}
+
+#[tokio::test]
+async fn get_entries_by_name_and_version_query() {
+    let app = setup_app().await;
+    publish_agent(&app, "entries-query", "v1").await;
+    let cmd = PublishCommand {
+        name: "entries-query".parse().unwrap(),
+        source: make_source("v2"),
+        rationale: ChangeRationale::new("update").unwrap(),
+        origin: PublishOrigin::Iteration,
+    };
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/publish")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&cmd).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/entries?name=entries-query&version=v1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["total"].as_u64().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn get_entries_query_version_without_name_is_400() {
+    let app = setup_app().await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/entries?version=v1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 // -------------------------------------------------------------------------
@@ -377,37 +499,6 @@ async fn get_lineage_returns_subgraph() {
 }
 
 // -------------------------------------------------------------------------
-// Fitness endpoint
-// -------------------------------------------------------------------------
-
-#[tokio::test]
-async fn post_fitness_score() {
-    let app = setup_app().await;
-    let published = publish_agent(&app, "fitness-agent", "fit code").await;
-    let hash = published["hash"].as_str().unwrap();
-
-    let body = serde_json::json!({
-        "domain": "accuracy",
-        "score": 0.92
-    });
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/entries/{hash}/fitness"))
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-}
-
-// -------------------------------------------------------------------------
 // Tag endpoints
 // -------------------------------------------------------------------------
 
@@ -451,6 +542,116 @@ async fn add_and_remove_tag_via_http() {
 }
 
 // -------------------------------------------------------------------------
+// Blob endpoints
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn put_and_get_blob_roundtrip() {
+    let app = setup_app().await;
+    let payload = b"fake-tar-gz-bytes";
+    let hash = common::sha256_hex(payload);
+
+    let put_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/blobs/{}", hash))
+                .header("content-type", "application/gzip")
+                .body(Body::from(payload.to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put_resp.status(), StatusCode::CREATED);
+
+    let get_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/blobs/{}", hash))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), StatusCode::OK);
+    let ct = get_resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    assert_eq!(ct, Some("application/gzip"));
+
+    let body = axum::body::to_bytes(get_resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body.as_ref(), payload);
+}
+
+#[tokio::test]
+async fn get_blob_not_found_returns_404() {
+    let app = setup_app().await;
+    let hash = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/blobs/{hash}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn put_blob_hash_mismatch_returns_400() {
+    let app = setup_app().await;
+    let wrong_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let payload = b"not-matching-hash";
+
+    let put_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/blobs/{wrong_hash}"))
+                .header("content-type", "application/gzip")
+                .body(Body::from(payload.to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put_resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn put_blob_too_large_returns_400() {
+    let app = setup_app().await;
+    let payload = vec![0u8; (5 * 1024 * 1024) + 1];
+    let hash = common::sha256_hex(&payload);
+
+    let put_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/blobs/{}", hash))
+                .header("content-type", "application/gzip")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put_resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// -------------------------------------------------------------------------
 // Error responses
 // -------------------------------------------------------------------------
 
@@ -462,7 +663,7 @@ async fn bad_hash_returns_400() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/entries/hash/not-a-valid-hash")
+                .uri("/entries/not-a-valid-hash")
                 .body(Body::empty())
                 .unwrap(),
         )

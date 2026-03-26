@@ -108,6 +108,7 @@ Default features enable all of the above.
 ## Documentation
 
 - **[How to write agents](docs/how-to-write-agents.md)** — Primary guide: package layout, A2A entrypoints, `ToolSessionPlan`, plan/intent + ReAct, `StructuredReply`, and **history / citations**.
+- **[Agent runner](docs/agent-runner.md)** — Runner CLI options, HTTP endpoints, repository/deploy flow, and startup restore behavior.
 - **Deep references:** [Intent-based planning & session prompting](docs/intent-based-planning-and-session-prompting.md), [Agent patterns](docs/agent-patterns.md), [Host tool guide (Rust)](docs/host-tool-guide.md), [Citable history & citations](docs/citable-history-and-checked-citations.md).
 
 ## BAML ↔ Host Tool Contract

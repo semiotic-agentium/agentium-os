@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 mod builder;
+mod deployment_state;
 mod package;
 
 use std::{
@@ -29,7 +30,9 @@ use baml_rt_a2a::{
 };
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister,
-    AgentManifest, AgentPackageName, AgentRouteKey, BamlRtError, ContextId, Result, RuntimeScope,
+    AgentManifest, AgentPackageName, AgentRouteKey, BamlRtError, ContextId, DeployResult,
+    DeploymentContentHash, DeploymentManager, DeploymentRecord, DeploymentStatus, Result,
+    RuntimeScope, UndeployResult,
     bus::BusStream,
     collect_a2a_stream,
     context::{self, InvocationScope},
@@ -49,6 +52,9 @@ use baml_rt_provenance::{
     index_tools,
 };
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
+use baml_rt_repository::{
+    BlobStore, LineageStore, MetadataStore, RepositoryService, SearchStore, SurrealStore,
+};
 use baml_rt_tools::{
     InventoryCatalog, ManifestToolNames, ToolAccessPolicy, parse_access_allowlist,
     register_manifest_tools,
@@ -402,6 +408,8 @@ pub(crate) struct BootedAgent {
     manifest: AgentManifest,
     /// BAML function names captured from the runtime at boot time (synchronous copy).
     baml_functions: Vec<String>,
+    content_hash: Option<DeploymentContentHash>,
+    repository_version: Option<u32>,
 }
 
 impl BootedAgent {
@@ -436,31 +444,43 @@ impl BootedAgent {
 pub(crate) struct AgentRunner {
     agents: RwLock<HashMap<String, BootedAgent>>,
     provenance_config: ProvenanceConfig,
+    deployment_state: Arc<deployment_state::DeploymentStateStore>,
     tool_index: Option<ToolIndexConfig>,
     access_policy: ToolAccessPolicy,
     routed_agents: std::sync::RwLock<HashMap<AgentRouteKey, A2aAgent>>,
     internal_a2a_router: Arc<InternalA2aRouter>,
     stream_idle_secs: Option<u64>,
+    repository_url: String,
+    repository_http_client: reqwest::Client,
 }
 
 impl AgentRunner {
     pub(crate) fn new(
         provenance_config: ProvenanceConfig,
+        deployment_state: Arc<deployment_state::DeploymentStateStore>,
         tool_index: Option<ToolIndexConfig>,
         access_policy: ToolAccessPolicy,
         stream_idle_secs: Option<u64>,
+        repository_url: String,
     ) -> Self {
         let routed_agents = std::sync::RwLock::new(HashMap::new());
         let internal_a2a_router = Arc::new(InternalA2aRouter::new());
         Self {
             agents: RwLock::new(HashMap::new()),
             provenance_config,
+            deployment_state,
             tool_index,
             access_policy,
             routed_agents,
             internal_a2a_router,
             stream_idle_secs,
+            repository_url,
+            repository_http_client: reqwest::Client::new(),
         }
+    }
+
+    pub(crate) fn deployment_state(&self) -> &Arc<deployment_state::DeploymentStateStore> {
+        &self.deployment_state
     }
 
     pub(crate) fn provenance_config(&self) -> &ProvenanceConfig {
@@ -495,6 +515,169 @@ impl AgentRunner {
         let count = guard.len();
         drop(guard);
         tracing::info!(agent = %name, total_agents = count, "Runner: agent inserted (discovery will see this count)");
+    }
+
+    async fn fetch_blob_from_repository(
+        &self,
+        content_hash: &DeploymentContentHash,
+    ) -> Result<Vec<u8>> {
+        let url = format!(
+            "{}/blobs/{}",
+            self.repository_url.trim_end_matches('/'),
+            content_hash.as_str()
+        );
+        let response = self
+            .repository_http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| {
+                BamlRtError::Io(std::io::Error::other(format!(
+                    "repository GET failed at {url}: {e}"
+                )))
+            })?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(BamlRtError::AgentNotFound(format!(
+                "Repository blob not found for hash {}",
+                content_hash.as_str()
+            )));
+        }
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(BamlRtError::Io(std::io::Error::other(format!(
+                "repository GET failed ({status}) at {url}: {body}"
+            ))));
+        }
+        response.bytes().await.map(|b| b.to_vec()).map_err(|e| {
+            BamlRtError::Io(std::io::Error::other(format!(
+                "failed reading repository blob body for {}: {e}",
+                content_hash.as_str()
+            )))
+        })
+    }
+
+    async fn fetch_repository_version(
+        &self,
+        content_hash: &DeploymentContentHash,
+    ) -> Result<Option<u32>> {
+        let url = format!(
+            "{}/entries/{}",
+            self.repository_url.trim_end_matches('/'),
+            content_hash.as_str()
+        );
+        let response = self
+            .repository_http_client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| {
+                BamlRtError::Io(std::io::Error::other(format!(
+                    "repository GET entry failed at {url}: {e}"
+                )))
+            })?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(BamlRtError::Io(std::io::Error::other(format!(
+                "repository GET entry failed ({status}) at {url}: {body}"
+            ))));
+        }
+        let value = response.json::<serde_json::Value>().await.map_err(|e| {
+            BamlRtError::Io(std::io::Error::other(format!(
+                "invalid repository entry JSON for {}: {e}",
+                content_hash.as_str()
+            )))
+        })?;
+        let version = value
+            .get("version_ref")
+            .and_then(|v| v.get("version"))
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok());
+        Ok(version)
+    }
+
+    fn validate_hash_and_content(content_hash: &DeploymentContentHash, bytes: &[u8]) -> Result<()> {
+        let computed = sha256_hex(bytes);
+        if computed != content_hash.as_str() {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "Blob content hash mismatch for {} (computed {computed})",
+                content_hash.as_str()
+            )));
+        }
+        Ok(())
+    }
+
+    async fn boot_from_blob_bytes(
+        &self,
+        bytes: &[u8],
+        content_hash: &DeploymentContentHash,
+        repository_version: Option<u32>,
+    ) -> Result<(String, AgentRouteKey, BootedAgent)> {
+        let mut package_file = tempfile::Builder::new()
+            .prefix("baml-deploy-")
+            .suffix(".tar.gz")
+            .tempfile()
+            .map_err(BamlRtError::Io)?;
+        use std::io::Write as _;
+        package_file.write_all(bytes).map_err(BamlRtError::Io)?;
+        package_file.flush().map_err(BamlRtError::Io)?;
+
+        let package = AgentPackage::load_from_file(package_file.path()).await?;
+        let name = package.name().to_string();
+        let package_name = AgentPackageName::parse(&name).ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!(
+                "Agent package name '{name}' is invalid; allowed characters: [A-Za-z0-9_-]"
+            ))
+        })?;
+        let route_key = AgentRouteKey::new(package_name, AgentInstanceId::default());
+        let scoped_router: Arc<dyn A2aRequestHandler> = Arc::new(ScopedInternalA2aRouter::new(
+            route_key.clone(),
+            self.internal_a2a_router().clone(),
+        ));
+        // Snapshot is intentional: deploy boot only needs currently visible peers.
+        // Agents loaded later are visible on subsequent discovery calls.
+        let catalogue = Arc::new(SnapshotAgentLister {
+            entries: self.discovery_entries(),
+        }) as Arc<dyn AgentLister>;
+        let (agent, _agent_id) = package
+            .boot(
+                self.provenance_config(),
+                self.tool_index().clone(),
+                self.access_policy(),
+                catalogue,
+                scoped_router,
+                self.stream_idle_secs(),
+            )
+            .await?;
+        let manifest = package.manifest().clone();
+        let baml_functions: Vec<String> = {
+            let bridge_arc = agent.bridge();
+            let bridge = bridge_arc.lock().await;
+            let all = bridge.list_baml_functions().await;
+            let mut seen = std::collections::HashSet::new();
+            all.into_iter()
+                .map(|name| {
+                    baml_rt_core::BamlFunctionId::parse(&name)
+                        .prompt_name()
+                        .as_str()
+                        .to_string()
+                })
+                .filter(|name| seen.insert(name.clone()))
+                .collect()
+        };
+        let booted = BootedAgent {
+            agent,
+            manifest,
+            baml_functions,
+            content_hash: Some(content_hash.clone()),
+            repository_version,
+        };
+        Ok((name, route_key, booted))
     }
 
     /// Execute a function in a specific agent
@@ -538,6 +721,8 @@ impl AgentRunner {
                 let agent_card = AgentCard {
                     name: m.name.clone(),
                     version: version.clone(),
+                    content_hash: booted.content_hash.as_ref().map(|h| h.as_str().to_string()),
+                    repository_version: booted.repository_version,
                     agent_package: pkg.clone(),
                     agent_instance_id: AgentInstanceId::DEFAULT.to_string(),
                     tools: m.tools.clone(),
@@ -548,6 +733,7 @@ impl AgentRunner {
                         .as_ref()
                         .map(|d| d.capabilities.clone())
                         .unwrap_or_default(),
+                    tags: m.tags.clone(),
                     subscriptions: m
                         .discovery
                         .as_ref()
@@ -789,6 +975,129 @@ impl AgentRunner {
         obj.insert("params".to_string(), Value::Object(params));
 
         Ok((agent_name, request.clone()))
+    }
+}
+
+#[derive(Clone)]
+struct SnapshotAgentLister {
+    entries: Vec<AgentDiscoveryEntry>,
+}
+
+impl AgentLister for SnapshotAgentLister {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        self.entries.clone()
+    }
+}
+
+// `?Send` matches core trait contract; deploy boot path is currently local-executor bound.
+#[async_trait(?Send)]
+impl DeploymentManager for AgentRunner {
+    async fn deploy_by_hash(&self, content_hash: &DeploymentContentHash) -> Result<DeployResult> {
+        {
+            let agents = self.agents.read().expect("RwLock poison");
+            if agents
+                .values()
+                .any(|agent| agent.content_hash.as_ref() == Some(content_hash))
+            {
+                return Ok(DeployResult {
+                    already_deployed: true,
+                });
+            }
+        }
+
+        let bytes = self.fetch_blob_from_repository(content_hash).await?;
+        AgentRunner::validate_hash_and_content(content_hash, &bytes)?;
+        let repository_version = match self.fetch_repository_version(content_hash).await {
+            Ok(version) => version,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    content_hash = %content_hash.as_str(),
+                    "Failed to resolve repository version for deployment; continuing without repository_version"
+                );
+                None
+            }
+        };
+        let (name, route_key, booted) = self
+            .boot_from_blob_bytes(&bytes, content_hash, repository_version)
+            .await?;
+
+        {
+            let mut agents = self.agents.write().expect("RwLock poison");
+            if agents
+                .values()
+                .any(|agent| agent.content_hash.as_ref() == Some(content_hash))
+            {
+                return Ok(DeployResult {
+                    already_deployed: true,
+                });
+            }
+            if let Some(existing) = agents.get(&name)
+                && existing.content_hash.as_ref() != Some(content_hash)
+            {
+                return Err(BamlRtError::Conflict(format!(
+                    "Agent '{name}' is already loaded with a different content hash"
+                )));
+            }
+
+            let mut routed = self.routed_agents.write().expect("RwLock poison");
+            routed.insert(route_key, booted.agent.clone());
+            agents.insert(name.clone(), booted);
+        }
+
+        let now = unix_timestamp_secs();
+        self.deployment_state
+            .save_deployment(&DeploymentRecord {
+                content_hash: content_hash.clone(),
+                agent_name: name,
+                deployed_at: now.clone(),
+                status: DeploymentStatus::Active,
+                last_error: None,
+                last_attempt_at: Some(now),
+                failure_count: 0,
+            })
+            .await?;
+
+        Ok(DeployResult {
+            already_deployed: false,
+        })
+    }
+
+    async fn undeploy_by_hash(
+        &self,
+        content_hash: &DeploymentContentHash,
+    ) -> Result<UndeployResult> {
+        let removed = {
+            let mut agents = self.agents.write().expect("RwLock poison");
+            let target_name = agents.iter().find_map(|(name, agent)| {
+                (agent.content_hash.as_ref() == Some(content_hash)).then_some(name.clone())
+            });
+            let Some(target_name) = target_name else {
+                return Ok(UndeployResult { removed: false });
+            };
+            let Some(booted) = agents.remove(&target_name) else {
+                return Ok(UndeployResult { removed: false });
+            };
+            drop(agents);
+
+            if let Some(package_name) = AgentPackageName::parse(&booted.manifest.name) {
+                let route_key = AgentRouteKey::new(package_name, AgentInstanceId::default());
+                let mut routed = self.routed_agents.write().expect("RwLock poison");
+                routed.remove(&route_key);
+            }
+            true
+        };
+
+        if removed {
+            self.deployment_state
+                .remove_deployment(content_hash)
+                .await?;
+        }
+        Ok(UndeployResult { removed })
+    }
+
+    async fn list_deployments(&self) -> Result<Vec<DeploymentRecord>> {
+        self.deployment_state.list_deployments().await
     }
 }
 
@@ -1097,6 +1406,27 @@ fn wrap_plaintext_message(text: &str) -> Result<Value> {
         .map_err(|e| BamlRtError::InvalidArgument(format!("Failed to build stdio request: {e}")))
 }
 
+fn unix_timestamp_secs() -> String {
+    let now = std::time::SystemTime::now();
+    let duration = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    duration.as_secs().to_string()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    hex
+}
+
 /// Provenance store: in-memory (default) or file-backed embedded SurrealDB (SurrealKV directory).
 #[derive(Debug, Clone)]
 enum ProvenanceDb {
@@ -1107,11 +1437,14 @@ enum ProvenanceDb {
 #[derive(Debug, Clone)]
 struct RunnerConfig {
     packages: Vec<PathBuf>,
+    repository_url: String,
+    repository_dir: PathBuf,
     invoke: Option<(String, String, String)>,
     a2a_stdio: bool,
     serve_http: Option<String>,
     web_dir: Option<PathBuf>,
     provenance_db: ProvenanceDb,
+    state_dir: PathBuf,
     /// If set, used as Claude workspaces root (overrides BAML_CLAUDE_WORKSPACES_BASE env).
     claude_workspaces_base: Option<PathBuf>,
     /// Stream collector idle timeout in seconds. No yield for this long ends the stream (Timeout). Default 900 for long-running tool sessions (e.g. claude/dev).
@@ -1125,8 +1458,20 @@ struct RunnerConfig {
 #[command(about = "Load and execute one or more packaged agents", long_about = None)]
 struct Cli {
     /// Agent package tar.gz paths to load.
-    #[arg(value_name = "AGENT_PACKAGE", required = true)]
+    #[arg(value_name = "AGENT_PACKAGE")]
     packages: Vec<PathBuf>,
+
+    /// Repository base URL used for hash-based deploy/restore (e.g. http://127.0.0.1:8080/repository).
+    #[arg(
+        long,
+        value_name = "URL",
+        default_value = "http://127.0.0.1:8080/repository"
+    )]
+    repository_url: String,
+
+    /// Local repository data directory (embedded SurrealKV backing /repository routes).
+    #[arg(long, value_name = "DIR", default_value = "./.repository")]
+    repository_dir: PathBuf,
 
     /// Invoke a JS function: <agent> <function> <json-args>
     #[arg(long, num_args = 3, value_names = ["AGENT", "FUNCTION", "JSON_ARGS"])]
@@ -1148,6 +1493,10 @@ struct Cli {
     /// Provenance storage path: `:memory:` or a directory for embedded SurrealKV (config lives alongside as `config.db`).
     #[arg(long, value_name = "PATH", default_value = ":memory:")]
     provenance_db: String,
+
+    /// Runner-local deployment state directory (embedded SurrealKV for deployment metadata/state).
+    #[arg(long, value_name = "DIR", default_value = "./.runner-state")]
+    state_dir: PathBuf,
 
     /// Claude workspaces root directory (claude/dev session cwd base). When set, overrides BAML_CLAUDE_WORKSPACES_BASE. Use an absolute path or path relative to current working directory.
     #[arg(long, value_name = "DIR")]
@@ -1178,11 +1527,14 @@ impl Cli {
 
         Ok(RunnerConfig {
             packages: self.packages,
+            repository_url: self.repository_url,
+            repository_dir: self.repository_dir,
             invoke,
             a2a_stdio: self.a2a_stdio,
             serve_http: self.serve_http,
             web_dir: self.web_dir,
             provenance_db,
+            state_dir: self.state_dir,
             claude_workspaces_base: self.claude_workspaces_base,
             stream_idle_secs: Some(self.stream_idle_secs),
             event_poll_interval: if self.event_poll_interval_secs > 0 {
@@ -2037,6 +2389,58 @@ async fn main() -> anyhow::Result<()> {
         .with_runtime_secret_store(Some(overlay))
         .build()
         .context("Failed to build provenance config")?;
+
+    std::fs::create_dir_all(&config.state_dir).with_context(|| {
+        format!(
+            "Failed to create runner state directory {}",
+            config.state_dir.display()
+        )
+    })?;
+    let state_db_path = config.state_dir.join("state.db");
+    let deployment_state = Arc::new(
+        deployment_state::DeploymentStateStore::open(&state_db_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to initialize runner deployment state DB at {}",
+                    state_db_path.display()
+                )
+            })?,
+    );
+    std::fs::create_dir_all(&config.repository_dir).with_context(|| {
+        format!(
+            "Failed to create repository directory {}",
+            config.repository_dir.display()
+        )
+    })?;
+    let repository_db_path = config.repository_dir.join("repository.db");
+    let repository_store = Arc::new(SurrealStore::open(&repository_db_path).await.with_context(
+        || {
+            format!(
+                "Failed to initialize repository DB at {}",
+                repository_db_path.display()
+            )
+        },
+    )?);
+    let repository_service = Arc::new(RepositoryService::new(
+        repository_store.clone() as Arc<dyn BlobStore>,
+        repository_store.clone() as Arc<dyn MetadataStore>,
+        repository_store.clone() as Arc<dyn LineageStore>,
+        repository_store as Arc<dyn SearchStore>,
+    ));
+    let existing_deployments = deployment_state
+        .list_deployments()
+        .await
+        .context("Failed to read runner deployment state records")?;
+    info!(
+        state_dir = %config.state_dir.display(),
+        state_db = %state_db_path.display(),
+        repository_dir = %config.repository_dir.display(),
+        repository_db = %repository_db_path.display(),
+        existing_deployments = existing_deployments.len(),
+        "Runner deployment + repository backends initialized"
+    );
+
     let access_allowlist = parse_access_allowlist();
     let tool_index = match &config.provenance_db {
         ProvenanceDb::InMemory => Some(ToolIndexConfig::in_memory()),
@@ -2044,10 +2448,51 @@ async fn main() -> anyhow::Result<()> {
     };
     let mut builder = builder::RunnerBuilder::<builder::Loading>::new(
         provenance_config,
+        deployment_state,
         tool_index,
         access_allowlist,
         config.stream_idle_secs,
+        config.repository_url.clone(),
     );
+
+    for mut deployment in existing_deployments {
+        match builder
+            .runner
+            .deploy_by_hash(&deployment.content_hash)
+            .await
+        {
+            Ok(result) => {
+                info!(
+                    content_hash = %deployment.content_hash.as_str(),
+                    already_deployed = result.already_deployed,
+                    "Restored deployment from runner state"
+                );
+            }
+            Err(err) => {
+                deployment.status = DeploymentStatus::Failed;
+                deployment.last_error = Some(err.to_string());
+                deployment.last_attempt_at = Some(unix_timestamp_secs());
+                deployment.failure_count = deployment.failure_count.saturating_add(1);
+                if let Err(save_err) = builder
+                    .runner
+                    .deployment_state()
+                    .save_deployment(&deployment)
+                    .await
+                {
+                    error!(
+                        error = %save_err,
+                        content_hash = %deployment.content_hash.as_str(),
+                        "Failed to persist restore failure state"
+                    );
+                }
+                warn!(
+                    error = %err,
+                    content_hash = %deployment.content_hash.as_str(),
+                    "Failed to restore deployment; continuing startup"
+                );
+            }
+        }
+    }
 
     for package in &config.packages {
         let package_path = Path::new(package);
@@ -2088,13 +2533,14 @@ async fn main() -> anyhow::Result<()> {
 
     let agents = ready.list_agents();
     if agents.is_empty() {
-        eprintln!("Error: No agents loaded");
-        std::process::exit(1);
-    }
-
-    println!("✅ Loaded {} agent(s):", agents.len());
-    for agent_name in &agents {
-        println!("  - {}", agent_name);
+        warn!(
+            "No agents loaded at startup (repository restore and package args both empty/failed); runner will continue and can receive deploy requests"
+        );
+    } else {
+        println!("✅ Loaded {} agent(s):", agents.len());
+        for agent_name in &agents {
+            println!("  - {}", agent_name);
+        }
     }
 
     // --- Event producer poll loop ---
@@ -2141,13 +2587,16 @@ async fn main() -> anyhow::Result<()> {
         );
         let runtime_secret_store = prov_config.runtime_secret_store();
         Some(tokio::spawn(async move {
-            baml_rt_api::serve_with_services(
+            baml_rt_api::serve_with_services_and_deploy(
                 registry_impl,
                 &bind,
                 mermaid,
                 context_metrics,
                 provenance_ops,
                 planning,
+                Some(runner.clone() as Arc<dyn DeploymentManager>),
+                Some(config.repository_url.clone()),
+                Some(repository_service.clone()),
                 tool_catalog,
                 config_service,
                 secret_resolver,
@@ -2288,6 +2737,14 @@ mod tests {
             .expect("provenance config")
     }
 
+    async fn test_deployment_state() -> Arc<deployment_state::DeploymentStateStore> {
+        Arc::new(
+            deployment_state::DeploymentStateStore::open_in_memory()
+                .await
+                .expect("in-memory deployment state"),
+        )
+    }
+
     async fn build_test_agent() -> A2aAgent {
         let manager = BamlRuntimeManager::builder()
             .build()
@@ -2331,6 +2788,8 @@ globalThis.onChatMessage = async function(_message) {
                 agent: build_test_agent().await,
                 manifest,
                 baml_functions: vec![],
+                content_hash: None,
+                repository_version: None,
             },
         );
     }
@@ -2339,9 +2798,11 @@ globalThis.onChatMessage = async function(_message) {
     async fn prepare_a2a_request_defaults_to_coordinator_for_plaintext_with_multiple_agents() {
         let runner = AgentRunner::new(
             test_provenance_config().await,
+            test_deployment_state().await,
             None,
             ToolAccessPolicy::default(),
             None,
+            "http://127.0.0.1:8080/repository".to_string(),
         );
         insert_test_agent(&runner, "coordinator-agent").await;
         insert_test_agent(&runner, "notion-agent").await;
@@ -2574,9 +3035,11 @@ globalThis.onChatMessage = async function(_message) {
     async fn prepare_a2a_request_still_errors_without_coordinator_when_multiple_agents_loaded() {
         let runner = AgentRunner::new(
             test_provenance_config().await,
+            test_deployment_state().await,
             None,
             ToolAccessPolicy::default(),
             None,
+            "http://127.0.0.1:8080/repository".to_string(),
         );
         insert_test_agent(&runner, "notion-agent").await;
         insert_test_agent(&runner, "clickup-agent").await;
@@ -2596,9 +3059,11 @@ globalThis.onChatMessage = async function(_message) {
     async fn internal_a2a_router_rejects_self_routing_by_route_key() {
         let runner = Arc::new(AgentRunner::new(
             test_provenance_config().await,
+            test_deployment_state().await,
             None,
             ToolAccessPolicy::default(),
             None,
+            "http://127.0.0.1:8080/repository".to_string(),
         ));
         runner.internal_a2a_router().set_runner(runner.clone());
         let caller = AgentRouteKey::new(
@@ -2637,9 +3102,11 @@ globalThis.onChatMessage = async function(_message) {
     async fn handle_a2a_by_key_respects_instance_id() {
         let runner = AgentRunner::new(
             test_provenance_config().await,
+            test_deployment_state().await,
             None,
             ToolAccessPolicy::default(),
             None,
+            "http://127.0.0.1:8080/repository".to_string(),
         );
         let package_name = AgentPackageName::parse("demo-agent").expect("valid package");
         let default_key = AgentRouteKey::new(package_name.clone(), AgentInstanceId::default());
@@ -2665,6 +3132,8 @@ globalThis.onChatMessage = async function(_message) {
                 agent,
                 manifest,
                 baml_functions: vec![],
+                content_hash: None,
+                repository_version: None,
             },
         );
 

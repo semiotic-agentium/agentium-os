@@ -13,11 +13,14 @@ baml-rt-id = { path = "../baml-rt-id" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+sha2 = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
-rusqlite = { workspace = true }
+surrealdb = { workspace = true }
 axum = { workspace = true }
 http-api-problem = { workspace = true }
 utoipa = { workspace = true }

@@ -9,7 +9,7 @@ use std::{path::Path, sync::Arc};
 use baml_rt_a2a::A2aRequestHandler;
 use baml_rt_core::{
     AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey, BamlFunctionId, BamlRtError,
-    Result,
+    DeploymentContentHash, Result,
 };
 use baml_rt_provenance::ToolIndexConfig;
 use serde_json::Value;
@@ -37,15 +37,19 @@ impl RunnerBuilder<Loading> {
     /// Registry is wired to the runner so discovery/A2A see agents as they are loaded.
     pub fn new(
         provenance_config: ProvenanceConfig,
+        deployment_state: Arc<crate::deployment_state::DeploymentStateStore>,
         tool_index: Option<ToolIndexConfig>,
         access_policy: ToolAccessPolicy,
         stream_idle_secs: Option<u64>,
+        repository_url: String,
     ) -> Self {
         let runner = Arc::new(crate::AgentRunner::new(
             provenance_config,
+            deployment_state,
             tool_index,
             access_policy,
             stream_idle_secs,
+            repository_url,
         ));
         // Wire the internal A2A router to the runner for cross-agent dispatch.
         runner.internal_a2a_router().set_runner(Arc::clone(&runner));
@@ -66,6 +70,19 @@ impl RunnerBuilder<Loading> {
         let _guard = span.enter();
 
         let package = AgentPackage::load_from_file(package_path).await?;
+        let package_bytes = std::fs::read(package_path).map_err(BamlRtError::Io)?;
+        let package_hash = {
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(&package_bytes);
+            let mut hex = String::with_capacity(64);
+            for byte in digest {
+                use std::fmt::Write as _;
+                let _ = write!(&mut hex, "{byte:02x}");
+            }
+            hex.parse::<DeploymentContentHash>().map_err(|e| {
+                BamlRtError::InvalidArgument(format!("failed to parse computed package hash: {e}"))
+            })?
+        };
         let name = package.name().to_string();
         let package_name = AgentPackageName::parse(&name).ok_or_else(|| {
             BamlRtError::InvalidArgument(format!(
@@ -111,6 +128,8 @@ impl RunnerBuilder<Loading> {
             agent,
             manifest: manifest.clone(),
             baml_functions,
+            content_hash: Some(package_hash),
+            repository_version: None,
         };
         tracing::info!(agent = %name, "Agent loaded and booted successfully");
         self.runner.insert_agent(name.clone(), route_key, booted);

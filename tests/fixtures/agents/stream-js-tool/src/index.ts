@@ -32,3 +32,5 @@ __chat_register({
     return { message: `Complete: ${text}` };
   },
 });
+
+export {};

@@ -1,25 +1,20 @@
-//! Storage trait boundaries: hybrid FS + SQLite architecture.
+//! Storage trait boundaries for repository persistence.
 //!
-//! The repository uses a split storage model:
+//! The repository keeps these concerns separated at the trait level:
 //!
-//! - **BlobStore** (filesystem): stores distributable tar.gz packages keyed by
-//!   `ContentHash`. The filesystem is the source of truth for binary content.
+//! - `BlobStore` for packaged tar.gz bytes.
+//! - `MetadataStore` for entry/version metadata.
+//! - `LineageStore` for graph traversal.
+//! - `SearchStore` for query/filter/ranking.
 //!
-//! - **MetadataStore** (SQLite): stores structured metadata, version mappings,
-//!   lineage edges, fitness scores, tags, and full-text search indices. SQLite
-//!   is the source of truth for all queryable state.
-//!
-//! This separation is deliberate:
-//! - Tar.gz blobs are opaque and large; SQLite BLOB columns would bloat the
-//!   database and degrade query performance.
-//! - Metadata is small, structured, and needs indexed search; SQLite excels.
-//! - The `ContentHash` is the join key: both stores agree on the hash as the
-//!   canonical identity.
+//! A concrete backend may implement all traits in one store (as the current
+//! SurrealDB backend does), while preserving these boundaries for testability
+//! and future evolution.
 
 use async_trait::async_trait;
 
 use crate::{
-    entry::{FitnessDomain, NewEntry, RepositoryEntry, RepositoryEntryHeader, Tag, Timestamp},
+    entry::{NewEntry, RepositoryEntry, RepositoryEntryHeader, Tag},
     error::Result,
     ids::{AgentName, ContentHash, Version, VersionRef},
     lineage::{AncestryNode, LineageEdge, LineageSubgraph},
@@ -27,7 +22,7 @@ use crate::{
 };
 
 // ---------------------------------------------------------------------------
-// BlobStore — filesystem-backed tar.gz storage
+// BlobStore — tar.gz storage
 // ---------------------------------------------------------------------------
 
 /// Stores and retrieves distributable tar.gz packages by content hash.
@@ -51,14 +46,14 @@ pub trait BlobStore: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// MetadataStore — SQLite-backed structured storage
+// MetadataStore — structured storage
 // ---------------------------------------------------------------------------
 
 /// Stores and queries agent metadata, version mappings, and lineage.
 ///
 /// This is the primary interface for all structured data operations. The
-/// implementation is expected to be backed by SQLite with appropriate indices
-/// for search and lineage traversal.
+/// implementation is expected to provide appropriate indices for search and
+/// lineage traversal.
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
     // --- Entry lifecycle ---
@@ -101,15 +96,6 @@ pub trait MetadataStore: Send + Sync {
     async fn list_agents(&self) -> Result<Vec<AgentName>>;
 
     // --- Mutable metadata ---
-
-    /// Append a fitness score to an entry. The entry must already exist.
-    async fn record_fitness(
-        &self,
-        hash: &ContentHash,
-        domain: FitnessDomain,
-        score: f64,
-        recorded_at: Timestamp,
-    ) -> Result<()>;
 
     /// Append a tag to an entry. Idempotent (duplicate tags are ignored).
     async fn add_tag(&self, hash: &ContentHash, tag: Tag) -> Result<()>;
@@ -158,19 +144,11 @@ pub trait LineageStore: Send + Sync {
 
 /// Search operations over repository metadata and source content.
 ///
-/// Separated because search indexing may use SQLite FTS5 or an external engine,
-/// and has different consistency requirements from core CRUD.
+/// Separated because search indexing may use backend-specific query/index
+/// capabilities and has different consistency requirements from core CRUD.
 #[async_trait]
 pub trait SearchStore: Send + Sync {
     /// Execute a structured search query, returning matching entry headers
     /// ordered by relevance.
     async fn search(&self, query: &SearchQuery) -> Result<Vec<RepositoryEntryHeader>>;
-
-    /// Retrieve the top-k entries by fitness score in a given domain.
-    /// This is the ADAS archive hot path.
-    async fn top_by_fitness(
-        &self,
-        domain: &FitnessDomain,
-        limit: usize,
-    ) -> Result<Vec<RepositoryEntryHeader>>;
 }

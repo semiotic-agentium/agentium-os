@@ -9,6 +9,10 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `new-tool <name>` | Create a new tool crate with all necessary patches |
 | `new-agent <name>` | Create a new agent package with templates |
 | `build [names]...` | Package agents into distributable tar.gz files |
+| `publish --package <path.tar.gz>` | Upload package blob and publish repository metadata |
+| `deploy --hash <hash>` | Deploy a published package hash into a running runner |
+| `undeploy --hash <hash>` | Remove an active deployment from a running runner |
+| `list-deployed-instances` | List currently loaded runner agent instances |
 | `list-tools` | List all registered tools from the inventory |
 | `list-agents` | List all agent packages |
 | `list-event-sources` | List event source kinds declared by tools and known schema versions |
@@ -652,54 +656,146 @@ Agent packaged successfully!
 
 Each output file is named `<agent-name>-<version>.tar.gz`. By default, files are placed in the current working directory. Use `-o` to specify a different output directory.
 
-**Running the packaged agent:**
+**Running packaged agents:**
 
-After building, run the agent using `baml-agent-runner` directly. The runner must be built with appropriate features for the tools your agent uses:
+`cargo agent-platform build` only produces package archives. Runtime execution is documented separately in [`docs/agent-runner.md`](./agent-runner.md).
 
-```bash
-# Build the runner with tool support (recommended for local dev)
-cargo build -p baml-agent-runner --all-features --release
+---
 
-# Run the agent
-./target/release/baml-agent-runner \
-  clickup-agent-1.0.0.tar.gz \
-  --serve-http 127.0.0.1:8080 \
-  --provenance-db provenance.db
-```
+### `publish`
 
-**Feature flags for baml-agent-runner:**
-
-| Feature | Required for |
-|---------|--------------|
-| `http-tools` | ClickUp, Notion, Slack tools (`support/clickup`, `support/notion`, `support/slack`) |
-| `memory` | Memory tools (`memory/add`, `memory/query`, etc.) |
-| `llm-tests` | LLM-dependent tests (not needed for running agents) |
-
-For local development, `--all-features` is the safest default to avoid "Unknown tool in manifest" errors when adding new tool crates.
-
-**Runner options:**
-
-| Option | Description |
-|--------|-------------|
-| `--serve-http <ADDR>` | Bind HTTP API on the given address (e.g., `127.0.0.1:8080`) |
-| `--a2a-stdio` | Run A2A JSON-RPC loop over stdio |
-| `--provenance-db <PATH>` | SQLite database path for provenance (default: `:memory:`) |
-| `--web-dir <DIR>` | Directory with web UI assets to serve at root path |
-
-**Typical workflow:**
+Uploads a built `.tar.gz` package to repository blob storage, then publishes metadata using the repository `PublishCommand` contract.
 
 ```bash
-# 1. Build the runner with features (once)
-cargo build -p baml-agent-runner --features http-tools,memory --release
-
-# 2. Build the agent
-cargo agent-platform build clickup-agent
-
-# 3. Run the agent
-./target/release/baml-agent-runner \
-  clickup-agent-1.0.0.tar.gz \
-  --serve-http 127.0.0.1:8080
+cargo run -p cargo-agent-platform -- publish --package <path.tar.gz> [options]
 ```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `--package <path.tar.gz>` | Path to a prebuilt package archive |
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--repository-url <url>` | `http://127.0.0.1:8080/repository` | Base URL where repository routes are mounted |
+| `--rationale <text>` | `published from package archive` | Change rationale sent in publish metadata |
+| `--origin <kind>` | `original` | Publish origin: `original` or `iteration` |
+
+**Flow:**
+
+1. Read package bytes from `--package`
+2. Compute SHA-256 over raw package bytes (used as blob hash)
+3. `PUT /repository/blobs/{hash}` with package bytes
+4. Extract manifest and source bundle from archive
+5. `POST /repository/publish` with repository `PublishCommand`
+
+**Important behavior:**
+
+- Tags are not accepted as a CLI option for publish.
+- Tags are derived from `manifest.json` inside the package and become the source of truth.
+- The repository assigns the persisted version for the published entry.
+
+**Examples:**
+
+```bash
+# Publish with defaults (origin=original)
+cargo run -p cargo-agent-platform -- publish \
+  --package ./dist/clickup-agent-1.0.0.tar.gz
+
+# Publish to another repository URL
+cargo run -p cargo-agent-platform -- publish \
+  --package ./dist/notion-agent-1.0.0.tar.gz \
+  --repository-url http://127.0.0.1:8081/repository
+
+# Publish as an iteration with explicit rationale
+cargo run -p cargo-agent-platform -- publish \
+  --package ./dist/clickup-agent-1.0.1.tar.gz \
+  --origin iteration \
+  --rationale "Improved task sync reliability"
+```
+
+**Example output:**
+```
+Blob uploaded successfully.
+  package: clickup-agent-1.0.0.tar.gz
+  hash:    bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
+  url:     http://127.0.0.1:8080/repository/blobs/bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
+
+Metadata published successfully.
+  url:     http://127.0.0.1:8080/repository/publish
+  result:  {"hash":"a1bf80e913eedede326e9b065bac5d9bd0e3e927d9aa565b0cc3f3f09e3f041f","version_ref":{"name":"clickup-agent","version":1},"generation":0}
+```
+
+After publish, use the runner deploy API to activate the package in a live runner instance.
+See [`docs/agent-runner.md`](./agent-runner.md) for the full deploy + chat flow.
+
+---
+
+### `deploy`
+
+Deploys a previously published package hash into a running `baml-agent-runner`.
+
+```bash
+cargo run -p cargo-agent-platform -- deploy --hash <sha256> [--url http://127.0.0.1:8080]
+```
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--hash <sha256>` | - | Content hash of the package blob to deploy |
+| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL (without `/repository`) |
+
+**Example:**
+
+```bash
+cargo agent-platform deploy \
+  --hash bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
+```
+
+---
+
+### `undeploy`
+
+Undeploys an active package hash from a running `baml-agent-runner`.
+
+```bash
+cargo run -p cargo-agent-platform -- undeploy --hash <sha256> [--url http://127.0.0.1:8080]
+```
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--hash <sha256>` | - | Content hash of the deployed package |
+| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL (without `/repository`) |
+
+**Example:**
+
+```bash
+cargo agent-platform undeploy \
+  --hash bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
+```
+
+---
+
+### `list-deployed-instances`
+
+Lists currently loaded agent instances from a running `baml-agent-runner`
+(`GET /agents`) and prints package + instance routing keys.
+
+```bash
+cargo run -p cargo-agent-platform -- list-deployed-instances [--url http://127.0.0.1:8080]
+```
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL |
 
 ---
 

@@ -19,6 +19,10 @@ pub struct AgentEventSubscriptionDto {
 pub struct AgentCardDto {
     pub name: String,
     pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_version: Option<u32>,
     pub agent_package: String,
     pub agent_instance_id: String,
     pub tools: Vec<String>,
@@ -27,6 +31,8 @@ pub struct AgentCardDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subscriptions: Vec<AgentEventSubscriptionDto>,
 }
@@ -67,17 +73,62 @@ pub struct AgentDispatchAckDto {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct DeployRequestDto {
+    /// Content hash to deploy directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+    /// Agent name for name/version resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Agent version for name/version resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct DeployResponseDto {
+    pub hash: String,
+    pub already_deployed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct UndeployRequestDto {
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct UndeployResponseDto {
+    pub removed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct DeploymentRecordDto {
+    pub content_hash: String,
+    pub agent_name: String,
+    pub deployed_at: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt_at: Option<String>,
+    pub failure_count: u32,
+}
+
 impl From<baml_rt_core::AgentCard> for AgentCardDto {
     fn from(c: baml_rt_core::AgentCard) -> Self {
         Self {
             name: c.name,
             version: c.version,
+            content_hash: c.content_hash,
+            repository_version: c.repository_version,
             agent_package: c.agent_package,
             agent_instance_id: c.agent_instance_id,
             tools: c.tools,
             baml_functions: c.baml_functions,
             description: c.description,
             capabilities: c.capabilities,
+            tags: c.tags,
             subscriptions: c
                 .subscriptions
                 .into_iter()

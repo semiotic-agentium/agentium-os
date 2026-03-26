@@ -145,12 +145,18 @@ pub struct DiscoverAgentsNextOutput {
 pub struct AgentCardDto {
     pub name: String,
     pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_version: Option<u32>,
     pub agent_package: String,
     pub agent_instance_id: String,
     pub tools: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subscriptions: Vec<AgentEventSubscriptionDto>,
 }

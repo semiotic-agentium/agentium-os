@@ -51,58 +51,61 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 ## Implementation Checklist (Cross-Session Tracking)
 
 ### Phase 0: Contracts and Config
-- [ ] Document canonical hash rule: `sha256(tar_gz_bytes)` (lowercase hex).
-- [ ] Document blob size default (`5 MB`) and config/env override (`repository.max_blob_bytes`, `BAML_REPOSITORY_MAX_BLOB_BYTES`).
-- [ ] Document deploy semantics (`already_deployed=true`, undeploy missing -> `404`, one deployment per hash per runner).
-- [ ] Document separate DB paths (`--repository-dir`, `--state-dir`).
-- [ ] Document OpenAPI/utoipa update requirement for every new endpoint/DTO.
+- [x] Document canonical hash rule: `sha256(tar_gz_bytes)` (lowercase hex).
+- [x] Document blob size default (`5 MB`) and config/env override (`repository.max_blob_bytes`, `BAML_REPOSITORY_MAX_BLOB_BYTES`).
+- [x] Document deploy semantics (`already_deployed=true`, undeploy missing -> `404`, one deployment per hash per runner).
+- [x] Document separate DB paths (`--repository-dir`, `--state-dir`).
+- [x] Document OpenAPI/utoipa update requirement for every new endpoint/DTO.
 
 ### Phase 1: SurrealDB Repository Backend
-- [ ] Replace repository SQLite/FS backend with SurrealDB-only backend implementation.
-- [ ] Remove old repository backend modules and wiring.
-- [ ] Port repository tests to in-memory SurrealDB.
+- [x] Replace repository SQLite/FS backend with SurrealDB-only backend implementation.
+- [x] Remove old repository backend modules and wiring.
+- [x] Port repository tests to in-memory SurrealDB.
+- [x] Remove fitness domain/model/API/store concerns from MVP scope.
 
 ### Phase 2: Repository Publish/Entries/Blobs + Search Inputs
-- [ ] Implement `PUT /repository/blobs/{hash}` and `GET /repository/blobs/{hash}`.
-- [ ] Implement `POST /repository/publish` (blob-first policy enforced).
-- [ ] Implement `GET /repository/entries`.
-- [ ] Implement `GET /repository/entries/{hash}`.
-- [ ] Implement `GET /repository/entries?name=<name>&version=<version>`.
-- [ ] Enforce payload/hash validation + HTTP status mapping (`400`, `404`, `409`).
-- [ ] Enforce max blob size checks (`5 MB` default).
-- [ ] Populate `manifest_text` from manifest metadata at publish time.
-- [ ] Populate `source_text` via bounded text extraction from tarball at publish time.
-- [ ] Ensure publish fails when referenced blob hash is missing.
+- [x] Implement `PUT /repository/blobs/{hash}` and `GET /repository/blobs/{hash}`.
+- [x] Implement `POST /repository/publish` (blob-first policy enforced).
+- [x] Implement `GET /repository/entries`.
+- [x] Implement `GET /repository/entries/{hash}`.
+- [x] Implement `GET /repository/entries?name=<name>&version=<version>`.
+- [x] Enforce payload/hash validation + HTTP status mapping (`400`, `404`, `409`).
+- [x] Enforce max blob size checks (`5 MB` default).
+- [x] Populate `manifest_text` from manifest metadata at publish time.
+- [x] Populate `source_text` via bounded text extraction from tarball at publish time.
+- [x] Ensure publish fails when referenced blob hash is missing.
+- [x] Implement `cargo agent-platform publish` with blob-first workflow (`package.tar.gz path -> PUT blob -> POST publish`).
+- [x] Ensure `POST /repository/publish {blob_hash}` stores and returns the same hash identity.
 
 ### Phase 3: Runner Local State
-- [ ] Add runner-local SurrealDB deployment table.
-- [ ] Add deployment record fields (`content_hash`, `agent_name`, `deployed_at`).
-- [ ] Add failure tracking fields (`status`, `last_error`, `last_attempt_at`, `failure_count`).
-- [ ] Wire `--state-dir` configuration and defaults.
+- [x] Add runner-local SurrealDB deployment table.
+- [x] Add deployment record fields (`content_hash`, `agent_name`, `deployed_at`).
+- [x] Add failure tracking fields (`status`, `last_error`, `last_attempt_at`, `failure_count`).
+- [x] Wire `--state-dir` configuration and defaults.
 
 ### Phase 4: Runtime Deploy Core
 - [ ] Remove CLI package-path startup flow.
-- [ ] Add `DeploymentManager` trait in `baml-rt-core`.
-- [ ] Implement hash-based deploy/undeploy core in runner.
-- [ ] Implement startup restore loop (try all saved deployments).
-- [ ] Record per-deployment restore/deploy failures in local state.
-- [ ] Clear failure state on successful subsequent boot.
+- [x] Add `DeploymentManager` trait in `baml-rt-core`.
+- [x] Implement hash-based deploy/undeploy core in runner.
+- [x] Implement startup restore loop (try all saved deployments).
+- [x] Record per-deployment restore/deploy failures in local state.
+- [x] Clear failure state on successful subsequent boot.
 - [ ] Implement graceful drain on undeploy (`503` for new requests, timeout, force-abort).
-- [ ] Apply hot-deploy lock discipline (boot outside write lock, insert/remove under short write lock).
+- [x] Apply hot-deploy lock discipline (boot outside write lock, insert/remove under short write lock).
 
 ### Phase 5: Runtime HTTP API
-- [ ] Add `POST /deploy`.
-- [ ] Add `POST /undeploy`.
-- [ ] Add `GET /deployments`.
-- [ ] Resolve `{name, version}` to hash in API layer before runner deploy call.
-- [ ] Enforce one-active-deployment-per-hash semantics (`already_deployed=true` on repeat deploy).
-- [ ] Include deployment status/error fields in deployments response.
-- [ ] Mount repository routes under `/repository`.
-- [ ] Update OpenAPI/utoipa for all new runtime and repository endpoints/DTOs.
+- [x] Add `POST /deploy`.
+- [x] Add `POST /undeploy`.
+- [x] Add `GET /deployments`.
+- [x] Resolve `{name, version}` to hash in API layer before runner deploy call.
+- [x] Enforce one-active-deployment-per-hash semantics (`already_deployed=true` on repeat deploy).
+- [x] Include deployment status/error fields in deployments response.
+- [x] Mount repository routes under `/repository`.
+- [x] Update OpenAPI/utoipa for all new runtime and repository endpoints/DTOs.
 
 ### Phase 6: Metadata Propagation
-- [ ] Enrich runner in-memory deployed-agent model with repository provenance.
-- [ ] Add provenance fields to `AgentCard` and API/system DTOs (`content_hash`, `repository_version`, `tags`).
+- [x] Enrich runner in-memory deployed-agent model with repository provenance.
+- [x] Add provenance fields to `AgentCard` and API/system DTOs (`content_hash`, `repository_version`, `tags`).
 - [ ] Verify serialization and discovery output coverage.
 
 ### Phase 7: Builder CLI
@@ -129,7 +132,8 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 - [x] `[MANIFEST-TAGS]` Update `cargo-agent-platform new-agent` generator to scaffold `tags: []` in new `manifest.json`.
 - [x] `[MANIFEST-TAGS]` Add interactive tool-based tag suggestions in `cargo-agent-platform new-agent` (exclude generic tags).
 - [x] `[MANIFEST-TAGS]` Enforce non-empty tags and reject banned generic tags (`support`, `read`, `write`, `system`) in `new-agent`.
-- [ ] `[MANIFEST-TAGS]` Ensure publish ingests manifest tags and FTS includes tags in `manifest_text`.
+- [x] `[MANIFEST-TAGS]` Enforce manifest tags contract in `cargo-agent-platform doctor` for `agents/` and fixture agents.
+- [x] `[MANIFEST-TAGS]` Ensure publish ingests manifest tags and FTS includes tags in `manifest_text`.
 
 ---
 
@@ -194,6 +198,12 @@ Rule: **One phase per PR** unless phase is tiny and clearly non-risky.
 - No user-entered tags in deploy APIs.
 - No standalone tag mutation endpoint in MVP.
 - Publish ingests tags from manifest into repository metadata.
+
+13. Publish metadata source and origin policy (MVP simplification)
+- Publish metadata should be derived from the uploaded blob/manifest whenever possible.
+- Do not require `origin` semantics (`original`/`iteration`/`influenced`) in MVP publish workflow.
+- Treat publish as local repository registration/indexing by default (not global distribution).
+- Keep publish request minimal and avoid duplicate user-supplied manifest metadata.
 
 12. Blob size configurability
 - Default max blob size is `5 MB`.

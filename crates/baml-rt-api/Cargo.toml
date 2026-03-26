@@ -14,6 +14,7 @@ baml-rt-config = { path = "../baml-rt-config" }
 baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
+baml-rt-repository = { path = "../baml-rt-repository" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,6 +27,7 @@ http-api-problem = { workspace = true }
 utoipa = { workspace = true }
 utoipa-axum = { workspace = true }
 tower-http = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }

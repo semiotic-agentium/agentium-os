@@ -38,6 +38,9 @@ pub enum RepositoryError {
     #[error("Invalid source bundle: {reason}")]
     InvalidSourceBundle { reason: String },
 
+    #[error("Blob too large: size={size_bytes} bytes exceeds max={max_bytes} bytes")]
+    BlobTooLarge { size_bytes: usize, max_bytes: usize },
+
     #[error("Canonical hash mismatch: expected {expected}, computed {computed}")]
     HashMismatch {
         expected: ContentHash,

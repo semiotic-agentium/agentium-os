@@ -67,24 +67,6 @@ pub(crate) fn search() -> Span {
     tracing::debug_span!("repository.search")
 }
 
-/// Span for top-by-fitness query (ADAS hot path).
-///
-/// Parent: HTTP request span.
-/// Children: search store query.
-#[inline]
-pub(crate) fn top_by_fitness(domain: &str, limit: usize) -> Span {
-    tracing::debug_span!("repository.top_by_fitness", domain = domain, limit = limit,)
-}
-
-/// Span for recording a fitness score.
-///
-/// Parent: HTTP request span.
-/// Children: metadata write.
-#[inline]
-pub(crate) fn record_fitness(hash: &str, domain: &str) -> Span {
-    tracing::debug_span!("repository.record_fitness", hash = hash, domain = domain,)
-}
-
 /// Span for canonical hash computation.
 ///
 /// Parent: publish or fork span.

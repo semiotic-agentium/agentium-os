@@ -1388,20 +1388,20 @@ async fn run_argument_sketch_two_agents_body() {
     );
     let first_texts = message_texts_from_chunks(&first_chunks);
     let argument_like = |t: &String| {
-        let lower = t.to_lowercase();
-        lower.contains("yes it is")
-            || lower.contains("no it isn't")
-            || lower.contains("no it isnt")
-            || lower.contains("i didn't")
-            || lower.contains("you did")
-            || lower.contains("i'm not")
-            || lower.contains("you are")
-            || lower.contains("i won't")
-            || lower.contains("i will not")
-            || lower.contains("i shan't")
-            || lower.contains("certainly")
-            || lower.contains("it is")
-            || lower.contains("it isn")
+        let trimmed = t.trim();
+        let lower = trimmed.to_lowercase();
+        !trimmed.is_empty()
+            && trimmed.len() <= 64
+            && (lower.starts_with("no")
+                || lower.starts_with("yes")
+                || lower.contains("n't")
+                || lower.contains(" not")
+                || lower.contains("certainly")
+                || lower.contains("you do")
+                || lower.contains("you don't")
+                || lower.contains("you did")
+                || lower.contains("i'm not")
+                || lower.contains("you are"))
     };
     // Prefer two chunks (Cleese then Chapman); stream-yield/task-local can sometimes deliver only one (see docs/argument-sketch-stream-trace.md).
     assert!(

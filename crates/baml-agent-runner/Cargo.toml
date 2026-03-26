@@ -15,6 +15,7 @@ baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-config = { path = "../baml-rt-config" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
+baml-rt-repository = { path = "../baml-rt-repository" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 baml-rt-tools-claude = { path = "../tools/claude" }
 baml-tools-system = { path = "../tools/system" }
@@ -29,11 +30,16 @@ async-trait = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
+surrealdb = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
 dotenvy = { workspace = true }
 uuid = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 test-support = { path = "../test-support" }
@@ -47,6 +53,7 @@ serde = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
 insta = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
 default = []

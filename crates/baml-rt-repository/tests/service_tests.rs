@@ -4,51 +4,25 @@ use std::sync::Arc;
 
 use baml_rt_repository::{
     commands::{ForkCommand, PublishCommand, PublishOrigin},
-    entry::{
-        ChangeRationale, FitnessDomain, ManifestSource, SourceBundle, SourceContent, SourceFile,
-        SourcePath, Tag,
-    },
-    fs_blob_store::FsBlobStore,
+    entry::{ChangeRationale, SourceBundle, Tag},
     ids::{AgentName, Generation, Version},
     lineage::{EdgeDescription, InfluenceRef, Parentage},
     search::{SearchQuery, TagFilter},
     service::RepositoryService,
-    sqlite_store::SqliteStore,
-    storage::{LineageStore, MetadataStore, SearchStore},
+    storage::{BlobStore, LineageStore, MetadataStore, SearchStore},
+    surreal_store::SurrealStore,
 };
+#[path = "support/common.rs"]
+mod common;
+use common::setup_service;
 
 fn make_source(content: &str) -> SourceBundle {
-    SourceBundle {
-        manifest: ManifestSource::new(serde_json::json!({
-            "name": "test-agent",
-            "version": "1.0.0",
-            "tools": ["calculator"],
-            "discovery": {
-                "description": "A test agent",
-                "capabilities": ["compute"]
-            }
-        })),
-        ts_sources: vec![SourceFile {
-            path: SourcePath::new("src/index.ts").unwrap(),
-            content: SourceContent::new(content),
-        }],
-        baml_sources: vec![],
-    }
-}
-
-async fn setup_service() -> RepositoryService {
-    let store = SqliteStore::open_in_memory().unwrap();
-    store.init_schema().await.unwrap();
-    let store = Arc::new(store);
-
-    let tmp = tempfile::tempdir().unwrap();
-    let blobs = Arc::new(FsBlobStore::new(tmp.path()).unwrap());
-
-    RepositoryService::new(
-        blobs,
-        store.clone() as Arc<dyn MetadataStore>,
-        store.clone() as Arc<dyn LineageStore>,
-        store as Arc<dyn SearchStore>,
+    common::make_source(
+        content,
+        "test-agent",
+        &["calculator"],
+        "A test agent",
+        &["compute"],
     )
 }
 
@@ -66,7 +40,6 @@ async fn publish_original_assigns_v1() {
             source: make_source("v1 code"),
             rationale: ChangeRationale::new("initial version").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -86,7 +59,6 @@ async fn publish_iteration_creates_fork_edge() {
             source: make_source("v1 code"),
             rationale: ChangeRationale::new("initial").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -99,7 +71,6 @@ async fn publish_iteration_creates_fork_edge() {
             source: make_source("v2 code"),
             rationale: ChangeRationale::new("improved accuracy").unwrap(),
             origin: PublishOrigin::Iteration,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -126,7 +97,6 @@ async fn publish_influenced_records_influence_edges() {
             source: make_source("source one code"),
             rationale: ChangeRationale::new("initial").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -137,7 +107,6 @@ async fn publish_influenced_records_influence_edges() {
             source: make_source("source two code"),
             rationale: ChangeRationale::new("initial").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -160,7 +129,6 @@ async fn publish_influenced_records_influence_edges() {
                     },
                 ],
             },
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -191,7 +159,6 @@ async fn publish_influenced_missing_source_fails() {
                     description: EdgeDescription::new("missing ref").unwrap(),
                 }],
             },
-            tags: vec![],
         })
         .await;
 
@@ -212,7 +179,6 @@ async fn fork_creates_new_lineage() {
             source: make_source("original code"),
             rationale: ChangeRationale::new("initial").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -272,7 +238,6 @@ async fn retrieval_by_hash_and_version() {
             source: make_source("retrieval test"),
             rationale: ChangeRationale::new("testing retrieval").unwrap(),
             origin: PublishOrigin::Original,
-            tags: vec![],
         })
         .await
         .unwrap();
@@ -302,20 +267,30 @@ async fn search_finds_published_agents() {
 
     svc.publish(PublishCommand {
         name: "searchable-one".parse().unwrap(),
-        source: make_source("first agent"),
+        source: common::make_source(
+            "first agent",
+            "searchable-one",
+            &["calculator"],
+            "First searchable agent",
+            &["stable"],
+        ),
         rationale: ChangeRationale::new("init").unwrap(),
         origin: PublishOrigin::Original,
-        tags: vec![Tag::new("stable")],
     })
     .await
     .unwrap();
 
     svc.publish(PublishCommand {
         name: "searchable-two".parse().unwrap(),
-        source: make_source("second agent"),
+        source: common::make_source(
+            "second agent",
+            "searchable-two",
+            &["calculator"],
+            "Second searchable agent",
+            &["experimental"],
+        ),
         rationale: ChangeRationale::new("init").unwrap(),
         origin: PublishOrigin::Original,
-        tags: vec![Tag::new("experimental")],
     })
     .await
     .unwrap();
@@ -337,51 +312,6 @@ async fn search_finds_published_agents() {
 }
 
 // -------------------------------------------------------------------------
-// Fitness + search
-// -------------------------------------------------------------------------
-
-#[tokio::test]
-async fn top_by_fitness_returns_ranked() {
-    let svc = setup_service().await;
-
-    let low = svc
-        .publish(PublishCommand {
-            name: "low-scorer".parse().unwrap(),
-            source: make_source("low"),
-            rationale: ChangeRationale::new("init").unwrap(),
-            origin: PublishOrigin::Original,
-            tags: vec![],
-        })
-        .await
-        .unwrap();
-
-    let high = svc
-        .publish(PublishCommand {
-            name: "high-scorer".parse().unwrap(),
-            source: make_source("high"),
-            rationale: ChangeRationale::new("init").unwrap(),
-            origin: PublishOrigin::Original,
-            tags: vec![],
-        })
-        .await
-        .unwrap();
-
-    svc.record_fitness(&low.hash, FitnessDomain::new("accuracy"), 0.30)
-        .await
-        .unwrap();
-    svc.record_fitness(&high.hash, FitnessDomain::new("accuracy"), 0.95)
-        .await
-        .unwrap();
-
-    let top = svc
-        .top_by_fitness(&FitnessDomain::new("accuracy"), 10)
-        .await
-        .unwrap();
-    assert_eq!(top.len(), 2);
-    assert_eq!(top[0].version_ref.name.as_str(), "high-scorer");
-}
-
-// -------------------------------------------------------------------------
 // Blob operations
 // -------------------------------------------------------------------------
 
@@ -389,22 +319,48 @@ async fn top_by_fitness_returns_ranked() {
 async fn blob_put_and_get() {
     let svc = setup_service().await;
 
-    let published = svc
-        .publish(PublishCommand {
-            name: "blob-agent".parse().unwrap(),
-            source: make_source("blob test"),
-            rationale: ChangeRationale::new("init").unwrap(),
-            origin: PublishOrigin::Original,
-            tags: vec![],
-        })
-        .await
-        .unwrap();
+    svc.publish(PublishCommand {
+        name: "blob-agent".parse().unwrap(),
+        source: make_source("blob test"),
+        rationale: ChangeRationale::new("init").unwrap(),
+        origin: PublishOrigin::Original,
+    })
+    .await
+    .unwrap();
 
     let blob_data = b"fake tar.gz content";
-    svc.put_blob(&published.hash, blob_data).await.unwrap();
+    let blob_hash = common::sha256_hash(blob_data);
+    svc.put_blob(&blob_hash, blob_data).await.unwrap();
 
-    let loaded = svc.get_blob(&published.hash).await.unwrap().unwrap();
+    let loaded = svc.get_blob(&blob_hash).await.unwrap().unwrap();
     assert_eq!(loaded, blob_data);
+}
+
+#[tokio::test]
+async fn blob_put_rejects_hash_mismatch() {
+    let svc = setup_service().await;
+    let wrong_hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        .parse()
+        .unwrap();
+    let err = svc.put_blob(&wrong_hash, b"mismatch").await.unwrap_err();
+    assert!(format!("{err}").contains("Canonical hash mismatch"));
+}
+
+#[tokio::test]
+async fn blob_put_rejects_too_large() {
+    let store = Arc::new(SurrealStore::open_in_memory().await.unwrap());
+    let svc = RepositoryService::new_with_max_blob_bytes(
+        store.clone() as Arc<dyn BlobStore>,
+        store.clone() as Arc<dyn MetadataStore>,
+        store.clone() as Arc<dyn LineageStore>,
+        store as Arc<dyn SearchStore>,
+        8,
+    );
+    let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        .parse()
+        .unwrap();
+    let err = svc.put_blob(&hash, b"0123456789").await.unwrap_err();
+    assert!(format!("{err}").contains("Blob too large"));
 }
 
 // -------------------------------------------------------------------------
@@ -420,7 +376,6 @@ async fn list_agents_and_versions() {
         source: make_source("a v1"),
         rationale: ChangeRationale::new("init").unwrap(),
         origin: PublishOrigin::Original,
-        tags: vec![],
     })
     .await
     .unwrap();
@@ -430,7 +385,6 @@ async fn list_agents_and_versions() {
         source: make_source("a v2"),
         rationale: ChangeRationale::new("update").unwrap(),
         origin: PublishOrigin::Iteration,
-        tags: vec![],
     })
     .await
     .unwrap();
@@ -440,7 +394,6 @@ async fn list_agents_and_versions() {
         source: make_source("b v1"),
         rationale: ChangeRationale::new("init").unwrap(),
         origin: PublishOrigin::Original,
-        tags: vec![],
     })
     .await
     .unwrap();

@@ -7,6 +7,7 @@ pub mod bus;
 pub mod context;
 pub mod correlation;
 pub mod deferred;
+pub mod deployment;
 pub mod dispatch;
 pub mod error;
 pub mod event_producer;
@@ -39,6 +40,10 @@ pub use context::{
     Scoped,
 };
 pub use deferred::DeferredHolder;
+pub use deployment::{
+    DeployResult, DeploymentContentHash, DeploymentManager, DeploymentRecord, DeploymentStatus,
+    UndeployResult,
+};
 pub use dispatch::{
     AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey,
     invocation_scope_for_agent_dispatch,

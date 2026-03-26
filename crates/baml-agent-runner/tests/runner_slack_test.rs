@@ -80,6 +80,27 @@ async fn start_slack_mock_server() -> std::io::Result<(RunningHttpServer, MockSl
         }))
     }
 
+    async fn conversation_history(
+        AxumState(state): AxumState<MockSlackState>,
+        uri: OriginalUri,
+    ) -> Json<Value> {
+        state.push_hit(format!("GET {}", uri.0)).await;
+        Json(json!({
+            "ok": true,
+            "messages": [
+                {
+                    "type": "message",
+                    "user": "UALICE",
+                    "text": "TODO: <@UBOB> ship the Slack integration by 2026-03-10.",
+                    "ts": "1735689600.000000",
+                    "thread_ts": "1735689600.000000"
+                }
+            ],
+            "has_more": false,
+            "response_metadata": { "next_cursor": "" }
+        }))
+    }
+
     async fn users_info(
         AxumState(state): AxumState<MockSlackState>,
         uri: OriginalUri,
@@ -124,6 +145,7 @@ async fn start_slack_mock_server() -> std::io::Result<(RunningHttpServer, MockSl
 
     let state = MockSlackState::default();
     let app = Router::new()
+        .route("/api/conversations.history", get(conversation_history))
         .route("/api/conversations.replies", get(thread_replies))
         .route("/api/users.info", get(users_info))
         .with_state(state.clone());

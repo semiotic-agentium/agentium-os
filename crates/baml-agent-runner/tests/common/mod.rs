@@ -123,12 +123,15 @@ impl AgentLister for SingleAgentRegistry {
         let agent_card = AgentCard {
             name: self.name.clone(),
             version: self.version.clone(),
+            content_hash: None,
+            repository_version: None,
             agent_package: self.package.clone(),
             agent_instance_id: self.instance_id.clone(),
             tools: Vec::new(),
             baml_functions: Vec::new(),
             description: None,
             capabilities: Vec::new(),
+            tags: Vec::new(),
             subscriptions: Vec::new(),
         };
         vec![AgentDiscoveryEntry {

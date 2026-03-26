@@ -9,6 +9,7 @@ use std::{path::Path, sync::Arc};
 use axum::{Router, extract::MatchedPath, http::Request};
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_config::{ConfigService, SurrealConfigStore};
+use baml_rt_core::DeploymentManager;
 use baml_rt_llm_config::{EmptySecretResolver, RuntimeSecretStore, SecretResolver};
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use tower_http::{
@@ -32,6 +33,8 @@ pub struct ApiState {
     pub context_metrics: Option<Arc<dyn ContextMetricsService>>,
     pub provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     pub planning: Option<Arc<dyn PlanningService>>,
+    pub deployment_manager: Option<Arc<dyn DeploymentManager>>,
+    pub repository_url: Option<String>,
     pub tool_catalog: Arc<dyn ToolCatalog>,
     pub config_service: Arc<dyn ConfigService>,
     pub secret_resolver: Arc<dyn SecretResolver>,
@@ -87,6 +90,40 @@ pub fn api_router_with_services(
     runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
     web_dir: Option<&Path>,
 ) -> Router {
+    api_router_with_services_and_deploy(
+        registry,
+        mermaid,
+        context_metrics,
+        provenance_ops,
+        planning,
+        None,
+        None,
+        None,
+        tool_catalog,
+        config_service,
+        secret_resolver,
+        runtime_secret_store,
+        web_dir,
+    )
+}
+
+/// Build API router with optional deployment manager and repository URL wiring.
+#[allow(clippy::too_many_arguments)]
+pub fn api_router_with_services_and_deploy(
+    registry: Arc<dyn AgentRegistry>,
+    mermaid: Option<Arc<dyn MermaidService>>,
+    context_metrics: Option<Arc<dyn ContextMetricsService>>,
+    provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+    planning: Option<Arc<dyn PlanningService>>,
+    deployment_manager: Option<Arc<dyn DeploymentManager>>,
+    repository_url: Option<String>,
+    repository_service: Option<Arc<baml_rt_repository::RepositoryService>>,
+    tool_catalog: Arc<dyn ToolCatalog>,
+    config_service: Arc<dyn ConfigService>,
+    secret_resolver: Arc<dyn SecretResolver>,
+    runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
+    web_dir: Option<&Path>,
+) -> Router {
     let http_trace_layer = TraceLayer::new_for_http().make_span_with(|req: &Request<_>| {
         let route = req
             .extensions()
@@ -115,6 +152,9 @@ pub fn api_router_with_services(
         .routes(utoipa_axum::routes!(handlers::get_provenance_tool_calls))
         .routes(utoipa_axum::routes!(handlers::get_provenance_messages))
         .routes(utoipa_axum::routes!(handlers::get_provenance_aggregates))
+        .routes(utoipa_axum::routes!(handlers::post_deploy))
+        .routes(utoipa_axum::routes!(handlers::post_undeploy))
+        .routes(utoipa_axum::routes!(handlers::get_deployments))
         .routes(utoipa_axum::routes!(config_handlers::list_secrets_overview))
         .routes(utoipa_axum::routes!(config_handlers::list_store_keys))
         .routes(utoipa_axum::routes!(config_handlers::put_secret))
@@ -140,11 +180,20 @@ pub fn api_router_with_services(
     let mut tag_provenance = utoipa::openapi::Tag::new("provenance");
     tag_provenance.description =
         Some("Provenance-backed metrics and operational query APIs.".to_string());
+    let mut tag_deployments = utoipa::openapi::Tag::new("deployments");
+    tag_deployments.description =
+        Some("Runner-local deployment lifecycle APIs (deploy, undeploy, list).".to_string());
     let mut tag_config = utoipa::openapi::Tag::new("config");
     tag_config.description = Some(
         "Tool configuration and secret requests (schema includes config type schemas)".to_string(),
     );
-    openapi.tags = Some(vec![tag_agents, tag_mermaid, tag_provenance, tag_config]);
+    openapi.tags = Some(vec![
+        tag_agents,
+        tag_mermaid,
+        tag_provenance,
+        tag_deployments,
+        tag_config,
+    ]);
 
     let state = Arc::new(ApiState {
         registry,
@@ -153,6 +202,8 @@ pub fn api_router_with_services(
         context_metrics,
         provenance_ops,
         planning,
+        deployment_manager,
+        repository_url,
         tool_catalog,
         config_service,
         secret_resolver,
@@ -169,6 +220,12 @@ pub fn api_router_with_services(
             .append_index_html_on_directories(true)
             .fallback(ServeFile::new(dir.join("index.html")));
         router = router.fallback_service(fallback);
+    }
+    if let Some(repo_service) = repository_service {
+        router = router.nest(
+            "/repository",
+            baml_rt_repository::repository_router(repo_service),
+        );
     }
 
     router
@@ -219,12 +276,52 @@ pub async fn serve_with_services(
     runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
     web_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let app = api_router_with_services(
+    serve_with_services_and_deploy(
+        registry,
+        bind,
+        mermaid,
+        context_metrics,
+        provenance_ops,
+        planning,
+        None,
+        None,
+        None,
+        tool_catalog,
+        config_service,
+        secret_resolver,
+        runtime_secret_store,
+        web_dir,
+    )
+    .await
+}
+
+/// Run HTTP server with optional deployment manager and repository URL wiring.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_with_services_and_deploy(
+    registry: Arc<dyn AgentRegistry>,
+    bind: &str,
+    mermaid: Option<Arc<dyn MermaidService>>,
+    context_metrics: Option<Arc<dyn ContextMetricsService>>,
+    provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+    planning: Option<Arc<dyn PlanningService>>,
+    deployment_manager: Option<Arc<dyn DeploymentManager>>,
+    repository_url: Option<String>,
+    repository_service: Option<Arc<baml_rt_repository::RepositoryService>>,
+    tool_catalog: Arc<dyn ToolCatalog>,
+    config_service: Arc<dyn ConfigService>,
+    secret_resolver: Arc<dyn SecretResolver>,
+    runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
+    web_dir: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let app = api_router_with_services_and_deploy(
         registry,
         mermaid,
         context_metrics,
         provenance_ops,
         planning,
+        deployment_manager,
+        repository_url,
+        repository_service,
         tool_catalog,
         config_service,
         secret_resolver,

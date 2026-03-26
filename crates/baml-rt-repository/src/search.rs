@@ -6,7 +6,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    entry::FitnessDomain,
     ids::{AgentName, Generation},
     lineage::LineageKind,
 };
@@ -39,10 +38,6 @@ pub struct SearchQuery {
     /// Filter by tags attached to entries.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub tags: Vec<TagFilter>,
-
-    /// Filter by minimum fitness score in a domain.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_fitness: Option<FitnessFilter>,
 
     /// Filter by lineage depth range.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,13 +120,6 @@ impl TagFilter {
     }
 }
 
-/// Minimum fitness score in a specific domain.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FitnessFilter {
-    pub domain: FitnessDomain,
-    pub min_score: f64,
-}
-
 /// Filter by lineage generation range.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GenerationFilter {
@@ -172,8 +160,6 @@ pub enum SearchOrder {
     Newest,
     /// Oldest first.
     Oldest,
-    /// Highest fitness score first (requires `min_fitness` domain).
-    HighestFitness,
     /// Most relevant to full-text query first.
     Relevance,
 }

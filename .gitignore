@@ -41,6 +41,8 @@ provenance.db
 provenance.db-shm
 provenance.db-wal
 config.db
+crates/baml-agent-runner/.repository/
+crates/baml-agent-runner/.runner-state/
 
 # Fastembed model cache (downloaded ONNX models, ~130 MB)
 .fastembed_cache/
