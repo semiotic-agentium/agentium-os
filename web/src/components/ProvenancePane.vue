@@ -214,6 +214,49 @@ const aggregateCards = computed<AggregateCard[]>(() => [
   },
 ]);
 
+function uniqueNonEmpty(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))];
+}
+
+// Hotspot group-key positions: 0 = agentId, 1 = package, 2 = version, 3 = model (LLM) or tool name (Tool)
+const HOTSPOT_PKG_IDX = 1;
+const HOTSPOT_DIM_IDX = 3;
+
+const traceAgentPackages = computed(() =>
+  uniqueNonEmpty([
+    ...(liveLlm.state.value.response?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, HOTSPOT_PKG_IDX)),
+    ...(liveTool.state.value.response?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, HOTSPOT_PKG_IDX)),
+  ]),
+);
+
+const traceModels = computed(() =>
+  uniqueNonEmpty(
+    (liveLlm.state.value.response?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, HOTSPOT_DIM_IDX)),
+  ),
+);
+
+const traceTools = computed(() =>
+  uniqueNonEmpty(
+    (liveTool.state.value.response?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, HOTSPOT_DIM_IDX)),
+  ),
+);
+
+const traceSnapshot = computed(() => {
+  const llmCount = liveLlm.state.value.response?.summary.count ?? 0;
+  const toolCount = liveTool.state.value.response?.summary.count ?? 0;
+  const totalTokens = liveLlm.state.value.response?.summary.totalTokens ?? 0;
+  const totalDurationMs =
+    (liveLlm.state.value.response?.summary.durationMsTotal ?? 0) +
+    (liveTool.state.value.response?.summary.durationMsTotal ?? 0);
+  return {
+    llmCount,
+    toolCount,
+    totalTokens,
+    totalDurationMs,
+    taskCount: planningTasks.value.length,
+  };
+});
+
 const anomalyCards = computed(() => {
   const groups = anomalyQuery.state.value.response?.hotspotGroups ?? [];
   return groups
@@ -1225,9 +1268,80 @@ onUnmounted(() => {
           </section>
 
           <section class="provenance-section" role="region" aria-label="Live trace mermaid diagram">
-            <div class="provenance-section-title">Live Trace Diagram</div>
+            <div class="provenance-section-title">Execution Trace</div>
+            <div class="trace-summary-card">
+              <div class="trace-summary-eyebrow">Execution Record</div>
+              <p class="trace-summary-lede">
+                This trace is rendered from the persisted provenance graph for this answer, not from a mock flow or a separate logging layer.
+              </p>
+
+              <div class="trace-summary-metrics">
+                <div class="trace-summary-stat">
+                  <span class="trace-summary-stat-value">{{ traceSnapshot.taskCount }}</span>
+                  <span class="trace-summary-stat-label">task<span v-if="traceSnapshot.taskCount !== 1">s</span></span>
+                </div>
+                <div class="trace-summary-stat">
+                  <span class="trace-summary-stat-value">{{ traceSnapshot.llmCount }}</span>
+                  <span class="trace-summary-stat-label">LLM calls</span>
+                </div>
+                <div class="trace-summary-stat">
+                  <span class="trace-summary-stat-value">{{ traceSnapshot.toolCount }}</span>
+                  <span class="trace-summary-stat-label">tool calls</span>
+                </div>
+                <div class="trace-summary-stat">
+                  <span class="trace-summary-stat-value">{{ formatDuration(traceSnapshot.totalDurationMs) }}</span>
+                  <span class="trace-summary-stat-label">runtime</span>
+                </div>
+                <div class="trace-summary-stat">
+                  <span class="trace-summary-stat-value">{{ formatCompact(traceSnapshot.totalTokens) }}</span>
+                  <span class="trace-summary-stat-label">tokens</span>
+                </div>
+              </div>
+
+              <div class="trace-summary-groups">
+                <div class="trace-summary-group">
+                  <span class="trace-summary-group-label">Actors</span>
+                  <div class="trace-summary-chips">
+                    <span class="trace-summary-chip">User</span>
+                    <span
+                      v-for="agentPackage in traceAgentPackages"
+                      :key="`trace-agent-${agentPackage}`"
+                      class="trace-summary-chip"
+                    >
+                      {{ agentPackage }}
+                    </span>
+                  </div>
+                </div>
+
+                <div v-if="traceModels.length > 0" class="trace-summary-group">
+                  <span class="trace-summary-group-label">Models</span>
+                  <div class="trace-summary-chips">
+                    <span
+                      v-for="model in traceModels"
+                      :key="`trace-model-${model}`"
+                      class="trace-summary-chip trace-summary-chip-accent"
+                    >
+                      {{ model }}
+                    </span>
+                  </div>
+                </div>
+
+                <div v-if="traceTools.length > 0" class="trace-summary-group">
+                  <span class="trace-summary-group-label">Tools</span>
+                  <div class="trace-summary-chips">
+                    <span
+                      v-for="tool in traceTools"
+                      :key="`trace-tool-${tool}`"
+                      class="trace-summary-chip trace-summary-chip-muted"
+                    >
+                      {{ tool }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div v-if="rendered.length === 0" class="provenance-empty">
-              The conversation sequence diagram will appear here after the first reply.
+              The execution trace will appear here after the first reply.
             </div>
             <div v-else class="reasoning-diagrams" aria-live="polite">
               <div
@@ -1243,6 +1357,9 @@ onUnmounted(() => {
                   <pre>{{ item.error }}</pre>
                 </div>
                 <template v-else>
+                  <div class="trace-diagram-caption">
+                    Exact event order for this run. Click to expand.
+                  </div>
                   <div class="diagram-svg" v-html="item.svg" />
                   <div class="diagram-expand-hint">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

@@ -147,13 +147,28 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
         let _ = writeln!(out, "    actor User");
     }
     for agent in &participants.agents {
-        let _ = writeln!(out, "    participant {}", sanitize_participant(agent));
+        let _ = writeln!(
+            out,
+            "    participant {} as \"{}\"",
+            sanitize_participant(agent),
+            escape_sequence_text(&agent_display_label(agent))
+        );
     }
     for llm in &participants.llms {
-        let _ = writeln!(out, "    participant {}", sanitize_participant(llm));
+        let _ = writeln!(
+            out,
+            "    participant {} as \"{}\"",
+            sanitize_participant(llm),
+            escape_sequence_text(&llm_display_label(llm))
+        );
     }
     for tool in &participants.tools {
-        let _ = writeln!(out, "    participant {}", sanitize_participant(tool));
+        let _ = writeln!(
+            out,
+            "    participant {} as \"{}\"",
+            sanitize_participant(tool),
+            escape_sequence_text(&tool_display_label(tool))
+        );
     }
     let _ = writeln!(out);
 
@@ -1167,6 +1182,7 @@ fn emit_llm_call(out: &mut String, node: &ExportedNode, agent: &str) {
     let function_name = prop_str(node, a2a::FUNCTION_NAME);
     let request_label = function_name
         .filter(|s| !s.is_empty())
+        .map(|raw| humanize_function_label(&raw))
         .unwrap_or_else(|| "call".to_string());
 
     // Agent -> LLM (request)
@@ -1239,7 +1255,11 @@ fn emit_prompt_rejected(out: &mut String, node: &ExportedNode, agent: &str) {
     let _ = writeln!(out, "    Note over {agent}: {}", escape_note_content(&note));
 }
 
-const A2A_MEDIATOR_TOOLS: [&str; 2] = ["system/internal_a2a", "system/a2a"];
+const A2A_MEDIATOR_TOOLS: [&str; 3] = [
+    "system/internal_a2a",
+    "system/a2a",
+    "a2a/execution_session_step",
+];
 
 /// Emit `Agent->>Tool` and `Tool-->>Agent` arrows for a ToolCall node.
 fn emit_tool_call(
@@ -1571,9 +1591,8 @@ fn prop_f64(node: &ExportedNode, key: &str) -> Option<f64> {
     })
 }
 
-/// Heuristic: skip the synthetic "previous" status companion that shares the
-/// same timestamp as a transition node and echoes that transition's old status.
-/// Strip known tool name prefixes for brevity.
+/// Strip known tool name prefixes (`support/`, `system/`) for brevity in
+/// diagram labels.
 fn strip_tool_prefix(name: &str) -> &str {
     name.strip_prefix("support/")
         .or_else(|| name.strip_prefix("system/"))
@@ -1624,6 +1643,136 @@ fn sanitize_participant(name: &str) -> String {
             }
         })
         .collect()
+}
+
+fn normalize_words(raw: &str) -> Vec<String> {
+    raw.split(['_', '-', '/', ':'])
+        .flat_map(|segment| {
+            let trimmed = segment.trim();
+            if trimmed.is_empty() {
+                return vec![];
+            }
+            split_camel_case(trimmed)
+        })
+        .collect()
+}
+
+/// Split a string on camelCase / PascalCase boundaries.
+///
+/// `"InferNotionIntent"` → `["Infer", "Notion", "Intent"]`
+/// `"reactToResults"`     → `["react", "To", "Results"]`
+/// `"LLMCall"`            → `["LLM", "Call"]`
+/// `"plain"`              → `["plain"]`
+fn split_camel_case(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut start = 0;
+    let chars: Vec<char> = s.chars().collect();
+    for i in 1..chars.len() {
+        let prev_upper = chars[i - 1].is_ascii_uppercase();
+        let curr_upper = chars[i].is_ascii_uppercase();
+        let next_lower = chars.get(i + 1).is_some_and(|c| c.is_ascii_lowercase());
+
+        // Split before a new capitalised word: `notionI` or `LLMCall` (uppercase
+        // followed by lowercase after a run of uppercase).
+        if curr_upper && (next_lower || !prev_upper) {
+            let word: String = chars[start..i].iter().collect();
+            if !word.is_empty() {
+                words.push(word);
+            }
+            start = i;
+        }
+    }
+    let tail: String = chars[start..].iter().collect();
+    if !tail.is_empty() {
+        words.push(tail);
+    }
+    words
+}
+
+/// Strip a trailing semver-style triple (three consecutive all-digit words)
+/// from the word list. Only fires for `major/minor/patch` patterns, not for
+/// date-based or mixed-alphanumeric version suffixes.
+fn trim_trailing_version_words(words: &[String]) -> &[String] {
+    if words.len() >= 3
+        && words[words.len() - 3..]
+            .iter()
+            .all(|segment| segment.chars().all(|c| c.is_ascii_digit()))
+    {
+        &words[..words.len() - 3]
+    } else {
+        words
+    }
+}
+
+fn title_case_word(raw: &str) -> String {
+    if raw.eq_ignore_ascii_case("llm") {
+        return "LLM".to_string();
+    }
+    if raw.eq_ignore_ascii_case("crm") {
+        return "CRM".to_string();
+    }
+    if raw.eq_ignore_ascii_case("a2a") {
+        return "A2A".to_string();
+    }
+    if raw.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return raw.to_string();
+    }
+    let mut chars = raw.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut out = String::new();
+    out.extend(first.to_uppercase());
+    out.push_str(&chars.as_str().to_lowercase());
+    out
+}
+
+fn humanize_identifier(raw: &str) -> String {
+    let words = normalize_words(raw);
+    let words = trim_trailing_version_words(&words);
+    if words.is_empty() {
+        return raw.to_string();
+    }
+    words
+        .iter()
+        .map(|segment| title_case_word(segment))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn agent_display_label(raw: &str) -> String {
+    humanize_identifier(raw)
+}
+
+fn llm_display_label(raw: &str) -> String {
+    let model = raw.strip_prefix("LLM ").unwrap_or(raw);
+    let model = model.rsplit('/').next().unwrap_or(model);
+    humanize_identifier(model)
+}
+
+fn tool_display_label(raw: &str) -> String {
+    humanize_identifier(raw)
+}
+
+fn humanize_function_label(raw: &str) -> String {
+    if let Some(base) = raw.strip_suffix("__select") {
+        return format!("{} Select", humanize_identifier(base));
+    }
+    if let Some((base, tool)) = raw.split_once("__act__") {
+        return format!(
+            "{} Call {}",
+            humanize_identifier(base),
+            tool_display_label(strip_tool_prefix(tool))
+        );
+    }
+    if let Some((base, tool)) = raw.split_once("__continue__") {
+        return format!(
+            "{} Continue After {}",
+            humanize_identifier(base),
+            tool_display_label(strip_tool_prefix(tool))
+        );
+    }
+    humanize_identifier(raw)
 }
 
 /// Extract a truncated error message preview from a node's metadata.
@@ -2718,6 +2867,137 @@ mod tests {
         assert!(
             output.contains("LLM_gpt_4--xbot: 3000ms ✗ rate limit exceeded"),
             "failed LLM should show error detail in response arrow: {output}"
+        );
+    }
+
+    #[test]
+    fn title_case_word_basics() {
+        assert_eq!(title_case_word("hello"), "Hello");
+        assert_eq!(title_case_word("HELLO"), "Hello");
+        assert_eq!(title_case_word("llm"), "LLM");
+        assert_eq!(title_case_word("LLM"), "LLM");
+        assert_eq!(title_case_word("crm"), "CRM");
+        assert_eq!(title_case_word("a2a"), "A2A");
+        assert_eq!(title_case_word("42"), "42");
+        assert_eq!(title_case_word(""), "");
+    }
+
+    #[test]
+    fn normalize_words_splits_separators() {
+        assert_eq!(normalize_words("a_b-c/d:e"), vec!["a", "b", "c", "d", "e"]);
+        assert_eq!(normalize_words("__leading__"), vec!["leading"]);
+        assert_eq!(normalize_words(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn normalize_words_splits_camel_case() {
+        assert_eq!(
+            normalize_words("InferNotionIntent"),
+            vec!["Infer", "Notion", "Intent"]
+        );
+        assert_eq!(
+            normalize_words("reactToResults"),
+            vec!["react", "To", "Results"]
+        );
+        assert_eq!(normalize_words("LLMCall"), vec!["LLM", "Call"]);
+        assert_eq!(normalize_words("plain"), vec!["plain"]);
+        assert_eq!(
+            normalize_words("coordinator__act__InferNotionIntent"),
+            vec!["coordinator", "act", "Infer", "Notion", "Intent"]
+        );
+    }
+
+    #[test]
+    fn trim_trailing_version_strips_semver() {
+        let words: Vec<String> = vec!["foo", "bar", "1", "2", "3"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(trim_trailing_version_words(&words), &words[..2]);
+    }
+
+    #[test]
+    fn trim_trailing_version_keeps_mixed_alpha_digit() {
+        // "4o" contains a letter so if it falls in the last 3, trimming won't fire
+        let words: Vec<String> = vec!["gpt", "4o", "mini"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(trim_trailing_version_words(&words), &words[..]);
+    }
+
+    #[test]
+    fn trim_trailing_version_trims_date_suffix() {
+        // Last 3 words are all-digit, so they get trimmed even though they're a date
+        let words: Vec<String> = vec!["gpt", "4o", "2024", "05", "13"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(trim_trailing_version_words(&words), &words[..2]);
+    }
+
+    #[test]
+    fn trim_trailing_version_needs_exactly_three() {
+        let words: Vec<String> = vec!["model", "2024", "05"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        // Only 2 trailing digits (len == 3 but first word "model" is not all-digit)
+        assert_eq!(trim_trailing_version_words(&words), &words[..]);
+    }
+
+    #[test]
+    fn humanize_identifier_examples() {
+        assert_eq!(
+            humanize_identifier("task_lifecycle_demo"),
+            "Task Lifecycle Demo"
+        );
+        assert_eq!(humanize_identifier("my-agent/v1_0_3"), "My Agent V1 0 3");
+        assert_eq!(humanize_identifier("my-agent_1_0_3"), "My Agent");
+        assert_eq!(humanize_identifier(""), "");
+        assert_eq!(humanize_identifier("single"), "Single");
+    }
+
+    #[test]
+    fn llm_display_label_strips_prefix_and_provider() {
+        assert_eq!(llm_display_label("LLM openai/gpt-4o-2024-05-13"), "Gpt 4o");
+        assert_eq!(
+            llm_display_label("LLM anthropic/claude-3-5-sonnet"),
+            "Claude 3 5 Sonnet"
+        );
+        assert_eq!(llm_display_label("bare-model"), "Bare Model");
+    }
+
+    #[test]
+    fn humanize_function_label_patterns() {
+        assert_eq!(
+            humanize_function_label("coordinator__select"),
+            "Coordinator Select"
+        );
+        assert_eq!(
+            humanize_function_label("coordinator__act__support/crm"),
+            "Coordinator Call CRM"
+        );
+        assert_eq!(
+            humanize_function_label("coordinator__continue__system/a2a"),
+            "Coordinator Continue After A2A"
+        );
+        assert_eq!(humanize_function_label("plain_function"), "Plain Function");
+    }
+
+    #[test]
+    fn participant_alias_is_quoted_in_output() {
+        let g = graph(
+            vec![
+                agent_node("a1", "task_lifecycle_demo"),
+                msg_node("m1", "user", "hello", Some(1)),
+            ],
+            vec![edge("a1", "RECEIVED", "m1")],
+        );
+        let output = render_sequence_diagram(&g);
+        assert!(
+            output.contains("as \"Task Lifecycle Demo\""),
+            "participant alias should be double-quoted: {output}"
         );
     }
 }
