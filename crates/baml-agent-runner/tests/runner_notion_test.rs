@@ -415,10 +415,10 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
         let mermaid = mermaid_response.text().await.expect("mermaid body");
 
         let mermaid_ok = mermaid.contains("sequenceDiagram")
-            && mermaid.contains("InferNotionIntent")
-            && mermaid.contains("PlanNotionWork")
-            && mermaid.contains("ChooseNotionAction")
-            && mermaid.contains("ReactToNotionResults")
+            && mermaid.contains("Infer Notion Intent")
+            && mermaid.contains("Plan Notion Work")
+            && mermaid.contains("Choose Notion Action")
+            && mermaid.contains("React To Notion Results")
             && mermaid.contains("\"Completed\"");
         if !mermaid_ok {
             last_diag = Some((sources, mock_hits.clone()));
