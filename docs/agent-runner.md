@@ -64,14 +64,14 @@ For exact request/response DTOs, use `openapi.json`.
 
 ## Deploy vs Publish
 
-- Publish stores package blobs + repository metadata in `/repository`.
-- Deploy activates a previously published package hash into the running registry.
+- Publish sends source bundle to `/repository/publish`; server-side build stores artifact bytes under canonical `content_hash`.
+- Deploy activates a previously published `content_hash` into the running registry.
 
 Typical flow:
 
 1. `cargo agent-platform build`
-2. `cargo agent-platform publish --package ...`
-3. `POST /deploy` with `hash` or `name+version`
+2. `cargo agent-platform publish --agent-dir ...`
+3. `POST /deploy` with `hash` (or resolve by `name+version` via deploy API)
 
 ## End-to-End Example (Publish -> Deploy -> Prompt)
 
@@ -84,13 +84,13 @@ Start runner:
   --provenance-db provenance.db
 ```
 
-Publish package:
+Publish source:
 
 ```bash
-cargo agent-platform publish --package clickup-agent-1.0.0.tar.gz
+cargo agent-platform publish --agent-dir agents/clickup-agent
 ```
 
-Deploy by blob hash (the hash printed in "Blob uploaded successfully"):
+Deploy by content hash (the hash printed in publish result):
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/deploy \

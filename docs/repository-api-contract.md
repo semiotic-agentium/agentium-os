@@ -1,41 +1,36 @@
-# Repository API Contract (Phase 0)
+# Repository API Contract
 
 ## Scope
 
-This document defines MVP contracts for repository publish/entries/blob behavior.
+This document defines repository contracts for publish/entries/blob behavior.
 
 ## Canonical Artifact Identity
 
 - Hash algorithm: `sha256`
-- Hash input: raw bytes of final packaged `.tar.gz`
+- Hash input: canonical source bundle content (manifest + source files)
 - Hash encoding: lowercase hex string
 
-`content_hash = sha256(tar_gz_bytes)`
+`content_hash = sha256(canonical_source_bundle)`
 
-## Blob Limits
+## Publish Ownership Rule
 
-- Default max blob size: `5 MB`
-- Config key: `repository.max_blob_bytes`
-- Env override: `BAML_REPOSITORY_MAX_BLOB_BYTES`
+Publish is source-first and server-owned:
 
-## Blob-First Publish Rule
+1. Client sends source bundle: `POST /repository/publish`
+2. Repository assigns version and computes canonical `content_hash`
+3. Host/repository publish orchestrator builds deployable artifact from source
+4. Built bytes are stored under `content_hash`
 
-MVP publish flow is blob-first:
-
-1. Upload blob: `PUT /repository/blobs/{hash}`
-2. Publish metadata referencing that hash: `POST /repository/publish`
-
-If referenced blob hash does not exist, publish must fail.
+Clients do not upload arbitrary blobs to establish publish provenance.
 
 ## HTTP Semantics (MVP)
 
-- `400 Bad Request`: malformed payload, invalid hash format, hash/content mismatch
+- `400 Bad Request`: malformed payload, invalid hash format
 - `404 Not Found`: requested entry/blob not found
 - `409 Conflict`: `(agent_name, version)` conflict
 
 ## Required Repository Endpoints (MVP)
 
-- `PUT /repository/blobs/{hash}`
 - `GET /repository/blobs/{hash}`
 - `POST /repository/publish`
 - `GET /repository/entries`
@@ -48,8 +43,7 @@ If referenced blob hash does not exist, publish must fail.
 - Publish ingests `manifest.tags` into repository metadata.
 - No standalone tag mutation endpoint in MVP.
 
-## Search Ingestion Inputs (MVP)
+## Search Ingestion Inputs
 
 - `manifest_text` from manifest fields (`name`, `description`, `capabilities`, `tools`, `tags`)
-- `source_text` from bounded text extraction from tarball (best effort)
-
+- `source_text` from bounded extraction over source bundle files (best effort)

@@ -9,8 +9,8 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `new-tool <name>` | Create a new tool crate with all necessary patches |
 | `new-agent <name>` | Create a new agent package with templates |
 | `build [names]...` | Package agents into distributable tar.gz files |
-| `publish --package <path.tar.gz>` | Upload package blob and publish repository metadata |
-| `deploy --hash <hash>` | Deploy a published package hash into a running runner |
+| `publish --agent-dir <path>` | Publish agent source bundle to repository |
+| `deploy --hash <hash>` | Deploy a published content hash into a running runner |
 | `undeploy --hash <hash>` | Remove an active deployment from a running runner |
 | `list-deployed-instances` | List currently loaded runner agent instances |
 | `list-tools` | List all registered tools from the inventory |
@@ -666,79 +666,75 @@ Each output file is named `<agent-name>-<version>.tar.gz`. By default, files are
 
 ### `publish`
 
-Uploads a built `.tar.gz` package to repository blob storage, then publishes metadata using the repository `PublishCommand` contract.
+Publishes an agent **source directory** to repository `PublishCommand`. The repository/host side assigns version + canonical content hash, builds the deployable artifact, and stores it under that hash.
 
 ```bash
-cargo run -p cargo-agent-platform -- publish --package <path.tar.gz> [options]
+cargo run -p cargo-agent-platform -- publish --agent-dir <path> [options]
 ```
 
 **Arguments:**
 
 | Argument | Description |
 |----------|-------------|
-| `--package <path.tar.gz>` | Path to a prebuilt package archive |
+| `--agent-dir <path>` | Path to an agent source directory (`manifest.json` + `baml_src/`) |
 
 **Options:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--repository-url <url>` | `http://127.0.0.1:8080/repository` | Base URL where repository routes are mounted |
-| `--rationale <text>` | `published from package archive` | Change rationale sent in publish metadata |
-| `--origin <kind>` | `original` | Publish origin: `original` or `iteration` |
+| `--rationale <text>` | `published from source directory` | Change rationale sent in publish metadata |
+| `--origin <kind>` | `iteration` | Publish origin: `original` or `iteration` |
 
 **Flow:**
 
-1. Read package bytes from `--package`
-2. Compute SHA-256 over raw package bytes (used as blob hash)
-3. `PUT /repository/blobs/{hash}` with package bytes
-4. Extract manifest and source bundle from archive
-5. `POST /repository/publish` with repository `PublishCommand`
+1. Read source bundle from `--agent-dir`
+2. `POST /repository/publish` with repository `PublishCommand`
+3. Server assigns version + canonical source `content_hash`
+4. Server builds deployable artifact and stores it under `content_hash`
 
 **Important behavior:**
 
 - Tags are not accepted as a CLI option for publish.
-- Tags are derived from `manifest.json` inside the package and become the source of truth.
+- Tags are derived from `manifest.json` in the source directory and become the source of truth.
 - The repository assigns the persisted version for the published entry.
 
 **Examples:**
 
 ```bash
-# Publish with defaults (origin=original)
+# Publish current directory
 cargo run -p cargo-agent-platform -- publish \
-  --package ./dist/clickup-agent-1.0.0.tar.gz
+  --agent-dir .
 
 # Publish to another repository URL
 cargo run -p cargo-agent-platform -- publish \
-  --package ./dist/notion-agent-1.0.0.tar.gz \
+  --agent-dir ./agents/notion-agent \
   --repository-url http://127.0.0.1:8081/repository
 
 # Publish as an iteration with explicit rationale
 cargo run -p cargo-agent-platform -- publish \
-  --package ./dist/clickup-agent-1.0.1.tar.gz \
+  --agent-dir ./agents/clickup-agent \
   --origin iteration \
   --rationale "Improved task sync reliability"
 ```
 
 **Example output:**
 ```
-Blob uploaded successfully.
-  package: clickup-agent-1.0.0.tar.gz
-  hash:    bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
-  url:     http://127.0.0.1:8080/repository/blobs/bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
-
-Metadata published successfully.
-  url:     http://127.0.0.1:8080/repository/publish
-  result:  {"hash":"a1bf80e913eedede326e9b065bac5d9bd0e3e927d9aa565b0cc3f3f09e3f041f","version_ref":{"name":"clickup-agent","version":1},"generation":0}
+Source published successfully.
+  agent dir: agents/clickup-agent
+  url:       http://127.0.0.1:8080/repository/publish
+  version:   clickup-agent@v3
+  hash:      8b0d0973de403b3b32e9ff234d5b996b8250d9708f6f09b54178c843f19cde5c
 ```
 
-After publish, use the runner deploy API to activate the package in a live runner instance.
-See [`docs/agent-runner.md`](./agent-runner.md) for the full deploy + chat flow.
+After publish, use deploy with the returned `hash` to activate the agent in a live runner instance.
+See [`docs/agent-runner.md`](./agent-runner.md) for the full deploy flow.
 
 ---
 
 ### `deploy`
 
-Deploys a previously published package hash into a running `baml-agent-runner`.
+Deploys a previously published content hash into a running `baml-agent-runner`.
 
 ```bash
 cargo run -p cargo-agent-platform -- deploy --hash <sha256> [--url http://127.0.0.1:8080]
@@ -748,7 +744,7 @@ cargo run -p cargo-agent-platform -- deploy --hash <sha256> [--url http://127.0.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--hash <sha256>` | - | Content hash of the package blob to deploy |
+| `--hash <sha256>` | - | Content hash returned by repository publish |
 | `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL (without `/repository`) |
 
 **Example:**
