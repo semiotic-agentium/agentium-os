@@ -12,12 +12,8 @@ path = "junit.xml"
 store-failure-output = true
 
 # Rate-limit provenance tests (max 1 at a time) to avoid SurrealDB embedded
-# resource contention. LLM e2e tests cap concurrency for API rate limits.
+# resource contention.
 [test-groups]
-# I/O-bound: each test blocks on HTTP calls to the LLM API, not CPU/memory.
-# 6 concurrent tests → 6 simultaneous in-flight requests, well within OpenRouter
-# rate limits (~60 RPM) while avoiding 8× unnecessary serialisation overhead.
-llm = { max-threads = 6 }
 provenance = { max-threads = 1 }
 
 [[profile.ci.overrides]]
@@ -56,35 +52,30 @@ retries = { backoff = "fixed", count = 2, delay = "2s" }
 filter = 'package(baml-rt-a2a) and (test(~test_interleaved) or test(~interleaved))'
 retries = { backoff = "fixed", count = 2, delay = "2s" }
 
-# LLM-dependent e2e tests: throttle concurrency and allow generous timeouts.
+# LLM-dependent e2e tests: generous timeouts and retries.
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_)'
-test-group = "llm"
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
 # Notion direct-id e2e: extra retries (LLM plan extraction occasionally skips tool path).
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
-test-group = "llm"
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 3, delay = "8s" }
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-interceptor) and test(~test_e2e_)'
-test-group = "llm"
 retries = { backoff = "fixed", count = 1, delay = "2s" }
 
-# baml-rt llm_test: real LLM calls (SimpleGreeting + streaming); cap concurrency.
+# baml-rt llm_test: real LLM calls (SimpleGreeting + streaming).
 [[profile.ci.overrides]]
 filter = 'package(baml-rt) and binary(llm_test)'
-test-group = "llm"
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a) and binary(task_streaming_test)'
-test-group = "llm"
 slow-timeout = { period = "60s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "3s" }
 
@@ -109,8 +100,7 @@ retries = 0
 
 # =============================================================================
 # Profile: ci-llm
-# LLM-dependent tests with low parallelism to respect API rate limits.
-# Used by `just test` for the first pass (LLM suite with -j 2).
+# LLM-dependent tests. Uses full parallelism (no thread limits).
 #
 # Tests are gated by `#[cfg(feature = "llm-tests")]` in source code.
 # Compile with `--features ...,llm-tests` to include them.
@@ -121,10 +111,9 @@ fail-fast = false
 path = "junit-llm.xml"
 store-failure-output = true
 
-# LLM tests use the "llm" test-group for rate limiting
+# Default timeouts and retries for LLM tests
 [[profile.ci-llm.overrides]]
 filter = 'all()'
-test-group = "llm"
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
