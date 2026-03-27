@@ -407,7 +407,7 @@ pub struct ProvenanceQuerySendInput {
 
 impl baml_rt_tools::DescribeAction for ProvenanceQuerySendInput {
     fn describe(&self) -> String {
-        format!("querying provenance {}", self.resource)
+        format!("querying provenance {resource}", resource = self.resource)
     }
 }
 

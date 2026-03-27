@@ -7,7 +7,7 @@ use baml_rt_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::error;
+use tracing::{error, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +99,11 @@ pub fn install_callback_store(store: Arc<dyn CallbackStore>) {
         error!("callback store registry write lock poisoned; recovering inner state");
         poisoned.into_inner()
     });
+    if guard.is_some() {
+        warn!(
+            "callback store replaced; pending callbacks in the previous store may be unreachable"
+        );
+    }
     *guard = Some(store);
 }
 

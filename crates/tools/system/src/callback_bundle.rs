@@ -76,7 +76,7 @@ async fn schedule_callback(
     let scheduled_for_unix_ms = requested_at_unix_ms.saturating_add(input.after_ms);
     let request = ScheduleCallbackRequest {
         source_key: normalize_source_key(&input.source_key)?,
-        dedupe_key: normalize_optional_text(input.dedupe_key)?,
+        dedupe_key: normalize_optional_text(input.dedupe_key, "dedupeKey")?,
         payload: input.payload,
         scheduled_for_unix_ms,
         requested_at_unix_ms,
@@ -107,9 +107,9 @@ async fn cancel_callback(
     store: &dyn crate::callback_store::CallbackStore,
     input: CallbackCancelInput,
 ) -> Result<CallbackToolOutput> {
-    let callback_id = normalize_optional_text(input.callback_id)?;
-    let source_key = normalize_optional_text(input.source_key)?;
-    let dedupe_key = normalize_optional_text(input.dedupe_key)?;
+    let callback_id = normalize_optional_text(input.callback_id, "callbackId")?;
+    let source_key = normalize_optional_text(input.source_key, "sourceKey")?;
+    let dedupe_key = normalize_optional_text(input.dedupe_key, "dedupeKey")?;
     let selector = match (callback_id, source_key, dedupe_key) {
         (Some(callback_id), None, None) => CancelCallbackSelector::CallbackId(callback_id),
         (Some(_), Some(_), None) | (Some(_), None, Some(_)) | (Some(_), Some(_), Some(_)) => {
@@ -162,17 +162,19 @@ fn normalize_source_key(raw: &str) -> Result<String> {
     EventSourceKey::parse(raw)
         .map(|key| key.as_str().to_string())
         .ok_or_else(|| {
-            BamlRtError::InvalidArgument("system/callback sourceKey is required".to_string())
+            BamlRtError::InvalidArgument(format!(
+                "system/callback sourceKey '{raw}' is missing or has an invalid format"
+            ))
         })
 }
 
-fn normalize_optional_text(raw: Option<String>) -> Result<Option<String>> {
+fn normalize_optional_text(raw: Option<String>, field_name: &str) -> Result<Option<String>> {
     raw.map(|value| {
         let trimmed = value.trim();
         if trimmed.is_empty() {
-            Err(BamlRtError::InvalidArgument(
-                "system/callback fields must not be empty strings".to_string(),
-            ))
+            Err(BamlRtError::InvalidArgument(format!(
+                "system/callback {field_name} must not be an empty string"
+            )))
         } else {
             Ok(trimmed.to_string())
         }
@@ -181,10 +183,11 @@ fn normalize_optional_text(raw: Option<String>) -> Result<Option<String>> {
 }
 
 fn parse_context_id(raw: Option<String>) -> Result<Option<ContextId>> {
-    normalize_optional_text(raw).map(|value| value.map(|raw| ContextId::from(raw.as_str())))
+    normalize_optional_text(raw, "contextId")
+        .map(|value| value.map(|raw| ContextId::from(raw.as_str())))
 }
 
 fn parse_task_id(raw: Option<String>) -> Result<Option<TaskId>> {
-    normalize_optional_text(raw)
+    normalize_optional_text(raw, "taskId")
         .map(|value| value.map(|raw| TaskId::from_external(ExternalId::new(raw))))
 }

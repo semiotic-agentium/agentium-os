@@ -14,7 +14,7 @@ use surrealdb::{
     Surreal,
     engine::local::{Db, Mem, SurrealKv},
 };
-use tracing::debug;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 const NS: &str = "baml";
@@ -58,6 +58,9 @@ const SCHEMA_QUERIES: &[&str] = &[
 
 pub struct DeploymentStateStore {
     db: Arc<Surreal<Db>>,
+    /// Guards the read-then-write paths in `schedule_callback` and
+    /// `cancel_callback` to prevent concurrent mutations on the same row.
+    callback_lock: tokio::sync::Mutex<()>,
 }
 
 impl DeploymentStateStore {
@@ -66,7 +69,10 @@ impl DeploymentStateStore {
             .await
             .map_err(to_write_err)?;
         db.use_ns(NS).use_db(DB_NAME).await.map_err(to_write_err)?;
-        let store = Self { db: Arc::new(db) };
+        let store = Self {
+            db: Arc::new(db),
+            callback_lock: tokio::sync::Mutex::new(()),
+        };
         store.init_schema().await?;
         Ok(store)
     }
@@ -74,7 +80,10 @@ impl DeploymentStateStore {
     pub async fn open_in_memory() -> Result<Self> {
         let db = Surreal::new::<Mem>(()).await.map_err(to_write_err)?;
         db.use_ns(NS).use_db(DB_NAME).await.map_err(to_write_err)?;
-        let store = Self { db: Arc::new(db) };
+        let store = Self {
+            db: Arc::new(db),
+            callback_lock: tokio::sync::Mutex::new(()),
+        };
         store.init_schema().await?;
         Ok(store)
     }
@@ -199,10 +208,53 @@ impl DeploymentStateStore {
         &self,
         request: &ScheduleCallbackRequest,
     ) -> Result<ScheduleCallbackResult> {
-        if let Some(dedupe_key) = &request.dedupe_key
-            && let Some(existing) = self
-                .find_pending_callback_by_dedupe(&request.source_key, dedupe_key)
-                .await?
+        // When a dedupe key is present, atomically check-then-insert inside a
+        // transaction to avoid a TOCTOU race between concurrent schedule calls.
+        if let Some(dedupe_key) = &request.dedupe_key {
+            return self
+                .schedule_callback_with_dedupe(request, dedupe_key)
+                .await;
+        }
+
+        let callback = StoredCallback {
+            callback_id: Uuid::new_v4().to_string(),
+            source_key: request.source_key.clone(),
+            dedupe_key: request.dedupe_key.clone(),
+            payload: request.payload.clone(),
+            scheduled_for_unix_ms: request.scheduled_for_unix_ms,
+            requested_at_unix_ms: request.requested_at_unix_ms,
+            context_id: request.context_id.clone(),
+            task_id: request.task_id.clone(),
+            requesting_agent_id: request.requesting_agent_id.clone(),
+            requesting_message_id: request.requesting_message_id.clone(),
+        };
+        self.upsert_callback_row(&callback, "pending", None, None)
+            .await?;
+        debug!(
+            callback_id = %callback.callback_id,
+            source_key = %callback.source_key,
+            deduped = false,
+            scheduled_for_unix_ms = callback.scheduled_for_unix_ms,
+            "runner state stored scheduled callback"
+        );
+        Ok(ScheduleCallbackResult {
+            callback,
+            created: true,
+        })
+    }
+
+    /// Dedupe-check and insert a callback, holding `callback_lock` to prevent
+    /// concurrent schedule calls with the same key from both inserting.
+    async fn schedule_callback_with_dedupe(
+        &self,
+        request: &ScheduleCallbackRequest,
+        dedupe_key: &str,
+    ) -> Result<ScheduleCallbackResult> {
+        let _guard = self.callback_lock.lock().await;
+
+        if let Some(existing) = self
+            .find_pending_callback_by_dedupe(&request.source_key, dedupe_key)
+            .await?
         {
             return Ok(ScheduleCallbackResult {
                 callback: existing,
@@ -241,6 +293,7 @@ impl DeploymentStateStore {
         &self,
         selector: CancelCallbackSelector,
     ) -> Result<Option<StoredCallback>> {
+        let _guard = self.callback_lock.lock().await;
         let callback = match selector {
             CancelCallbackSelector::CallbackId(callback_id) => {
                 self.find_pending_callback_by_id(&callback_id).await?
@@ -303,7 +356,8 @@ impl DeploymentStateStore {
             return Ok(());
         }
 
-        self.db
+        let mut resp = self
+            .db
             .query(format!(
                 "UPDATE {TBL_SCHEDULED_CALLBACKS} SET \
                     status = 'delivered', \
@@ -315,9 +369,20 @@ impl DeploymentStateStore {
             .bind(("delivered_at_unix_ms", delivered_at_unix_ms as i64))
             .await
             .map_err(to_write_err)?;
+        let updated_rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+        let updated_count = updated_rows.len();
+        let requested_count = callback_ids.len();
+        if updated_count < requested_count {
+            warn!(
+                requested_count,
+                updated_count,
+                "some callbacks were not pending at delivery time; \
+                 they may have been cancelled between emission and reconciliation"
+            );
+        }
         debug!(
-            delivered_count = callback_ids.len(),
-            delivered_at_unix_ms, "runner state marked callbacks delivered"
+            updated_count,
+            requested_count, delivered_at_unix_ms, "runner state marked callbacks delivered"
         );
         Ok(())
     }

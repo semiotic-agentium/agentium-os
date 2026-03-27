@@ -2711,7 +2711,9 @@ async fn main() -> anyhow::Result<()> {
         (false, None) => {
             // No stdio, no HTTP. If the dispatcher is running, block on it.
             if let Some(handle) = dispatcher_handle {
-                let _ = handle.await;
+                if let Err(err) = handle.await {
+                    error!(error = %err, "event producer poll loop terminated unexpectedly");
+                }
                 return Ok(());
             }
             // else: nothing to run, fall through.
@@ -2779,6 +2781,17 @@ async fn run_event_poll_cycle(
                     failures = delivery.failures.len(),
                     "event delivery partial failure"
                 );
+                if let Some(checkpoint) = dispatcher.checkpoint(producer_key).value()
+                    && let Err(err) = deployment_state
+                        .save_event_producer_checkpoint(producer_key, checkpoint)
+                        .await
+                {
+                    warn!(
+                        producer_key = %producer_key,
+                        error = %err,
+                        "failed to persist event producer checkpoint after partial failure"
+                    );
+                }
             }
             Err(err) => {
                 warn!(
