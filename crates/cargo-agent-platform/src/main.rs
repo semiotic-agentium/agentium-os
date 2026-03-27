@@ -200,24 +200,6 @@ enum Commands {
         warn_missing_catalog: bool,
     },
 
-    /// Interactive chat with a deployed agent
-    Chat {
-        /// Agent name (package name from manifest)
-        #[arg(long)]
-        agent: String,
-
-        /// Runner base URL
-        #[arg(long, default_value = "http://127.0.0.1:8080")]
-        url: String,
-
-        /// Instance identifier (default: "default")
-        #[arg(long, default_value = "default")]
-        instance: String,
-
-        /// Enable verbose output (show SSE events, request details)
-        #[arg(long, short)]
-        verbose: bool,
-    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -391,11 +373,5 @@ fn main() -> anyhow::Result<()> {
             warn_missing_catalog,
         } => commands::doctor::run(ci, warn_missing_catalog),
 
-        Commands::Chat {
-            agent,
-            url,
-            instance,
-            verbose,
-        } => commands::chat::run(&agent, &url, &instance, verbose),
     }
 }
