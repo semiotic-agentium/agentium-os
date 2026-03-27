@@ -1,12 +1,13 @@
 ---
 source: crates/baml-rt-provenance/tests/store_test.rs
+assertion_line: 339
 expression: mermaid
 ---
 sequenceDiagram
     autonumber
     actor User
-    participant clickup_1_0_0
-    participant notion
+    participant clickup_1_0_0 as "Clickup@1.0.0"
+    participant notion as "Notion"
 
     User->>+clickup_1_0_0: Draft a weekly status update
     rect rgb(220, 230, 241)

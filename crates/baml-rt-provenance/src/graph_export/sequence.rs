@@ -149,7 +149,7 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
     for agent in &participants.agents {
         let _ = writeln!(
             out,
-            "    participant {} as {}",
+            "    participant {} as \"{}\"",
             sanitize_participant(agent),
             escape_sequence_text(&agent_display_label(agent))
         );
@@ -157,7 +157,7 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
     for llm in &participants.llms {
         let _ = writeln!(
             out,
-            "    participant {} as {}",
+            "    participant {} as \"{}\"",
             sanitize_participant(llm),
             escape_sequence_text(&llm_display_label(llm))
         );
@@ -165,7 +165,7 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
     for tool in &participants.tools {
         let _ = writeln!(
             out,
-            "    participant {} as {}",
+            "    participant {} as \"{}\"",
             sanitize_participant(tool),
             escape_sequence_text(&tool_display_label(tool))
         );
@@ -1591,9 +1591,8 @@ fn prop_f64(node: &ExportedNode, key: &str) -> Option<f64> {
     })
 }
 
-/// Heuristic: skip the synthetic "previous" status companion that shares the
-/// same timestamp as a transition node and echoes that transition's old status.
-/// Strip known tool name prefixes for brevity.
+/// Strip known tool name prefixes (`support/`, `system/`) for brevity in
+/// diagram labels.
 fn strip_tool_prefix(name: &str) -> &str {
     name.strip_prefix("support/")
         .or_else(|| name.strip_prefix("system/"))
@@ -1647,7 +1646,7 @@ fn sanitize_participant(name: &str) -> String {
 }
 
 fn normalize_words(raw: &str) -> Vec<String> {
-    raw.split(|c: char| matches!(c, '_' | '-' | '/' | ':'))
+    raw.split(['_', '-', '/', ':'])
         .filter_map(|segment| {
             let trimmed = segment.trim();
             if trimmed.is_empty() {
@@ -1659,6 +1658,9 @@ fn normalize_words(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Strip a trailing semver-style triple (three consecutive all-digit words)
+/// from the word list. Only fires for `major/minor/patch` patterns, not for
+/// date-based or mixed-alphanumeric version suffixes.
 fn trim_trailing_version_words(words: &[String]) -> &[String] {
     if words.len() >= 3
         && words[words.len() - 3..]
@@ -2834,6 +2836,119 @@ mod tests {
         assert!(
             output.contains("LLM_gpt_4--xbot: 3000ms ✗ rate limit exceeded"),
             "failed LLM should show error detail in response arrow: {output}"
+        );
+    }
+
+    #[test]
+    fn title_case_word_basics() {
+        assert_eq!(title_case_word("hello"), "Hello");
+        assert_eq!(title_case_word("HELLO"), "Hello");
+        assert_eq!(title_case_word("llm"), "LLM");
+        assert_eq!(title_case_word("LLM"), "LLM");
+        assert_eq!(title_case_word("crm"), "CRM");
+        assert_eq!(title_case_word("a2a"), "A2A");
+        assert_eq!(title_case_word("42"), "42");
+        assert_eq!(title_case_word(""), "");
+    }
+
+    #[test]
+    fn normalize_words_splits_separators() {
+        assert_eq!(normalize_words("a_b-c/d:e"), vec!["a", "b", "c", "d", "e"]);
+        assert_eq!(normalize_words("__leading__"), vec!["leading"]);
+        assert_eq!(normalize_words(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn trim_trailing_version_strips_semver() {
+        let words: Vec<String> = vec!["foo", "bar", "1", "2", "3"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(trim_trailing_version_words(&words), &words[..2]);
+    }
+
+    #[test]
+    fn trim_trailing_version_keeps_mixed_alpha_digit() {
+        // "4o" contains a letter so if it falls in the last 3, trimming won't fire
+        let words: Vec<String> = vec!["gpt", "4o", "mini"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(trim_trailing_version_words(&words), &words[..]);
+    }
+
+    #[test]
+    fn trim_trailing_version_trims_date_suffix() {
+        // Last 3 words are all-digit, so they get trimmed even though they're a date
+        let words: Vec<String> = vec!["gpt", "4o", "2024", "05", "13"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(trim_trailing_version_words(&words), &words[..2]);
+    }
+
+    #[test]
+    fn trim_trailing_version_needs_exactly_three() {
+        let words: Vec<String> = vec!["model", "2024", "05"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        // Only 2 trailing digits (len == 3 but first word "model" is not all-digit)
+        assert_eq!(trim_trailing_version_words(&words), &words[..]);
+    }
+
+    #[test]
+    fn humanize_identifier_examples() {
+        assert_eq!(
+            humanize_identifier("task_lifecycle_demo"),
+            "Task Lifecycle Demo"
+        );
+        assert_eq!(humanize_identifier("my-agent/v1_0_3"), "My Agent V1 0 3");
+        assert_eq!(humanize_identifier("my-agent_1_0_3"), "My Agent");
+        assert_eq!(humanize_identifier(""), "");
+        assert_eq!(humanize_identifier("single"), "Single");
+    }
+
+    #[test]
+    fn llm_display_label_strips_prefix_and_provider() {
+        assert_eq!(llm_display_label("LLM openai/gpt-4o-2024-05-13"), "Gpt 4o");
+        assert_eq!(
+            llm_display_label("LLM anthropic/claude-3-5-sonnet"),
+            "Claude 3 5 Sonnet"
+        );
+        assert_eq!(llm_display_label("bare-model"), "Bare Model");
+    }
+
+    #[test]
+    fn humanize_function_label_patterns() {
+        assert_eq!(
+            humanize_function_label("coordinator__select"),
+            "Coordinator Select"
+        );
+        assert_eq!(
+            humanize_function_label("coordinator__act__support/crm"),
+            "Coordinator Call CRM"
+        );
+        assert_eq!(
+            humanize_function_label("coordinator__continue__system/a2a"),
+            "Coordinator Continue After A2A"
+        );
+        assert_eq!(humanize_function_label("plain_function"), "Plain Function");
+    }
+
+    #[test]
+    fn participant_alias_is_quoted_in_output() {
+        let g = graph(
+            vec![
+                agent_node("a1", "task_lifecycle_demo"),
+                msg_node("m1", "user", "hello", Some(1)),
+            ],
+            vec![edge("a1", "RECEIVED", "m1")],
+        );
+        let output = render_sequence_diagram(&g);
+        assert!(
+            output.contains("as \"Task Lifecycle Demo\""),
+            "participant alias should be double-quoted: {output}"
         );
     }
 }

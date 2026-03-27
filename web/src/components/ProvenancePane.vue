@@ -218,22 +218,26 @@ function uniqueNonEmpty(values: Array<string | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))];
 }
 
+// Hotspot group-key positions: 0 = agentId, 1 = package, 2 = version, 3 = model (LLM) or tool name (Tool)
+const HOTSPOT_PKG_IDX = 1;
+const HOTSPOT_DIM_IDX = 3;
+
 const traceAgentPackages = computed(() =>
   uniqueNonEmpty([
-    ...(liveLlm.state.value.response?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, 1)),
-    ...(liveTool.state.value.response?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, 1)),
+    ...(liveLlm.state.value.response?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, HOTSPOT_PKG_IDX)),
+    ...(liveTool.state.value.response?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, HOTSPOT_PKG_IDX)),
   ]),
 );
 
 const traceModels = computed(() =>
   uniqueNonEmpty(
-    (liveLlm.state.value.response?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, 3)),
+    (liveLlm.state.value.response?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, HOTSPOT_DIM_IDX)),
   ),
 );
 
 const traceTools = computed(() =>
   uniqueNonEmpty(
-    (liveTool.state.value.response?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, 3)),
+    (liveTool.state.value.response?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, HOTSPOT_DIM_IDX)),
   ),
 );
 
