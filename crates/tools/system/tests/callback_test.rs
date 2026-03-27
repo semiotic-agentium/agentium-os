@@ -316,12 +316,75 @@ async fn callback_tool_schedules_and_dedupes_against_pending_rows() {
     let rows = store.snapshot().await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].status, "pending");
+    assert_eq!(
+        rows[0].callback.dedupe_key.as_deref(),
+        Some("same-follow-up")
+    );
     assert_eq!(rows[0].callback.context_id.as_ref(), Some(&context_id));
     assert_eq!(rows[0].callback.task_id.as_ref(), Some(&task_id));
     assert_eq!(
         rows[0].callback.requesting_agent_id.as_deref(),
         Some(agent_id.as_str())
     );
+
+    clear_callback_store();
+}
+
+#[tokio::test]
+async fn callback_tool_dedupe_is_scoped_per_source_key() {
+    let _suite_guard = suite_lock().lock().await;
+    clear_callback_store();
+    let store = Arc::new(MemoryCallbackStore::default());
+    install_callback_store(store.clone());
+
+    let registry = test_registry();
+    let context_id = test_context_id();
+    let task_id = test_task_id();
+    let agent_id = test_agent_id();
+
+    let first = expect_done_output(
+        invoke_callback_tool(
+            registry.as_ref(),
+            &context_id,
+            &agent_id,
+            Some(&task_id),
+            json!({
+                "op": "schedule",
+                "afterMs": 250,
+                "sourceKey": "workflow-intake:channel-a",
+                "dedupeKey": "shared-key",
+                "payload": { "from": "a" }
+            }),
+        )
+        .await,
+    );
+    assert_eq!(first["deduped"], false);
+
+    let second = expect_done_output(
+        invoke_callback_tool(
+            registry.as_ref(),
+            &context_id,
+            &agent_id,
+            Some(&task_id),
+            json!({
+                "op": "schedule",
+                "afterMs": 250,
+                "sourceKey": "workflow-intake:channel-b",
+                "dedupeKey": "shared-key",
+                "payload": { "from": "b" }
+            }),
+        )
+        .await,
+    );
+    assert_eq!(second["deduped"], false);
+    assert_ne!(
+        first["callbackId"].as_str(),
+        second["callbackId"].as_str(),
+        "same dedupeKey under different sourceKeys must create separate callbacks"
+    );
+
+    let rows = store.snapshot().await;
+    assert_eq!(rows.len(), 2);
 
     clear_callback_store();
 }
@@ -552,6 +615,122 @@ async fn callback_tool_cancel_validates_selector_combinations() {
 }
 
 #[tokio::test]
+async fn callback_tool_cancel_returns_false_for_nonexistent_id() {
+    let _suite_guard = suite_lock().lock().await;
+    clear_callback_store();
+    install_callback_store(Arc::new(MemoryCallbackStore::default()));
+
+    let registry = test_registry();
+    let context_id = test_context_id();
+    let agent_id = test_agent_id();
+    let task_id = test_task_id();
+
+    let output = expect_done_output(
+        invoke_callback_tool(
+            registry.as_ref(),
+            &context_id,
+            &agent_id,
+            Some(&task_id),
+            json!({
+                "op": "cancel",
+                "callbackId": "cb-does-not-exist"
+            }),
+        )
+        .await,
+    );
+    assert_eq!(output["outcome"], "cancelled");
+    assert_eq!(output["cancelled"], false);
+
+    clear_callback_store();
+}
+
+#[tokio::test]
+async fn callback_tool_cancel_returns_false_for_already_delivered() {
+    let _suite_guard = suite_lock().lock().await;
+    clear_callback_store();
+    let store = Arc::new(MemoryCallbackStore::default());
+    install_callback_store(store.clone());
+
+    let registry = test_registry();
+    let context_id = test_context_id();
+    let agent_id = test_agent_id();
+    let task_id = test_task_id();
+
+    let scheduled = expect_done_output(
+        invoke_callback_tool(
+            registry.as_ref(),
+            &context_id,
+            &agent_id,
+            Some(&task_id),
+            json!({
+                "op": "schedule",
+                "afterMs": 0,
+                "sourceKey": "workflow-intake:follow-up",
+                "payload": { "kind": "reminder" }
+            }),
+        )
+        .await,
+    );
+    let callback_id = scheduled["callbackId"].as_str().unwrap().to_string();
+
+    store
+        .mark_callbacks_delivered(std::slice::from_ref(&callback_id), 999)
+        .await
+        .unwrap();
+
+    let output = expect_done_output(
+        invoke_callback_tool(
+            registry.as_ref(),
+            &context_id,
+            &agent_id,
+            Some(&task_id),
+            json!({
+                "op": "cancel",
+                "callbackId": callback_id
+            }),
+        )
+        .await,
+    );
+    assert_eq!(output["outcome"], "cancelled");
+    assert_eq!(output["cancelled"], false);
+
+    clear_callback_store();
+}
+
+#[tokio::test]
+async fn callback_tool_rejects_empty_source_key() {
+    let _suite_guard = suite_lock().lock().await;
+    clear_callback_store();
+    install_callback_store(Arc::new(MemoryCallbackStore::default()));
+
+    let registry = test_registry();
+    let context_id = test_context_id();
+    let agent_id = test_agent_id();
+    let task_id = test_task_id();
+
+    let step = invoke_callback_tool(
+        registry.as_ref(),
+        &context_id,
+        &agent_id,
+        Some(&task_id),
+        json!({
+            "op": "schedule",
+            "afterMs": 100,
+            "sourceKey": "",
+            "payload": { "kind": "test" }
+        }),
+    )
+    .await;
+    let message = expect_error_message(step);
+    assert!(
+        message.contains("invalid format"),
+        "expected sourceKey validation error, got: {message}"
+    );
+
+    clear_callback_store();
+}
+
+#[tokio::test]
 async fn callback_producer_returns_empty_when_store_is_not_installed() {
     let _suite_guard = suite_lock().lock().await;
     clear_callback_store();
@@ -613,7 +792,7 @@ async fn callback_producer_errors_on_invalid_stored_source_key() {
 }
 
 #[tokio::test]
-async fn callback_producer_reconciles_persisted_delivery_checkpoint() {
+async fn callback_producer_polls_and_reconciles_delivery() {
     let _suite_guard = suite_lock().lock().await;
     clear_callback_store();
     let store = Arc::new(MemoryCallbackStore::default());
@@ -704,6 +883,147 @@ async fn callback_producer_reconciles_persisted_delivery_checkpoint() {
         .unwrap();
     assert!(third_poll.events.is_empty());
     assert!(third_poll.checkpoint.value().is_none());
+
+    clear_callback_store();
+}
+
+#[tokio::test]
+async fn callback_producer_reconciles_after_simulated_restart() {
+    let _suite_guard = suite_lock().lock().await;
+    clear_callback_store();
+    let store = Arc::new(MemoryCallbackStore::default());
+    install_callback_store(store.clone());
+
+    let scheduled = store
+        .schedule_callback(ScheduleCallbackRequest {
+            source_key: "workflow-intake:resume".to_string(),
+            dedupe_key: None,
+            payload: json!({"goal": "resume"}),
+            scheduled_for_unix_ms: 0,
+            requested_at_unix_ms: 0,
+            context_id: Some(ContextId::new(50, 4)),
+            task_id: None,
+            requesting_agent_id: None,
+            requesting_message_id: None,
+        })
+        .await
+        .unwrap();
+
+    // First producer polls and returns events + checkpoint.
+    let first_producers = build_callback_event_producers(EventProducerBuildContext {
+        metadata: system_callback_metadata(),
+        config: None,
+        persisted_checkpoints: Arc::new(HashMap::new()),
+    })
+    .await
+    .unwrap();
+    let first_poll = first_producers[0]
+        .poll(&ProducerCheckpoint::none())
+        .await
+        .unwrap();
+    assert_eq!(first_poll.events.len(), 1);
+    assert_eq!(
+        first_poll.events[0].messages[0]["callback_id"].as_str(),
+        Some(scheduled.callback.callback_id.as_str())
+    );
+
+    // Simulate crash: checkpoint was persisted but mark_callbacks_delivered
+    // never ran because the host died before the next poll. The callback is
+    // still "pending" in the store.
+    assert_eq!(
+        store
+            .snapshot()
+            .await
+            .into_iter()
+            .filter(|row| row.status == "pending")
+            .count(),
+        1
+    );
+
+    // Build a fresh producer (simulating process restart) and pass the
+    // persisted checkpoint from the prior run to the first poll.
+    let restart_producers = build_callback_event_producers(EventProducerBuildContext {
+        metadata: system_callback_metadata(),
+        config: None,
+        persisted_checkpoints: Arc::new(HashMap::new()),
+    })
+    .await
+    .unwrap();
+    let restart_poll = restart_producers[0]
+        .poll(&first_poll.checkpoint)
+        .await
+        .unwrap();
+
+    // The reconciliation path should have marked the callback delivered,
+    // and since there are no new due callbacks the poll returns empty.
+    assert!(
+        restart_poll.events.is_empty(),
+        "no new events expected after reconciliation"
+    );
+    assert_eq!(
+        store
+            .snapshot()
+            .await
+            .into_iter()
+            .filter(|row| row.status == "delivered")
+            .count(),
+        1,
+        "reconciliation should have marked the callback delivered"
+    );
+
+    clear_callback_store();
+}
+
+#[tokio::test]
+async fn callback_producer_respects_max_poll_limit() {
+    let _suite_guard = suite_lock().lock().await;
+    clear_callback_store();
+    let store = Arc::new(MemoryCallbackStore::default());
+    install_callback_store(store.clone());
+
+    // Schedule 105 immediately-due callbacks (exceeds MAX_CALLBACKS_PER_POLL = 100).
+    for i in 0..105 {
+        store
+            .schedule_callback(ScheduleCallbackRequest {
+                source_key: "workflow-intake:bulk".to_string(),
+                dedupe_key: None,
+                payload: json!({ "index": i }),
+                scheduled_for_unix_ms: 0,
+                requested_at_unix_ms: 0,
+                context_id: None,
+                task_id: None,
+                requesting_agent_id: None,
+                requesting_message_id: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    let producers = build_callback_event_producers(EventProducerBuildContext {
+        metadata: system_callback_metadata(),
+        config: None,
+        persisted_checkpoints: Arc::new(HashMap::new()),
+    })
+    .await
+    .unwrap();
+
+    let first_poll = producers[0]
+        .poll(&ProducerCheckpoint::none())
+        .await
+        .unwrap();
+    assert_eq!(
+        first_poll.events.len(),
+        100,
+        "first poll should return at most MAX_CALLBACKS_PER_POLL events"
+    );
+
+    // Mark the first batch delivered, then poll again for the remainder.
+    let second_poll = producers[0].poll(&first_poll.checkpoint).await.unwrap();
+    assert_eq!(
+        second_poll.events.len(),
+        5,
+        "second poll should return the remaining 5 callbacks"
+    );
 
     clear_callback_store();
 }

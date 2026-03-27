@@ -279,9 +279,9 @@ impl DeploymentStateStore {
         debug!(
             callback_id = %callback.callback_id,
             source_key = %callback.source_key,
-            deduped = false,
+            dedupe_key = %dedupe_key,
             scheduled_for_unix_ms = callback.scheduled_for_unix_ms,
-            "runner state stored scheduled callback"
+            "runner state stored scheduled callback (dedupe key checked, no match)"
         );
         Ok(ScheduleCallbackResult {
             callback,

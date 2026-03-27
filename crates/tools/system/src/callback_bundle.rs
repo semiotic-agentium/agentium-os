@@ -80,6 +80,8 @@ async fn schedule_callback(
         payload: input.payload,
         scheduled_for_unix_ms,
         requested_at_unix_ms,
+        // context_id is required for dispatch routing — default to the
+        // invoking session's context when the agent omits it.
         context_id: parse_context_id(input.context_id)?
             .or_else(|| Some(session_ctx.context_id.clone())),
         task_id: parse_task_id(input.task_id)?.or_else(|| session_ctx.task_id.clone()),

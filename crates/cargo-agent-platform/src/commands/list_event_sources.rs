@@ -108,13 +108,16 @@ pub fn run() -> anyhow::Result<()> {
     println!(
         "{}",
         style(
-            "Note: Schema versions are conventions defined by event producers (e.g., task-daemon)."
+            "Note: Agents subscribe to source kinds (e.g. \"system/callback\") in manifest subscriptions."
         )
         .dim()
     );
     println!(
         "{}",
-        style("      Use these in agent manifest subscriptions to receive matching events.").dim()
+        style(
+            "      Schema versions identify the envelope format of events produced by each source."
+        )
+        .dim()
     );
     println!();
 
