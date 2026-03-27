@@ -79,6 +79,12 @@ filter = 'package(baml-rt-a2a) and binary(task_streaming_test)'
 slow-timeout = { period = "60s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "3s" }
 
+# Workflow intake tests spawn subprocesses with HTTP servers; flaky under load.
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_workflow_intake_test)'
+slow-timeout = { period = "120s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "3s" }
+
 # A2A provenance-using test binaries: route to provenance group.
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a) and (binary(run_handle_a2a_property_test) or binary(a2a_malformed_and_error_paths_test))'
@@ -134,6 +140,12 @@ fail-fast = false
 [profile.ci-non-llm.junit]
 path = "junit-non-llm.xml"
 store-failure-output = true
+
+# Workflow intake tests spawn subprocesses with HTTP servers; flaky under load.
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_workflow_intake_test)'
+slow-timeout = { period = "120s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "3s" }
 
 # Provenance tests need serialization to avoid SurrealDB contention
 [[profile.ci-non-llm.overrides]]
