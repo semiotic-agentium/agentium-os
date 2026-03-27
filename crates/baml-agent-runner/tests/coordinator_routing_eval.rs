@@ -74,6 +74,7 @@ async fn setup_coordinator_agent() -> (baml_rt::A2aAgent, Arc<SurrealProvenanceS
         .expect("load coordinator schema");
     let allowlist: HashSet<String> = [
         "system/internal_a2a",
+        "system/callback",
         "system/discover_agents",
         "system/discover_tools",
     ]

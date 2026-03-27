@@ -16,7 +16,8 @@ use baml_rt_tools::{EventProducerBuildContext, ProducerCheckpoint, ToolRegistry,
 use baml_tools_system::{
     SystemBundle,
     callback_producer::{
-        CALLBACK_EVENT_SCHEMA_VERSION, CALLBACK_SOURCE_KIND, build_callback_event_producers,
+        CALLBACK_EVENT_ROUTING_KEY, CALLBACK_EVENT_SCHEMA_VERSION, CALLBACK_SOURCE_KIND,
+        build_callback_event_producers,
     },
     callback_store::{
         CallbackStore, CancelCallbackSelector, ScheduleCallbackRequest, ScheduleCallbackResult,
@@ -838,6 +839,32 @@ async fn callback_producer_polls_and_reconciles_delivery() {
     assert_eq!(
         first_poll.events[0].source_key.as_str(),
         "workflow-intake:resume"
+    );
+    // Routing fields the event dispatcher needs to deliver to the right agent/task.
+    assert_eq!(
+        first_poll.events[0].routing_key.as_str(),
+        CALLBACK_EVENT_ROUTING_KEY
+    );
+    assert_eq!(
+        first_poll.events[0].context_id.as_ref(),
+        Some(&ContextId::new(50, 4)),
+        "context_id must flow through from the schedule request for dispatch routing"
+    );
+    assert_eq!(
+        first_poll.events[0].task_id.as_ref().map(|id| id.as_str()),
+        Some("task-resume-1"),
+        "task_id must flow through from the schedule request for dispatch routing"
+    );
+    assert_eq!(
+        first_poll.events[0].message_id.as_deref(),
+        Some(
+            format!(
+                "system/callback:{callback_id}",
+                callback_id = scheduled.callback.callback_id
+            )
+            .as_str()
+        ),
+        "message_id must be derived from callback_id for idempotent delivery"
     );
     assert_eq!(
         first_poll.events[0].messages[0]["callback_id"].as_str(),

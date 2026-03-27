@@ -346,6 +346,7 @@ async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
         "system/discover_tools",
         "system/discover_agents",
         "system/internal_a2a",
+        "system/callback",
         "support/calculate",
     ]
     .into_iter()
@@ -826,7 +827,7 @@ async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
     manager
         .load_schema(extract_dir.to_str().expect("utf8 path"))
         .expect("load coordinator schema");
-    let allowlist: HashSet<String> = ["system/internal_a2a"]
+    let allowlist: HashSet<String> = ["system/internal_a2a", "system/callback"]
         .into_iter()
         .map(String::from)
         .collect();
