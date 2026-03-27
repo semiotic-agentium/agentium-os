@@ -1647,15 +1647,46 @@ fn sanitize_participant(name: &str) -> String {
 
 fn normalize_words(raw: &str) -> Vec<String> {
     raw.split(['_', '-', '/', ':'])
-        .filter_map(|segment| {
+        .flat_map(|segment| {
             let trimmed = segment.trim();
             if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
+                return vec![];
             }
+            split_camel_case(trimmed)
         })
         .collect()
+}
+
+/// Split a string on camelCase / PascalCase boundaries.
+///
+/// `"InferNotionIntent"` → `["Infer", "Notion", "Intent"]`
+/// `"reactToResults"`     → `["react", "To", "Results"]`
+/// `"LLMCall"`            → `["LLM", "Call"]`
+/// `"plain"`              → `["plain"]`
+fn split_camel_case(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut start = 0;
+    let chars: Vec<char> = s.chars().collect();
+    for i in 1..chars.len() {
+        let prev_upper = chars[i - 1].is_ascii_uppercase();
+        let curr_upper = chars[i].is_ascii_uppercase();
+        let next_lower = chars.get(i + 1).is_some_and(|c| c.is_ascii_lowercase());
+
+        // Split before a new capitalised word: `notionI` or `LLMCall` (uppercase
+        // followed by lowercase after a run of uppercase).
+        if curr_upper && (next_lower || !prev_upper) {
+            let word: String = chars[start..i].iter().collect();
+            if !word.is_empty() {
+                words.push(word);
+            }
+            start = i;
+        }
+    }
+    let tail: String = chars[start..].iter().collect();
+    if !tail.is_empty() {
+        words.push(tail);
+    }
+    words
 }
 
 /// Strip a trailing semver-style triple (three consecutive all-digit words)
@@ -2856,6 +2887,24 @@ mod tests {
         assert_eq!(normalize_words("a_b-c/d:e"), vec!["a", "b", "c", "d", "e"]);
         assert_eq!(normalize_words("__leading__"), vec!["leading"]);
         assert_eq!(normalize_words(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn normalize_words_splits_camel_case() {
+        assert_eq!(
+            normalize_words("InferNotionIntent"),
+            vec!["Infer", "Notion", "Intent"]
+        );
+        assert_eq!(
+            normalize_words("reactToResults"),
+            vec!["react", "To", "Results"]
+        );
+        assert_eq!(normalize_words("LLMCall"), vec!["LLM", "Call"]);
+        assert_eq!(normalize_words("plain"), vec!["plain"]);
+        assert_eq!(
+            normalize_words("coordinator__act__InferNotionIntent"),
+            vec!["coordinator", "act", "Infer", "Notion", "Intent"]
+        );
     }
 
     #[test]

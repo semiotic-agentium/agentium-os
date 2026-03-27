@@ -13,7 +13,7 @@ sequenceDiagram
     User->>+clickup_1_0_0: how many tasks are in to do?
     rect rgb(220, 230, 241)
     Note over clickup_1_0_0,clickup: "task-sequence-1"
-    clickup_1_0_0->>+LLM_openai_generic: Chooseclickupaction
+    clickup_1_0_0->>+LLM_openai_generic: Choose Click Up Action
     LLM_openai_generic-->>-clickup_1_0_0: 7475ms ✓
     clickup_1_0_0->>+clickup: action=ListTeams
     clickup-->>-clickup_1_0_0: 976ms ✓
