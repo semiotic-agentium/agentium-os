@@ -194,7 +194,7 @@ async fn setup_agent_with_a2a_session_tool() -> A2aAgent {
         .build()
         .await
         .unwrap();
-    let registry = agent.runtime().lock().await.tool_registry();
+    let registry = agent.runtime().read().await.tool_registry();
     registry
         .register_bundle(SystemBundle::new(
             Arc::new(EmptyAgentList),
@@ -425,7 +425,7 @@ async fn test_message_send_tool_calling() {
     let agent = setup_agent().await;
     {
         let runtime = agent.runtime();
-        let mut manager = runtime.lock().await;
+        let mut manager = runtime.write().await;
         manager.register_tool(AddNumbersTool).await.unwrap();
     }
 
@@ -451,7 +451,7 @@ async fn test_message_send_baml_tool_calling() {
     let agent = setup_agent().await;
     {
         let runtime = agent.runtime();
-        let mut manager = runtime.lock().await;
+        let mut manager = runtime.write().await;
         manager.register_tool(CalculatorTool).await.unwrap();
     }
 
@@ -479,7 +479,7 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
     let agent = setup_agent_with_a2a_session_tool().await;
     let handle = {
         let runtime = agent.runtime();
-        let mgr = runtime.lock().await;
+        let mgr = runtime.read().await;
         mgr.tool_session_handle()
     };
     let context_id = context::generate_context_id();
@@ -587,7 +587,7 @@ async fn test_a2a_session_send_after_finish_fails() {
     let agent = setup_agent_with_a2a_session_tool().await;
     let handle = {
         let runtime = agent.runtime();
-        let mgr = runtime.lock().await;
+        let mgr = runtime.read().await;
         mgr.tool_session_handle()
     };
     let context_id = context::generate_context_id();

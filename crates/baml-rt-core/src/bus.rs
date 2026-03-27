@@ -166,7 +166,11 @@ pub enum SessionStepOp {
     Open,
     /// Blocking Send completed — result archived at `archive_ref` (e.g. `"@1"`).
     /// `header` is the full display string: `"@1 tool_name 'summary' [N lines, KB]"`.
-    SendDone { archive_ref: String, header: String },
+    SendDone {
+        archive_ref: String,
+        header: String,
+        informed_by: String,
+    },
     /// LLM read the archive at `archive_ref`. Parameters stored so the cat-n
     /// output can be re-derived deterministically for conversation history.
     Read {
@@ -265,6 +269,8 @@ pub enum EffectEvent {
         tool_name: String,
         session_id: String,
         op: SessionStepOp,
+        /// When set, provenance ties the session step to this task (task-scoped episode transcript).
+        task_id: Option<TaskId>,
     },
 }
 
@@ -785,9 +791,28 @@ impl BusWithEffects {
         }
 
         let subs = self.effect_subscribers.read().await;
-        for sub in subs.iter() {
-            if let Err(e) = sub.on_effect(&event).await {
-                tracing::warn!(error = ?e, "Effect subscriber failed");
+        let is_llm_completed = matches!(event, EffectEvent::LlmCompleted { .. });
+        if is_llm_completed {
+            // LlmCompleted carries the most expensive subscriber work:
+            // drift scoring (embedding inference, 100–500ms per call) and
+            // the FastEmbed cold-start (~2s on the first call).
+            // Spawn as a background Tokio task so the LLM completion
+            // notification returns immediately to the QuickJS bridge,
+            // unblocking the next hop in the ReAct loop.
+            for sub in subs.iter() {
+                let sub = sub.clone();
+                let event = event.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = sub.on_effect(&event).await {
+                        tracing::warn!(error = ?e, "Effect subscriber background LlmCompleted error");
+                    }
+                });
+            }
+        } else {
+            for sub in subs.iter() {
+                if let Err(e) = sub.on_effect(&event).await {
+                    tracing::warn!(error = ?e, "Effect subscriber failed");
+                }
             }
         }
         Ok(())

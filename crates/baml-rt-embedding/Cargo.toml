@@ -14,5 +14,9 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 regex = { workspace = true }
 
+[[bin]]
+name = "download_models"
+path = "src/bin/download_models.rs"
+
 [dev-dependencies]
 toml = "0.8"

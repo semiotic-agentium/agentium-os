@@ -127,6 +127,7 @@ impl BamlRuntimeManager {
             tool_session_scopes: self.state.tool_session_scopes.clone(),
             tool_session_states: self.state.tool_session_states.clone(),
             tool_session_effect_tokens: self.state.tool_session_effect_tokens.clone(),
+            read_completion_tool_anchors: self.state.read_completion_tool_anchors.clone(),
         }
     }
 }

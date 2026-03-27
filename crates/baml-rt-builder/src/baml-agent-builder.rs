@@ -611,7 +611,7 @@ async fn load_agent_package(
     };
 
     // Create QuickJS bridge
-    let runtime_manager_arc = Arc::new(Mutex::new(runtime_manager));
+    let runtime_manager_arc = Arc::new(tokio::sync::RwLock::new(runtime_manager));
     // Generate a temporary agent_id for builder context
     let temp_agent_id = AgentId::from_uuid(baml_rt_core::ids::UuidId::new(Uuid::new_v4()));
     let mut js_bridge = {

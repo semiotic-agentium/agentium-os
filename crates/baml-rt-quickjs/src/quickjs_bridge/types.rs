@@ -13,7 +13,7 @@ use baml_rt_tools::ToolStep;
 use dashmap::DashMap;
 use quickjs_runtime::facades::QuickJsRuntimeFacade;
 use serde_json::Value;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{RwLock, Semaphore};
 
 use super::scope::{InvocationContextId, InvocationContextRegistry, InvocationToken};
 use crate::baml::BamlRuntimeManager;
@@ -100,7 +100,7 @@ pub(crate) struct EvalLifecycleGuard {
     pub(crate) context_id_to_exit: Option<InvocationContextId>,
     pub(crate) eval_slot_registered: bool,
     #[allow(dead_code)]
-    pub(crate) baml_manager: Arc<Mutex<BamlRuntimeManager>>,
+    pub(crate) baml_manager: Arc<RwLock<BamlRuntimeManager>>,
 }
 
 impl EvalLifecycleGuard {
@@ -109,7 +109,7 @@ impl EvalLifecycleGuard {
         invocation_context_registry: InvocationContextRegistrySlot,
         eval_token: InvocationToken,
         context_id_to_exit: Option<InvocationContextId>,
-        baml_manager: Arc<Mutex<BamlRuntimeManager>>,
+        baml_manager: Arc<RwLock<BamlRuntimeManager>>,
     ) -> Self {
         Self {
             eval_results_by_token,

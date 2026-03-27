@@ -6,11 +6,13 @@ use std::{
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    BamlRtError, Result,
+    BamlRtError, Citation, Result,
     ids::{AgentId, ContextId, TaskId},
 };
 use baml_rt_observability::metrics;
-use baml_rt_provenance::{ProvEvent, ProvenanceConversationContextItem, ProvenanceWriter};
+use baml_rt_provenance::{
+    ProvEvent, ProvenanceConversationContextItem, ProvenanceWriter, events::ReservedAnchor,
+};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -310,6 +312,32 @@ impl ProvenanceTaskStore {
             .await;
     }
 
+    /// Emit a `TaskStatusChanged` provenance event using a pre-allocated anchor, then
+    /// conditionally emit `TaskExecutionEnded` for terminal states.
+    ///
+    /// The `anchor` should be a [`ReservedAnchor`] allocated **before** any `async` await
+    /// that precedes this call, to preserve logical `event_order` under concurrency.
+    async fn emit_status_provenance(
+        &self,
+        anchor: ReservedAnchor,
+        context_id: baml_rt_core::ids::ContextId,
+        task_id: baml_rt_core::ids::TaskId,
+        status_str: Option<String>,
+    ) {
+        let event = ProvEvent::task_status_changed_with_id(
+            anchor,
+            context_id.clone(),
+            task_id.clone(),
+            None,
+            status_str.clone(),
+        );
+        self.record_event(event).await;
+        if status_str.as_deref().is_some_and(is_terminal_state) {
+            self.record_event(ProvEvent::task_execution_ended(context_id, task_id))
+                .await;
+        }
+    }
+
     async fn record_event_required(&self, event: ProvEvent, context: &str) -> Result<()> {
         self.writer.add_event(event).await.map_err(|source| {
             BamlRtError::InvalidArgumentWithSource {
@@ -501,20 +529,20 @@ impl TaskRepository for ProvenanceTaskStore {
     }
 
     async fn cancel(&self, id: &str) -> Option<Task> {
+        // Reserve anchor before the await — same race as record_status_update / apply_task_delta.
+        let prov_anchor = ReservedAnchor::allocate();
         let out = self.inner.cancel(id).await;
         if let Some(ref task) = out
             && let (Some(cid), Some(tid)) = (task.context_id.clone(), task.id.clone())
             && let Ok(context_id) = require_context_id(Some(cid), "provenance cancel")
         {
-            let event = ProvEvent::task_status_changed(
-                context_id.clone(),
-                tid.clone(),
-                None,
+            self.emit_status_provenance(
+                prov_anchor,
+                context_id,
+                tid,
                 Some(TASK_STATE_CANCELED.to_string()),
-            );
-            self.record_event(event).await;
-            self.record_event(ProvEvent::task_execution_ended(context_id, tid))
-                .await;
+            )
+            .await;
         }
         out
     }
@@ -596,6 +624,7 @@ impl TaskRepository for ProvenanceTaskStore {
                 metadata,
                 self.agent_id.clone(),
                 now_millis(),
+                Vec::new(),
             ),
             (_, None) => ProvEvent::message_sent_global(
                 context_id.clone(),
@@ -605,6 +634,7 @@ impl TaskRepository for ProvenanceTaskStore {
                 metadata,
                 self.agent_id.clone(),
                 now_millis(),
+                Vec::new(),
             ),
         };
         self.record_event_required(event, "insert_message message lifecycle")
@@ -674,6 +704,11 @@ impl TaskEventRecorder for ProvenanceTaskStore {
         status: TaskStatus,
     ) -> Result<Option<TaskUpdateEvent>> {
         let start = Instant::now();
+        // Reserve the activity anchor BEFORE the inner await so that event_order is
+        // assigned in logical emission order, not in DB-round-trip completion order.
+        // (Two tokio tasks can race here: the QuickJS task emits WORKING via this path
+        // while the drain-loop task emits COMPLETED via apply_task_delta.)
+        let prov_anchor = ReservedAnchor::allocate();
         let out = self
             .inner
             .record_status_update(task_id, context_id, status)
@@ -684,18 +719,13 @@ impl TaskEventRecorder for ProvenanceTaskStore {
             && let (Some(tid), Some(cid)) = (ev.task_id.as_ref(), ev.context_id.as_ref())
             && let Ok(context_id) = require_context_id(Some(cid.clone()), "provenance status")
         {
-            let status_str = ev.status.as_ref().and_then(status_to_string);
-            let event = ProvEvent::task_status_changed(
-                context_id.clone(),
+            self.emit_status_provenance(
+                prov_anchor,
+                context_id,
                 tid.clone(),
-                None,
-                status_str.clone(),
-            );
-            self.record_event(event).await;
-            if status_str.as_deref().is_some_and(is_terminal_state) {
-                self.record_event(ProvEvent::task_execution_ended(context_id, tid.clone()))
-                    .await;
-            }
+                ev.status.as_ref().and_then(status_to_string),
+            )
+            .await;
         }
         Ok(out)
     }
@@ -760,6 +790,12 @@ impl TaskChunkApplier for ProvenanceTaskStore {
         });
         let (task, message) = Self::inject_agent_id_into_chunk(task, message, &self.agent_id);
         let message_for_prov = message.clone();
+        // Reserve an activity anchor BEFORE the inner await so that event_order is assigned
+        // in logical emission order, not DB-round-trip completion order.
+        // The drain-loop task (COMPLETED) and the QuickJS task (WORKING) race through here
+        // concurrently; one pre-reserved anchor suffices for the typical single status
+        // transition per chunk. Additional transitions take fresh anchors (rare).
+        let mut status_anchor = Some(ReservedAnchor::allocate());
         let start = Instant::now();
         let events = self
             .inner
@@ -788,20 +824,18 @@ impl TaskChunkApplier for ProvenanceTaskStore {
                         if let (Some(task_id), Some(status)) =
                             (ev.task_id.clone(), ev.status.as_ref())
                         {
-                            let status_str = status_to_string(status);
-                            let prov = ProvEvent::task_status_changed(
-                                context_id.clone(),
-                                task_id.clone(),
-                                None,
-                                status_str.clone(),
-                            );
-                            self.record_event(prov).await;
-                            if status_str.as_deref().is_some_and(is_terminal_state) {
-                                self.record_event(ProvEvent::task_execution_ended(
-                                    context_id, task_id,
-                                ))
-                                .await;
-                            }
+                            // Consume the pre-reserved anchor on first use; allocate fresh
+                            // ones for subsequent status events in the same chunk.
+                            let anchor = status_anchor
+                                .take()
+                                .unwrap_or_else(ReservedAnchor::allocate);
+                            self.emit_status_provenance(
+                                anchor,
+                                context_id,
+                                task_id,
+                                status_to_string(status),
+                            )
+                            .await;
                         }
                     }
                     TaskUpdateEvent::Artifact(ev) => {
@@ -828,6 +862,26 @@ impl TaskChunkApplier for ProvenanceTaskStore {
             let role = message_role_string(&msg.role);
             let content = validated_message_content(msg, "apply_task_delta")?;
             let metadata = msg.metadata.as_ref().map(metadata_string_map);
+            // Extract validated citation refs from wire metadata before the lossy string-map
+            // conversion drops the array. Citations are model-produced #N/@N ref strings.
+            let citations: Vec<Citation> = msg
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("citations"))
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .filter_map(|s| match Citation::try_new(s) {
+                            Ok(c) => Some(c),
+                            Err(e) => {
+                                tracing::warn!(raw = s, error = %e, "citation parse failed; skipping");
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             let event = match (role.as_str(), msg.task_id.clone()) {
                 (ROLE_USER, Some(task_id)) => ProvEvent::message_received_task(
                     context_id,
@@ -857,6 +911,7 @@ impl TaskChunkApplier for ProvenanceTaskStore {
                     metadata,
                     self.agent_id.clone(),
                     now_millis(),
+                    citations,
                 ),
                 (_, None) => ProvEvent::message_sent_global(
                     context_id,
@@ -866,6 +921,7 @@ impl TaskChunkApplier for ProvenanceTaskStore {
                     metadata,
                     self.agent_id.clone(),
                     now_millis(),
+                    citations,
                 ),
             };
             self.record_event_required(event, "apply_task_delta message lifecycle")

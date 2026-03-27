@@ -26,9 +26,9 @@ pub mod trajectory;
 
 pub use assessment::{
     BIPIA_CITE_MEAN_THRESHOLD, BIPIA_STEP_ALIGN_THRESHOLD, BIPIA_SYNTHESIS_CITE_THRESHOLD,
-    BIPIA_SYNTHESIS_STEP_THRESHOLD, BipiaSignal, CitationDriftAssessment, CitationSimilarity,
-    DEFAULT_TEXT_PREVIEW_CHARS, DriftAssessment, DriftSeverity, classify_score, preview_text,
-    score_bipia_signal, score_citation_drift, score_drift,
+    BIPIA_SYNTHESIS_STEP_THRESHOLD, BipiaSignal, BipiaSignalInputs, CitationDriftAssessment,
+    CitationSimilarity, DEFAULT_TEXT_PREVIEW_CHARS, DriftAssessment, DriftSeverity, classify_score,
+    preview_text, score_bipia_signal, score_citation_drift, score_drift,
 };
 pub use config::{DriftConfig, DriftMode};
 pub use plan_assessment::{

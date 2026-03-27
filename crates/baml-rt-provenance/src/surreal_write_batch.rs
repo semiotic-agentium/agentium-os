@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::{
     graph_model::GraphNodeLabel,
+    id_semantics::context_entity_id_string,
     normalizer::{A2aRelationType, NormalizedProv},
     payload_record::PayloadRecord,
     payload_storage,
@@ -557,24 +558,82 @@ fn build_graph_fragment(normalized: &NormalizedProv, context_id: Option<&str>) -
         for (k, v) in &relation.attributes {
             edge_props.insert(k.clone(), v.clone());
         }
-        let (from_label, to_label) = match relation.relation {
-            A2aRelationType::IntentReplacedBy | A2aRelationType::IntentRefinedBy => (
+        let (from_label, to_label, rel_type) = match relation.relation {
+            A2aRelationType::IntentReplacedBy => (
                 GraphNodeLabel::Intent.as_str(),
                 GraphNodeLabel::Intent.as_str(),
+                semantic_labels::WAS_REPLACED_BY,
             ),
-            A2aRelationType::PlanReplacedBy | A2aRelationType::PlanRefinedBy => {
-                (GraphNodeLabel::Plan.as_str(), GraphNodeLabel::Plan.as_str())
+            A2aRelationType::IntentRefinedBy => (
+                GraphNodeLabel::Intent.as_str(),
+                GraphNodeLabel::Intent.as_str(),
+                semantic_labels::WAS_REFINED_BY,
+            ),
+            A2aRelationType::PlanReplacedBy => (
+                GraphNodeLabel::Plan.as_str(),
+                GraphNodeLabel::Plan.as_str(),
+                semantic_labels::WAS_REPLACED_BY,
+            ),
+            A2aRelationType::PlanRefinedBy => (
+                GraphNodeLabel::Plan.as_str(),
+                GraphNodeLabel::Plan.as_str(),
+                semantic_labels::WAS_REFINED_BY,
+            ),
+            A2aRelationType::InformedByToolInvocation => (
+                GraphNodeLabel::SessionStep.as_str(),
+                GraphNodeLabel::ToolCall.as_str(),
+                semantic_labels::WAS_INFORMED_BY,
+            ),
+            A2aRelationType::CitedSource => {
+                let from_label = label_for_prov_node_ref(
+                    &relation.from,
+                    &entity_labels,
+                    &activity_labels,
+                    &agent_labels,
+                );
+                let to_label = label_for_prov_node_ref(
+                    &relation.to,
+                    &entity_labels,
+                    &activity_labels,
+                    &agent_labels,
+                );
+                (from_label, to_label, semantic_labels::CITED)
             }
-            _ => continue,
-        };
-        let rel_type = match relation.relation {
-            A2aRelationType::IntentReplacedBy | A2aRelationType::PlanReplacedBy => {
-                semantic_labels::WAS_REPLACED_BY
+            A2aRelationType::HasIntent => (
+                GraphNodeLabel::Task.as_str(),
+                GraphNodeLabel::Intent.as_str(),
+                semantic_labels::HAS_INTENT,
+            ),
+            A2aRelationType::HasPlan => (
+                GraphNodeLabel::Task.as_str(),
+                GraphNodeLabel::Plan.as_str(),
+                semantic_labels::HAS_PLAN,
+            ),
+            // All remaining derived relations use dynamic label resolution.
+            // Every variant is handled — no silent skipping.
+            // All remaining derived relations: resolve labels dynamically,
+            // use the canonical a2a_relations string as rel_type.
+            A2aRelationType::TaskHasMessage
+            | A2aRelationType::TaskHasSessionStep
+            | A2aRelationType::TaskHasArtifact
+            | A2aRelationType::TaskCall
+            | A2aRelationType::TaskStatusTransition
+            | A2aRelationType::MessageCall
+            | A2aRelationType::InformedByObservation => {
+                let from_label = label_for_prov_node_ref(
+                    &relation.from,
+                    &entity_labels,
+                    &activity_labels,
+                    &agent_labels,
+                );
+                let to_label = label_for_prov_node_ref(
+                    &relation.to,
+                    &entity_labels,
+                    &activity_labels,
+                    &agent_labels,
+                );
+                (from_label, to_label, relation.relation.as_str())
             }
-            A2aRelationType::IntentRefinedBy | A2aRelationType::PlanRefinedBy => {
-                semantic_labels::WAS_REFINED_BY
-            }
-            _ => continue,
         };
         push_edge_upsert(
             &mut stmts,
@@ -592,7 +651,7 @@ fn build_graph_fragment(normalized: &NormalizedProv, context_id: Option<&str>) -
     }
 
     if let Some(ctx_id) = context_id {
-        let ctx_node_id = format!("context:{ctx_id}");
+        let ctx_node_id = context_entity_id_string(ctx_id);
         let ctx_props: HashMap<String, Value> = HashMap::new();
         push_node_upsert(
             &mut stmts,

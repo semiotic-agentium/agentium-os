@@ -25,9 +25,39 @@
 //!   any read that starts after a write completes sees that write. Callers must await
 //!   [ProvenanceWriter::add_event] (or [ProvenanceWriter::add_events]) before calling the reader
 //!   methods if they need to see those events.
+//!
+//! ## Graph-first design constraint
+//!
+//! All **storage** provenance read paths must derive relationships from graph edge traversals.
+//! String-based ID prefix matching (`starts_with`, `strip_prefix`), positional FIFO
+//! matching, and tool-name suffix matching are prohibited on those read paths. If a
+//! read-path projection is impossible given the stored graph, the graph construction
+//! (write path) is incorrect — fix the write path, do not add a read-time heuristic.
+//! **Episode / API view-model** code may apply display-only pairing (e.g. matching a synthetic
+//! tool name to enrich JSON) as long as it does not substitute for graph-backed retrieval.
+//!
+//! ID conventions (e.g. `"session-step:{anchor}"`) may be used at **write time** to
+//! construct deterministic node IDs — this is the normalizer's own convention, not a
+//! read-path concern. These conventions must be expressed through typed semantic ID
+//! constructors (see [`crate::id_semantics`]), not bare `format!()` strings.
+//!
+//! ## `Option` discipline
+//!
+//! `Option` on provenance types must represent **genuine optionality** — "this value
+//! may be legitimately absent." It must not represent construction order ("not built
+//! yet" — use typestate), variant-specific data ("only for SendDone" — use enum
+//! variants), or fallible side-channel retrieval ("DashMap might not have it" — fix
+//! the insertion or assert).
+//!
+//! When a provenance event field is `None` at a point where it should be populated,
+//! the write path must either: (1) reject the event with an error, or (2) log at
+//! `error!` level and degrade gracefully with a synthetic fallback. Silently mapping
+//! `None` to "skip this edge/attribute" is prohibited — it produces invisible graph
+//! corruption that manifests as missing data on the read path, far from the source.
 
 use async_trait::async_trait;
 use baml_rt_core::{
+    Citation,
     bus::PlanningSupersessionKind,
     ids::{ActivityAnchorId, AgentId, ContextId, MessageId, TaskId},
 };
@@ -100,6 +130,7 @@ pub enum SessionStepOp {
     SendDone {
         archive_ref: String,
         header: String,
+        informed_by: String,
     },
     /// Parameters that deterministically reproduce the cat-n output from the archive.
     Read {
@@ -115,13 +146,25 @@ pub enum SessionStepOp {
 pub struct SessionStepContent {
     pub tool_name: String,
     pub op: SessionStepOp,
+    /// `SendDone` only: `tool_result` JSON from the linked `ToolCall` (via `WAS_INFORMED_BY` graph edge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_done_replay_payload: Option<serde_json::Value>,
+    /// `Read` only: replayed `cat -n` lines after resolving `archive_ref` against a prior hydrated SendDone in the same context batch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_replay_lines: Option<Vec<String>>,
 }
 
 /// Typed discriminated content for a conversation history item.
 /// Replaces `content: Value` + `source: String` — the source IS the variant.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ConversationItemContent {
-    Message(String),
+    Message {
+        text: String,
+        /// Validated citation refs (`#N`, `@N`, …) produced by the model in this message.
+        /// Populated from CITED graph edges on the Message entity; empty for user messages.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        citations: Vec<Citation>,
+    },
     ToolCall(ToolCallContent),
     ToolResult(ToolResultContent),
     /// An individual session step — Open/SendDone/Read within an in-progress session.
@@ -133,7 +176,7 @@ impl ConversationItemContent {
     /// `StatusOnly` tool results return false.
     pub fn is_meaningful(&self) -> bool {
         match self {
-            Self::Message(s) => !s.trim().is_empty(),
+            Self::Message { text, .. } => !text.trim().is_empty(),
             Self::ToolCall(_) => true,
             Self::ToolResult(tr) => !matches!(tr.outcome, ToolOutcome::StatusOnly),
             Self::SessionStep(_) => true,
@@ -154,7 +197,7 @@ impl ProvenanceConversationContextItem {
     /// Returns a string label for the content variant — used in tests and diagnostics.
     pub fn source_name(&self) -> &'static str {
         match &self.content {
-            ConversationItemContent::Message(_) => "message",
+            ConversationItemContent::Message { .. } => "message",
             ConversationItemContent::ToolCall(_) => "tool_call",
             ConversationItemContent::ToolResult(_) => "tool_result",
             ConversationItemContent::SessionStep(_) => "session_step",
@@ -239,6 +282,11 @@ impl ToolSessionPhase {
 /// reflect all prior writes that completed before the read. This trait corresponds to
 /// [ProvenanceReadIntent::AgentContext]. Use [ProvenanceQueryApi] for API-exposed reads that do
 /// not require this guarantee.
+///
+/// **Graph-first contract:** Implementations must reconstruct conversation items from graph
+/// structure (edges, node properties, stored `event_order`) — not from node ID string
+/// conventions or positional matching. Node property reads (e.g. `a2a_event_order`,
+/// `a2a_role`, `a2a_content`) are the canonical data source.
 #[async_trait]
 pub trait ProvenanceContextReader: Send + Sync {
     /// Messages for the given context (user + assistant). Used for conversation history.
@@ -251,12 +299,30 @@ pub trait ProvenanceContextReader: Send + Sync {
 
     /// Full conversation context (messages + tool calls) for the given context. Used for
     /// BAML conversation context. Must reflect all prior [ProvenanceWriter::add_event] calls
-    /// that completed before this call.
+    /// that completed before this call. Returns **all** context-scoped rows (not filtered by task).
+    ///
+    /// For the same slice as [ProvenanceQueryApi::query_conversation_context] with a task filter,
+    /// use [Self::conversation_context_with_task] when `task_id` is known (e.g. citation drift
+    /// scoring for a task-scoped LLM completion).
     async fn conversation_context(
         &self,
         context_id: &ContextId,
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceConversationContextItem>>;
+
+    /// Conversation rows for prompt-adjacent logic that must align with a **task transcript**
+    /// (same filtering as [ProvenanceQueryApi::query_conversation_context] when `task_id` is `Some`).
+    ///
+    /// Default implementation ignores `task_id` and delegates to [Self::conversation_context].
+    async fn conversation_context_with_task(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+        task_id: Option<&TaskId>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        let _ = task_id;
+        self.conversation_context(context_id, limit).await
+    }
 }
 
 /// Query API for provenance context: **does not** guarantee no-stale-read.
@@ -274,10 +340,18 @@ pub trait ProvenanceQueryApi: Send + Sync {
     ) -> Result<Vec<ProvenanceContextMessage>>;
 
     /// Full conversation context for the given context. No guarantee of consistency with writes.
+    ///
+    /// When `task_id` is `Some`, only rows linked to that task are returned (for per-task
+    /// transcript / episode assembly). When `None`, returns the same rows as
+    /// [ProvenanceContextReader::conversation_context] (full context history).
+    /// Agent-side code with only [ProvenanceContextReader] should use
+    /// [ProvenanceContextReader::conversation_context_with_task] for the same filter under
+    /// no-stale-read.
     async fn query_conversation_context(
         &self,
         context_id: &ContextId,
         limit: Option<usize>,
+        task_id: Option<&TaskId>,
     ) -> Result<Vec<ProvenanceConversationContextItem>>;
 }
 
@@ -291,6 +365,9 @@ pub struct PlanningIntentRecord {
     pub activity_anchor_id: ActivityAnchorId,
     pub intent_id: String,
     pub description: String,
+    /// Monotonic event counter parsed from the activity anchor at write time.
+    #[serde(default)]
+    pub event_order: u64,
     /// Relation kind from the previous revision to this record, if any.
     pub supersession_from_previous: Option<PlanningSupersessionKind>,
     /// Relation kind from this record to a newer revision, if any.
@@ -319,6 +396,9 @@ pub struct PlanningPlanRecord {
     pub intent_id: String,
     pub plan_id: String,
     pub steps: Vec<PlanningPlanStepRecord>,
+    /// Monotonic event counter parsed from the activity anchor at write time.
+    #[serde(default)]
+    pub event_order: u64,
     /// Relation kind from the previous revision to this record, if any.
     pub supersession_from_previous: Option<PlanningSupersessionKind>,
     /// Relation kind from this record to a newer revision, if any.
@@ -500,6 +580,11 @@ pub struct ProvenanceArchiveRecord {
     pub payloads: Vec<ProvenanceArchivePayload>,
 }
 
+/// Operational analytics queries over the provenance store.
+///
+/// **Graph-first contract:** Query results should derive relationships from node properties
+/// and edge labels — not from node ID string parsing. Ordering uses the persisted
+/// `event_order` property rather than activity-anchor string manipulation.
 #[async_trait]
 pub trait ProvenanceOpsQuery: Send + Sync {
     async fn query_ops(

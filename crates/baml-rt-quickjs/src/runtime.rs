@@ -9,7 +9,7 @@ use baml_rt_core::{
     bus::{BusApi, BusWithEffects, EffectEmitter, EffectLiveness},
 };
 use baml_rt_interceptor::{InterceptorPipeline, LLMInterceptor, ToolInterceptor};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::{a2a_stream::BridgeHandle, baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
 
@@ -167,7 +167,7 @@ impl RuntimeConfig {
 /// Built runtime environment
 pub struct Runtime {
     /// The BAML runtime manager
-    pub baml_manager: Arc<Mutex<BamlRuntimeManager>>,
+    pub baml_manager: Arc<RwLock<BamlRuntimeManager>>,
 
     /// Per-bridge handover handle (owns the bridge + dedicated OS thread).
     pub bridge_handle: Arc<BridgeHandle>,
@@ -178,7 +178,7 @@ pub struct Runtime {
 
 impl Runtime {
     /// Get the BAML runtime manager
-    pub fn baml_manager(&self) -> Arc<Mutex<BamlRuntimeManager>> {
+    pub fn baml_manager(&self) -> Arc<RwLock<BamlRuntimeManager>> {
         self.baml_manager.clone()
     }
 
@@ -402,7 +402,7 @@ impl RuntimeBuilder {
             registry_guard.merge_tool_pipeline(tool_pipeline);
         }
 
-        let baml_manager = Arc::new(Mutex::new(baml_manager));
+        let baml_manager = Arc::new(RwLock::new(baml_manager));
 
         // Extract config fields before moving - clone quickjs_config to avoid partial move
         let RuntimeConfig {

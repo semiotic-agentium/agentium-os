@@ -81,6 +81,8 @@ pub mod a2a {
     pub const CONTEXT_ID: &str = "a2a:context_id";
     pub const REASON: &str = "a2a:reason";
     pub const TIMESTAMP_MS: &str = "a2a:timestamp_ms";
+    /// Monotonic event counter parsed from the activity anchor at write time.
+    pub const EVENT_ORDER: &str = "a2a:event_order";
     pub const DELEGATION_TARGET: &str = "a2a:delegation_target";
     pub const FAILURE_CLASS: &str = "a2a:failure_class";
     pub const FAILURE_EVIDENCE: &str = "a2a:failure_evidence";
@@ -130,14 +132,20 @@ pub mod a2a_types {
     pub const MESSAGE: &str = "a2a:Message";
     pub const ARTIFACT: &str = "a2a:Artifact";
     pub const DELEGATION_TARGET: &str = "a2a:DelegationTarget";
+    pub const SESSION_STEP: &str = "a2a:SessionStep";
     pub const FAILURE_CLASSIFICATION_ACTIVITY: &str = "a2a:FailureClassificationActivity";
     pub const FAILURE_CLASSIFICATION: &str = "a2a:FailureClassification";
+    pub const CONTEXT: &str = "a2a:Context";
 }
 
 pub mod a2a_relation_types {
     pub const STATUS_TRANSITION: &str = "a2a:status_transition";
     /// `WasDerivedFrom.prov_type` for archive (`@N`) citation lineage: decision grounded in observed data.
     pub const INFORMED_BY_OBSERVATION: &str = "a2a:informed_by_observation";
+    /// `WAS_INFORMED_BY` edge: session `SendDone` step grounded in a specific `ToolCall` completion’s result.
+    pub const INFORMED_BY_TOOL_INVOCATION: &str = "a2a:informed_by_tool_invocation";
+    /// `CITED` edge: LLM decision cited a specific evidence source.
+    pub const CITED: &str = "a2a:cited";
 }
 
 /// Structural relation: Context node to nodes scoped to that context.
@@ -175,6 +183,10 @@ pub mod semantic_labels {
     pub const WAS_DELEGATED_TO: &str = "WAS_DELEGATED_TO";
     pub const TASK_TRIGGERED_BY_MESSAGE: &str = "TASK_TRIGGERED_BY_MESSAGE";
     pub const TASK_EMITTED_MESSAGE: &str = "TASK_EMITTED_MESSAGE";
+    /// LLM decision cited a specific evidence source (`#N` history or `@N` archive).
+    pub const CITED: &str = "CITED";
+    pub const HAS_INTENT: &str = "HAS_INTENT";
+    pub const HAS_PLAN: &str = "HAS_PLAN";
 }
 
 pub mod prov_roles {
@@ -206,19 +218,18 @@ pub mod message_directions {
 }
 
 pub mod a2a_relations {
-    pub const INTENT_MESSAGE: &str = "A2A_INTENT_MESSAGE";
-    pub const INTENT_PLAN: &str = "A2A_INTENT_PLAN";
+    // Relation types whose DB rel_type is from this module (used directly by write-batch dynamic arm
+    // and read paths). Keep in sync with `A2aRelationType::as_str()` in normalizer.rs.
     pub const PLAN_STEP: &str = "A2A_PLAN_STEP";
-    pub const INTENT_REPLACED_BY: &str = "A2A_INTENT_REPLACED_BY";
-    pub const INTENT_REFINED_BY: &str = "A2A_INTENT_REFINED_BY";
-    pub const PLAN_REPLACED_BY: &str = "A2A_PLAN_REPLACED_BY";
-    pub const PLAN_REFINED_BY: &str = "A2A_PLAN_REFINED_BY";
     pub const TASK_MESSAGE: &str = "A2A_TASK_MESSAGE";
+    /// `A2ATask` entity → `SessionStep` entity (task-scoped tool session rows).
+    pub const TASK_SESSION_STEP: &str = "A2A_TASK_SESSION_STEP";
     pub const TASK_ARTIFACT: &str = "A2A_TASK_ARTIFACT";
     pub const TASK_CALL: &str = "A2A_TASK_CALL";
     pub const TASK_STATUS_TRANSITION: &str = "A2A_TASK_STATUS_TRANSITION";
     pub const MESSAGE_CALL: &str = "A2A_MESSAGE_CALL";
-    /// Reserved for derived-relation emission when linking an LLM/decision node to an observation source (`@N`).
+    /// Reserved — `InformedByObservation` variant is not yet emitted;
+    /// this value is used as the `prov_type` attribute on WAS_DERIVED_FROM edges when it is.
     pub const INFORMED_BY_OBSERVATION: &str = "A2A_INFORMED_BY_OBSERVATION";
 }
 
@@ -293,6 +304,7 @@ pub mod storage_safe {
     pub const A2A_ARTIFACT_TYPE: &str = "a2a_artifact_type";
     pub const A2A_CONTEXT_ID: &str = "a2a_context_id";
     pub const A2A_TIMESTAMP_MS: &str = "a2a_timestamp_ms";
+    pub const A2A_EVENT_ORDER: &str = "a2a_event_order";
     pub const A2A_FAILURE_CLASS: &str = "a2a_failure_class";
     pub const A2A_FAILURE_EVIDENCE: &str = "a2a_failure_evidence";
     pub const A2A_FAILURE_CODE: &str = "a2a_failure_code";

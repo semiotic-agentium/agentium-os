@@ -1,0 +1,2 @@
+models/fastembed/**/blobs/c1296* filter=lfs diff=lfs merge=lfs -text
+models/fastembed/**/blobs/d908* filter=lfs diff=lfs merge=lfs -text

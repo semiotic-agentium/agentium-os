@@ -1,0 +1,88 @@
+use serde_json::Value;
+
+use crate::error::ProvenanceError;
+
+pub(super) fn map_surreal_error(e: surrealdb::Error) -> ProvenanceError {
+    ProvenanceError::Storage(Box::new(e))
+}
+
+/// Deserialize SurrealDB [`surrealdb::IndexedResults`] statement `0` as JSON object rows.
+#[inline]
+pub(super) fn query_take_zero<E>(
+    response: &mut surrealdb::IndexedResults,
+    map_err: impl FnOnce(surrealdb::Error) -> E,
+) -> std::result::Result<Vec<Value>, E> {
+    response.take(0).map_err(map_err)
+}
+
+pub(super) fn normalize_message_content(value: &Value) -> String {
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::String(s) => s.trim().to_string(),
+        other => other.to_string(),
+    }
+}
+
+pub(super) fn is_empty_object(value: &Value) -> bool {
+    matches!(value, Value::Object(m) if m.is_empty())
+}
+
+pub(super) fn has_meaningful_result(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Object(m) => !m.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::String(s) => !s.trim().is_empty(),
+        _ => true,
+    }
+}
+
+/// Reserved for conversation_context tool metadata extraction.
+#[allow(dead_code)]
+pub(super) fn metadata_error(metadata: &Value) -> Option<Value> {
+    let error = metadata.get("error")?;
+    if has_meaningful_result(error) {
+        Some(error.clone())
+    } else {
+        None
+    }
+}
+
+pub(super) fn is_step_completed_status(status: &str) -> bool {
+    let normalized = status.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "completed" | "done" | "step_completed" | "finished"
+    )
+}
+
+pub(super) fn decode_depends_on(raw: Option<String>) -> Vec<String> {
+    raw.and_then(|value| serde_json::from_str::<Value>(&value).ok())
+        .and_then(|value| value.as_array().cloned())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+/// Normalize payload text search query for SurrealDB BM25 full-text search.
+pub(super) fn normalize_payload_text_query(raw: &str) -> String {
+    raw.split_whitespace()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(|token| token.replace('"', ""))
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}

@@ -20,6 +20,7 @@ const {
   provenanceDiagram,
   contextMetrics,
   contextId,
+  taskId,
   workflowProgress,
   awaitingInput,
   inputRequiredPrompt,
@@ -142,6 +143,7 @@ onMounted(() => fetchAgents());
           />
           <ProvenancePane
             :context-id="contextId"
+            :task-id="taskId ?? undefined"
             :selected-agent-id="undefined"
             :is-streaming="isLoading"
             :diagrams="diagrams"

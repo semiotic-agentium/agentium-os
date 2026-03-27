@@ -1,8 +1,8 @@
-//! Derive task_id, context_id, agent_id by graph traversal.
+//! Derive task_id, context_id, agent_id by node properties and edge traversal.
 //!
-//! These properties need not be written on every node; they can be derived by
-//! parsing node ids or traversing edges. This enrichment runs after export parse
-//! so consumers (filter_scope, sequence) continue to work without change.
+//! These properties are read from node properties first, then propagated to
+//! adjacent nodes via edge traversal. Graph-first: no node ID prefix parsing.
+//! Runs after export parse so consumers (filter_scope, sequence) work unchanged.
 
 use std::collections::HashMap;
 
@@ -22,40 +22,31 @@ const EDGE_TO_ACTIVITY_WITH_TASK: &[&str] = &["WAS_EMITTED_BY"];
 /// Edges to AgentRuntimeInstance (agent_id in id).
 const EDGE_TO_AGENT: &[&str] = &["WAS_EXECUTED_BY", "WAS_INVOKED_BY"];
 
-/// Parse task_id from node id. Returns Some if the id format encodes task_id.
-fn parse_task_id_from_id(id: &str) -> Option<String> {
-    if let Some(tid) = id.strip_prefix("task_execution_") {
-        return Some(tid.to_string());
-    }
-    if let Some(tid) = id.strip_prefix("task:") {
-        return Some(tid.to_string());
-    }
-    if let Some(rest) = id.strip_prefix("task_state:") {
-        return rest.split(':').next().map(String::from);
-    }
-    if let Some(rest) = id.strip_prefix("artifact:") {
-        return rest.split(':').next().map(String::from);
-    }
-    None
+/// Derive task_id from node properties only (graph-first).
+fn derive_task_id(node: &super::ExportedNode) -> Option<String> {
+    node.properties
+        .get(a2a::TASK_ID)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
 }
 
-/// Parse context_id from node id.
-fn parse_context_id_from_id(id: &str) -> Option<String> {
-    if let Some(rest) = id.strip_prefix("message:") {
-        return rest.split(':').next().map(String::from);
-    }
-    if let Some(rest) = id.strip_prefix("message_processing:") {
-        return rest.split(':').next().map(String::from);
-    }
-    None
+/// Derive context_id from node properties only (graph-first).
+fn derive_context_id(node: &super::ExportedNode) -> Option<String> {
+    node.properties
+        .get(a2a::CONTEXT_ID)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
 }
 
-/// Parse agent_id from node id.
-fn parse_agent_id_from_id(id: &str) -> Option<String> {
-    if let Some(aid) = id.strip_prefix("agent_instance:") {
-        return Some(aid.to_string());
-    }
-    None
+/// Derive agent_id from node properties only (graph-first).
+fn derive_agent_id(node: &super::ExportedNode) -> Option<String> {
+    node.properties
+        .get(a2a::AGENT_ID)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
 }
 
 /// Enrich nodes with task_id, context_id, agent_id derived by id parsing and traversal.
@@ -65,13 +56,13 @@ pub fn enrich_derived_properties(graph: &mut ExportedGraph) {
     let mut agent_id_by_node: HashMap<String, String> = HashMap::new();
 
     for node in &graph.nodes {
-        if let Some(tid) = parse_task_id_from_id(&node.id) {
+        if let Some(tid) = derive_task_id(node) {
             task_id_by_node.insert(node.id.clone(), tid);
         }
-        if let Some(cid) = parse_context_id_from_id(&node.id) {
+        if let Some(cid) = derive_context_id(node) {
             context_id_by_node.insert(node.id.clone(), cid);
         }
-        if let Some(aid) = parse_agent_id_from_id(&node.id) {
+        if let Some(aid) = derive_agent_id(node) {
             agent_id_by_node.insert(node.id.clone(), aid);
         }
     }
@@ -188,16 +179,21 @@ mod tests {
 
     #[test]
     fn enrich_derives_task_id_by_traversal() {
+        let mut task_exec_props = HashMap::new();
+        task_exec_props.insert(
+            a2a::TASK_ID.to_string(),
+            serde_json::Value::String("task-1".to_string()),
+        );
         let mut graph = ExportedGraph {
             nodes: vec![
                 ExportedNode {
                     id: "task_execution_task-1".to_string(),
                     label: "TaskExecution".to_string(),
                     display_name: "TaskExec task-1".to_string(),
-                    properties: HashMap::new(),
+                    properties: task_exec_props,
                     event_order: Some(1),
                 },
-                super::super::ExportedNode {
+                ExportedNode {
                     id: "llm_call_ctx:msg:0".to_string(),
                     label: "LlmCall".to_string(),
                     display_name: "LLM".to_string(),
@@ -227,15 +223,18 @@ mod tests {
 
     #[test]
     fn enrich_derives_task_id_on_message_via_was_received_by() {
-        // MessageProcessing -[WAS_INVOKED_BY]-> TaskExecution gives mp task_id.
-        // MessageProcessing -[WAS_RECEIVED_BY]-> Message propagates task_id to Message.
+        let mut task_exec_props = HashMap::new();
+        task_exec_props.insert(
+            a2a::TASK_ID.to_string(),
+            serde_json::Value::String("task-2".to_string()),
+        );
         let mut graph = ExportedGraph {
             nodes: vec![
                 ExportedNode {
                     id: "task_execution_task-2".to_string(),
                     label: "TaskExecution".to_string(),
                     display_name: "TaskExec task-2".to_string(),
-                    properties: HashMap::new(),
+                    properties: task_exec_props,
                     event_order: Some(1),
                 },
                 ExportedNode {
@@ -284,13 +283,18 @@ mod tests {
 
     #[test]
     fn enrich_derives_context_id_from_message_id() {
+        let mut msg_props = HashMap::new();
+        msg_props.insert(
+            a2a::CONTEXT_ID.to_string(),
+            serde_json::Value::String("ctx-1".to_string()),
+        );
         let mut graph = ExportedGraph {
             nodes: vec![
                 ExportedNode {
                     id: "message:ctx-1:msg-1".to_string(),
                     label: "Message".to_string(),
                     display_name: "msg".to_string(),
-                    properties: HashMap::new(),
+                    properties: msg_props,
                     event_order: Some(1),
                 },
                 ExportedNode {
@@ -324,13 +328,18 @@ mod tests {
 
     #[test]
     fn enrich_derives_agent_id_by_traversal() {
+        let mut agent_props = HashMap::new();
+        agent_props.insert(
+            a2a::AGENT_ID.to_string(),
+            serde_json::Value::String("tony".to_string()),
+        );
         let mut graph = ExportedGraph {
             nodes: vec![
                 ExportedNode {
                     id: "agent_instance:tony".to_string(),
                     label: "AgentRuntimeInstance".to_string(),
                     display_name: "Agent tony".to_string(),
-                    properties: HashMap::new(),
+                    properties: agent_props,
                     event_order: None,
                 },
                 ExportedNode {

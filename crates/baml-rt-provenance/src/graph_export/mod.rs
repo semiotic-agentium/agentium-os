@@ -21,6 +21,7 @@ use std::{
     sync::Arc,
 };
 
+use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -28,6 +29,7 @@ use crate::{
     error::{ProvenanceError, Result},
     graph_export::activity_outcome::NodeActivityOutcome,
     graph_model::GraphNodeLabel,
+    id_semantics::context_entity_id_string,
     surreal_store::SurrealProvenanceStore,
     vocabulary::{a2a, context_scope, message_directions, prov, storage_safe},
 };
@@ -114,9 +116,8 @@ impl GraphExporter {
         tracing::debug!(context_id = %context_id, "export_context_core: START surreal");
         let t0 = std::time::Instant::now();
 
-        // Context node_id is prefixed: "context:{context_id}"
         let scoped_to = context_scope::SCOPED_TO;
-        let ctx_node_id = format!("context:{context_id}");
+        let ctx_node_id = context_entity_id_string(context_id);
 
         // Use subqueries to avoid binding Vec<String> which SurrealDB's bind API
         // does not support for IN clauses. The scoped_ids subquery is reused
@@ -173,15 +174,27 @@ impl GraphExporter {
 
         let mut extra_node_rows: Vec<Value> = Vec::new();
         if !extra_ids.is_empty() {
-            // Fetch extra target nodes individually (small set — typically just AgentRuntimeInstance)
-            for extra_id in &extra_ids {
-                let mut resp = self.store.db()
-                    .query("SELECT node_id, label, props OMIT id FROM prov_node WHERE node_id = $nid LIMIT 1")
-                    .bind(("nid", extra_id.clone()))
-                    .await
-                    .map_err(surreal_err)?;
-                let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
-                extra_node_rows.extend(rows);
+            // Fetch extra target nodes concurrently (small set — typically just AgentRuntimeInstance).
+            let fetch_results = join_all(extra_ids.iter().map(|extra_id| {
+                let store = Arc::clone(&self.store);
+                let nid = extra_id.clone();
+                async move {
+                    let mut resp = store
+                        .db()
+                        .query(
+                            "SELECT node_id, label, props OMIT id FROM prov_node \
+                             WHERE node_id = $nid LIMIT 1",
+                        )
+                        .bind(("nid", nid))
+                        .await
+                        .map_err(surreal_err)?;
+                    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+                    Ok::<Vec<Value>, ProvenanceError>(rows)
+                }
+            }))
+            .await;
+            for result in fetch_results {
+                extra_node_rows.extend(result?);
             }
         }
 
@@ -244,12 +257,22 @@ impl GraphExporter {
             .filter(|s| !s.is_empty())
             .collect();
         if ids.is_empty() {
-            let fallback = "SELECT DISTINCT props.a2a_context_id AS ctx_id OMIT id FROM prov_node WHERE props.a2a_context_id IS NOT NULL";
-            let mut fb_response = self.store.db().query(fallback).await.map_err(surreal_err)?;
+            // Fallback: find distinct SCOPED_TO target nodes with Context label.
+            let scoped = context_scope::SCOPED_TO;
+            let fallback = format!(
+                "SELECT DISTINCT to_id OMIT id FROM prov_edge \
+                 WHERE rel_type = '{scoped}' AND to_label = '{ctx_label}'"
+            );
+            let mut fb_response = self
+                .store
+                .db()
+                .query(&fallback)
+                .await
+                .map_err(surreal_err)?;
             let fb_rows: Vec<Value> = fb_response.take(0).map_err(surreal_err)?;
             ids = fb_rows
                 .iter()
-                .filter_map(|r| r.get("ctx_id").and_then(Value::as_str).map(String::from))
+                .filter_map(|r| r.get("to_id").and_then(Value::as_str).map(String::from))
                 .filter(|s| !s.is_empty())
                 .collect();
         }
@@ -258,24 +281,48 @@ impl GraphExporter {
         Ok(ids)
     }
 
+    /// Resolve the context_id for a task via SCOPED_TO edge traversal.
     async fn task_context_id(&self, task_id: &str) -> Result<Option<String>> {
-        let query = "SELECT props.a2a_context_id AS ctx_id OMIT id FROM prov_node \
-                     WHERE props.a2a_task_id = $task_id AND props.a2a_context_id IS NOT NULL LIMIT 1";
+        let task_node = crate::id_semantics::task_entity_id_string_raw(task_id);
+        let scoped = context_scope::SCOPED_TO;
+        let query = format!(
+            "SELECT to_id OMIT id FROM prov_edge \
+             WHERE from_id = $task_node AND rel_type = '{scoped}' LIMIT 1"
+        );
         let mut response = self
             .store
             .db()
-            .query(query)
-            .bind(("task_id", task_id.to_string()))
+            .query(&query)
+            .bind(("task_node", task_node))
             .await
             .map_err(surreal_err)?;
         let rows: Vec<Value> = response.take(0).map_err(surreal_err)?;
-        let ctx_id = rows
+        // The to_id is the Context entity node_id (e.g. "context:ctx-1234-0").
+        // Extract the raw context_id by stripping the "context:" prefix.
+        let ctx_node_id = rows
             .first()
-            .and_then(|r| r.get("ctx_id"))
-            .and_then(Value::as_str)
-            .map(String::from);
-        Ok(ctx_id)
+            .and_then(|r| r.get("to_id"))
+            .and_then(Value::as_str);
+        Ok(ctx_node_id.and_then(|nid| nid.strip_prefix("context:").map(String::from)))
     }
+}
+
+// ── Convenience wrappers ────────────────────────────────────────────────────
+
+/// Resolve the `context_id` for a task from the graph (single lightweight query).
+pub async fn task_context_id(
+    store: Arc<SurrealProvenanceStore>,
+    task_id: &str,
+) -> Result<Option<String>> {
+    GraphExporter::new(store).task_context_id(task_id).await
+}
+
+/// Convenience wrapper: export the subgraph for a single task.
+pub async fn export_graph_for_task(
+    store: Arc<SurrealProvenanceStore>,
+    task_id: &str,
+) -> Result<ExportedGraph> {
+    GraphExporter::new(store).export_by_task(task_id).await
 }
 
 // ── Parsing (SurrealDB rows) ────────────────────────────────────────────────
@@ -819,23 +866,17 @@ fn cmp_event_order(
     }
 }
 
-/// Extract a temporal ordering key from node properties.
+/// Extract a temporal ordering key from node properties (graph-first).
 ///
-/// Primary: parse the monotonic counter from `a2a:activity_anchor` (`"prov-42"` → 42).
-/// Fallback: use `a2a:timestamp_ms`, then `a2a:task_state_time` for TaskState nodes.
+/// Primary: persisted `a2a:event_order` (written at normalization time).
+/// Fallback: `a2a:timestamp_ms`, then `a2a:task_state_time` (both stored properties).
 fn parse_event_order(props: &HashMap<String, serde_json::Value>) -> Option<u64> {
-    // Try `a2a:activity_anchor` first (format: "prov-{counter}").
-    if let Some(activity_anchor) = props.get(a2a::ACTIVITY_ANCHOR).and_then(|v| v.as_str())
-        && let Some(counter_str) = activity_anchor.strip_prefix("prov-")
-        && let Ok(counter) = counter_str.parse::<u64>()
-    {
-        return Some(counter);
+    if let Some(order) = props.get(a2a::EVENT_ORDER).and_then(|v| v.as_u64()) {
+        return Some(order);
     }
-    // Fallback to a2a:timestamp_ms.
     if let Some(ts) = props.get(a2a::TIMESTAMP_MS).and_then(|v| v.as_u64()) {
         return Some(ts);
     }
-    // Fallback for TaskState nodes: a2a:task_state_time.
     props.get(a2a::TASK_STATE_TIME).and_then(|v| v.as_u64())
 }
 

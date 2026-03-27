@@ -62,7 +62,7 @@ async fn test_js_invoke_baml_function() {
 
     let baml_manager = setup_baml_runtime_from_fixture("stream-baml-tool");
     {
-        let mut manager = baml_manager.lock().await;
+        let mut manager = baml_manager.write().await;
         manager.register_tool(CalculatorTool).await.unwrap();
         manager
             .register_llm_interceptor(StubChooseCalcToolInterceptor)

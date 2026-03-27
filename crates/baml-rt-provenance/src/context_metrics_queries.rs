@@ -9,7 +9,10 @@ use serde_json::Value;
 
 use crate::{
     error::{ProvenanceError, Result},
+    id_semantics::context_entity_id_string,
     surreal_store::SurrealProvenanceStore,
+    surreal_tables::{TBL_EDGE, TBL_NODE},
+    vocabulary::{context_scope, semantic_labels},
 };
 
 fn surreal_err(e: surrealdb::Error) -> ProvenanceError {
@@ -22,22 +25,26 @@ pub async fn session_totals_by_context(
     store: &SurrealProvenanceStore,
     context_id: &str,
 ) -> Result<Vec<MetricsRow>> {
-    let query = "\
-        SELECT \
+    let ctx_node = context_entity_id_string(context_id);
+    let scoped = context_scope::SCOPED_TO;
+    let query = format!(
+        "SELECT \
             math::sum(props.a2a_usage_prompt_tokens) AS tokens_in, \
             math::sum(props.a2a_usage_completion_tokens) AS tokens_out, \
             math::sum(props.a2a_usage_total_tokens) AS tokens_total, \
             count() AS llm_call_count, \
             math::sum(props.a2a_duration_ms) AS llm_duration_ms_total \
-        FROM prov_node \
+        FROM {TBL_NODE} \
         WHERE label = 'LlmCall' \
-          AND props.a2a_context_id = $context_id \
+          AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
+            WHERE to_id = $ctx_node AND rel_type = '{scoped}' AND from_label = 'LlmCall') \
           AND props.a2a_usage_total_tokens IS NOT NULL \
-        GROUP ALL";
+        GROUP ALL"
+    );
     let mut resp = store
         .db()
-        .query(query)
-        .bind(("context_id", context_id.to_string()))
+        .query(&query)
+        .bind(("ctx_node", ctx_node))
         .await
         .map_err(surreal_err)?;
     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
@@ -55,11 +62,13 @@ pub async fn turn_totals_by_context(
     context_id: &str,
 ) -> Result<Vec<MetricsRow>> {
     // Two-step approach: get edges, then resolve node properties per-message.
-    let edge_query = "\
-        SELECT from_id, to_id OMIT id FROM prov_edge \
-        WHERE rel_type = 'WAS_INVOKED_BY' \
-          AND from_label = 'A2AMessageProcessing' \
-          AND to_label = 'LlmCall'";
+    let was_invoked_by = semantic_labels::WAS_INVOKED_BY;
+    let edge_query = format!(
+        "SELECT from_id, to_id OMIT id FROM prov_edge \
+         WHERE rel_type = '{was_invoked_by}' \
+           AND from_label = 'A2AMessageProcessing' \
+           AND to_label = 'LlmCall'"
+    );
     let mut edge_resp = store.db().query(edge_query).await.map_err(surreal_err)?;
     let edge_rows: Vec<Value> = edge_resp.take(0).map_err(surreal_err)?;
 
@@ -76,12 +85,40 @@ pub async fn turn_totals_by_context(
         return Ok(Vec::new());
     }
 
+    let ctx_node = context_entity_id_string(context_id);
+    let scoped = context_scope::SCOPED_TO;
+
+    // Collect scoped node IDs for this context to filter edge results.
+    let scoped_ids_query = format!(
+        "SELECT VALUE from_id FROM {TBL_EDGE} \
+         WHERE to_id = $ctx_node AND rel_type = '{scoped}'"
+    );
+    let mut scoped_resp = store
+        .db()
+        .query(&scoped_ids_query)
+        .bind(("ctx_node", ctx_node))
+        .await
+        .map_err(surreal_err)?;
+    let scoped_ids: std::collections::HashSet<String> = scoped_resp
+        .take::<Vec<String>>(0)
+        .map_err(surreal_err)?
+        .into_iter()
+        .collect();
+
     let mut msg_rows: Vec<Value> = Vec::new();
     for nid in &msg_ids {
-        let mut resp = store.db()
-            .query("SELECT node_id, props.a2a_message_id AS message_id, props.a2a_context_id AS ctx OMIT id FROM prov_node WHERE node_id = $nid LIMIT 1")
+        if !scoped_ids.contains(nid) {
+            continue;
+        }
+        let mut resp = store
+            .db()
+            .query(format!(
+                "SELECT node_id, props.a2a_message_id AS message_id OMIT id \
+                 FROM {TBL_NODE} WHERE node_id = $nid LIMIT 1"
+            ))
             .bind(("nid", nid.clone()))
-            .await.map_err(surreal_err)?;
+            .await
+            .map_err(surreal_err)?;
         let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
         msg_rows.extend(rows);
     }
@@ -89,10 +126,6 @@ pub async fn turn_totals_by_context(
         .iter()
         .filter_map(|r| {
             let nid = r.get("node_id").and_then(Value::as_str)?;
-            let ctx = r.get("ctx").and_then(Value::as_str)?;
-            if ctx != context_id {
-                return None;
-            }
             let mid = r.get("message_id").and_then(Value::as_str)?;
             Some((nid.to_string(), mid.to_string()))
         })
@@ -100,11 +133,18 @@ pub async fn turn_totals_by_context(
 
     let mut llm_rows: Vec<Value> = Vec::new();
     for nid in &llm_ids {
-        let mut resp = store.db()
-            .query("SELECT node_id, props OMIT id FROM prov_node WHERE node_id = $nid AND props.a2a_context_id = $context_id AND props.a2a_usage_total_tokens IS NOT NULL LIMIT 1")
+        if !scoped_ids.contains(nid) {
+            continue;
+        }
+        let mut resp = store
+            .db()
+            .query(format!(
+                "SELECT node_id, props OMIT id FROM {TBL_NODE} \
+                 WHERE node_id = $nid AND props.a2a_usage_total_tokens IS NOT NULL LIMIT 1"
+            ))
             .bind(("nid", nid.clone()))
-            .bind(("context_id", context_id.to_string()))
-            .await.map_err(surreal_err)?;
+            .await
+            .map_err(surreal_err)?;
         let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
         llm_rows.extend(rows);
     }
@@ -189,18 +229,22 @@ pub async fn user_prompts_by_context(
     store: &SurrealProvenanceStore,
     context_id: &str,
 ) -> Result<Vec<MetricsRow>> {
-    let query = "\
-        SELECT props.a2a_message_id AS message_id, count() AS user_prompt_count \
-        FROM prov_node \
+    let ctx_node = context_entity_id_string(context_id);
+    let scoped = context_scope::SCOPED_TO;
+    let query = format!(
+        "SELECT props.a2a_message_id AS message_id, count() AS user_prompt_count \
+        FROM {TBL_NODE} \
         WHERE label = 'Message' \
-          AND props.a2a_context_id = $context_id \
+          AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
+            WHERE to_id = $ctx_node AND rel_type = '{scoped}' AND from_label = 'Message') \
           AND props.a2a_direction = 'received' \
           AND (props.a2a_role = 'user' OR props.a2a_role = 'ROLE_USER') \
-        GROUP BY props.a2a_message_id";
+        GROUP BY props.a2a_message_id"
+    );
     let mut resp = store
         .db()
-        .query(query)
-        .bind(("context_id", context_id.to_string()))
+        .query(&query)
+        .bind(("ctx_node", ctx_node))
         .await
         .map_err(surreal_err)?;
     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;

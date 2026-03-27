@@ -21,7 +21,6 @@ use test_support::common::{
     assert_tool_registered_in_js, setup_baml_runtime_default, setup_baml_runtime_manager_default,
     setup_bridge,
 };
-use tokio::sync::Mutex;
 
 // Test bundle for test tools
 struct Test;
@@ -283,7 +282,7 @@ async fn test_register_and_execute_tool_rust() {
 
     // Register a simple calculator tool using the trait
     {
-        let mut manager = baml_manager.lock().await;
+        let mut manager = baml_manager.write().await;
         manager.register_tool(AddNumbersTool).await.unwrap();
     }
 
@@ -292,7 +291,7 @@ async fn test_register_and_execute_tool_rust() {
     ));
     // Test executing the tool directly from Rust (scope required)
     {
-        let manager = baml_manager.lock().await;
+        let manager = baml_manager.read().await;
         let result = manager
             .execute_tool_with_scope(
                 scope.as_scope(),
@@ -313,7 +312,7 @@ async fn test_register_and_execute_tool_rust() {
 
     // Test listing tools
     {
-        let manager = baml_manager.lock().await;
+        let manager = baml_manager.read().await;
         let tools = manager.list_tools().await;
         assert!(
             tools.contains(&"test/add_numbers".to_string()),
@@ -329,7 +328,7 @@ async fn test_register_and_execute_tool_js() {
 
     // Register a tool using the trait
     {
-        let mut manager = baml_manager.lock().await;
+        let mut manager = baml_manager.write().await;
         manager.register_tool(GreetTool).await.unwrap();
     }
 
@@ -344,7 +343,7 @@ async fn test_register_and_execute_tool_js() {
 
     // Test executing the tool directly from Rust to verify it works end-to-end
     {
-        let manager = baml_manager.lock().await;
+        let manager = baml_manager.read().await;
         let result = manager
             .execute_tool_with_scope(scope.as_scope(), "test/greet", json!({"name": "World"}))
             .await
@@ -363,7 +362,7 @@ async fn test_async_streaming_tool() {
 
     // Register an async streaming tool using the trait
     {
-        let mut manager = baml_manager.lock().await;
+        let mut manager = baml_manager.write().await;
         manager.register_tool(StreamLettersTool).await.unwrap();
     }
 
@@ -372,7 +371,7 @@ async fn test_async_streaming_tool() {
         UuidId::parse_str("00000000-0000-0000-0000-00000000000c").unwrap(),
     ));
     {
-        let manager = baml_manager.lock().await;
+        let manager = baml_manager.read().await;
         let result = manager
             .execute_tool_with_scope(
                 scope.as_scope(),
@@ -534,7 +533,7 @@ async fn test_js_tool_not_available_in_rust() {
         .unwrap();
 
     // Verify it's NOT in the Rust tool registry
-    let manager = baml_manager.lock().await;
+    let manager = baml_manager.read().await;
     let rust_tools = manager.list_tools().await;
     assert!(
         !rust_tools.contains(&"js/only".to_string()),
@@ -595,7 +594,7 @@ async fn test_js_tool_name_conflict_with_rust_tool() {
     // Register Rust tool first
     baml_manager.register_tool(TestRustTool).await.unwrap();
 
-    let baml_manager = Arc::new(Mutex::new(baml_manager));
+    let baml_manager = Arc::new(tokio::sync::RwLock::new(baml_manager));
     let mut bridge = setup_bridge(baml_manager.clone()).await;
 
     // Try to register a JS tool with the same name - should fail
@@ -827,7 +826,7 @@ async fn test_open_session_scoped_propagates_task_id_and_legacy_open_does_not() 
 async fn test_synthetic_session_eval_tool_supports_explicit_ref_progression() {
     let baml_manager = setup_baml_runtime_default();
     {
-        let mut manager = baml_manager.lock().await;
+        let mut manager = baml_manager.write().await;
         manager
             .register_tool(SyntheticSessionEvalTool)
             .await
@@ -837,7 +836,7 @@ async fn test_synthetic_session_eval_tool_supports_explicit_ref_progression() {
         UuidId::parse_str("00000000-0000-0000-0000-0000000000ab").unwrap(),
     ));
     let first = {
-        let manager = baml_manager.lock().await;
+        let manager = baml_manager.read().await;
         manager
             .execute_tool_with_scope(scope.as_scope(), "test/synthetic_session_eval", json!({}))
             .await
@@ -855,7 +854,7 @@ async fn test_synthetic_session_eval_tool_supports_explicit_ref_progression() {
         .to_string();
 
     let second = {
-        let manager = baml_manager.lock().await;
+        let manager = baml_manager.read().await;
         manager
             .execute_tool_with_scope(
                 scope.as_scope(),

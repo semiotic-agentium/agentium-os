@@ -254,7 +254,9 @@ fn normalize_context_item(
     use baml_rt_provenance::store::{ConversationItemContent, ToolOutcome};
 
     let (content_keys, tool_name, tool_phase, has_result, has_error) = match &item.content {
-        ConversationItemContent::Message(_) => (vec!["text".to_string()], None, None, false, false),
+        ConversationItemContent::Message { .. } => {
+            (vec!["text".to_string()], None, None, false, false)
+        }
         ConversationItemContent::ToolCall(tc) => (
             vec![
                 "args".to_string(),
@@ -395,6 +397,7 @@ async fn setup_failed_call_with_classification(store: &dyn SnapshotStore) {
                 outcome: Outcome::Failure,
                 drift: None,
                 citations: vec![],
+                resolved_citations: vec![],
             },
         }))
         .await
@@ -488,6 +491,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
                 content: vec!["Calculate 2 + 3 for me".to_string()],
                 metadata: None,
                 agent_id: agent_id.clone(),
+                citations: vec![],
             },
         }))
         .await
@@ -582,6 +586,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
                 content: vec!["The result of 2 + 3 is 5.".to_string()],
                 metadata: None,
                 agent_id: agent_id.clone(),
+                citations: vec![],
             },
         }))
         .await

@@ -4,7 +4,7 @@ set dotenv-load
 provenance_db := "provenance.db"
 # Separate SurrealKV store dirs (provenance + sibling config.db) so this stack can run alongside another runner using `provenance.db`.
 provenance_persona_claude_notion_db := "persona-claude-notion-provenance.db"
-runner_http_bind := "127.0.0.1:8080"
+runner_http_bind := "127.0.0.1:8081"
 slack_channel := "agentium-eng"
 
 # Binaries (build once with `just build-release`, then agent recipes use these).
@@ -16,6 +16,12 @@ graph_exporter_bin := "${CARGO_TARGET_DIR:-target}/debug/graph_exporter"
 # Regenerate `_baml_runtime.baml` + `src/baml-runtime.d.ts` for every fixture under `tests/fixtures/agents/` and agent under `agents/`. Requires all tool crates (same as build-release).
 regen-fixtures:
     cargo run -p baml-rt-builder --all-features --bin regen_fixtures
+
+# Pre-download fastembed ONNX models to models/fastembed/ (git-LFS tracked).
+# Run once after a fresh clone or when models/ is empty.
+# Models are also committed via LFS — git lfs pull will restore them without re-downloading.
+download-models:
+    cargo run -p baml-rt-embedding --bin download_models
 
 # Build release versions of builder, runner, and graph_exporter. Run once before using agent recipes.
 build-release:

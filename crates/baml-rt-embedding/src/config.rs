@@ -6,9 +6,10 @@ use std::collections::HashSet;
 ///
 /// Using an enum (not a bool) to avoid boolean blindness and to leave room
 /// for future modes (e.g. `Sample(f32)` for probabilistic enforcement).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DriftMode {
+    #[default]
     /// Log drift events via `tracing` without blocking any calls.
     /// Safe default for initial rollout and threshold calibration.
     Audit,

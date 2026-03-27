@@ -78,10 +78,7 @@ use baml_tools_system::{
 };
 use clap::Parser;
 use serde_json::Value;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt},
-    sync::Mutex,
-};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tracing::{error, info, warn};
 
 /// Inert agent package - just holds package data
@@ -103,7 +100,7 @@ struct ToolsRegistered {
 
 /// Boot typestate: A2A agent built and JS initialized.
 struct JsInitialized {
-    runtime_manager: Arc<Mutex<BamlRuntimeManager>>,
+    runtime_manager: Arc<tokio::sync::RwLock<BamlRuntimeManager>>,
     agent: A2aAgent,
 }
 
@@ -270,7 +267,7 @@ impl AgentPackage {
             runtime_manager.set_llm_client_resolver(resolver);
         }
 
-        let runtime_manager_arc = Arc::new(Mutex::new(runtime_manager));
+        let runtime_manager_arc = Arc::new(tokio::sync::RwLock::new(runtime_manager));
         let quickjs_config = QuickJSConfig::new().with_stream_collector_idle_secs(stream_idle_secs);
         let mut agent_builder = A2aAgent::builder()
             .with_runtime_handle(runtime_manager_arc.clone())
@@ -356,7 +353,7 @@ impl AgentPackage {
         let runtime_manager_arc = initialized.runtime_manager;
 
         {
-            let manager = runtime_manager_arc.lock().await;
+            let manager = runtime_manager_arc.read().await;
             let tools = manager.export_tool_metadata().await;
             if let Err(err) = index_tools(provenance_config.store().as_ref(), &tools).await {
                 warn!(error = %err, "Failed to index tool metadata in provenance store");
@@ -2041,7 +2038,60 @@ impl PlanningServiceImpl {
     fn new(store: Arc<baml_rt_provenance::SurrealProvenanceStore>) -> Self {
         Self { store }
     }
+}
 
+struct EpisodeServiceImpl {
+    store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
+}
+
+impl EpisodeServiceImpl {
+    fn new(store: Arc<baml_rt_provenance::SurrealProvenanceStore>) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait::async_trait]
+impl baml_rt_api::EpisodeService for EpisodeServiceImpl {
+    async fn episode_snapshot(
+        &self,
+        task_id: &str,
+    ) -> std::result::Result<baml_rt_api::EpisodeSnapshotDto, baml_rt_api::EpisodeError> {
+        use baml_rt_core::ids::{ExternalId, TaskId};
+        use baml_rt_provenance::EpisodeReader;
+
+        let task_id_typed = TaskId::from_external(ExternalId::new(task_id.to_string()));
+        let reader = EpisodeReader::new(Arc::clone(&self.store));
+
+        match reader.read_snapshot_by_task_id(&task_id_typed).await {
+            Ok(episode) => Ok(episode.into()),
+            Err(baml_rt_provenance::ProvenanceError::InvalidEvent { .. }) => {
+                Err(baml_rt_api::EpisodeError::NotFound)
+            }
+            Err(e) => Err(baml_rt_api::EpisodeError::Other(Box::new(e))),
+        }
+    }
+
+    async fn episode_text(
+        &self,
+        task_id: &str,
+    ) -> std::result::Result<String, baml_rt_api::EpisodeError> {
+        use baml_rt_core::ids::{ExternalId, TaskId};
+        use baml_rt_provenance::{EpisodeReader, render_episode};
+
+        let task_id_typed = TaskId::from_external(ExternalId::new(task_id.to_string()));
+        let reader = EpisodeReader::new(Arc::clone(&self.store));
+
+        match reader.read_snapshot_by_task_id(&task_id_typed).await {
+            Ok(episode) => Ok(render_episode(&episode)),
+            Err(baml_rt_provenance::ProvenanceError::InvalidEvent { .. }) => {
+                Err(baml_rt_api::EpisodeError::NotFound)
+            }
+            Err(e) => Err(baml_rt_api::EpisodeError::Other(Box::new(e))),
+        }
+    }
+}
+
+impl PlanningServiceImpl {
     fn summarize_steps(
         plan: Option<&baml_rt_provenance::PlanningPlanRecord>,
     ) -> baml_rt_api::PlanningStepSummary {
@@ -2068,155 +2118,52 @@ impl PlanningServiceImpl {
     }
 
     /// `drift.citation` may use camelCase (current serde) or legacy snake_case keys.
-    fn parse_citation_details_from_drift(
-        drift_obj: &serde_json::Value,
-    ) -> Vec<baml_rt_api::CitationDetail> {
-        let Some(c) = drift_obj.get("citation") else {
-            return Vec::new();
-        };
-        let Some(arr) = c
-            .get("perCitation")
-            .or_else(|| c.get("per_citation"))
-            .and_then(|v| v.as_array())
-        else {
-            return Vec::new();
-        };
-        arr.iter()
-            .filter_map(|item| {
-                let raw = item
-                    .get("raw")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let n = item.get("n")?.as_u64()? as u32;
-                Some(baml_rt_api::CitationDetail {
-                    raw,
-                    n,
-                    is_history: item
-                        .get("isHistory")
-                        .or_else(|| item.get("is_history"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true),
-                    negated: item
-                        .get("negated")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    similarity: item
-                        .get("similarity")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0) as f32,
-                    activity_anchor: item
-                        .get("activityAnchor")
-                        .or_else(|| item.get("activity_anchor"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    content_preview: item
-                        .get("contentPreview")
-                        .or_else(|| item.get("content_preview"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                })
-            })
-            .collect()
-    }
+    //
 
     async fn aggregate_drift(
         store: &baml_rt_provenance::SurrealProvenanceStore,
         context_id: &str,
         task_id: &str,
     ) -> Option<baml_rt_api::TaskPlanDriftSummary> {
-        use baml_rt_provenance::store::*;
+        use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 
-        let report = store
-            .query_ops(ProvenanceOpsQueryRequest {
-                resource: ProvenanceOpsResource::LlmCalls,
-                filters: ProvenanceOpsFilters {
-                    context_id: Some(ContextId::from(context_id)),
-                    task_id: Some(TaskId::from_external(ExternalId::new(task_id.to_string()))),
-                    ..Default::default()
-                },
-                page_size: Some(100),
-                sort_by: Some("timestamp_ms".to_string()),
-                sort_dir: Some("desc".to_string()),
-                ..Default::default()
-            })
-            .await
-            .ok()?;
+        // Use the shared drift aggregation from the provenance crate
+        let ctx_id = ContextId::from(context_id);
+        let tid = TaskId::from_external(ExternalId::new(task_id.to_string()));
+        let (drift_summary, drift_calls) =
+            baml_rt_provenance::episode::aggregate_task_drift(store, &ctx_id, &tid)
+                .await
+                .ok()?;
 
-        let mut scored_count = 0u32;
-        let mut warn_count = 0u32;
-        let mut block_count = 0u32;
-        let mut latest_plan_drift: Option<&serde_json::Value> = None;
+        let summary = drift_summary?;
+
+        // Build drifted_calls with citation details
         let mut drifted_calls = Vec::new();
-
-        fn f32_field(obj: &serde_json::Value, key: &str) -> Option<f32> {
-            obj.get(key).and_then(|v| v.as_f64()).map(|v| v as f32)
-        }
-        fn str_field(obj: &serde_json::Value, key: &str) -> String {
-            obj.get(key)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-
-        for row in &report.rows {
-            let Some(drift_obj) = row.get("drift") else {
-                continue;
-            };
-            let Some(plan) = drift_obj.get("plan") else {
-                continue;
-            };
-            scored_count += 1;
-
-            if latest_plan_drift.is_none() {
-                latest_plan_drift = Some(plan);
+        for call in drift_calls {
+            if call.severity >= baml_rt_embedding::DriftSeverity::Warn {
+                drifted_calls.push(baml_rt_api::DriftedCallDetail {
+                    function_name: call.function_name,
+                    severity: call.severity.as_str().to_owned(),
+                    intent_alignment: call.intent_alignment,
+                    step_alignment: call.step_alignment,
+                    cross_encoder_step_score: call.cross_encoder_step_score,
+                    intent_text_preview: String::new(),
+                    response_text_preview: String::new(),
+                    step_text_preview: String::new(),
+                    citations: Vec::new(),
+                });
             }
-
-            let severity = plan
-                .get("compositeSeverity")
-                .and_then(|v| v.as_str())
-                .unwrap_or("acceptable");
-            match severity {
-                "warn" => warn_count += 1,
-                "block" => block_count += 1,
-                _ => {}
-            }
-
-            let citations = Self::parse_citation_details_from_drift(drift_obj);
-
-            drifted_calls.push(baml_rt_api::DriftedCallDetail {
-                function_name: row
-                    .get("baml_prompt")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string(),
-                severity: severity.to_string(),
-                intent_alignment: f32_field(plan, "intentAlignment").unwrap_or(0.0),
-                step_alignment: f32_field(plan, "stepAlignment"),
-                cross_encoder_step_score: f32_field(plan, "crossEncoderStepScore"),
-                intent_text_preview: str_field(drift_obj, "intentTextPreview"),
-                response_text_preview: str_field(drift_obj, "responseTextPreview"),
-                step_text_preview: str_field(drift_obj, "stepTextPreview"),
-                citations,
-            });
         }
-
-        let plan = latest_plan_drift?;
 
         Some(baml_rt_api::TaskPlanDriftSummary {
-            composite_severity: plan
-                .get("compositeSeverity")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            intent_alignment: f32_field(plan, "intentAlignment"),
-            step_alignment: f32_field(plan, "stepAlignment"),
-            trajectory_drift: f32_field(plan, "trajectoryDrift"),
-            plan_adherence_score: f32_field(plan, "planAdherenceScore"),
-            scored_call_count: scored_count,
-            warn_count,
-            block_count,
+            composite_severity: Some(summary.composite_severity.as_str().to_owned()),
+            intent_alignment: Some(summary.intent_alignment),
+            step_alignment: summary.step_alignment,
+            trajectory_drift: summary.trajectory_drift,
+            plan_adherence_score: Some(summary.plan_adherence_score),
+            scored_call_count: summary.scored_call_count,
+            warn_count: summary.warn_count,
+            block_count: summary.block_count,
             drifted_calls,
         })
     }
@@ -2692,10 +2639,11 @@ async fn main() -> anyhow::Result<()> {
             as Arc<dyn baml_rt_api::ContextMetricsService>);
         let provenance_ops = Some(Arc::new(ProvenanceOpsServiceImpl::new(store.clone()))
             as Arc<dyn baml_rt_api::ProvenanceOpsService>);
-        let planning = Some(
-            Arc::new(PlanningServiceImpl::new(store)) as Arc<dyn baml_rt_api::PlanningService>
-        );
+        let planning = Some(Arc::new(PlanningServiceImpl::new(store.clone()))
+            as Arc<dyn baml_rt_api::PlanningService>);
         let registry_impl = ready.registry();
+        let episode =
+            Some(Arc::new(EpisodeServiceImpl::new(store)) as Arc<dyn baml_rt_api::EpisodeService>);
         let web_dir = config.web_dir.clone();
         info!(
             bind = %bind,
@@ -2711,6 +2659,7 @@ async fn main() -> anyhow::Result<()> {
                 context_metrics,
                 provenance_ops,
                 planning,
+                episode,
                 Some(runner.clone() as Arc<dyn DeploymentManager>),
                 Some(config.repository_url.clone()),
                 Some(repository_service.clone()),

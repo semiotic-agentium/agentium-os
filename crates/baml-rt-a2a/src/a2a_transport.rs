@@ -9,7 +9,7 @@ use std::{
 use async_trait::async_trait;
 use baml_rt_core::{
     A2aJsChatHost, A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDispatchAck,
-    AgentDispatchRequest, BamlRtError, Result,
+    AgentDispatchRequest, BamlRtError, Citation, Result,
     bus::{BusStream, EffectEmitter},
     context::{self, InvocationScope, OutcomeInvocationContext, RequestScope},
     correlation,
@@ -20,7 +20,8 @@ use baml_rt_core::{
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{
     A2aGraphStore, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
-    ProvenanceConversationContextItem, ProvenanceEffectSubscriber, ProvenanceWriter,
+    ProvenanceConversationContextItem, ProvenanceEffectSubscriber, ProvenanceInterceptor,
+    ProvenanceWriter,
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, BridgeHandle, QuickJSBridge, QuickJSConfig,
@@ -34,7 +35,7 @@ use baml_rt_tools::{
 };
 use baml_tools_system::A2aSessionBundle;
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tracing::Span;
 
 use crate::{
@@ -120,10 +121,25 @@ impl SurrealRuntimeStore {
         let role = message_role_string(&message.role);
         let content = validated_message_content(message, operation)?;
         let metadata = message.metadata.as_ref().map(metadata_string_map);
+        // Extract typed citations from wire metadata before the lossy string-map conversion
+        // drops the array. Citations are model-produced ref-table strings (#N, @N, …).
+        let citations: Vec<Citation> = message
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("citations"))
+            .and_then(serde_json::Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .filter_map(|s| Citation::try_new(s).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
         tracing::debug!(
             context_id = %context_id,
             message_id = %message.message_id.as_message_id(),
             role = %role,
+            citation_count = citations.len(),
             "emit_message_lifecycle_event: emitting MessageReceived/MessageSent"
         );
         let event = match (role.as_str(), message.task_id.clone()) {
@@ -155,6 +171,7 @@ impl SurrealRuntimeStore {
                 metadata,
                 self.agent_id.clone(),
                 Self::now_millis(),
+                citations,
             ),
             (_, None) => ProvEvent::message_sent_global(
                 context_id,
@@ -164,6 +181,7 @@ impl SurrealRuntimeStore {
                 metadata,
                 self.agent_id.clone(),
                 Self::now_millis(),
+                citations,
             ),
         };
         self.add_provenance_event_required(event, operation).await
@@ -272,6 +290,20 @@ impl ProvenanceContextReader for SurrealRuntimeStore {
     > {
         self.provenance
             .conversation_context(context_id, limit)
+            .await
+    }
+
+    async fn conversation_context_with_task(
+        &self,
+        context_id: &baml_rt_core::ids::ContextId,
+        limit: Option<usize>,
+        task_id: Option<&baml_rt_core::ids::TaskId>,
+    ) -> std::result::Result<
+        Vec<ProvenanceConversationContextItem>,
+        baml_rt_provenance::ProvenanceError,
+    > {
+        self.provenance
+            .conversation_context_with_task(context_id, limit, task_id)
             .await
     }
 }
@@ -412,18 +444,128 @@ pub(crate) fn to_projection_item(
     baml_rt_provenance::provenance_item_to_projection_item(item)
 }
 
+// ---------------------------------------------------------------------------
+// Provenance wiring — atomic subsystem registration
+// ---------------------------------------------------------------------------
+
+/// Witness type: proves that all provenance subsystems have been atomically wired
+/// onto the runtime and effect bus. Only constructible via [`wire_provenance_subsystems`].
+///
+/// Holds the provenance writer so the `A2aAgent` can expose it without an `Option`.
+///
+/// # Subsystems enforced
+///
+/// | # | Subsystem | Target | Purpose |
+/// |---|-----------|--------|---------|
+/// | 1 | [`ProvenanceEffectSubscriber`] | effect bus | LLM/tool completion → provenance events with drift scoring |
+/// | 2 | [`ProvenanceInterceptor`] (tool pipeline) | interceptor registry | Reserved-anchor tool completions for WAS_INFORMED_BY edges |
+/// | 3 | [`ProjectingConversationContextProvider`] | runtime | Prompt projection from provenance conversation graph |
+///
+/// **Adding a new provenance-dependent subsystem? Add it to [`wire_provenance_subsystems`].**
+#[derive(Clone)]
+struct ProvenanceWired {
+    writer: Arc<dyn ProvenanceWriter>,
+}
+
+/// Atomically wire all provenance subsystems onto the runtime and effect bus.
+///
+/// Returns [`ProvenanceWired`] as proof that all wiring is complete. The `A2aAgent`
+/// requires this witness, so the compiler rejects any `build()` path that skips wiring.
+///
+/// # Why a single function?
+///
+/// The provenance interceptor was missing from the tool pipeline for months because
+/// the wiring was scattered across two imperative blocks inside `build()`. Co-locating
+/// all provenance registrations here makes it impossible to forget one.
+///
+/// # LLM interceptor intentionally omitted
+///
+/// `ProvenanceInterceptor` implements both `LLMInterceptor` and `ToolInterceptor`.
+/// Only the tool pipeline is registered here because LLM events flow exclusively
+/// through the effect bus path (`ProvenanceEffectSubscriber`), which performs drift
+/// scoring, plan tracking, and citation resolution — registering the LLM interceptor
+/// would produce duplicate events without the richer analysis.
+async fn wire_provenance_subsystems(
+    writer: Arc<dyn ProvenanceWriter>,
+    runtime: &RwLock<BamlRuntimeManager>,
+    effect_emitter: &dyn EffectEmitter,
+) -> Result<ProvenanceWired> {
+    tracing::debug!("wire_provenance_subsystems: begin");
+
+    // Phase 1: Read shared state from the runtime (single lock acquisition).
+    let (tool_registry, archive_ref_tables, interceptor_registry) = {
+        let guard = runtime.read().await;
+        (
+            guard.tool_registry(),
+            guard.archive_ref_tables(),
+            guard.interceptor_registry(),
+        )
+    };
+
+    // Subsystem 1: ProvenanceEffectSubscriber → effect bus.
+    // Source of truth for LLM/tool completion events including drift scoring,
+    // plan tracking, citation resolution, and deferred plan failures.
+    {
+        let mut subscriber = ProvenanceEffectSubscriber::new(writer.clone());
+        let registry_for_citations = tool_registry.clone();
+        let registry_for_describer = tool_registry.clone();
+        subscriber.set_tool_registry(registry_for_citations);
+        subscriber.set_archive_ref_tables(archive_ref_tables.clone());
+        subscriber.set_action_describer(Arc::new(
+            move |tool_name: Option<&str>, content: &serde_json::Value| {
+                let s = registry_for_describer.describe_invocation_with_hint(tool_name, content);
+                if s.is_empty() { None } else { Some(s) }
+            },
+        ));
+        effect_emitter
+            .subscribe_effect_subscriber(Arc::new(subscriber))
+            .await;
+    }
+
+    // Subsystem 2: ProvenanceInterceptor → tool pipeline of the interceptor registry.
+    // The reserved-anchor mechanism on tool_session_read completions targets this
+    // interceptor — without it, WAS_INFORMED_BY edges between SessionStep(SendDone)
+    // and ToolCall nodes are never created.
+    {
+        let prov_interceptor = ProvenanceInterceptor::new(writer.clone());
+        let mut registry = interceptor_registry.lock().await;
+        registry.register_tool_interceptor(prov_interceptor);
+    }
+
+    // Subsystem 3: ConversationContextProvider → runtime.
+    // Projects the provenance conversation graph into BAML prompt context
+    // using the same tool registry and archive ref tables as drift scoring.
+    {
+        let conversation_source: Arc<dyn ConversationContextSource> =
+            Arc::new(ProvenanceWriterConversationSource::new(writer.clone()));
+        let mut guard = runtime.write().await;
+        guard.set_conversation_context_provider(Arc::new(
+            ProjectingConversationContextProvider::new(
+                conversation_source,
+                tool_registry,
+                Some(archive_ref_tables),
+            ),
+        ));
+    }
+
+    tracing::debug!("wire_provenance_subsystems: all subsystems wired");
+    Ok(ProvenanceWired { writer })
+}
+
 /// Top-level agent type that owns runtime, JS bridge, and A2A comms.
 #[derive(Clone)]
 pub struct A2aAgent {
     agent_id: baml_rt_core::ids::AgentId,
-    runtime: Arc<Mutex<BamlRuntimeManager>>,
+    runtime: Arc<RwLock<BamlRuntimeManager>>,
     bridge_handle: Arc<BridgeHandle>,
     task_store: Arc<dyn TaskStoreBackend>,
     #[allow(dead_code)] // passed to router at build; clone does not use the field directly
     result_pipeline: Arc<dyn ResultStoragePipeline>,
     /// Inner pipeline (no dedup) used by live stream path so chunk application always persists.
     live_result_pipeline: Arc<dyn ResultStoragePipeline>,
-    provenance_writer: Option<Arc<dyn ProvenanceWriter>>,
+    /// Witness that all provenance subsystems are wired. Never optional — every
+    /// agent has a provenance graph. Use `.provenance_writer()` to access the writer.
+    provenance: ProvenanceWired,
     response_formatter: Arc<dyn ResponseFormatter>,
     request_router: Arc<dyn RequestRouter>,
     error_classifier: Arc<dyn ErrorClassifier>,
@@ -445,7 +587,7 @@ impl A2aAgent {
     }
 
     /// Access the underlying runtime manager.
-    pub fn runtime(&self) -> Arc<Mutex<BamlRuntimeManager>> {
+    pub fn runtime(&self) -> Arc<RwLock<BamlRuntimeManager>> {
         self.runtime.clone()
     }
 
@@ -464,9 +606,9 @@ impl A2aAgent {
         self.task_store.clone()
     }
 
-    /// Access the provenance writer, if configured.
-    pub fn provenance_writer(&self) -> Option<Arc<dyn ProvenanceWriter>> {
-        self.provenance_writer.clone()
+    /// Access the provenance writer. Always present — every agent has a provenance graph.
+    pub fn provenance_writer(&self) -> Arc<dyn ProvenanceWriter> {
+        self.provenance.writer.clone()
     }
 
     /// True when this agent still has an active turn for the given scope.
@@ -573,7 +715,7 @@ impl A2aAgent {
         });
 
         let registry = {
-            let runtime = self.runtime.lock().await;
+            let runtime = self.runtime.read().await;
             runtime.tool_registry()
         };
         registry.register_dynamic(metadata, handler)?;
@@ -584,7 +726,7 @@ impl A2aAgent {
     pub async fn register_a2a_session_tool(&self) -> Result<()> {
         let bundle = A2aSessionBundle::new(Arc::new(self.clone()));
         let registry = {
-            let runtime = self.runtime.lock().await;
+            let runtime = self.runtime.read().await;
             runtime.tool_registry()
         };
         registry.register_bundle(bundle)?;
@@ -597,7 +739,7 @@ impl A2aAgent {
     ) -> Result<()> {
         let bundle = A2aSessionBundle::new(handler);
         let registry = {
-            let runtime = self.runtime.lock().await;
+            let runtime = self.runtime.read().await;
             runtime.tool_registry()
         };
         registry.register_bundle(bundle)?;
@@ -656,7 +798,7 @@ pub struct A2aAgentBuilderWithEffectEmitter {
 
 /// Runtime configuration: either provided or default.
 enum RuntimeConfig {
-    Provided(Arc<Mutex<BamlRuntimeManager>>),
+    Provided(Arc<RwLock<BamlRuntimeManager>>),
     Default,
 }
 
@@ -747,12 +889,12 @@ impl A2aAgentBuilder {
 
     /// Provide an existing runtime manager (overrides default).
     pub fn with_runtime_manager(mut self, runtime: BamlRuntimeManager) -> Self {
-        self.runtime = RuntimeConfig::Provided(Arc::new(Mutex::new(runtime)));
+        self.runtime = RuntimeConfig::Provided(Arc::new(RwLock::new(runtime)));
         self
     }
 
     /// Provide a shared runtime manager (overrides default).
-    pub fn with_runtime_handle(mut self, runtime: Arc<Mutex<BamlRuntimeManager>>) -> Self {
+    pub fn with_runtime_handle(mut self, runtime: Arc<RwLock<BamlRuntimeManager>>) -> Self {
         self.runtime = RuntimeConfig::Provided(runtime);
         self
     }
@@ -851,12 +993,12 @@ impl A2aAgentBuilder {
 impl A2aAgentBuilderWithEffectEmitter {
     /// Provide an existing runtime manager (overrides default).
     pub fn with_runtime_manager(mut self, runtime: BamlRuntimeManager) -> Self {
-        self.runtime = RuntimeConfig::Provided(Arc::new(Mutex::new(runtime)));
+        self.runtime = RuntimeConfig::Provided(Arc::new(RwLock::new(runtime)));
         self
     }
 
     /// Provide a shared runtime manager (overrides default).
-    pub fn with_runtime_handle(mut self, runtime: Arc<Mutex<BamlRuntimeManager>>) -> Self {
+    pub fn with_runtime_handle(mut self, runtime: Arc<RwLock<BamlRuntimeManager>>) -> Self {
         self.runtime = RuntimeConfig::Provided(runtime);
         self
     }
@@ -939,7 +1081,7 @@ impl A2aAgentBuilderWithEffectEmitter {
             }
             RuntimeConfig::Default => {
                 tracing::debug!("A2aAgentBuilder::build: Creating default runtime");
-                Arc::new(Mutex::new(BamlRuntimeManager::builder().build()?))
+                Arc::new(RwLock::new(BamlRuntimeManager::builder().build()?))
             }
         };
 
@@ -1003,7 +1145,7 @@ impl A2aAgentBuilderWithEffectEmitter {
 
         // So tool session path (openToolSession/send/next) can emit ToolStarted for WORKING relay.
         {
-            let mut runtime_guard = runtime.lock().await;
+            let mut runtime_guard = runtime.write().await;
             runtime_guard.set_effect_emitter(self.effect_emitter.clone());
         }
 
@@ -1147,26 +1289,10 @@ impl A2aAgentBuilderWithEffectEmitter {
         effect_emitter
             .subscribe_effect_subscriber(relay.clone())
             .await;
-        // Provenance: effect bus is the source of truth for LLM/tool completion (including deferred
-        // plan failures). Interceptors only see trace-based completion; when execute_tool_from_baml_result
-        // fails (e.g. empty steps), handle.complete(Failure) emits via effect bus.
-        {
-            let mut subscriber = ProvenanceEffectSubscriber::new(writer.clone());
-            // Wire tool-action describer so drift scoring produces natural language
-            // ("searching Notion for 'squigs'") instead of raw JSON for tool-call payloads.
-            let registry = runtime.lock().await.tool_registry();
-            let registry_for_citations = registry.clone();
-            subscriber.set_tool_registry(registry_for_citations);
-            subscriber.set_action_describer(Arc::new(
-                move |tool_name: Option<&str>, content: &serde_json::Value| {
-                    let s = registry.describe_invocation_with_hint(tool_name, content);
-                    if s.is_empty() { None } else { Some(s) }
-                },
-            ));
-            effect_emitter
-                .subscribe_effect_subscriber(Arc::new(subscriber))
-                .await;
-        }
+        // Provenance: all subsystems (effect subscriber, tool interceptor, conversation
+        // context) wired atomically. See `wire_provenance_subsystems` doc for the full list.
+        let provenance =
+            wire_provenance_subsystems(writer, &runtime, effect_emitter.as_ref()).await?;
         let request_router: Arc<dyn RequestRouter> = Arc::new(MethodBasedRouter::new(
             task_handler.clone(),
             js_invoker,
@@ -1176,32 +1302,6 @@ impl A2aAgentBuilderWithEffectEmitter {
         ));
         let error_classifier: Arc<dyn ErrorClassifier> = Arc::new(A2aErrorClassifier);
 
-        tracing::debug!("A2aAgentBuilder::build: wiring runtime context/interceptors");
-        {
-            use tokio::time::{Duration, timeout as tokio_timeout};
-            let mut runtime_guard = tokio_timeout(Duration::from_secs(10), runtime.lock())
-                .await
-                .map_err(|_| {
-                    BamlRtError::InvalidArgument(
-                        "A2aAgentBuilder::build: timed out acquiring runtime lock".to_string(),
-                    )
-                })?;
-            let tool_registry = runtime_guard.tool_registry();
-            let archive_ref_tables = Some(runtime_guard.archive_ref_tables());
-            let conversation_source: Arc<dyn ConversationContextSource> =
-                Arc::new(ProvenanceWriterConversationSource::new(writer.clone()));
-            runtime_guard.set_conversation_context_provider(Arc::new(
-                ProjectingConversationContextProvider::new(
-                    conversation_source,
-                    tool_registry,
-                    archive_ref_tables,
-                ),
-            ));
-            tracing::debug!(
-                "A2aAgentBuilder::build: conversation context wired to provenance graph"
-            );
-        }
-        tracing::debug!("A2aAgentBuilder::build: runtime context/interceptors wired");
         // live_result_pipeline uses the same task_store as repository (inner_pipeline wraps task_store).
         let agent = A2aAgent {
             agent_id,
@@ -1210,7 +1310,7 @@ impl A2aAgentBuilderWithEffectEmitter {
             task_store,
             result_pipeline,
             live_result_pipeline: inner_pipeline,
-            provenance_writer: Some(writer),
+            provenance,
             response_formatter,
             request_router,
             error_classifier,
@@ -1244,7 +1344,7 @@ impl A2aAgentBuilderWithEffectEmitter {
         tracing::debug!("A2aAgentBuilder::build: validate_tool_allowlist_registered start");
         {
             use tokio::time::{Duration, timeout as tokio_timeout};
-            let runtime_guard = tokio_timeout(Duration::from_secs(10), agent.runtime.lock())
+            let runtime_guard = tokio_timeout(Duration::from_secs(10), agent.runtime.read())
                 .await
                 .map_err(|_| {
                     BamlRtError::InvalidArgument(
@@ -2219,7 +2319,7 @@ mod tests {
         let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
         let runtime = agent.runtime();
         let result = {
-            let mgr = runtime.lock().await;
+            let mgr = runtime.read().await;
             mgr.execute_tool_with_scope(scope.as_scope(), "js/add", json!({"a": 2, "b": 3}))
                 .await
                 .expect("execute tool")
@@ -2420,6 +2520,7 @@ mod tests {
                 &SessionStepOp::SendDone {
                     archive_ref: archive_ref.clone(),
                     header: header.clone(),
+                    informed_by: "test-anchor-1".to_string(),
                 },
             ))
             .await

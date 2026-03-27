@@ -199,3 +199,143 @@ export interface ContextPlanningResponse {
   contextId: string;
   tasks: ContextPlanningTaskSnapshot[];
 }
+
+// Episode streaming types
+export type EpisodeTerminalStatus =
+  | "completed"
+  | "failed"
+  | "canceled"
+  | "rejected"
+  | string; // Other(string)
+
+export interface EpisodeDuration {
+  active_ms: number;
+  wait_ms: number;
+  wall_clock_ms: number;
+}
+
+export interface EpisodeTokenSummary {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  llm_call_count: number;
+  llm_duration_ms: number;
+}
+
+export type EpisodeStepType =
+  | "message"
+  | "tool_call"
+  | "tool_read"
+  | "tool_result"
+  | "plan_revision"
+  | "status_transition"
+  | "artifact_emitted";
+
+export type EpisodeContent =
+  | { type: "text"; text: string }
+  | { type: "tool_invocation"; tool_name: string; description: string }
+  | { type: "tool_output"; tool_name: string; summary: string; line_count: number; byte_count: number; lines: string[] }
+  | { type: "plan_revision_ref"; summary: string }
+  | { type: "status_change"; old: string; new: string; message?: string }
+  | { type: "artifact"; name: string; media_type?: string; size_bytes?: number };
+
+export interface EpisodeTranscriptEntry {
+  seq: number;
+  step_type: EpisodeStepType;
+  role: string;
+  elapsed_ms: number;
+  content: EpisodeContent;
+  activity_anchor: string;
+  citation_strings?: string[];
+}
+
+/** BAML `conversation_history` mirror: role + projection-shaped content (episode-prefixed refs). */
+export interface EpisodeSessionHistoryLine {
+  role: string;
+  content: string;
+}
+
+export interface EpisodeIntentRevision {
+  intent_id: string;
+  description: string;
+  activity_anchor: string;
+  timestamp_ms: number;
+  superseded_by_next: boolean;
+  supersession_from_previous?: string;
+  derived_citation_strings: string[];
+}
+
+export interface EpisodePlanStepEntry {
+  step_id: string;
+  description: string;
+  status: string;
+  timestamp_ms?: number;
+  citation_strings: string[];
+}
+
+export interface EpisodePlanRevision {
+  plan_id: string;
+  intent_id: string;
+  activity_anchor: string;
+  timestamp_ms: number;
+  superseded_by_next: boolean;
+  steps: EpisodePlanStepEntry[];
+}
+
+export interface EpisodeArtifactSummary {
+  name: string;
+  media_type?: string;
+}
+
+export interface EpisodeOutcome {
+  final_message?: string;
+  artifacts: EpisodeArtifactSummary[];
+  citation_strings: string[];
+  token_summary: EpisodeTokenSummary;
+  duration: EpisodeDuration;
+}
+
+export interface EpisodeDriftSummary {
+  composite_severity: string;
+  intent_alignment: number;
+  step_alignment?: number;
+  trajectory_drift?: number;
+  plan_adherence_score: number;
+  scored_call_count: number;
+  warn_count: number;
+  block_count: number;
+}
+
+export interface EpisodeDriftCall {
+  activity_anchor: string;
+  function_name: string;
+  severity: string;
+  intent_alignment: number;
+  step_alignment?: number;
+  cross_encoder_step_score?: number;
+  trajectory_drift?: number;
+  plan_adherence_score: number;
+  citation_mean_similarity?: number;
+  citation_coverage?: number;
+  citation_strings?: string[];
+}
+
+export interface EpisodeSnapshot {
+  task_id: string;
+  context_id: string;
+  agent_id: string;
+  ref_prefix: string;
+  status: EpisodeTerminalStatus;
+  started_timestamp_ms: number;
+  duration: EpisodeDuration;
+  token_summary: EpisodeTokenSummary;
+  prior_context: EpisodeTranscriptEntry[];
+  goal: EpisodeTranscriptEntry;
+  transcript: EpisodeTranscriptEntry[];
+  session_history: EpisodeSessionHistoryLine[];
+  intents: EpisodeIntentRevision[];
+  plans: EpisodePlanRevision[];
+  outcome: EpisodeOutcome;
+  drift_summary?: EpisodeDriftSummary;
+  drift_calls?: EpisodeDriftCall[];
+}

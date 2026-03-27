@@ -184,10 +184,12 @@ function tryApplyStructuredMessage(msg: ChatMessage, wire: A2aMessage): boolean 
   const parts = wire.parts;
   if (!parts?.length) return false;
   const structBlocks = partsToContentBlocks(parts);
+  const hasMetadata = wire.metadata && Object.keys(wire.metadata).length > 0;
   const useStructured =
     structBlocks.length > 1 ||
     structBlocks.some((b) => b.type === "data") ||
-    parts.length > 1;
+    parts.length > 1 ||
+    hasMetadata;
   if (!useStructured || structBlocks.length === 0) return false;
   ensureContentBlocks(msg);
   pushStructuredBlocks(msg, structBlocks);
@@ -205,7 +207,7 @@ export function useA2aClient() {
 
   // Multi-turn conversation state
   const _contextId = ref<string | undefined>();
-  let taskId: string | undefined;
+  const _taskId = ref<string | null>(null);
 
   // Context metrics (fetched after each response)
   const contextMetrics = ref<ContextMetricsResponse | null>(null);
@@ -235,7 +237,7 @@ export function useA2aClient() {
     selectedAgent.value = agent;
     messages.value = [];
     _contextId.value = undefined;
-    taskId = undefined;
+    _taskId.value = null;
     provenanceDiagram.value = "";
     contextMetrics.value = null;
     workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
@@ -312,7 +314,7 @@ export function useA2aClient() {
       parts: [{ text: text.trim() }],
     };
     if (_contextId.value) message.contextId = _contextId.value;
-    if (taskId) message.taskId = taskId;
+    if (_taskId.value) message.taskId = _taskId.value;
 
     const request = {
       jsonrpc: "2.0",
@@ -429,7 +431,7 @@ export function useA2aClient() {
     const ctx = chunk.task?.contextId ?? chunk.statusUpdate?.status_update?.contextId ?? chunk.statusUpdate?.statusUpdate?.contextId;
     const tid = chunk.task?.id ?? chunk.statusUpdate?.taskId ?? chunk.statusUpdate?.status_update?.taskId ?? chunk.statusUpdate?.statusUpdate?.taskId;
     if (ctx) _contextId.value = ctx;
-    if (tid) taskId = tid;
+    if (tid) _taskId.value = tid;
 
     // Shape: toolStreamChunk chunks split into two kinds.
     // - Phase (status): toolStreamChunk true, no tool payload — statusUpdate.status_update.status.message only (e.g. "Calling model: unknown (PhaseName)", "Invoking tool: X"). One block per "segment" (new segment after each message).
@@ -659,6 +661,7 @@ export function useA2aClient() {
     contextMetrics,
     workflowProgress,
     contextId: computed(() => _contextId.value),
+    taskId: computed(() => _taskId.value),
     awaitingInput,
     inputRequiredPrompt,
     fetchAgents,

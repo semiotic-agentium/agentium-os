@@ -31,6 +31,7 @@ use serde_json::Value;
 use crate::{
     ApiState,
     context_metrics::{ContextMetricsError, ContextMetricsResponseDto},
+    episode::EpisodeSnapshotDto,
     mermaid::MermaidError,
     metrics,
     openapi::{
@@ -39,6 +40,7 @@ use crate::{
     },
     planning::{ContextPlanningResponse, PlanningError},
     provenance_ops::ProvenanceOpsError,
+    service_error::service_result_to_http,
     spans,
 };
 
@@ -1044,4 +1046,163 @@ pub async fn post_dispatch(
         }
         Err(e) => domain_to_problem(&e, &agent_package, &agent_instance_id).into_response(),
     }
+}
+
+/// Get a one-shot episode snapshot for a completed or in-progress task.
+#[utoipa::path(
+    get,
+    path = "/tasks/{task_id}/episode",
+    tag = "provenance",
+    summary = "Episode snapshot by task_id",
+    params(("task_id" = String, Path, description = "A2A task ID")),
+    responses(
+        (status = 200, description = "Episode snapshot", body = EpisodeSnapshotDto),
+        (status = 404, description = "No episode found for task"),
+        (status = 501, description = "Episode service not available"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_episode(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> HttpResult<Json<EpisodeSnapshotDto>> {
+    let span = spans::get_episode(&task_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let Some(svc) = &state.episode else {
+        metrics::record_request("get_episode", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Episode service not configured",
+        ));
+    };
+    service_result_to_http("get_episode", start, svc.episode_snapshot(&task_id).await)
+}
+
+/// Download the canonical text rendering of an episode (produced by `render_episode`).
+#[utoipa::path(
+    get,
+    path = "/tasks/{task_id}/episode/text",
+    tag = "provenance",
+    summary = "Episode as canonical plain text",
+    params(("task_id" = String, Path, description = "A2A task ID")),
+    responses(
+        (status = 200, description = "Episode plain text", content_type = "text/plain"),
+        (status = 404, description = "No episode found for task"),
+        (status = 501, description = "Episode service not available"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_episode_text(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, HttpApiProblem> {
+    let start = Instant::now();
+    let Some(svc) = &state.episode else {
+        metrics::record_request("get_episode_text", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Episode service not configured",
+        ));
+    };
+    match svc.episode_text(&task_id).await {
+        Ok(text) => {
+            metrics::record_request("get_episode_text", "success", start.elapsed());
+            let filename = format!("episode-{task_id}.txt");
+            Ok((
+                [
+                    ("content-type", "text/plain; charset=utf-8".to_string()),
+                    (
+                        "content-disposition",
+                        format!("attachment; filename=\"{filename}\""),
+                    ),
+                ],
+                text,
+            ))
+        }
+        Err(e) => {
+            let resp =
+                service_result_to_http::<EpisodeSnapshotDto>("get_episode_text", start, Err(e));
+            Err(resp.unwrap_err())
+        }
+    }
+}
+
+/// SSE streaming episode updates for a task.
+#[utoipa::path(
+    get,
+    path = "/tasks/{task_id}/episode/stream",
+    tag = "provenance",
+    summary = "Streaming episode updates by task_id",
+    params(("task_id" = String, Path, description = "A2A task ID")),
+    responses(
+        (status = 200, description = "SSE stream of episode snapshots", content_type = "text/event-stream"),
+        (status = 404, description = "No episode found for task"),
+        (status = 501, description = "Episode service not available"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_episode_stream(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> HttpResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    let start = Instant::now();
+    let Some(svc) = &state.episode else {
+        metrics::record_request("get_episode_stream", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Episode service not configured",
+        ));
+    };
+    let initial = match service_result_to_http(
+        "get_episode_stream",
+        start,
+        svc.episode_snapshot(&task_id).await,
+    ) {
+        Ok(axum::Json(s)) => s,
+        Err(e) => return Err(e),
+    };
+    let svc = Arc::clone(svc);
+    let stream = async_stream::stream! {
+        let data = serde_json::to_string(&initial).unwrap_or_else(|_| "{}".into());
+        yield Ok::<_, Infallible>(Event::default().event("snapshot").data(data));
+        if initial.status.is_terminal() {
+            let data = serde_json::to_string(&initial).unwrap_or_else(|_| "{}".into());
+            yield Ok::<_, Infallible>(Event::default().event("done").data(data));
+            return;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+        let mut prev_transcript_len = initial.transcript.len();
+        let mut prev_session_history_len = initial.session_history.len();
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            if std::time::Instant::now() > deadline { break; }
+            match svc.episode_snapshot(&task_id).await {
+                Ok(snap) => {
+                    let changed = snap.transcript.len() != prev_transcript_len
+                        || snap.session_history.len() != prev_session_history_len
+                        || snap.status.is_terminal();
+                    if !changed { continue; }
+                    prev_transcript_len = snap.transcript.len();
+                    prev_session_history_len = snap.session_history.len();
+                    let terminal = snap.status.is_terminal();
+                    let data = serde_json::to_string(&snap).unwrap_or_else(|_| "{}".into());
+                    yield Ok::<_, Infallible>(Event::default().event("snapshot").data(data));
+                    if terminal {
+                        let data = serde_json::to_string(&snap).unwrap_or_else(|_| "{}".into());
+                        yield Ok::<_, Infallible>(Event::default().event("done").data(data));
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(task_id = %task_id, error = %e, "Episode snapshot failed during stream");
+                }
+            }
+        }
+    };
+    metrics::record_request("get_episode_stream", "success", start.elapsed());
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }

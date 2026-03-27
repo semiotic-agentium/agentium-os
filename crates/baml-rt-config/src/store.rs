@@ -158,7 +158,8 @@ impl ConfigWriter for SurrealConfigStore {
             .query("\
                 BEGIN; \
                 LET $cur = (SELECT version FROM config_current WHERE bundle_name = $name LIMIT 1); \
-                LET $nv = IF array::len($cur) > 0 THEN $cur[0].version + 1 ELSE 1 END; \
+                LET $safe = $cur ?? []; \
+                LET $nv = IF array::len($safe) > 0 THEN $safe[0].version + 1 ELSE 1 END; \
                 UPSERT config_current SET bundle_name = $name, config_json = $cj, version = $nv, updated_at_ms = $ts WHERE bundle_name = $name; \
                 CREATE config_version_history SET bundle_name = $name, version = $nv, config_json = $cj, created_at_ms = $ts; \
                 COMMIT;")

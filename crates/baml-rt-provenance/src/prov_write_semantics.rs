@@ -68,12 +68,16 @@ pub(crate) fn semantic_associated_with_label(role: Option<&str>) -> &'static str
 }
 
 pub(crate) fn semantic_derived_from_label(prov_type: Option<&str>) -> &'static str {
-    use crate::vocabulary::{a2a_relation_types, a2a_relations};
+    use crate::vocabulary::a2a_relation_types;
     match prov_type {
         Some(t) if t == a2a_relation_types::STATUS_TRANSITION => {
             semantic_labels::WAS_TRANSITIONED_FROM
         }
-        Some(t) if t == a2a_relations::INFORMED_BY_OBSERVATION => semantic_labels::WAS_INFORMED_BY,
+        // Both observation-citation and tool-invocation derivations map to the same
+        // semantic label. The prov_type attribute preserves the distinction.
+        Some(t) if t == a2a_relation_types::INFORMED_BY_OBSERVATION => {
+            semantic_labels::WAS_INFORMED_BY
+        }
         _ => crate::vocabulary::prov_relations::WAS_DERIVED_FROM,
     }
 }

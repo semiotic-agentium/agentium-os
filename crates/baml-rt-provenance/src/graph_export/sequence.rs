@@ -2183,71 +2183,56 @@ mod tests {
             msg_node("m5", "user", "hi", Some(9)),
             msg_node("m6", "assistant", "Hi there", Some(12)),
         ];
-        // TaskExecution nodes (ids encode task_id for enrich)
-        nodes.push(ExportedNode {
-            id: "task_execution_task-1".to_string(),
-            label: "A2ATaskExecution".to_string(),
-            display_name: "TaskExec 1".to_string(),
-            properties: HashMap::new(),
-            event_order: Some(0),
-        });
-        nodes.push(ExportedNode {
-            id: "task_execution_task-2".to_string(),
-            label: "A2ATaskExecution".to_string(),
-            display_name: "TaskExec 2".to_string(),
-            properties: HashMap::new(),
-            event_order: Some(4),
-        });
-        nodes.push(ExportedNode {
-            id: "task_execution_task-3".to_string(),
-            label: "A2ATaskExecution".to_string(),
-            display_name: "TaskExec 3".to_string(),
-            properties: HashMap::new(),
-            event_order: Some(8),
-        });
-        // TaskState nodes for status labels
-        nodes.push(ExportedNode {
-            id: "task_state:task-1:TASK_STATE_COMPLETED".to_string(),
-            label: "A2ATaskState".to_string(),
-            display_name: "Completed".to_string(),
-            properties: {
-                let mut p = HashMap::new();
-                p.insert(
-                    a2a::TASK_STATE.to_string(),
-                    serde_json::json!("TASK_STATE_COMPLETED"),
-                );
-                p
-            },
-            event_order: Some(3),
-        });
-        nodes.push(ExportedNode {
-            id: "task_state:task-2:TASK_STATE_INPUT_REQUIRED".to_string(),
-            label: "A2ATaskState".to_string(),
-            display_name: "Input required".to_string(),
-            properties: {
-                let mut p = HashMap::new();
-                p.insert(
-                    a2a::TASK_STATE.to_string(),
-                    serde_json::json!("TASK_STATE_INPUT_REQUIRED"),
-                );
-                p
-            },
-            event_order: Some(7),
-        });
-        nodes.push(ExportedNode {
-            id: "task_state:task-3:TASK_STATE_COMPLETED".to_string(),
-            label: "A2ATaskState".to_string(),
-            display_name: "Completed".to_string(),
-            properties: {
-                let mut p = HashMap::new();
-                p.insert(
-                    a2a::TASK_STATE.to_string(),
-                    serde_json::json!("TASK_STATE_COMPLETED"),
-                );
-                p
-            },
-            event_order: Some(11),
-        });
+        fn task_exec_node(id: &str, task_id: &str, order: u64) -> ExportedNode {
+            let mut p = HashMap::new();
+            p.insert(
+                a2a::TASK_ID.to_string(),
+                serde_json::Value::String(task_id.to_string()),
+            );
+            ExportedNode {
+                id: id.to_string(),
+                label: "A2ATaskExecution".to_string(),
+                display_name: format!("TaskExec {task_id}"),
+                properties: p,
+                event_order: Some(order),
+            }
+        }
+        nodes.push(task_exec_node("task_execution_task-1", "task-1", 0));
+        nodes.push(task_exec_node("task_execution_task-2", "task-2", 4));
+        nodes.push(task_exec_node("task_execution_task-3", "task-3", 8));
+        fn task_state_node(id: &str, task_id: &str, state: &str, order: u64) -> ExportedNode {
+            let mut p = HashMap::new();
+            p.insert(a2a::TASK_STATE.to_string(), serde_json::json!(state));
+            p.insert(
+                a2a::TASK_ID.to_string(),
+                serde_json::Value::String(task_id.to_string()),
+            );
+            ExportedNode {
+                id: id.to_string(),
+                label: "A2ATaskState".to_string(),
+                display_name: state.to_string(),
+                properties: p,
+                event_order: Some(order),
+            }
+        }
+        nodes.push(task_state_node(
+            "task_state:task-1:TASK_STATE_COMPLETED",
+            "task-1",
+            "TASK_STATE_COMPLETED",
+            3,
+        ));
+        nodes.push(task_state_node(
+            "task_state:task-2:TASK_STATE_INPUT_REQUIRED",
+            "task-2",
+            "TASK_STATE_INPUT_REQUIRED",
+            7,
+        ));
+        nodes.push(task_state_node(
+            "task_state:task-3:TASK_STATE_COMPLETED",
+            "task-3",
+            "TASK_STATE_COMPLETED",
+            11,
+        ));
         let mut edges = vec![
             edge("mp1", EDGE_WAS_RECEIVED_BY, "m1"),
             edge("m2", EDGE_WAS_EMITTED_BY, "mp1"),

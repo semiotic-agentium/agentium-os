@@ -1,7 +1,13 @@
 //! Citation query API for provenance.
 //!
+//! SurrealQL notes:
+//! - `props.*` fields are `NONE` (not `NULL`) when absent — always coalesce before operations.
+//! - `citations` may be stored as a JSON-string array (`'["#1"]'`) or a native SurrealDB array
+//!   depending on the write path. `array::len` errors on string values, so we filter with
+//!   `props.citations IS NOT NONE` and do emptiness checks in Rust instead.
+//!
 //! Queries citations recorded on LLM activity nodes and plan step entities.
-//! Citations are stored as a `citations` attribute array (raw strings like `"#1"`, `"@4:2"`)
+//! Citations are stored as a `citations` attribute (raw strings like `"#1"`, `"@4:2"`)
 //! on:
 //! - LLM call activities (`label = 'LlmCall'`)
 //! - Plan step entities (`label = 'PlanStep'`)
@@ -15,6 +21,7 @@ use serde_json::Value;
 use crate::{
     error::{ProvenanceError, Result},
     surreal_store::SurrealProvenanceStore,
+    surreal_tables::{TBL_EDGE, TBL_NODE},
 };
 
 fn surreal_err(e: surrealdb::Error) -> ProvenanceError {
@@ -32,6 +39,8 @@ pub struct CitationEntry {
     pub task_id: Option<String>,
     /// Function name, if available (LLM activities only).
     pub function_name: Option<String>,
+    /// Plan-local step id when this row is a `PlanStep` node.
+    pub step_id: Option<String>,
 }
 
 /// Retrieve citations recorded on all LLM activities within a task.
@@ -41,25 +50,30 @@ pub async fn query_step_citations(
     store: &SurrealProvenanceStore,
     task_id: &str,
 ) -> Result<Vec<CitationEntry>> {
-    let query = "\
-        SELECT id, props.citations AS citations, \
+    let task_exec = crate::id_semantics::task_execution_activity_id_string(task_id);
+    let task_call = crate::vocabulary::a2a_relations::TASK_CALL;
+    let query = format!(
+        "SELECT id, props.citations AS citations, \
                props.a2a_task_id AS task_id, \
                props.a2a_function_name AS function_name \
-        FROM prov_node \
+        FROM {TBL_NODE} \
         WHERE label = 'LlmCall' \
-          AND props.a2a_task_id = $task_id \
-          AND props.citations IS NOT NULL \
-          AND array::len(props.citations) > 0";
+          AND node_id IN (SELECT VALUE to_id FROM {TBL_EDGE} \
+            WHERE from_id = $task_exec AND rel_type = '{task_call}' AND to_label = 'LlmCall') \
+          AND props.citations IS NOT NONE"
+    );
     let mut resp = store
         .db()
-        .query(query)
-        .bind(("task_id", task_id.to_string()))
+        .query(&query)
+        .bind(("task_exec", task_exec))
         .await
         .map_err(surreal_err)?;
     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
     Ok(rows
         .into_iter()
         .filter_map(|v| parse_citation_row(&v))
+        // Rust-side non-empty guard (handles both array and JSON-string citations)
+        .filter(|e| !e.citations.is_empty())
         .collect())
 }
 
@@ -71,26 +85,29 @@ pub async fn query_plan_citations(
     task_id: &str,
     plan_id: &str,
 ) -> Result<Vec<CitationEntry>> {
-    let query = "\
-        SELECT id, props.citations AS citations, \
-               props.a2a_task_id AS task_id \
-        FROM prov_node \
+    let plan_node_id = crate::id_semantics::plan_entity_id_string_raw(task_id, plan_id);
+    let derived = crate::vocabulary::prov_relations::WAS_DERIVED_FROM;
+    let query = format!(
+        "SELECT id, props.citations AS citations, \
+               props.a2a_task_id AS task_id, \
+               props.a2a_step_id AS step_id \
+        FROM {TBL_NODE} \
         WHERE label = 'PlanStep' \
-          AND props.a2a_task_id = $task_id \
-          AND props.a2a_plan_id = $plan_id \
-          AND props.citations IS NOT NULL \
-          AND array::len(props.citations) > 0";
+          AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
+            WHERE to_id = $plan_node AND rel_type = '{derived}' AND from_label = 'PlanStep') \
+          AND props.citations IS NOT NONE"
+    );
     let mut resp = store
         .db()
-        .query(query)
-        .bind(("task_id", task_id.to_string()))
-        .bind(("plan_id", plan_id.to_string()))
+        .query(&query)
+        .bind(("plan_node", plan_node_id))
         .await
         .map_err(surreal_err)?;
     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
     Ok(rows
         .into_iter()
         .filter_map(|v| parse_citation_row(&v))
+        .filter(|e| !e.citations.is_empty())
         .collect())
 }
 
@@ -101,17 +118,24 @@ pub async fn query_uncited_steps(
     store: &SurrealProvenanceStore,
     task_id: &str,
 ) -> Result<Vec<CitationEntry>> {
-    let query = "\
-        SELECT id, props.a2a_task_id AS task_id, \
+    let task_node = crate::id_semantics::task_entity_id_string_raw(task_id);
+    let has_plan = crate::vocabulary::semantic_labels::HAS_PLAN;
+    let derived = crate::vocabulary::prov_relations::WAS_DERIVED_FROM;
+    let query = format!(
+        "SELECT id, props.a2a_task_id AS task_id, \
                props.a2a_step_id AS step_id \
-        FROM prov_node \
+        FROM {TBL_NODE} \
         WHERE label = 'PlanStep' \
-          AND props.a2a_task_id = $task_id \
-          AND (props.citations IS NULL OR array::len(props.citations) = 0)";
+          AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
+            WHERE to_id IN (SELECT VALUE to_id FROM {TBL_EDGE} \
+              WHERE from_id = $task_node AND rel_type = '{has_plan}') \
+            AND rel_type = '{derived}' AND from_label = 'PlanStep') \
+          AND (props.citations IS NONE OR (type::is::array(props.citations) AND array::len(props.citations) = 0))"
+    );
     let mut resp = store
         .db()
-        .query(query)
-        .bind(("task_id", task_id.to_string()))
+        .query(&query)
+        .bind(("task_node", task_node))
         .await
         .map_err(surreal_err)?;
     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
@@ -126,6 +150,7 @@ pub async fn query_uncited_steps(
             citations: vec![],
             task_id: v.get("task_id").and_then(Value::as_str).map(str::to_string),
             function_name: None,
+            step_id: v.get("step_id").and_then(Value::as_str).map(str::to_string),
         })
         .collect())
 }
@@ -152,5 +177,6 @@ fn parse_citation_row(v: &Value) -> Option<CitationEntry> {
             .get("function_name")
             .and_then(Value::as_str)
             .map(str::to_string),
+        step_id: v.get("step_id").and_then(Value::as_str).map(str::to_string),
     })
 }

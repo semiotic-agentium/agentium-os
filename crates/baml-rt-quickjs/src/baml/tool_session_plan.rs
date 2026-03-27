@@ -207,6 +207,7 @@ impl BamlRuntimeManager {
                                 tool_name: tool_name_str.clone(),
                                 session_id: session.to_string(),
                                 op: baml_rt_core::bus::SessionStepOp::Open,
+                                task_id: plan_scope.task_id_opt().cloned(),
                             })
                             .await;
                     }
@@ -279,7 +280,12 @@ impl BamlRuntimeManager {
                                             op: baml_rt_core::bus::SessionStepOp::SendDone {
                                                 archive_ref: send_result.archive_ref.to_string(),
                                                 header: send_result.header.clone(),
+                                                informed_by: send_result
+                                                    .informed_by_tool_activity_anchor
+                                                    .as_str()
+                                                    .to_string(),
                                             },
+                                            task_id: plan_scope.task_id_opt().cloned(),
                                         })
                                         .await;
                                 }
@@ -445,23 +451,24 @@ impl BamlRuntimeManager {
                                 .await;
                         }
 
-                        // Emit ToolSessionStep::Read for conversation history.
-                        let _ = emitter
-                            .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
-                                context_id: plan_scope.context_id().clone(),
-                                tool_name: tool_name_str.clone(),
-                                session_id: session_id
-                                    .as_ref()
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_default(),
-                                op: baml_rt_core::bus::SessionStepOp::Read {
-                                    archive_ref: archive_ref.to_string(),
-                                    grep: grep_str,
-                                    offset: offset.0,
-                                    limit: limit.get(),
-                                },
-                            })
-                            .await;
+                        // Emit ToolSessionStep::Read only when a session is active, to
+                        // avoid creating SessionStep entities with empty session_id strings.
+                        if let Some(sid) = session_id.as_ref() {
+                            let _ = emitter
+                                .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
+                                    context_id: plan_scope.context_id().clone(),
+                                    tool_name: tool_name_str.clone(),
+                                    session_id: sid.to_string(),
+                                    op: baml_rt_core::bus::SessionStepOp::Read {
+                                        archive_ref: archive_ref.to_string(),
+                                        grep: grep_str,
+                                        offset: offset.0,
+                                        limit: limit.get(),
+                                    },
+                                    task_id: plan_scope.task_id_opt().cloned(),
+                                })
+                                .await;
+                        }
                     }
                 }
                 ToolSessionOp::Finish { reason } => {

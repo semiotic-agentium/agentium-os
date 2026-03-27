@@ -16,13 +16,14 @@ import type {
 
 const props = defineProps<{
   contextId?: string;
+  taskId?: string;
   selectedAgentId?: string;
   isStreaming: boolean;
   diagrams?: string[];
 }>();
 
 const isOpen = ref(typeof window !== "undefined" ? window.innerWidth >= 1280 : true);
-const activeTab = ref<"live" | "failures" | "anomalies" | "drift" | "explore">("live");
+const activeTab = ref<"live" | "failures" | "anomalies" | "drift" | "explore" | "episode">("live");
 
 const { theme } = useTheme();
 const sources = computed(() => props.diagrams ?? []);
@@ -30,6 +31,18 @@ const { rendered } = useMermaidRenderer(sources, theme);
 const expandedIdx = ref<number | null>(null);
 
 const { createQuery } = useProvenanceOps();
+/** The task currently selected in the Episode tab. Initialized from props.taskId. */
+const selectedEpisodeTaskId = ref<string | null>(props.taskId ?? null);
+
+// Keep selectedEpisodeTaskId in sync when the chat moves to a new task.
+watch(
+  () => props.taskId,
+  (newId) => {
+    if (newId && newId !== selectedEpisodeTaskId.value) {
+      selectedEpisodeTaskId.value = newId;
+    }
+  },
+);
 
 const liveLlm = createQuery("llm_calls", {
   pageSize: 20,
@@ -139,6 +152,9 @@ async function refreshForActiveTab() {
     if (activeTab.value === "drift") {
       await refreshPlanning();
     }
+    if (activeTab.value === "episode") {
+      await refreshPlanning();
+    }
   } finally {
     pollInFlight.value = false;
   }
@@ -174,7 +190,7 @@ function stopPolling() {
 
 function schedulePolling(immediate = false) {
   stopPolling();
-  if (!props.contextId || activeTab.value === "explore") return;
+  if (!props.contextId || activeTab.value === "explore" || activeTab.value === "episode") return;
   const delay = immediate ? 0 : props.isStreaming ? 2500 : 12000;
   pollTimer.value = window.setTimeout(async () => {
     await refreshForActiveTab();
@@ -338,6 +354,39 @@ const planningTasks = computed<ContextPlanningTaskSnapshot[]>(() => {
   return planningState.value.response?.tasks ?? [];
 });
 
+/** Ordered, deduplicated list of task ids visible in this context. The active chat task is always
+ *  first (even when planning hasn't recorded it yet), followed by planning tasks in server order. */
+const episodeTaskIds = computed<string[]>(() => {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  if (props.taskId) {
+    ids.push(props.taskId);
+    seen.add(props.taskId);
+  }
+  for (const t of planningTasks.value) {
+    if (!seen.has(t.taskId)) {
+      ids.push(t.taskId);
+      seen.add(t.taskId);
+    }
+  }
+  return ids;
+});
+
+// Auto-select first known task when nothing is selected yet (e.g. on tab open before chat).
+watch(
+  episodeTaskIds,
+  (ids) => {
+    if (!selectedEpisodeTaskId.value && ids.length > 0) {
+      selectedEpisodeTaskId.value = ids[0] ?? null;
+    }
+  },
+  { immediate: true },
+);
+
+function selectEpisodeTask(taskId: string): void {
+  selectedEpisodeTaskId.value = taskId;
+}
+
 function nonEmptyText(value: string | null | undefined): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -429,6 +478,7 @@ function stepStatusClass(status: string): string {
   return "step-status-pending";
 }
 
+
 function driftSeverityClass(severity: string | null | undefined): string {
   if (!severity) return "";
   const normalized = severity.toLowerCase();
@@ -450,6 +500,26 @@ function formatDriftScore(score: number | null | undefined): string {
 
 function taskHasDrift(task: ContextPlanningTaskSnapshot): boolean {
   return task.drift != null && task.drift.compositeSeverity != null;
+}
+
+async function downloadEpisodeText() {
+  const taskId = selectedEpisodeTaskId.value;
+  if (!taskId) return;
+  const response = await fetch(`/tasks/${taskId}/episode/text`);
+  if (!response.ok) {
+    console.error("episode/text fetch failed:", response.status);
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `episode-${taskId}.txt`;
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 function citationRefLabel(c: CitationDetail | CitationSimilarityOnRow): string {
@@ -1100,11 +1170,16 @@ watch(
 );
 
 watch(
-  () => [activeTab.value, props.isStreaming] as const,
+  () => [activeTab.value] as const,
   ([tab]) => {
     if (tab === "explore") {
       stopPolling();
       applyExploreQuery(true);
+      return;
+    }
+    if (tab === "episode") {
+      stopPolling();
+      if (props.contextId) void refreshPlanning();
       return;
     }
     schedulePolling(true);
@@ -1160,6 +1235,7 @@ onUnmounted(() => {
           Drift
         </button>
         <button class="provenance-tab" :class="{ active: activeTab === 'explore' }" @click="activeTab = 'explore'">Explore</button>
+        <button class="provenance-tab" :class="{ active: activeTab === 'episode' }" @click="activeTab = 'episode'">Episode</button>
       </div>
 
       <div class="provenance-body">
@@ -1649,6 +1725,53 @@ onUnmounted(() => {
           </div>
         </template>
 
+        <template v-else-if="activeTab === 'episode'">
+          <!-- Task picker: appears whenever the context holds more than one task -->
+          <div v-if="episodeTaskIds.length > 1" class="episode-task-picker">
+            <div class="episode-task-picker-head">
+              <span class="episode-task-picker-count">{{ episodeTaskIds.length }} tasks in this context</span>
+            </div>
+            <div class="episode-task-picker-list">
+              <button
+                v-for="tid in episodeTaskIds"
+                :key="tid"
+                class="episode-task-btn"
+                :class="{
+                  'episode-task-btn-active': tid === selectedEpisodeTaskId,
+                  'episode-task-btn-live': tid === props.taskId && props.isStreaming,
+                }"
+                @click="selectEpisodeTask(tid)"
+              >
+                <span class="episode-task-btn-kind">{{ taskKindLabel(tid) }}</span>
+                <span class="episode-task-btn-id">{{ shortId(tid) }}</span>
+                <span
+                  v-if="tid === props.taskId && props.isStreaming"
+                  class="episode-task-live-dot"
+                  title="Active chat task"
+                >●</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- No task selected yet -->
+          <div v-if="!selectedEpisodeTaskId" class="provenance-empty">
+            {{ planningState.loading ? 'Loading tasks…' : 'Complete a chat turn to download its episode transcript.' }}
+          </div>
+
+          <!-- Download section — no live streaming; avoids SurrealDB read contention during agent execution -->
+          <div v-else class="episode-download-section">
+            <div class="episode-download-meta">
+              <span class="episode-download-task-id">{{ shortId(selectedEpisodeTaskId) }}</span>
+              <span class="episode-download-hint">
+                Episode transcripts are generated on demand. Download after the task completes for full detail.
+              </span>
+            </div>
+            <button class="episode-download-btn-large" @click="downloadEpisodeText" title="Download episode as plain-text transcript">
+              ⤓ Download episode transcript
+            </button>
+          </div>
+        </template>
+
         <template v-else>
           <div class="explore-controls">
             <select v-model="exploreForm.resource">
@@ -1980,3 +2103,127 @@ onUnmounted(() => {
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+/* Episode task picker: shown when a context contains multiple tasks */
+.episode-task-picker {
+  padding: 6px 10px 0;
+  border-bottom: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-secondary) 70%, transparent);
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+
+.episode-task-picker-head {
+  margin-bottom: 6px;
+}
+
+.episode-task-picker-count {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.episode-task-picker-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-bottom: 8px;
+}
+
+.episode-task-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  font-size: 10px;
+  font-family: inherit;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  white-space: nowrap;
+}
+
+.episode-task-btn:hover {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--text-secondary) 55%, transparent);
+}
+
+.episode-task-btn-active {
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+  border-color: color-mix(in srgb, var(--text-secondary) 55%, transparent);
+  color: var(--text-primary);
+}
+
+.episode-task-btn-live {
+  border-color: color-mix(in srgb, #22c55e 70%, transparent);
+}
+
+.episode-task-btn-kind {
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.episode-task-btn-id {
+  font-weight: 600;
+}
+
+.episode-task-live-dot {
+  color: #22c55e;
+  font-size: 8px;
+  animation: episodePulse 1.2s ease-in-out infinite;
+}
+
+/* Episode download section */
+.episode-download-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 32px 20px;
+  text-align: center;
+}
+
+.episode-download-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.episode-download-task-id {
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.episode-download-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-width: 260px;
+  line-height: 1.5;
+}
+
+.episode-download-btn-large {
+  padding: 10px 22px;
+  font-size: 13px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.episode-download-btn-large:hover {
+  background: color-mix(in srgb, var(--text-secondary) 20%, transparent);
+  border-color: color-mix(in srgb, var(--text-secondary) 55%, transparent);
+}
+</style>

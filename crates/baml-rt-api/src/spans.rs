@@ -92,3 +92,8 @@ pub(crate) fn get_provenance_messages() -> Span {
 pub(crate) fn get_provenance_aggregates() -> Span {
     tracing::debug_span!("baml_rt_api.get_provenance_aggregates")
 }
+
+#[inline]
+pub(crate) fn get_episode(task_id: &str) -> Span {
+    tracing::debug_span!("baml_rt_api.episode.get", task_id = %task_id)
+}

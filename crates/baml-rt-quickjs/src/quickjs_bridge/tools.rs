@@ -78,7 +78,7 @@ impl QuickJSBridge {
         // Register a JS-callable wrapper per tool so each tool name is available as a function
         tracing::debug!("register_tool_functions: baml_manager lock start");
         let tool_names = timeout(Duration::from_secs(15), async {
-            let manager = self.baml_manager.lock().await;
+            let manager = self.baml_manager.read().await;
             manager.list_tools().await
         })
         .await
@@ -176,7 +176,7 @@ impl QuickJSBridge {
                         let tool_scope = scope.clone();
                         context::with_scope(scope, async move {
                             let execution_handle = {
-                                let manager = manager_for_promise.lock().await;
+                                let manager = manager_for_promise.read().await;
                                 manager.tool_execution_context()
                             };
                             let result = execution_handle
@@ -239,7 +239,7 @@ impl QuickJSBridge {
                         let tool_scope = scope.clone();
                         context::with_scope(scope, async move {
                             let execution_handle = {
-                                let manager = manager_for_promise.lock().await;
+                                let manager = manager_for_promise.read().await;
                                 manager.tool_execution_context()
                             };
                             let result = execution_handle
@@ -328,7 +328,7 @@ impl QuickJSBridge {
                 Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
                     let run = async move {
                         let session_handle = {
-                            let manager = manager_for_promise.lock().await;
+                            let manager = manager_for_promise.read().await;
                             manager.tool_session_handle()
                         };
                         let session_id = session_handle
@@ -379,7 +379,7 @@ impl QuickJSBridge {
                 Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
                     context::with_scope(scope, async move {
                         let session_handle = {
-                            let manager = manager_for_promise.lock().await;
+                            let manager = manager_for_promise.read().await;
                             manager.tool_session_handle()
                         };
                         let result = session_handle.tool_session_send(&session_id, args_json).await;
@@ -422,7 +422,7 @@ impl QuickJSBridge {
                 Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
                     context::with_scope(scope, async move {
                         let session_handle = {
-                            let manager = manager_for_promise.lock().await;
+                            let manager = manager_for_promise.read().await;
                             manager.tool_session_handle()
                         };
                         let result = session_handle.tool_session_read(&session_id, input_json).await;
@@ -462,7 +462,7 @@ impl QuickJSBridge {
                 Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
                     context::with_scope(scope, async move {
                         let session_handle = {
-                            let manager = manager_for_promise.lock().await;
+                            let manager = manager_for_promise.read().await;
                             manager.tool_session_handle()
                         };
                         let result = session_handle.tool_session_finish(&session_id).await;
@@ -506,7 +506,7 @@ impl QuickJSBridge {
                 Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
                     context::with_scope(scope, async move {
                         let session_handle = {
-                            let manager = manager_for_promise.lock().await;
+                            let manager = manager_for_promise.read().await;
                             manager.tool_session_handle()
                         };
                         let result = session_handle.tool_session_abort(&session_id, reason).await;
@@ -579,7 +579,7 @@ impl QuickJSBridge {
                         let tool_scope = scope.clone();
                         context::with_scope(scope, async move {
                             let execution_handle = {
-                                let manager = manager_for_promise.lock().await;
+                                let manager = manager_for_promise.read().await;
                                 manager.tool_execution_context()
                             };
                             // Cancellation checkpoint: after acquiring handle, before tool execution
@@ -645,7 +645,7 @@ impl QuickJSBridge {
                         let tool_scope = scope.clone();
                         context::with_scope(scope, async move {
                             let execution_handle = {
-                                let manager = manager_for_promise.lock().await;
+                                let manager = manager_for_promise.read().await;
                                 manager.tool_execution_context()
                             };
                             // Cancellation checkpoint: after acquiring handle, before tool execution
@@ -705,7 +705,7 @@ impl QuickJSBridge {
                     let cancel_inner = cancel.clone();
                     let run = async move {
                         let session_handle = {
-                            let manager = manager_for_promise.lock().await;
+                            let manager = manager_for_promise.read().await;
                             manager.tool_session_handle()
                         };
                         // Cancellation checkpoint: after acquiring handle, before tool session open
@@ -769,7 +769,7 @@ impl QuickJSBridge {
                     let cancel_inner = cancel.clone();
                     context::with_scope(scope, async move {
                         let session_handle = {
-                            let manager = manager_for_promise.lock().await;
+                            let manager = manager_for_promise.read().await;
                             manager.tool_session_handle()
                         };
                         // Cancellation checkpoint: after acquiring handle, before tool session send
@@ -830,7 +830,7 @@ impl QuickJSBridge {
                     let cancel_inner = cancel.clone();
                     context::with_scope(scope, async move {
                         let session_handle = {
-                            let manager = manager_for_promise.lock().await;
+                            let manager = manager_for_promise.read().await;
                             manager.tool_session_handle()
                         };
                         // Cancellation checkpoint: after acquiring handle, before tool session read
@@ -885,7 +885,7 @@ impl QuickJSBridge {
                     let cancel_inner = cancel.clone();
                     context::with_scope(scope, async move {
                         let session_handle = {
-                            let manager = manager_for_promise.lock().await;
+                            let manager = manager_for_promise.read().await;
                             manager.tool_session_handle()
                         };
                         // Cancellation checkpoint: after acquiring handle, before tool session finish
@@ -943,7 +943,7 @@ impl QuickJSBridge {
                     let cancel_inner = cancel.clone();
                     context::with_scope(scope, async move {
                         let session_handle = {
-                            let manager = manager_for_promise.lock().await;
+                            let manager = manager_for_promise.read().await;
                             manager.tool_session_handle()
                         };
                         // Cancellation checkpoint: after acquiring handle, before tool session abort
@@ -1044,7 +1044,7 @@ impl QuickJSBridge {
 
         // Check if tool name conflicts with existing Rust tools
         {
-            let manager = self.baml_manager.lock().await;
+            let manager = self.baml_manager.read().await;
             let rust_tools = manager.list_tools().await;
             if rust_tools.contains(&tool_name) {
                 return Err(BamlRtError::InvalidArgument(format!(

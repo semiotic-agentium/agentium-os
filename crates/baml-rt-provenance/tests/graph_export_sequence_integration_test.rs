@@ -126,6 +126,7 @@ async fn file_backed_export_renders_expected_sequence_flow() {
             None,
             agent_id.clone(),
             1_771_470_000_010,
+            Vec::new(),
         ))
         .await
         .expect("message_sent");
@@ -596,6 +597,7 @@ async fn two_tasks_in_same_context_both_render_with_separate_rects() {
             None,
             agent_id.clone(),
             1_771_470_000_310,
+            Vec::new(),
         ))
         .await
         .expect("message_sent");
@@ -658,6 +660,7 @@ async fn two_tasks_in_same_context_both_render_with_separate_rects() {
             None,
             agent_id.clone(),
             1_771_470_000_320,
+            Vec::new(),
         ))
         .await
         .expect("message_sent");

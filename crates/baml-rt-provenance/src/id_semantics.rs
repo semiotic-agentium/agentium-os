@@ -6,7 +6,7 @@ use baml_rt_id::{
     ProvDerivedIdTemplate, ProvEntitySemantics, ProvIdSemantics, ProvKind, ProvVocabularyType,
 };
 
-use crate::vocabulary::a2a_types;
+use crate::{types::ProvEntityId, vocabulary::a2a_types};
 
 /// Provenance ID semantics for derived graph nodes.
 ///
@@ -350,6 +350,12 @@ impl ProvDerivedIdTemplate for PlanStepEntityId {
     }
 }
 
+/// Canonical PlanStep entity node_id from raw string components.
+/// Mirrors `PlanStepEntityId::build` for read-path graph lookups.
+pub fn plan_step_entity_id_string(task_id: &str, plan_id: &str, step_id: &str) -> String {
+    DerivedId::from_parts("plan_step", [task_id, plan_id, step_id]).into_string()
+}
+
 /// Entity representing a task state. One node per (task_id, status). Idempotent MERGE.
 pub struct TaskStateEntityId;
 impl DerivedConstructible for TaskStateEntityId {}
@@ -596,6 +602,31 @@ impl ProvConstantIdTemplate for RunnerRuntimeInstanceId {
     }
 }
 
+/// Entity representing a tool session step (Open/SendDone/Read).
+/// Derived from the event's activity anchor.
+pub struct SessionStepEntityId;
+impl DerivedConstructible for SessionStepEntityId {}
+impl ProvIdSemantics for SessionStepEntityId {
+    const KIND: ProvKind = ProvKind::Entity;
+}
+impl ProvEntitySemantics for SessionStepEntityId {}
+impl ProvDerivedEntitySemantics for SessionStepEntityId {}
+impl ProvVocabularyType for SessionStepEntityId {
+    const VOCAB_TYPE: &'static str = a2a_types::SESSION_STEP;
+}
+
+pub struct SessionStepEntityInput<'a> {
+    pub event_anchor: &'a str,
+}
+
+impl ProvDerivedIdTemplate for SessionStepEntityId {
+    type Input<'a> = SessionStepEntityInput<'a>;
+
+    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
+        DerivedId::from_parts("session-step", [input.event_anchor])
+    }
+}
+
 /// Entity representing a message.
 pub struct MessageEntityId;
 impl DerivedConstructible for MessageEntityId {}
@@ -651,4 +682,46 @@ impl ProvDerivedIdTemplate for MessageProcessingActivityId {
             input.message_id.as_str()
         ))
     }
+}
+
+/// Entity representing a conversation context (scoping node).
+pub struct ContextEntityId;
+impl DerivedConstructible for ContextEntityId {}
+impl ProvIdSemantics for ContextEntityId {
+    const KIND: ProvKind = ProvKind::Entity;
+}
+impl ProvEntitySemantics for ContextEntityId {}
+impl ProvDerivedEntitySemantics for ContextEntityId {}
+impl ProvVocabularyType for ContextEntityId {
+    const VOCAB_TYPE: &'static str = a2a_types::CONTEXT;
+}
+
+pub struct ContextEntityInput<'a> {
+    pub context_id: &'a str,
+}
+
+impl ProvDerivedIdTemplate for ContextEntityId {
+    type Input<'a> = ContextEntityInput<'a>;
+
+    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
+        DerivedId::from_parts("context", [input.context_id])
+    }
+}
+
+/// Public helper so callers can construct the Context entity ID string
+/// without importing the full semantic type machinery.
+pub fn context_entity_id_string(context_id: &str) -> String {
+    ProvEntityId::derived::<ContextEntityId>(ContextEntityInput { context_id }).into_string()
+}
+
+/// Canonical Task entity node_id from a raw task_id string.
+/// Mirrors `TaskEntityId::build` for read-path graph lookups.
+pub fn task_entity_id_string_raw(task_id: &str) -> String {
+    DerivedId::from_parts("task", [task_id]).into_string()
+}
+
+/// Canonical Plan entity node_id from raw string components.
+/// Mirrors `PlanEntityId::build` for read-path graph lookups.
+pub fn plan_entity_id_string_raw(task_id: &str, plan_id: &str) -> String {
+    DerivedId::from_parts("plan", [task_id, plan_id]).into_string()
 }

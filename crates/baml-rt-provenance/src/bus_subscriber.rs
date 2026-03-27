@@ -56,6 +56,7 @@ impl Subscriber for ProvenanceBusSubscriber {
                         None,
                         scope.agent_id().clone(),
                         envelope.timestamp_ms,
+                        Vec::new(),
                     );
                     self.writer
                         .add_event_with_logging(event, "bus subscriber event")
