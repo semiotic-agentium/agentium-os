@@ -199,7 +199,6 @@ enum Commands {
         #[arg(long)]
         warn_missing_catalog: bool,
     },
-
 }
 
 fn main() -> anyhow::Result<()> {
@@ -372,6 +371,5 @@ fn main() -> anyhow::Result<()> {
             ci,
             warn_missing_catalog,
         } => commands::doctor::run(ci, warn_missing_catalog),
-
     }
 }
