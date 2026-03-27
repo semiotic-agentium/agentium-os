@@ -1,6 +1,10 @@
 //! End-to-end tests for the event-producer → dispatcher → agent pipeline.
 
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use baml_rt_a2a::{A2aAgent, AgentRegistry, EventDispatcher};
@@ -164,25 +168,6 @@ impl StubProducer {
         }
     }
 
-    fn unmatched() -> Self {
-        Self {
-            key: "test:unknown".into(),
-            kinds: vec![EventSourceKind::parse("unknown_source").unwrap()],
-            events: vec![ProducedEvent {
-                routing_key: AgentDispatchRoutingKey::parse("unknown:intake").unwrap(),
-                schema_version: EventSchemaVersion::parse("custom.v1").unwrap(),
-                source_kind: EventSourceKind::parse("unknown_source").unwrap(),
-                source_key: EventSourceKey::parse("unknown:key").unwrap(),
-                messages: vec![json!({"test": true})],
-                context_id: None,
-                task_id: None,
-                message_id: None,
-                metadata: None,
-            }],
-            next_checkpoint: ProducerCheckpoint::some("should-not-advance"),
-        }
-    }
-
     /// Producer declares source_kinds=["clickup"] but emits a "slack" event.
     fn mismatched_source_kind() -> Self {
         Self {
@@ -250,10 +235,14 @@ async fn poll_and_deliver_reaches_subscribed_agent() {
     assert_eq!(outcome.subscribers_matched, 1);
     assert_eq!(outcome.subscribers_accepted, 1);
     assert!(outcome.failures.is_empty());
+    assert_eq!(
+        dispatcher.checkpoint("test:slack").value(),
+        Some("cursor-after-delivery")
+    );
 }
 
 #[tokio::test]
-async fn deliver_event_errors_when_no_subscribers() {
+async fn deliver_event_returns_zero_outcome_when_no_subscribers() {
     ensure_fixture_runtime_types();
     let (agent, built_dir) = setup_fixture_agent("dispatch-echo").await;
     let _cleanup = TempDirCleanup::new(built_dir);
@@ -279,17 +268,44 @@ async fn deliver_event_errors_when_no_subscribers() {
     };
 
     let result = dispatcher.deliver_event(event).await;
-    assert!(result.is_err(), "expected no-subscriber error");
+    let outcome = result.expect("no subscribers should be treated as a handled event");
+    assert_eq!(outcome.subscribers_matched, 0);
+    assert_eq!(outcome.subscribers_accepted, 0);
+    assert!(outcome.failures.is_empty());
+}
 
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("no subscribed agents"),
-        "unexpected error: {err_msg}"
-    );
+/// Producer that records the checkpoint it receives on each poll, so tests can
+/// directly assert on checkpoint state.
+struct RecordingProducer {
+    key: String,
+    kinds: Vec<EventSourceKind>,
+    events: Vec<ProducedEvent>,
+    next_checkpoint: ProducerCheckpoint,
+    received_checkpoints: Arc<Mutex<Vec<Option<String>>>>,
+}
+
+#[async_trait]
+impl EventProducer for RecordingProducer {
+    fn producer_key(&self) -> &str {
+        &self.key
+    }
+    fn source_kinds(&self) -> &[EventSourceKind] {
+        &self.kinds
+    }
+    async fn poll(&self, checkpoint: &ProducerCheckpoint) -> Result<ProducerPoll> {
+        self.received_checkpoints
+            .lock()
+            .unwrap()
+            .push(checkpoint.value().map(String::from));
+        Ok(ProducerPoll {
+            events: self.events.clone(),
+            checkpoint: self.next_checkpoint.clone(),
+        })
+    }
 }
 
 #[tokio::test]
-async fn checkpoint_does_not_advance_when_no_subscribers() {
+async fn checkpoint_advances_when_no_subscribers() {
     ensure_fixture_runtime_types();
     let (agent, built_dir) = setup_fixture_agent("dispatch-echo").await;
     let _cleanup = TempDirCleanup::new(built_dir);
@@ -299,24 +315,96 @@ async fn checkpoint_does_not_advance_when_no_subscribers() {
         entries: vec![dispatch_echo_discovery_entry()],
     });
 
+    let received = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+    let producer = RecordingProducer {
+        key: "test:unknown".into(),
+        kinds: vec![EventSourceKind::parse("unknown_source").unwrap()],
+        events: vec![ProducedEvent {
+            routing_key: AgentDispatchRoutingKey::parse("unknown:intake").unwrap(),
+            schema_version: EventSchemaVersion::parse("custom.v1").unwrap(),
+            source_kind: EventSourceKind::parse("unknown_source").unwrap(),
+            source_key: EventSourceKey::parse("unknown:key").unwrap(),
+            messages: vec![json!({"test": true})],
+            context_id: None,
+            task_id: None,
+            message_id: None,
+            metadata: None,
+        }],
+        next_checkpoint: ProducerCheckpoint::some("cursor-no-subscribers"),
+        received_checkpoints: Arc::clone(&received),
+    };
+
     let mut dispatcher = EventDispatcher::new(registry);
     dispatcher
-        .register_producer(Arc::new(StubProducer::unmatched()))
+        .register_producer(Arc::new(producer))
         .expect("register producer");
 
+    // First poll: delivery is handled as a zero-subscriber no-op.
     let results = dispatcher.poll_and_deliver().await;
-    assert_eq!(results.len(), 1);
+    let outcome = results[0]
+        .1
+        .as_ref()
+        .expect("no subscribers should not be a hard error");
+    assert_eq!(outcome.subscribers_matched, 0);
+    assert_eq!(outcome.subscribers_accepted, 0);
+    assert!(outcome.failures.is_empty());
 
-    let (key, result) = &results[0];
-    assert_eq!(key, "test:unknown");
+    // Second poll should receive the advanced checkpoint value.
+    let results2 = dispatcher.poll_and_deliver().await;
     assert!(
-        result.is_err(),
-        "expected delivery error for unmatched source"
+        results2[0].1.is_ok(),
+        "second poll should continue from the advanced checkpoint"
     );
 
-    // Verify cursor did not advance: re-poll should still have no checkpoint
-    // (the dispatcher holds ProducerRegistry internally — we verify by running
-    // another poll cycle and confirming the producer is called with the same state)
+    let checkpoints = received.lock().unwrap();
+    assert_eq!(checkpoints.len(), 2);
+    assert_eq!(
+        checkpoints[0], None,
+        "first poll should receive initial (empty) checkpoint"
+    );
+    assert_eq!(
+        checkpoints[1],
+        Some("cursor-no-subscribers".to_string()),
+        "second poll should receive the advanced checkpoint"
+    );
+}
+
+#[tokio::test]
+async fn dispatcher_passes_preloaded_checkpoint_to_producer() {
+    ensure_fixture_runtime_types();
+    let (agent, built_dir) = setup_fixture_agent("dispatch-echo").await;
+    let _cleanup = TempDirCleanup::new(built_dir);
+
+    let registry: Arc<dyn AgentRegistry> = Arc::new(TestRegistry {
+        agent,
+        entries: vec![dispatch_echo_discovery_entry()],
+    });
+
+    let received = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+    let producer = RecordingProducer {
+        key: "test:preloaded".into(),
+        kinds: vec![EventSourceKind::parse("slack").unwrap()],
+        events: vec![],
+        next_checkpoint: ProducerCheckpoint::none(),
+        received_checkpoints: Arc::clone(&received),
+    };
+
+    let mut dispatcher = EventDispatcher::new(registry);
+    dispatcher
+        .register_producer_with_checkpoint(
+            Arc::new(producer),
+            ProducerCheckpoint::some("persisted-cursor"),
+        )
+        .expect("register producer with checkpoint");
+
+    let results = dispatcher.poll_and_deliver().await;
+    assert!(results[0].1.is_ok(), "empty poll should succeed");
+
+    let checkpoints = received.lock().unwrap();
+    assert_eq!(
+        checkpoints.as_slice(),
+        &[Some("persisted-cursor".to_string())]
+    );
 }
 
 #[tokio::test]
@@ -343,6 +431,36 @@ async fn empty_poll_returns_zero_outcome() {
     let outcome = outcome.as_ref().expect("empty poll should not error");
     assert_eq!(outcome.subscribers_matched, 0);
     assert_eq!(outcome.subscribers_accepted, 0);
+}
+
+#[tokio::test]
+async fn empty_poll_advances_non_empty_checkpoint() {
+    ensure_fixture_runtime_types();
+    let (agent, built_dir) = setup_fixture_agent("dispatch-echo").await;
+    let _cleanup = TempDirCleanup::new(built_dir);
+
+    let registry: Arc<dyn AgentRegistry> = Arc::new(TestRegistry {
+        agent,
+        entries: vec![dispatch_echo_discovery_entry()],
+    });
+
+    let mut dispatcher = EventDispatcher::new(registry);
+    dispatcher
+        .register_producer(Arc::new(RecordingProducer {
+            key: "test:empty-advance".into(),
+            kinds: vec![EventSourceKind::parse("slack").unwrap()],
+            events: vec![],
+            next_checkpoint: ProducerCheckpoint::some("cursor-after-empty-poll"),
+            received_checkpoints: Arc::new(Mutex::new(Vec::new())),
+        }))
+        .expect("register producer");
+
+    let results = dispatcher.poll_and_deliver().await;
+    assert!(results[0].1.is_ok(), "empty poll should succeed");
+    assert_eq!(
+        dispatcher.checkpoint("test:empty-advance").value(),
+        Some("cursor-after-empty-poll")
+    );
 }
 
 #[tokio::test]
@@ -377,4 +495,58 @@ async fn source_kind_mismatch_is_a_hard_error() {
         err_msg.contains("clickup"),
         "error should name the declared kinds: {err_msg}"
     );
+}
+
+/// Proves that generic raw source-ingress events deliver to agents subscribing
+/// to `source_kinds: ["slack"]` without restricting schema_version.
+#[tokio::test]
+async fn raw_source_records_deliver_to_slack_subscriber() {
+    ensure_fixture_runtime_types();
+    let (agent, built_dir) = setup_fixture_agent("dispatch-echo").await;
+    let _cleanup = TempDirCleanup::new(built_dir);
+
+    // Use a broader subscription (source_kind only, no schema_version constraint)
+    // to match the generic raw ingress schema.
+    let mut entry = dispatch_echo_discovery_entry();
+    entry.agent_card.subscriptions = vec![EventSubscription {
+        source_kinds: vec![EventSourceKind::parse("slack").unwrap()],
+        ..EventSubscription::default()
+    }];
+
+    let registry: Arc<dyn AgentRegistry> = Arc::new(TestRegistry {
+        agent,
+        entries: vec![entry],
+    });
+
+    let dispatcher = EventDispatcher::new(registry);
+
+    let event = ProducedEvent {
+        routing_key: AgentDispatchRoutingKey::parse("event:intake").unwrap(),
+        schema_version: EventSchemaVersion::parse("host.source-records.v1").unwrap(),
+        source_kind: EventSourceKind::parse("slack").unwrap(),
+        source_key: EventSourceKey::parse("slack:C_test").unwrap(),
+        messages: vec![json!({
+            "schema_version": "host.source-records.v1",
+            "source": {
+                "source_kind": "slack",
+                "source_key": "slack:C_test",
+                "source_label": "#test-channel"
+            },
+            "records": [
+                { "ts": "1735689600.000001", "user": "U123", "text": "hello from slack" }
+            ]
+        })],
+        context_id: None,
+        task_id: None,
+        message_id: None,
+        metadata: None,
+    };
+
+    let outcome = dispatcher
+        .deliver_event(event)
+        .await
+        .expect("delivery should succeed");
+    assert_eq!(outcome.subscribers_matched, 1);
+    assert_eq!(outcome.subscribers_accepted, 1);
+    assert!(outcome.failures.is_empty());
 }

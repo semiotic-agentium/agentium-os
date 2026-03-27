@@ -2,8 +2,11 @@
 //!
 //! [`EventDispatcher`] polls registered [`EventProducer`]s, matches their events
 //! against agent subscriptions, and delivers via [`AgentRegistry::handle_dispatch`].
-//! Checkpoint cursors advance only after successful delivery — preserving
-//! at-least-once semantics.
+//! Checkpoint cursors advance only after a poll cycle reaches the configured
+//! success boundary:
+//! - subscriber delivery failures remain sticky and keep the checkpoint pinned
+//! - events with no matching subscribers are logged and treated as handled so
+//!   the host does not stall an entire source on permanently unconsumed data
 
 use std::sync::Arc;
 
@@ -12,7 +15,7 @@ use baml_rt_core::{
     EventDeliveryOutcome, ProducedEvent, Result,
     event_subscription::{PublishedEvent, subscriptions_match_published_event},
 };
-use baml_rt_tools::{EventProducer, ProducerRegistry};
+use baml_rt_tools::{EventProducer, ProducerCheckpoint, ProducerRegistry};
 use tracing::{info, warn};
 
 use crate::AgentRegistry;
@@ -37,21 +40,41 @@ impl EventDispatcher {
         self.producers.register(producer)
     }
 
+    /// Register an event producer with a preloaded checkpoint.
+    pub fn register_producer_with_checkpoint(
+        &mut self,
+        producer: Arc<dyn EventProducer>,
+        checkpoint: ProducerCheckpoint,
+    ) -> Result<()> {
+        self.producers
+            .register_with_checkpoint(producer, checkpoint)
+    }
+
+    /// Current checkpoint for a registered producer.
+    pub fn checkpoint(&self, producer_key: &str) -> ProducerCheckpoint {
+        self.producers.checkpoint(producer_key)
+    }
+
     /// Deliver a single [`ProducedEvent`] to all matched subscribers.
     ///
-    /// Returns an error if no subscribers match (prevents silent event dropping).
+    /// Returns a zero-match outcome when no subscribers match.
     pub async fn deliver_event(&self, event: ProducedEvent) -> Result<EventDeliveryOutcome> {
         let published = event.as_published_event();
         let entries = self.registry.list_agents();
         let targets = matching_subscribers(&entries, &published);
 
         if targets.is_empty() {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "no subscribed agents matched schema={schema}, source_kind={kind}, source_key={key}",
-                schema = published.schema_version,
-                kind = published.source_kind,
-                key = published.source_key,
-            )));
+            warn!(
+                schema = %published.schema_version,
+                source_kind = %published.source_kind,
+                source_key = %published.source_key,
+                "no subscribed agents matched produced event; advancing checkpoint"
+            );
+            return Ok(EventDeliveryOutcome {
+                subscribers_matched: 0,
+                subscribers_accepted: 0,
+                failures: Vec::new(),
+            });
         }
 
         let request = event.into_dispatch_request();
@@ -95,7 +118,7 @@ impl EventDispatcher {
     ///
     /// Returns one `(producer_key, Result<EventDeliveryOutcome>)` per producer.
     ///
-    /// - `Err` means the poll failed or no subscribers matched (hard failure).
+    /// - `Err` means the poll failed or delivery hit a hard failure.
     /// - `Ok(outcome)` with non-empty `outcome.failures` means some subscribers
     ///   rejected or errored (partial failure). The checkpoint is **not** advanced
     ///   in this case — only a fully clean delivery advances the cursor.
@@ -123,6 +146,8 @@ impl EventDispatcher {
             };
 
             if poll_result.events.is_empty() {
+                self.producers
+                    .advance_checkpoint(&key, poll_result.checkpoint.clone());
                 info!(producer_key = %key, "producer poll returned no events");
                 results.push((
                     key,

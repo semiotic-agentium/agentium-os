@@ -12,15 +12,18 @@ use crate::text::truncate_for_display;
 
 /// Known schema versions for event delivery.
 ///
-/// NOTE: Hardcoded for now. The task-daemon is currently the only event producer,
-/// so `task-daemon.interpretation.v1` is the only known schema version.
-/// In the future, this could be read from a registry or discovered from
-/// daemon/tool configuration. When adding new event producers, add their
-/// schema versions here.
-const KNOWN_SCHEMA_VERSIONS: &[(&str, &str)] = &[(
-    "task-daemon.interpretation.v1",
-    "Task daemon event interpretation (Slack, ClickUp, GitHub Issues)",
-)];
+/// NOTE: Hardcoded for now. In the future, this should come from the same
+/// producer inventory used by the runner.
+const KNOWN_SCHEMA_VERSIONS: &[(&str, &str)] = &[
+    (
+        "host.source-records.v1",
+        "Generic raw source-ingress batch produced by host-managed event sources",
+    ),
+    (
+        "task-daemon.interpretation.v1",
+        "Task daemon event interpretation (Slack, ClickUp, GitHub Issues)",
+    ),
+];
 
 pub fn run() -> anyhow::Result<()> {
     let catalog = InventoryCatalog::new();

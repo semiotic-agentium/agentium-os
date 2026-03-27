@@ -19,6 +19,14 @@ pub(crate) struct SecretDef {
     pub reason: String,
 }
 
+/// Parsed config metadata from `config = { bundle = "...", schema = T, default = expr }`.
+#[derive(Debug, Clone)]
+pub(crate) struct ConfigDef {
+    pub bundle: LitStr,
+    pub schema: Type,
+    pub default: Expr,
+}
+
 /// Parsed attributes from `#[baml_tool(...)]`.
 #[derive(Debug)]
 pub(crate) struct ToolAttrs {
@@ -38,6 +46,8 @@ pub(crate) struct ToolAttrs {
     pub extra_ts_types: Vec<Path>,
     /// Event source kinds this tool can produce when polled (e.g. `["slack"]`).
     pub event_sources: Vec<LitStr>,
+    /// Optional bundle config metadata for host-managed configuration.
+    pub config: Option<ConfigDef>,
     /// Whether this is a metadata-only registration (no runtime handler).
     pub metadata_only: bool,
     /// Override for the default build function.
@@ -59,6 +69,7 @@ enum AttrEntry {
     Secrets(Vec<SecretDef>),
     Access(Ident),
     EventSources(Vec<LitStr>),
+    Config(Box<ConfigDef>),
     BamlTypes(Vec<Path>),
     ExtraTsTypes(Vec<Path>),
     MetadataOnly,
@@ -66,6 +77,12 @@ enum AttrEntry {
     OpenInput(Type),
     Input(Type),
     Output(Type),
+}
+
+enum ConfigEntry {
+    Bundle(LitStr),
+    Schema(Type),
+    Default(Expr),
 }
 
 /// Parse the entire `(...)` contents of `#[baml_tool(...)]`.
@@ -79,6 +96,7 @@ impl Parse for ToolAttrs {
         let mut secrets: Vec<SecretDef> = Vec::new();
         let mut access: Option<Ident> = None;
         let mut event_sources: Vec<LitStr> = Vec::new();
+        let mut config: Option<ConfigDef> = None;
         let mut baml_types: Vec<Path> = Vec::new();
         let mut extra_ts_types: Vec<Path> = Vec::new();
         let mut metadata_only = false;
@@ -95,6 +113,7 @@ impl Parse for ToolAttrs {
                 AttrEntry::Secrets(v) => secrets = v,
                 AttrEntry::Access(v) => access = Some(v),
                 AttrEntry::EventSources(v) => event_sources = v,
+                AttrEntry::Config(v) => config = Some(*v),
                 AttrEntry::BamlTypes(v) => baml_types = v,
                 AttrEntry::ExtraTsTypes(v) => extra_ts_types = v,
                 AttrEntry::MetadataOnly => metadata_only = true,
@@ -130,6 +149,7 @@ impl Parse for ToolAttrs {
             secrets,
             access,
             event_sources,
+            config,
             baml_types,
             extra_ts_types,
             metadata_only,
@@ -245,6 +265,12 @@ impl Parse for AttrEntry {
             }
             "event_sources" => {
                 let strings = parse_string_array(input)?;
+                if strings.is_empty() {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "baml_tool: `event_sources` must not be an empty array; omit it if the tool does not produce events",
+                    ));
+                }
                 for s in &strings {
                     if s.value().trim().is_empty() {
                         return Err(syn::Error::new(
@@ -254,6 +280,40 @@ impl Parse for AttrEntry {
                     }
                 }
                 Ok(AttrEntry::EventSources(strings))
+            }
+            "config" => {
+                let content;
+                syn::braced!(content in input);
+                let entries: Punctuated<ConfigEntry, Token![,]> =
+                    Punctuated::parse_terminated(&content)?;
+
+                let mut bundle: Option<LitStr> = None;
+                let mut schema: Option<Type> = None;
+                let mut default: Option<Expr> = None;
+
+                for entry in entries {
+                    match entry {
+                        ConfigEntry::Bundle(v) => bundle = Some(v),
+                        ConfigEntry::Schema(v) => schema = Some(v),
+                        ConfigEntry::Default(v) => default = Some(v),
+                    }
+                }
+
+                let bundle = bundle.ok_or_else(|| {
+                    syn::Error::new(Span::call_site(), "baml_tool: `config.bundle` is required")
+                })?;
+                let schema = schema.ok_or_else(|| {
+                    syn::Error::new(Span::call_site(), "baml_tool: `config.schema` is required")
+                })?;
+                let default = default.ok_or_else(|| {
+                    syn::Error::new(Span::call_site(), "baml_tool: `config.default` is required")
+                })?;
+
+                Ok(AttrEntry::Config(Box::new(ConfigDef {
+                    bundle,
+                    schema,
+                    default,
+                })))
             }
             "baml_types" => {
                 let paths = parse_path_array(input)?;
@@ -282,6 +342,25 @@ impl Parse for AttrEntry {
             other => Err(syn::Error::new(
                 key.span(),
                 format!("baml_tool: unknown attribute `{other}`"),
+            )),
+        }
+    }
+}
+
+impl Parse for ConfigEntry {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let key: Ident = input.parse()?;
+        input.parse::<Token![=]>()?;
+
+        match key.to_string().as_str() {
+            "bundle" => Ok(ConfigEntry::Bundle(input.parse()?)),
+            "schema" => Ok(ConfigEntry::Schema(input.parse()?)),
+            "default" => Ok(ConfigEntry::Default(input.parse()?)),
+            other => Err(syn::Error::new(
+                key.span(),
+                format!(
+                    "baml_tool: unknown config attribute `{other}`; expected bundle, schema, or default"
+                ),
             )),
         }
     }
@@ -396,5 +475,22 @@ impl Parse for KvPair {
         input.parse::<Token![=]>()?;
         let value: LitStr = input.parse()?;
         Ok(KvPair(key, value))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use syn::parse_str;
+
+    use super::ToolAttrs;
+
+    #[test]
+    fn event_sources_rejects_empty_array() {
+        let err = parse_str::<ToolAttrs>(
+            r#"name = "support/test", description = "test", event_sources = []"#,
+        )
+        .expect_err("empty event_sources should be rejected");
+
+        assert!(err.to_string().contains("must not be an empty array"));
     }
 }

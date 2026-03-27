@@ -122,17 +122,19 @@ cargo run -p cargo-agent-platform -- list-event-sources
 Event Source Kinds (declared by tools):
 
   SOURCE KIND          TOOL                                DESCRIPTION
+  slack                support/slack                       Read-only Slack integration for conversa...
   weather              internal-dev/get_weather            Test weather tool
 
 Known Schema Versions:
 
   SCHEMA VERSION                           DESCRIPTION
+  host.source-records.v1                   Generic raw source-ingress batch produced by host-managed event sources
   task-daemon.interpretation.v1            Task daemon event interpretation (Slack, ClickUp, GitHub Issues)
 
 Note: Schema versions are conventions defined by event producers (e.g., task-daemon).
       Use these in agent manifest subscriptions to receive matching events.
 
-Total: 1 event source kind(s), 1 known schema version(s)
+Total: 2 event source kind(s), 2 known schema version(s)
 ```
 
 **Use cases:**
