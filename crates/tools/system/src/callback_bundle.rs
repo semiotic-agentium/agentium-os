@@ -1,10 +1,6 @@
 use std::sync::Arc;
 
-use baml_rt_core::{
-    BamlRtError, Result,
-    event_subscription::EventSourceKey,
-    ids::{ContextId, ExternalId, TaskId},
-};
+use baml_rt_core::{BamlRtError, Result, event_subscription::EventSourceKey};
 use baml_rt_tools::{
     ToolBundle, ToolBundleMetadata, ToolHandler,
     tools::{
@@ -18,8 +14,8 @@ use crate::{
     callback_time::callback_now_unix_ms,
     metadata::system_callback_metadata,
     tools::{
-        CallbackCancelInput, CallbackCancelledOutput, CallbackScheduleInput,
-        CallbackScheduledOutput, CallbackToolInput, CallbackToolOutput,
+        CallbackCancelInput, CallbackCancelledOutput, CallbackContinuationMode,
+        CallbackScheduleInput, CallbackScheduledOutput, CallbackToolInput, CallbackToolOutput,
     },
 };
 
@@ -74,22 +70,31 @@ async fn schedule_callback(
 ) -> Result<CallbackToolOutput> {
     let requested_at_unix_ms = callback_now_unix_ms("system_callback_schedule");
     let scheduled_for_unix_ms = requested_at_unix_ms.saturating_add(input.after_ms);
-    let context_id = parse_context_id(input.context_id)?;
-    let task_id = parse_task_id(input.task_id)?;
-    if context_id.is_none() && task_id.is_some() {
-        return Err(BamlRtError::InvalidArgument(
-            "system/callback taskId requires contextId so the host can resume a real task scope"
-                .to_string(),
-        ));
-    }
+    let dedupe_key = normalize_optional_text(input.dedupe_key, "dedupeKey")?;
+    let (context_id, task_id) = match input.continuation.unwrap_or_default() {
+        CallbackContinuationMode::Detached => (None, None),
+        CallbackContinuationMode::ResumeCurrentTask => {
+            let task_id = session_ctx.task_id.clone().ok_or_else(|| {
+                BamlRtError::InvalidArgument(
+                    "system/callback continuation=resume_current_task requires an active task scope"
+                        .to_string(),
+                )
+            })?;
+            if dedupe_key.is_none() {
+                return Err(BamlRtError::InvalidArgument(
+                    "system/callback continuation=resume_current_task requires dedupeKey"
+                        .to_string(),
+                ));
+            }
+            (Some(session_ctx.context_id.clone()), Some(task_id))
+        }
+    };
     let request = ScheduleCallbackRequest {
         source_key: normalize_source_key(&input.source_key)?,
-        dedupe_key: normalize_optional_text(input.dedupe_key, "dedupeKey")?,
+        dedupe_key,
         payload: input.payload,
         scheduled_for_unix_ms,
         requested_at_unix_ms,
-        // Fresh synthetic dispatch is the safe default for callbacks.
-        // Agents must opt into continuing an existing context/task.
         context_id,
         task_id,
         requesting_agent_id: Some(session_ctx.agent_id.as_str().to_string()),
@@ -189,14 +194,4 @@ fn normalize_optional_text(raw: Option<String>, field_name: &str) -> Result<Opti
         }
     })
     .transpose()
-}
-
-fn parse_context_id(raw: Option<String>) -> Result<Option<ContextId>> {
-    normalize_optional_text(raw, "contextId")
-        .map(|value| value.map(|raw| ContextId::from(raw.as_str())))
-}
-
-fn parse_task_id(raw: Option<String>) -> Result<Option<TaskId>> {
-    normalize_optional_text(raw, "taskId")
-        .map(|value| value.map(|raw| TaskId::from_external(ExternalId::new(raw))))
 }

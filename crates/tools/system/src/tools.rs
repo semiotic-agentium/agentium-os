@@ -121,14 +121,9 @@ pub struct CallbackScheduleInput {
     pub dedupe_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[baml(
-        description = "Optional existing context to continue when this callback fires. Omit it to dispatch in a fresh synthetic context."
+        description = "Optional continuation policy. Omit it for a detached callback. Use `resume_current_task` to re-enter the current task later in the same context."
     )]
-    pub context_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[baml(
-        description = "Optional existing task to continue when this callback fires. Requires contextId."
-    )]
-    pub task_id: Option<String>,
+    pub continuation: Option<CallbackContinuationMode>,
 }
 
 impl baml_rt_tools::DescribeAction for CallbackScheduleInput {
@@ -139,6 +134,14 @@ impl baml_rt_tools::DescribeAction for CallbackScheduleInput {
             after_ms = self.after_ms
         )
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CallbackContinuationMode {
+    #[default]
+    Detached,
+    ResumeCurrentTask,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]

@@ -332,7 +332,7 @@ async fn callback_tool_schedules_and_dedupes_against_pending_rows() {
 }
 
 #[tokio::test]
-async fn callback_tool_preserves_explicit_context_and_task_continuity() {
+async fn callback_tool_resume_current_task_preserves_task_continuity() {
     let _suite_guard = suite_lock().lock().await;
     clear_callback_store();
     let store = Arc::new(MemoryCallbackStore::default());
@@ -353,9 +353,9 @@ async fn callback_tool_preserves_explicit_context_and_task_continuity() {
                 "op": "schedule",
                 "afterMs": 250,
                 "sourceKey": "workflow-intake:follow-up",
+                "dedupeKey": "resume-current-task",
                 "payload": { "kind": "resume" },
-                "contextId": context_id.as_str(),
-                "taskId": task_id.as_str()
+                "continuation": "resume_current_task"
             }),
         )
         .await,
@@ -639,10 +639,10 @@ async fn callback_tool_cancel_validates_selector_combinations() {
                 "op": "schedule",
                 "afterMs": 250,
                 "sourceKey": "workflow-intake:follow-up",
-                "payload": { "kind": "resume" },
-                "taskId": "task-callback-test"
+                "continuation": "resume_current_task",
+                "payload": { "kind": "resume" }
             }),
-            "system/callback taskId requires contextId so the host can resume a real task scope",
+            "system/callback continuation=resume_current_task requires dedupeKey",
         ),
     ];
 
@@ -660,6 +660,38 @@ async fn callback_tool_cancel_validates_selector_combinations() {
             "expected error to end with '{expected_message}'"
         );
     }
+
+    clear_callback_store();
+}
+
+#[tokio::test]
+async fn callback_tool_resume_current_task_requires_active_task_scope() {
+    let _suite_guard = suite_lock().lock().await;
+    clear_callback_store();
+    install_callback_store(Arc::new(MemoryCallbackStore::default()));
+
+    let registry = test_registry();
+    let context_id = test_context_id();
+    let agent_id = test_agent_id();
+
+    let step = invoke_callback_tool(
+        registry.as_ref(),
+        &context_id,
+        &agent_id,
+        None,
+        json!({
+            "op": "schedule",
+            "afterMs": 250,
+            "sourceKey": "workflow-intake:follow-up",
+            "dedupeKey": "resume-current-task",
+            "continuation": "resume_current_task",
+            "payload": { "kind": "resume" }
+        }),
+    )
+    .await;
+    assert!(expect_error_message(step).ends_with(
+        "system/callback continuation=resume_current_task requires an active task scope"
+    ));
 
     clear_callback_store();
 }

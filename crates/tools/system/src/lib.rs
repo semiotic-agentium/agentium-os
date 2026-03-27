@@ -25,10 +25,11 @@ pub use callback_bundle::CallbackBundle;
 pub use provenance_bundle::ProvenanceBundle;
 pub use tools::{
     AgentCardDto, AgentEventSubscriptionDto, CallbackCancelInput, CallbackCancelledOutput,
-    CallbackScheduleInput, CallbackScheduledOutput, CallbackToolInput, CallbackToolOutput,
-    ConversationChunk, ConversationMessage, ConversationPart, DiscoverAgentsNextOutput,
-    DiscoverAgentsOpenInput, DiscoverAgentsSendInput, DiscoverToolsNextOutput,
-    DiscoverToolsOpenInput, DiscoverToolsSendInput, InternalA2aCompletion, InternalA2aNextOutput,
-    InternalA2aOpenInput, InternalA2aSendInput, InternalA2aTarget, ProvenanceQueryNextOutput,
-    ProvenanceQueryOpenInput, ProvenanceQuerySendInput, ToolDiscoveryRecordDto,
+    CallbackContinuationMode, CallbackScheduleInput, CallbackScheduledOutput, CallbackToolInput,
+    CallbackToolOutput, ConversationChunk, ConversationMessage, ConversationPart,
+    DiscoverAgentsNextOutput, DiscoverAgentsOpenInput, DiscoverAgentsSendInput,
+    DiscoverToolsNextOutput, DiscoverToolsOpenInput, DiscoverToolsSendInput, InternalA2aCompletion,
+    InternalA2aNextOutput, InternalA2aOpenInput, InternalA2aSendInput, InternalA2aTarget,
+    ProvenanceQueryNextOutput, ProvenanceQueryOpenInput, ProvenanceQuerySendInput,
+    ToolDiscoveryRecordDto,
 };
