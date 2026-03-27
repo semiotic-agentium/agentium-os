@@ -2364,6 +2364,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Open the three independent stores concurrently to reduce startup latency.
     // provenance_config_builder depends on config_service and runs after this join.
+    // When ProvenanceDb::InMemory, all stores use in-memory backends for consistency
+    // and to avoid file I/O contention in parallel test scenarios.
     let (config_service, deployment_state, repository_store) = tokio::try_join!(
         async {
             let svc: Arc<dyn baml_rt_config::ConfigService> = match &config.provenance_db {
@@ -2388,20 +2390,29 @@ async fn main() -> anyhow::Result<()> {
             Ok::<_, anyhow::Error>(svc)
         },
         async {
-            Ok::<_, anyhow::Error>(Arc::new(
-                deployment_state::DeploymentStateStore::open(&state_db_path)
+            let store = match &config.provenance_db {
+                ProvenanceDb::InMemory => deployment_state::DeploymentStateStore::open_in_memory()
                     .await
-                    .with_context(|| {
-                        format!(
-                            "Failed to initialize runner deployment state DB at {}",
-                            state_db_path.display()
-                        )
-                    })?,
-            ))
+                    .context("Failed to create in-memory deployment state store")?,
+                ProvenanceDb::File(_) => {
+                    deployment_state::DeploymentStateStore::open(&state_db_path)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to initialize runner deployment state DB at {}",
+                                state_db_path.display()
+                            )
+                        })?
+                }
+            };
+            Ok::<_, anyhow::Error>(Arc::new(store))
         },
         async {
-            Ok::<_, anyhow::Error>(Arc::new(
-                SurrealStore::open(&repository_db_path)
+            let store = match &config.provenance_db {
+                ProvenanceDb::InMemory => SurrealStore::open_in_memory()
+                    .await
+                    .context("Failed to create in-memory repository store")?,
+                ProvenanceDb::File(_) => SurrealStore::open(&repository_db_path)
                     .await
                     .with_context(|| {
                         format!(
@@ -2409,7 +2420,8 @@ async fn main() -> anyhow::Result<()> {
                             repository_db_path.display()
                         )
                     })?,
-            ))
+            };
+            Ok::<_, anyhow::Error>(Arc::new(store))
         },
     )?;
     info!("Storage backends initialized (config, deployment state, repository)");
