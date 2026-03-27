@@ -640,7 +640,7 @@ impl A2aAgent {
             return true;
         }
 
-        let runtime = self.runtime.lock().await;
+        let runtime = self.runtime.read().await;
         runtime
             .open_session_count_for_scope(context_id, task_id)
             .await

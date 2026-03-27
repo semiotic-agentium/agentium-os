@@ -12,11 +12,14 @@ use baml_rt_core::{
     DeploymentContentHash, Result,
 };
 use baml_rt_provenance::ToolIndexConfig;
+use baml_rt_tools::ToolAccessPolicy;
 use serde_json::Value;
 
 use crate::{
-    AgentPackage, BootedAgent, ProvenanceConfig, RunnerRegistry, ScopedInternalA2aRouter,
-    ToolAccessPolicy,
+    agent_package::{AgentPackage, BootedAgent},
+    config::ProvenanceConfig,
+    routing::{RunnerRegistry, ScopedInternalA2aRouter},
+    runner::AgentRunner,
 };
 
 /// Builder state: loading agent packages. No execution entrypoints yet.
@@ -27,7 +30,7 @@ pub struct Ready;
 
 /// Linear builder for the agent runner. Progression: Loading -> Ready.
 pub struct RunnerBuilder<S> {
-    pub(crate) runner: Arc<crate::AgentRunner>,
+    pub(crate) runner: Arc<AgentRunner>,
     pub(crate) registry: Arc<RunnerRegistry>,
     _state: std::marker::PhantomData<S>,
 }
@@ -43,7 +46,7 @@ impl RunnerBuilder<Loading> {
         stream_idle_secs: Option<u64>,
         repository_url: String,
     ) -> Self {
-        let runner = Arc::new(crate::AgentRunner::new(
+        let runner = Arc::new(AgentRunner::new(
             provenance_config,
             deployment_state,
             tool_index,
@@ -174,7 +177,7 @@ impl RunnerBuilder<Ready> {
     }
 
     /// Runner arc (for provenance, mermaid, discovery, or custom A2A loop).
-    pub fn runner(&self) -> Arc<crate::AgentRunner> {
+    pub fn runner(&self) -> Arc<AgentRunner> {
         Arc::clone(&self.runner)
     }
 }
