@@ -1,4 +1,4 @@
-#![cfg(feature = "slack")]
+#![cfg(all(feature = "llm-tests", feature = "slack"))]
 
 mod common;
 

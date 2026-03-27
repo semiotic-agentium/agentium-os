@@ -1,4 +1,4 @@
-#![cfg(feature = "notion")]
+#![cfg(all(feature = "llm-tests", feature = "notion"))]
 
 mod common;
 

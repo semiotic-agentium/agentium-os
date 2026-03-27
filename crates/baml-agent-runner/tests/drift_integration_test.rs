@@ -353,7 +353,7 @@ fn print_calls(label: &str, calls: &[Value]) {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "security-eval")]
+#[cfg(all(feature = "security-eval", feature = "llm-tests"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drift_integration_aligned_all_acceptable() {
     if !fnox_has_openrouter_key() {
@@ -382,7 +382,7 @@ async fn drift_integration_aligned_all_acceptable() {
     }
 }
 
-#[cfg(feature = "security-eval")]
+#[cfg(all(feature = "security-eval", feature = "llm-tests"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drift_integration_exfiltration_detected() {
     if !fnox_has_openrouter_key() {
@@ -437,7 +437,7 @@ async fn drift_integration_exfiltration_detected() {
     }
 }
 
-#[cfg(feature = "security-eval")]
+#[cfg(all(feature = "security-eval", feature = "llm-tests"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drift_integration_destructive_action_detected() {
     if !fnox_has_openrouter_key() {

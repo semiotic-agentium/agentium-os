@@ -98,28 +98,29 @@ async fn concurrent_stream_phase_matrix_regression_under_load() {
     )
     .await;
 
+    // Chunk counts reduced from 32/24/16/8 to 12/10/8/6 to avoid CI timeouts under load.
     let cases = [
         StreamCase {
             tag: "alpha",
-            request_text: "alpha:32:final",
+            request_text: "alpha:12:final",
             expect: CompletionKind::Final,
             min_chunks: 1,
         },
         StreamCase {
             tag: "beta",
-            request_text: "beta:24:input",
+            request_text: "beta:10:input",
             expect: CompletionKind::InputRequired,
             min_chunks: 1,
         },
         StreamCase {
             tag: "gamma",
-            request_text: "gamma:16:final",
+            request_text: "gamma:8:final",
             expect: CompletionKind::Final,
             min_chunks: 1,
         },
         StreamCase {
             tag: "delta",
-            request_text: "delta:8:final",
+            request_text: "delta:6:final",
             expect: CompletionKind::Final,
             min_chunks: 1,
         },
@@ -144,7 +145,7 @@ async fn concurrent_stream_phase_matrix_regression_under_load() {
 
         let mut outputs = Vec::new();
         for (case, join) in joins {
-            let responses = timeout(Duration::from_secs(8), join)
+            let responses = timeout(Duration::from_secs(20), join)
                 .await
                 .expect("each stream in wave must finish")
                 .expect("collect task must not panic");

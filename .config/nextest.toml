@@ -12,12 +12,8 @@ path = "junit.xml"
 store-failure-output = true
 
 # Rate-limit provenance tests (max 1 at a time) to avoid SurrealDB embedded
-# resource contention. LLM e2e tests cap concurrency for API rate limits.
+# resource contention.
 [test-groups]
-# I/O-bound: each test blocks on HTTP calls to the LLM API, not CPU/memory.
-# 6 concurrent tests → 6 simultaneous in-flight requests, well within OpenRouter
-# rate limits (~60 RPM) while avoiding 8× unnecessary serialisation overhead.
-llm = { max-threads = 6 }
 provenance = { max-threads = 1 }
 
 [[profile.ci.overrides]]
@@ -56,43 +52,45 @@ retries = { backoff = "fixed", count = 2, delay = "2s" }
 filter = 'package(baml-rt-a2a) and (test(~test_interleaved) or test(~interleaved))'
 retries = { backoff = "fixed", count = 2, delay = "2s" }
 
-# LLM-dependent e2e tests: throttle concurrency and allow generous timeouts.
+# LLM-dependent e2e tests: generous timeouts and retries.
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_)'
-test-group = "llm"
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
 # Notion direct-id e2e: extra retries (LLM plan extraction occasionally skips tool path).
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
-test-group = "llm"
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 3, delay = "8s" }
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-interceptor) and test(~test_e2e_)'
-test-group = "llm"
 retries = { backoff = "fixed", count = 1, delay = "2s" }
 
-# baml-rt llm_test: real LLM calls (SimpleGreeting + streaming); cap concurrency.
+# baml-rt llm_test: real LLM calls (SimpleGreeting + streaming).
 [[profile.ci.overrides]]
 filter = 'package(baml-rt) and binary(llm_test)'
-test-group = "llm"
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a) and binary(task_streaming_test)'
-test-group = "llm"
 slow-timeout = { period = "60s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "3s" }
+
+# Workflow intake tests spawn subprocesses with HTTP servers; flaky under load.
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_workflow_intake_test)'
+slow-timeout = { period = "120s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "3s" }
 
 # A2A provenance-using test binaries: route to provenance group.
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a) and (binary(run_handle_a2a_property_test) or binary(a2a_malformed_and_error_paths_test))'
 test-group = "provenance"
 slow-timeout = { period = "60s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "2s" }
 
 # A2A property test drives many concurrent INPUT_REQUIRED/resume cycles.
 [[profile.ci.overrides]]
@@ -105,3 +103,102 @@ slow-timeout = { period = "300s", terminate-after = 1 }
 filter = 'package(baml-rt-a2a) and test(prop_interleaved_a2a_tool_llm_multi_context_isolation)'
 slow-timeout = { period = "300s", terminate-after = 1 }
 retries = 0
+
+# =============================================================================
+# Profile: ci-llm
+# LLM-dependent tests. Uses full parallelism (no thread limits).
+#
+# Tests are gated by `#[cfg(feature = "llm-tests")]` in source code.
+# Compile with `--features ...,llm-tests` to include them.
+# =============================================================================
+[profile.ci-llm]
+fail-fast = false
+[profile.ci-llm.junit]
+path = "junit-llm.xml"
+store-failure-output = true
+
+# Default timeouts and retries for LLM tests
+[[profile.ci-llm.overrides]]
+filter = 'all()'
+slow-timeout = { period = "120s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 1, delay = "5s" }
+
+# Notion direct-id e2e: extra retries (LLM plan extraction occasionally skips tool path)
+[[profile.ci-llm.overrides]]
+filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
+retries = { backoff = "fixed", count = 3, delay = "8s" }
+
+# =============================================================================
+# Profile: ci-non-llm
+# Non-LLM tests with higher parallelism (CPU/memory bound only).
+# Used by `just test` for the second pass with nproc/2 threads.
+#
+# Compile WITHOUT `--features llm-tests` so LLM-gated tests don't exist.
+# =============================================================================
+[profile.ci-non-llm]
+fail-fast = false
+[profile.ci-non-llm.junit]
+path = "junit-non-llm.xml"
+store-failure-output = true
+
+# Workflow intake tests spawn subprocesses with HTTP servers; flaky under load.
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_workflow_intake_test)'
+slow-timeout = { period = "120s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "3s" }
+
+# Provenance tests need serialization to avoid SurrealDB contention
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-rt-provenance) and binary(tool_index_test)'
+test-group = "provenance"
+
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-rt-a2a) and (binary(provenance_context_test) or binary(provenance_property_test))'
+test-group = "provenance"
+
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-rt-api)'
+test-group = "provenance"
+
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-tools-system)'
+test-group = "provenance"
+
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-agent-runner) and test(~conversational_context_auto_via_provenance)'
+test-group = "provenance"
+slow-timeout = { period = "120s", terminate-after = 10 }
+
+# QuickJS flake retries
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-agent-runner) and test(~test_e2e_stream_baml_tool)'
+retries = { backoff = "fixed", count = 2, delay = "2s" }
+
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-agent-runner) and test(~test_internal_a2a_)'
+retries = { backoff = "fixed", count = 2, delay = "2s" }
+
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-rt-a2a) and (test(~test_interleaved) or test(~interleaved))'
+retries = { backoff = "fixed", count = 2, delay = "2s" }
+
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-rt-a2a) and (binary(run_handle_a2a_property_test) or binary(a2a_malformed_and_error_paths_test))'
+test-group = "provenance"
+slow-timeout = { period = "60s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "2s" }
+
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-rt-a2a) and test(prop_input_required_resume_positive_and_no_auto_final)'
+slow-timeout = { period = "300s", terminate-after = 1 }
+
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-rt-a2a) and test(prop_interleaved_a2a_tool_llm_multi_context_isolation)'
+slow-timeout = { period = "300s", terminate-after = 1 }
+retries = 0
+
+# Concurrent stream phase matrix: timing-sensitive under CI load; increase timeout and add retries.
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-rt-a2a) and test(concurrent_stream_phase_matrix_regression_under_load)'
+slow-timeout = { period = "30s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "2s" }

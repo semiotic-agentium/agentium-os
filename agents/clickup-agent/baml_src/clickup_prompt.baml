@@ -127,52 +127,22 @@ function ChooseClickUpAction(
 ) -> FinalResponse | SupportClickupSessionPlan {
   client DefaultClient
   prompt #"
-    You are executing one step of a ClickUp workspace plan.
+    You are a ClickUp workspace assistant executing one plan step.
+    Stay focused on this step only and use prior tool evidence from this turn.
+
     Overall goal: {{ goal }}
-    This step: {{ step_description }}
+    Current step: {{ step_description }}
     Operation kind: {{ operation_kind }}
 
-    This function is called in an iterative loop. Each call you make ONE decision:
-    either execute ONE tool action fragment, or return FinalResponse when this step is done.
-    Emit exactly one FSM step object per reply.
+    Domain rules:
+    - Reuse IDs from prior_results / history; do not invent IDs for required fields.
+    - For read steps, gather only the data needed for this step and then complete.
+    - For write steps, perform the requested change and then confirm what changed.
+    - For delete operations: require explicit confirmation flow. First send confirm_delete=false; only send confirm_delete=true after clear user confirmation in prior results/history.
+    - For final formatting steps, return FinalResponse with a user-ready message grounded in retrieved results.
 
-    Available actions — each is a distinct input type for the Send step:
-
-    Navigation (discover IDs you don't already have):
-    - ListTeamsInput: list all teams/workspaces (empty object — no fields)
-    - ListSpacesInput: list spaces in a team (needs team_id from prior tool results)
-    - ListListsInput: list task lists in a space (needs space_id from prior tool results)
-
-    Task management:
-    - ListTasksInput: list tasks in a list (needs list_id from prior tool results)
-    - GetTaskInput: get details of a specific task (needs task_id)
-    - CreateTaskInput: create a new task (needs list_id, name; optional: description, priority)
-    - UpdateTaskInput: update status/description/priority of a task (needs task_id)
-    - DeleteTaskInput: permanently delete a task (needs task_id, confirm_delete)
-
-    Guidance:
-    - Focus on what THIS STEP needs to accomplish, using prior_results for any IDs found earlier.
-    - For a "navigate" step: discover teams/spaces/lists/task IDs needed by subsequent steps.
-      When you have the IDs this step needs, emit { "message": "<what was found>" }.
-    - For an "execute" step: use IDs from prior_results to perform the target operation.
-      When the operation is complete, emit { "message": "<what was done>" }.
-    - For a "format" step: emit FinalResponse with message as the user-visible summary (prefer GitHub-flavored Markdown). Optionally set structured_json to a compact JSON string of key entities (task ids, urls) and citations to URLs/refs from prior_results.
-    - Always extract IDs from prior_results — never guess or use null for required IDs.
-
-    RESPONSE GATE:
-    - If prior_results already contains what this step needs, emit { "message": "<summary>" } immediately.
-    - After a successful write (create/update confirmed in tool result), emit { "message": "<confirmation>" }.
-
-    DELETION SAFETY (overrides all rules for delete operations):
-    a) First call: send DeleteTaskInput with confirm_delete=false.
-    b) If tool_result contains "Please confirm", emit { "message": "<relay the confirmation question>" } — STOP.
-    c) Only when prior_results shows a confirmed "yes" from the user, send DeleteTaskInput confirm_delete=true.
-    d) If user says "no"/"cancel", emit { "message": "Deletion cancelled." }.
-
-    STRICT FSM VALIDITY:
-    - When tool work is needed: emit exactly one Send step using the schema from ctx.output_format.
-    - Only Send is valid. Never emit Open, Read, Next, Finish, or Abort.
-    - When this step is complete: emit the completion variant (message field), not a step object.
+    This invocation uses a narrowed output schema for the current hop.
+    Emit exactly one JSON object that matches ctx.output_format.
 
     {{ ctx.output_format }}
 

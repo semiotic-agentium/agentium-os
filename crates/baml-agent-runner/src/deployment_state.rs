@@ -4,11 +4,9 @@ use baml_rt_core::{
     BamlRtError, DeploymentContentHash, DeploymentRecord, DeploymentStatus, Result,
 };
 use serde::Deserialize;
-#[cfg(test)]
-use surrealdb::engine::local::Mem;
 use surrealdb::{
     Surreal,
-    engine::local::{Db, SurrealKv},
+    engine::local::{Db, Mem, SurrealKv},
 };
 
 const NS: &str = "baml";
@@ -47,7 +45,6 @@ impl DeploymentStateStore {
         Ok(store)
     }
 
-    #[cfg(test)]
     pub async fn open_in_memory() -> Result<Self> {
         let db = Surreal::new::<Mem>(()).await.map_err(to_write_err)?;
         db.use_ns(NS).use_db(DB_NAME).await.map_err(to_write_err)?;
