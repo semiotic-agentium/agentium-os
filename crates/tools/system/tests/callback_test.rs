@@ -321,12 +321,51 @@ async fn callback_tool_schedules_and_dedupes_against_pending_rows() {
         rows[0].callback.dedupe_key.as_deref(),
         Some("same-follow-up")
     );
-    assert_eq!(rows[0].callback.context_id.as_ref(), Some(&context_id));
-    assert_eq!(rows[0].callback.task_id.as_ref(), Some(&task_id));
+    assert_eq!(rows[0].callback.context_id, None);
+    assert_eq!(rows[0].callback.task_id, None);
     assert_eq!(
         rows[0].callback.requesting_agent_id.as_deref(),
         Some(agent_id.as_str())
     );
+
+    clear_callback_store();
+}
+
+#[tokio::test]
+async fn callback_tool_preserves_explicit_context_and_task_continuity() {
+    let _suite_guard = suite_lock().lock().await;
+    clear_callback_store();
+    let store = Arc::new(MemoryCallbackStore::default());
+    install_callback_store(store.clone());
+
+    let registry = test_registry();
+    let context_id = test_context_id();
+    let task_id = test_task_id();
+    let agent_id = test_agent_id();
+
+    let output = expect_done_output(
+        invoke_callback_tool(
+            registry.as_ref(),
+            &context_id,
+            &agent_id,
+            Some(&task_id),
+            json!({
+                "op": "schedule",
+                "afterMs": 250,
+                "sourceKey": "workflow-intake:follow-up",
+                "payload": { "kind": "resume" },
+                "contextId": context_id.as_str(),
+                "taskId": task_id.as_str()
+            }),
+        )
+        .await,
+    );
+    assert_eq!(output["outcome"], "scheduled");
+
+    let rows = store.snapshot().await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].callback.context_id.as_ref(), Some(&context_id));
+    assert_eq!(rows[0].callback.task_id.as_ref(), Some(&task_id));
 
     clear_callback_store();
 }
@@ -594,6 +633,16 @@ async fn callback_tool_cancel_validates_selector_combinations() {
                 "sourceKey": "workflow-intake:follow-up"
             }),
             "system/callback cancel accepts either callbackId or sourceKey + dedupeKey, not both",
+        ),
+        (
+            json!({
+                "op": "schedule",
+                "afterMs": 250,
+                "sourceKey": "workflow-intake:follow-up",
+                "payload": { "kind": "resume" },
+                "taskId": "task-callback-test"
+            }),
+            "system/callback taskId requires contextId so the host can resume a real task scope",
         ),
     ];
 

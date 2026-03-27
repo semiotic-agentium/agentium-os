@@ -74,17 +74,24 @@ async fn schedule_callback(
 ) -> Result<CallbackToolOutput> {
     let requested_at_unix_ms = callback_now_unix_ms("system_callback_schedule");
     let scheduled_for_unix_ms = requested_at_unix_ms.saturating_add(input.after_ms);
+    let context_id = parse_context_id(input.context_id)?;
+    let task_id = parse_task_id(input.task_id)?;
+    if context_id.is_none() && task_id.is_some() {
+        return Err(BamlRtError::InvalidArgument(
+            "system/callback taskId requires contextId so the host can resume a real task scope"
+                .to_string(),
+        ));
+    }
     let request = ScheduleCallbackRequest {
         source_key: normalize_source_key(&input.source_key)?,
         dedupe_key: normalize_optional_text(input.dedupe_key, "dedupeKey")?,
         payload: input.payload,
         scheduled_for_unix_ms,
         requested_at_unix_ms,
-        // context_id is required for dispatch routing — default to the
-        // invoking session's context when the agent omits it.
-        context_id: parse_context_id(input.context_id)?
-            .or_else(|| Some(session_ctx.context_id.clone())),
-        task_id: parse_task_id(input.task_id)?.or_else(|| session_ctx.task_id.clone()),
+        // Fresh synthetic dispatch is the safe default for callbacks.
+        // Agents must opt into continuing an existing context/task.
+        context_id,
+        task_id,
         requesting_agent_id: Some(session_ctx.agent_id.as_str().to_string()),
         requesting_message_id: None,
     };

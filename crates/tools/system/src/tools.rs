@@ -121,12 +121,12 @@ pub struct CallbackScheduleInput {
     pub dedupe_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[baml(
-        description = "Optional context to continue when this callback fires. Defaults to the current invocation context."
+        description = "Optional existing context to continue when this callback fires. Omit it to dispatch in a fresh synthetic context."
     )]
     pub context_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[baml(
-        description = "Optional task to continue when this callback fires. Defaults to the current invocation task when one exists."
+        description = "Optional existing task to continue when this callback fires. Requires contextId."
     )]
     pub task_id: Option<String>,
 }
