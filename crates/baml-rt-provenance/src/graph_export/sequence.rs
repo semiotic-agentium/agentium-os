@@ -147,13 +147,28 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
         let _ = writeln!(out, "    actor User");
     }
     for agent in &participants.agents {
-        let _ = writeln!(out, "    participant {}", sanitize_participant(agent));
+        let _ = writeln!(
+            out,
+            "    participant {} as {}",
+            sanitize_participant(agent),
+            escape_sequence_text(&agent_display_label(agent))
+        );
     }
     for llm in &participants.llms {
-        let _ = writeln!(out, "    participant {}", sanitize_participant(llm));
+        let _ = writeln!(
+            out,
+            "    participant {} as {}",
+            sanitize_participant(llm),
+            escape_sequence_text(&llm_display_label(llm))
+        );
     }
     for tool in &participants.tools {
-        let _ = writeln!(out, "    participant {}", sanitize_participant(tool));
+        let _ = writeln!(
+            out,
+            "    participant {} as {}",
+            sanitize_participant(tool),
+            escape_sequence_text(&tool_display_label(tool))
+        );
     }
     let _ = writeln!(out);
 
@@ -1167,6 +1182,7 @@ fn emit_llm_call(out: &mut String, node: &ExportedNode, agent: &str) {
     let function_name = prop_str(node, a2a::FUNCTION_NAME);
     let request_label = function_name
         .filter(|s| !s.is_empty())
+        .map(|raw| humanize_function_label(&raw))
         .unwrap_or_else(|| "call".to_string());
 
     // Agent -> LLM (request)
@@ -1239,7 +1255,11 @@ fn emit_prompt_rejected(out: &mut String, node: &ExportedNode, agent: &str) {
     let _ = writeln!(out, "    Note over {agent}: {}", escape_note_content(&note));
 }
 
-const A2A_MEDIATOR_TOOLS: [&str; 2] = ["system/internal_a2a", "system/a2a"];
+const A2A_MEDIATOR_TOOLS: [&str; 3] = [
+    "system/internal_a2a",
+    "system/a2a",
+    "a2a/execution_session_step",
+];
 
 /// Emit `Agent->>Tool` and `Tool-->>Agent` arrows for a ToolCall node.
 fn emit_tool_call(
@@ -1624,6 +1644,102 @@ fn sanitize_participant(name: &str) -> String {
             }
         })
         .collect()
+}
+
+fn normalize_words(raw: &str) -> Vec<String> {
+    raw.split(|c: char| matches!(c, '_' | '-' | '/' | ':'))
+        .filter_map(|segment| {
+            let trimmed = segment.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect()
+}
+
+fn trim_trailing_version_words(words: &[String]) -> &[String] {
+    if words.len() >= 3
+        && words[words.len() - 3..]
+            .iter()
+            .all(|segment| segment.chars().all(|c| c.is_ascii_digit()))
+    {
+        &words[..words.len() - 3]
+    } else {
+        words
+    }
+}
+
+fn title_case_word(raw: &str) -> String {
+    if raw.eq_ignore_ascii_case("llm") {
+        return "LLM".to_string();
+    }
+    if raw.eq_ignore_ascii_case("crm") {
+        return "CRM".to_string();
+    }
+    if raw.eq_ignore_ascii_case("a2a") {
+        return "A2A".to_string();
+    }
+    if raw.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return raw.to_string();
+    }
+    let mut chars = raw.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut out = String::new();
+    out.extend(first.to_uppercase());
+    out.push_str(&chars.as_str().to_lowercase());
+    out
+}
+
+fn humanize_identifier(raw: &str) -> String {
+    let words = normalize_words(raw);
+    let words = trim_trailing_version_words(&words);
+    if words.is_empty() {
+        return raw.to_string();
+    }
+    words
+        .iter()
+        .map(|segment| title_case_word(segment))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn agent_display_label(raw: &str) -> String {
+    humanize_identifier(raw)
+}
+
+fn llm_display_label(raw: &str) -> String {
+    let model = raw.strip_prefix("LLM ").unwrap_or(raw);
+    let model = model.rsplit('/').next().unwrap_or(model);
+    humanize_identifier(model)
+}
+
+fn tool_display_label(raw: &str) -> String {
+    humanize_identifier(raw)
+}
+
+fn humanize_function_label(raw: &str) -> String {
+    if let Some(base) = raw.strip_suffix("__select") {
+        return format!("{} Select", humanize_identifier(base));
+    }
+    if let Some((base, tool)) = raw.split_once("__act__") {
+        return format!(
+            "{} Call {}",
+            humanize_identifier(base),
+            tool_display_label(strip_tool_prefix(tool))
+        );
+    }
+    if let Some((base, tool)) = raw.split_once("__continue__") {
+        return format!(
+            "{} Continue After {}",
+            humanize_identifier(base),
+            tool_display_label(strip_tool_prefix(tool))
+        );
+    }
+    humanize_identifier(raw)
 }
 
 /// Extract a truncated error message preview from a node's metadata.
