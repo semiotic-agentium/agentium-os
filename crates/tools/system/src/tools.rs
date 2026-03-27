@@ -4,6 +4,7 @@ use baml_derive::BamlType;
 use baml_rt_core::ids::{AgentId, ContextId, TaskId};
 use baml_rt_tools::tools::{HistoryContextV1, SessionReadEnvelope, SessionReadMode};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct InternalA2aTarget {
@@ -81,6 +82,120 @@ pub struct InternalA2aNextOutput {
     pub completion: Option<InternalA2aCompletion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_context: Option<HistoryContextV1>,
+}
+
+// --- system/callback ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+#[baml(union)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum CallbackToolInput {
+    Schedule(CallbackScheduleInput),
+    Cancel(CallbackCancelInput),
+}
+
+impl baml_rt_tools::DescribeAction for CallbackToolInput {
+    fn describe(&self) -> String {
+        match self {
+            Self::Schedule(input) => input.describe(),
+            Self::Cancel(input) => input.describe(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+#[serde(rename_all = "camelCase")]
+pub struct CallbackScheduleInput {
+    #[baml(description = "Delay before the callback event is emitted, in milliseconds.")]
+    pub after_ms: u64,
+    #[baml(
+        description = "Stable event source key for subscription matching, for example `workflow-intake:follow-up`."
+    )]
+    pub source_key: String,
+    #[baml(description = "Opaque JSON payload delivered back through onDispatch.")]
+    pub payload: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(
+        description = "Optional idempotency key scoped to the sourceKey. A pending callback with the same sourceKey + dedupeKey is reused instead of creating another row."
+    )]
+    pub dedupe_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(
+        description = "Optional context to continue when this callback fires. Defaults to the current invocation context."
+    )]
+    pub context_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(
+        description = "Optional task to continue when this callback fires. Defaults to the current invocation task when one exists."
+    )]
+    pub task_id: Option<String>,
+}
+
+impl baml_rt_tools::DescribeAction for CallbackScheduleInput {
+    fn describe(&self) -> String {
+        format!(
+            "scheduling callback '{source_key}' in {after_ms} ms",
+            source_key = self.source_key,
+            after_ms = self.after_ms
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+#[serde(rename_all = "camelCase")]
+pub struct CallbackCancelInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(description = "Exact callback id to cancel.")]
+    pub callback_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(
+        description = "Source key for dedupe-key cancellation. Required when cancelling by dedupeKey."
+    )]
+    pub source_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(
+        description = "Optional dedupe key to cancel instead of a callback id. Requires sourceKey."
+    )]
+    pub dedupe_key: Option<String>,
+}
+
+impl baml_rt_tools::DescribeAction for CallbackCancelInput {
+    fn describe(&self) -> String {
+        match (&self.callback_id, &self.dedupe_key) {
+            (Some(callback_id), _) => format!("cancelling callback '{callback_id}'"),
+            (None, Some(dedupe_key)) => format!("cancelling deduped callback '{dedupe_key}'"),
+            _ => "cancelling callback".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+#[baml(union)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum CallbackToolOutput {
+    Scheduled(CallbackScheduledOutput),
+    Cancelled(CallbackCancelledOutput),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+#[serde(rename_all = "camelCase")]
+pub struct CallbackScheduledOutput {
+    pub callback_id: String,
+    pub source_key: String,
+    pub scheduled_for_unix_ms: u64,
+    pub deduped: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+#[serde(rename_all = "camelCase")]
+pub struct CallbackCancelledOutput {
+    pub cancelled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dedupe_key: Option<String>,
 }
 
 // --- system/discover_agents ---

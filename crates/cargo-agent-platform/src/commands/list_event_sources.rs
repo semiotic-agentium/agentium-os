@@ -20,6 +20,10 @@ const KNOWN_SCHEMA_VERSIONS: &[(&str, &str)] = &[
         "Generic raw source-ingress batch produced by host-managed event sources",
     ),
     (
+        "system.callback.v1",
+        "Durable host-native callback event emitted by system/callback",
+    ),
+    (
         "task-daemon.interpretation.v1",
         "Task daemon event interpretation (Slack, ClickUp, GitHub Issues)",
     ),

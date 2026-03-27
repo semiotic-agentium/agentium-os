@@ -2451,6 +2451,9 @@ async fn main() -> anyhow::Result<()> {
         .with_runtime_secret_store(Some(overlay))
         .build()
         .context("Failed to build provenance config")?;
+    baml_tools_system::callback_store::install_callback_store(
+        deployment_state.clone() as Arc<dyn baml_tools_system::callback_store::CallbackStore>,
+    );
     let repository_service = Arc::new(RepositoryService::new(
         repository_store.clone() as Arc<dyn BlobStore>,
         repository_store.clone() as Arc<dyn MetadataStore>,

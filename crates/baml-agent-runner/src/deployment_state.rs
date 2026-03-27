@@ -3,16 +3,25 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 use baml_rt_core::{
     BamlRtError, DeploymentContentHash, DeploymentRecord, DeploymentStatus, Result,
 };
+use baml_tools_system::{
+    callback_store::{
+        CancelCallbackSelector, ScheduleCallbackRequest, ScheduleCallbackResult, StoredCallback,
+    },
+    callback_time::callback_now_unix_ms,
+};
 use serde::Deserialize;
 use surrealdb::{
     Surreal,
     engine::local::{Db, Mem, SurrealKv},
 };
+use tracing::debug;
+use uuid::Uuid;
 
 const NS: &str = "baml";
 const DB_NAME: &str = "runner_state";
 const TBL_DEPLOYMENTS: &str = "deployments";
 const TBL_EVENT_PRODUCER_CHECKPOINTS: &str = "event_producer_checkpoints";
+const TBL_SCHEDULED_CALLBACKS: &str = "scheduled_callbacks";
 
 const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE TABLE IF NOT EXISTS deployments SCHEMAFULL",
@@ -28,6 +37,23 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE FIELD IF NOT EXISTS producer_key ON event_producer_checkpoints TYPE string",
     "DEFINE FIELD IF NOT EXISTS checkpoint ON event_producer_checkpoints TYPE string",
     "DEFINE INDEX IF NOT EXISTS idx_event_producer_checkpoint_key ON event_producer_checkpoints FIELDS producer_key UNIQUE",
+    "DEFINE TABLE IF NOT EXISTS scheduled_callbacks SCHEMAFULL",
+    "DEFINE FIELD IF NOT EXISTS callback_id ON scheduled_callbacks TYPE string",
+    "DEFINE FIELD IF NOT EXISTS source_key ON scheduled_callbacks TYPE string",
+    "DEFINE FIELD IF NOT EXISTS dedupe_key ON scheduled_callbacks TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS payload_json ON scheduled_callbacks TYPE string",
+    "DEFINE FIELD IF NOT EXISTS status ON scheduled_callbacks TYPE string",
+    "DEFINE FIELD IF NOT EXISTS scheduled_for_unix_ms ON scheduled_callbacks TYPE int",
+    "DEFINE FIELD IF NOT EXISTS requested_at_unix_ms ON scheduled_callbacks TYPE int",
+    "DEFINE FIELD IF NOT EXISTS delivered_at_unix_ms ON scheduled_callbacks TYPE option<int>",
+    "DEFINE FIELD IF NOT EXISTS cancelled_at_unix_ms ON scheduled_callbacks TYPE option<int>",
+    "DEFINE FIELD IF NOT EXISTS context_id ON scheduled_callbacks TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS task_id ON scheduled_callbacks TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS requesting_agent_id ON scheduled_callbacks TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS requesting_message_id ON scheduled_callbacks TYPE option<string>",
+    "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_id ON scheduled_callbacks FIELDS callback_id UNIQUE",
+    "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_due ON scheduled_callbacks FIELDS status, scheduled_for_unix_ms",
+    "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_dedupe ON scheduled_callbacks FIELDS source_key, dedupe_key, status",
 ];
 
 pub struct DeploymentStateStore {
@@ -107,11 +133,7 @@ impl DeploymentStateStore {
             .await
             .map_err(to_write_err)?;
         let rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
-        if !rows.is_empty() {
-            return Ok(true);
-        }
-        let rows_alt: Vec<serde_json::Value> = resp.take(1).map_err(to_read_err)?;
-        Ok(!rows_alt.is_empty())
+        Ok(!rows.is_empty())
     }
 
     pub async fn list_deployments(&self) -> Result<Vec<DeploymentRecord>> {
@@ -172,6 +194,244 @@ impl DeploymentStateStore {
             })
             .collect::<Result<HashMap<_, _>>>()
     }
+
+    pub async fn schedule_callback(
+        &self,
+        request: &ScheduleCallbackRequest,
+    ) -> Result<ScheduleCallbackResult> {
+        if let Some(dedupe_key) = &request.dedupe_key
+            && let Some(existing) = self
+                .find_pending_callback_by_dedupe(&request.source_key, dedupe_key)
+                .await?
+        {
+            return Ok(ScheduleCallbackResult {
+                callback: existing,
+                created: false,
+            });
+        }
+
+        let callback = StoredCallback {
+            callback_id: Uuid::new_v4().to_string(),
+            source_key: request.source_key.clone(),
+            dedupe_key: request.dedupe_key.clone(),
+            payload: request.payload.clone(),
+            scheduled_for_unix_ms: request.scheduled_for_unix_ms,
+            requested_at_unix_ms: request.requested_at_unix_ms,
+            context_id: request.context_id.clone(),
+            task_id: request.task_id.clone(),
+            requesting_agent_id: request.requesting_agent_id.clone(),
+            requesting_message_id: request.requesting_message_id.clone(),
+        };
+        self.upsert_callback_row(&callback, "pending", None, None)
+            .await?;
+        debug!(
+            callback_id = %callback.callback_id,
+            source_key = %callback.source_key,
+            deduped = false,
+            scheduled_for_unix_ms = callback.scheduled_for_unix_ms,
+            "runner state stored scheduled callback"
+        );
+        Ok(ScheduleCallbackResult {
+            callback,
+            created: true,
+        })
+    }
+
+    pub async fn cancel_callback(
+        &self,
+        selector: CancelCallbackSelector,
+    ) -> Result<Option<StoredCallback>> {
+        let callback = match selector {
+            CancelCallbackSelector::CallbackId(callback_id) => {
+                self.find_pending_callback_by_id(&callback_id).await?
+            }
+            CancelCallbackSelector::DedupeKey {
+                source_key,
+                dedupe_key,
+            } => {
+                self.find_pending_callback_by_dedupe(&source_key, &dedupe_key)
+                    .await?
+            }
+        };
+
+        let Some(callback) = callback else {
+            return Ok(None);
+        };
+
+        self.upsert_callback_row(
+            &callback,
+            "cancelled",
+            None,
+            Some(callback_now_unix_ms("system_callback_cancel")),
+        )
+        .await?;
+        debug!(
+            callback_id = %callback.callback_id,
+            source_key = %callback.source_key,
+            "runner state cancelled callback"
+        );
+        Ok(Some(callback))
+    }
+
+    pub async fn list_due_callbacks(
+        &self,
+        now_unix_ms: u64,
+        limit: usize,
+    ) -> Result<Vec<StoredCallback>> {
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT callback_id,source_key,dedupe_key,payload_json,scheduled_for_unix_ms,requested_at_unix_ms,context_id,task_id,requesting_agent_id,requesting_message_id \
+                 FROM {TBL_SCHEDULED_CALLBACKS} \
+                 WHERE status = 'pending' AND scheduled_for_unix_ms <= $scheduled_for_unix_ms \
+                 ORDER BY scheduled_for_unix_ms ASC, callback_id ASC LIMIT $limit"
+            ))
+            .bind(("scheduled_for_unix_ms", now_unix_ms as i64))
+            .bind(("limit", limit as i64))
+            .await
+            .map_err(to_read_err)?;
+        let rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+        rows.into_iter().map(parse_callback_row).collect()
+    }
+
+    pub async fn mark_callbacks_delivered(
+        &self,
+        callback_ids: &[String],
+        delivered_at_unix_ms: u64,
+    ) -> Result<()> {
+        if callback_ids.is_empty() {
+            return Ok(());
+        }
+
+        self.db
+            .query(format!(
+                "UPDATE {TBL_SCHEDULED_CALLBACKS} SET \
+                    status = 'delivered', \
+                    delivered_at_unix_ms = $delivered_at_unix_ms, \
+                    cancelled_at_unix_ms = NONE \
+                 WHERE callback_id INSIDE $callback_ids AND status = 'pending'"
+            ))
+            .bind(("callback_ids", callback_ids.to_vec()))
+            .bind(("delivered_at_unix_ms", delivered_at_unix_ms as i64))
+            .await
+            .map_err(to_write_err)?;
+        debug!(
+            delivered_count = callback_ids.len(),
+            delivered_at_unix_ms, "runner state marked callbacks delivered"
+        );
+        Ok(())
+    }
+
+    async fn find_pending_callback_by_id(
+        &self,
+        callback_id: &str,
+    ) -> Result<Option<StoredCallback>> {
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT callback_id,source_key,dedupe_key,payload_json,scheduled_for_unix_ms,requested_at_unix_ms,context_id,task_id,requesting_agent_id,requesting_message_id \
+                 FROM {TBL_SCHEDULED_CALLBACKS} \
+                 WHERE callback_id = $callback_id AND status = 'pending' LIMIT 1"
+            ))
+            .bind(("callback_id", callback_id.to_string()))
+            .await
+            .map_err(to_read_err)?;
+        let rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+        rows.into_iter().next().map(parse_callback_row).transpose()
+    }
+
+    async fn find_pending_callback_by_dedupe(
+        &self,
+        source_key: &str,
+        dedupe_key: &str,
+    ) -> Result<Option<StoredCallback>> {
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT callback_id,source_key,dedupe_key,payload_json,scheduled_for_unix_ms,requested_at_unix_ms,context_id,task_id,requesting_agent_id,requesting_message_id \
+                 FROM {TBL_SCHEDULED_CALLBACKS} \
+                 WHERE source_key = $source_key AND dedupe_key = $dedupe_key AND status = 'pending' LIMIT 1"
+            ))
+            .bind(("source_key", source_key.to_string()))
+            .bind(("dedupe_key", dedupe_key.to_string()))
+            .await
+            .map_err(to_read_err)?;
+        let rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+        rows.into_iter().next().map(parse_callback_row).transpose()
+    }
+
+    async fn upsert_callback_row(
+        &self,
+        callback: &StoredCallback,
+        status: &str,
+        delivered_at_unix_ms: Option<u64>,
+        cancelled_at_unix_ms: Option<u64>,
+    ) -> Result<()> {
+        let payload_json = serde_json::to_string(&callback.payload).map_err(|err| {
+            BamlRtError::InvalidArgument(format!("failed to serialize callback payload: {err}"))
+        })?;
+        self.db
+            .query(format!(
+                "UPSERT {TBL_SCHEDULED_CALLBACKS} SET \
+                    callback_id = $callback_id, \
+                    source_key = $source_key, \
+                    dedupe_key = $dedupe_key, \
+                    payload_json = $payload_json, \
+                    status = $status, \
+                    scheduled_for_unix_ms = $scheduled_for_unix_ms, \
+                    requested_at_unix_ms = $requested_at_unix_ms, \
+                    delivered_at_unix_ms = $delivered_at_unix_ms, \
+                    cancelled_at_unix_ms = $cancelled_at_unix_ms, \
+                    context_id = $context_id, \
+                    task_id = $task_id, \
+                    requesting_agent_id = $requesting_agent_id, \
+                    requesting_message_id = $requesting_message_id \
+                 WHERE callback_id = $callback_id"
+            ))
+            .bind(("callback_id", callback.callback_id.clone()))
+            .bind(("source_key", callback.source_key.clone()))
+            .bind(("dedupe_key", callback.dedupe_key.clone()))
+            .bind(("payload_json", payload_json))
+            .bind(("status", status.to_string()))
+            .bind((
+                "scheduled_for_unix_ms",
+                callback.scheduled_for_unix_ms as i64,
+            ))
+            .bind(("requested_at_unix_ms", callback.requested_at_unix_ms as i64))
+            .bind((
+                "delivered_at_unix_ms",
+                delivered_at_unix_ms.map(|value| value as i64),
+            ))
+            .bind((
+                "cancelled_at_unix_ms",
+                cancelled_at_unix_ms.map(|value| value as i64),
+            ))
+            .bind((
+                "context_id",
+                callback
+                    .context_id
+                    .as_ref()
+                    .map(|value| value.as_str().to_string()),
+            ))
+            .bind((
+                "task_id",
+                callback
+                    .task_id
+                    .as_ref()
+                    .map(|value| value.as_str().to_string()),
+            ))
+            .bind(("requesting_agent_id", callback.requesting_agent_id.clone()))
+            .bind((
+                "requesting_message_id",
+                callback
+                    .requesting_message_id
+                    .as_ref()
+                    .map(|value| value.as_str().to_string()),
+            ))
+            .await
+            .map_err(to_write_err)?;
+        Ok(())
+    }
 }
 
 fn parse_deployment_row(row: serde_json::Value) -> Result<DeploymentRecord> {
@@ -206,6 +466,53 @@ fn parse_deployment_row(row: serde_json::Value) -> Result<DeploymentRecord> {
     })
 }
 
+fn parse_callback_row(row: serde_json::Value) -> Result<StoredCallback> {
+    #[derive(Deserialize)]
+    struct CallbackRow {
+        callback_id: String,
+        source_key: String,
+        #[serde(default)]
+        dedupe_key: Option<String>,
+        payload_json: String,
+        scheduled_for_unix_ms: i64,
+        requested_at_unix_ms: i64,
+        #[serde(default)]
+        context_id: Option<String>,
+        #[serde(default)]
+        task_id: Option<String>,
+        #[serde(default)]
+        requesting_agent_id: Option<String>,
+        #[serde(default)]
+        requesting_message_id: Option<String>,
+    }
+
+    let parsed: CallbackRow = serde_json::from_value(row).map_err(|e| {
+        BamlRtError::InvalidArgument(format!("invalid callback row from state DB: {e}"))
+    })?;
+    let payload = serde_json::from_str(&parsed.payload_json).map_err(|e| {
+        BamlRtError::InvalidArgument(format!("invalid callback payload_json from state DB: {e}"))
+    })?;
+
+    Ok(StoredCallback {
+        callback_id: parsed.callback_id,
+        source_key: parsed.source_key,
+        dedupe_key: parsed.dedupe_key,
+        payload,
+        scheduled_for_unix_ms: parsed.scheduled_for_unix_ms.max(0) as u64,
+        requested_at_unix_ms: parsed.requested_at_unix_ms.max(0) as u64,
+        context_id: parsed
+            .context_id
+            .map(|value| baml_rt_core::ids::ContextId::from(value.as_str())),
+        task_id: parsed.task_id.map(|value| {
+            baml_rt_core::ids::TaskId::from_external(baml_rt_core::ids::ExternalId::new(value))
+        }),
+        requesting_agent_id: parsed.requesting_agent_id,
+        requesting_message_id: parsed
+            .requesting_message_id
+            .map(baml_rt_core::ids::MessageId::from),
+    })
+}
+
 fn to_write_err(err: surrealdb::Error) -> BamlRtError {
     BamlRtError::Io(std::io::Error::other(format!(
         "runner state write failed: {err}"
@@ -218,8 +525,44 @@ fn to_read_err(err: surrealdb::Error) -> BamlRtError {
     )))
 }
 
+#[async_trait::async_trait]
+impl baml_tools_system::callback_store::CallbackStore for DeploymentStateStore {
+    async fn schedule_callback(
+        &self,
+        request: ScheduleCallbackRequest,
+    ) -> Result<ScheduleCallbackResult> {
+        DeploymentStateStore::schedule_callback(self, &request).await
+    }
+
+    async fn cancel_callback(
+        &self,
+        selector: CancelCallbackSelector,
+    ) -> Result<Option<StoredCallback>> {
+        DeploymentStateStore::cancel_callback(self, selector).await
+    }
+
+    async fn list_due_callbacks(
+        &self,
+        now_unix_ms: u64,
+        limit: usize,
+    ) -> Result<Vec<StoredCallback>> {
+        DeploymentStateStore::list_due_callbacks(self, now_unix_ms, limit).await
+    }
+
+    async fn mark_callbacks_delivered(
+        &self,
+        callback_ids: &[String],
+        delivered_at_unix_ms: u64,
+    ) -> Result<()> {
+        DeploymentStateStore::mark_callbacks_delivered(self, callback_ids, delivered_at_unix_ms)
+            .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use baml_rt_core::ids::{ContextId, ExternalId, MessageId, TaskId};
+
     use super::*;
 
     #[tokio::test]
@@ -365,5 +708,61 @@ mod tests {
                 .map(String::as_str),
             Some("cursor-42")
         );
+    }
+
+    #[tokio::test]
+    async fn scheduled_callbacks_persist_and_clear_after_delivery() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+
+        let store = DeploymentStateStore::open(&path).await.unwrap();
+        let scheduled = store
+            .schedule_callback(&ScheduleCallbackRequest {
+                source_key: "workflow-intake:resume".to_string(),
+                dedupe_key: Some("resume-once".to_string()),
+                payload: serde_json::json!({"goal": "resume"}),
+                scheduled_for_unix_ms: 10,
+                requested_at_unix_ms: 5,
+                context_id: Some(ContextId::new(12, 2)),
+                task_id: Some(TaskId::from_external(ExternalId::new("task-99"))),
+                requesting_agent_id: Some("agent-42".to_string()),
+                requesting_message_id: Some(MessageId::from("msg-77")),
+            })
+            .await
+            .unwrap();
+        let deduped = store
+            .schedule_callback(&ScheduleCallbackRequest {
+                source_key: "workflow-intake:resume".to_string(),
+                dedupe_key: Some("resume-once".to_string()),
+                payload: serde_json::json!({"goal": "resume"}),
+                scheduled_for_unix_ms: 11,
+                requested_at_unix_ms: 6,
+                context_id: Some(ContextId::new(12, 2)),
+                task_id: Some(TaskId::from_external(ExternalId::new("task-99"))),
+                requesting_agent_id: Some("agent-42".to_string()),
+                requesting_message_id: Some(MessageId::from("msg-78")),
+            })
+            .await
+            .unwrap();
+        assert!(!deduped.created);
+        assert_eq!(deduped.callback.callback_id, scheduled.callback.callback_id);
+        drop(store);
+
+        let reopened = retry_open(20, 100, &path).await;
+        let due = reopened.list_due_callbacks(10, 10).await.unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].callback_id, scheduled.callback.callback_id);
+        assert_eq!(due[0].source_key, "workflow-intake:resume");
+        assert_eq!(due[0].requesting_agent_id.as_deref(), Some("agent-42"));
+
+        reopened
+            .mark_callbacks_delivered(std::slice::from_ref(&scheduled.callback.callback_id), 25)
+            .await
+            .unwrap();
+        drop(reopened);
+
+        let reopened = retry_open(20, 100, &path).await;
+        let due = reopened.list_due_callbacks(1_000, 10).await.unwrap();
+        assert!(due.is_empty());
     }
 }

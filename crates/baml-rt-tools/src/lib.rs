@@ -57,5 +57,6 @@ pub use tools::{
     ToolDiscoveryRecord, ToolExecutor, ToolFunctionMetadataExport, ToolHandler,
     ToolMetadataBuilder, ToolName, ToolOrigin, ToolRegistry, ToolSessionAdvance, ToolSessionHandle,
     ToolSlug, ToolTypeSpec, TypeBasedMetadataBuilder, create_multi_send_session_tool_from_async,
+    create_one_shot_tool_from_async, create_one_shot_tool_from_async_with_context,
     parse_tool_name_and_class,
 };
