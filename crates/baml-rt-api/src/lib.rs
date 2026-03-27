@@ -11,6 +11,7 @@ mod metrics;
 mod openapi;
 mod planning;
 mod provenance_ops;
+mod repository_publish;
 mod router;
 mod spans;
 

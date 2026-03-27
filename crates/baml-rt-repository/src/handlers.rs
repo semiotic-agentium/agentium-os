@@ -6,9 +6,8 @@
 use std::sync::Arc;
 
 use axum::{
-    body::Bytes,
     extract::{Json, Path, Query, State},
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderValue, header},
     response::{IntoResponse, Response},
 };
 use http_api_problem::HttpApiProblem;
@@ -169,18 +168,6 @@ pub async fn remove_tag(
         .await
         .map_err(HttpApiProblem::from)?;
     Ok(Json(()))
-}
-
-pub async fn put_blob(
-    State(svc): State<RepoState>,
-    Path(p): Path<BlobPath>,
-    body: Bytes,
-) -> std::result::Result<StatusCode, HttpApiProblem> {
-    let hash = p.hash.parse().map_err(|e| bad_request(format!("{e}")))?;
-    svc.put_blob(&hash, &body)
-        .await
-        .map_err(HttpApiProblem::from)?;
-    Ok(StatusCode::CREATED)
 }
 
 pub async fn get_blob(

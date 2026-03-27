@@ -21,7 +21,7 @@ use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
     ContextMetricsService, MermaidService, PlanningService, ProvenanceOpsService, config_handlers,
-    handlers,
+    handlers, repository_publish,
 };
 
 /// Shared state for API handlers: registry, OpenAPI spec, and **injected** config/catalog/resolver.
@@ -222,10 +222,15 @@ pub fn api_router_with_services_and_deploy(
         router = router.fallback_service(fallback);
     }
     if let Some(repo_service) = repository_service {
-        router = router.nest(
-            "/repository",
-            baml_rt_repository::repository_router(repo_service),
-        );
+        let publish_router = axum::Router::new()
+            .route(
+                "/publish",
+                axum::routing::post(repository_publish::publish_with_build),
+            )
+            .with_state(repo_service.clone());
+        let repo_router = baml_rt_repository::repository_router_without_publish(repo_service)
+            .merge(publish_router);
+        router = router.nest("/repository", repo_router);
     }
 
     router

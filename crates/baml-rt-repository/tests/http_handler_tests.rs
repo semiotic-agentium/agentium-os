@@ -546,24 +546,10 @@ async fn add_and_remove_tag_via_http() {
 // -------------------------------------------------------------------------
 
 #[tokio::test]
-async fn put_and_get_blob_roundtrip() {
+async fn publish_does_not_store_blob_by_default() {
     let app = setup_app().await;
-    let payload = b"fake-tar-gz-bytes";
-    let hash = common::sha256_hex(payload);
-
-    let put_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/blobs/{}", hash))
-                .header("content-type", "application/gzip")
-                .body(Body::from(payload.to_vec()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(put_resp.status(), StatusCode::CREATED);
+    let published = publish_agent(&app, "blob-http-agent", "export function run() {}").await;
+    let hash = published["hash"].as_str().unwrap();
 
     let get_resp = app
         .clone()
@@ -576,17 +562,7 @@ async fn put_and_get_blob_roundtrip() {
         )
         .await
         .unwrap();
-    assert_eq!(get_resp.status(), StatusCode::OK);
-    let ct = get_resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok());
-    assert_eq!(ct, Some("application/gzip"));
-
-    let body = axum::body::to_bytes(get_resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    assert_eq!(body.as_ref(), payload);
+    assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -610,45 +586,23 @@ async fn get_blob_not_found_returns_404() {
 }
 
 #[tokio::test]
-async fn put_blob_hash_mismatch_returns_400() {
+async fn put_blob_route_not_available() {
     let app = setup_app().await;
-    let wrong_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let payload = b"not-matching-hash";
+    let hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    let put_resp = app
+    let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(format!("/blobs/{wrong_hash}"))
+                .uri(format!("/blobs/{hash}"))
                 .header("content-type", "application/gzip")
-                .body(Body::from(payload.to_vec()))
+                .body(Body::from(b"payload".to_vec()))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(put_resp.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn put_blob_too_large_returns_400() {
-    let app = setup_app().await;
-    let payload = vec![0u8; (5 * 1024 * 1024) + 1];
-    let hash = common::sha256_hex(&payload);
-
-    let put_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/blobs/{}", hash))
-                .header("content-type", "application/gzip")
-                .body(Body::from(payload))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(put_resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
 
 // -------------------------------------------------------------------------

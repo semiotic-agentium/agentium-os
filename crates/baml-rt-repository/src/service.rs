@@ -25,10 +25,7 @@ pub struct RepositoryService {
     metadata: Arc<dyn MetadataStore>,
     lineage: Arc<dyn LineageStore>,
     search: Arc<dyn SearchStore>,
-    max_blob_bytes: usize,
 }
-
-const DEFAULT_MAX_BLOB_BYTES: usize = 5 * 1024 * 1024;
 
 impl RepositoryService {
     /// Create a new service with the given store implementations.
@@ -38,27 +35,11 @@ impl RepositoryService {
         lineage: Arc<dyn LineageStore>,
         search: Arc<dyn SearchStore>,
     ) -> Self {
-        let max_blob_bytes = std::env::var("BAML_REPOSITORY_MAX_BLOB_BYTES")
-            .ok()
-            .and_then(|raw| raw.parse::<usize>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(DEFAULT_MAX_BLOB_BYTES);
-        Self::new_with_max_blob_bytes(blobs, metadata, lineage, search, max_blob_bytes)
-    }
-
-    pub fn new_with_max_blob_bytes(
-        blobs: Arc<dyn BlobStore>,
-        metadata: Arc<dyn MetadataStore>,
-        lineage: Arc<dyn LineageStore>,
-        search: Arc<dyn SearchStore>,
-        max_blob_bytes: usize,
-    ) -> Self {
         Self {
             blobs,
             metadata,
             lineage,
             search,
-            max_blob_bytes,
         }
     }
 
@@ -72,9 +53,6 @@ impl RepositoryService {
     /// 2. Insert metadata (store atomically assigns version, writes it into
     ///    the manifest, and computes the content hash).
     /// 3. Record lineage edges (using the hash returned by the store).
-    ///
-    /// Does **not** write a blob (the caller packages the tar.gz separately
-    /// via `put_blob`).
     pub async fn publish(&self, cmd: PublishCommand) -> Result<PublishResult> {
         let _span = crate::spans::publish(cmd.name.as_str());
 
@@ -281,27 +259,16 @@ impl RepositoryService {
     // Blob operations
     // -----------------------------------------------------------------------
 
-    /// Store a tar.gz blob.
-    pub async fn put_blob(&self, hash: &ContentHash, data: &[u8]) -> Result<()> {
-        if data.len() > self.max_blob_bytes {
-            return Err(RepositoryError::BlobTooLarge {
-                size_bytes: data.len(),
-                max_bytes: self.max_blob_bytes,
-            });
-        }
-        let computed = sha256_content_hash(data);
-        if &computed != hash {
-            return Err(RepositoryError::HashMismatch {
-                expected: hash.clone(),
-                computed,
-            });
-        }
-        self.blobs.put(hash, data).await
-    }
-
     /// Retrieve a tar.gz blob.
     pub async fn get_blob(&self, hash: &ContentHash) -> Result<Option<Vec<u8>>> {
         self.blobs.get(hash).await
+    }
+
+    /// Store a repository-built tar.gz blob under content hash.
+    ///
+    /// This is intended for trusted in-process orchestrators (not public HTTP upload).
+    pub async fn put_built_blob(&self, hash: &ContentHash, data: &[u8]) -> Result<()> {
+        self.blobs.put(hash, data).await
     }
 
     // -----------------------------------------------------------------------
@@ -362,18 +329,4 @@ fn manifest_tags(source: &crate::entry::SourceBundle) -> Vec<Tag> {
         .into_iter()
         .map(|tag| Tag::new(tag.to_string()))
         .collect()
-}
-
-fn sha256_content_hash(data: &[u8]) -> ContentHash {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(64);
-    for b in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut hex, "{b:02x}");
-    }
-    hex.parse::<ContentHash>()
-        .expect("sha256 digest is always valid lowercase hex")
 }

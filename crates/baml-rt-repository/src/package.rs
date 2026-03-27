@@ -1,6 +1,10 @@
-//! Utilities for working with packaged agent artifacts (`.tar.gz`).
+//! Utilities for extracting repository source bundles from artifacts or source trees.
 
-use std::io::{Cursor, Read};
+use std::{
+    fs,
+    io::{Cursor, Read},
+    path::Path,
+};
 
 use flate2::read::GzDecoder;
 use serde_json::Value;
@@ -35,6 +39,14 @@ pub enum PackageExtractError {
     SourceRead { path: String },
     #[error("invalid source path '{path}': {reason}")]
     SourcePathInvalid { path: String, reason: String },
+    #[error("agent directory does not exist: {path}")]
+    AgentDirMissing { path: String },
+    #[error("agent directory is not a directory: {path}")]
+    AgentDirInvalid { path: String },
+    #[error("failed to read directory {path}: {reason}")]
+    DirRead { path: String, reason: String },
+    #[error("failed to read file {path}: {reason}")]
+    FileRead { path: String, reason: String },
 }
 
 /// Extract `(AgentName, SourceBundle)` from a packaged `.tar.gz` archive.
@@ -115,6 +127,9 @@ pub fn source_bundle_from_tar_gz(
         .parse::<AgentName>()
         .map_err(|e| PackageExtractError::ManifestNameInvalid(e.to_string()))?;
 
+    ts_sources.sort_by(|a, b| a.path.cmp(&b.path));
+    baml_sources.sort_by(|a, b| a.path.cmp(&b.path));
+
     Ok((
         name,
         SourceBundle {
@@ -123,4 +138,131 @@ pub fn source_bundle_from_tar_gz(
             baml_sources,
         },
     ))
+}
+
+/// Extract `(AgentName, SourceBundle)` from an unpacked agent source directory.
+///
+/// Reads:
+/// - `<agent_dir>/manifest.json`
+/// - `<agent_dir>/src/**/*.ts`
+/// - `<agent_dir>/baml_src/**/*.baml`
+pub fn source_bundle_from_agent_dir(
+    agent_dir: &Path,
+) -> std::result::Result<(AgentName, SourceBundle), PackageExtractError> {
+    if !agent_dir.exists() {
+        return Err(PackageExtractError::AgentDirMissing {
+            path: agent_dir.display().to_string(),
+        });
+    }
+    if !agent_dir.is_dir() {
+        return Err(PackageExtractError::AgentDirInvalid {
+            path: agent_dir.display().to_string(),
+        });
+    }
+
+    let manifest_path = agent_dir.join("manifest.json");
+    let manifest_raw =
+        fs::read_to_string(&manifest_path).map_err(|e| PackageExtractError::FileRead {
+            path: manifest_path.display().to_string(),
+            reason: e.to_string(),
+        })?;
+    let manifest: Value = serde_json::from_str(&manifest_raw)
+        .map_err(|e| PackageExtractError::ManifestParse(e.to_string()))?;
+
+    let name = manifest
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or(PackageExtractError::ManifestNameMissing)?
+        .parse::<AgentName>()
+        .map_err(|e| PackageExtractError::ManifestNameInvalid(e.to_string()))?;
+
+    let mut ts_sources = Vec::new();
+    let mut baml_sources = Vec::new();
+
+    collect_sources_recursive(
+        agent_dir,
+        &agent_dir.join("src"),
+        "src",
+        |rel| rel.ends_with(".ts"),
+        &mut ts_sources,
+    )?;
+    collect_sources_recursive(
+        agent_dir,
+        &agent_dir.join("baml_src"),
+        "baml_src",
+        |rel| rel.ends_with(".baml"),
+        &mut baml_sources,
+    )?;
+
+    ts_sources.sort_by(|a, b| a.path.cmp(&b.path));
+    baml_sources.sort_by(|a, b| a.path.cmp(&b.path));
+
+    Ok((
+        name,
+        SourceBundle {
+            manifest: ManifestSource::new(manifest),
+            ts_sources,
+            baml_sources,
+        },
+    ))
+}
+
+fn collect_sources_recursive<F>(
+    agent_root: &Path,
+    dir: &Path,
+    logical_prefix: &str,
+    include: F,
+    out: &mut Vec<SourceFile>,
+) -> std::result::Result<(), PackageExtractError>
+where
+    F: Fn(&str) -> bool + Copy,
+{
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(dir).map_err(|e| PackageExtractError::DirRead {
+        path: dir.display().to_string(),
+        reason: e.to_string(),
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| PackageExtractError::DirRead {
+            path: dir.display().to_string(),
+            reason: e.to_string(),
+        })?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_sources_recursive(agent_root, &path, logical_prefix, include, out)?;
+            continue;
+        }
+
+        let rel =
+            path.strip_prefix(agent_root)
+                .map_err(|e| PackageExtractError::SourcePathInvalid {
+                    path: path.display().to_string(),
+                    reason: e.to_string(),
+                })?;
+        let rel_norm = rel.to_string_lossy().replace('\\', "/");
+        if !rel_norm.starts_with(logical_prefix) || !include(&rel_norm) {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path).map_err(|e| PackageExtractError::FileRead {
+            path: path.display().to_string(),
+            reason: e.to_string(),
+        })?;
+        let source_path = SourcePath::new(rel_norm.clone()).map_err(|e| {
+            PackageExtractError::SourcePathInvalid {
+                path: rel_norm.clone(),
+                reason: e.reason.to_string(),
+            }
+        })?;
+        out.push(SourceFile {
+            path: source_path,
+            content: SourceContent::new(content),
+        });
+    }
+
+    Ok(())
 }
