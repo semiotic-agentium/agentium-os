@@ -121,25 +121,43 @@ jobs:
           default = "$SLACK_USER_TOKEN"
           EOF
 
-      - name: Run nextest
+      - name: Run nextest (LLM suite)
         run: |
-          # Cap test parallelism to half the available cores (floor of 2) to
-          # avoid saturating CPU/memory on resource-constrained CI runners.
-          THREADS=$(( $(nproc) / 2 ))
-          [ "$THREADS" -lt 2 ] && THREADS=2
-          echo ">>> nextest parallelism: -j ${THREADS}  (nproc=$(nproc))"
-          cargo nextest run --workspace --locked --profile ci --no-fail-fast \
-            -j "$THREADS" \
-            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
+          # LLM tests use low parallelism (-j 2) to respect API rate limits.
+          echo ">>> nextest LLM suite: -j 2  (nproc=$(nproc))"
+          cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast \
+            -j 2 \
+            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests,baml-rt-provenance/surreal-backend
         env:
           RUSTUP_TOOLCHAIN: stable
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
-      - name: Publish JUnit report
+      - name: Run nextest (non-LLM suite)
+        run: |
+          # Non-LLM tests can run with higher parallelism (CPU/memory bound).
+          THREADS=$(( $(nproc) / 2 ))
+          [ "$THREADS" -lt 2 ] && THREADS=2
+          echo ">>> nextest non-LLM suite: -j ${THREADS}  (nproc=$(nproc))"
+          cargo nextest run --workspace --locked --profile ci-non-llm --no-fail-fast \
+            -j "$THREADS" \
+            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt-provenance/surreal-backend
+        env:
+          RUSTUP_TOOLCHAIN: stable
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+      - name: Publish JUnit report (LLM suite)
         if: always()
         uses: mikepenz/action-junit-report@v4
         with:
-          report_paths: "target/nextest/ci/junit.xml"
+          report_paths: "target/nextest/ci-llm/junit-llm.xml"
           require_tests: false
-          check_name: Nextest results
+          check_name: Nextest results (LLM)
+
+      - name: Publish JUnit report (non-LLM suite)
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: "target/nextest/ci-non-llm/junit-non-llm.xml"
+          require_tests: false
+          check_name: Nextest results (non-LLM)
