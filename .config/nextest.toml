@@ -110,6 +110,9 @@ retries = 0
 # Profile: ci-llm
 # LLM-dependent tests with low parallelism to respect API rate limits.
 # Used by `just test` for the first pass (LLM suite with -j 2).
+#
+# Tests are gated by `#[cfg(feature = "llm-tests")]` in source code.
+# Compile with `--features ...,llm-tests` to include them.
 # =============================================================================
 [profile.ci-llm]
 fail-fast = false
@@ -117,39 +120,24 @@ fail-fast = false
 path = "junit-llm.xml"
 store-failure-output = true
 
+# LLM tests use the "llm" test-group for rate limiting
 [[profile.ci-llm.overrides]]
-filter = 'package(baml-agent-runner) and test(~test_e2e_)'
+filter = 'all()'
 test-group = "llm"
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
+# Notion direct-id e2e: extra retries (LLM plan extraction occasionally skips tool path)
 [[profile.ci-llm.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
-test-group = "llm"
-slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 3, delay = "8s" }
-
-[[profile.ci-llm.overrides]]
-filter = 'package(baml-rt-interceptor) and test(~test_e2e_)'
-test-group = "llm"
-retries = { backoff = "fixed", count = 1, delay = "2s" }
-
-[[profile.ci-llm.overrides]]
-filter = 'package(baml-rt) and binary(llm_test)'
-test-group = "llm"
-slow-timeout = { period = "120s", terminate-after = 2 }
-retries = { backoff = "fixed", count = 1, delay = "5s" }
-
-[[profile.ci-llm.overrides]]
-filter = 'package(baml-rt-a2a) and binary(task_streaming_test)'
-test-group = "llm"
-slow-timeout = { period = "60s", terminate-after = 2 }
-retries = { backoff = "fixed", count = 1, delay = "3s" }
 
 # =============================================================================
 # Profile: ci-non-llm
 # Non-LLM tests with higher parallelism (CPU/memory bound only).
 # Used by `just test` for the second pass with nproc/2 threads.
+#
+# Compile WITHOUT `--features llm-tests` so LLM-gated tests don't exist.
 # =============================================================================
 [profile.ci-non-llm]
 fail-fast = false
@@ -157,7 +145,7 @@ fail-fast = false
 path = "junit-non-llm.xml"
 store-failure-output = true
 
-# Provenance tests still need serialization regardless of LLM status
+# Provenance tests need serialization to avoid SurrealDB contention
 [[profile.ci-non-llm.overrides]]
 filter = 'package(baml-rt-provenance) and binary(tool_index_test)'
 test-group = "provenance"

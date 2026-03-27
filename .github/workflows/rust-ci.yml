@@ -124,10 +124,11 @@ jobs:
       - name: Run nextest (LLM suite)
         run: |
           # LLM tests use low parallelism (-j 2) to respect API rate limits.
+          # Tests gated by #[cfg(feature = "llm-tests")] compile only when feature enabled.
           echo ">>> nextest LLM suite: -j 2  (nproc=$(nproc))"
           cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast \
             -j 2 \
-            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
+            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
           RUSTUP_TOOLCHAIN: stable
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
@@ -135,7 +136,8 @@ jobs:
 
       - name: Run nextest (non-LLM suite)
         run: |
-          # Non-LLM tests can run with higher parallelism (CPU/memory bound).
+          # Non-LLM tests run with higher parallelism (CPU/memory bound).
+          # LLM-gated tests don't compile without llm-tests feature.
           THREADS=$(( $(nproc) / 2 ))
           [ "$THREADS" -lt 2 ] && THREADS=2
           echo ">>> nextest non-LLM suite: -j ${THREADS}  (nproc=$(nproc))"

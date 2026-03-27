@@ -184,12 +184,14 @@ fmt:
 clippy:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-ci_features := "baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests"
+ci_features := "baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests"
 
 # CI parity: run nextest in CI order (LLM suite first, then non-LLM suite).
 # Requires: cargo-nextest and OPENROUTER_API_KEY for LLM tests.
+# LLM suite: tests gated by #[cfg(feature = "llm-tests")] compile and run with -j 2.
+# Non-LLM suite: no llm-tests feature, higher parallelism.
 test:
-    cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast -j 2 --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
+    cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast -j 2 --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
     THREADS=$(( $(nproc) / 2 )); [ "$THREADS" -lt 2 ] && THREADS=2; cargo nextest run --workspace --locked --profile ci-non-llm --no-fail-fast -j "$THREADS" --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
 
 # Same as `test` but only compile — useful for a quick pre-push check.

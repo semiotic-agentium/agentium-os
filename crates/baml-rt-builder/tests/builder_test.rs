@@ -68,6 +68,7 @@ fn test_cli_package_creates_manifest_if_missing() {
     // Test skipped - core functionality tested in test_cli_package_agent
 }
 
+#[cfg(feature = "llm-tests")]
 #[tokio::test]
 async fn test_full_integration_package_load_execute() {
     // FULL INTEGRATION TEST: Package agent -> Load package -> Execute JavaScript function
