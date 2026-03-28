@@ -88,6 +88,32 @@ enum Commands {
         args: Option<String>,
     },
 
+    /// Publish an agent source bundle to a repository and optionally deploy it.
+    ///
+    /// Sends source files to the repository; the repository builds and stores
+    /// the deployable artifact under the canonical content hash.
+    Publish {
+        /// Agent directory (default: current directory)
+        #[arg(short, long, default_value = ".")]
+        agent_dir: PathBuf,
+
+        /// Repository URL (e.g. http://127.0.0.1:8081/repository)
+        #[arg(short, long, default_value = "http://127.0.0.1:8081/repository")]
+        repository_url: String,
+
+        /// Runner URL for deployment after publishing (e.g. http://127.0.0.1:8081).
+        /// When set, automatically sends POST /deploy after a successful publish.
+        #[arg(long)]
+        deploy_url: Option<String>,
+
+        /// Change rationale / commit message for this version.
+        #[arg(short, long, default_value = "Published via baml-agent-builder")]
+        message: String,
+
+        /// Publish origin: `original` (new lineage) or `iteration` (next version).
+        #[arg(long, default_value = "iteration")]
+        origin: String,
+    },
     /// Bootstrap a new BAML agent package (interactive TUI, or non-interactive with --name/--description)
     Bootstrap {
         /// Directory to create the package in (default: current directory)
@@ -132,6 +158,23 @@ async fn main() -> Result<()> {
             let package_path = PackagePath::new(package)?;
             let function_name = function.map(FunctionName::new).transpose()?;
             run_agent(&package_path, function_name.as_ref(), args.as_deref()).await?;
+        }
+        Commands::Publish {
+            agent_dir,
+            repository_url,
+            deploy_url,
+            message,
+            origin,
+        } => {
+            let agent_dir = AgentDir::new(agent_dir)?;
+            publish_agent(
+                &agent_dir,
+                &repository_url,
+                deploy_url.as_deref(),
+                &message,
+                &origin,
+            )
+            .await?;
         }
         Commands::Bootstrap {
             path,
@@ -282,6 +325,91 @@ async fn package_agent(agent_dir: &AgentDir, output: &std::path::Path) -> Result
     Ok(())
 }
 
+async fn publish_agent(
+    agent_dir: &AgentDir,
+    repository_url: &str,
+    deploy_url: Option<&str>,
+    message: &str,
+    origin_str: &str,
+) -> Result<()> {
+    use baml_rt_repository::{
+        commands::{PublishCommand, PublishOrigin, PublishResult},
+        entry::ChangeRationale,
+        source_bundle_from_agent_dir,
+    };
+
+    println!("📦 Publishing source bundle...");
+
+    let repo_url = repository_url.trim_end_matches('/');
+    let http = reqwest::Client::new();
+
+    let (name, source) = source_bundle_from_agent_dir(agent_dir.as_path())
+        .map_err(|e| anyhow::anyhow!("Failed to read source bundle from agent directory: {e}"))?;
+
+    let origin = match origin_str {
+        "original" => PublishOrigin::Original,
+        _ => PublishOrigin::Iteration,
+    };
+    let rationale = ChangeRationale::new(message)
+        .map_err(|_| anyhow::anyhow!("Change rationale must not be empty"))?;
+
+    let cmd = PublishCommand {
+        name: name.clone(),
+        source,
+        rationale,
+        origin,
+    };
+
+    println!("   Publishing entry...");
+    let pub_resp = http
+        .post(format!("{repo_url}/publish"))
+        .json(&cmd)
+        .send()
+        .await
+        .context("Failed to publish entry")?;
+
+    let status = pub_resp.status();
+    if !status.is_success() {
+        let body = pub_resp.text().await.unwrap_or_default();
+        anyhow::bail!("Publish failed ({status}): {body}");
+    }
+
+    let result: PublishResult = pub_resp
+        .json()
+        .await
+        .context("Failed to parse publish response")?;
+
+    let content_hash = result.hash.as_str();
+    println!(
+        "\n✅ Published {name}@v{version}",
+        name = result.version_ref.name,
+        version = result.version_ref.version,
+    );
+    println!("   content_hash: {content_hash}");
+
+    // Optionally deploy immediately using content_hash (not blob_hash).
+    if let Some(runner_url) = deploy_url {
+        println!("\n🚀 Deploying {content_hash} to {runner_url}...");
+        let deploy_resp = reqwest::Client::new()
+            .post(format!("{}/deploy", runner_url.trim_end_matches('/')))
+            .json(&serde_json::json!({ "hash": content_hash }))
+            .send()
+            .await
+            .context("Failed to send deploy request")?;
+        let deploy_status = deploy_resp.status();
+        if !deploy_status.is_success() {
+            let body = deploy_resp.text().await.unwrap_or_default();
+            anyhow::bail!("Deploy failed ({deploy_status}): {body}");
+        }
+        let body: serde_json::Value = deploy_resp
+            .json()
+            .await
+            .context("Failed to parse deploy response")?;
+        println!("✅ Deployed: {body}");
+    }
+
+    Ok(())
+}
 async fn run_agent(
     package_path: &PackagePath,
     function: Option<&FunctionName>,

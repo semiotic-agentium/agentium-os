@@ -167,7 +167,7 @@ impl TryFrom<EntriesQuery> for EntriesQueryMode {
     }
 }
 
-/// PUT/GET /blobs/:hash
+/// GET /blobs/:hash
 #[derive(Debug, Deserialize)]
 pub struct BlobPath {
     pub hash: String,

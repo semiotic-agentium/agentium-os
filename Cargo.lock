@@ -1514,9 +1514,11 @@ dependencies = [
 name = "baml-rt-api"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum",
  "baml-rt-a2a",
+ "baml-rt-builder",
  "baml-rt-config",
  "baml-rt-core",
  "baml-rt-llm-config",
@@ -1552,6 +1554,7 @@ dependencies = [
  "baml-rt-core",
  "baml-rt-observability",
  "baml-rt-quickjs",
+ "baml-rt-repository",
  "baml-rt-tools",
  "baml-rt-tools-claude",
  "baml-runtime",
@@ -1571,6 +1574,7 @@ dependencies = [
  "insta",
  "internal-baml-core",
  "regex",
+ "reqwest 0.12.26",
  "serde_json",
  "tar",
  "tempfile",
@@ -1782,7 +1786,6 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
- "sha2",
  "surrealdb",
  "tar",
  "tempfile",

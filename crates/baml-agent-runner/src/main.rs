@@ -602,17 +602,6 @@ impl AgentRunner {
         Ok(version)
     }
 
-    fn validate_hash_and_content(content_hash: &DeploymentContentHash, bytes: &[u8]) -> Result<()> {
-        let computed = sha256_hex(bytes);
-        if computed != content_hash.as_str() {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "Blob content hash mismatch for {} (computed {computed})",
-                content_hash.as_str()
-            )));
-        }
-        Ok(())
-    }
-
     async fn boot_from_blob_bytes(
         &self,
         bytes: &[u8],
@@ -1007,7 +996,8 @@ impl DeploymentManager for AgentRunner {
         }
 
         let bytes = self.fetch_blob_from_repository(content_hash).await?;
-        AgentRunner::validate_hash_and_content(content_hash, &bytes)?;
+        // content_hash is the canonical source hash, not SHA-256 of the tar.gz bytes.
+        // The repository builds and stores the deployable blob under content_hash.
         let repository_version = match self.fetch_repository_version(content_hash).await {
             Ok(version) => version,
             Err(err) => {
@@ -1413,19 +1403,6 @@ fn unix_timestamp_secs() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     duration.as_secs().to_string()
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        use std::fmt::Write as _;
-        let _ = write!(&mut hex, "{byte:02x}");
-    }
-    hex
 }
 
 /// Provenance store: in-memory (default) or file-backed embedded SurrealDB (SurrealKV directory).

@@ -12,6 +12,7 @@ axum = { workspace = true }
 baml-rt-a2a = { path = "../baml-rt-a2a" }
 baml-rt-config = { path = "../baml-rt-config" }
 baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-builder = { path = "../baml-rt-builder" }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-repository = { path = "../baml-rt-repository" }
@@ -28,6 +29,7 @@ utoipa = { workspace = true }
 utoipa-axum = { workspace = true }
 tower-http = { workspace = true }
 reqwest = { workspace = true }
+anyhow = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }

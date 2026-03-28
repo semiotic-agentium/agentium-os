@@ -11,7 +11,7 @@
 //! - `new-tool <name>` — Create a new tool crate with all necessary patches
 //! - `new-agent <name>` — Create a new agent package (supports `--subscriptions` for event delivery)
 //! - `build [name]` — Package an agent into a distributable tar.gz
-//! - `publish --package <path.tar.gz>` — Upload package blob to repository
+//! - `publish --agent-dir <path>` — Publish source bundle to repository
 //! - `deploy --hash <hash>` — Activate a deployed hash in a running runner
 //! - `undeploy --hash <hash>` — Remove an active deployed hash from a running runner
 //! - `list-deployed-instances` — List loaded agent instances from a running runner
@@ -134,28 +134,28 @@ enum Commands {
         output: Option<String>,
     },
 
-    /// Publish a built package tar.gz to repository blob storage
+    /// Publish an agent source bundle to repository
     Publish {
-        /// Path to a prebuilt package tar.gz file
-        #[arg(long)]
-        package: String,
+        /// Path to an agent source directory (contains manifest.json + baml_src/)
+        #[arg(long, default_value = ".")]
+        agent_dir: String,
 
         /// Repository base URL where repository routes are mounted
         #[arg(long, default_value = "http://127.0.0.1:8080/repository")]
         repository_url: String,
 
         /// Why this publish happened
-        #[arg(long, default_value = "published from package archive")]
+        #[arg(long, default_value = "published from source directory")]
         rationale: String,
 
         /// Publish origin kind: original | iteration
-        #[arg(long, value_enum, default_value_t = PublishOriginArg::Original)]
+        #[arg(long, value_enum, default_value_t = PublishOriginArg::Iteration)]
         origin: PublishOriginArg,
     },
 
-    /// Deploy an agent package by content hash into a running runner
+    /// Deploy an agent artifact by content hash into a running runner
     Deploy {
-        /// Content hash of the package blob to deploy
+        /// Content hash returned by repository publish
         #[arg(long)]
         hash: String,
 
@@ -353,11 +353,11 @@ fn main() -> anyhow::Result<()> {
         } => commands::build::run(&names, path.as_deref(), output.as_deref()),
 
         Commands::Publish {
-            package,
+            agent_dir,
             repository_url,
             rationale,
             origin,
-        } => commands::publish::run(&package, &repository_url, &rationale, origin),
+        } => commands::publish::run(&agent_dir, &repository_url, &rationale, origin),
 
         Commands::Deploy { hash, url } => commands::deploy::run(&hash, &url),
 

@@ -22,11 +22,13 @@ baml-tools-memory = { path = "../tools/memory", optional = true }
 baml-tools-notion = { path = "../tools/notion", optional = true }
 baml-tools-slack = { path = "../tools/slack", optional = true }
 baml-tools-security-eval = { path = "../tools/security-eval", optional = true }
+baml-rt-repository = { path = "../baml-rt-repository" }
 baml-runtime = { workspace = true }
 baml-types = { workspace = true }
 internal-baml-core = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+reqwest = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 regex = { workspace = true }
