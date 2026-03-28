@@ -94,3 +94,148 @@ class ArchiveReadInput {
   limit int? @description("Maximum lines to return. Omit for default page size.")
   grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
 }
+// Domain types generated from JSON schemas
+class CallbackToolInputVariant1 {
+  after_ms int
+  source_key string
+  payload string
+  dedupe_key string | null?
+  continuation string | null?
+}
+
+class CallbackToolInputVariant2 {
+  callback_id string | null?
+  source_key string | null?
+  dedupe_key string | null?
+}
+
+type CallbackToolInput = CallbackToolInputVariant1 | CallbackToolInputVariant2
+
+class CallbackToolOutputVariant1 {
+  callback_id string
+  source_key string
+  scheduled_for_unix_ms int
+  deduped bool
+}
+
+class CallbackToolOutputVariant2 {
+  cancelled bool
+  callback_id string | null?
+  source_key string | null?
+  dedupe_key string | null?
+}
+
+type CallbackToolOutput = CallbackToolOutputVariant1 | CallbackToolOutputVariant2
+
+class ToolDiscoveryRecordDto {
+  name string
+  bundle string
+  description string
+  tags string[]
+  event_sources string[]
+}
+
+class HistoryContextV1 {
+  hop int
+  op string
+  status string
+  truncated bool
+  cursor string | null?
+  payload string | null?
+}
+
+class DiscoverToolsNextOutput {
+  tools ToolDiscoveryRecordDto[]
+  done bool
+  history_context HistoryContextV1 | null?
+}
+
+class DiscoverToolsOpenInput {
+  reason string | null?
+}
+
+class DiscoverToolsSendInput {
+  query string | null?
+  limit int | null?
+}
+
+/// Tool card for system/callback: metadata for polymorphic Open selection.
+class SystemCallbackToolCard {
+  tool_name "system/callback"
+  description "Schedules or cancels durable host-side callback events. Use this to ask the host to emit a future `system.callback.v1` dispatch on a stable source key through the normal event-delivery path."
+  session_policy "Strict"
+  input_summary "{}"
+  tags string[] @description("Tool tags: system, callback, scheduler")
+}
+
+class SystemCallbackOpenStep {
+  op "Open"
+  tool_name "system/callback" @description("Tool to open")
+}
+
+class SystemCallbackSendStep {
+  op "Send"
+  input CallbackToolInput @description("Payload for this step.")
+  citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
+}
+
+class SystemCallbackReadStep {
+  op "Read"
+  input ArchiveReadInput @description("Archive ref and optional pagination/grep params.")
+}
+
+class SystemCallbackFinishStep {
+  op "Finish"
+}
+
+class SystemCallbackAbortStep {
+  op "Abort"
+}
+
+type SystemCallbackSessionStep = SystemCallbackOpenStep | SystemCallbackSendStep | SystemCallbackReadStep | SystemCallbackFinishStep | SystemCallbackAbortStep
+
+class SystemCallbackSessionPlan {
+  step SystemCallbackSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
+  citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
+}
+
+/// Tool card for system/discover_tools: metadata for polymorphic Open selection.
+class SystemDiscover_toolsToolCard {
+  tool_name "system/discover_tools"
+  description "Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times."
+  session_policy "Strict"
+  input_summary "{ limit?: any, query?: any }"
+  tags string[] @description("Tool tags: system, discovery")
+}
+
+class SystemDiscover_toolsOpenStep {
+  op "Open"
+  tool_name "system/discover_tools" @description("Tool to open")
+  initial_input DiscoverToolsOpenInput? @description("Optional open payload.")
+}
+
+class SystemDiscover_toolsSendStep {
+  op "Send"
+  input DiscoverToolsSendInput @description("Payload for this step.")
+  citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
+}
+
+class SystemDiscover_toolsReadStep {
+  op "Read"
+  input ArchiveReadInput @description("Archive ref and optional pagination/grep params.")
+}
+
+class SystemDiscover_toolsFinishStep {
+  op "Finish"
+}
+
+class SystemDiscover_toolsAbortStep {
+  op "Abort"
+}
+
+type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
+
+class SystemDiscover_toolsSessionPlan {
+  step SystemDiscover_toolsSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
+  citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
+}

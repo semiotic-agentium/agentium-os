@@ -51,6 +51,14 @@ fn resolve_path_tokens(type_path: &syn::TypePath) -> Result<TokenStream, syn::Er
         return Ok(quote! { ::std::string::String::from(#lit) });
     }
 
+    // Special: serde_json::Value (or bare `Value`) maps to BAML `string`.
+    // The generated BAML layer cannot represent arbitrary JSON faithfully, so
+    // we degrade to a string-shaped prompt contract while runtime validation and
+    // TypeScript declarations retain the real JSON schema / `any` shape.
+    if ident_str == "Value" {
+        return Ok(quote! { ::std::string::String::from("string") });
+    }
+
     // Check for known generic wrappers.
     match ident_str.as_str() {
         "Option" => {

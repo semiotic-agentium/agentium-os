@@ -631,10 +631,10 @@ fn json_schema_to_baml_type(
                                 )?;
                                 format!("{}[]", item_type)
                             } else {
-                                "any[]".to_string()
+                                "string[]".to_string()
                             }
                         }
-                        other => format!("any /* {} */", other),
+                        _other => "string".to_string(),
                     }
                 }
                 Value::Object(_) => json_schema_to_baml_type(
@@ -645,12 +645,12 @@ fn json_schema_to_baml_type(
                     type_names,
                     inline_name_hint,
                 )?,
-                _ => "any".to_string(),
+                _ => "string".to_string(),
             };
             mapped.push(mapped_type);
         }
         if mapped.is_empty() {
-            return Ok("any".to_string());
+            return Ok("string".to_string());
         }
         if mapped.len() == 1 {
             return Ok(mapped.remove(0));
@@ -727,7 +727,7 @@ fn json_schema_to_baml_type(
                 )?;
                 return Ok(format!("{}[]", item_type));
             }
-            return Ok("any[]".to_string());
+            return Ok("string[]".to_string());
         }
 
         // Handle scalar primitive types
@@ -759,7 +759,7 @@ fn json_schema_to_baml_type(
             "number" => "float".to_string(),
             "boolean" => "bool".to_string(),
             "null" => "null".to_string(),
-            _ => format!("any /* {} */", type_str),
+            _ => "string".to_string(),
         });
     }
 
@@ -769,7 +769,7 @@ fn json_schema_to_baml_type(
         return Ok("string".to_string()); // Fallback
     }
 
-    Ok("any".to_string())
+    Ok("string".to_string())
 }
 
 fn to_pascal_case(s: &str) -> String {

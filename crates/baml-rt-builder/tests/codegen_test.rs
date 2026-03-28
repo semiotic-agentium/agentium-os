@@ -118,6 +118,26 @@ fn test_baml_tool_interface_generation() {
     insta::assert_snapshot!("baml_tool_interfaces", baml_output);
 }
 
+#[test]
+fn test_system_callback_tool_baml_interfaces() {
+    let tool_names = vec!["system/callback".to_string()];
+    let baml_output =
+        render_baml_tool_interfaces(&tool_names).expect("Should generate callback BAML interfaces");
+
+    assert!(
+        baml_output.contains("type CallbackToolInput"),
+        "Expected CallbackToolInput union in generated BAML"
+    );
+    assert!(
+        baml_output.contains("payload string"),
+        "Expected arbitrary callback payloads to degrade to a valid BAML string type"
+    );
+    assert!(
+        baml_output.contains("class SystemCallbackOpenStep"),
+        "Expected system/callback session scaffolding in generated BAML"
+    );
+}
+
 fn fixture_baml_src(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

@@ -3,7 +3,10 @@
   "name": "dispatch-echo",
   "entry_point": "src/index.ts",
   "signature": "dispatch-echo@1.0.0",
-  "tools": [],
+  "tools": [
+    "system/callback",
+    "system/discover_tools"
+  ],
   "discovery": {
     "description": "Fixture: echoes dispatch requests back as acknowledgements",
     "capabilities": [
@@ -18,6 +21,17 @@
           "slack",
           "clickup",
           "github_issues"
+        ]
+      },
+      {
+        "schema_versions": [
+          "system.callback.v1"
+        ],
+        "source_kinds": [
+          "system/callback"
+        ],
+        "source_key_prefixes": [
+          "dispatch-echo:callback:"
         ]
       }
     ]
