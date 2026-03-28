@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -115,6 +115,7 @@ impl EventProducer for CallbackEventProducer {
             )
         })?;
         let checkpoint_state = CallbackProducerCheckpoint::from_checkpoint(checkpoint);
+        let reconciled_deliveries = !checkpoint_state.delivered_callback_ids.is_empty();
         if !checkpoint_state.delivered_callback_ids.is_empty() {
             store
                 .mark_callbacks_delivered(
@@ -134,6 +135,30 @@ impl EventProducer for CallbackEventProducer {
                 MAX_CALLBACKS_PER_POLL,
             )
             .await?;
+        let due_callback_ids = due_callbacks
+            .iter()
+            .map(|callback| callback.callback_id.clone())
+            .collect::<Vec<_>>();
+        let emitted_callback_ids = store
+            .mark_callbacks_emitted(
+                &due_callback_ids,
+                callback_now_unix_ms("system_callback_mark_emitted"),
+            )
+            .await?;
+        let emitted_callback_id_set: HashSet<&str> =
+            emitted_callback_ids.iter().map(String::as_str).collect();
+        let due_callbacks = due_callbacks
+            .into_iter()
+            .filter(|callback| emitted_callback_id_set.contains(callback.callback_id.as_str()))
+            .collect::<Vec<_>>();
+        if emitted_callback_ids.len() < due_callback_ids.len() {
+            debug!(
+                requested_count = due_callback_ids.len(),
+                emitted_count = emitted_callback_ids.len(),
+                "system/callback skipped rows that were no longer pending during emission claim"
+            );
+        }
+
         let delivered_callback_ids = due_callbacks
             .iter()
             .map(|callback| callback.callback_id.clone())
@@ -143,7 +168,11 @@ impl EventProducer for CallbackEventProducer {
             .map(|callback| self.callback_to_event(callback))
             .collect::<Result<Vec<_>>>()?;
         let checkpoint = if events.is_empty() && delivered_callback_ids.is_empty() {
-            ProducerCheckpoint::none()
+            if reconciled_deliveries {
+                CallbackProducerCheckpoint::default().to_checkpoint()
+            } else {
+                ProducerCheckpoint::none()
+            }
         } else {
             CallbackProducerCheckpoint {
                 delivered_callback_ids,
@@ -156,6 +185,8 @@ impl EventProducer for CallbackEventProducer {
                 event_count = events.len(),
                 "system/callback produced due callback events"
             );
+        } else if reconciled_deliveries {
+            debug!("system/callback cleared reconciled delivery checkpoint");
         }
 
         Ok(ProducerPoll { events, checkpoint })

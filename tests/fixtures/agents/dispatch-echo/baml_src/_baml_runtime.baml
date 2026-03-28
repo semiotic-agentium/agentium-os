@@ -106,12 +106,14 @@ class CallbackToolInputVariant1 {
   payload OpaqueJson @description("Opaque JSON transport value. The runtime accepts any JSON payload; generated BAML surfaces this as the named OpaqueJson type.")
   dedupe_key string | null?
   continuation string | null?
+  op string
 }
 
 class CallbackToolInputVariant2 {
   callback_id string | null?
   source_key string | null?
   dedupe_key string | null?
+  op string
 }
 
 type CallbackToolInput = CallbackToolInputVariant1 | CallbackToolInputVariant2
@@ -121,6 +123,7 @@ class CallbackToolOutputVariant1 {
   source_key string
   scheduled_for_unix_ms int
   deduped bool
+  outcome string
 }
 
 class CallbackToolOutputVariant2 {
@@ -128,6 +131,7 @@ class CallbackToolOutputVariant2 {
   callback_id string | null?
   source_key string | null?
   dedupe_key string | null?
+  outcome string
 }
 
 type CallbackToolOutput = CallbackToolOutputVariant1 | CallbackToolOutputVariant2

@@ -62,8 +62,10 @@ pub enum CancelCallbackSelector {
 /// Delivery is intentionally at-least-once. The callback producer emits due callbacks,
 /// then marks them delivered only after the host persists the producer checkpoint and the
 /// next poll reconciles that checkpoint. Implementors must preserve pending callbacks
-/// across crashes/restarts until `mark_callbacks_delivered` is called, and consuming
-/// agents should treat callback payloads as idempotent.
+/// across crashes/restarts until `mark_callbacks_delivered` is called. Pending callbacks
+/// may be marked as emitted before that reconciliation step; those rows must still remain
+/// eligible for crash-recovery redelivery, but they should no longer participate in
+/// dedupe/cancel lookups. Consuming agents should treat callback payloads as idempotent.
 #[async_trait]
 pub trait CallbackStore: Send + Sync {
     async fn schedule_callback(
@@ -81,6 +83,12 @@ pub trait CallbackStore: Send + Sync {
         now_unix_ms: u64,
         limit: usize,
     ) -> Result<Vec<StoredCallback>>;
+
+    async fn mark_callbacks_emitted(
+        &self,
+        callback_ids: &[String],
+        emitted_at_unix_ms: u64,
+    ) -> Result<Vec<String>>;
 
     async fn mark_callbacks_delivered(
         &self,

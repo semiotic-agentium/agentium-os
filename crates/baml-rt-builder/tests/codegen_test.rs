@@ -137,6 +137,14 @@ fn test_system_callback_tool_baml_interfaces() {
         "Expected callback payloads to use the explicit OpaqueJson transport type"
     );
     assert!(
+        baml_output.contains("op string"),
+        "Expected callback input variants to preserve the op discriminator in generated BAML"
+    );
+    assert!(
+        baml_output.contains("outcome string"),
+        "Expected callback output variants to preserve the outcome discriminator in generated BAML"
+    );
+    assert!(
         baml_output.contains("class SystemCallbackOpenStep"),
         "Expected system/callback session scaffolding in generated BAML"
     );

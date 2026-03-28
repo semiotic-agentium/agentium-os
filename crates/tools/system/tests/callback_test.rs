@@ -7,6 +7,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use baml_derive_core::JsonSchemaType;
 use baml_rt_core::{
     A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDiscoveryEntry, AgentLister,
     BamlRtError, BusStream, ContextId, Result,
@@ -14,7 +15,7 @@ use baml_rt_core::{
 };
 use baml_rt_tools::{EventProducerBuildContext, ProducerCheckpoint, ToolRegistry, ToolStep};
 use baml_tools_system::{
-    SystemBundle,
+    CallbackToolInput, SystemBundle,
     callback_producer::{
         CALLBACK_EVENT_ROUTING_KEY, CALLBACK_EVENT_SCHEMA_VERSION, CALLBACK_SOURCE_KIND,
         build_callback_event_producers,
@@ -130,6 +131,7 @@ struct MemoryCallbackStore {
 struct MemoryCallbackRow {
     callback: StoredCallback,
     status: &'static str,
+    emitted_at_unix_ms: Option<u64>,
 }
 
 impl Default for MemoryCallbackStore {
@@ -157,6 +159,7 @@ impl CallbackStore for MemoryCallbackStore {
         if let Some(dedupe_key) = &request.dedupe_key
             && let Some(existing) = rows.iter().find(|row| {
                 row.status == "pending"
+                    && row.emitted_at_unix_ms.is_none()
                     && row.callback.source_key == request.source_key
                     && row.callback.dedupe_key.as_deref() == Some(dedupe_key.as_str())
             })
@@ -182,6 +185,7 @@ impl CallbackStore for MemoryCallbackStore {
         rows.push(MemoryCallbackRow {
             callback: callback.clone(),
             status: "pending",
+            emitted_at_unix_ms: None,
         });
         Ok(ScheduleCallbackResult {
             callback,
@@ -196,6 +200,9 @@ impl CallbackStore for MemoryCallbackStore {
         let mut rows = self.rows.lock().await;
         let found = rows.iter_mut().find(|row| {
             if row.status != "pending" {
+                return false;
+            }
+            if row.emitted_at_unix_ms.is_some() {
                 return false;
             }
             match &selector {
@@ -244,6 +251,24 @@ impl CallbackStore for MemoryCallbackStore {
         Ok(callbacks)
     }
 
+    async fn mark_callbacks_emitted(
+        &self,
+        callback_ids: &[String],
+        emitted_at_unix_ms: u64,
+    ) -> Result<Vec<String>> {
+        let mut rows = self.rows.lock().await;
+        let mut emitted_ids = Vec::new();
+        for row in rows.iter_mut() {
+            if row.status == "pending" && callback_ids.contains(&row.callback.callback_id) {
+                if row.emitted_at_unix_ms.is_none() {
+                    row.emitted_at_unix_ms = Some(emitted_at_unix_ms);
+                }
+                emitted_ids.push(row.callback.callback_id.clone());
+            }
+        }
+        Ok(emitted_ids)
+    }
+
     async fn mark_callbacks_delivered(
         &self,
         callback_ids: &[String],
@@ -256,6 +281,38 @@ impl CallbackStore for MemoryCallbackStore {
             }
         }
         Ok(())
+    }
+}
+
+#[test]
+fn callback_tool_input_schema_requires_op_discriminator() {
+    let schema = CallbackToolInput::json_schema_inline();
+    let variants = schema["oneOf"]
+        .as_array()
+        .expect("callback input schema should be a tagged union");
+    assert_eq!(variants.len(), 2);
+    for variant in variants {
+        assert_eq!(variant["type"].as_str(), Some("object"));
+        let properties = variant["properties"]
+            .as_object()
+            .expect("callback input variant must expose object properties");
+        assert!(
+            properties.contains_key("op"),
+            "callback input variants must include the op discriminator"
+        );
+        let op_schema = properties.get("op").expect("op property");
+        assert_eq!(op_schema["type"].as_str(), Some("string"));
+        assert!(
+            op_schema.get("const").and_then(Value::as_str).is_some(),
+            "op discriminator must pin a concrete variant value"
+        );
+        let required = variant["required"]
+            .as_array()
+            .expect("callback input variant must declare required fields");
+        assert!(
+            required.iter().any(|value| value.as_str() == Some("op")),
+            "callback input variant must require the op discriminator"
+        );
     }
 }
 
@@ -824,6 +881,90 @@ async fn callback_tool_cancel_returns_false_for_already_delivered() {
 }
 
 #[tokio::test]
+async fn callback_tool_reschedule_ignores_emitted_pending_rows() {
+    let _suite_guard = suite_lock().lock().await;
+    clear_callback_store();
+    let store = Arc::new(MemoryCallbackStore::default());
+    install_callback_store(store.clone());
+
+    let registry = test_registry();
+    let context_id = test_context_id();
+    let agent_id = test_agent_id();
+    let task_id = test_task_id();
+
+    let first_output = expect_done_output(
+        invoke_callback_tool(
+            registry.as_ref(),
+            &context_id,
+            &agent_id,
+            Some(&task_id),
+            json!({
+                "op": "schedule",
+                "afterMs": 0,
+                "sourceKey": "workflow-intake:follow-up",
+                "dedupeKey": "follow-up-once",
+                "payload": { "kind": "reminder" }
+            }),
+        )
+        .await,
+    );
+    let first_callback_id = first_output["callbackId"].as_str().unwrap().to_string();
+
+    let producers = build_callback_event_producers(EventProducerBuildContext {
+        metadata: system_callback_metadata(),
+        config: None,
+        persisted_checkpoints: Arc::new(HashMap::new()),
+    })
+    .await
+    .unwrap();
+    let first_poll = producers[0]
+        .poll(&ProducerCheckpoint::none())
+        .await
+        .unwrap();
+    assert_eq!(first_poll.events.len(), 1);
+
+    let second_output = expect_done_output(
+        invoke_callback_tool(
+            registry.as_ref(),
+            &context_id,
+            &agent_id,
+            Some(&task_id),
+            json!({
+                "op": "schedule",
+                "afterMs": 0,
+                "sourceKey": "workflow-intake:follow-up",
+                "dedupeKey": "follow-up-once",
+                "payload": { "kind": "reminder-again" }
+            }),
+        )
+        .await,
+    );
+    assert_eq!(second_output["outcome"], "scheduled");
+    assert_eq!(second_output["deduped"], false);
+    assert_ne!(
+        second_output["callbackId"].as_str(),
+        Some(first_callback_id.as_str())
+    );
+
+    let rows = store.snapshot().await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.status == "pending" && row.emitted_at_unix_ms.is_some())
+            .count(),
+        1
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.status == "pending" && row.emitted_at_unix_ms.is_none())
+            .count(),
+        1
+    );
+
+    clear_callback_store();
+}
+
+#[tokio::test]
 async fn callback_tool_rejects_empty_source_key() {
     let _suite_guard = suite_lock().lock().await;
     clear_callback_store();
@@ -1011,14 +1152,19 @@ async fn callback_producer_polls_and_reconciles_delivery() {
             .snapshot()
             .await
             .into_iter()
-            .filter(|row| row.status == "pending")
+            .filter(|row| row.status == "pending" && row.emitted_at_unix_ms.is_some())
             .count(),
         1
     );
 
     let second_poll = producers[0].poll(&first_poll.checkpoint).await.unwrap();
     assert!(second_poll.events.is_empty());
-    assert!(second_poll.checkpoint.value().is_none());
+    assert_eq!(
+        serde_json::from_str::<Value>(second_poll.checkpoint.value().unwrap()).unwrap(),
+        json!({
+            "delivered_callback_ids": []
+        })
+    );
     assert_eq!(
         store
             .snapshot()
@@ -1029,10 +1175,7 @@ async fn callback_producer_polls_and_reconciles_delivery() {
         1
     );
 
-    let third_poll = producers[0]
-        .poll(&ProducerCheckpoint::none())
-        .await
-        .unwrap();
+    let third_poll = producers[0].poll(&second_poll.checkpoint).await.unwrap();
     assert!(third_poll.events.is_empty());
     assert!(third_poll.checkpoint.value().is_none());
 
@@ -1121,6 +1264,60 @@ async fn callback_producer_reconciles_after_simulated_restart() {
             .count(),
         1,
         "reconciliation should have marked the callback delivered"
+    );
+
+    clear_callback_store();
+}
+
+#[tokio::test]
+async fn callback_producer_redelivers_pending_rows_when_checkpoint_is_missing() {
+    let _suite_guard = suite_lock().lock().await;
+    clear_callback_store();
+    let store = Arc::new(MemoryCallbackStore::default());
+    install_callback_store(store.clone());
+
+    let scheduled = store
+        .schedule_callback(ScheduleCallbackRequest {
+            source_key: "workflow-intake:resume".to_string(),
+            dedupe_key: Some("resume-1".to_string()),
+            payload: json!({"goal": "resume"}),
+            scheduled_for_unix_ms: 0,
+            requested_at_unix_ms: 0,
+            context_id: None,
+            task_id: None,
+            requesting_agent_id: Some("agent-123".to_string()),
+            requesting_message_id: None,
+        })
+        .await
+        .unwrap();
+
+    let producers = build_callback_event_producers(EventProducerBuildContext {
+        metadata: system_callback_metadata(),
+        config: None,
+        persisted_checkpoints: Arc::new(HashMap::new()),
+    })
+    .await
+    .unwrap();
+
+    let first_poll = producers[0]
+        .poll(&ProducerCheckpoint::none())
+        .await
+        .unwrap();
+    assert_eq!(first_poll.events.len(), 1);
+    assert_eq!(
+        first_poll.events[0].messages[0]["callback_id"].as_str(),
+        Some(scheduled.callback.callback_id.as_str())
+    );
+
+    let second_poll = producers[0]
+        .poll(&ProducerCheckpoint::none())
+        .await
+        .unwrap();
+    assert_eq!(second_poll.events.len(), 1);
+    assert_eq!(
+        second_poll.events[0].messages[0]["callback_id"].as_str(),
+        Some(scheduled.callback.callback_id.as_str()),
+        "pending emitted rows must be redelivered when the host never persisted a checkpoint"
     );
 
     clear_callback_store();

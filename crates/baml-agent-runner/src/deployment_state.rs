@@ -45,6 +45,7 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE FIELD IF NOT EXISTS status ON scheduled_callbacks TYPE string",
     "DEFINE FIELD IF NOT EXISTS scheduled_for_unix_ms ON scheduled_callbacks TYPE int",
     "DEFINE FIELD IF NOT EXISTS requested_at_unix_ms ON scheduled_callbacks TYPE int",
+    "DEFINE FIELD IF NOT EXISTS emitted_at_unix_ms ON scheduled_callbacks TYPE option<int>",
     "DEFINE FIELD IF NOT EXISTS delivered_at_unix_ms ON scheduled_callbacks TYPE option<int>",
     "DEFINE FIELD IF NOT EXISTS cancelled_at_unix_ms ON scheduled_callbacks TYPE option<int>",
     "DEFINE FIELD IF NOT EXISTS context_id ON scheduled_callbacks TYPE option<string>",
@@ -54,6 +55,7 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_id ON scheduled_callbacks FIELDS callback_id UNIQUE",
     "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_due ON scheduled_callbacks FIELDS status, scheduled_for_unix_ms",
     "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_dedupe ON scheduled_callbacks FIELDS source_key, dedupe_key, status",
+    "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_dedupe_unemitted ON scheduled_callbacks FIELDS source_key, dedupe_key, status, emitted_at_unix_ms",
 ];
 
 pub struct DeploymentStateStore {
@@ -228,7 +230,7 @@ impl DeploymentStateStore {
             requesting_agent_id: request.requesting_agent_id.clone(),
             requesting_message_id: request.requesting_message_id.clone(),
         };
-        self.upsert_callback_row(&callback, "pending", None, None)
+        self.upsert_callback_row(&callback, "pending", None, None, None)
             .await?;
         debug!(
             callback_id = %callback.callback_id,
@@ -274,7 +276,7 @@ impl DeploymentStateStore {
             requesting_agent_id: request.requesting_agent_id.clone(),
             requesting_message_id: request.requesting_message_id.clone(),
         };
-        self.upsert_callback_row(&callback, "pending", None, None)
+        self.upsert_callback_row(&callback, "pending", None, None, None)
             .await?;
         debug!(
             callback_id = %callback.callback_id,
@@ -314,6 +316,7 @@ impl DeploymentStateStore {
         self.upsert_callback_row(
             &callback,
             "cancelled",
+            None,
             None,
             Some(callback_now_unix_ms("system_callback_cancel")),
         )
@@ -387,6 +390,79 @@ impl DeploymentStateStore {
         Ok(())
     }
 
+    pub async fn mark_callbacks_emitted(
+        &self,
+        callback_ids: &[String],
+        emitted_at_unix_ms: u64,
+    ) -> Result<Vec<String>> {
+        if callback_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let _guard = self.callback_lock.lock().await;
+
+        #[derive(Deserialize)]
+        struct CallbackEmissionRow {
+            callback_id: String,
+            #[serde(default)]
+            emitted_at_unix_ms: Option<i64>,
+        }
+
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT callback_id,emitted_at_unix_ms \
+                 FROM {TBL_SCHEDULED_CALLBACKS} \
+                 WHERE callback_id INSIDE $callback_ids \
+                   AND status = 'pending'"
+            ))
+            .bind(("callback_ids", callback_ids.to_vec()))
+            .await
+            .map_err(to_read_err)?;
+        let pending_rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+        let emission_rows = pending_rows
+            .into_iter()
+            .map(|row| {
+                let parsed: CallbackEmissionRow = serde_json::from_value(row).map_err(|err| {
+                    BamlRtError::InvalidArgument(format!(
+                        "invalid callback emission row from state DB: {err}"
+                    ))
+                })?;
+                Ok(parsed)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let eligible_ids = emission_rows
+            .iter()
+            .map(|row| row.callback_id.clone())
+            .collect::<Vec<_>>();
+        let first_emission_ids = emission_rows
+            .into_iter()
+            .filter(|row| row.emitted_at_unix_ms.is_none())
+            .map(|row| row.callback_id)
+            .collect::<Vec<_>>();
+        if !first_emission_ids.is_empty() {
+            self.db
+                .query(format!(
+                    "UPDATE {TBL_SCHEDULED_CALLBACKS} SET \
+                        emitted_at_unix_ms = $emitted_at_unix_ms \
+                     WHERE callback_id INSIDE $callback_ids \
+                       AND status = 'pending' \
+                       AND emitted_at_unix_ms = NONE"
+                ))
+                .bind(("callback_ids", first_emission_ids.clone()))
+                .bind(("emitted_at_unix_ms", emitted_at_unix_ms as i64))
+                .await
+                .map_err(to_write_err)?;
+        }
+        if eligible_ids.len() < callback_ids.len() {
+            debug!(
+                requested_count = callback_ids.len(),
+                emitted_count = eligible_ids.len(),
+                "some callbacks were no longer eligible for emission claim"
+            );
+        }
+        Ok(eligible_ids)
+    }
+
     async fn find_pending_callback_by_id(
         &self,
         callback_id: &str,
@@ -396,7 +472,7 @@ impl DeploymentStateStore {
             .query(format!(
                 "SELECT callback_id,source_key,dedupe_key,payload_json,scheduled_for_unix_ms,requested_at_unix_ms,context_id,task_id,requesting_agent_id,requesting_message_id \
                  FROM {TBL_SCHEDULED_CALLBACKS} \
-                 WHERE callback_id = $callback_id AND status = 'pending' LIMIT 1"
+                 WHERE callback_id = $callback_id AND status = 'pending' AND emitted_at_unix_ms = NONE LIMIT 1"
             ))
             .bind(("callback_id", callback_id.to_string()))
             .await
@@ -415,7 +491,7 @@ impl DeploymentStateStore {
             .query(format!(
                 "SELECT callback_id,source_key,dedupe_key,payload_json,scheduled_for_unix_ms,requested_at_unix_ms,context_id,task_id,requesting_agent_id,requesting_message_id \
                  FROM {TBL_SCHEDULED_CALLBACKS} \
-                 WHERE source_key = $source_key AND dedupe_key = $dedupe_key AND status = 'pending' LIMIT 1"
+                 WHERE source_key = $source_key AND dedupe_key = $dedupe_key AND status = 'pending' AND emitted_at_unix_ms = NONE LIMIT 1"
             ))
             .bind(("source_key", source_key.to_string()))
             .bind(("dedupe_key", dedupe_key.to_string()))
@@ -429,6 +505,7 @@ impl DeploymentStateStore {
         &self,
         callback: &StoredCallback,
         status: &str,
+        emitted_at_unix_ms: Option<u64>,
         delivered_at_unix_ms: Option<u64>,
         cancelled_at_unix_ms: Option<u64>,
     ) -> Result<()> {
@@ -445,6 +522,7 @@ impl DeploymentStateStore {
                     status = $status, \
                     scheduled_for_unix_ms = $scheduled_for_unix_ms, \
                     requested_at_unix_ms = $requested_at_unix_ms, \
+                    emitted_at_unix_ms = $emitted_at_unix_ms, \
                     delivered_at_unix_ms = $delivered_at_unix_ms, \
                     cancelled_at_unix_ms = $cancelled_at_unix_ms, \
                     context_id = $context_id, \
@@ -463,6 +541,10 @@ impl DeploymentStateStore {
                 callback.scheduled_for_unix_ms as i64,
             ))
             .bind(("requested_at_unix_ms", callback.requested_at_unix_ms as i64))
+            .bind((
+                "emitted_at_unix_ms",
+                emitted_at_unix_ms.map(|value| value as i64),
+            ))
             .bind((
                 "delivered_at_unix_ms",
                 delivered_at_unix_ms.map(|value| value as i64),
@@ -612,6 +694,14 @@ impl baml_tools_system::callback_store::CallbackStore for DeploymentStateStore {
         limit: usize,
     ) -> Result<Vec<StoredCallback>> {
         DeploymentStateStore::list_due_callbacks(self, now_unix_ms, limit).await
+    }
+
+    async fn mark_callbacks_emitted(
+        &self,
+        callback_ids: &[String],
+        emitted_at_unix_ms: u64,
+    ) -> Result<Vec<String>> {
+        DeploymentStateStore::mark_callbacks_emitted(self, callback_ids, emitted_at_unix_ms).await
     }
 
     async fn mark_callbacks_delivered(
@@ -829,5 +919,62 @@ mod tests {
         let reopened = retry_open(20, 100, &path).await;
         let due = reopened.list_due_callbacks(1_000, 10).await.unwrap();
         assert!(due.is_empty());
+    }
+
+    #[tokio::test]
+    async fn emitted_callbacks_do_not_block_rescheduling_same_dedupe_key() {
+        let store = DeploymentStateStore::open_in_memory().await.unwrap();
+        let first = store
+            .schedule_callback(&ScheduleCallbackRequest {
+                source_key: "workflow-intake:resume".to_string(),
+                dedupe_key: Some("resume-once".to_string()),
+                payload: serde_json::json!({"goal": "resume"}),
+                scheduled_for_unix_ms: 10,
+                requested_at_unix_ms: 5,
+                context_id: None,
+                task_id: None,
+                requesting_agent_id: Some("agent-42".to_string()),
+                requesting_message_id: None,
+            })
+            .await
+            .unwrap();
+
+        let due = store.list_due_callbacks(10, 10).await.unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].callback_id, first.callback.callback_id);
+
+        let emitted_ids = store
+            .mark_callbacks_emitted(std::slice::from_ref(&first.callback.callback_id), 15)
+            .await
+            .unwrap();
+        assert_eq!(emitted_ids, vec![first.callback.callback_id.clone()]);
+
+        let rescheduled = store
+            .schedule_callback(&ScheduleCallbackRequest {
+                source_key: "workflow-intake:resume".to_string(),
+                dedupe_key: Some("resume-once".to_string()),
+                payload: serde_json::json!({"goal": "resume-again"}),
+                scheduled_for_unix_ms: 20,
+                requested_at_unix_ms: 16,
+                context_id: None,
+                task_id: None,
+                requesting_agent_id: Some("agent-42".to_string()),
+                requesting_message_id: None,
+            })
+            .await
+            .unwrap();
+        assert!(rescheduled.created);
+        assert_ne!(rescheduled.callback.callback_id, first.callback.callback_id);
+
+        let cancelled = store
+            .cancel_callback(CancelCallbackSelector::CallbackId(
+                first.callback.callback_id,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            cancelled.is_none(),
+            "already-emitted callbacks must not be cancellable before reconciliation"
+        );
     }
 }

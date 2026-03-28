@@ -159,12 +159,14 @@ class ProvenancePayloadLlmCallDto {
   payload_ref string
   activity_ref string
   prompt_json string
+  source string
 }
 
 class ProvenancePayloadLlmResultDto {
   payload_ref string
   activity_ref string
   result_json string
+  source string
 }
 
 class ProvenancePayloadToolCallDto {
@@ -173,12 +175,14 @@ class ProvenancePayloadToolCallDto {
   tool_name string | null?
   phase string | null?
   args_json string
+  source string
 }
 
 class ProvenancePayloadToolResultDto {
   payload_ref string
   activity_ref string
   result_json string
+  source string
 }
 
 class ProvenanceArchiveRecordDto {
