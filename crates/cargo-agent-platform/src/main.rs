@@ -20,6 +20,7 @@
 //! - `list-event-sources` — List event source kinds declared by tools and known schema versions
 //! - `regen` — Regenerate type declarations for all agents
 //! - `doctor` — Validate workspace integrity
+//! - `chat` — Interactive terminal chat with a deployed agent
 
 mod commands;
 mod generated_baml;
@@ -199,6 +200,25 @@ enum Commands {
         #[arg(long)]
         warn_missing_catalog: bool,
     },
+
+    /// Interactive terminal chat with a deployed agent
+    Chat {
+        /// Agent package/name from discovery
+        #[arg(long)]
+        agent: String,
+
+        /// Runner base URL
+        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        url: String,
+
+        /// Agent instance identifier
+        #[arg(long, default_value = "default")]
+        instance: String,
+
+        /// Print debug diagnostics
+        #[arg(long, short)]
+        verbose: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -371,5 +391,12 @@ fn main() -> anyhow::Result<()> {
             ci,
             warn_missing_catalog,
         } => commands::doctor::run(ci, warn_missing_catalog),
+
+        Commands::Chat {
+            agent,
+            url,
+            instance,
+            verbose,
+        } => commands::chat::run(&agent, &url, &instance, verbose),
     }
 }

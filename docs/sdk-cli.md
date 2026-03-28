@@ -6,8 +6,8 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 
 | Command | Description |
 |---------|-------------|
-| `new-tool <name>` | Create a new tool crate with all necessary patches |
-| `new-agent <name>` | Create a new agent package with templates |
+| `new-tool [name]` | Create a new tool crate with all necessary patches |
+| `new-agent [name]` | Create a new agent package with templates |
 | `build [names]...` | Package agents into distributable tar.gz files |
 | `publish --agent-dir <path>` | Publish agent source bundle to repository |
 | `deploy --hash <hash>` | Deploy a published content hash into a running runner |
@@ -15,720 +15,170 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `list-deployed-instances` | List currently loaded runner agent instances |
 | `list-tools` | List all registered tools from the inventory |
 | `list-agents` | List all agent packages |
-| `list-event-sources` | List event source kinds declared by tools and known schema versions |
-| `regen [names]...` | Regenerate type declarations for agents (all if no names given) |
+| `list-event-sources` | List event source kinds and known schema versions |
+| `regen [names]...` | Regenerate type declarations for agents (all if omitted) |
 | `doctor` | Validate workspace integrity |
+| `chat --agent <name>` | Interactive terminal chat with a deployed agent |
 
 ## Installation
 
-### Option 1: Use without installation (recommended for development)
-
-Run directly via `cargo run`:
+**Option 1 — run directly (recommended for development):**
 
 ```bash
 cargo run -p cargo-agent-platform -- <command> [options]
 ```
 
-Examples:
-```bash
-cargo run -p cargo-agent-platform -- list-tools
-cargo run -p cargo-agent-platform -- new-tool github --dry-run
-cargo run -p cargo-agent-platform -- new-agent my-agent --template planner
-cargo run -p cargo-agent-platform -- doctor
-```
-
-### Option 2: Install locally
-
-Install the binary to your Cargo bin directory:
+**Option 2 — install to Cargo bin:**
 
 ```bash
 cargo install --path crates/cargo-agent-platform
+cargo agent-platform <command> [options]
 ```
 
-After installation, use the standard Cargo subcommand syntax:
-
-```bash
-cargo agent-platform list-tools
-cargo agent-platform new-tool github
-cargo agent-platform doctor
-```
-
-### Getting Help
-
-```bash
-# Show all commands
-cargo agent-platform --help
-
-# Show help for a specific command
-cargo agent-platform new-tool --help
-cargo agent-platform doctor --help
-```
-
-### Option 3: Run the binary directly
-
-After building:
+**Option 3 — run the built binary directly:**
 
 ```bash
 cargo build -p cargo-agent-platform
-./target/debug/cargo-agent-platform list-tools
+./target/debug/cargo-agent-platform <command> [options]
+```
+
+```bash
+# Help
+cargo agent-platform --help
+cargo agent-platform <command> --help
 ```
 
 ---
 
 ## Commands
 
-### `list-tools`
-
-Lists all registered tools from the inventory with their metadata.
-
-```bash
-cargo run -p cargo-agent-platform -- list-tools
-```
-
-**Output includes:**
-- Tool name (e.g., `support/github`, `system/internal_a2a`)
-- Description (truncated)
-- Tags
-- Access level (Read, Write, or None)
-
-**Example output:**
-```
-NAME                           DESCRIPTION                                        TAGS                      ACCESS
-claude/dev                     Host-managed Claude streaming session. Open o...   [claude, stream, session] Write
-memory/add                     Store cognitive events (facts, decisions, inf...   [memory]                  Write
-support/calculate              Performs mathematical calculations. Can handl...   [support, calculate]      None
-support/clickup                Interact with ClickUp: navigate workspaces (t...   [support, clickup]        None
-system/internal_a2a            Opens a conversational session to another age...   [system, a2a]             None
-
-Total: 20 tool(s) registered
-```
-
----
-
-### `list-event-sources`
-
-Lists event source kinds declared by tools and known schema versions for event delivery.
-
-```bash
-cargo run -p cargo-agent-platform -- list-event-sources
-```
-
-**Output includes:**
-- Event source kinds declared by tools via `#[baml_tool(..., event_sources = ["kind"])]`
-- Known schema versions that agents can subscribe to (currently hardcoded)
-
-**Example output:**
-```
-Event Source Kinds (declared by tools):
-
-  SOURCE KIND          TOOL                                DESCRIPTION
-  slack                support/slack                       Read-only Slack integration for conversa...
-  weather              internal-dev/get_weather            Test weather tool
-
-Known Schema Versions:
-
-  SCHEMA VERSION                           DESCRIPTION
-  host.source-records.v1                   Generic raw source-ingress batch produced by host-managed event sources
-  task-daemon.interpretation.v1            Task daemon event interpretation (Slack, ClickUp, GitHub Issues)
-
-Note: Schema versions are conventions defined by event producers (e.g., task-daemon).
-      Use these in agent manifest subscriptions to receive matching events.
-
-Total: 2 event source kind(s), 2 known schema version(s)
-```
-
-**Use cases:**
-- Discover which tools can produce events when polled
-- Find available schema versions for agent subscriptions
-- Understand the event delivery model before creating agents that need to receive events
-
-**Note:** The known schema versions are hardcoded. When new event producers are added, update the `KNOWN_SCHEMA_VERSIONS` constant in `list_event_sources.rs`.
-
----
-
 ### `new-tool`
 
-Creates a new tool crate with all necessary file patches for it to compile and be discoverable.
-
-**Interactive Mode (recommended):**
+Creates a new tool crate with all necessary file patches. Omit `name` for interactive mode.
 
 ```bash
-cargo run -p cargo-agent-platform -- new-tool
+cargo agent-platform new-tool [name] [options]
 ```
-
-When no name is provided, interactive mode guides you through the process:
-
-```
-? Tool name (kebab-case): github
-? Bundle type: support (default) - Standard support tool
-? Access level: read (default) - Query-only, no side effects
-? Description (optional): basic github API interactions
-
-Summary:
-  Name:   github
-  Bundle: support
-  Access: read
-  Desc:   basic github API interactions
-
-Operations to perform:
-  CREATE DIR  crates/tools/github
-  CREATE DIR  crates/tools/github/src
-  CREATE      crates/tools/github/Cargo.toml
-  CREATE      crates/tools/github/src/lib.rs
-  EDIT        Cargo.toml
-  EDIT        crates/baml-tool-links/Cargo.toml
-  EDIT        crates/baml-tool-links/src/lib.rs
-  EDIT        crates/baml-agent-runner/Cargo.toml
-  EDIT        crates/baml-agent-runner/src/main.rs
-  EDIT        crates/baml-rt-builder/Cargo.toml
-  EDIT        crates/baml-rt-builder/src/baml-agent-builder.rs
-  EDIT        crates/baml-rt-builder/src/bin/regen_fixtures.rs
-
-Note:
-  Most tools are auto-registered via inventory and need no extra setup.
-  If your tool requires runtime context (e.g., agent name, manifest data),
-  you'll also need to manually edit:
-    - crates/baml-agent-runner/src/optional_tool_bundles.rs
-    - crates/baml-rt-builder/src/optional_tool_bundles.rs
-  See the memory tool for an example.
-
-? Proceed? (Y/n):
-```
-
-**Non-Interactive Mode:**
-
-```bash
-cargo run -p cargo-agent-platform -- new-tool <name> [options]
-```
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<name>` | Tool name in kebab-case (e.g., `github`, `jira`, `linear`). Omit for interactive mode. |
-
-**Options:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--bundle <type>` | `support` | Bundle type. Currently only `support` is supported. |
-| `--access <level>` | `read` | Access level: `read` (query-only) or `write` (can mutate) |
-| `--description <desc>` | `""` | Optional user-facing tool description shown in discovery and picker UIs |
-| `--dry-run` | - | Validate and preview changes without writing files (non-interactive only). Returns non-zero if validation fails. |
+| `name` | *(interactive)* | Tool name in kebab-case (e.g. `github`, `jira`) |
+| `--bundle <type>` | `support` | Bundle type — only `support` is currently supported |
+| `--access <level>` | `read` | `read` (query-only) or `write` (can mutate) |
+| `--description <text>` | `""` | Human-readable description shown in discovery UIs |
+| `--dry-run` | off | Preview changes without writing files (non-interactive only) |
 
-**Access Levels:**
+**What it creates:** `crates/tools/<name>/Cargo.toml` + `src/lib.rs`
 
-| Level | Description |
-|-------|-------------|
-| `read` | Query-only, no side effects. Default for most tools. |
-| `write` | Can mutate data (create, update, delete). Use for tools that modify external state. |
+**What it patches:** workspace `Cargo.toml`, `baml-tool-links`, `baml-agent-runner`, `baml-rt-builder` (Cargo deps, feature forwarding, and `force_link_all_tools!` entry).
 
-**Examples:**
+> If your tool needs runtime context (agent name, manifest data), also manually edit `optional_tool_bundles.rs` in runner and builder. See the `memory` tool for an example.
 
 ```bash
-# Interactive mode (recommended for new users)
-cargo run -p cargo-agent-platform -- new-tool
-
-# Preview what would be created (non-interactive)
-cargo run -p cargo-agent-platform -- new-tool github --dry-run
-
-# Create a read-only tool (non-interactive with defaults)
-cargo run -p cargo-agent-platform -- new-tool github
-
-# Create a tool with write access (non-interactive)
-cargo run -p cargo-agent-platform -- new-tool github --access write
+cargo agent-platform new-tool github --dry-run
+cargo agent-platform new-tool github --access write --description "GitHub REST API"
 ```
-
-**What it creates:**
-
-```
-crates/tools/<name>/
-  Cargo.toml
-  src/
-    lib.rs
-```
-
-**What it patches:**
-
-| File | Change |
-|------|--------|
-| `Cargo.toml` (workspace root) | Adds crate to `workspace.members` |
-| `crates/baml-tool-links/Cargo.toml` | Adds optional dependency and feature |
-| `crates/baml-tool-links/src/lib.rs` | Adds entry to `force_link_all_tools!` macro |
-| `crates/baml-agent-runner/Cargo.toml` | Adds feature forwarding |
-| `crates/baml-agent-runner/src/main.rs` | Adds force-link import for runtime tool registration |
-| `crates/baml-rt-builder/Cargo.toml` | Adds feature forwarding |
-| `crates/baml-rt-builder/src/baml-agent-builder.rs` | Adds force-link import for packaging/type generation |
-| `crates/baml-rt-builder/src/bin/regen_fixtures.rs` | Adds force-link import for regen flows |
-
-**After creating a tool:**
-
-1. Edit `crates/tools/<name>/src/lib.rs` to implement your tool logic
-2. Run `cargo check -p baml-tools-<name>` to verify compilation
-3. Run `cargo run -p baml-rt-builder --bin regen_fixtures` to update generated files
-
-**Tools requiring runtime context:**
-
-Most tools are auto-registered via inventory and need no extra setup. However, if your tool requires runtime context (e.g., agent name, manifest data), you'll need to manually add initialization code to:
-
-- `crates/baml-agent-runner/src/optional_tool_bundles.rs`
-- `crates/baml-rt-builder/src/optional_tool_bundles.rs`
-
-See the `memory` tool for an example of runtime initialization.
-
-**Validation rules:**
-
-- Name must be kebab-case (lowercase letters, numbers, hyphens)
-- Name cannot start or end with a hyphen
-- Name cannot contain consecutive hyphens
-- Reserved names: `test`, `lib`, `bin`, `build`, `dev`
-
----
-
-### `doctor`
-
-Validates workspace integrity with static checks and catalog validation.
-
-```bash
-cargo run -p cargo-agent-platform -- doctor [options]
-```
-
-**Options:**
-
-| Option | Description |
-|--------|-------------|
-| `--ci` | Exit non-zero on any issue (for CI pipelines) |
-| `--warn-missing-catalog` | Downgrade missing catalog entries from error to warning |
-
-**Layer 1 - Static checks (file-based):**
-
-1. Every tool crate in `crates/tools/` is listed in workspace `Cargo.toml` members
-2. Every tool crate has a matching dependency in `crates/baml-tool-links/Cargo.toml`
-3. Every tool crate has an entry in `force_link_all_tools!` macro
-4. Feature forwarding is configured in runner and builder `Cargo.toml`
-
-**Layer 2 - Catalog checks (requires compiled inventory):**
-
-5. Agent manifests reference tools that exist in the compiled inventory
-
-**Example output:**
-
-```
-Found workspace root: /path/to/agent-platform
-
-Layer 1: Static checks
-  ✓ clickup in workspace members
-  ✓ memory in workspace members
-  ✓ calculator in workspace members
-  ...
-  Found 8 tool crate(s)
-  ✓ clickup in baml-tool-links deps
-  ✓ clickup in force_link_all_tools! macro
-  ✓ clickup feature forwarding in runner
-  ✓ clickup feature forwarding in builder
-  ...
-
-Layer 2: Catalog checks
-  Found 20 tools in inventory
-
-✓ All checks passed!
-```
-
-**CI usage:**
-
-```bash
-cargo run -p cargo-agent-platform -- doctor --ci
-```
-
-This exits with code 1 if any issues are found, suitable for CI pipelines.
 
 ---
 
 ### `new-agent`
 
-Creates a new agent package with generated BAML prompts, TypeScript entry point, and type declarations.
-
-**Interactive Mode (recommended):**
+Creates a new agent package with generated BAML prompts, TypeScript entry point, and type declarations. Omit `name` for interactive mode.
 
 ```bash
-cargo run -p cargo-agent-platform -- new-agent
+cargo agent-platform new-agent [name] [options]
 ```
-
-When no name is provided, interactive mode guides you through the process:
-
-```
-? Agent name: intake-agent
-? Description (optional): Processes events from external sources
-? Template: planner - 3-phase: Intent -> Plan -> Execute
-? Select tools (Space to select, Enter to confirm):
-  [x] system/internal_a2a
-  [ ] system/discover_agents
-  [ ] support/clickup
-
-? Does this agent need to receive events? Yes
-? Select schema versions to subscribe to:
-  [x] task-daemon.interpretation.v1
-? Select source kinds to subscribe to:
-  [x] slack                (common)
-  [x] clickup              (common)
-  [ ] github_issues        (common)
-
-Summary:
-  Name:        intake-agent
-  Template:    planner
-  Description: Processes events from external sources
-  Tools:       system/internal_a2a
-  Subscriptions:
-    Schemas: task-daemon.interpretation.v1
-    Sources: slack, clickup
-  Output:      /path/to/agents/intake-agent
-
-Files to be created:
-  agents/intake-agent/
-    manifest.json
-    tsconfig.json
-    baml_src/
-      intake_agent_prompt.baml
-      generated_tools.baml (after type generation)
-    src/
-      index.ts
-      baml-runtime.d.ts (after type generation)
-
-? Proceed? (Y/n):
-```
-
-**Non-Interactive Mode:**
-
-```bash
-cargo run -p cargo-agent-platform -- new-agent <name> [options]
-```
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<name>` | Agent name in kebab-case (e.g., `github-agent`, `task-manager`). Omit for interactive mode. |
-
-**Options:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--tools <tools>` | - | Comma-separated tool IDs (e.g., `support/github,system/internal_a2a`) |
-| `--template <template>` | `simple` | Agent template: `simple`, `basic-tools`, `planner`, `coordinator` |
-| `--description <desc>` | `""` | Human-readable description for agent discovery |
-| `--subscriptions <sub>` | - | Event subscriptions (see Event Subscriptions below) |
+| `name` | *(interactive)* | Agent name in kebab-case (e.g. `github-agent`) |
+| `--tools <ids>` | — | Comma-separated tool IDs (e.g. `support/github,system/internal_a2a`) |
+| `--template <name>` | `simple` | `simple`, `basic-tools`, `planner`, `coordinator` |
+| `--description <text>` | `""` | Human-readable description for agent discovery |
+| `--tags <tags>` | — | Comma-separated manifest tags (e.g. `support,clickup,prod`) |
+| `--subscriptions <sub>` | — | Event subscriptions — format: `schema=<version>,sources=<kind1,kind2>` |
 | `--output <dir>` | `agents/<name>` | Target directory for the agent package |
-| `--dry-run` | - | Validate and preview changes without writing files (non-interactive only). Returns non-zero if validation fails. |
+| `--dry-run` | off | Preview changes without writing files (non-interactive only) |
 
 **Templates:**
 
-| Template | Description | Use Case |
-|----------|-------------|----------|
-| `simple` | Basic agent without tools | Q&A chatbots, summarizers |
-| `basic-tools` | Simple agent with tool support | Single-purpose tool agents |
-| `planner` | 3-phase architecture: Intent → Plan → Execute | Domain-specific agents (like clickup-agent) |
-| `coordinator` | Multi-agent delegator pattern | Routing to specialist agents |
+| Template | Description |
+|----------|-------------|
+| `simple` | Basic agent without tools — Q&A, summarizers |
+| `basic-tools` | Simple agent with tool support |
+| `planner` | 3-phase: Intent → Plan → Execute (based on clickup-agent) |
+| `coordinator` | Multi-agent delegator with DAG-based workflow execution |
 
-**Event Subscriptions:**
-
-Agents can subscribe to events dispatched by the host (e.g., from task-daemon polling Slack, ClickUp, etc.).
-
-Format: `--subscriptions "schema=<version>,sources=<kind1,kind2>"`
-
-Example:
-```bash
---subscriptions "schema=task-daemon.interpretation.v1,sources=slack,clickup"
-```
-
-This writes subscriptions to `manifest.json`:
-```json
-{
-  "discovery": {
-    "subscriptions": [
-      {
-        "schema_versions": ["task-daemon.interpretation.v1"],
-        "source_kinds": ["slack", "clickup"]
-      }
-    ]
-  }
-}
-```
-
-**Interactive mode:** When using interactive mode, the CLI prompts:
-1. "Does this agent need to receive events?" (Y/n)
-2. If yes, select schema versions from known options
-3. Select source kinds (auto-suggested from tools + common sources like slack, clickup, github_issues)
-
-Use `list-event-sources` to see available source kinds and schema versions.
-
-**Examples:**
+**What it creates:** `agents/<name>/manifest.json`, `tsconfig.json`, `baml_src/<name>_prompt.baml`, `src/index.ts`, and generated type files.
 
 ```bash
-# Interactive mode (recommended for new users)
-cargo run -p cargo-agent-platform -- new-agent
-
-# Preview what would be created (non-interactive)
-cargo run -p cargo-agent-platform -- new-agent github-agent --dry-run
-
-# Create a simple agent (no tools)
-cargo run -p cargo-agent-platform -- new-agent qa-bot --description "Q&A assistant"
-
-# Create an agent with tools using the planner template
-cargo run -p cargo-agent-platform -- new-agent github-agent \
+cargo agent-platform new-agent github-agent \
   --tools support/github,system/internal_a2a \
   --template planner \
   --description "GitHub issue and PR assistant"
 
-# Create a coordinator agent (automatically includes system tools)
-cargo run -p cargo-agent-platform -- new-agent my-coordinator \
-  --template coordinator \
-  --description "Routes requests to specialist agents"
-
-# Create an agent that receives events from Slack and ClickUp
-cargo run -p cargo-agent-platform -- new-agent intake-agent \
+cargo agent-platform new-agent intake-agent \
   --tools system/internal_a2a \
   --template planner \
-  --subscriptions "schema=task-daemon.interpretation.v1,sources=slack,clickup" \
-  --description "Processes events from Slack and ClickUp"
-```
-
-**What it creates:**
-
-```
-agents/<name>/
-  manifest.json           # Agent metadata (name, version, tools, discovery)
-  tsconfig.json           # TypeScript configuration
-  baml_src/
-    <name>_prompt.baml    # BAML prompt functions (template-specific)
-    generated_tools.baml  # Auto-generated tool type interfaces
-    planner.baml          # (coordinator template only) Workflow planning
-  src/
-    index.ts              # TypeScript entry point (template-specific)
-    baml-runtime.d.ts     # Auto-generated TypeScript declarations
-```
-
-**Template Details:**
-
-**`simple` / `basic-tools`:**
-- Wraps the existing `run_bootstrap` from baml-rt-builder
-- Generates a single BAML function and simple `index.ts`
-- `basic-tools` is automatically selected when tools are specified with `simple`
-
-**`planner` (3-phase architecture):**
-- Based on the clickup-agent pattern
-- Generates three BAML functions:
-  - `Infer{Name}Intent` - Classifies user intent, asks for clarification, or rejects
-  - `Plan{Name}Work` - Generates a step plan from validated intent
-  - `Choose{Name}Action` - Executes one step at a time via `runGeneratedStepExecutor`
-- TypeScript includes intent loop with `awaitInput` for clarification
-
-**`coordinator` (multi-agent delegator):**
-- Based on the coordinator-agent pattern
-- Automatically includes tools: `system/discover_agents`, `system/discover_tools`, `system/internal_a2a`
-- Generates workflow planning and synthesis BAML functions
-- TypeScript includes DAG-based workflow execution with parallel node execution
-
-**After creating an agent:**
-
-1. Edit `src/index.ts` to customize your agent logic
-2. Edit `baml_src/<name>_prompt.baml` to customize BAML prompts
-3. Run `cargo run -p baml-rt-builder --bin baml-agent-builder` to package the agent
-
-**Default LLM client in generated templates:**
-
-Newly generated `simple`, `planner`, and `coordinator` templates use:
-
-```baml
-client DefaultClient {
-  provider openai-generic
-  options {
-    model "openai/gpt-4o-mini"
-    base_url "https://openrouter.ai/api/v1"
-    api_key env.OPENROUTER_API_KEY
-  }
-}
-```
-
-You can change this in your agent's `baml_src/*.baml` files.
-
----
-
-### `list-agents`
-
-Lists all agent packages in `agents/` and `tests/fixtures/agents/` with their manifest metadata.
-
-```bash
-cargo run -p cargo-agent-platform -- list-agents
-```
-
-**Output includes:**
-- Agent name
-- Version
-- Source (production or fixture)
-- Description (truncated)
-
-**Example output:**
-```
-NAME                         VERSION  SOURCE      DESCRIPTION
-claude-session-demo          1.0.0    production  Development agent that turns natural-language requirement...
-clickup-agent                1.0.0    production  Agent that interacts with ClickUp tasks and spaces
-coordinator-agent            1.0.0    production  Coordinator agent that delegates to specialist sub-agents...
-
-argument-chapman             1.0.0    fixture     Fixture: Monty Python argument sketch agent (responder)
-conversational-context-auto  1.0.0    fixture     Fixture: provenance-backed automatic conversation context...
-
-Total: 19 agent(s)
+  --subscriptions "schema=task-daemon.interpretation.v1,sources=slack,clickup"
 ```
 
 ---
 
 ### `build`
 
-Packages one or more agents into distributable tar.gz files. This wraps the `baml-agent-builder package` functionality with a more ergonomic CLI.
+Packages one or more agents into distributable tar.gz files. Omit names to build from the current directory.
 
 ```bash
-cargo run -p cargo-agent-platform -- build [names]... [options]
+cargo agent-platform build [names]... [options]
 ```
 
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `[names]...` | Agent names (looks in `agents/` directory). Omit to build current directory. |
-
-**Options:**
-
-| Option | Description |
-|--------|-------------|
-| `--path <path>` | Explicit path to agent directory (overrides name lookup, only valid with single agent) |
-| `-o, --output <dir>` | Output directory for tar.gz files (default: current directory) |
-
-**Examples:**
+| Option | Default | Description |
+|--------|---------|-------------|
+| `[names]...` | *(current dir)* | Agent names to look up in `agents/` |
+| `--path <path>` | — | Explicit agent directory path (single agent only) |
+| `-o, --output <dir>` | `.` | Output directory for tar.gz files |
 
 ```bash
-# Build a single agent by name (looks in agents/)
-cargo run -p cargo-agent-platform -- build github-agent
-
-# Build multiple agents at once
-cargo run -p cargo-agent-platform -- build clickup-agent notion-agent github-agent
-
-# Build with explicit path (single agent only)
-cargo run -p cargo-agent-platform -- build --path agents/clickup-agent
-
-# Build from current directory (when inside an agent directory)
-cd agents/my-agent && cargo run -p cargo-agent-platform -- build
-
-# Build with custom output directory
-cargo run -p cargo-agent-platform -- build github-agent -o /tmp/
-
-# Build multiple agents to a specific directory
-cargo run -p cargo-agent-platform -- build clickup-agent notion-agent -o ./dist/
+cargo agent-platform build clickup-agent notion-agent -o ./dist/
+cargo agent-platform build --path agents/clickup-agent
 ```
 
-**Example output:**
-```
-[1/4] Building agent 'github-agent'...
-      Source: /path/to/agents/github-agent
-      Output: /path/to/github-agent-1.0.0.tar.gz
-[2/4] Copying BAML sources...
-[3/4] Generating types and compiling TypeScript...
-
-📝 Generating runtime type declarations...
-
-⚙️  Compiling TypeScript...
-
-📦 Packaging agent...
-[4/4] Packaging complete.
-
-Agent packaged successfully!
-
-  Package: /path/to/github-agent-1.0.0.tar.gz
-```
-
-**What it does:**
-
-1. Resolves the agent directory (by name, path, or current directory)
-2. Reads `manifest.json` to get agent name and version
-3. Copies BAML sources to build directory
-4. Generates runtime type declarations (`baml-runtime.d.ts`)
-5. Compiles TypeScript with type checking
-6. Packages everything into a tar.gz archive
-
-**Output naming:**
-
-Each output file is named `<agent-name>-<version>.tar.gz`. By default, files are placed in the current working directory. Use `-o` to specify a different output directory.
-
-**Running packaged agents:**
-
-`cargo agent-platform build` only produces package archives. Runtime execution is documented separately in [`docs/agent-runner.md`](./agent-runner.md).
+Output: `<agent-name>-<version>.tar.gz`
 
 ---
 
 ### `publish`
 
-Publishes an agent **source directory** to repository `PublishCommand`. The repository/host side assigns version + canonical content hash, builds the deployable artifact, and stores it under that hash.
+Publishes an agent source directory to the repository. The repository assigns the version and content hash, builds the artifact, and stores it.
 
 ```bash
-cargo run -p cargo-agent-platform -- publish --agent-dir <path> [options]
+cargo agent-platform publish [options]
 ```
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `--agent-dir <path>` | Path to an agent source directory (`manifest.json` + `baml_src/`) |
-
-**Options:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--repository-url <url>` | `http://127.0.0.1:8080/repository` | Base URL where repository routes are mounted |
-| `--rationale <text>` | `published from source directory` | Change rationale sent in publish metadata |
-| `--origin <kind>` | `iteration` | Publish origin: `original` or `iteration` |
+| `--agent-dir <path>` | `.` | Path to agent source directory (`manifest.json` + `baml_src/`) |
+| `--repository-url <url>` | `http://127.0.0.1:8080/repository` | Repository base URL |
+| `--rationale <text>` | `published from source directory` | Change rationale in publish metadata |
+| `--origin <kind>` | `iteration` | `original` or `iteration` |
 
-**Flow:**
-
-1. Read source bundle from `--agent-dir`
-2. `POST /repository/publish` with repository `PublishCommand`
-3. Server assigns version + canonical source `content_hash`
-4. Server builds deployable artifact and stores it under `content_hash`
-
-**Important behavior:**
-
-- Tags are not accepted as a CLI option for publish.
-- Tags are derived from `manifest.json` in the source directory and become the source of truth.
-- The repository assigns the persisted version for the published entry.
-
-**Examples:**
+Tags are read from `manifest.json` — not accepted as a CLI flag.
 
 ```bash
-# Publish current directory
-cargo run -p cargo-agent-platform -- publish \
-  --agent-dir .
-
-# Publish to another repository URL
-cargo run -p cargo-agent-platform -- publish \
-  --agent-dir ./agents/notion-agent \
-  --repository-url http://127.0.0.1:8081/repository
-
-# Publish as an iteration with explicit rationale
-cargo run -p cargo-agent-platform -- publish \
-  --agent-dir ./agents/clickup-agent \
-  --origin iteration \
-  --rationale "Improved task sync reliability"
+cargo agent-platform publish --agent-dir ./agents/clickup-agent \
+  --origin iteration --rationale "Improved task sync reliability"
 ```
 
-**Example output:**
+Example output:
 ```
 Source published successfully.
   agent dir: agents/clickup-agent
-  url:       http://127.0.0.1:8080/repository/publish
   version:   clickup-agent@v3
   hash:      8b0d0973de403b3b32e9ff234d5b996b8250d9708f6f09b54178c843f19cde5c
 ```
 
-After publish, use deploy with the returned `hash` to activate the agent in a live runner instance.
-See [`docs/agent-runner.md`](./agent-runner.md) for the full deploy flow.
+Use the returned `hash` with `deploy`.
 
 ---
 
@@ -737,59 +187,46 @@ See [`docs/agent-runner.md`](./agent-runner.md) for the full deploy flow.
 Deploys a previously published content hash into a running `baml-agent-runner`.
 
 ```bash
-cargo run -p cargo-agent-platform -- deploy --hash <sha256> [--url http://127.0.0.1:8080]
+cargo agent-platform deploy [options]
 ```
-
-**Options:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--hash <sha256>` | - | Content hash returned by repository publish |
-| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL (without `/repository`) |
-
-**Example:**
+| `--hash <sha256>` | *(required)* | Content hash returned by `publish` |
+| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL |
 
 ```bash
-cargo agent-platform deploy \
-  --hash bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
+cargo agent-platform deploy --hash bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
 ```
 
 ---
 
 ### `undeploy`
 
-Undeploys an active package hash from a running `baml-agent-runner`.
+Removes an active package hash from a running `baml-agent-runner`.
 
 ```bash
-cargo run -p cargo-agent-platform -- undeploy --hash <sha256> [--url http://127.0.0.1:8080]
+cargo agent-platform undeploy [options]
 ```
-
-**Options:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--hash <sha256>` | - | Content hash of the deployed package |
-| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL (without `/repository`) |
-
-**Example:**
+| `--hash <sha256>` | *(required)* | Content hash of the deployed package |
+| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL |
 
 ```bash
-cargo agent-platform undeploy \
-  --hash bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
+cargo agent-platform undeploy --hash bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
 ```
 
 ---
 
 ### `list-deployed-instances`
 
-Lists currently loaded agent instances from a running `baml-agent-runner`
-(`GET /agents`) and prints package + instance routing keys.
+Lists currently loaded agent instances from a running runner (`GET /agents`).
 
 ```bash
-cargo run -p cargo-agent-platform -- list-deployed-instances [--url http://127.0.0.1:8080]
+cargo agent-platform list-deployed-instances [options]
 ```
-
-**Options:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -797,295 +234,146 @@ cargo run -p cargo-agent-platform -- list-deployed-instances [--url http://127.0
 
 ---
 
-### `regen`
+### `list-tools`
 
-Regenerates `generated_tools.baml` and `baml-runtime.d.ts` for agents in both `agents/` and `tests/fixtures/agents/`.
+Lists all registered tools from the compiled inventory.
 
 ```bash
-cargo run -p cargo-agent-platform -- regen [names]...
+cargo agent-platform list-tools
 ```
 
-**Arguments:**
+Output columns: `NAME`, `DESCRIPTION` (truncated), `TAGS`, `ACCESS` (Read/Write/None).
+
+---
+
+### `list-agents`
+
+Lists all agent packages found in `agents/` and `tests/fixtures/agents/`.
+
+```bash
+cargo agent-platform list-agents
+```
+
+Output columns: `NAME`, `VERSION`, `SOURCE` (production/fixture), `DESCRIPTION` (truncated).
+
+---
+
+### `list-event-sources`
+
+Lists event source kinds declared by tools and known schema versions for agent subscriptions.
+
+```bash
+cargo agent-platform list-event-sources
+```
+
+Use this to discover available source kinds and schema versions before creating agents with `--subscriptions`.
+
+---
+
+### `regen`
+
+Regenerates `generated_tools.baml` and `baml-runtime.d.ts` for agents. Omit names to regenerate all.
+
+```bash
+cargo agent-platform regen [names]...
+```
 
 | Argument | Description |
 |----------|-------------|
-| `[names]...` | Agent names to regenerate (omit for all agents) |
+| `[names]...` | Agent names to regenerate (omit for all in `agents/` + `tests/fixtures/agents/`) |
 
-**Examples:**
+Run after adding/modifying tools or BAML schemas, and before committing.
 
 ```bash
-# Regenerate all agents
-cargo run -p cargo-agent-platform -- regen
-
-# Regenerate a single agent
-cargo run -p cargo-agent-platform -- regen clickup-agent
-
-# Regenerate multiple specific agents
-cargo run -p cargo-agent-platform -- regen clickup-agent notion-agent argument-chapman
+cargo agent-platform regen
+cargo agent-platform regen clickup-agent notion-agent
 ```
 
-**What it does:**
+---
 
-1. Scans `agents/` and `tests/fixtures/agents/` for directories containing `baml_src/`
-2. If agent names are provided, filters to only those agents
-3. For each agent:
-   - Writes canonical `tsconfig.json`
-   - Runs the `RuntimeTypeGenerator` to produce `src/baml-runtime.d.ts`
-   - Syncs `generated_*.baml` files to the agent's `baml_src/` directory
-   - Removes stale `generated_*.baml` files no longer emitted
+### `doctor`
 
-**Example output (all agents):**
-```
-[regen] Regenerating 7 agents in agents...
-  -> claude-session-demo... ok
-  -> clickup-agent... ok
-  -> coordinator-agent... ok
-  ...
-[regen] Regenerating 13 agents in fixtures...
-  -> argument-chapman... ok
-  -> conversational-context-auto... ok
-  ...
+Validates workspace integrity across two layers:
 
-Done! Regenerated 20 agent(s)
-```
+1. **Static checks** — tool crates in workspace members, `baml-tool-links` deps, `force_link_all_tools!` entries, feature forwarding in runner/builder.
+2. **Catalog checks** — agent manifests reference tools that exist in the compiled inventory.
 
-**Example output (specific agent):**
-```
-[regen] Regenerating 1 agent(s) in agents...
-  -> clickup-agent... ok
-
-Done! Regenerated 1 agent(s)
-```
-
-**When to run:**
-- After adding or modifying tools
-- After changing tool metadata (description, tags, etc.)
-- After modifying BAML schemas that affect type generation
-- Before committing changes that touch tool definitions
-
-**CI usage:**
-
-The `regen` command is equivalent to running:
 ```bash
-cargo run -p baml-rt-builder --features http-tools,memory --bin regen_fixtures
+cargo agent-platform doctor [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--ci` | Exit non-zero on any issue (for CI pipelines) |
+| `--warn-missing-catalog` | Downgrade missing catalog entries from error to warning |
+
+```bash
+cargo agent-platform doctor --ci
 ```
 
 ---
 
-## Generated Tool Template
+### `chat`
 
-When you run `new-tool`, the generated `lib.rs` includes:
+Interactive terminal chat with a deployed agent. Discovers available agents via `GET /agents`, validates the target, then opens a REPL loop sending JSON-RPC `message.sendStream` requests.
 
-- Input/Output structs with required derives (`BamlType` for BAML + TS + JSON Schema generation)
-- Error type with `From<Error> for BamlRtError` implementation
-- Tool struct with `#[baml_tool(...)]` attribute
-- `BamlTool` trait implementation with placeholder logic
-
-The generated code follows the patterns established by existing tools like `calculator`, `clickup`, and `notion`.
-
----
-
-## Troubleshooting
-
-### "Tool already exists"
-
-If you see this error, the tool crate directory already exists. Either:
-- Choose a different name
-- Delete the existing crate if it was a failed attempt
-
-### Patches fail to apply
-
-All patches are transactional - if any patch fails, all changes are rolled back. Common causes:
-- TOML parsing errors in target files
-- Missing expected sections (e.g., `[features]`)
-
-Run `doctor` to verify workspace integrity after any manual edits.
-
-### Tool not appearing in `list-tools`
-
-Ensure:
-1. The tool crate compiles (`cargo check -p baml-tools-<name>`)
-2. The `force_link_all_tools!` macro includes the tool
-3. The feature is enabled when building the CLI
-
-Run `doctor` to diagnose missing linkage.
-
-### Agent not appearing in `list-agents`
-
-Ensure:
-1. The agent directory contains a `manifest.json` file
-2. The manifest is valid JSON with required fields (`name`, `version`, `entry_point`)
-3. The agent is in either `agents/` or `tests/fixtures/agents/`
-
-### `new-agent` fails with "Directory already exists"
-
-The target directory must be empty or non-existent. Either:
-- Choose a different name or output directory
-- Delete the existing directory if it was a failed attempt
-
-### `regen` fails for an agent
-
-Common causes:
-- Missing or invalid `baml_src/` directory
-- BAML syntax errors in prompt files
-- Missing `manifest.json`
-
-Check the error message for the specific agent and fix the underlying issue.
-
----
-
-## Agent Templates in Detail
-
-### Planner Template Architecture
-
-The planner template implements a 3-phase architecture inspired by the clickup-agent:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Phase 1: Intent                          │
-│  Infer{Name}Intent(user_message) →                         │
-│    NeedClarification | NotRelevant | {Name}Intent          │
-│                                                             │
-│  - Classifies user message                                  │
-│  - Asks clarifying questions via awaitInput                 │
-│  - Rejects irrelevant requests                              │
-│  - Distills clean intent statement                          │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                    Phase 2: Planning                        │
-│  Plan{Name}Work(intent, operation_kind) → {Name}Plan       │
-│                                                             │
-│  - Generates step plan from validated intent                │
-│  - Steps have kinds: navigate, execute, format              │
-│  - No data fetching or execution in this phase              │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                    Phase 3: Execution                       │
-│  Choose{Name}Action(goal, step_description, ...) →         │
-│    FinalResponse | {ToolName}SessionPlan                   │
-│                                                             │
-│  - Called via runGeneratedStepExecutor in a ReAct loop     │
-│  - Executes one step at a time                              │
-│  - Threads prior results forward to subsequent steps        │
-└─────────────────────────────────────────────────────────────┘
+```bash
+cargo agent-platform chat --agent <name> [options]
 ```
 
-### Coordinator Template Architecture
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--agent <name>` | *(required)* | Agent name or package from discovery |
+| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL |
+| `--instance <id>` | `default` | Agent instance identifier |
+| `-v, --verbose` | off | Print debug info (message IDs, context IDs, raw errors) |
 
-The coordinator template implements a multi-agent delegation pattern:
+Type your message and press Enter. Exit with `quit`, `exit`, `/quit`, `/exit`, or Ctrl+D.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    1. Discovery                             │
-│  discoverAgents(userText) via system/discover_agents        │
-│                                                             │
-│  - Finds all available specialist agents                    │
-│  - Filters out self (coordinator) and non-default instances │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                    2. Planning                              │
-│  PlanCoordinatorWorkflow(user_message, available_agents)   │
-│    → WorkflowPlan { goal, nodes[], final_node_id }         │
-│                                                             │
-│  Node kinds:                                                │
-│    - call_agent: Delegate to specialist via system/internal_a2a │
-│    - foreach: Fan-out over items from upstream              │
-│    - synthesize: Merge prior node outputs                   │
-│    - clarify: Ask user for clarification                    │
-│    - direct_answer: Respond without delegation              │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                    3. Execution                             │
-│  executeWorkflow(plan, artifacts)                           │
-│                                                             │
-│  - Topological sort for dependency ordering                 │
-│  - Parallel execution with concurrency limit                │
-│  - Clarify nodes suspend execution via awaitInput           │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                    4. Synthesis                             │
-│  SynthesizeCoordinatorResponse(user_message, transcript)   │
-│    → CoordinatorAnswer { answer, goals, sources, ... }     │
-│                                                             │
-│  - Aggregates evidence from all workflow nodes              │
-│  - Produces structured response with confidence score       │
-└─────────────────────────────────────────────────────────────┘
+```bash
+cargo agent-platform chat --agent clickup-agent
+cargo agent-platform chat --agent clickup-agent --instance default --verbose
 ```
 
 ---
 
 ## CI Integration
 
-### Recommended CI Steps
-
 ```yaml
-# 1. Check generated files are up to date
 - name: Regenerate type declarations
   run: cargo run -p cargo-agent-platform -- regen
 
-- name: Check for uncommitted changes
+- name: Check for stale generated files
   run: |
     if ! git diff --quiet -- 'agents/' 'tests/fixtures/agents/'; then
       echo "::error::Generated files are stale. Run 'cargo agent-platform regen' and commit."
       exit 1
     fi
 
-# 2. Validate workspace integrity
 - name: Workspace integrity check
   run: cargo run -p cargo-agent-platform -- doctor --ci
 ```
 
-### justfile Shortcuts
+---
 
-```just
-# Canonical feature set for CI
-ci-tool-features := "http-tools,memory"
+## Troubleshooting
 
-# SDK CLI shortcuts
-new-tool name bundle='support':
-    cargo run -p cargo-agent-platform -- new-tool {{name}} --bundle {{bundle}}
-
-new-agent name *args:
-    cargo run -p cargo-agent-platform -- new-agent {{name}} {{args}}
-
-regen:
-    cargo run -p cargo-agent-platform -- regen
-
-doctor:
-    cargo run -p cargo-agent-platform -- doctor
-
-doctor-ci:
-    cargo run -p cargo-agent-platform -- doctor --ci
-
-list-tools:
-    cargo run -p cargo-agent-platform -- list-tools
-
-list-agents:
-    cargo run -p cargo-agent-platform -- list-agents
-
-list-event-sources:
-    cargo run -p cargo-agent-platform -- list-event-sources
-
-build +names:
-    cargo run -p cargo-agent-platform -- build {{names}}
-
-# Run agents directly with baml-agent-runner (requires building with features)
-run-agent *args:
-    ./target/release/baml-agent-runner {{args}}
-```
+| Symptom | Fix |
+|---------|-----|
+| `Tool already exists` | Choose a different name or delete the failed crate directory |
+| Patches fail to apply | Patches are transactional — all rolled back on failure. Run `doctor` to diagnose. |
+| Tool not in `list-tools` | Check it compiles, is in `force_link_all_tools!`, and the feature is enabled |
+| Agent not in `list-agents` | Ensure `manifest.json` exists with valid `name`, `version`, `entry_point` fields |
+| `new-agent` fails with "Directory already exists" | Choose a different name/output or delete the existing directory |
+| `regen` fails for an agent | Check for missing/invalid `baml_src/`, BAML syntax errors, or missing `manifest.json` |
+| `chat` fails "Agent target not found" | Run `list-deployed-instances` to see valid agent/instance combinations |
 
 ---
 
 ## See Also
 
-- `sdk_plan.md` - Full implementation roadmap and design decisions
-- `docs/host-to-agent-event-delivery.md` - Event delivery model and subscriptions
-- `CLAUDE.md` - Agent platform architecture and conventions
-- `agents/clickup-agent/` - Reference implementation for planner template
-- `agents/coordinator-agent/` - Reference implementation for coordinator template
-- `agents/workflow-intake-agent/` - Reference implementation for event-consuming agent
+- `docs/host-to-agent-event-delivery.md` — Event delivery model and subscriptions
+- `docs/agent-runner.md` — Running and managing the agent runner
+- `CLAUDE.md` — Architecture overview and Rust conventions
+- `agents/clickup-agent/` — Reference implementation for the `planner` template
+- `agents/coordinator-agent/` — Reference implementation for the `coordinator` template
