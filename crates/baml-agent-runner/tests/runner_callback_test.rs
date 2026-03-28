@@ -174,22 +174,30 @@ async fn post_a2a_sse_collect(
     Ok(responses)
 }
 
+struct CallbackScheduleRequest<'a> {
+    task_id: &'a TaskId,
+    context_id: &'a ContextId,
+    message_id: &'a str,
+    request_id: &'a str,
+    mode: &'a str,
+    token: &'a str,
+}
+
 async fn invoke_callback_schedule(
     client: &reqwest::Client,
     base_url: &str,
-    task_id: &TaskId,
-    context_id: &ContextId,
-    message_id: &str,
-    request_id: &str,
-    mode: &str,
-    token: &str,
+    callback: CallbackScheduleRequest<'_>,
 ) -> Vec<Value> {
     let request = send_stream_request_with_task(
-        message_id,
-        &format!("schedule-callback {mode} {token}"),
-        request_id,
-        Some(context_id.clone()),
-        Some(task_id.clone()),
+        callback.message_id,
+        &format!(
+            "schedule-callback {mode} {token}",
+            mode = callback.mode,
+            token = callback.token
+        ),
+        callback.request_id,
+        Some(callback.context_id.clone()),
+        Some(callback.task_id.clone()),
     );
     let a2a_url = format!("{base_url}/agents/dispatch-echo/default/a2a/sse");
     post_a2a_sse_collect(client, &a2a_url, &request)
@@ -269,12 +277,14 @@ async fn runner_callback_delivery_honors_continuation_policy() {
     let detached_responses = invoke_callback_schedule(
         &client,
         &runner.base_url,
-        &detached_task_id,
-        &detached_context_id,
-        "dispatch-echo-detached-msg",
-        "corr-1735720000000-41",
-        "detached",
-        &detached_token,
+        CallbackScheduleRequest {
+            task_id: &detached_task_id,
+            context_id: &detached_context_id,
+            message_id: "dispatch-echo-detached-msg",
+            request_id: "corr-1735720000000-41",
+            mode: "detached",
+            token: &detached_token,
+        },
     )
     .await;
     let detached_texts = message_texts_from_chunks(&chunks_from_responses(&detached_responses));
@@ -309,12 +319,14 @@ async fn runner_callback_delivery_honors_continuation_policy() {
     let resumed_responses = invoke_callback_schedule(
         &client,
         &runner.base_url,
-        &resumed_task_id,
-        &resumed_context_id,
-        "dispatch-echo-resume-msg",
-        "corr-1735720000000-42",
-        "resume_current_task",
-        &resumed_token,
+        CallbackScheduleRequest {
+            task_id: &resumed_task_id,
+            context_id: &resumed_context_id,
+            message_id: "dispatch-echo-resume-msg",
+            request_id: "corr-1735720000000-42",
+            mode: "resume_current_task",
+            token: &resumed_token,
+        },
     )
     .await;
     let resumed_texts = message_texts_from_chunks(&chunks_from_responses(&resumed_responses));
@@ -338,6 +350,56 @@ async fn runner_callback_delivery_honors_continuation_policy() {
         &runner.base_url,
         Some(&resumed_context_id),
         Some(&resumed_task_id),
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn runner_callback_resume_current_task_defers_immediate_delivery_until_turn_completes() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    ensure_fixture_runtime_types();
+
+    let package_path =
+        build_agent_package_archive_to_temp(agent_fixture("dispatch-echo"), "dispatch-echo").await;
+    let _package_cleanup = TempFileCleanup::new(package_path.clone());
+
+    let runner = RunningRunnerProcess::start(&[package_path], 1).await;
+    let client = reqwest::Client::new();
+
+    let task_id = TaskId::from_external(ExternalId::new("dispatch-echo-immediate-resume-task"));
+    let context_id = ContextId::new(731, 1);
+    let token = format!("immediateresume{}", uuid::Uuid::new_v4().simple());
+
+    // The fixture schedules this callback with afterMs=0. The host must defer
+    // delivery until the scheduling stream has quiesced, otherwise the original
+    // request can stall before returning its final assistant message.
+    let responses = invoke_callback_schedule(
+        &client,
+        &runner.base_url,
+        CallbackScheduleRequest {
+            task_id: &task_id,
+            context_id: &context_id,
+            message_id: "dispatch-echo-immediate-resume-msg",
+            request_id: "corr-1735720000000-43",
+            mode: "resume_current_task",
+            token: &token,
+        },
+    )
+    .await;
+    let texts = message_texts_from_chunks(&chunks_from_responses(&responses));
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("scheduled callback resume_current_task")),
+        "expected immediate resume callback scheduling confirmation, got texts={texts:?} responses={responses:?}"
+    );
+
+    wait_for_provenance_tool_call_status(
+        &client,
+        &runner.base_url,
+        Some(&context_id),
+        Some(&task_id),
         true,
     )
     .await;

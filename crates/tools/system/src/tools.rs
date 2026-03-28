@@ -207,7 +207,7 @@ pub struct CallbackScheduleInput {
     pub dedupe_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[baml(
-        description = "Optional continuation policy. Omit it for a detached callback. Use `resume_current_task` to re-enter the current task later in the same context."
+        description = "Optional continuation policy. Omit it for a detached callback. Use `resume_current_task` to re-enter the current task later in the same context after the current turn has quiesced."
     )]
     pub continuation: Option<CallbackContinuationMode>,
 }

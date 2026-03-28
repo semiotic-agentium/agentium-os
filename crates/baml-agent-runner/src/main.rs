@@ -72,7 +72,10 @@ use baml_tools_notion as _;
 use baml_tools_security_eval as _;
 #[cfg(feature = "slack")]
 use baml_tools_slack as _;
-use baml_tools_system::SystemBundle;
+use baml_tools_system::{
+    SystemBundle,
+    callback_delivery_gate::{CallbackDeliveryGate, install_callback_delivery_gate},
+};
 use clap::Parser;
 use serde_json::Value;
 use tokio::{
@@ -516,6 +519,33 @@ impl AgentRunner {
         let count = guard.len();
         drop(guard);
         tracing::info!(agent = %name, total_agents = count, "Runner: agent inserted (discovery will see this count)");
+    }
+
+    async fn requesting_task_still_in_flight(
+        &self,
+        requesting_agent_id: &str,
+        context_id: &ContextId,
+        task_id: &TaskId,
+    ) -> bool {
+        let agent = {
+            let routed_agents = self.routed_agents.read().expect("RwLock poison");
+            routed_agents
+                .values()
+                .find(|agent| agent.agent_id().as_str() == requesting_agent_id)
+                .cloned()
+        };
+        match agent {
+            Some(agent) => agent.has_in_flight_turn(context_id, Some(task_id)).await,
+            None => {
+                warn!(
+                    requesting_agent_id,
+                    context_id = %context_id,
+                    task_id = %task_id,
+                    "system/callback could not find requesting agent while evaluating continuation deferral"
+                );
+                false
+            }
+        }
     }
 
     async fn fetch_blob_from_repository(
@@ -1104,6 +1134,29 @@ impl DeploymentManager for AgentRunner {
 
 /// Thin wrapper so we can pass the runner as `Arc<dyn AgentRegistry>` to the HTTP API.
 pub(crate) struct RunnerRegistry(pub(crate) Arc<AgentRunner>);
+
+struct RunnerCallbackDeliveryGate {
+    runner: Arc<AgentRunner>,
+}
+
+#[async_trait]
+impl CallbackDeliveryGate for RunnerCallbackDeliveryGate {
+    async fn can_emit_callback(
+        &self,
+        callback: &baml_tools_system::callback_store::StoredCallback,
+    ) -> Result<bool> {
+        let Some(requesting_agent_id) = callback.requesting_agent_id.as_deref() else {
+            return Ok(true);
+        };
+        let (Some(context_id), Some(task_id)) = (&callback.context_id, &callback.task_id) else {
+            return Ok(true);
+        };
+        Ok(!self
+            .runner
+            .requesting_task_still_in_flight(requesting_agent_id, context_id, task_id)
+            .await)
+    }
+}
 
 impl AgentLister for RunnerRegistry {
     fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
@@ -2551,6 +2604,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let ready = builder.build();
+    install_callback_delivery_gate(Arc::new(RunnerCallbackDeliveryGate {
+        runner: ready.runner(),
+    }));
 
     if let Some((agent_name, function_name, json_args)) = config.invoke {
         let args_value: Value =

@@ -14,6 +14,7 @@ use serde_json::json;
 use tracing::{debug, warn};
 
 use crate::{
+    callback_delivery_gate::callback_delivery_gate,
     callback_store::{StoredCallback, callback_store},
     callback_time::callback_now_unix_ms,
 };
@@ -135,6 +136,27 @@ impl EventProducer for CallbackEventProducer {
                 MAX_CALLBACKS_PER_POLL,
             )
             .await?;
+        let due_callbacks = if let Some(gate) = callback_delivery_gate() {
+            let mut deliverable = Vec::with_capacity(due_callbacks.len());
+            let mut deferred_count = 0usize;
+            for callback in due_callbacks {
+                if gate.can_emit_callback(&callback).await? {
+                    deliverable.push(callback);
+                } else {
+                    deferred_count += 1;
+                }
+            }
+            if deferred_count > 0 {
+                debug!(
+                    deferred_count,
+                    deliverable_count = deliverable.len(),
+                    "system/callback deferred due callbacks until host delivery gate opens"
+                );
+            }
+            deliverable
+        } else {
+            due_callbacks
+        };
         let due_callback_ids = due_callbacks
             .iter()
             .map(|callback| callback.callback_id.clone())

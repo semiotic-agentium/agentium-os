@@ -9,6 +9,7 @@
 mod a2a_session;
 pub mod bundle;
 mod callback_bundle;
+pub mod callback_delivery_gate;
 pub mod callback_producer;
 pub mod callback_store;
 pub mod callback_time;

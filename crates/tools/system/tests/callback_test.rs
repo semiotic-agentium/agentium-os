@@ -16,6 +16,9 @@ use baml_rt_core::{
 use baml_rt_tools::{EventProducerBuildContext, ProducerCheckpoint, ToolRegistry, ToolStep};
 use baml_tools_system::{
     CallbackToolInput, SystemBundle,
+    callback_delivery_gate::{
+        CallbackDeliveryGate, clear_callback_delivery_gate, install_callback_delivery_gate,
+    },
     callback_producer::{
         CALLBACK_EVENT_ROUTING_KEY, CALLBACK_EVENT_SCHEMA_VERSION, CALLBACK_SOURCE_KIND,
         build_callback_event_producers,
@@ -121,6 +124,15 @@ fn expect_error_message(step: ToolStep) -> String {
     }
 }
 
+struct CallbackGlobalsCleanup;
+
+impl Drop for CallbackGlobalsCleanup {
+    fn drop(&mut self) {
+        clear_callback_store();
+        clear_callback_delivery_gate();
+    }
+}
+
 #[derive(Clone)]
 struct MemoryCallbackStore {
     next_id: Arc<AtomicU64>,
@@ -146,6 +158,17 @@ impl Default for MemoryCallbackStore {
 impl MemoryCallbackStore {
     async fn snapshot(&self) -> Vec<MemoryCallbackRow> {
         self.rows.lock().await.clone()
+    }
+}
+
+struct ToggleDeliveryGate {
+    allow: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait]
+impl CallbackDeliveryGate for ToggleDeliveryGate {
+    async fn can_emit_callback(&self, _callback: &StoredCallback) -> Result<bool> {
+        Ok(self.allow.load(Ordering::Relaxed))
     }
 }
 
@@ -1017,6 +1040,7 @@ async fn callback_producer_returns_empty_when_store_is_not_installed() {
 async fn callback_producer_errors_on_invalid_stored_source_key() {
     let _suite_guard = suite_lock().lock().await;
     clear_callback_store();
+    clear_callback_delivery_gate();
     let store = Arc::new(MemoryCallbackStore::default());
     install_callback_store(store.clone());
 
@@ -1056,6 +1080,76 @@ async fn callback_producer_errors_on_invalid_stored_source_key() {
     }
 
     clear_callback_store();
+    clear_callback_delivery_gate();
+}
+
+#[tokio::test]
+async fn callback_producer_defers_until_delivery_gate_opens() {
+    let _suite_guard = suite_lock().lock().await;
+    let _cleanup = CallbackGlobalsCleanup;
+    clear_callback_store();
+    clear_callback_delivery_gate();
+    let store = Arc::new(MemoryCallbackStore::default());
+    install_callback_store(store.clone());
+    let allow = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    install_callback_delivery_gate(Arc::new(ToggleDeliveryGate {
+        allow: allow.clone(),
+    }));
+
+    let scheduled = store
+        .schedule_callback(ScheduleCallbackRequest {
+            source_key: "workflow-intake:resume".to_string(),
+            dedupe_key: Some("resume-now".to_string()),
+            payload: json!({"goal": "resume"}),
+            scheduled_for_unix_ms: 0,
+            requested_at_unix_ms: 0,
+            context_id: Some(test_context_id()),
+            task_id: Some(test_task_id()),
+            requesting_agent_id: Some(test_agent_id().as_str().to_string()),
+            requesting_message_id: None,
+        })
+        .await
+        .unwrap();
+
+    let producers = build_callback_event_producers(EventProducerBuildContext {
+        metadata: system_callback_metadata(),
+        config: None,
+        persisted_checkpoints: Arc::new(HashMap::new()),
+    })
+    .await
+    .unwrap();
+    assert_eq!(producers.len(), 1);
+
+    let first_poll = producers[0]
+        .poll(&ProducerCheckpoint::none())
+        .await
+        .unwrap();
+    assert!(
+        first_poll.events.is_empty(),
+        "callback should stay deferred"
+    );
+    assert!(
+        first_poll.checkpoint.value().is_none(),
+        "deferral should not advance checkpoint"
+    );
+    let rows_after_deferral = store.snapshot().await;
+    assert_eq!(rows_after_deferral.len(), 1);
+    assert_eq!(rows_after_deferral[0].status, "pending");
+    assert!(
+        rows_after_deferral[0].emitted_at_unix_ms.is_none(),
+        "deferred callback must remain unemitted"
+    );
+
+    allow.store(true, Ordering::Relaxed);
+    let second_poll = producers[0]
+        .poll(&ProducerCheckpoint::none())
+        .await
+        .unwrap();
+    assert_eq!(second_poll.events.len(), 1);
+    assert_eq!(
+        second_poll.events[0].messages[0]["callback_id"].as_str(),
+        Some(scheduled.callback.callback_id.as_str())
+    );
 }
 
 #[tokio::test]
