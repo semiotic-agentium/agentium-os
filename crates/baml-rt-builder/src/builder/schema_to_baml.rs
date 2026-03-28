@@ -20,6 +20,25 @@ fn custom_baml_type(schema_obj: &serde_json::Map<String, Value>) -> Option<&str>
         .filter(|value| *value == OPAQUE_JSON_BAML_TYPE)
 }
 
+fn schema_snippet(schema: &Value) -> String {
+    let compact =
+        serde_json::to_string(schema).unwrap_or_else(|_| "<unserializable schema>".to_string());
+    const MAX_LEN: usize = 200;
+    if compact.len() <= MAX_LEN {
+        compact
+    } else {
+        format!("{prefix}...", prefix = &compact[..MAX_LEN - 3])
+    }
+}
+
+fn unsupported_json_schema(detail: impl AsRef<str>, schema: &Value) -> BamlBuilderError {
+    let detail = detail.as_ref();
+    let schema = schema_snippet(schema);
+    BamlBuilderError::InvalidArgument(format!(
+        "unsupported JSON Schema for generated BAML: {detail}; schema={schema}. Use baml_rt_tools::OpaqueJson for opaque JSON payloads."
+    ))
+}
+
 /// Generate BAML type definitions from JSON schemas
 pub fn generate_baml_types_from_schemas(
     schemas: &HashMap<String, Value>,
@@ -236,6 +255,27 @@ fn generate_baml_type(
     if let Some(Value::String(schema_type)) = schema_obj.get("type")
         && schema_type == "object"
     {
+        if is_map_schema(schema_obj) {
+            let baml_type = json_schema_to_baml_type(
+                output,
+                schema,
+                generated,
+                all_schemas,
+                type_names,
+                Some((type_name, "Value")),
+            )?;
+            write_line(output, &format!("type {type_name} = {baml_type}"))?;
+            write_line(output, "")?;
+            return Ok(());
+        }
+        if !is_inline_object_schema(schema_obj) {
+            return Err(unsupported_json_schema(
+                format!(
+                    "Cannot generate BAML type for {type_name}: object schema without properties or additionalProperties"
+                ),
+                schema,
+            ));
+        }
         generate_baml_class(
             output,
             type_name,
@@ -249,6 +289,14 @@ fn generate_baml_type(
 
     // Fallback: try to infer from properties
     if schema_obj.contains_key("properties") {
+        if !is_inline_object_schema(schema_obj) {
+            return Err(unsupported_json_schema(
+                format!(
+                    "Cannot generate BAML type for {type_name}: object schema declares empty properties"
+                ),
+                schema,
+            ));
+        }
         generate_baml_class(
             output,
             type_name,
@@ -588,10 +636,11 @@ fn json_schema_to_baml_type(
     type_names: &HashMap<String, String>,
     inline_name_hint: Option<(&str, &str)>,
 ) -> Result<String> {
-    // Schemars may emit boolean schemas (`true`/`false`) for fully open/closed forms,
-    // especially when serializing untyped JSON payloads.
     if schema.is_boolean() {
-        return Ok("string".to_string());
+        return Err(unsupported_json_schema(
+            "boolean schemas cannot be represented in generated BAML",
+            schema,
+        ));
     }
     let schema_obj = schema
         .as_object()
@@ -687,7 +736,10 @@ fn json_schema_to_baml_type(
                                     "map<string, string>".to_string()
                                 }
                             } else {
-                                "string".to_string()
+                                return Err(unsupported_json_schema(
+                                    "object unions without properties or additionalProperties cannot be represented in generated BAML",
+                                    schema,
+                                ));
                             }
                         }
                         "array" => {
@@ -702,10 +754,18 @@ fn json_schema_to_baml_type(
                                 )?;
                                 format!("{}[]", item_type)
                             } else {
-                                "string[]".to_string()
+                                return Err(unsupported_json_schema(
+                                    "array schema is missing `items`",
+                                    schema,
+                                ));
                             }
                         }
-                        _other => "string".to_string(),
+                        other => {
+                            return Err(unsupported_json_schema(
+                                format!("unknown JSON Schema type `{other}`"),
+                                schema,
+                            ));
+                        }
                     }
                 }
                 Value::Object(_) => json_schema_to_baml_type(
@@ -716,12 +776,17 @@ fn json_schema_to_baml_type(
                     type_names,
                     inline_name_hint,
                 )?,
-                _ => "string".to_string(),
+                _ => {
+                    return Err(unsupported_json_schema(
+                        "non-string entry inside `type` array",
+                        value,
+                    ));
+                }
             };
             mapped.push(mapped_type);
         }
         if mapped.is_empty() {
-            return Ok("string".to_string());
+            return Ok("null".to_string());
         }
         if mapped.len() == 1 {
             return Ok(mapped.remove(0));
@@ -798,7 +863,10 @@ fn json_schema_to_baml_type(
                 )?;
                 return Ok(format!("{}[]", item_type));
             }
-            return Ok("string[]".to_string());
+            return Err(unsupported_json_schema(
+                "array schema is missing `items`",
+                schema,
+            ));
         }
 
         // Handle scalar primitive types
@@ -831,7 +899,10 @@ fn json_schema_to_baml_type(
                 )?;
                 return Ok(format!("map<string, {value_type}>"));
             }
-            return Ok("string".to_string());
+            return Err(unsupported_json_schema(
+                "object schema without properties or additionalProperties cannot be represented in generated BAML",
+                schema,
+            ));
         }
 
         return Ok(match type_str {
@@ -843,17 +914,27 @@ fn json_schema_to_baml_type(
             "number" => "float".to_string(),
             "boolean" => "bool".to_string(),
             "null" => "null".to_string(),
-            _ => "string".to_string(),
+            other => {
+                return Err(unsupported_json_schema(
+                    format!("unknown JSON Schema type `{other}`"),
+                    schema,
+                ));
+            }
         });
     }
 
     // Handle enum
     if schema_obj.contains_key("enum") {
-        // This should have been handled by generate_baml_enum
-        return Ok("string".to_string()); // Fallback
+        return Err(unsupported_json_schema(
+            "enum schema could not be normalized into a generated BAML enum",
+            schema,
+        ));
     }
 
-    Ok("string".to_string())
+    Err(unsupported_json_schema(
+        "schema is missing a supported type discriminator",
+        schema,
+    ))
 }
 
 fn to_pascal_case(s: &str) -> String {
