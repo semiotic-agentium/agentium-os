@@ -371,6 +371,50 @@ async fn callback_tool_resume_current_task_preserves_task_continuity() {
 }
 
 #[tokio::test]
+async fn callback_tool_accepts_opaque_json_wrapper_payloads() {
+    let _suite_guard = suite_lock().lock().await;
+    clear_callback_store();
+    let store = Arc::new(MemoryCallbackStore::default());
+    install_callback_store(store.clone());
+
+    let registry = test_registry();
+    let context_id = test_context_id();
+    let task_id = test_task_id();
+    let agent_id = test_agent_id();
+
+    let output = expect_done_output(
+        invoke_callback_tool(
+            registry.as_ref(),
+            &context_id,
+            &agent_id,
+            Some(&task_id),
+            json!({
+                "op": "schedule",
+                "afterMs": 250,
+                "sourceKey": "workflow-intake:follow-up",
+                "payload": {
+                    "__baml_opaque_json": "{\"kind\":\"wrapped\",\"count\":2}"
+                }
+            }),
+        )
+        .await,
+    );
+    assert_eq!(output["outcome"], "scheduled");
+
+    let rows = store.snapshot().await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].callback.payload,
+        json!({
+            "kind": "wrapped",
+            "count": 2
+        })
+    );
+
+    clear_callback_store();
+}
+
+#[tokio::test]
 async fn callback_tool_dedupe_is_scoped_per_source_key() {
     let _suite_guard = suite_lock().lock().await;
     clear_callback_store();

@@ -2,9 +2,11 @@
 
 use baml_derive::BamlType;
 use baml_rt_core::ids::{AgentId, ContextId, TaskId};
-use baml_rt_tools::tools::{HistoryContextV1, SessionReadEnvelope, SessionReadMode};
+use baml_rt_tools::{
+    OpaqueJson,
+    tools::{HistoryContextV1, SessionReadEnvelope, SessionReadMode},
+};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct InternalA2aTarget {
@@ -113,7 +115,7 @@ pub struct CallbackScheduleInput {
     )]
     pub source_key: String,
     #[baml(description = "Opaque JSON payload delivered back through onDispatch.")]
-    pub payload: Value,
+    pub payload: OpaqueJson,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[baml(
         description = "Optional idempotency key scoped to the sourceKey. A pending callback with the same sourceKey + dedupeKey is reused instead of creating another row."

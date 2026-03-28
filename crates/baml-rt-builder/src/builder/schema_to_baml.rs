@@ -4,12 +4,20 @@
 
 use std::collections::{HashMap, HashSet};
 
+use baml_rt_tools::{OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY};
 use serde_json::Value;
 
 use crate::builder::error::{BamlBuilderError, Result, write_line};
 
 fn escape_baml_string(value: &str) -> String {
     value.chars().flat_map(|c| c.escape_default()).collect()
+}
+
+fn custom_baml_type(schema_obj: &serde_json::Map<String, Value>) -> Option<&str> {
+    schema_obj
+        .get(OPAQUE_JSON_SCHEMA_MARKER_KEY)
+        .and_then(Value::as_str)
+        .filter(|value| *value == OPAQUE_JSON_BAML_TYPE)
 }
 
 /// Generate BAML type definitions from JSON schemas
@@ -113,6 +121,12 @@ fn generate_baml_type(
     let schema_obj = schema.as_object().ok_or_else(|| {
         BamlBuilderError::InvalidArgument(format!("Schema for {} must be an object", type_name))
     })?;
+
+    if let Some(custom_type) = custom_baml_type(schema_obj) {
+        write_line(output, &format!("type {type_name} = {custom_type}"))?;
+        write_line(output, "")?;
+        return Ok(());
+    }
 
     // Check if it's an enum (oneOf with const values or enum field)
     if let Some(enum_values) = schema_obj.get("enum")
@@ -407,6 +421,15 @@ fn is_inline_object_schema(schema_obj: &serde_json::Map<String, Value>) -> bool 
     !props.is_empty()
 }
 
+fn is_map_schema(schema_obj: &serde_json::Map<String, Value>) -> bool {
+    schema_obj
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|schema_type| schema_type == "object")
+        && schema_obj.get("additionalProperties").is_some()
+        && !is_inline_object_schema(schema_obj)
+}
+
 /// Stable BAML class name for an inline `type: object` schema (nested struct fields).
 fn nested_class_name_for_inline_object(
     schema_obj: &serde_json::Map<String, Value>,
@@ -442,6 +465,20 @@ fn preemit_nested_inline_classes(
         return Ok(());
     };
     if schema_obj.contains_key("$ref") {
+        return Ok(());
+    }
+
+    if is_map_schema(schema_obj) {
+        if let Some(value_schema) = schema_obj.get("additionalProperties") {
+            preemit_nested_inline_classes(
+                output,
+                value_schema,
+                inline_name_hint,
+                generated,
+                all_schemas,
+                type_names,
+            )?;
+        }
         return Ok(());
     }
 
@@ -560,6 +597,10 @@ fn json_schema_to_baml_type(
         .as_object()
         .ok_or_else(|| BamlBuilderError::InvalidArgument("Schema must be an object".to_string()))?;
 
+    if let Some(custom_type) = custom_baml_type(schema_obj) {
+        return Ok(custom_type.to_string());
+    }
+
     // Handle $ref - extract nested types from definitions
     if let Some(Value::String(ref_path)) = schema_obj.get("$ref") {
         // Extract type name from #/$defs/TypeName or #/definitions/TypeName
@@ -582,6 +623,22 @@ fn json_schema_to_baml_type(
             )?;
         }
         return Ok(nested_name);
+    }
+
+    if is_map_schema(schema_obj) {
+        let value_type = if let Some(value_schema) = schema_obj.get("additionalProperties") {
+            json_schema_to_baml_type(
+                output,
+                value_schema,
+                generated,
+                all_schemas,
+                type_names,
+                inline_name_hint,
+            )?
+        } else {
+            "string".to_string()
+        };
+        return Ok(format!("map<string, {value_type}>"));
     }
 
     // Handle nullable types represented as type: ["string", "null"]
@@ -615,6 +672,20 @@ fn json_schema_to_baml_type(
                                     )?;
                                 }
                                 nested_name
+                            } else if is_map_schema(schema_obj) {
+                                if let Some(value_schema) = schema_obj.get("additionalProperties") {
+                                    let value_type = json_schema_to_baml_type(
+                                        output,
+                                        value_schema,
+                                        generated,
+                                        all_schemas,
+                                        type_names,
+                                        inline_name_hint,
+                                    )?;
+                                    format!("map<string, {value_type}>")
+                                } else {
+                                    "map<string, string>".to_string()
+                                }
                             } else {
                                 "string".to_string()
                             }
@@ -746,6 +817,19 @@ fn json_schema_to_baml_type(
                     )?;
                 }
                 return Ok(nested_name);
+            }
+            if is_map_schema(schema_obj)
+                && let Some(value_schema) = schema_obj.get("additionalProperties")
+            {
+                let value_type = json_schema_to_baml_type(
+                    output,
+                    value_schema,
+                    generated,
+                    all_schemas,
+                    type_names,
+                    inline_name_hint,
+                )?;
+                return Ok(format!("map<string, {value_type}>"));
             }
             return Ok("string".to_string());
         }

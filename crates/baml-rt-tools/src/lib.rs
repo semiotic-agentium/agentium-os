@@ -15,6 +15,7 @@ pub mod config_resolver;
 pub mod event_producer;
 pub mod host_registration;
 mod metrics;
+pub mod opaque_json;
 pub mod prompt_projection;
 pub mod session_coordination;
 mod spans;
@@ -38,6 +39,9 @@ pub use event_producer::{
     load_configured_event_producers_with_checkpoints,
 };
 pub use host_registration::register_manifest_tools;
+pub use opaque_json::{
+    OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY, OpaqueJson, opaque_json_map_from_object,
+};
 pub use session_coordination::get_session_coordination_baml_for_tools;
 pub use tool_catalog::{InventoryCatalog, ManifestToolNames, ToolCatalog};
 pub use tool_discovery::search_tools;

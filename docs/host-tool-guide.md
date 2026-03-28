@@ -10,6 +10,7 @@ Create a new Rust module in `crates/baml-rt-tools/src/` and implement the `BamlT
 
 Key requirements:
 - Provide `OpenInput`, `Input`, and `Output` types that implement **`serde::Serialize` / `Deserialize`** and the schema traits the registry expects—on `BamlTool`, phase payloads use **`ToolType`** (JSON Schema + TypeScript generation via the tooling pipeline in `baml-rt-tools`). BAML-facing agent types often use **`#[derive(BamlType)]`** (`baml_derive`) where appropriate; tool I/O phases are **`ToolType`** + **`DescribeAction`** where summaries are needed.
+- For opaque transport payloads, prefer **`baml_rt_tools::OpaqueJson`** instead of bare `serde_json::Value` on `#[derive(BamlType)]` structs. That keeps generated BAML/TypeScript interfaces explicit while runtime validation still accepts arbitrary JSON.
 - Provide a `description()` string (avoid unescaped quotes in descriptions).
 - Enforce action-specific required fields at runtime.
 - Map tool errors to `BamlRtError`.

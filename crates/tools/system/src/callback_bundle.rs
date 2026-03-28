@@ -92,7 +92,7 @@ async fn schedule_callback(
     let request = ScheduleCallbackRequest {
         source_key: normalize_source_key(&input.source_key)?,
         dedupe_key,
-        payload: input.payload,
+        payload: input.payload.into_inner(),
         scheduled_for_unix_ms,
         requested_at_unix_ms,
         context_id,

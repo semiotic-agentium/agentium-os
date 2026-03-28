@@ -25,6 +25,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::{
     bundles::BundleType,
     config_resolver::ConfigResolver,
+    opaque_json::OpaqueJson,
     tool_catalog::{InventoryCatalog, ToolCatalog},
     tool_error_classify::{ClassifiedToolError, ToolExecutionClassifier},
     tool_fsm::{
@@ -1268,10 +1269,11 @@ pub struct HistoryContextV1 {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
-    // `BTreeMap<String, Value>` auto-maps to `Record<string, any> | null` in TS
-    // and `{"type":"object","additionalProperties":{}} | null` in JSON Schema.
+    // History payloads are opaque host-side state carried across read hops.
+    // The explicit `OpaqueJson` wrapper keeps generated interfaces honest while
+    // preserving arbitrary JSON at runtime.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub payload: Option<BTreeMap<String, Value>>,
+    pub payload: Option<BTreeMap<String, OpaqueJson>>,
 }
 
 #[async_trait]

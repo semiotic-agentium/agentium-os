@@ -59,6 +59,11 @@ class SessionContext {
   status_token string?
 }
 
+/// Opaque JSON transport value for host-managed tools and event payloads.
+/// Runtime validation accepts arbitrary JSON. The generated TypeScript surface
+/// renders this alias as `JsonValue`.
+type OpaqueJson = string
+
 // Structured reply types for synthesis functions
 enum ReplyMediaType {
   TextPlain @alias("text/plain")
@@ -98,7 +103,7 @@ class ArchiveReadInput {
 class CallbackToolInputVariant1 {
   after_ms int
   source_key string
-  payload string
+  payload OpaqueJson @description("Opaque JSON transport value. The runtime accepts any JSON payload; generated BAML surfaces this as the named OpaqueJson type.")
   dedupe_key string | null?
   continuation string | null?
 }
@@ -141,7 +146,7 @@ class HistoryContextV1 {
   status string
   truncated bool
   cursor string | null?
-  payload string | null?
+  payload map<string, OpaqueJson> | null?
 }
 
 class DiscoverToolsNextOutput {

@@ -4,7 +4,7 @@
 #![allow(clippy::result_large_err)]
 
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{HashMap, VecDeque},
     path::PathBuf,
     pin::Pin,
     sync::Arc,
@@ -16,6 +16,7 @@ use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
     ToolSession, ToolSessionError, ToolStep,
     bundles::BundleType,
+    opaque_json_map_from_object,
     tools::{
         HistoryContextV1, ToolFunctionMetadata, ToolProjectionSemantics, ToolSessionContext,
         validate_open_input,
@@ -880,19 +881,10 @@ impl ToolSession for ClaudeSession {
                         status: "suspended".to_string(),
                         truncated: false,
                         cursor: None,
-                        payload: Some(
-                            serde_json::json!({
-                                "eventCount": 0,
-                                "completion": "INPUT_REQUIRED",
-                            })
-                            .as_object()
-                            .map(|obj| {
-                                obj.iter()
-                                    .map(|(k, v)| (k.clone(), v.clone()))
-                                    .collect::<BTreeMap<_, _>>()
-                            })
-                            .unwrap_or_default(),
-                        ),
+                        payload: Some(opaque_json_map_from_object(serde_json::json!({
+                            "eventCount": 0,
+                            "completion": "INPUT_REQUIRED",
+                        }))),
                     }),
                 };
                 let value = serde_json::to_value(output).map_err(|e| {
@@ -952,19 +944,10 @@ impl ToolSession for ClaudeSession {
                 },
                 truncated: false,
                 cursor: None,
-                payload: Some(
-                    serde_json::json!({
-                        "eventCount": event_count,
-                        "completion": completion.as_ref().map(|c| format!("{:?}", c)),
-                    })
-                    .as_object()
-                    .map(|obj| {
-                        obj.iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect::<BTreeMap<_, _>>()
-                    })
-                    .unwrap_or_default(),
-                ),
+                payload: Some(opaque_json_map_from_object(serde_json::json!({
+                    "eventCount": event_count,
+                    "completion": completion.as_ref().map(|c| format!("{:?}", c)),
+                }))),
             }),
         };
         let value = serde_json::to_value(output)

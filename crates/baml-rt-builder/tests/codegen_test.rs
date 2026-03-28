@@ -129,8 +129,12 @@ fn test_system_callback_tool_baml_interfaces() {
         "Expected CallbackToolInput union in generated BAML"
     );
     assert!(
-        baml_output.contains("payload string"),
-        "Expected arbitrary callback payloads to degrade to a valid BAML string type"
+        baml_output.contains("type OpaqueJson = string"),
+        "Expected generated BAML prelude to declare the OpaqueJson transport type"
+    );
+    assert!(
+        baml_output.contains("payload OpaqueJson"),
+        "Expected callback payloads to use the explicit OpaqueJson transport type"
     );
     assert!(
         baml_output.contains("class SystemCallbackOpenStep"),

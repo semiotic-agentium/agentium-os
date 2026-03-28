@@ -186,8 +186,12 @@ pub fn emit_type_declarations_tokens(
             quote_in!(out => export type $(name) = $(union_expr););
             out.line();
         } else if let Some(type_node) = ir.type_aliases.get(name) {
-            let frag = type_to_ts_expr(type_node.field_type.as_ref(), ir)?;
-            let type_expr = frag.expr.as_str();
+            let type_expr = if name == "OpaqueJson" {
+                "JsonValue".to_string()
+            } else {
+                let frag = type_to_ts_expr(type_node.field_type.as_ref(), ir)?;
+                frag.expr
+            };
             quote_in!(out => export type $(name) = $(type_expr););
             out.line();
         }

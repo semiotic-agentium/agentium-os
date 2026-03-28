@@ -51,12 +51,16 @@ fn resolve_path_tokens(type_path: &syn::TypePath) -> Result<TokenStream, syn::Er
         return Ok(quote! { ::std::string::String::from(#lit) });
     }
 
-    // Special: serde_json::Value (or bare `Value`) maps to BAML `string`.
-    // The generated BAML layer cannot represent arbitrary JSON faithfully, so
-    // we degrade to a string-shaped prompt contract while runtime validation and
-    // TypeScript declarations retain the real JSON schema / `any` shape.
+    // `serde_json::Value` must be made explicit at the BAML boundary.
+    //
+    // Tool-facing opaque JSON should use `baml_rt_tools::OpaqueJson` so the
+    // generated schema/codegen layer can preserve the intent instead of silently
+    // degrading to a plain string.
     if ident_str == "Value" {
-        return Ok(quote! { ::std::string::String::from("string") });
+        return Err(syn::Error::new_spanned(
+            ident,
+            "bare serde_json::Value cannot be derived into BAML; use baml_rt_tools::OpaqueJson or an explicit #[baml(type = \"...\")] override",
+        ));
     }
 
     // Check for known generic wrappers.
