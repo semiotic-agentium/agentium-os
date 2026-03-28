@@ -12,18 +12,19 @@ use baml_rt_core::{
 use baml_rt_provenance::{
     AgentType, PlanningPlanRecord, PlanningPlanStepRecord, ProvEvent, ProvenanceContextReader,
     ProvenanceConversationContextItem, ProvenancePlanningQuery, ProvenanceWriter,
-    SurrealProvenanceStore, SurrealStoreBuilder,
+    SurrealProvenanceStore,
     store::{ConversationItemContent, ToolOutcome},
 };
 use baml_tools_clickup::ClickUpTool;
 use common::{
     RunningHttpServer, TempDirCleanup, build_clickup_agent_to_temp_async, e2e_serial_gate,
-    post_a2a_sse_collect, start_http_server, start_runner_api_server,
+    fetch_context_mermaid, post_a2a_sse_collect, start_http_server, start_runner_api_server,
 };
 use serde_json::{Value, json};
 use test_support::common::{
     chunks_from_responses, fnox_has_clickup_key, fnox_has_openrouter_key,
-    message_texts_from_chunks, send_stream_request_with_task, workspace_fnox_path,
+    message_texts_from_chunks, send_stream_request_with_task, test_surreal_store,
+    workspace_fnox_path,
 };
 use tokio::time::{Duration, sleep, timeout};
 
@@ -170,7 +171,7 @@ async fn setup_clickup_agent_with_provenance(
         .await
         .expect("register clickup tool");
 
-    let provenance = build_surreal_test_store().await;
+    let provenance = test_surreal_store().await;
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
     provenance
         .add_event(ProvEvent::agent_booted(
@@ -368,29 +369,6 @@ fn find_object_with_top_level_tasks_len(value: &Value, n: usize) -> Option<Value
         }
         _ => None,
     }
-}
-
-#[allow(dead_code)]
-async fn fetch_mermaid_context(base_url: &str, context_id: &ContextId) -> String {
-    let http_client = reqwest::Client::new();
-    let mermaid_url = format!("{base_url}/contexts/{}/mermaid", context_id.as_str());
-    let mermaid_response = timeout(Duration::from_secs(20), http_client.get(mermaid_url).send())
-        .await
-        .expect("mermaid request timed out")
-        .expect("mermaid request failed");
-    assert!(
-        mermaid_response.status().is_success(),
-        "Expected 200 from /contexts/<context_id>/mermaid, got {}",
-        mermaid_response.status()
-    );
-    mermaid_response.text().await.expect("mermaid body")
-}
-
-async fn build_surreal_test_store() -> Arc<SurrealProvenanceStore> {
-    SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build isolated SurrealDB store")
 }
 
 #[tokio::test]
@@ -680,6 +658,21 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
         hit_list_tasks || tool_result.is_some(),
         "Expected list-tasks traffic on fixture or a captured 2-task tool payload (proves enumeration). \
          Model/tool ordering is non-deterministic; we require evidence of task list fetch, not every intermediate hop. hits={mock_hits:?}"
+    );
+
+    let mermaid = fetch_context_mermaid(
+        &http_client,
+        runner_api.base_url.as_str(),
+        context_id.as_str(),
+    )
+    .await;
+    assert!(
+        mermaid.contains("sequenceDiagram"),
+        "Expected mermaid sequence output, got: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("ChooseClickUpAction"),
+        "Expected ChooseClickUpAction (step executor) in context mermaid; got: {mermaid}"
     );
 
     runner_api.stop().await;

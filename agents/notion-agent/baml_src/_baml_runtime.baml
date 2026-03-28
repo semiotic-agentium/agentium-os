@@ -464,6 +464,12 @@ function ChooseNotionAction__select(
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
+Phase lock — the system text above this block begins with a bracket tag. Match that tag only; output MUST parse as the schema below (no extra keys, no alternate op names).
+
+- [OPEN] … Open a session …: Emit ONLY Open for this tool. Exact shape: {"op":"Open","tool_name":"support/notion"}. In this hop do NOT emit Send, Read, CallTool, Call, Finish, block_id, params, args, or any Notion API / dotted method name — those belong to Send after the session exists.
+- [SEND] … session is open …: Emit ONLY Send with op "Send", NotionInput in input, and citations.
+- [CONTINUE] … result is archived …: Emit exactly one of Send, Read, or Finish as the schema allows; follow the preamble bullets. If cat -n @N for support/notion already lists blocks and has_more is false, emit Finish (do not Send the same block_id again). If has_more is true, the next Send must use start_cursor from that archive, not repeat the first page.
+
 {% if ctx.tags['conversation_history'] %}
 Session history:
 {% for msg in ctx.tags['conversation_history'] %}
@@ -487,6 +493,12 @@ function ChooseNotionAction__act__support_notion(
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
+Phase lock — the system text above this block begins with a bracket tag. Match that tag only; output MUST parse as the schema below (no extra keys, no alternate op names).
+
+- [OPEN] … Open a session …: Emit ONLY Open for this tool. Exact shape: {"op":"Open","tool_name":"support/notion"}. In this hop do NOT emit Send, Read, CallTool, Call, Finish, block_id, params, args, or any Notion API / dotted method name — those belong to Send after the session exists.
+- [SEND] … session is open …: Emit ONLY Send with op "Send", NotionInput in input, and citations.
+- [CONTINUE] … result is archived …: Emit exactly one of Send, Read, or Finish as the schema allows; follow the preamble bullets. If cat -n @N for support/notion already lists blocks and has_more is false, emit Finish (do not Send the same block_id again). If has_more is true, the next Send must use start_cursor from that archive, not repeat the first page.
+
 {% if ctx.tags['conversation_history'] %}
 Session history:
 {% for msg in ctx.tags['conversation_history'] %}
@@ -509,6 +521,12 @@ function ChooseNotionAction__continue__support_notion(
   prompt #"[CONTINUE] support/notion result is archived.\nCheck session history:\n- See \"@N support/notion\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/notion\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/notion\" with no content yet → emit Read archive_ref=\"@N\"\n\nYou are executing one step of a read-only Notion retrieval plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
+
+Phase lock — the system text above this block begins with a bracket tag. Match that tag only; output MUST parse as the schema below (no extra keys, no alternate op names).
+
+- [OPEN] … Open a session …: Emit ONLY Open for this tool. Exact shape: {"op":"Open","tool_name":"support/notion"}. In this hop do NOT emit Send, Read, CallTool, Call, Finish, block_id, params, args, or any Notion API / dotted method name — those belong to Send after the session exists.
+- [SEND] … session is open …: Emit ONLY Send with op "Send", NotionInput in input, and citations.
+- [CONTINUE] … result is archived …: Emit exactly one of Send, Read, or Finish as the schema allows; follow the preamble bullets. If cat -n @N for support/notion already lists blocks and has_more is false, emit Finish (do not Send the same block_id again). If has_more is true, the next Send must use start_cursor from that archive, not repeat the first page.
 
 {% if ctx.tags['conversation_history'] %}
 Session history:

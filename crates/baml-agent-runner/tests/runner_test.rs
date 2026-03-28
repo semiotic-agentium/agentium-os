@@ -20,7 +20,7 @@ use baml_rt_core::{
     context::{self, InvocationScope},
     ids::{AgentId, ContextId, ExternalId, TaskId, UuidId},
 };
-use baml_rt_provenance::{ProvenanceContextReader, SurrealProvenanceStore, SurrealStoreBuilder};
+use baml_rt_provenance::{ProvenanceContextReader, SurrealProvenanceStore};
 use baml_rt_tools::bundles::BundleType;
 #[cfg(feature = "slack")]
 use baml_tools_slack as _;
@@ -81,22 +81,14 @@ use baml_rt_llm_config::{
     LlmProvider, StaticResolver,
 };
 use baml_rt_tools::BundleName;
-use common::e2e_serial_gate;
+use common::{e2e_secs_ci_or_local, e2e_serial_gate, try_load_dotenv_for_tests};
 #[cfg(feature = "llm-tests")]
 use test_support::common::workspace_fnox_path;
 use test_support::common::{
     CalculatorTool, chunks_from_responses, ensure_baml_src_exists, ensure_fixture_runtime_types,
-    first_task_id_from_stream, message_texts_from_chunks, user_message, user_message_with_task,
-    workspace_root,
+    first_task_id_from_stream, message_texts_from_chunks, test_surreal_store, user_message,
+    user_message_with_task, workspace_root,
 };
-
-fn stream_collector_idle_secs() -> u64 {
-    if std::env::var_os("CI").is_some() {
-        300
-    } else {
-        90
-    }
-}
 
 async fn build_fixture_to_temp_async(fixture_name: &str) -> std::path::PathBuf {
     test_support::common::build_fixture_package_to_temp(fixture_name).await
@@ -325,7 +317,7 @@ async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_surreal_store(build_surreal_test_store().await)
+        .with_surreal_store(test_surreal_store().await)
         .build()
         .await
         .unwrap()
@@ -372,7 +364,7 @@ async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_surreal_store(build_surreal_test_store().await)
+        .with_surreal_store(test_surreal_store().await)
         .build()
         .await
         .unwrap()
@@ -398,7 +390,7 @@ async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_surreal_store(build_surreal_test_store().await)
+        .with_surreal_store(test_surreal_store().await)
         .build()
         .await
         .unwrap()
@@ -446,7 +438,7 @@ async fn setup_internal_a2a_router_agents(
     Arc<SurrealProvenanceStore>,
 ) {
     let responder_manager = BamlRuntimeManager::builder().build().unwrap();
-    let responder_store = build_surreal_test_store().await;
+    let responder_store = test_surreal_store().await;
     let responder_code = r#"
 globalThis.onChatMessage = async function(message) {
   const text = message?.parts?.[0]?.text || "unknown";
@@ -460,7 +452,7 @@ globalThis.onChatMessage = async function(message) {
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
         .with_quickjs_config(
             baml_rt::QuickJSConfig::new()
-                .with_stream_collector_idle_secs(Some(stream_collector_idle_secs())),
+                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(300, 90))),
         )
         .with_surreal_store(responder_store.clone())
         .build()
@@ -473,7 +465,7 @@ globalThis.onChatMessage = async function(message) {
 
     let initiator_manager = BamlRuntimeManager::builder().build().unwrap();
     let target_literal = serde_json::to_string(target_package).expect("serialize target package");
-    let initiator_store = build_surreal_test_store().await;
+    let initiator_store = test_surreal_store().await;
     let initiator_code = r#"
 globalThis.onChatMessage = async function(message) {
     const userText = message?.parts?.[0]?.text || "ping";
@@ -541,7 +533,7 @@ globalThis.onChatMessage = async function(message) {
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
         .with_quickjs_config(
             baml_rt::QuickJSConfig::new()
-                .with_stream_collector_idle_secs(Some(stream_collector_idle_secs())),
+                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(300, 90))),
         )
         .with_surreal_store(initiator_store.clone())
         .build()
@@ -566,7 +558,7 @@ async fn setup_internal_a2a_parallel_fanout_agents(
     Arc<SurrealProvenanceStore>,
 ) {
     let responder_manager = BamlRuntimeManager::builder().build().unwrap();
-    let responder_store = build_surreal_test_store().await;
+    let responder_store = test_surreal_store().await;
     let responder_code = r#"
 globalThis.onChatMessage = async function(message) {
   const text = message?.parts?.[0]?.text || "unknown";
@@ -590,7 +582,7 @@ globalThis.onChatMessage = async function(message) {
     let initiator_manager = BamlRuntimeManager::builder().build().unwrap();
     let target_literal = serde_json::to_string(target_package).expect("serialize target package");
     let fanout_literal = fanout.to_string();
-    let initiator_store = build_surreal_test_store().await;
+    let initiator_store = test_surreal_store().await;
     let initiator_code = r#"
 globalThis.onChatMessage = async function(message) {
   const baseText = message?.parts?.[0]?.text || "ping parallel";
@@ -707,7 +699,7 @@ async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_surreal_store(build_surreal_test_store().await)
+        .with_surreal_store(test_surreal_store().await)
         .build()
         .await
         .unwrap()
@@ -728,7 +720,7 @@ async fn setup_argument_fixture_agent(fixture: &str) -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_surreal_store(build_surreal_test_store().await)
+        .with_surreal_store(test_surreal_store().await)
         .build()
         .await
         .unwrap()
@@ -796,7 +788,7 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
         .with_runtime_manager(manager)
         .with_init_js(entry_js)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_surreal_store(build_surreal_test_store().await)
+        .with_surreal_store(test_surreal_store().await)
         .build()
         .await
         .expect("build packaged A2A agent");
@@ -851,7 +843,7 @@ async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
     let entry_js = fs::read_to_string(extract_dir.join("dist").join("index.js"))
         .expect("coordinator-agent dist/index.js");
     // Persistent mode requires a store; omit and A2aAgent::build() returns InvalidArgument.
-    let store = build_surreal_test_store().await;
+    let store = test_surreal_store().await;
     baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(entry_js)
@@ -860,13 +852,6 @@ async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
         .build()
         .await
         .expect("build coordinator agent")
-}
-
-async fn build_surreal_test_store() -> Arc<SurrealProvenanceStore> {
-    SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build isolated surreal store")
 }
 
 #[tokio::test]
@@ -1069,7 +1054,7 @@ async fn test_e2e_agent_runner_invoke_function() {
     // E2E via packaged agent loaded in-process, then invoked through A2A.
     // This avoids recursive `cargo run` subprocess behavior and validates
     // package -> runtime -> A2A request flow directly.
-    let _ = dotenvy::dotenv();
+    try_load_dotenv_for_tests();
     let has_api_key = std::env::var("OPENROUTER_API_KEY").is_ok();
     let (agent, extract_dir) = setup_packaged_stream_baml_tool_agent().await;
 
@@ -1161,7 +1146,7 @@ async fn test_tool_discovery_demo_responds_with_tool_list() {
         return;
     }
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
-    let _ = dotenvy::dotenv();
+    try_load_dotenv_for_tests();
     let agent = setup_tool_discovery_demo_agent().await;
     let request = send_message_request(
         SendMessageRequest {
@@ -1253,7 +1238,7 @@ async fn test_e2e_stream_baml_tool() {
         return;
     }
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
-    let _ = dotenvy::dotenv();
+    try_load_dotenv_for_tests();
 
     let agent = setup_stream_baml_tool_agent().await;
 
@@ -1298,7 +1283,7 @@ async fn test_e2e_argument_sketch_two_agents() {
         return;
     }
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
-    let _ = dotenvy::dotenv();
+    try_load_dotenv_for_tests();
     if std::env::var("OPENROUTER_API_KEY").is_err() {
         eprintln!("Skipping test_e2e_argument_sketch_two_agents: OPENROUTER_API_KEY not set");
         return;
@@ -1329,7 +1314,7 @@ async fn run_argument_sketch_two_agents_body() {
     let agent_list = Arc::new(EmptyAgentList);
     for agent in [&cleese_agent, &chapman_agent] {
         let runtime = agent.runtime();
-        let manager = runtime.lock().await;
+        let manager = runtime.write().await;
         let registry = manager.tool_registry();
         registry
             .register_bundle(SystemBundle::new(

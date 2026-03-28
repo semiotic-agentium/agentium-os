@@ -53,6 +53,9 @@ crates/baml-agent-runner/.runner-state/
 
 # Fastembed model cache (downloaded ONNX models, ~130 MB)
 .fastembed_cache/
+# HF-style fetch sidecars — not committed (tensors under blobs/ use Git LFS)
+models/fastembed/**/blobs/*.lock
+models/fastembed/**/blobs/*.part
 
 # Nix
 .direnv/

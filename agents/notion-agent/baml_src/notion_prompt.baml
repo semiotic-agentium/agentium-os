@@ -76,9 +76,13 @@ function PlanNotionWork(intent: string) -> NotionPlan {
     The user's validated intent: {{ intent }}
     Produce an explicit step plan to satisfy it. Do NOT retrieve content — just plan.
 
+    You MUST return a valid NotionPlan: non-empty "steps", every step has id, description, and kind,
+    and the last step is always kind "synthesize".
+
     Available step kinds:
     - discover: search Notion for pages matching a query (NotionSearchPagesInput)
-    - read: retrieve block content from a specific page (NotionGetPageBlocksInput)
+    - read: retrieve block content — list child blocks for a block id, or page blocks for a page id
+      (NotionGetPageBlocksInput; paginate when the API indicates has_more)
     - synthesize: no tool call; the agent summarizes collected content for the user
 
     PLAN RULES:
@@ -86,9 +90,13 @@ function PlanNotionWork(intent: string) -> NotionPlan {
     - Default to [discover, read, synthesize] — reading the most relevant page's content is almost
       always necessary to give a useful answer. Only skip the read step when the goal is explicitly
       just a list of page titles or a count (e.g. "how many pages are there about X?").
-    - If the intent references a specific page URL or ID, you can skip discover and go straight to
-      [read, synthesize].
-    - For broad topics, discover first to find the most relevant page, then read it.
+    - If the intent references a specific page URL or page UUID, skip discover and use [read, synthesize].
+      The read step description must say to load that page's content (properties and/or blocks as fits the request).
+    - BLOCK IDs (critical): If the intent mentions a Notion *block* and contains a UUID (with or without
+      hyphens, or 32 contiguous hex characters), you MUST NOT rely on search alone. Use [read, synthesize] only.
+      The read step description MUST explicitly say to list **child blocks** for that block id via the
+      Notion blocks children API (follow pagination cursors until has_more is false). Copy the id from the intent verbatim.
+    - For broad topics with no specific id, discover first to find the most relevant page, then read it.
     - Keep step ids concise, lowercase, kebab-case, and unique.
 
     {{ ctx.output_format }}
@@ -115,6 +123,12 @@ function ChooseNotionAction(
     You are executing one step of a read-only Notion retrieval plan.
     Overall goal: {{ goal }}
     This step: {{ step_description }}
+
+    Phase lock — the system text above this block begins with a bracket tag. Match that tag only; output MUST parse as the schema below (no extra keys, no alternate op names).
+
+    - [OPEN] … Open a session …: Emit ONLY Open for this tool. Exact shape: {"op":"Open","tool_name":"support/notion"}. In this hop do NOT emit Send, Read, CallTool, Call, Finish, block_id, params, args, or any Notion API / dotted method name — those belong to Send after the session exists.
+    - [SEND] … session is open …: Emit ONLY Send with op "Send", NotionInput in input, and citations.
+    - [CONTINUE] … result is archived …: Emit exactly one of Send, Read, or Finish as the schema allows; follow the preamble bullets. If cat -n @N for support/notion already lists blocks and has_more is false, emit Finish (do not Send the same block_id again). If has_more is true, the next Send must use start_cursor from that archive, not repeat the first page.
 
     {% if ctx.tags['conversation_history'] %}
     Session history:
