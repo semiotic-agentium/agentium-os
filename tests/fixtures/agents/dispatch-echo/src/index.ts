@@ -81,7 +81,7 @@ async function scheduleCallback(command: CallbackCommand): Promise<void> {
   const sourceKey = `dispatch-echo:callback:${command.token}`;
   const input: Record<string, unknown> = {
     op: "schedule",
-    afterMs: 0,
+    afterMs: command.continuation === "resume_current_task" ? 3000 : 0,
     sourceKey,
     payload: {
       token: command.token,
