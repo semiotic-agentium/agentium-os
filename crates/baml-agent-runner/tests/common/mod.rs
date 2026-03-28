@@ -196,7 +196,7 @@ impl AgentRegistry for SingleAgentRegistry {
     async fn handle_dispatch(
         &self,
         key: &AgentRouteKey,
-        _request: AgentDispatchRequest,
+        request: AgentDispatchRequest,
     ) -> baml_rt_core::Result<AgentDispatchAck> {
         if key.agent_package.as_str() != self.package
             || key.agent_instance_id.as_str() != self.instance_id
@@ -207,9 +207,7 @@ impl AgentRegistry for SingleAgentRegistry {
                 key.agent_instance_id.as_str()
             )));
         }
-        Err(baml_rt_core::BamlRtError::FunctionNotFound(
-            "onDispatch".to_string(),
-        ))
+        self.agent.handle_dispatch(request).await
     }
 }
 

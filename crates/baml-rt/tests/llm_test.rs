@@ -36,7 +36,7 @@ async fn test_e2e_simple_greeting_with_llm() {
     let baml_manager = setup_baml_runtime_default();
     // Single attempt: avoid retry flakiness (second attempt can return empty parsed response).
     {
-        let mut mgr = baml_manager.lock().await;
+        let mut mgr = baml_manager.write().await;
         mgr.set_parse_retry_policy(ParseRetryPolicy {
             max_attempts: 1,
             delay_ms: 0,

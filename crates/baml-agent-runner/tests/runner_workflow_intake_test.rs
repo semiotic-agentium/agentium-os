@@ -1,31 +1,24 @@
 #[allow(dead_code, unused_imports)]
 mod common;
 
-use std::{
-    collections::HashSet,
-    fs,
-    net::TcpListener,
-    path::PathBuf,
-    process::{Child, Command, Stdio},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt::{A2aRequestHandler, BamlRtError, baml::BamlRuntimeManager};
+use baml_rt_a2a::AgentRegistry;
 use baml_rt_core::{
-    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister,
+    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
+    AgentDispatchRequest, AgentLister, AgentRouteKey,
     bus::{BusStream, BusWithEffects},
 };
 use baml_tools_system::SystemBundle;
 use common::e2e_serial_gate;
 use serde_json::{Value, json};
 use test_support::common::{
-    TempDirCleanup, build_agent_package_archive_to_temp, build_agent_package_to_temp,
-    chunks_from_responses, message_texts_from_chunks, test_surreal_store, workspace_fnox_path,
-    workspace_root,
+    TempDirCleanup, build_agent_package_to_temp, chunks_from_responses, message_texts_from_chunks,
+    test_surreal_store, workspace_fnox_path, workspace_root,
 };
-use tokio::{sync::Mutex, time::sleep};
+use tokio::sync::Mutex;
 
 #[derive(Clone)]
 struct StaticAgentList {
@@ -175,111 +168,142 @@ fn workflow_intake_agent_dir() -> PathBuf {
         .join("workflow-intake-agent")
 }
 
-#[derive(Debug)]
-struct TempFileCleanup {
-    path: PathBuf,
+/// Minimal registry for HTTP API tests: forwards dispatch to [`baml_rt::A2aAgent`] (real `onDispatch`).
+#[derive(Clone)]
+struct DispatchRegistry {
+    package: String,
+    instance_id: String,
+    name: String,
+    version: String,
+    agent: baml_rt::A2aAgent,
 }
 
-impl TempFileCleanup {
-    fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-}
-
-impl Drop for TempFileCleanup {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-struct RunningRunnerProcess {
-    base_url: String,
-    child: Child,
-    log_path: PathBuf,
-    repository_dir: PathBuf,
-    state_dir: PathBuf,
-}
-
-impl RunningRunnerProcess {
-    async fn start(package_paths: &[PathBuf]) -> Self {
-        let reserved = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-        let addr = reserved.local_addr().expect("local address");
-        drop(reserved);
-
-        let base_url = format!("http://{addr}");
-        let repository_dir = std::env::temp_dir().join(format!(
-            "workflow-intake-repository-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let state_dir = std::env::temp_dir().join(format!(
-            "workflow-intake-state-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        fs::create_dir_all(&repository_dir).expect("create temp repository dir");
-        fs::create_dir_all(&state_dir).expect("create temp state dir");
-        let log_path = std::env::temp_dir().join(format!(
-            "workflow-intake-dispatch-runner-{}-{}.log",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let stdout = fs::File::create(&log_path).expect("create runner log");
-        let stderr = stdout.try_clone().expect("clone runner log handle");
-
-        let mut command = Command::new(env!("CARGO_BIN_EXE_baml-agent-runner"));
-        command
-            .args(package_paths)
-            .arg("--serve-http")
-            .arg(addr.to_string())
-            .arg("--repository-dir")
-            .arg(&repository_dir)
-            .arg("--state-dir")
-            .arg(&state_dir)
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr));
-
-        let mut child = command.spawn().expect("spawn baml-agent-runner");
-        let client = reqwest::Client::new();
-        let agents_url = format!("{base_url}/agents");
-        // CI startup can be slower when package build + runner boot overlap.
-        // Allow up to ~60s before declaring readiness failure.
-        for _ in 0..300 {
-            if let Some(status) = child.try_wait().expect("poll runner process") {
-                let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "<unreadable>".into());
-                panic!("runner exited before serving HTTP (status: {status}). Log:\n{log}");
-            }
-
-            if let Ok(response) = client.get(&agents_url).send().await
-                && response.status().is_success()
-            {
-                return Self {
-                    base_url,
-                    child,
-                    log_path,
-                    repository_dir,
-                    state_dir,
-                };
-            }
-
-            sleep(Duration::from_millis(200)).await;
+impl DispatchRegistry {
+    fn new(
+        package: &str,
+        instance_id: &str,
+        name: &str,
+        version: &str,
+        agent: baml_rt::A2aAgent,
+    ) -> Self {
+        Self {
+            package: package.to_string(),
+            instance_id: instance_id.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            agent,
         }
-
-        let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "<unreadable>".into());
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("runner did not become ready. Log:\n{log}");
     }
 }
 
-impl Drop for RunningRunnerProcess {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = fs::remove_file(&self.log_path);
-        let _ = fs::remove_dir_all(&self.repository_dir);
-        let _ = fs::remove_dir_all(&self.state_dir);
+#[async_trait]
+impl AgentLister for DispatchRegistry {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        let agent_card = AgentCard {
+            name: self.name.clone(),
+            version: self.version.clone(),
+            content_hash: None,
+            repository_version: None,
+            agent_package: self.package.clone(),
+            agent_instance_id: self.instance_id.clone(),
+            tools: Vec::new(),
+            baml_functions: Vec::new(),
+            description: None,
+            capabilities: Vec::new(),
+            tags: Vec::new(),
+            subscriptions: Vec::new(),
+        };
+        vec![AgentDiscoveryEntry {
+            agent_package: self.package.clone(),
+            agent_instance_id: self.instance_id.clone(),
+            name: self.name.clone(),
+            version: self.version.clone(),
+            agent_card,
+        }]
     }
+}
+
+#[async_trait]
+impl AgentRegistry for DispatchRegistry {
+    async fn handle_a2a_stream(
+        &self,
+        key: &AgentRouteKey,
+        request: A2aWireRequest,
+    ) -> baml_rt_core::Result<BusStream<A2aStreamChunk>> {
+        if key.agent_package.as_str() != self.package
+            || key.agent_instance_id.as_str() != self.instance_id
+        {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "Agent {}/{} not found",
+                key.agent_package.as_str(),
+                key.agent_instance_id.as_str()
+            )));
+        }
+        self.agent.handle_a2a_stream(request).await
+    }
+
+    async fn handle_dispatch(
+        &self,
+        key: &AgentRouteKey,
+        request: AgentDispatchRequest,
+    ) -> baml_rt_core::Result<AgentDispatchAck> {
+        if key.agent_package.as_str() != self.package
+            || key.agent_instance_id.as_str() != self.instance_id
+        {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "Agent {}/{} not found",
+                key.agent_package.as_str(),
+                key.agent_instance_id.as_str()
+            )));
+        }
+        self.agent.handle_dispatch(request).await
+    }
+}
+
+struct DispatchHttpServer {
+    base_url: String,
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl DispatchHttpServer {
+    async fn stop(mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(h) = self.handle.take() {
+            let _ = h.await;
+        }
+    }
+}
+
+impl Drop for DispatchHttpServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(h) = self.handle.take() {
+            h.abort();
+        }
+    }
+}
+
+async fn start_dispatch_http_server(app: axum::Router) -> std::io::Result<DispatchHttpServer> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+    Ok(DispatchHttpServer {
+        base_url: format!("http://{addr}"),
+        shutdown_tx: Some(shutdown_tx),
+        handle: Some(handle),
+    })
 }
 
 async fn setup_workflow_intake_agent(
@@ -471,20 +495,29 @@ async fn workflow_intake_routes_slack_events_to_clickup_creation_capability() {
 async fn workflow_intake_dispatch_http_routes_to_real_on_dispatch_noop_ack() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
-    let package_path = build_agent_package_archive_to_temp(
-        workflow_intake_agent_dir(),
-        "workflow-intake-agent-dispatch",
-    )
-    .await;
-    let _package_cleanup = TempFileCleanup::new(package_path.clone());
+    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
+        entries: vec![discovery_entry("clickup-agent", &["clickup:create-task"])],
+    });
+    let handler = Arc::new(CapturingA2aHandler::default());
+    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner = RunningRunnerProcess::start(&[package_path]).await;
+    let registry = Arc::new(DispatchRegistry::new(
+        "workflow-intake-agent",
+        "default",
+        "workflow-intake-agent",
+        "1.0.0",
+        agent,
+    )) as Arc<dyn AgentRegistry>;
+    let app = baml_rt_api::api_router(registry, None, None).await;
+    let server = start_dispatch_http_server(app)
+        .await
+        .expect("start dispatch http api");
+    let base_url = server.base_url.clone();
+
     let client = reqwest::Client::new();
     let context_id = "ctx-1735720000000-42";
-    let dispatch_url = format!(
-        "{}/agents/workflow-intake-agent/default/dispatch",
-        runner.base_url
-    );
+    let dispatch_url = format!("{}/agents/workflow-intake-agent/default/dispatch", base_url);
     let dispatch_body = json!({
         "routing_key": "slack:intake",
         "message_type": "task-daemon.interpretation.v1",
@@ -516,7 +549,7 @@ async fn workflow_intake_dispatch_http_routes_to_real_on_dispatch_noop_ack() {
     );
 
     let discovery = client
-        .get(format!("{}/agents", runner.base_url))
+        .get(format!("{}/agents", base_url))
         .send()
         .await
         .expect("discovery request");
@@ -531,6 +564,8 @@ async fn workflow_intake_dispatch_http_routes_to_real_on_dispatch_noop_ack() {
             })),
         "workflow-intake-agent must be discoverable: {agents:?}"
     );
+
+    server.stop().await;
 }
 
 #[tokio::test]
