@@ -1,0 +1,1620 @@
+✅ Loaded 1 agent(s):
+  - clickup-agent
+2026-03-13T19:50:58.642884Z  INFO baml_rt_api::router: HTTP API listening addr=127.0.0.1:8080 web_dir=None
+how many tasks are in to do status in clickup?
+2026-03-13T19:51:12.171926Z  INFO baml_rt_quickjs::baml: Tool session open: start tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1
+2026-03-13T19:51:13.001481Z  INFO baml_rt_quickjs::baml: Tool session open: ok tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1 session_id=8b02eb9d-90e7-4939-942a-3df97331b5de
+2026-03-13T19:51:13.001560Z  INFO baml_rt_quickjs::baml: Tool session send: start session_id=8b02eb9d-90e7-4939-942a-3df97331b5de tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:51:14.069698Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send received query_count=1
+2026-03-13T19:51:14.069748Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve called query_count=1
+2026-03-13T19:51:14.069757Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve scanning store total_records=0
+2026-03-13T19:51:14.069766Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=team_id found=false fresh=false
+2026-03-13T19:51:14.069804Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=team_name found=false fresh=false
+2026-03-13T19:51:14.069819Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=team_candidates found=false fresh=fal
+se
+2026-03-13T19:51:14.069832Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=space_id found=false fresh=false
+2026-03-13T19:51:14.069843Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=space_name found=false fresh=false
+2026-03-13T19:51:14.069856Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=space_candidates found=false fresh=fa
+lse
+2026-03-13T19:51:14.069868Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=list_id found=false fresh=false
+2026-03-13T19:51:14.069878Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=list_name found=false fresh=false
+2026-03-13T19:51:14.069890Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=list_candidates found=false fresh=fal
+se
+2026-03-13T19:51:14.069901Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve complete result_count=9 found_count=0
+2026-03-13T19:51:14.069911Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send ok result_count=9 found_any=false
+2026-03-13T19:51:14.069962Z  INFO baml_rt_quickjs::baml: Tool session send: ok session_id=8b02eb9d-90e7-4939-942a-3df97331b5de tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:51:14.070003Z  INFO baml_rt_quickjs::baml: Tool session next: start session_id=8b02eb9d-90e7-4939-942a-3df97331b5de
+2026-03-13T19:51:15.912478Z  INFO baml_rt_quickjs::baml: Tool session next: ok session_id=8b02eb9d-90e7-4939-942a-3df97331b5de step=Done { output: Some(Object {"results": Array [Object {"scopeType": String("run"
+), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("team_id"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(false)}, Object {"scopeType": String(
+"run"), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("team_name"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(false)}, Object {"scopeType":
+String("run"), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("team_candidates"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(false)}, Object {
+"scopeType": String("run"), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("space_id"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(false)}, Ob
+ject {"scopeType": String("run"), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("space_name"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(fal
+se)}, Object {"scopeType": String("run"), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("space_candidates"), "found": Bool(false), "fresh": Bool(false), "needsRefr
+esh": Bool(false)}, Object {"scopeType": String("run"), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("list_id"), "found": Bool(false), "fresh": Bool(false), "need
+sRefresh": Bool(false)}, Object {"scopeType": String("run"), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("list_name"), "found": Bool(false), "fresh": Bool(false)
+, "needsRefresh": Bool(false)}, Object {"scopeType": String("run"), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("list_candidates"), "found": Bool(false), "fresh"
+: Bool(false), "needsRefresh": Bool(false)}], "done": Bool(true)}) }
+2026-03-13T19:51:15.912608Z  INFO baml_rt_quickjs::baml: Tool session finish: start session_id=8b02eb9d-90e7-4939-942a-3df97331b5de
+2026-03-13T19:51:15.912635Z  INFO baml_rt_quickjs::baml: Tool session finish: ok session_id=8b02eb9d-90e7-4939-942a-3df97331b5de
+2026-03-13T19:51:15.912891Z  INFO quickjs::console: [clickup-agent] TIMING resolve=3743ms keys=null
+2026-03-13T19:51:17.861429Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: start function="ChooseClickUpAction" context_id=ctx-1773431471271-1 message_id=cli-msg-1 task_id=cli-task-ctx-1773431471271-
+1 attempt=1
+2026-03-13T13:51:19.765 [BAML INFO] Function ChooseClickUpAction:
+    Client: DefaultClient (openai/gpt-4o-mini) - 1863ms. StopReason: stop. Tokens(in/out): 1911/43
+    ---PROMPT---
+    system: You are a ClickUp assistant. You can navigate workspaces and manage tasks.
+    This function is called repeatedly in an iterative ReAct loop.
+    Each call you make ONE decision:
+    - return FinalResponse, OR
+    - return one SupportClickupSessionPlan, OR
+    - return one ClickUpMemoryResolveOp.
+    Never output partial plans.
+    Available actions — each is a distinct input type for the Send step.
+    Pick the one that matches the user's intent:
+    Navigation (discover IDs you don't already have):
+    - ListTeamsInput: list all teams/workspaces (empty object — no fields)
+    - ListSpacesInput: list spaces in a team (needs team_id from prior tool results)
+    - ListListsInput: list task lists in a space (needs space_id from prior tool results)
+    Task management:
+    - ListTasksInput: list tasks in a list (needs list_id from prior tool results)
+    - GetTaskInput: get details of a specific task (needs task_id)
+    - CreateTaskInput: create a new task (needs list_id, name; optional: description, priority)
+    - UpdateTaskInput: update status/description/priority of a task (needs task_id)
+    - DeleteTaskInput: permanently delete a task (needs task_id, confirm_delete)
+    CURRENT RUNTIME MEMORY STATE:
+    {}
+    LATEST TOOL RESULT (from current run state):
+    null
+    CONTEXT RESOLUTION PRIORITY (always follow this order when you need an ID):
+    1) LATEST TOOL RESULT FIRST — if last_tool_result_json already contains the needed data, use it.
+    2) MEMORY STATE SECOND — if memory_state_json already contains the ID, use it directly.
+    3) MEMORY LOOKUP THIRD — if memory_state_json lacks needed IDs/candidates, return ClickUpMemoryResolveOp.
+       Request only the specific keys you need now.
+    4) CONVERSATION HISTORY FOURTH — use recent tool_result data only if needed key is not in memory.
+    5) DISCOVERY LAST — only if neither latest_tool_result_json, memory, nor conversation_history can provide the ID,
+       emit a SupportClickupSessionPlan to discover it (ListTeamsInput -> ListSpacesInput -> ListListsInput).
+    RESPONSE GATE (apply after context resolution):
+    1) If the needed data is already available (from last_tool_result_json, memory_state_json, conversation_history, or prior
+       tool results), return FinalResponse immediately with a human-readable summary.
+       If the user asks to filter already available tasks (e.g. "which are in progress"),
+       return FinalResponse directly; do NOT emit any plan.
+    2) OTHERWISE, emit a SupportClickupSessionPlan to fetch the missing data.
+       Never return FinalResponse when the required data has not been retrieved yet.
+    3) If the latest tool_result contains a non-empty "tasks" array and the user asked to
+       list/find/filter tasks (e.g. "in progress", "to do", "done"), return FinalResponse
+       immediately by filtering those tasks. Do NOT call another tool.
+    4) ListTasks already includes status, id, name, and url, which is enough for status-based
+       task queries. For these queries, never call GetTaskInput after ListTasksInput.
+    DECISION LOGIC — follow this in order:
+    1. If you can answer from latest_tool_result_json, memory, or prior tool results, return FinalResponse with a concise summary.
+    2. If required context is missing, return ClickUpMemoryResolveOp first with specific keys.
+    3. Otherwise return exactly one valid 4-step plan: Open -> Send -> Next -> Finish.
+    4. Extract IDs from last_tool_result_json first, then memory_state_json, then prior tool results in conversation_history.
+       For example, if memory provides team_id "123", use that exact value.
+    5. Do not repeat the same action with the same IDs if the latest tool result did not change.
+    6. Always provide concrete IDs — never use null for a required ID.
+    7. For CreateTaskInput: if list_id is missing, check memory and conversation_history first.
+       Only do discovery (ListTeamsInput/ListSpacesInput/ListListsInput) if neither has it.
+    8. For UpdateTaskInput: if the latest tool_result already confirms the target task
+       is at the requested status, return FinalResponse immediately. Do NOT call UpdateTaskInput again.
+    9. After a successful CreateTaskInput or UpdateTaskInput tool_result appears in conversation_history,
+       your very next decision MUST be FinalResponse summarizing the result.
+       Do NOT emit another tool plan unless the user asked for an additional action.
+    10. DELETION SAFETY — this rule overrides all others for delete operations:
+       a) When the user asks to delete a task, send DeleteTaskInput with confirm_delete=false.
+       b) When the tool_result message contains "Please confirm", you MUST return FinalResponse
+          relaying the confirmation question to the user. Do NOT send another plan.
+          Do NOT set confirm_delete=true. STOP and WAIT for a new user message.
+       c) Only when a NEW user message explicitly says "yes", "confirm", "go ahead", or similar
+          affirmation AFTER the confirmation question was shown, send DeleteTaskInput
+          with confirm_delete=true.
+       d) If the user says "no" or "cancel", return FinalResponse saying the deletion was cancelled.
+    11. After a successful DeleteTaskInput tool_result with message containing "Deleted task",
+        return FinalResponse summarizing the deletion.
+    STRICT PLAN VALIDITY:
+    - If you return a plan, it MUST have exactly 4 steps and in this exact order:
+      1) {"op":"Open"}
+      2) {"op":"Send","input":{...}}
+      3) {"op":"Next"}
+      4) {"op":"Finish"}
+    - Never return a 1-step or 2-step plan.
+    - Never return only {"op":"Finish"} or only {"op":"Abort"}.
+    - If work is complete, return FinalResponse (message), not a plan.
+    For "in progress" task requests:
+    - Match status case-insensitively against "in progress".
+    - If matches exist, list them with name and URL.
+    - If none exist, clearly say there are no in-progress tasks.
+    Answer in JSON using any of these schemas:
+    {
+      // The final answer to return to the user when no more tool calls are needed.
+      message: string,
+    } or {
+      // Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Ru
+ntime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Return a top-level JSON object containing this steps field; do not return the steps array by itself.
+ Example object: {steps: [{op: "Open"}, {op: "Send", input: {...}}, {op: "Next"}, {op: "Finish"}], reason: null}.
+      steps: [
+        {
+          op: "Open",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Send",
+          // Input to send to the already-open session.
+          input: {
+          } or {
+            team_id: string,
+          } or {
+            space_id: string,
+          } or {
+            list_id: string,
+          } or {
+            task_id: string,
+          } or {
+            list_id: string,
+            name: string,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            // Task status string (e.g. in progress).
+            status: string or null,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            confirm_delete: bool,
+          },
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Next",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Finish",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Abort",
+          // Optional explanation for aborting the session.
+          reason: string or null,
+        }
+      ],
+      // Optional plan-level intent or rationale. Logged when plan is rejected (e.g. empty steps).
+      reason: string or null,
+    } or {
+      // Request runtime memory resolution for specific keys before planning the next ClickUp action.
+      op: "MemoryResolve",
+      // Optional list of clickup memory keys to resolve (team_id, team_name, team_candidates, space_id, space_name, space_candidates, list_id, list_name, list_candidates).
+      keys: string[] or null,
+      // Optional explanation for why this memory lookup is needed.
+      reason: string or null,
+    }
+    user: how many tasks are in to do status in clickup?
+    ---LLM REPLY---
+    {
+      "op": "MemoryResolve",
+      "keys": ["list_id"],
+      "reason": "Need to resolve the list_id for the task list where the 'to do' tasks are located."
+    }
+    ---Parsed Response (class ClickUpMemoryResolveOp)---
+    {
+      "op": "MemoryResolve",
+      "keys": [
+        "list_id"
+      ],
+      "reason": "Need to resolve the list_id for the task list where the 'to do' tasks are located."
+    }
+2026-03-13T19:51:19.766172Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: ok function="ChooseClickUpAction" elapsed_ms=3853
+2026-03-13T19:51:21.235160Z  INFO quickjs::console: [clickup-agent] TIMING llm step=1: 5323ms
+2026-03-13T19:51:21.235597Z  INFO baml_rt_quickjs::baml: Tool session open: start tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1
+2026-03-13T19:51:22.051345Z  INFO baml_rt_quickjs::baml: Tool session open: ok tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1 session_id=818848ed-39ab-4b86-aeb9-392ef99179b6
+2026-03-13T19:51:22.051407Z  INFO baml_rt_quickjs::baml: Tool session send: start session_id=818848ed-39ab-4b86-aeb9-392ef99179b6 tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:51:23.303290Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send received query_count=1
+2026-03-13T19:51:23.303348Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve called query_count=1
+2026-03-13T19:51:23.303358Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve scanning store total_records=0
+2026-03-13T19:51:23.303367Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=list_id found=false fresh=false
+2026-03-13T19:51:23.303385Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve complete result_count=1 found_count=0
+2026-03-13T19:51:23.303394Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send ok result_count=1 found_any=false
+2026-03-13T19:51:23.303419Z  INFO baml_rt_quickjs::baml: Tool session send: ok session_id=818848ed-39ab-4b86-aeb9-392ef99179b6 tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:51:23.303444Z  INFO baml_rt_quickjs::baml: Tool session next: start session_id=818848ed-39ab-4b86-aeb9-392ef99179b6
+2026-03-13T19:51:24.736127Z  INFO baml_rt_quickjs::baml: Tool session next: ok session_id=818848ed-39ab-4b86-aeb9-392ef99179b6 step=Done { output: Some(Object {"results": Array [Object {"scopeType": String("run"
+), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("list_id"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(false)}], "done": Bool(true)}) }
+2026-03-13T19:51:24.736188Z  INFO baml_rt_quickjs::baml: Tool session finish: start session_id=818848ed-39ab-4b86-aeb9-392ef99179b6
+2026-03-13T19:51:24.736208Z  INFO baml_rt_quickjs::baml: Tool session finish: ok session_id=818848ed-39ab-4b86-aeb9-392ef99179b6
+2026-03-13T19:51:24.736404Z  INFO quickjs::console: [clickup-agent] TIMING resolve(memory_op) step=1: 3501ms keys=list_id
+2026-03-13T19:51:26.305992Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: start function="ChooseClickUpAction" context_id=ctx-1773431471271-1 message_id=cli-msg-1 task_id=cli-task-ctx-1773431471271-
+1 attempt=1
+2026-03-13T13:51:28.463 [BAML INFO] Function ChooseClickUpAction:
+    Client: DefaultClient (openai/gpt-4o-mini) - 2120ms. StopReason: stop. Tokens(in/out): 1911/48
+    ---PROMPT---
+    system: You are a ClickUp assistant. You can navigate workspaces and manage tasks.
+    This function is called repeatedly in an iterative ReAct loop.
+    Each call you make ONE decision:
+    - return FinalResponse, OR
+    - return one SupportClickupSessionPlan, OR
+    - return one ClickUpMemoryResolveOp.
+    Never output partial plans.
+    Available actions — each is a distinct input type for the Send step.
+    Pick the one that matches the user's intent:
+    Navigation (discover IDs you don't already have):
+    - ListTeamsInput: list all teams/workspaces (empty object — no fields)
+    - ListSpacesInput: list spaces in a team (needs team_id from prior tool results)
+    - ListListsInput: list task lists in a space (needs space_id from prior tool results)
+    Task management:
+    - ListTasksInput: list tasks in a list (needs list_id from prior tool results)
+    - GetTaskInput: get details of a specific task (needs task_id)
+    - CreateTaskInput: create a new task (needs list_id, name; optional: description, priority)
+    - UpdateTaskInput: update status/description/priority of a task (needs task_id)
+    - DeleteTaskInput: permanently delete a task (needs task_id, confirm_delete)
+    CURRENT RUNTIME MEMORY STATE:
+    {}
+    LATEST TOOL RESULT (from current run state):
+    null
+    CONTEXT RESOLUTION PRIORITY (always follow this order when you need an ID):
+    1) LATEST TOOL RESULT FIRST — if last_tool_result_json already contains the needed data, use it.
+    2) MEMORY STATE SECOND — if memory_state_json already contains the ID, use it directly.
+    3) MEMORY LOOKUP THIRD — if memory_state_json lacks needed IDs/candidates, return ClickUpMemoryResolveOp.
+       Request only the specific keys you need now.
+    4) CONVERSATION HISTORY FOURTH — use recent tool_result data only if needed key is not in memory.
+    5) DISCOVERY LAST — only if neither latest_tool_result_json, memory, nor conversation_history can provide the ID,
+       emit a SupportClickupSessionPlan to discover it (ListTeamsInput -> ListSpacesInput -> ListListsInput).
+    RESPONSE GATE (apply after context resolution):
+    1) If the needed data is already available (from last_tool_result_json, memory_state_json, conversation_history, or prior
+       tool results), return FinalResponse immediately with a human-readable summary.
+       If the user asks to filter already available tasks (e.g. "which are in progress"),
+       return FinalResponse directly; do NOT emit any plan.
+    2) OTHERWISE, emit a SupportClickupSessionPlan to fetch the missing data.
+       Never return FinalResponse when the required data has not been retrieved yet.
+    3) If the latest tool_result contains a non-empty "tasks" array and the user asked to
+       list/find/filter tasks (e.g. "in progress", "to do", "done"), return FinalResponse
+       immediately by filtering those tasks. Do NOT call another tool.
+    4) ListTasks already includes status, id, name, and url, which is enough for status-based
+       task queries. For these queries, never call GetTaskInput after ListTasksInput.
+    DECISION LOGIC — follow this in order:
+    1. If you can answer from latest_tool_result_json, memory, or prior tool results, return FinalResponse with a concise summary.
+    2. If required context is missing, return ClickUpMemoryResolveOp first with specific keys.
+    3. Otherwise return exactly one valid 4-step plan: Open -> Send -> Next -> Finish.
+    4. Extract IDs from last_tool_result_json first, then memory_state_json, then prior tool results in conversation_history.
+       For example, if memory provides team_id "123", use that exact value.
+    5. Do not repeat the same action with the same IDs if the latest tool result did not change.
+    6. Always provide concrete IDs — never use null for a required ID.
+    7. For CreateTaskInput: if list_id is missing, check memory and conversation_history first.
+       Only do discovery (ListTeamsInput/ListSpacesInput/ListListsInput) if neither has it.
+    8. For UpdateTaskInput: if the latest tool_result already confirms the target task
+       is at the requested status, return FinalResponse immediately. Do NOT call UpdateTaskInput again.
+    9. After a successful CreateTaskInput or UpdateTaskInput tool_result appears in conversation_history,
+       your very next decision MUST be FinalResponse summarizing the result.
+       Do NOT emit another tool plan unless the user asked for an additional action.
+    10. DELETION SAFETY — this rule overrides all others for delete operations:
+       a) When the user asks to delete a task, send DeleteTaskInput with confirm_delete=false.
+       b) When the tool_result message contains "Please confirm", you MUST return FinalResponse
+          relaying the confirmation question to the user. Do NOT send another plan.
+          Do NOT set confirm_delete=true. STOP and WAIT for a new user message.
+       c) Only when a NEW user message explicitly says "yes", "confirm", "go ahead", or similar
+          affirmation AFTER the confirmation question was shown, send DeleteTaskInput
+          with confirm_delete=true.
+       d) If the user says "no" or "cancel", return FinalResponse saying the deletion was cancelled.
+    11. After a successful DeleteTaskInput tool_result with message containing "Deleted task",
+        return FinalResponse summarizing the deletion.
+    STRICT PLAN VALIDITY:
+    - If you return a plan, it MUST have exactly 4 steps and in this exact order:
+      1) {"op":"Open"}
+      2) {"op":"Send","input":{...}}
+      3) {"op":"Next"}
+      4) {"op":"Finish"}
+    - Never return a 1-step or 2-step plan.
+    - Never return only {"op":"Finish"} or only {"op":"Abort"}.
+    - If work is complete, return FinalResponse (message), not a plan.
+    For "in progress" task requests:
+    - Match status case-insensitively against "in progress".
+    - If matches exist, list them with name and URL.
+    - If none exist, clearly say there are no in-progress tasks.
+    Answer in JSON using any of these schemas:
+    {
+      // The final answer to return to the user when no more tool calls are needed.
+      message: string,
+    } or {
+      // Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Ru
+ntime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Return a top-level JSON object containing this steps field; do not return the steps array by itself.
+ Example object: {steps: [{op: "Open"}, {op: "Send", input: {...}}, {op: "Next"}, {op: "Finish"}], reason: null}.
+      steps: [
+        {
+          op: "Open",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Send",
+          // Input to send to the already-open session.
+          input: {
+          } or {
+            team_id: string,
+          } or {
+            space_id: string,
+          } or {
+            list_id: string,
+          } or {
+            task_id: string,
+          } or {
+            list_id: string,
+            name: string,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            // Task status string (e.g. in progress).
+            status: string or null,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            confirm_delete: bool,
+          },
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Next",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Finish",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Abort",
+          // Optional explanation for aborting the session.
+          reason: string or null,
+        }
+      ],
+      // Optional plan-level intent or rationale. Logged when plan is rejected (e.g. empty steps).
+      reason: string or null,
+    } or {
+      // Request runtime memory resolution for specific keys before planning the next ClickUp action.
+      op: "MemoryResolve",
+      // Optional list of clickup memory keys to resolve (team_id, team_name, team_candidates, space_id, space_name, space_candidates, list_id, list_name, list_candidates).
+      keys: string[] or null,
+      // Optional explanation for why this memory lookup is needed.
+      reason: string or null,
+    }
+    user: how many tasks are in to do status in clickup?
+    ---LLM REPLY---
+    {
+      "op": "MemoryResolve",
+      "keys": [
+        "list_id"
+      ],
+      "reason": "To retrieve the tasks in 'to do' status, I need the list ID where tasks are stored."
+    }
+    ---Parsed Response (class ClickUpMemoryResolveOp)---
+    {
+      "op": "MemoryResolve",
+      "keys": [
+        "list_id"
+      ],
+      "reason": "To retrieve the tasks in 'to do' status, I need the list ID where tasks are stored."
+    }
+2026-03-13T19:51:28.464099Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: ok function="ChooseClickUpAction" elapsed_ms=3727
+2026-03-13T19:51:29.578083Z  INFO quickjs::console: [clickup-agent] TIMING llm step=2: 4842ms
+2026-03-13T19:51:29.578490Z  INFO baml_rt_quickjs::baml: Tool session open: start tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1
+2026-03-13T19:51:30.389781Z  INFO baml_rt_quickjs::baml: Tool session open: ok tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1 session_id=ffd6a99f-f7d9-43f1-937d-983968a429dc
+2026-03-13T19:51:30.389837Z  INFO baml_rt_quickjs::baml: Tool session send: start session_id=ffd6a99f-f7d9-43f1-937d-983968a429dc tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:51:31.656315Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send received query_count=1
+2026-03-13T19:51:31.656363Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve called query_count=1
+2026-03-13T19:51:31.656373Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve scanning store total_records=0
+2026-03-13T19:51:31.656388Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=list_id found=false fresh=false
+2026-03-13T19:51:31.656408Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve complete result_count=1 found_count=0
+2026-03-13T19:51:31.656417Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send ok result_count=1 found_any=false
+2026-03-13T19:51:31.656449Z  INFO baml_rt_quickjs::baml: Tool session send: ok session_id=ffd6a99f-f7d9-43f1-937d-983968a429dc tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:51:31.656476Z  INFO baml_rt_quickjs::baml: Tool session next: start session_id=ffd6a99f-f7d9-43f1-937d-983968a429dc
+2026-03-13T19:51:33.002582Z  INFO baml_rt_quickjs::baml: Tool session next: ok session_id=ffd6a99f-f7d9-43f1-937d-983968a429dc step=Done { output: Some(Object {"results": Array [Object {"scopeType": String("run"
+), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("list_id"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(false)}], "done": Bool(true)}) }
+2026-03-13T19:51:33.002648Z  INFO baml_rt_quickjs::baml: Tool session finish: start session_id=ffd6a99f-f7d9-43f1-937d-983968a429dc
+2026-03-13T19:51:33.002677Z  INFO baml_rt_quickjs::baml: Tool session finish: ok session_id=ffd6a99f-f7d9-43f1-937d-983968a429dc
+2026-03-13T19:51:33.002936Z  INFO quickjs::console: [clickup-agent] TIMING resolve(memory_op) step=2: 3424ms keys=list_id
+2026-03-13T19:51:34.641463Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: start function="ChooseClickUpAction" context_id=ctx-1773431471271-1 message_id=cli-msg-1 task_id=cli-task-ctx-1773431471271-
+1 attempt=1
+2026-03-13T13:51:36.394 [BAML INFO] Function ChooseClickUpAction:
+    Client: DefaultClient (openai/gpt-4o-mini) - 1720ms. StopReason: stop. Tokens(in/out): 1911/44
+    ---PROMPT---
+    system: You are a ClickUp assistant. You can navigate workspaces and manage tasks.
+    This function is called repeatedly in an iterative ReAct loop.
+    Each call you make ONE decision:
+    - return FinalResponse, OR
+    - return one SupportClickupSessionPlan, OR
+    - return one ClickUpMemoryResolveOp.
+    Never output partial plans.
+    Available actions — each is a distinct input type for the Send step.
+    Pick the one that matches the user's intent:
+    Navigation (discover IDs you don't already have):
+    - ListTeamsInput: list all teams/workspaces (empty object — no fields)
+    - ListSpacesInput: list spaces in a team (needs team_id from prior tool results)
+    - ListListsInput: list task lists in a space (needs space_id from prior tool results)
+    Task management:
+    - ListTasksInput: list tasks in a list (needs list_id from prior tool results)
+    - GetTaskInput: get details of a specific task (needs task_id)
+    - CreateTaskInput: create a new task (needs list_id, name; optional: description, priority)
+    - UpdateTaskInput: update status/description/priority of a task (needs task_id)
+    - DeleteTaskInput: permanently delete a task (needs task_id, confirm_delete)
+    CURRENT RUNTIME MEMORY STATE:
+    {}
+    LATEST TOOL RESULT (from current run state):
+    null
+    CONTEXT RESOLUTION PRIORITY (always follow this order when you need an ID):
+    1) LATEST TOOL RESULT FIRST — if last_tool_result_json already contains the needed data, use it.
+    2) MEMORY STATE SECOND — if memory_state_json already contains the ID, use it directly.
+    3) MEMORY LOOKUP THIRD — if memory_state_json lacks needed IDs/candidates, return ClickUpMemoryResolveOp.
+       Request only the specific keys you need now.
+    4) CONVERSATION HISTORY FOURTH — use recent tool_result data only if needed key is not in memory.
+    5) DISCOVERY LAST — only if neither latest_tool_result_json, memory, nor conversation_history can provide the ID,
+       emit a SupportClickupSessionPlan to discover it (ListTeamsInput -> ListSpacesInput -> ListListsInput).
+    RESPONSE GATE (apply after context resolution):
+    1) If the needed data is already available (from last_tool_result_json, memory_state_json, conversation_history, or prior
+       tool results), return FinalResponse immediately with a human-readable summary.
+       If the user asks to filter already available tasks (e.g. "which are in progress"),
+       return FinalResponse directly; do NOT emit any plan.
+    2) OTHERWISE, emit a SupportClickupSessionPlan to fetch the missing data.
+       Never return FinalResponse when the required data has not been retrieved yet.
+    3) If the latest tool_result contains a non-empty "tasks" array and the user asked to
+       list/find/filter tasks (e.g. "in progress", "to do", "done"), return FinalResponse
+       immediately by filtering those tasks. Do NOT call another tool.
+    4) ListTasks already includes status, id, name, and url, which is enough for status-based
+       task queries. For these queries, never call GetTaskInput after ListTasksInput.
+    DECISION LOGIC — follow this in order:
+    1. If you can answer from latest_tool_result_json, memory, or prior tool results, return FinalResponse with a concise summary.
+    2. If required context is missing, return ClickUpMemoryResolveOp first with specific keys.
+    3. Otherwise return exactly one valid 4-step plan: Open -> Send -> Next -> Finish.
+    4. Extract IDs from last_tool_result_json first, then memory_state_json, then prior tool results in conversation_history.
+       For example, if memory provides team_id "123", use that exact value.
+    5. Do not repeat the same action with the same IDs if the latest tool result did not change.
+    6. Always provide concrete IDs — never use null for a required ID.
+    7. For CreateTaskInput: if list_id is missing, check memory and conversation_history first.
+       Only do discovery (ListTeamsInput/ListSpacesInput/ListListsInput) if neither has it.
+    8. For UpdateTaskInput: if the latest tool_result already confirms the target task
+       is at the requested status, return FinalResponse immediately. Do NOT call UpdateTaskInput again.
+    9. After a successful CreateTaskInput or UpdateTaskInput tool_result appears in conversation_history,
+       your very next decision MUST be FinalResponse summarizing the result.
+       Do NOT emit another tool plan unless the user asked for an additional action.
+    10. DELETION SAFETY — this rule overrides all others for delete operations:
+       a) When the user asks to delete a task, send DeleteTaskInput with confirm_delete=false.
+       b) When the tool_result message contains "Please confirm", you MUST return FinalResponse
+          relaying the confirmation question to the user. Do NOT send another plan.
+          Do NOT set confirm_delete=true. STOP and WAIT for a new user message.
+       c) Only when a NEW user message explicitly says "yes", "confirm", "go ahead", or similar
+          affirmation AFTER the confirmation question was shown, send DeleteTaskInput
+          with confirm_delete=true.
+       d) If the user says "no" or "cancel", return FinalResponse saying the deletion was cancelled.
+    11. After a successful DeleteTaskInput tool_result with message containing "Deleted task",
+        return FinalResponse summarizing the deletion.
+    STRICT PLAN VALIDITY:
+    - If you return a plan, it MUST have exactly 4 steps and in this exact order:
+      1) {"op":"Open"}
+      2) {"op":"Send","input":{...}}
+      3) {"op":"Next"}
+      4) {"op":"Finish"}
+    - Never return a 1-step or 2-step plan.
+    - Never return only {"op":"Finish"} or only {"op":"Abort"}.
+    - If work is complete, return FinalResponse (message), not a plan.
+    For "in progress" task requests:
+    - Match status case-insensitively against "in progress".
+    - If matches exist, list them with name and URL.
+    - If none exist, clearly say there are no in-progress tasks.
+    Answer in JSON using any of these schemas:
+    {
+      // The final answer to return to the user when no more tool calls are needed.
+      message: string,
+    } or {
+      // Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Ru
+ntime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Return a top-level JSON object containing this steps field; do not return the steps array by itself.
+ Example object: {steps: [{op: "Open"}, {op: "Send", input: {...}}, {op: "Next"}, {op: "Finish"}], reason: null}.
+      steps: [
+        {
+          op: "Open",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Send",
+          // Input to send to the already-open session.
+          input: {
+          } or {
+            team_id: string,
+          } or {
+            space_id: string,
+          } or {
+            list_id: string,
+          } or {
+            task_id: string,
+          } or {
+            list_id: string,
+            name: string,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            // Task status string (e.g. in progress).
+            status: string or null,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            confirm_delete: bool,
+          },
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Next",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Finish",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Abort",
+          // Optional explanation for aborting the session.
+          reason: string or null,
+        }
+      ],
+      // Optional plan-level intent or rationale. Logged when plan is rejected (e.g. empty steps).
+      reason: string or null,
+    } or {
+      // Request runtime memory resolution for specific keys before planning the next ClickUp action.
+      op: "MemoryResolve",
+      // Optional list of clickup memory keys to resolve (team_id, team_name, team_candidates, space_id, space_name, space_candidates, list_id, list_name, list_candidates).
+      keys: string[] or null,
+      // Optional explanation for why this memory lookup is needed.
+      reason: string or null,
+    }
+    user: how many tasks are in to do status in clickup?
+    ---LLM REPLY---
+    {
+      "op": "MemoryResolve",
+      "keys": [
+        "list_id"
+      ],
+      "reason": "I need the list_id to check for tasks in the 'to do' status."
+    }
+    ---Parsed Response (class ClickUpMemoryResolveOp)---
+    {
+      "op": "MemoryResolve",
+      "keys": [
+        "list_id"
+      ],
+      "reason": "I need the list_id to check for tasks in the 'to do' status."
+    }
+2026-03-13T19:51:36.395322Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: ok function="ChooseClickUpAction" elapsed_ms=3392
+2026-03-13T19:51:37.484505Z  INFO quickjs::console: [clickup-agent] TIMING llm step=3: 4482ms
+2026-03-13T19:51:37.484720Z  INFO baml_rt_quickjs::baml: Tool session open: start tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1
+2026-03-13T19:51:38.305387Z  INFO baml_rt_quickjs::baml: Tool session open: ok tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1 session_id=286a3416-b568-4fc1-af50-eb8fc4c4917e
+2026-03-13T19:51:38.305440Z  INFO baml_rt_quickjs::baml: Tool session send: start session_id=286a3416-b568-4fc1-af50-eb8fc4c4917e tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:51:39.617017Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send received query_count=1
+2026-03-13T19:51:39.617062Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve called query_count=1
+2026-03-13T19:51:39.617073Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve scanning store total_records=0
+2026-03-13T19:51:39.617088Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=list_id found=false fresh=false
+2026-03-13T19:51:39.617107Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve complete result_count=1 found_count=0
+2026-03-13T19:51:39.617121Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send ok result_count=1 found_any=false
+2026-03-13T19:51:39.617166Z  INFO baml_rt_quickjs::baml: Tool session send: ok session_id=286a3416-b568-4fc1-af50-eb8fc4c4917e tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:51:39.617197Z  INFO baml_rt_quickjs::baml: Tool session next: start session_id=286a3416-b568-4fc1-af50-eb8fc4c4917e
+2026-03-13T19:51:41.001461Z  INFO baml_rt_quickjs::baml: Tool session next: ok session_id=286a3416-b568-4fc1-af50-eb8fc4c4917e step=Done { output: Some(Object {"results": Array [Object {"scopeType": String("run"
+), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("list_id"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(false)}], "done": Bool(true)}) }
+2026-03-13T19:51:41.001526Z  INFO baml_rt_quickjs::baml: Tool session finish: start session_id=286a3416-b568-4fc1-af50-eb8fc4c4917e
+2026-03-13T19:51:41.001545Z  INFO baml_rt_quickjs::baml: Tool session finish: ok session_id=286a3416-b568-4fc1-af50-eb8fc4c4917e
+2026-03-13T19:51:41.001819Z  INFO quickjs::console: [clickup-agent] TIMING resolve(memory_op) step=3: 3517ms keys=list_id
+2026-03-13T19:51:42.576894Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: start function="ChooseClickUpAction" context_id=ctx-1773431471271-1 message_id=cli-msg-1 task_id=cli-task-ctx-1773431471271-
+1 attempt=1
+2026-03-13T13:51:44.685 [BAML INFO] Function ChooseClickUpAction:
+    Client: DefaultClient (openai/gpt-4o-mini) - 2093ms. StopReason: stop. Tokens(in/out): 1911/38
+    ---PROMPT---
+    system: You are a ClickUp assistant. You can navigate workspaces and manage tasks.
+    This function is called repeatedly in an iterative ReAct loop.
+    Each call you make ONE decision:
+    - return FinalResponse, OR
+    - return one SupportClickupSessionPlan, OR
+    - return one ClickUpMemoryResolveOp.
+    Never output partial plans.
+    Available actions — each is a distinct input type for the Send step.
+    Pick the one that matches the user's intent:
+    Navigation (discover IDs you don't already have):
+    - ListTeamsInput: list all teams/workspaces (empty object — no fields)
+    - ListSpacesInput: list spaces in a team (needs team_id from prior tool results)
+    - ListListsInput: list task lists in a space (needs space_id from prior tool results)
+    Task management:
+    - ListTasksInput: list tasks in a list (needs list_id from prior tool results)
+    - GetTaskInput: get details of a specific task (needs task_id)
+    - CreateTaskInput: create a new task (needs list_id, name; optional: description, priority)
+    - UpdateTaskInput: update status/description/priority of a task (needs task_id)
+    - DeleteTaskInput: permanently delete a task (needs task_id, confirm_delete)
+    CURRENT RUNTIME MEMORY STATE:
+    {}
+    LATEST TOOL RESULT (from current run state):
+    null
+    CONTEXT RESOLUTION PRIORITY (always follow this order when you need an ID):
+    1) LATEST TOOL RESULT FIRST — if last_tool_result_json already contains the needed data, use it.
+    2) MEMORY STATE SECOND — if memory_state_json already contains the ID, use it directly.
+    3) MEMORY LOOKUP THIRD — if memory_state_json lacks needed IDs/candidates, return ClickUpMemoryResolveOp.
+       Request only the specific keys you need now.
+    4) CONVERSATION HISTORY FOURTH — use recent tool_result data only if needed key is not in memory.
+    5) DISCOVERY LAST — only if neither latest_tool_result_json, memory, nor conversation_history can provide the ID,
+       emit a SupportClickupSessionPlan to discover it (ListTeamsInput -> ListSpacesInput -> ListListsInput).
+    RESPONSE GATE (apply after context resolution):
+    1) If the needed data is already available (from last_tool_result_json, memory_state_json, conversation_history, or prior
+       tool results), return FinalResponse immediately with a human-readable summary.
+       If the user asks to filter already available tasks (e.g. "which are in progress"),
+       return FinalResponse directly; do NOT emit any plan.
+    2) OTHERWISE, emit a SupportClickupSessionPlan to fetch the missing data.
+       Never return FinalResponse when the required data has not been retrieved yet.
+    3) If the latest tool_result contains a non-empty "tasks" array and the user asked to
+       list/find/filter tasks (e.g. "in progress", "to do", "done"), return FinalResponse
+       immediately by filtering those tasks. Do NOT call another tool.
+    4) ListTasks already includes status, id, name, and url, which is enough for status-based
+       task queries. For these queries, never call GetTaskInput after ListTasksInput.
+    DECISION LOGIC — follow this in order:
+    1. If you can answer from latest_tool_result_json, memory, or prior tool results, return FinalResponse with a concise summary.
+    2. If required context is missing, return ClickUpMemoryResolveOp first with specific keys.
+    3. Otherwise return exactly one valid 4-step plan: Open -> Send -> Next -> Finish.
+    4. Extract IDs from last_tool_result_json first, then memory_state_json, then prior tool results in conversation_history.
+       For example, if memory provides team_id "123", use that exact value.
+    5. Do not repeat the same action with the same IDs if the latest tool result did not change.
+    6. Always provide concrete IDs — never use null for a required ID.
+    7. For CreateTaskInput: if list_id is missing, check memory and conversation_history first.
+       Only do discovery (ListTeamsInput/ListSpacesInput/ListListsInput) if neither has it.
+    8. For UpdateTaskInput: if the latest tool_result already confirms the target task
+       is at the requested status, return FinalResponse immediately. Do NOT call UpdateTaskInput again.
+    9. After a successful CreateTaskInput or UpdateTaskInput tool_result appears in conversation_history,
+       your very next decision MUST be FinalResponse summarizing the result.
+       Do NOT emit another tool plan unless the user asked for an additional action.
+    10. DELETION SAFETY — this rule overrides all others for delete operations:
+       a) When the user asks to delete a task, send DeleteTaskInput with confirm_delete=false.
+       b) When the tool_result message contains "Please confirm", you MUST return FinalResponse
+          relaying the confirmation question to the user. Do NOT send another plan.
+          Do NOT set confirm_delete=true. STOP and WAIT for a new user message.
+       c) Only when a NEW user message explicitly says "yes", "confirm", "go ahead", or similar
+          affirmation AFTER the confirmation question was shown, send DeleteTaskInput
+          with confirm_delete=true.
+       d) If the user says "no" or "cancel", return FinalResponse saying the deletion was cancelled.
+    11. After a successful DeleteTaskInput tool_result with message containing "Deleted task",
+        return FinalResponse summarizing the deletion.
+    STRICT PLAN VALIDITY:
+    - If you return a plan, it MUST have exactly 4 steps and in this exact order:
+      1) {"op":"Open"}
+      2) {"op":"Send","input":{...}}
+      3) {"op":"Next"}
+      4) {"op":"Finish"}
+    - Never return a 1-step or 2-step plan.
+    - Never return only {"op":"Finish"} or only {"op":"Abort"}.
+    - If work is complete, return FinalResponse (message), not a plan.
+    For "in progress" task requests:
+    - Match status case-insensitively against "in progress".
+    - If matches exist, list them with name and URL.
+    - If none exist, clearly say there are no in-progress tasks.
+    Answer in JSON using any of these schemas:
+    {
+      // The final answer to return to the user when no more tool calls are needed.
+      message: string,
+    } or {
+      // Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Ru
+ntime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Return a top-level JSON object containing this steps field; do not return the steps array by itself.
+ Example object: {steps: [{op: "Open"}, {op: "Send", input: {...}}, {op: "Next"}, {op: "Finish"}], reason: null}.
+      steps: [
+        {
+          op: "Open",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Send",
+          // Input to send to the already-open session.
+          input: {
+          } or {
+            team_id: string,
+          } or {
+            space_id: string,
+          } or {
+            list_id: string,
+          } or {
+            task_id: string,
+          } or {
+            list_id: string,
+            name: string,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            // Task status string (e.g. in progress).
+            status: string or null,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            confirm_delete: bool,
+          },
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Next",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Finish",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Abort",
+          // Optional explanation for aborting the session.
+          reason: string or null,
+        }
+      ],
+      // Optional plan-level intent or rationale. Logged when plan is rejected (e.g. empty steps).
+      reason: string or null,
+    } or {
+      // Request runtime memory resolution for specific keys before planning the next ClickUp action.
+      op: "MemoryResolve",
+      // Optional list of clickup memory keys to resolve (team_id, team_name, team_candidates, space_id, space_name, space_candidates, list_id, list_name, list_candidates).
+      keys: string[] or null,
+      // Optional explanation for why this memory lookup is needed.
+      reason: string or null,
+    }
+    user: how many tasks are in to do status in clickup?
+    ---LLM REPLY---
+    {
+      "op": "MemoryResolve",
+      "keys": ["list_id"],
+      "reason": "I need the list_id to retrieve tasks in 'to do' status."
+    }
+    ---Parsed Response (class ClickUpMemoryResolveOp)---
+    {
+      "op": "MemoryResolve",
+      "keys": [
+        "list_id"
+      ],
+      "reason": "I need the list_id to retrieve tasks in 'to do' status."
+    }
+2026-03-13T19:51:44.686056Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: ok function="ChooseClickUpAction" elapsed_ms=3683
+2026-03-13T19:51:45.718672Z  INFO quickjs::console: [clickup-agent] TIMING llm step=4: 4717ms
+2026-03-13T19:51:45.718924Z  INFO baml_rt_quickjs::baml: Tool session open: start tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1
+2026-03-13T19:51:46.540587Z  INFO baml_rt_quickjs::baml: Tool session open: ok tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1 session_id=da2b71cd-2890-40f8-805d-74d409dae91c
+2026-03-13T19:51:46.540652Z  INFO baml_rt_quickjs::baml: Tool session send: start session_id=da2b71cd-2890-40f8-805d-74d409dae91c tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:51:47.774945Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send received query_count=1
+2026-03-13T19:51:47.774988Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve called query_count=1
+2026-03-13T19:51:47.774997Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve scanning store total_records=0
+2026-03-13T19:51:47.775013Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=list_id found=false fresh=false
+2026-03-13T19:51:47.775032Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve complete result_count=1 found_count=0
+2026-03-13T19:51:47.775045Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send ok result_count=1 found_any=false
+2026-03-13T19:51:47.775079Z  INFO baml_rt_quickjs::baml: Tool session send: ok session_id=da2b71cd-2890-40f8-805d-74d409dae91c tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:51:47.775105Z  INFO baml_rt_quickjs::baml: Tool session next: start session_id=da2b71cd-2890-40f8-805d-74d409dae91c
+2026-03-13T19:51:49.209687Z  INFO baml_rt_quickjs::baml: Tool session next: ok session_id=da2b71cd-2890-40f8-805d-74d409dae91c step=Done { output: Some(Object {"results": Array [Object {"scopeType": String("run"
+), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("list_id"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(false)}], "done": Bool(true)}) }
+2026-03-13T19:51:49.209752Z  INFO baml_rt_quickjs::baml: Tool session finish: start session_id=da2b71cd-2890-40f8-805d-74d409dae91c
+2026-03-13T19:51:49.209774Z  INFO baml_rt_quickjs::baml: Tool session finish: ok session_id=da2b71cd-2890-40f8-805d-74d409dae91c
+2026-03-13T19:51:49.210004Z  INFO quickjs::console: [clickup-agent] TIMING resolve(memory_op) step=4: 3491ms keys=list_id
+2026-03-13T19:51:50.786658Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: start function="ChooseClickUpAction" context_id=ctx-1773431471271-1 message_id=cli-msg-1 task_id=cli-task-ctx-1773431471271-
+1 attempt=1
+2026-03-13T13:51:52.842 [BAML INFO] Function ChooseClickUpAction:
+    Client: DefaultClient (openai/gpt-4o-mini) - 2023ms. StopReason: stop. Tokens(in/out): 1911/41
+    ---PROMPT---
+    system: You are a ClickUp assistant. You can navigate workspaces and manage tasks.
+    This function is called repeatedly in an iterative ReAct loop.
+    Each call you make ONE decision:
+    - return FinalResponse, OR
+    - return one SupportClickupSessionPlan, OR
+    - return one ClickUpMemoryResolveOp.
+    Never output partial plans.
+    Available actions — each is a distinct input type for the Send step.
+    Pick the one that matches the user's intent:
+    Navigation (discover IDs you don't already have):
+    - ListTeamsInput: list all teams/workspaces (empty object — no fields)
+    - ListSpacesInput: list spaces in a team (needs team_id from prior tool results)
+    - ListListsInput: list task lists in a space (needs space_id from prior tool results)
+    Task management:
+    - ListTasksInput: list tasks in a list (needs list_id from prior tool results)
+    - GetTaskInput: get details of a specific task (needs task_id)
+    - CreateTaskInput: create a new task (needs list_id, name; optional: description, priority)
+    - UpdateTaskInput: update status/description/priority of a task (needs task_id)
+    - DeleteTaskInput: permanently delete a task (needs task_id, confirm_delete)
+    CURRENT RUNTIME MEMORY STATE:
+    {}
+    LATEST TOOL RESULT (from current run state):
+    null
+    CONTEXT RESOLUTION PRIORITY (always follow this order when you need an ID):
+    1) LATEST TOOL RESULT FIRST — if last_tool_result_json already contains the needed data, use it.
+    2) MEMORY STATE SECOND — if memory_state_json already contains the ID, use it directly.
+    3) MEMORY LOOKUP THIRD — if memory_state_json lacks needed IDs/candidates, return ClickUpMemoryResolveOp.
+       Request only the specific keys you need now.
+    4) CONVERSATION HISTORY FOURTH — use recent tool_result data only if needed key is not in memory.
+    5) DISCOVERY LAST — only if neither latest_tool_result_json, memory, nor conversation_history can provide the ID,
+       emit a SupportClickupSessionPlan to discover it (ListTeamsInput -> ListSpacesInput -> ListListsInput).
+    RESPONSE GATE (apply after context resolution):
+    1) If the needed data is already available (from last_tool_result_json, memory_state_json, conversation_history, or prior
+       tool results), return FinalResponse immediately with a human-readable summary.
+       If the user asks to filter already available tasks (e.g. "which are in progress"),
+       return FinalResponse directly; do NOT emit any plan.
+    2) OTHERWISE, emit a SupportClickupSessionPlan to fetch the missing data.
+       Never return FinalResponse when the required data has not been retrieved yet.
+    3) If the latest tool_result contains a non-empty "tasks" array and the user asked to
+       list/find/filter tasks (e.g. "in progress", "to do", "done"), return FinalResponse
+       immediately by filtering those tasks. Do NOT call another tool.
+    4) ListTasks already includes status, id, name, and url, which is enough for status-based
+       task queries. For these queries, never call GetTaskInput after ListTasksInput.
+    DECISION LOGIC — follow this in order:
+    1. If you can answer from latest_tool_result_json, memory, or prior tool results, return FinalResponse with a concise summary.
+    2. If required context is missing, return ClickUpMemoryResolveOp first with specific keys.
+    3. Otherwise return exactly one valid 4-step plan: Open -> Send -> Next -> Finish.
+    4. Extract IDs from last_tool_result_json first, then memory_state_json, then prior tool results in conversation_history.
+       For example, if memory provides team_id "123", use that exact value.
+    5. Do not repeat the same action with the same IDs if the latest tool result did not change.
+    6. Always provide concrete IDs — never use null for a required ID.
+    7. For CreateTaskInput: if list_id is missing, check memory and conversation_history first.
+       Only do discovery (ListTeamsInput/ListSpacesInput/ListListsInput) if neither has it.
+    8. For UpdateTaskInput: if the latest tool_result already confirms the target task
+       is at the requested status, return FinalResponse immediately. Do NOT call UpdateTaskInput again.
+    9. After a successful CreateTaskInput or UpdateTaskInput tool_result appears in conversation_history,
+       your very next decision MUST be FinalResponse summarizing the result.
+       Do NOT emit another tool plan unless the user asked for an additional action.
+    10. DELETION SAFETY — this rule overrides all others for delete operations:
+       a) When the user asks to delete a task, send DeleteTaskInput with confirm_delete=false.
+       b) When the tool_result message contains "Please confirm", you MUST return FinalResponse
+          relaying the confirmation question to the user. Do NOT send another plan.
+          Do NOT set confirm_delete=true. STOP and WAIT for a new user message.
+       c) Only when a NEW user message explicitly says "yes", "confirm", "go ahead", or similar
+          affirmation AFTER the confirmation question was shown, send DeleteTaskInput
+          with confirm_delete=true.
+       d) If the user says "no" or "cancel", return FinalResponse saying the deletion was cancelled.
+    11. After a successful DeleteTaskInput tool_result with message containing "Deleted task",
+        return FinalResponse summarizing the deletion.
+    STRICT PLAN VALIDITY:
+    - If you return a plan, it MUST have exactly 4 steps and in this exact order:
+      1) {"op":"Open"}
+      2) {"op":"Send","input":{...}}
+      3) {"op":"Next"}
+      4) {"op":"Finish"}
+    - Never return a 1-step or 2-step plan.
+    - Never return only {"op":"Finish"} or only {"op":"Abort"}.
+    - If work is complete, return FinalResponse (message), not a plan.
+    For "in progress" task requests:
+    - Match status case-insensitively against "in progress".
+    - If matches exist, list them with name and URL.
+    - If none exist, clearly say there are no in-progress tasks.
+    Answer in JSON using any of these schemas:
+    {
+      // The final answer to return to the user when no more tool calls are needed.
+      message: string,
+    } or {
+      // Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Ru
+ntime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Return a top-level JSON object containing this steps field; do not return the steps array by itself.
+ Example object: {steps: [{op: "Open"}, {op: "Send", input: {...}}, {op: "Next"}, {op: "Finish"}], reason: null}.
+      steps: [
+        {
+          op: "Open",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Send",
+          // Input to send to the already-open session.
+          input: {
+          } or {
+            team_id: string,
+          } or {
+            space_id: string,
+          } or {
+            list_id: string,
+          } or {
+            task_id: string,
+          } or {
+            list_id: string,
+            name: string,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            // Task status string (e.g. in progress).
+            status: string or null,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            confirm_delete: bool,
+          },
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Next",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Finish",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Abort",
+          // Optional explanation for aborting the session.
+          reason: string or null,
+        }
+      ],
+      // Optional plan-level intent or rationale. Logged when plan is rejected (e.g. empty steps).
+      reason: string or null,
+    } or {
+      // Request runtime memory resolution for specific keys before planning the next ClickUp action.
+      op: "MemoryResolve",
+      // Optional list of clickup memory keys to resolve (team_id, team_name, team_candidates, space_id, space_name, space_candidates, list_id, list_name, list_candidates).
+      keys: string[] or null,
+      // Optional explanation for why this memory lookup is needed.
+      reason: string or null,
+    }
+    user: how many tasks are in to do status in clickup?
+    ---LLM REPLY---
+    {
+      "op": "MemoryResolve",
+      "keys": [
+        "list_id"
+      ],
+      "reason": "Need the list_id to retrieve tasks in 'To Do' status."
+    }
+    ---Parsed Response (class ClickUpMemoryResolveOp)---
+    {
+      "op": "MemoryResolve",
+      "keys": [
+        "list_id"
+      ],
+      "reason": "Need the list_id to retrieve tasks in 'To Do' status."
+    }
+2026-03-13T19:51:52.842943Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: ok function="ChooseClickUpAction" elapsed_ms=3632
+2026-03-13T19:51:53.958405Z  INFO quickjs::console: [clickup-agent] TIMING llm step=5: 4748ms
+2026-03-13T19:51:53.958661Z  INFO baml_rt_quickjs::baml: Tool session open: start tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1
+2026-03-13T19:51:54.797141Z  INFO baml_rt_quickjs::baml: Tool session open: ok tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1 session_id=8ad6e78e-3b8d-4832-99ef-2e1f3e4ef1a5
+2026-03-13T19:51:54.797206Z  INFO baml_rt_quickjs::baml: Tool session send: start session_id=8ad6e78e-3b8d-4832-99ef-2e1f3e4ef1a5 tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:51:56.041356Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send received query_count=1
+2026-03-13T19:51:56.041401Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve called query_count=1
+2026-03-13T19:51:56.041411Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve scanning store total_records=0
+2026-03-13T19:51:56.041422Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=list_id found=false fresh=false
+2026-03-13T19:51:56.041437Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve complete result_count=1 found_count=0
+2026-03-13T19:51:56.041446Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send ok result_count=1 found_any=false
+2026-03-13T19:51:56.041471Z  INFO baml_rt_quickjs::baml: Tool session send: ok session_id=8ad6e78e-3b8d-4832-99ef-2e1f3e4ef1a5 tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:51:56.041503Z  INFO baml_rt_quickjs::baml: Tool session next: start session_id=8ad6e78e-3b8d-4832-99ef-2e1f3e4ef1a5
+2026-03-13T19:51:57.432883Z  INFO baml_rt_quickjs::baml: Tool session next: ok session_id=8ad6e78e-3b8d-4832-99ef-2e1f3e4ef1a5 step=Done { output: Some(Object {"results": Array [Object {"scopeType": String("run"
+), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("list_id"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(false)}], "done": Bool(true)}) }
+2026-03-13T19:51:57.432954Z  INFO baml_rt_quickjs::baml: Tool session finish: start session_id=8ad6e78e-3b8d-4832-99ef-2e1f3e4ef1a5
+2026-03-13T19:51:57.432976Z  INFO baml_rt_quickjs::baml: Tool session finish: ok session_id=8ad6e78e-3b8d-4832-99ef-2e1f3e4ef1a5
+2026-03-13T19:51:57.433180Z  INFO quickjs::console: [clickup-agent] TIMING resolve(memory_op) step=5: 3475ms keys=list_id
+2026-03-13T19:51:59.033196Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: start function="ChooseClickUpAction" context_id=ctx-1773431471271-1 message_id=cli-msg-1 task_id=cli-task-ctx-1773431471271-
+1 attempt=1
+2026-03-13T13:52:00.561 [BAML INFO] Function ChooseClickUpAction:
+    Client: DefaultClient (openai/gpt-4o-mini) - 1496ms. StopReason: stop. Tokens(in/out): 1911/45
+    ---PROMPT---
+    system: You are a ClickUp assistant. You can navigate workspaces and manage tasks.
+    This function is called repeatedly in an iterative ReAct loop.
+    Each call you make ONE decision:
+    - return FinalResponse, OR
+    - return one SupportClickupSessionPlan, OR
+    - return one ClickUpMemoryResolveOp.
+    Never output partial plans.
+    Available actions — each is a distinct input type for the Send step.
+    Pick the one that matches the user's intent:
+    Navigation (discover IDs you don't already have):
+    - ListTeamsInput: list all teams/workspaces (empty object — no fields)
+    - ListSpacesInput: list spaces in a team (needs team_id from prior tool results)
+    - ListListsInput: list task lists in a space (needs space_id from prior tool results)
+    Task management:
+    - ListTasksInput: list tasks in a list (needs list_id from prior tool results)
+    - GetTaskInput: get details of a specific task (needs task_id)
+    - CreateTaskInput: create a new task (needs list_id, name; optional: description, priority)
+    - UpdateTaskInput: update status/description/priority of a task (needs task_id)
+    - DeleteTaskInput: permanently delete a task (needs task_id, confirm_delete)
+    CURRENT RUNTIME MEMORY STATE:
+    {}
+    LATEST TOOL RESULT (from current run state):
+    null
+    CONTEXT RESOLUTION PRIORITY (always follow this order when you need an ID):
+    1) LATEST TOOL RESULT FIRST — if last_tool_result_json already contains the needed data, use it.
+    2) MEMORY STATE SECOND — if memory_state_json already contains the ID, use it directly.
+    3) MEMORY LOOKUP THIRD — if memory_state_json lacks needed IDs/candidates, return ClickUpMemoryResolveOp.
+       Request only the specific keys you need now.
+    4) CONVERSATION HISTORY FOURTH — use recent tool_result data only if needed key is not in memory.
+    5) DISCOVERY LAST — only if neither latest_tool_result_json, memory, nor conversation_history can provide the ID,
+       emit a SupportClickupSessionPlan to discover it (ListTeamsInput -> ListSpacesInput -> ListListsInput).
+    RESPONSE GATE (apply after context resolution):
+    1) If the needed data is already available (from last_tool_result_json, memory_state_json, conversation_history, or prior
+       tool results), return FinalResponse immediately with a human-readable summary.
+       If the user asks to filter already available tasks (e.g. "which are in progress"),
+       return FinalResponse directly; do NOT emit any plan.
+    2) OTHERWISE, emit a SupportClickupSessionPlan to fetch the missing data.
+       Never return FinalResponse when the required data has not been retrieved yet.
+    3) If the latest tool_result contains a non-empty "tasks" array and the user asked to
+       list/find/filter tasks (e.g. "in progress", "to do", "done"), return FinalResponse
+       immediately by filtering those tasks. Do NOT call another tool.
+    4) ListTasks already includes status, id, name, and url, which is enough for status-based
+       task queries. For these queries, never call GetTaskInput after ListTasksInput.
+    DECISION LOGIC — follow this in order:
+    1. If you can answer from latest_tool_result_json, memory, or prior tool results, return FinalResponse with a concise summary.
+    2. If required context is missing, return ClickUpMemoryResolveOp first with specific keys.
+    3. Otherwise return exactly one valid 4-step plan: Open -> Send -> Next -> Finish.
+    4. Extract IDs from last_tool_result_json first, then memory_state_json, then prior tool results in conversation_history.
+       For example, if memory provides team_id "123", use that exact value.
+    5. Do not repeat the same action with the same IDs if the latest tool result did not change.
+    6. Always provide concrete IDs — never use null for a required ID.
+    7. For CreateTaskInput: if list_id is missing, check memory and conversation_history first.
+       Only do discovery (ListTeamsInput/ListSpacesInput/ListListsInput) if neither has it.
+    8. For UpdateTaskInput: if the latest tool_result already confirms the target task
+       is at the requested status, return FinalResponse immediately. Do NOT call UpdateTaskInput again.
+    9. After a successful CreateTaskInput or UpdateTaskInput tool_result appears in conversation_history,
+       your very next decision MUST be FinalResponse summarizing the result.
+       Do NOT emit another tool plan unless the user asked for an additional action.
+    10. DELETION SAFETY — this rule overrides all others for delete operations:
+       a) When the user asks to delete a task, send DeleteTaskInput with confirm_delete=false.
+       b) When the tool_result message contains "Please confirm", you MUST return FinalResponse
+          relaying the confirmation question to the user. Do NOT send another plan.
+          Do NOT set confirm_delete=true. STOP and WAIT for a new user message.
+       c) Only when a NEW user message explicitly says "yes", "confirm", "go ahead", or similar
+          affirmation AFTER the confirmation question was shown, send DeleteTaskInput
+          with confirm_delete=true.
+       d) If the user says "no" or "cancel", return FinalResponse saying the deletion was cancelled.
+    11. After a successful DeleteTaskInput tool_result with message containing "Deleted task",
+        return FinalResponse summarizing the deletion.
+    STRICT PLAN VALIDITY:
+    - If you return a plan, it MUST have exactly 4 steps and in this exact order:
+      1) {"op":"Open"}
+      2) {"op":"Send","input":{...}}
+      3) {"op":"Next"}
+      4) {"op":"Finish"}
+    - Never return a 1-step or 2-step plan.
+    - Never return only {"op":"Finish"} or only {"op":"Abort"}.
+    - If work is complete, return FinalResponse (message), not a plan.
+    For "in progress" task requests:
+    - Match status case-insensitively against "in progress".
+    - If matches exist, list them with name and URL.
+    - If none exist, clearly say there are no in-progress tasks.
+    Answer in JSON using any of these schemas:
+    {
+      // The final answer to return to the user when no more tool calls are needed.
+      message: string,
+    } or {
+      // Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Ru
+ntime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Return a top-level JSON object containing this steps field; do not return the steps array by itself.
+ Example object: {steps: [{op: "Open"}, {op: "Send", input: {...}}, {op: "Next"}, {op: "Finish"}], reason: null}.
+      steps: [
+        {
+          op: "Open",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Send",
+          // Input to send to the already-open session.
+          input: {
+          } or {
+            team_id: string,
+          } or {
+            space_id: string,
+          } or {
+            list_id: string,
+          } or {
+            task_id: string,
+          } or {
+            list_id: string,
+            name: string,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            // Task status string (e.g. in progress).
+            status: string or null,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            confirm_delete: bool,
+          },
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Next",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Finish",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Abort",
+          // Optional explanation for aborting the session.
+          reason: string or null,
+        }
+      ],
+      // Optional plan-level intent or rationale. Logged when plan is rejected (e.g. empty steps).
+      reason: string or null,
+    } or {
+      // Request runtime memory resolution for specific keys before planning the next ClickUp action.
+      op: "MemoryResolve",
+      // Optional list of clickup memory keys to resolve (team_id, team_name, team_candidates, space_id, space_name, space_candidates, list_id, list_name, list_candidates).
+      keys: string[] or null,
+      // Optional explanation for why this memory lookup is needed.
+      reason: string or null,
+    }
+    user: how many tasks are in to do status in clickup?
+    ---LLM REPLY---
+    {
+      "op": "MemoryResolve",
+      "keys": ["list_id"],
+      "reason": "To find tasks in the 'to do' status, I need the list_id for the relevant task list."
+    }
+    ---Parsed Response (class ClickUpMemoryResolveOp)---
+    {
+      "op": "MemoryResolve",
+      "keys": [
+        "list_id"
+      ],
+      "reason": "To find tasks in the 'to do' status, I need the list_id for the relevant task list."
+    }
+2026-03-13T19:52:00.561911Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: ok function="ChooseClickUpAction" elapsed_ms=3128
+2026-03-13T19:52:01.653156Z  INFO quickjs::console: [clickup-agent] TIMING llm step=6: 4220ms
+2026-03-13T19:52:01.653421Z  INFO baml_rt_quickjs::baml: Tool session open: start tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1
+2026-03-13T19:52:02.457051Z  INFO baml_rt_quickjs::baml: Tool session open: ok tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1 session_id=b0fab754-db7c-4217-89b7-e8b95739e0a9
+2026-03-13T19:52:02.457107Z  INFO baml_rt_quickjs::baml: Tool session send: start session_id=b0fab754-db7c-4217-89b7-e8b95739e0a9 tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:52:03.666647Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send received query_count=1
+2026-03-13T19:52:03.666682Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve called query_count=1
+2026-03-13T19:52:03.666690Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve scanning store total_records=0
+2026-03-13T19:52:03.666698Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=list_id found=false fresh=false
+2026-03-13T19:52:03.666711Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve complete result_count=1 found_count=0
+2026-03-13T19:52:03.666717Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send ok result_count=1 found_any=false
+2026-03-13T19:52:03.666740Z  INFO baml_rt_quickjs::baml: Tool session send: ok session_id=b0fab754-db7c-4217-89b7-e8b95739e0a9 tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:52:03.666762Z  INFO baml_rt_quickjs::baml: Tool session next: start session_id=b0fab754-db7c-4217-89b7-e8b95739e0a9
+2026-03-13T19:52:05.058813Z  INFO baml_rt_quickjs::baml: Tool session next: ok session_id=b0fab754-db7c-4217-89b7-e8b95739e0a9 step=Done { output: Some(Object {"results": Array [Object {"scopeType": String("run"
+), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("list_id"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(false)}], "done": Bool(true)}) }
+2026-03-13T19:52:05.058870Z  INFO baml_rt_quickjs::baml: Tool session finish: start session_id=b0fab754-db7c-4217-89b7-e8b95739e0a9
+2026-03-13T19:52:05.058892Z  INFO baml_rt_quickjs::baml: Tool session finish: ok session_id=b0fab754-db7c-4217-89b7-e8b95739e0a9
+2026-03-13T19:52:05.059125Z  INFO quickjs::console: [clickup-agent] TIMING resolve(memory_op) step=6: 3406ms keys=list_id
+2026-03-13T19:52:06.650368Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: start function="ChooseClickUpAction" context_id=ctx-1773431471271-1 message_id=cli-msg-1 task_id=cli-task-ctx-1773431471271-
+1 attempt=1
+2026-03-13T13:52:08.506 [BAML INFO] Function ChooseClickUpAction:
+    Client: DefaultClient (openai/gpt-4o-mini) - 1821ms. StopReason: stop. Tokens(in/out): 1911/40
+    ---PROMPT---
+    system: You are a ClickUp assistant. You can navigate workspaces and manage tasks.
+    This function is called repeatedly in an iterative ReAct loop.
+    Each call you make ONE decision:
+    - return FinalResponse, OR
+    - return one SupportClickupSessionPlan, OR
+    - return one ClickUpMemoryResolveOp.
+    Never output partial plans.
+    Available actions — each is a distinct input type for the Send step.
+    Pick the one that matches the user's intent:
+    Navigation (discover IDs you don't already have):
+    - ListTeamsInput: list all teams/workspaces (empty object — no fields)
+    - ListSpacesInput: list spaces in a team (needs team_id from prior tool results)
+    - ListListsInput: list task lists in a space (needs space_id from prior tool results)
+    Task management:
+    - ListTasksInput: list tasks in a list (needs list_id from prior tool results)
+    - GetTaskInput: get details of a specific task (needs task_id)
+    - CreateTaskInput: create a new task (needs list_id, name; optional: description, priority)
+    - UpdateTaskInput: update status/description/priority of a task (needs task_id)
+    - DeleteTaskInput: permanently delete a task (needs task_id, confirm_delete)
+    CURRENT RUNTIME MEMORY STATE:
+    {}
+    LATEST TOOL RESULT (from current run state):
+    null
+    CONTEXT RESOLUTION PRIORITY (always follow this order when you need an ID):
+    1) LATEST TOOL RESULT FIRST — if last_tool_result_json already contains the needed data, use it.
+    2) MEMORY STATE SECOND — if memory_state_json already contains the ID, use it directly.
+    3) MEMORY LOOKUP THIRD — if memory_state_json lacks needed IDs/candidates, return ClickUpMemoryResolveOp.
+       Request only the specific keys you need now.
+    4) CONVERSATION HISTORY FOURTH — use recent tool_result data only if needed key is not in memory.
+    5) DISCOVERY LAST — only if neither latest_tool_result_json, memory, nor conversation_history can provide the ID,
+       emit a SupportClickupSessionPlan to discover it (ListTeamsInput -> ListSpacesInput -> ListListsInput).
+    RESPONSE GATE (apply after context resolution):
+    1) If the needed data is already available (from last_tool_result_json, memory_state_json, conversation_history, or prior
+       tool results), return FinalResponse immediately with a human-readable summary.
+       If the user asks to filter already available tasks (e.g. "which are in progress"),
+       return FinalResponse directly; do NOT emit any plan.
+    2) OTHERWISE, emit a SupportClickupSessionPlan to fetch the missing data.
+       Never return FinalResponse when the required data has not been retrieved yet.
+    3) If the latest tool_result contains a non-empty "tasks" array and the user asked to
+       list/find/filter tasks (e.g. "in progress", "to do", "done"), return FinalResponse
+       immediately by filtering those tasks. Do NOT call another tool.
+    4) ListTasks already includes status, id, name, and url, which is enough for status-based
+       task queries. For these queries, never call GetTaskInput after ListTasksInput.
+    DECISION LOGIC — follow this in order:
+    1. If you can answer from latest_tool_result_json, memory, or prior tool results, return FinalResponse with a concise summary.
+    2. If required context is missing, return ClickUpMemoryResolveOp first with specific keys.
+    3. Otherwise return exactly one valid 4-step plan: Open -> Send -> Next -> Finish.
+    4. Extract IDs from last_tool_result_json first, then memory_state_json, then prior tool results in conversation_history.
+       For example, if memory provides team_id "123", use that exact value.
+    5. Do not repeat the same action with the same IDs if the latest tool result did not change.
+    6. Always provide concrete IDs — never use null for a required ID.
+    7. For CreateTaskInput: if list_id is missing, check memory and conversation_history first.
+       Only do discovery (ListTeamsInput/ListSpacesInput/ListListsInput) if neither has it.
+    8. For UpdateTaskInput: if the latest tool_result already confirms the target task
+       is at the requested status, return FinalResponse immediately. Do NOT call UpdateTaskInput again.
+    9. After a successful CreateTaskInput or UpdateTaskInput tool_result appears in conversation_history,
+       your very next decision MUST be FinalResponse summarizing the result.
+       Do NOT emit another tool plan unless the user asked for an additional action.
+    10. DELETION SAFETY — this rule overrides all others for delete operations:
+       a) When the user asks to delete a task, send DeleteTaskInput with confirm_delete=false.
+       b) When the tool_result message contains "Please confirm", you MUST return FinalResponse
+          relaying the confirmation question to the user. Do NOT send another plan.
+          Do NOT set confirm_delete=true. STOP and WAIT for a new user message.
+       c) Only when a NEW user message explicitly says "yes", "confirm", "go ahead", or similar
+          affirmation AFTER the confirmation question was shown, send DeleteTaskInput
+          with confirm_delete=true.
+       d) If the user says "no" or "cancel", return FinalResponse saying the deletion was cancelled.
+    11. After a successful DeleteTaskInput tool_result with message containing "Deleted task",
+        return FinalResponse summarizing the deletion.
+    STRICT PLAN VALIDITY:
+    - If you return a plan, it MUST have exactly 4 steps and in this exact order:
+      1) {"op":"Open"}
+      2) {"op":"Send","input":{...}}
+      3) {"op":"Next"}
+      4) {"op":"Finish"}
+    - Never return a 1-step or 2-step plan.
+    - Never return only {"op":"Finish"} or only {"op":"Abort"}.
+    - If work is complete, return FinalResponse (message), not a plan.
+    For "in progress" task requests:
+    - Match status case-insensitively against "in progress".
+    - If matches exist, list them with name and URL.
+    - If none exist, clearly say there are no in-progress tasks.
+    Answer in JSON using any of these schemas:
+    {
+      // The final answer to return to the user when no more tool calls are needed.
+      message: string,
+    } or {
+      // Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Ru
+ntime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Return a top-level JSON object containing this steps field; do not return the steps array by itself.
+ Example object: {steps: [{op: "Open"}, {op: "Send", input: {...}}, {op: "Next"}, {op: "Finish"}], reason: null}.
+      steps: [
+        {
+          op: "Open",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Send",
+          // Input to send to the already-open session.
+          input: {
+          } or {
+            team_id: string,
+          } or {
+            space_id: string,
+          } or {
+            list_id: string,
+          } or {
+            task_id: string,
+          } or {
+            list_id: string,
+            name: string,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            // Task status string (e.g. in progress).
+            status: string or null,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            confirm_delete: bool,
+          },
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Next",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Finish",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Abort",
+          // Optional explanation for aborting the session.
+          reason: string or null,
+        }
+      ],
+      // Optional plan-level intent or rationale. Logged when plan is rejected (e.g. empty steps).
+      reason: string or null,
+    } or {
+      // Request runtime memory resolution for specific keys before planning the next ClickUp action.
+      op: "MemoryResolve",
+      // Optional list of clickup memory keys to resolve (team_id, team_name, team_candidates, space_id, space_name, space_candidates, list_id, list_name, list_candidates).
+      keys: string[] or null,
+      // Optional explanation for why this memory lookup is needed.
+      reason: string or null,
+    }
+    user: how many tasks are in to do status in clickup?
+    ---LLM REPLY---
+    {
+      "op": "MemoryResolve",
+      "keys": ["list_id"],
+      "reason": "Need to resolve the list_id to check for tasks in 'to do' status."
+    }
+    ---Parsed Response (class ClickUpMemoryResolveOp)---
+    {
+      "op": "MemoryResolve",
+      "keys": [
+        "list_id"
+      ],
+      "reason": "Need to resolve the list_id to check for tasks in 'to do' status."
+    }
+2026-03-13T19:52:08.507501Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: ok function="ChooseClickUpAction" elapsed_ms=3448
+2026-03-13T19:52:09.584762Z  INFO quickjs::console: [clickup-agent] TIMING llm step=7: 4525ms
+2026-03-13T19:52:09.585011Z  INFO baml_rt_quickjs::baml: Tool session open: start tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1
+2026-03-13T19:52:10.419612Z  INFO baml_rt_quickjs::baml: Tool session open: ok tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1 session_id=fb7d3cb4-c395-4828-96f4-ff8e24062eb6
+2026-03-13T19:52:10.419669Z  INFO baml_rt_quickjs::baml: Tool session send: start session_id=fb7d3cb4-c395-4828-96f4-ff8e24062eb6 tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:52:11.709812Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send received query_count=1
+2026-03-13T19:52:11.709853Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve called query_count=1
+2026-03-13T19:52:11.709863Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve scanning store total_records=0
+2026-03-13T19:52:11.709873Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=list_id found=false fresh=false
+2026-03-13T19:52:11.709889Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve complete result_count=1 found_count=0
+2026-03-13T19:52:11.709898Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send ok result_count=1 found_any=false
+2026-03-13T19:52:11.709937Z  INFO baml_rt_quickjs::baml: Tool session send: ok session_id=fb7d3cb4-c395-4828-96f4-ff8e24062eb6 tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:52:11.709963Z  INFO baml_rt_quickjs::baml: Tool session next: start session_id=fb7d3cb4-c395-4828-96f4-ff8e24062eb6
+2026-03-13T19:52:13.127574Z  INFO baml_rt_quickjs::baml: Tool session next: ok session_id=fb7d3cb4-c395-4828-96f4-ff8e24062eb6 step=Done { output: Some(Object {"results": Array [Object {"scopeType": String("run"
+), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("list_id"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(false)}], "done": Bool(true)}) }
+2026-03-13T19:52:13.127639Z  INFO baml_rt_quickjs::baml: Tool session finish: start session_id=fb7d3cb4-c395-4828-96f4-ff8e24062eb6
+2026-03-13T19:52:13.127659Z  INFO baml_rt_quickjs::baml: Tool session finish: ok session_id=fb7d3cb4-c395-4828-96f4-ff8e24062eb6
+2026-03-13T19:52:13.127862Z  INFO quickjs::console: [clickup-agent] TIMING resolve(memory_op) step=7: 3543ms keys=list_id
+2026-03-13T19:52:14.710584Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: start function="ChooseClickUpAction" context_id=ctx-1773431471271-1 message_id=cli-msg-1 task_id=cli-task-ctx-1773431471271-
+1 attempt=1
+2026-03-13T13:52:16.527 [BAML INFO] Function ChooseClickUpAction:
+    Client: DefaultClient (openai/gpt-4o-mini) - 1782ms. StopReason: stop. Tokens(in/out): 1911/42
+    ---PROMPT---
+    system: You are a ClickUp assistant. You can navigate workspaces and manage tasks.
+    This function is called repeatedly in an iterative ReAct loop.
+    Each call you make ONE decision:
+    - return FinalResponse, OR
+    - return one SupportClickupSessionPlan, OR
+    - return one ClickUpMemoryResolveOp.
+    Never output partial plans.
+    Available actions — each is a distinct input type for the Send step.
+    Pick the one that matches the user's intent:
+    Navigation (discover IDs you don't already have):
+    - ListTeamsInput: list all teams/workspaces (empty object — no fields)
+    - ListSpacesInput: list spaces in a team (needs team_id from prior tool results)
+    - ListListsInput: list task lists in a space (needs space_id from prior tool results)
+    Task management:
+    - ListTasksInput: list tasks in a list (needs list_id from prior tool results)
+    - GetTaskInput: get details of a specific task (needs task_id)
+    - CreateTaskInput: create a new task (needs list_id, name; optional: description, priority)
+    - UpdateTaskInput: update status/description/priority of a task (needs task_id)
+    - DeleteTaskInput: permanently delete a task (needs task_id, confirm_delete)
+    CURRENT RUNTIME MEMORY STATE:
+    {}
+    LATEST TOOL RESULT (from current run state):
+    null
+    CONTEXT RESOLUTION PRIORITY (always follow this order when you need an ID):
+    1) LATEST TOOL RESULT FIRST — if last_tool_result_json already contains the needed data, use it.
+    2) MEMORY STATE SECOND — if memory_state_json already contains the ID, use it directly.
+    3) MEMORY LOOKUP THIRD — if memory_state_json lacks needed IDs/candidates, return ClickUpMemoryResolveOp.
+       Request only the specific keys you need now.
+    4) CONVERSATION HISTORY FOURTH — use recent tool_result data only if needed key is not in memory.
+    5) DISCOVERY LAST — only if neither latest_tool_result_json, memory, nor conversation_history can provide the ID,
+       emit a SupportClickupSessionPlan to discover it (ListTeamsInput -> ListSpacesInput -> ListListsInput).
+    RESPONSE GATE (apply after context resolution):
+    1) If the needed data is already available (from last_tool_result_json, memory_state_json, conversation_history, or prior
+       tool results), return FinalResponse immediately with a human-readable summary.
+       If the user asks to filter already available tasks (e.g. "which are in progress"),
+       return FinalResponse directly; do NOT emit any plan.
+    2) OTHERWISE, emit a SupportClickupSessionPlan to fetch the missing data.
+       Never return FinalResponse when the required data has not been retrieved yet.
+    3) If the latest tool_result contains a non-empty "tasks" array and the user asked to
+       list/find/filter tasks (e.g. "in progress", "to do", "done"), return FinalResponse
+       immediately by filtering those tasks. Do NOT call another tool.
+    4) ListTasks already includes status, id, name, and url, which is enough for status-based
+       task queries. For these queries, never call GetTaskInput after ListTasksInput.
+    DECISION LOGIC — follow this in order:
+    1. If you can answer from latest_tool_result_json, memory, or prior tool results, return FinalResponse with a concise summary.
+    2. If required context is missing, return ClickUpMemoryResolveOp first with specific keys.
+    3. Otherwise return exactly one valid 4-step plan: Open -> Send -> Next -> Finish.
+    4. Extract IDs from last_tool_result_json first, then memory_state_json, then prior tool results in conversation_history.
+       For example, if memory provides team_id "123", use that exact value.
+    5. Do not repeat the same action with the same IDs if the latest tool result did not change.
+    6. Always provide concrete IDs — never use null for a required ID.
+    7. For CreateTaskInput: if list_id is missing, check memory and conversation_history first.
+       Only do discovery (ListTeamsInput/ListSpacesInput/ListListsInput) if neither has it.
+    8. For UpdateTaskInput: if the latest tool_result already confirms the target task
+       is at the requested status, return FinalResponse immediately. Do NOT call UpdateTaskInput again.
+    9. After a successful CreateTaskInput or UpdateTaskInput tool_result appears in conversation_history,
+       your very next decision MUST be FinalResponse summarizing the result.
+       Do NOT emit another tool plan unless the user asked for an additional action.
+    10. DELETION SAFETY — this rule overrides all others for delete operations:
+       a) When the user asks to delete a task, send DeleteTaskInput with confirm_delete=false.
+       b) When the tool_result message contains "Please confirm", you MUST return FinalResponse
+          relaying the confirmation question to the user. Do NOT send another plan.
+          Do NOT set confirm_delete=true. STOP and WAIT for a new user message.
+       c) Only when a NEW user message explicitly says "yes", "confirm", "go ahead", or similar
+          affirmation AFTER the confirmation question was shown, send DeleteTaskInput
+          with confirm_delete=true.
+       d) If the user says "no" or "cancel", return FinalResponse saying the deletion was cancelled.
+    11. After a successful DeleteTaskInput tool_result with message containing "Deleted task",
+        return FinalResponse summarizing the deletion.
+    STRICT PLAN VALIDITY:
+    - If you return a plan, it MUST have exactly 4 steps and in this exact order:
+      1) {"op":"Open"}
+      2) {"op":"Send","input":{...}}
+      3) {"op":"Next"}
+      4) {"op":"Finish"}
+    - Never return a 1-step or 2-step plan.
+    - Never return only {"op":"Finish"} or only {"op":"Abort"}.
+    - If work is complete, return FinalResponse (message), not a plan.
+    For "in progress" task requests:
+    - Match status case-insensitively against "in progress".
+    - If matches exist, list them with name and URL.
+    - If none exist, clearly say there are no in-progress tasks.
+    Answer in JSON using any of these schemas:
+    {
+      // The final answer to return to the user when no more tool calls are needed.
+      message: string,
+    } or {
+      // Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Ru
+ntime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Return a top-level JSON object containing this steps field; do not return the steps array by itself.
+ Example object: {steps: [{op: "Open"}, {op: "Send", input: {...}}, {op: "Next"}, {op: "Finish"}], reason: null}.
+      steps: [
+        {
+          op: "Open",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Send",
+          // Input to send to the already-open session.
+          input: {
+          } or {
+            team_id: string,
+          } or {
+            space_id: string,
+          } or {
+            list_id: string,
+          } or {
+            task_id: string,
+          } or {
+            list_id: string,
+            name: string,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            // Task status string (e.g. in progress).
+            status: string or null,
+            description: string or null,
+            // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+            priority: int or null,
+          } or {
+            task_id: string,
+            confirm_delete: bool,
+          },
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Next",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Finish",
+          // Optional explanation for this step.
+          reason: string or null,
+        } or {
+          op: "Abort",
+          // Optional explanation for aborting the session.
+          reason: string or null,
+        }
+      ],
+      // Optional plan-level intent or rationale. Logged when plan is rejected (e.g. empty steps).
+      reason: string or null,
+    } or {
+      // Request runtime memory resolution for specific keys before planning the next ClickUp action.
+      op: "MemoryResolve",
+      // Optional list of clickup memory keys to resolve (team_id, team_name, team_candidates, space_id, space_name, space_candidates, list_id, list_name, list_candidates).
+      keys: string[] or null,
+      // Optional explanation for why this memory lookup is needed.
+      reason: string or null,
+    }
+    user: how many tasks are in to do status in clickup?
+    ---LLM REPLY---
+    {
+      "op": "MemoryResolve",
+      "keys": [
+        "list_id"
+      ],
+      "reason": "Need the list_id to check for tasks in 'to do' status."
+    }
+    ---Parsed Response (class ClickUpMemoryResolveOp)---
+    {
+      "op": "MemoryResolve",
+      "keys": [
+        "list_id"
+      ],
+      "reason": "Need the list_id to check for tasks in 'to do' status."
+    }
+2026-03-13T19:52:16.527909Z  INFO baml_rt_quickjs::baml_execution: BAML call_function: ok function="ChooseClickUpAction" elapsed_ms=3399
+2026-03-13T19:52:17.630540Z  INFO quickjs::console: [clickup-agent] TIMING llm step=8: 4503ms
+2026-03-13T19:52:17.630858Z  INFO baml_rt_quickjs::baml: Tool session open: start tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1
+2026-03-13T19:52:18.434763Z  INFO baml_rt_quickjs::baml: Tool session open: ok tool_name="system/agentic_memory_resolve" context_id=ctx-1773431471271-1 session_id=280e2d53-12f3-4ce5-98f4-537e9be4d603
+2026-03-13T19:52:18.434827Z  INFO baml_rt_quickjs::baml: Tool session send: start session_id=280e2d53-12f3-4ce5-98f4-537e9be4d603 tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:52:19.720746Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send received query_count=1
+2026-03-13T19:52:19.720772Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve called query_count=1
+2026-03-13T19:52:19.720779Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve scanning store total_records=0
+2026-03-13T19:52:19.720786Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve key lookup scope_id=ctx-1773431471271-1 memory_namespace=clickup key=list_id found=false fresh=false
+2026-03-13T19:52:19.720797Z  INFO baml_tools_system::agentic_memory_store: agentic_memory_store: resolve complete result_count=1 found_count=0
+2026-03-13T19:52:19.720805Z  INFO baml_tools_system::agentic_memory_session_tools: agentic_memory_session_tools: resolve send ok result_count=1 found_any=false
+2026-03-13T19:52:19.720823Z  INFO baml_rt_quickjs::baml: Tool session send: ok session_id=280e2d53-12f3-4ce5-98f4-537e9be4d603 tool_name=system/agentic_memory_resolve context_id=ctx-1773431471271-1
+2026-03-13T19:52:19.720839Z  INFO baml_rt_quickjs::baml: Tool session next: start session_id=280e2d53-12f3-4ce5-98f4-537e9be4d603
+2026-03-13T19:52:21.116690Z  INFO baml_rt_quickjs::baml: Tool session next: ok session_id=280e2d53-12f3-4ce5-98f4-537e9be4d603 step=Done { output: Some(Object {"results": Array [Object {"scopeType": String("run"
+), "scopeId": String("ctx-1773431471271-1"), "memoryNamespace": String("clickup"), "key": String("list_id"), "found": Bool(false), "fresh": Bool(false), "needsRefresh": Bool(false)}], "done": Bool(true)}) }
+2026-03-13T19:52:21.116747Z  INFO baml_rt_quickjs::baml: Tool session finish: start session_id=280e2d53-12f3-4ce5-98f4-537e9be4d603
+2026-03-13T19:52:21.116763Z  INFO baml_rt_quickjs::baml: Tool session finish: ok session_id=280e2d53-12f3-4ce5-98f4-537e9be4d603
+2026-03-13T19:52:21.116944Z  INFO quickjs::console: [clickup-agent] TIMING resolve(memory_op) step=8: 3486ms keys=list_id
+{"jsonrpc":"2.0","result":{"stream":true,"index":0,"final":false,"chunk":{"statusUpdate":{"status":{"state":"TASK_STATE_SUBMITTED"},"taskId":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"},"tas
+k":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1","status":{"state":"TASK_STATE_SUBMITTED"}}}},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":1,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","message
+":{"messageId":"a2a-host-status-ctx-1773431471271-1-2","role":"ROLE_AGENT","parts":[{"text":"Invoking tool: system/agentic_memory_resolve"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271
+-1","referenceTaskIds":[],"extensions":[]}},"metadata":{"kind":"tool","toolName":"system/agentic_memory_resolve"}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChunk
+":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":2,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","message
+":{"messageId":"a2a-host-status-ctx-1773431471271-1-4","role":"ROLE_AGENT","parts":[{"text":"Calling model: gpt-4o-mini (ChooseClickUpAction)"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-177343147
+1271-1","referenceTaskIds":[],"extensions":[]}}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChunk":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":3,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","message
+":{"messageId":"a2a-host-status-ctx-1773431471271-1-6","role":"ROLE_AGENT","parts":[{"text":"Invoking tool: system/agentic_memory_resolve"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271
+-1","referenceTaskIds":[],"extensions":[]}},"metadata":{"toolName":"system/agentic_memory_resolve","kind":"tool"}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChunk
+":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":4,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","message
+":{"messageId":"a2a-host-status-ctx-1773431471271-1-8","role":"ROLE_AGENT","parts":[{"text":"Calling model: gpt-4o-mini (ChooseClickUpAction)"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-177343147
+1271-1","referenceTaskIds":[],"extensions":[]}}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChunk":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":5,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","message
+":{"messageId":"a2a-host-status-ctx-1773431471271-1-10","role":"ROLE_AGENT","parts":[{"text":"Invoking tool: system/agentic_memory_resolve"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-177343147127
+1-1","referenceTaskIds":[],"extensions":[]}},"metadata":{"toolName":"system/agentic_memory_resolve","kind":"tool"}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChun
+k":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":6,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","message
+":{"messageId":"a2a-host-status-ctx-1773431471271-1-12","role":"ROLE_AGENT","parts":[{"text":"Calling model: gpt-4o-mini (ChooseClickUpAction)"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-17734314
+71271-1","referenceTaskIds":[],"extensions":[]}}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChunk":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":7,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","message
+":{"messageId":"a2a-host-status-ctx-1773431471271-1-14","role":"ROLE_AGENT","parts":[{"text":"Invoking tool: system/agentic_memory_resolve"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-177343147127
+1-1","referenceTaskIds":[],"extensions":[]}},"metadata":{"kind":"tool","toolName":"system/agentic_memory_resolve"}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChun
+k":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":8,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","message
+":{"messageId":"a2a-host-status-ctx-1773431471271-1-16","role":"ROLE_AGENT","parts":[{"text":"Calling model: gpt-4o-mini (ChooseClickUpAction)"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-17734314
+71271-1","referenceTaskIds":[],"extensions":[]}}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChunk":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":9,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","message
+":{"messageId":"a2a-host-status-ctx-1773431471271-1-18","role":"ROLE_AGENT","parts":[{"text":"Invoking tool: system/agentic_memory_resolve"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-177343147127
+1-1","referenceTaskIds":[],"extensions":[]}},"metadata":{"kind":"tool","toolName":"system/agentic_memory_resolve"}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChun
+k":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":10,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","messag
+e":{"messageId":"a2a-host-status-ctx-1773431471271-1-20","role":"ROLE_AGENT","parts":[{"text":"Calling model: gpt-4o-mini (ChooseClickUpAction)"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431
+471271-1","referenceTaskIds":[],"extensions":[]}}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChunk":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":11,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","messag
+e":{"messageId":"a2a-host-status-ctx-1773431471271-1-22","role":"ROLE_AGENT","parts":[{"text":"Invoking tool: system/agentic_memory_resolve"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-17734314712
+71-1","referenceTaskIds":[],"extensions":[]}},"metadata":{"kind":"tool","toolName":"system/agentic_memory_resolve"}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChu
+nk":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":12,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","messag
+e":{"messageId":"a2a-host-status-ctx-1773431471271-1-24","role":"ROLE_AGENT","parts":[{"text":"Calling model: gpt-4o-mini (ChooseClickUpAction)"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431
+471271-1","referenceTaskIds":[],"extensions":[]}}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChunk":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":13,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","messag
+e":{"messageId":"a2a-host-status-ctx-1773431471271-1-26","role":"ROLE_AGENT","parts":[{"text":"Invoking tool: system/agentic_memory_resolve"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-17734314712
+71-1","referenceTaskIds":[],"extensions":[]}},"metadata":{"toolName":"system/agentic_memory_resolve","kind":"tool"}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChu
+nk":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":14,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","messag
+e":{"messageId":"a2a-host-status-ctx-1773431471271-1-28","role":"ROLE_AGENT","parts":[{"text":"Calling model: gpt-4o-mini (ChooseClickUpAction)"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431
+471271-1","referenceTaskIds":[],"extensions":[]}}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChunk":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":15,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","messag
+e":{"messageId":"a2a-host-status-ctx-1773431471271-1-30","role":"ROLE_AGENT","parts":[{"text":"Invoking tool: system/agentic_memory_resolve"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-17734314712
+71-1","referenceTaskIds":[],"extensions":[]}},"metadata":{"kind":"tool","toolName":"system/agentic_memory_resolve"}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChu
+nk":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":16,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","messag
+e":{"messageId":"a2a-host-status-ctx-1773431471271-1-32","role":"ROLE_AGENT","parts":[{"text":"Calling model: gpt-4o-mini (ChooseClickUpAction)"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431
+471271-1","referenceTaskIds":[],"extensions":[]}}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChunk":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":17,"final":false,"chunk":{"statusUpdate":{"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1","status":{"state":"TASK_STATE_WORKING","messag
+e":{"messageId":"a2a-host-status-ctx-1773431471271-1-34","role":"ROLE_AGENT","parts":[{"text":"Invoking tool: system/agentic_memory_resolve"}],"contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-17734314712
+71-1","referenceTaskIds":[],"extensions":[]}},"metadata":{"kind":"tool","toolName":"system/agentic_memory_resolve"}},"task":{"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}},"toolStreamChu
+nk":true},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":18,"final":false,"chunk":{"message":{"parts":[{"text":"Unable to complete the request within 8 planning steps."}],"messageId":"js-msg-ctx-1773431471271-1-1","role
+":"ROLE_AGENT","contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1"},"task":{"status":{"state":"TASK_STATE_WORKING","message":{"parts":[{"text":"Unable to complete the request within 8 plann
+ing steps."}],"messageId":"js-msg-ctx-1773431471271-1-2","role":"ROLE_AGENT","contextId":"ctx-1773431471271-1","taskId":"cli-task-ctx-1773431471271-1"}},"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-17734
+31471271-1"}}},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":19,"final":false,"chunk":{"task":{"status":{"state":"TASK_STATE_COMPLETED"},"id":"cli-task-ctx-1773431471271-1","contextId":"ctx-1773431471271-1"}}},"id":null}
+{"jsonrpc":"2.0","result":{"stream":true,"index":20,"final":true,"chunk":null},"id":null}

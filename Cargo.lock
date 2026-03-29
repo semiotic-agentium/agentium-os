@@ -2607,9 +2607,12 @@ dependencies = [
  "baml-tool-links",
  "clap",
  "console 0.15.11",
+ "futures-util",
+ "indicatif",
  "inquire 0.7.5",
  "regex",
  "reqwest 0.12.26",
+ "reqwest-eventsource",
  "serde",
  "serde_json",
  "sha2",
@@ -2617,6 +2620,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml_edit 0.22.27",
+ "uuid",
 ]
 
 [[package]]
