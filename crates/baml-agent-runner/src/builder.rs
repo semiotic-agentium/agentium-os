@@ -1,28 +1,19 @@
 //! Linear typestate builder for runner construction.
 //!
-//! Phases: Loading (load agents) -> Ready (serve/invoke/stdio).
-//! Execution entrypoints are only available on RunnerReady, guaranteeing
-//! discovery and A2A providers are wired before any mode runs.
+//! Phases: Loading (construct builder) → Ready (serve/invoke/stdio). Agents are loaded via
+//! deploy-by-hash, not positional `tar.gz` paths; this builder only wires the empty runner.
+//! Execution entrypoints are only available on RunnerReady.
 
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
-use baml_rt_a2a::A2aRequestHandler;
-use baml_rt_core::{
-    AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey, BamlFunctionId, BamlRtError,
-    DeploymentContentHash, Result,
-};
+use baml_rt_core::Result;
 use baml_rt_provenance::ToolIndexConfig;
 use baml_rt_tools::ToolAccessPolicy;
 use serde_json::Value;
 
-use crate::{
-    agent_package::{AgentPackage, BootedAgent},
-    config::ProvenanceConfig,
-    routing::{RunnerRegistry, ScopedInternalA2aRouter},
-    runner::AgentRunner,
-};
+use crate::{config::ProvenanceConfig, routing::RunnerRegistry, runner::AgentRunner};
 
-/// Builder state: loading agent packages. No execution entrypoints yet.
+/// Builder state: runner constructed; add agents via [`AgentRunner::deploy_by_hash`](crate::runner::AgentRunner::deploy_by_hash) before [`RunnerBuilder::build`](RunnerBuilder::build).
 pub struct Loading;
 
 /// Terminal state: all dependencies wired, execution entrypoints available.
@@ -37,7 +28,7 @@ pub struct RunnerBuilder<S> {
 
 impl RunnerBuilder<Loading> {
     /// Start building: parse config and create empty runner + registry.
-    /// Registry is wired to the runner so discovery/A2A see agents as they are loaded.
+    /// Registry is wired to the runner so discovery/A2A see agents as they are deployed.
     pub fn new(
         provenance_config: ProvenanceConfig,
         deployment_state: Arc<crate::deployment_state::DeploymentStateStore>,
@@ -64,82 +55,7 @@ impl RunnerBuilder<Loading> {
         }
     }
 
-    /// Load one agent package. Registry (discover_agents, internal_a2a) sees agents already loaded.
-    pub async fn load_agent(self, package_path: &Path) -> Result<RunnerBuilder<Loading>> {
-        let span = tracing::info_span!(
-            "baml_rt.load_agent",
-            package_path = %package_path.display(),
-        );
-        let _guard = span.enter();
-
-        let package = AgentPackage::load_from_file(package_path).await?;
-        let package_bytes = std::fs::read(package_path).map_err(BamlRtError::Io)?;
-        let package_hash = {
-            use sha2::{Digest, Sha256};
-            let digest = Sha256::digest(&package_bytes);
-            let mut hex = String::with_capacity(64);
-            for byte in digest {
-                use std::fmt::Write as _;
-                let _ = write!(&mut hex, "{byte:02x}");
-            }
-            hex.parse::<DeploymentContentHash>().map_err(|e| {
-                BamlRtError::InvalidArgument(format!("failed to parse computed package hash: {e}"))
-            })?
-        };
-        let name = package.name().to_string();
-        let package_name = AgentPackageName::parse(&name).ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!(
-                "Agent package name '{name}' is invalid; allowed characters: [A-Za-z0-9_-]"
-            ))
-        })?;
-        let route_key = AgentRouteKey::new(package_name.clone(), AgentInstanceId::default());
-        let scoped_router: Arc<dyn A2aRequestHandler> = Arc::new(ScopedInternalA2aRouter::new(
-            route_key.clone(),
-            self.runner.internal_a2a_router().clone(),
-        ));
-        let catalogue = self.registry.clone() as Arc<dyn AgentLister>;
-        let (agent, _agent_id) = package
-            .boot(
-                self.runner.provenance_config(),
-                self.runner.tool_index().clone(),
-                self.runner.access_policy(),
-                catalogue,
-                scoped_router,
-                self.runner.stream_idle_secs(),
-            )
-            .await?;
-        let manifest = package.manifest().clone();
-        // Capture BAML function names from the bridge's runtime manager at boot time.
-        // Filter to logical prompt names only (deduplicate FSM variants like __select, __act__, __continue__).
-        let baml_functions: Vec<String> = {
-            let bridge_arc = agent.bridge();
-            let bridge = bridge_arc.lock().await;
-            let all = bridge.list_baml_functions().await;
-            // Parse each name and keep only base (non-variant) prompt names, deduplicated.
-            let mut seen = std::collections::HashSet::new();
-            all.into_iter()
-                .map(|name| {
-                    BamlFunctionId::parse(&name)
-                        .prompt_name()
-                        .as_str()
-                        .to_string()
-                })
-                .filter(|name| seen.insert(name.clone()))
-                .collect()
-        };
-        let booted = BootedAgent {
-            agent,
-            manifest: manifest.clone(),
-            baml_functions,
-            content_hash: Some(package_hash),
-            repository_version: None,
-        };
-        tracing::info!(agent = %name, "Agent loaded and booted successfully");
-        self.runner.insert_agent(name.clone(), route_key, booted);
-        Ok(self)
-    }
-
-    /// Finish loading and transition to Ready. No more agents can be added; execution entrypoints unlock.
+    /// Finish wiring and transition to Ready. Execution entrypoints unlock.
     pub fn build(self) -> RunnerBuilder<Ready> {
         RunnerBuilder {
             runner: self.runner,

@@ -81,7 +81,9 @@ use baml_rt_llm_config::{
     LlmProvider, StaticResolver,
 };
 use baml_rt_tools::BundleName;
-use common::{e2e_secs_ci_or_local, e2e_serial_gate, try_load_dotenv_for_tests};
+#[cfg(feature = "llm-tests")]
+use common::try_load_dotenv_for_tests;
+use common::{e2e_secs_ci_or_local, e2e_serial_gate};
 #[cfg(feature = "llm-tests")]
 use test_support::common::workspace_fnox_path;
 use test_support::common::{

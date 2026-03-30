@@ -546,33 +546,22 @@ mod tests {
     use std::sync::Arc;
 
     use baml_rt::baml::BamlRuntimeManager;
-    use baml_rt_a2a::{A2aAgent, A2aRequestHandler as _, AgentRegistry as _};
     use baml_rt_api::PlanningService;
-    use baml_rt_core::{
-        AgentInstanceId, AgentLister as _, AgentPackageName, AgentRouteKey, BamlRtError,
-        DeploymentManager as _, Result,
-        bus::{BusWithEffects, EffectEmitter as _, Subscriber},
-        ids::{ContextId, ExternalId, IntentId, MessageId, PlanId, TaskId, UuidId},
-        route_key_from_request,
-    };
+    use baml_rt_core::{BamlRtError, bus::BusWithEffects};
     use baml_rt_llm_config::EmptySecretResolver;
-    use baml_rt_provenance::{ProvenanceOpsFilters, ProvenanceOpsQuery as _, SurrealStoreBuilder};
+    use baml_rt_provenance::SurrealStoreBuilder;
     use serde_json::json;
 
     use crate::{
-        agent_package::{BootedAgent, SnapshotAgentLister},
+        agent_package::BootedAgent,
         config::{ProvenanceConfig, ProvenanceDb, provenance_config_builder},
         deployment_state,
-        routing::{
-            InternalA2aRouter, RunnerRegistry, ScopedInternalA2aRouter,
-            extract_internal_a2a_target, scope_from_request,
-        },
+        routing::{RunnerRegistry, ScopedInternalA2aRouter, extract_internal_a2a_target},
         runner::AgentRunner,
         services::PlanningServiceImpl,
         stdio::{
-            MESSAGE_COUNTER, is_a2a_method, map_a2a_error, select_implicit_stdio_agent,
-            serialize_a2a_response, split_agent_method, strip_stream_suffix, unix_timestamp_secs,
-            wrap_plaintext_message,
+            is_a2a_method, map_a2a_error, select_implicit_stdio_agent, serialize_a2a_response,
+            strip_stream_suffix, unix_timestamp_secs, wrap_plaintext_message,
         },
     };
 
@@ -591,12 +580,18 @@ mod tests {
             .expect("provenance config")
     }
 
-    async fn test_deployment_state() -> Arc<deployment_state::DeploymentStateStore> {
-        Arc::new(
-            deployment_state::DeploymentStateStore::open_in_memory()
+    async fn test_deployment_state() -> (
+        tempfile::TempDir,
+        Arc<deployment_state::DeploymentStateStore>,
+    ) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("runner_state.db");
+        let state = Arc::new(
+            deployment_state::DeploymentStateStore::open(&path)
                 .await
-                .expect("in-memory deployment state"),
-        )
+                .expect("deployment state"),
+        );
+        (dir, state)
     }
 
     async fn build_test_agent() -> baml_rt_a2a::A2aAgent {
@@ -740,7 +735,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn test_runner_registry_list_agents_empty() {
         let prov = test_provenance_config().await;
-        let state = test_deployment_state().await;
+        let (_dir, state) = test_deployment_state().await;
         let runner = make_runner(prov, state);
         let registry = RunnerRegistry(Arc::clone(&runner));
         use baml_rt_core::AgentLister as _;
@@ -751,7 +746,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn test_internal_a2a_router_self_routing_rejected() {
         use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey};
         let prov = test_provenance_config().await;
-        let state = test_deployment_state().await;
+        let (_dir, state) = test_deployment_state().await;
         let runner = make_runner(prov, state);
         let router = runner.internal_a2a_router().clone();
         let pkg = AgentPackageName::parse("my-agent").unwrap();
@@ -785,7 +780,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn test_scoped_internal_router_routes_to_agent() {
         use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey, collect_a2a_stream};
         let prov = test_provenance_config().await;
-        let state = test_deployment_state().await;
+        let (_dir, state) = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;
@@ -826,7 +821,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn test_prepare_a2a_request_explicit_agent_name() {
         let prov = test_provenance_config().await;
-        let state = test_deployment_state().await;
+        let (_dir, state) = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;
@@ -849,7 +844,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn test_prepare_a2a_request_method_prefix_routing() {
         let prov = test_provenance_config().await;
-        let state = test_deployment_state().await;
+        let (_dir, state) = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;
@@ -871,7 +866,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn test_prepare_a2a_request_implicit_single_agent() {
         let prov = test_provenance_config().await;
-        let state = test_deployment_state().await;
+        let (_dir, state) = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;
@@ -894,7 +889,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn test_run_a2a_loop_handles_valid_request() {
         use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey};
         let prov = test_provenance_config().await;
-        let state = test_deployment_state().await;
+        let (_dir, state) = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;
@@ -939,7 +934,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn test_run_a2a_loop_plaintext_wraps_message() {
         let prov = test_provenance_config().await;
-        let state = test_deployment_state().await;
+        let (_dir, state) = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;
