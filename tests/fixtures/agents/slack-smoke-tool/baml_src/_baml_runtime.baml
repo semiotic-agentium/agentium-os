@@ -59,10 +59,12 @@ class SessionContext {
   status_token string?
 }
 
-/// Opaque JSON transport value for host-managed tools and event payloads.
-/// Runtime validation accepts arbitrary JSON. The generated TypeScript surface
-/// renders this alias as `JsonValue`.
-type OpaqueJson = string
+/// Opaque JSON transport wrapper for host-managed tools and event payloads.
+/// Generated BAML callers pass serialized JSON in `__baml_opaque_json`.
+/// Direct host-side callers may still send arbitrary raw JSON.
+class OpaqueJson {
+  opaque_json string @alias("__baml_opaque_json") @description("Serialized JSON payload.")
+}
 
 // Structured reply types for synthesis functions
 enum ReplyMediaType {
@@ -275,7 +277,7 @@ class SupportSlackToolCard {
   tool_name "support/slack"
   description "Read-only Slack integration for conversation retrieval and source-backed analysis."
   session_policy "Strict"
-  input_summary "{}"
+  input_summary "anyOf({ auth?: anyOf(enum(\"Auto\" | \"Bot\" | \"User\") | null), channel_id: string, cursor?: anyOf(string | null), inclusive?: anyOf(boolean | null), latest?: anyOf(string | null), limit?: anyOf(integer | null), oldest?: anyOf(string | null), order?: anyOf(enum(\"LatestFirst\" | \"OldestFirst\") | null), resolve_users?: anyOf(enum(\"None\" | \"ResolveUsers\") | null), thread_ts: string } | { auth?: anyOf(enum(\"Auto\" | \"Bot\" | \"User\") | null), channel_id: string, cursor?: anyOf(string | null), inclusive?: anyOf(boolean | null), latest?: anyOf(string | null), limit?: anyOf(integer | null), oldest?: anyOf(string | null), order?: anyOf(enum(\"LatestFirst\" | \"OldestFirst\") | null), resolve_users?: anyOf(enum(\"None\" | \"ResolveUsers\") | null) } | { auth?: anyOf(enum(\"Auto\" | \"Bot\" | \"User\") | null), count?: anyOf(integer | null), direction?: anyOf(enum(\"Asc\" | \"Desc\") | null), page?: anyOf(integer | null), query: string, resolve_users?: anyOf(enum(\"None\" | \"ResolveUsers\") | null), sort?: anyOf(enum(\"Score\" | \"Timestamp\") | null) } | { auth?: anyOf(enum(\"Auto\" | \"Bot\" | \"User\") | null), user_ids: string[] } | { auth?: anyOf(enum(\"Auto\" | \"Bot\" | \"User\") | null), cursor?: anyOf(string | null), exclude_archived?: anyOf(boolean | null), include_num_members?: anyOf(boolean | null), kinds: enum(\"Im\" | \"Mpim\" | \"PrivateChannel\" | \"PublicChannel\")[], limit?: anyOf(integer | null) })"
   tags string[] @description("Tool tags: support, slack, read")
 }
 

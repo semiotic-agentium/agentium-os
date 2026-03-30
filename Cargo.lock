@@ -2125,6 +2125,7 @@ dependencies = [
  "async-trait",
  "baml-derive 0.1.0",
  "baml-derive-core",
+ "baml-rt",
  "baml-rt-core",
  "baml-rt-provenance",
  "baml-rt-tools",

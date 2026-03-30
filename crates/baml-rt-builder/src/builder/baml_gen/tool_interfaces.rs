@@ -156,26 +156,92 @@ fn generate_tool_card_baml(output: &mut String, tool: &ToolFunctionMetadata) -> 
 }
 
 fn summarize_input_schema(schema: &Value) -> String {
+    let mut visited_refs = HashSet::new();
+    summarize_schema_shape(schema, schema, &mut visited_refs)
+}
+
+fn summarize_schema_shape(
+    schema: &Value,
+    root_schema: &Value,
+    visited_refs: &mut HashSet<String>,
+) -> String {
     let Some(obj) = schema.as_object() else {
-        return "{}".to_string();
+        return "any".to_string();
     };
-    let props = obj.get("properties").and_then(Value::as_object);
-    let required: HashSet<&str> = obj
+    if let Some(ref_path) = obj.get("$ref").and_then(Value::as_str) {
+        return summarize_ref_schema(ref_path, root_schema, visited_refs);
+    }
+    if obj
+        .get(OPAQUE_JSON_SCHEMA_MARKER_KEY)
+        .and_then(Value::as_str)
+        .is_some_and(|marker| marker == OPAQUE_JSON_BAML_TYPE)
+    {
+        return OPAQUE_JSON_BAML_TYPE.to_string();
+    }
+    if let Some(const_value) = obj.get("const") {
+        return summarize_const_value(const_value);
+    }
+    if let Some(one_of) = obj.get("oneOf").and_then(Value::as_array) {
+        return summarize_union_schema("oneOf", one_of, root_schema, visited_refs);
+    }
+    if let Some(any_of) = obj.get("anyOf").and_then(Value::as_array) {
+        return summarize_union_schema("anyOf", any_of, root_schema, visited_refs);
+    };
+    if let Some(enum_values) = obj.get("enum").and_then(Value::as_array) {
+        return summarize_enum_values(enum_values);
+    }
+    if let Some(props) = obj.get("properties").and_then(Value::as_object) {
+        return summarize_object_schema(props, obj, root_schema, visited_refs);
+    }
+    if let Some(items) = obj.get("items") {
+        return format!(
+            "{}[]",
+            summarize_schema_shape(items, root_schema, visited_refs)
+        );
+    }
+    if let Some(additional_properties) = obj.get("additionalProperties") {
+        return format!(
+            "map<string, {}>",
+            summarize_schema_shape(additional_properties, root_schema, visited_refs)
+        );
+    }
+    if let Some(type_array) = obj.get("type").and_then(Value::as_array) {
+        let mut parts = type_array
+            .iter()
+            .filter_map(Value::as_str)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        parts.sort();
+        parts.dedup();
+        return if parts.is_empty() {
+            "any".to_string()
+        } else {
+            parts.join(" | ")
+        };
+    }
+    obj.get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("any")
+        .to_string()
+}
+
+fn summarize_object_schema(
+    props: &serde_json::Map<String, Value>,
+    schema_obj: &serde_json::Map<String, Value>,
+    root_schema: &Value,
+    visited_refs: &mut HashSet<String>,
+) -> String {
+    let required: HashSet<&str> = schema_obj
         .get("required")
         .and_then(Value::as_array)
         .map(|arr| arr.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
-
-    let Some(props) = props else {
-        return "{}".to_string();
-    };
-
     let mut parts: Vec<String> = Vec::new();
     let mut sorted_keys: Vec<&String> = props.keys().collect();
     sorted_keys.sort();
     for key in sorted_keys {
         let prop = &props[key];
-        let ty = summarize_schema_type(prop);
+        let ty = summarize_schema_shape(prop, root_schema, visited_refs);
         let optional = if required.contains(key.as_str()) {
             ""
         } else {
@@ -186,18 +252,70 @@ fn summarize_input_schema(schema: &Value) -> String {
     format!("{{ {} }}", parts.join(", "))
 }
 
-fn summarize_schema_type(schema: &Value) -> &str {
-    let Some(obj) = schema.as_object() else {
-        return "any";
-    };
-    if obj
-        .get(OPAQUE_JSON_SCHEMA_MARKER_KEY)
-        .and_then(Value::as_str)
-        .is_some_and(|marker| marker == OPAQUE_JSON_BAML_TYPE)
-    {
-        return OPAQUE_JSON_BAML_TYPE;
+fn summarize_union_schema(
+    kind: &str,
+    variants: &[Value],
+    root_schema: &Value,
+    visited_refs: &mut HashSet<String>,
+) -> String {
+    let parts = variants
+        .iter()
+        .map(|variant| summarize_schema_shape(variant, root_schema, visited_refs))
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        "any".to_string()
+    } else {
+        format!("{kind}({})", parts.join(" | "))
     }
-    obj.get("type").and_then(Value::as_str).unwrap_or("any")
+}
+
+fn summarize_ref_schema(
+    ref_path: &str,
+    root_schema: &Value,
+    visited_refs: &mut HashSet<String>,
+) -> String {
+    if !ref_path.starts_with('#') {
+        return summarize_ref_name(ref_path);
+    }
+    if !visited_refs.insert(ref_path.to_string()) {
+        return summarize_ref_name(ref_path);
+    }
+    let summary = root_schema
+        .pointer(ref_path.trim_start_matches('#'))
+        .map(|resolved| summarize_schema_shape(resolved, root_schema, visited_refs))
+        .unwrap_or_else(|| summarize_ref_name(ref_path));
+    visited_refs.remove(ref_path);
+    summary
+}
+
+fn summarize_ref_name(ref_path: &str) -> String {
+    ref_path
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or("$ref")
+        .to_string()
+}
+
+fn summarize_const_value(value: &Value) -> String {
+    match value {
+        Value::String(value) => format!("\"{value}\""),
+        Value::Number(value) => value.to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Null => "null".to_string(),
+        _ => "const".to_string(),
+    }
+}
+
+fn summarize_enum_values(values: &[Value]) -> String {
+    let mut rendered = values.iter().map(summarize_const_value).collect::<Vec<_>>();
+    rendered.sort();
+    rendered.dedup();
+    if rendered.is_empty() {
+        "enum".to_string()
+    } else {
+        format!("enum({})", rendered.join(" | "))
+    }
 }
 
 fn schema_allows_empty_or_null_open_input(schema: &Value) -> bool {
@@ -251,6 +369,39 @@ fn schema_allows_empty_or_null_open_input(schema: &Value) -> bool {
             min_properties == 0
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::summarize_input_schema;
+
+    #[test]
+    fn summarize_input_schema_resolves_local_refs() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "payload": { "$ref": "#/$defs/Payload" }
+            },
+            "required": ["payload"],
+            "$defs": {
+                "Payload": {
+                    "type": "object",
+                    "properties": {
+                        "count": { "type": "integer" },
+                        "kind": { "type": "string" }
+                    },
+                    "required": ["count"]
+                }
+            }
+        });
+
+        assert_eq!(
+            summarize_input_schema(&schema),
+            "{ payload: { count: integer, kind?: string } }"
+        );
     }
 }
 

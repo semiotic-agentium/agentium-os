@@ -192,15 +192,17 @@ impl baml_rt_tools::DescribeAction for CallbackToolInput {
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct CallbackScheduleInput {
+    #[serde(alias = "after_ms")]
     #[baml(description = "Delay before the callback event is emitted, in milliseconds.")]
     pub after_ms: u64,
+    #[serde(alias = "source_key")]
     #[baml(
         description = "Stable event source key for subscription matching, for example `workflow-intake:follow-up`."
     )]
     pub source_key: String,
     #[baml(description = "Opaque JSON payload delivered back through onDispatch.")]
     pub payload: OpaqueJson,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "dedupe_key", skip_serializing_if = "Option::is_none")]
     #[baml(
         description = "Optional idempotency key scoped to the sourceKey. A pending callback with the same sourceKey + dedupeKey is reused instead of creating another row."
     )]
@@ -222,26 +224,35 @@ impl baml_rt_tools::DescribeAction for CallbackScheduleInput {
     }
 }
 
+/// Continuation mode for `system/callback`.
+///
+/// Canonical wire values are snake_case for serde and runtime storage.
+/// PascalCase serde aliases keep older callers working, and BAML aliases keep
+/// generated BAML surfaces aligned with the snake_case wire contract.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CallbackContinuationMode {
     #[default]
+    #[serde(alias = "Detached")]
+    #[baml(alias = "detached")]
     Detached,
+    #[serde(alias = "ResumeCurrentTask")]
+    #[baml(alias = "resume_current_task")]
     ResumeCurrentTask,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct CallbackCancelInput {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "callback_id", skip_serializing_if = "Option::is_none")]
     #[baml(description = "Exact callback id to cancel.")]
     pub callback_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "source_key", skip_serializing_if = "Option::is_none")]
     #[baml(
         description = "Source key for dedupe-key cancellation. Required when cancelling by dedupeKey."
     )]
     pub source_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "dedupe_key", skip_serializing_if = "Option::is_none")]
     #[baml(
         description = "Optional dedupe key to cancel instead of a callback id. Requires sourceKey."
     )]

@@ -1537,11 +1537,18 @@ struct Cli {
     #[arg(long, value_name = "SECS", default_value = "900")]
     stream_idle_secs: u64,
 
-    /// Event producer poll interval (seconds). When non-zero, the runner polls
-    /// registered event producers and delivers events to subscribed agents.
-    /// 0 disables the poll loop (default).
-    #[arg(long, value_name = "SECS", default_value = "0")]
+    /// Event producer poll interval (seconds). The runner polls registered
+    /// event producers and delivers events to subscribed agents. Set 0 to
+    /// disable the poll loop explicitly.
+    #[arg(long, value_name = "SECS", default_value = "1")]
     event_poll_interval_secs: u64,
+}
+
+fn event_poll_interval_for_registered_producers(
+    requested_interval: Option<std::time::Duration>,
+    configured_producer_count: usize,
+) -> Option<std::time::Duration> {
+    requested_interval.filter(|_| configured_producer_count > 0)
 }
 
 impl Cli {
@@ -2609,7 +2616,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- Event producer poll loop ---
-    let dispatcher_handle = if let Some(interval) = config.event_poll_interval {
+    let dispatcher_handle = if let Some(requested_interval) = config.event_poll_interval {
         let registry = ready.registry();
         let runner = ready.runner();
         let deployment_state = runner.deployment_state().clone();
@@ -2633,25 +2640,38 @@ async fn main() -> anyhow::Result<()> {
         )
         .await
         .context("loading configured event producers")?;
-        for producer in configured_producers {
-            let producer_key = producer.producer_key().to_string();
-            let checkpoint = persisted_checkpoints
-                .get(&producer_key)
-                .cloned()
-                .unwrap_or_else(ProducerCheckpoint::none);
-            dispatcher
-                .register_producer_with_checkpoint(producer, checkpoint)
-                .with_context(|| format!("registering event producer {producer_key}"))?;
-            info!(producer_key = %producer_key, "registered event producer");
-        }
+        if event_poll_interval_for_registered_producers(
+            Some(requested_interval),
+            configured_producers.len(),
+        )
+        .is_none()
+        {
+            info!(
+                requested_interval_secs = requested_interval.as_secs(),
+                "event producer poll loop skipped because no producers were registered"
+            );
+            None
+        } else {
+            for producer in configured_producers {
+                let producer_key = producer.producer_key().to_string();
+                let checkpoint = persisted_checkpoints
+                    .get(&producer_key)
+                    .cloned()
+                    .unwrap_or_else(ProducerCheckpoint::none);
+                dispatcher
+                    .register_producer_with_checkpoint(producer, checkpoint)
+                    .with_context(|| format!("registering event producer {producer_key}"))?;
+                info!(producer_key = %producer_key, "registered event producer");
+            }
 
-        info!(
-            interval_secs = interval.as_secs(),
-            "event producer poll loop enabled"
-        );
-        Some(tokio::spawn(async move {
-            run_event_poll_loop(dispatcher, deployment_state, interval).await;
-        }))
+            info!(
+                interval_secs = requested_interval.as_secs(),
+                "event producer poll loop enabled"
+            );
+            Some(tokio::spawn(async move {
+                run_event_poll_loop(dispatcher, deployment_state, requested_interval).await;
+            }))
+        }
     } else {
         None
     };
@@ -3329,5 +3349,46 @@ globalThis.onChatMessage = async function(_message) {
             "params": { "metadata": {} }
         });
         assert!(route_key_from_request(baml_rt_core::A2aWireRequest::from(request)).is_err());
+    }
+
+    #[test]
+    fn cli_defaults_enable_event_poll_loop() {
+        let cli = Cli::parse_from(["baml-agent-runner"]);
+        let config = cli.into_config().expect("default CLI config");
+        assert_eq!(
+            config.event_poll_interval,
+            Some(std::time::Duration::from_secs(1))
+        );
+    }
+
+    #[test]
+    fn cli_allows_explicit_event_poll_loop_disable() {
+        let cli = Cli::parse_from(["baml-agent-runner", "--event-poll-interval-secs", "0"]);
+        let config = cli
+            .into_config()
+            .expect("CLI config with disabled poll loop");
+        assert_eq!(config.event_poll_interval, None);
+    }
+
+    #[test]
+    fn poll_loop_stays_disabled_when_no_producers_are_registered() {
+        assert_eq!(
+            event_poll_interval_for_registered_producers(
+                Some(std::time::Duration::from_secs(1)),
+                0
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn poll_loop_runs_when_producers_are_registered() {
+        assert_eq!(
+            event_poll_interval_for_registered_producers(
+                Some(std::time::Duration::from_secs(1)),
+                1
+            ),
+            Some(std::time::Duration::from_secs(1))
+        );
     }
 }

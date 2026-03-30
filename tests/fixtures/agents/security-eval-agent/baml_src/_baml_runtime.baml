@@ -59,10 +59,12 @@ class SessionContext {
   status_token string?
 }
 
-/// Opaque JSON transport value for host-managed tools and event payloads.
-/// Runtime validation accepts arbitrary JSON. The generated TypeScript surface
-/// renders this alias as `JsonValue`.
-type OpaqueJson = string
+/// Opaque JSON transport wrapper for host-managed tools and event payloads.
+/// Generated BAML callers pass serialized JSON in `__baml_opaque_json`.
+/// Direct host-side callers may still send arbitrary raw JSON.
+class OpaqueJson {
+  opaque_json string @alias("__baml_opaque_json") @description("Serialized JSON payload.")
+}
 
 // Structured reply types for synthesis functions
 enum ReplyMediaType {
@@ -176,7 +178,7 @@ class SupportCrmToolCard {
   tool_name "support/crm"
   description "Customer relationship management: query accounts, contacts, opportunities. Create notes and manage records."
   session_policy "Strict"
-  input_summary "{}"
+  input_summary "anyOf({ fiscal_quarter?: anyOf(string | null), query?: anyOf(string | null), region?: anyOf(string | null) } | { account_id: string, min_value?: anyOf(number | null), stage?: anyOf(string | null) } | { contact_id: string } | { account_id: string, body: string, subject: string } | { confirm_delete: boolean, record_id: string, record_type: string } | { destination?: anyOf(string | null), format?: anyOf(string | null), query: string })"
   tags string[] @description("Tool tags: support, crm")
 }
 

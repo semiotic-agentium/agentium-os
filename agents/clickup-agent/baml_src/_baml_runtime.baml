@@ -59,10 +59,12 @@ class SessionContext {
   status_token string?
 }
 
-/// Opaque JSON transport value for host-managed tools and event payloads.
-/// Runtime validation accepts arbitrary JSON. The generated TypeScript surface
-/// renders this alias as `JsonValue`.
-type OpaqueJson = string
+/// Opaque JSON transport wrapper for host-managed tools and event payloads.
+/// Generated BAML callers pass serialized JSON in `__baml_opaque_json`.
+/// Direct host-side callers may still send arbitrary raw JSON.
+class OpaqueJson {
+  opaque_json string @alias("__baml_opaque_json") @description("Serialized JSON payload.")
+}
 
 // Structured reply types for synthesis functions
 enum ReplyMediaType {
@@ -295,7 +297,7 @@ class SupportClickupToolCard {
   tool_name "support/clickup"
   description "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
   session_policy "Strict"
-  input_summary "{}"
+  input_summary "anyOf({  } | { team_id: string } | { space_id: string } | { list_id: string } | { task_id: string } | { description?: anyOf(string | null), list_id: string, name: string, priority?: anyOf(integer | null) } | { description?: anyOf(string | null), priority?: anyOf(integer | null), status?: anyOf(string | null), task_id: string } | { confirm_delete: boolean, task_id: string })"
   tags string[] @description("Tool tags: support, clickup")
 }
 
@@ -335,7 +337,7 @@ class SystemDiscover_agentsToolCard {
   tool_name "system/discover_agents"
   description "Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents."
   session_policy "Strict"
-  input_summary "{ limit?: any, offset?: any, query?: any, required_capabilities?: any, required_schema_versions?: any, required_source_kinds?: any }"
+  input_summary "{ limit?: anyOf(integer | null), offset?: anyOf(integer | null), query?: anyOf(string | null), required_capabilities?: anyOf(string[] | null), required_schema_versions?: anyOf(string[] | null), required_source_kinds?: anyOf(string[] | null) }"
   tags string[] @description("Tool tags: system, discovery")
 }
 
@@ -376,7 +378,7 @@ class SystemDiscover_toolsToolCard {
   tool_name "system/discover_tools"
   description "Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times."
   session_policy "Strict"
-  input_summary "{ limit?: any, query?: any }"
+  input_summary "{ limit?: anyOf(integer | null), query?: anyOf(string | null) }"
   tags string[] @description("Tool tags: system, discovery")
 }
 
@@ -417,7 +419,7 @@ class SystemInternal_a2aToolCard {
   tool_name "system/internal_a2a"
   description "Opens a conversational session to another agent. Send a message (text or parts), Read the response, then Send follow-ups or Finish. Multiple Send/Read rounds are allowed within one session — use this for multi-turn conversations with the delegated agent."
   session_policy "MultiSend"
-  input_summary "{ parts: array }"
+  input_summary "{ parts: { filename?: anyOf(string | null), media_type?: anyOf(string | null), raw?: anyOf(string | null), text?: anyOf(string | null), url?: anyOf(string | null) }[] }"
   tags string[] @description("Tool tags: system, a2a")
 }
 

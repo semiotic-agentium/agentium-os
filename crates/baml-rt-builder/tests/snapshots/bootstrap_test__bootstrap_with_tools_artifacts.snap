@@ -572,10 +572,12 @@ class SessionContext {
   status_token string?
 }
 
-/// Opaque JSON transport value for host-managed tools and event payloads.
-/// Runtime validation accepts arbitrary JSON. The generated TypeScript surface
-/// renders this alias as `JsonValue`.
-type OpaqueJson = string
+/// Opaque JSON transport wrapper for host-managed tools and event payloads.
+/// Generated BAML callers pass serialized JSON in `__baml_opaque_json`.
+/// Direct host-side callers may still send arbitrary raw JSON.
+class OpaqueJson {
+  opaque_json string @alias("__baml_opaque_json") @description("Serialized JSON payload.")
+}
 
 // Structured reply types for synthesis functions
 enum ReplyMediaType {
@@ -645,7 +647,7 @@ class SupportCalculateToolCard {
   tool_name "support/calculate"
   description "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division."
   session_policy "Strict"
-  input_summary "{ expression: object }"
+  input_summary "{ expression: { left: integer, operation: enum(\"Add\" | \"Divide\" | \"Multiply\" | \"Subtract\"), right: integer } }"
   tags string[] @description("Tool tags: support, calculate")
 }
 

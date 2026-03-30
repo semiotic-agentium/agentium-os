@@ -1,5 +1,7 @@
 use std::{
     collections::HashMap,
+    fs,
+    path::PathBuf,
     sync::{
         Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
@@ -8,12 +10,19 @@ use std::{
 
 use async_trait::async_trait;
 use baml_derive_core::JsonSchemaType;
+use baml_rt::{
+    baml::BamlRuntimeManager,
+    interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor},
+};
 use baml_rt_core::{
     A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDiscoveryEntry, AgentLister,
     BamlRtError, BusStream, ContextId, Result,
+    context::{self, InvocationScope},
     ids::{AgentId, ExternalId, MessageId, TaskId, UuidId},
 };
-use baml_rt_tools::{EventProducerBuildContext, ProducerCheckpoint, ToolRegistry, ToolStep};
+use baml_rt_tools::{
+    EventProducerBuildContext, ProducerCheckpoint, SessionPlanTypeName, ToolRegistry, ToolStep,
+};
 use baml_tools_system::{
     CallbackToolInput, SystemBundle,
     callback_delivery_gate::{
@@ -130,6 +139,110 @@ impl Drop for CallbackGlobalsCleanup {
     fn drop(&mut self) {
         clear_callback_store();
         clear_callback_delivery_gate();
+    }
+}
+
+struct TempSchemaDir {
+    path: PathBuf,
+}
+
+impl TempSchemaDir {
+    fn new(label: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "callback-baml-schema-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&path).expect("create temporary callback schema dir");
+        Self { path }
+    }
+}
+
+impl Drop for TempSchemaDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+const CALLBACK_RUNTIME_BAML: &str =
+    include_str!("../../../../tests/fixtures/agents/dispatch-echo/baml_src/_baml_runtime.baml");
+
+const CALLBACK_PLAN_PROMPT_BAML: &str = r##"
+function PlanCallbackSchedule(token: string) -> SystemCallbackSessionPlan {
+  client DefaultClient
+  prompt #"
+    Schedule a callback for {{ token }}.
+    {{ ctx.output_format }}
+  "#
+}
+
+retry_policy ParseRetry {
+  max_retries 1
+  strategy {
+    type constant_delay
+    delay_ms 1
+  }
+}
+
+client DefaultClient {
+  provider openai-generic
+  retry_policy ParseRetry
+  options {
+    model "x-ai/grok-4.1-fast"
+    base_url "https://openrouter.ai/api/v1"
+    api_key env.OPENROUTER_API_KEY
+  }
+}
+"##;
+
+fn write_callback_plan_schema_fixture() -> TempSchemaDir {
+    let temp_dir = TempSchemaDir::new("plan");
+    let baml_src_dir = temp_dir.path.join("baml_src");
+    fs::create_dir_all(&baml_src_dir).expect("create temp baml_src dir");
+    fs::write(
+        baml_src_dir.join("_baml_runtime.baml"),
+        CALLBACK_RUNTIME_BAML,
+    )
+    .expect("write generated runtime BAML");
+    fs::write(
+        baml_src_dir.join("callback_plan_prompt.baml"),
+        CALLBACK_PLAN_PROMPT_BAML,
+    )
+    .expect("write callback plan prompt BAML");
+    temp_dir
+}
+
+struct StubCallbackPlanInterceptor;
+
+#[async_trait]
+impl LLMInterceptor for StubCallbackPlanInterceptor {
+    async fn intercept_llm_call(&self, context: &LLMCallContext) -> Result<InterceptorDecision> {
+        if context.function_id.prompt_name().as_str() == "PlanCallbackSchedule" {
+            return Ok(InterceptorDecision::Substitute(json!({
+                "step": {
+                    "op": "Send",
+                    "input": {
+                        "op": "schedule",
+                        "after_ms": 0,
+                        "source_key": "workflow-intake:follow-up",
+                        "payload": {
+                            "__baml_opaque_json": "{\"kind\":\"wrapped\",\"count\":2}"
+                        }
+                    },
+                    "citations": []
+                },
+                "citations": []
+            })));
+        }
+        Ok(InterceptorDecision::Allow)
+    }
+
+    async fn on_llm_call_complete(
+        &self,
+        _context: &LLMCallContext,
+        _result: &Result<serde_json::Value>,
+        _duration_ms: u64,
+    ) {
     }
 }
 
@@ -492,6 +605,65 @@ async fn callback_tool_accepts_opaque_json_wrapper_payloads() {
     );
 
     clear_callback_store();
+}
+
+#[tokio::test]
+async fn callback_plan_from_baml_invocation_executes_wrapped_payloads() {
+    let _suite_guard = suite_lock().lock().await;
+    let _cleanup = CallbackGlobalsCleanup;
+    clear_callback_store();
+    let store = Arc::new(MemoryCallbackStore::default());
+    install_callback_store(store.clone());
+
+    let schema_dir = write_callback_plan_schema_fixture();
+    let mut manager = BamlRuntimeManager::builder()
+        .build()
+        .expect("create BAML runtime manager");
+    manager
+        .load_schema(schema_dir.path.to_str().expect("temp schema path"))
+        .expect("load callback plan schema");
+    manager
+        .tool_registry()
+        .register_bundle(SystemBundle::new(
+            Arc::new(EmptyAgentList),
+            manager.tool_registry(),
+            Arc::new(MockA2aHandler),
+        ))
+        .expect("register system bundle");
+    manager
+        .register_llm_interceptor(StubCallbackPlanInterceptor)
+        .await;
+
+    let mut plan_map = HashMap::new();
+    plan_map.insert(
+        "PlanCallbackSchedule".to_string(),
+        vec![SessionPlanTypeName::new("SystemCallbackSessionPlan").expect("plan type name")],
+    );
+    manager.set_session_plan_functions(Some(plan_map));
+
+    let scope = InvocationScope::synthetic_message(test_agent_id());
+    let invoke_result = context::with_scope(scope.as_scope().clone(), async {
+        manager
+            .invoke_function(
+                scope.as_scope(),
+                "PlanCallbackSchedule",
+                json!({ "token": "wrapped" }),
+            )
+            .await
+    })
+    .await
+    .expect("invoke callback planning function");
+    assert_eq!(invoke_result["status"], "done");
+
+    let rows = store.snapshot().await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].callback.payload,
+        json!({
+            "kind": "wrapped",
+            "count": 2
+        })
+    );
 }
 
 #[tokio::test]

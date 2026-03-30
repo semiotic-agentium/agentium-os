@@ -59,10 +59,12 @@ class SessionContext {
   status_token string?
 }
 
-/// Opaque JSON transport value for host-managed tools and event payloads.
-/// Runtime validation accepts arbitrary JSON. The generated TypeScript surface
-/// renders this alias as `JsonValue`.
-type OpaqueJson = string
+/// Opaque JSON transport wrapper for host-managed tools and event payloads.
+/// Generated BAML callers pass serialized JSON in `__baml_opaque_json`.
+/// Direct host-side callers may still send arbitrary raw JSON.
+class OpaqueJson {
+  opaque_json string @alias("__baml_opaque_json") @description("Serialized JSON payload.")
+}
 
 // Structured reply types for synthesis functions
 enum ReplyMediaType {
@@ -139,7 +141,7 @@ class ClaudeDevToolCard {
   tool_name "claude/dev"
   description "Host-managed Claude streaming session. Open once, send prompt/content, then call next() until completion is DONE/INTERRUPTED or INPUT_REQUIRED for resume."
   session_policy "Strict"
-  input_summary "{ content?: any, prompt?: any }"
+  input_summary "{ content?: anyOf(oneOf({ kind: \"text\", text: string } | { kind: \"image_url\", url: string } | { data: string, kind: \"image_base64\", media_type: string })[] | null), prompt?: anyOf(string | null) }"
   tags string[] @description("Tool tags: claude, stream, session")
 }
 
