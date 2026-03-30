@@ -1,5 +1,9 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+# Loads `.env` next to this justfile for recipes that use the default shell (plain `cargo` lines).
 set dotenv-load
+
+# Shebang recipes additionally `cd` to the repo root and run `set -a; [ -f .env ] && . ./.env; set +a`
+# so assignments in `.env` are exported (same idea as `source .env` in bash).
 
 provenance_db := "provenance.db"
 # Separate SurrealKV store dirs (provenance + sibling config.db) so this stack can run alongside another runner using `provenance.db`.
@@ -21,23 +25,59 @@ graph_exporter_bin := "${CARGO_TARGET_DIR:-target}/debug/graph_exporter"
 
 # Regenerate `_baml_runtime.baml` + `src/baml-runtime.d.ts` for every fixture under `tests/fixtures/agents/` and agent under `agents/`. Requires all tool crates (same as build-release).
 regen-fixtures:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     cargo run -p baml-rt-builder --all-features --bin regen_fixtures
 
 # Pre-download fastembed ONNX models to models/fastembed/ (git-LFS tracked).
 # Run once after a fresh clone or when models/ is empty.
 # Models are also committed via LFS — git lfs pull will restore them without re-downloading.
 download-models:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     cargo run -p baml-rt-embedding --bin download_models
 
 # Build release versions of builder, runner, and graph_exporter. Run once before using agent recipes.
 build-release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     cargo build -p baml-rt-builder --bin baml-agent-builder --all-features
     cargo build -p baml-agent-runner --all-features
     cargo build -p baml-rt-provenance --bin graph_exporter --features cli
 
 # Build the runner in debug mode (fast local iteration).
 build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     cargo build -p baml-agent-runner --all-features
+
+# Build Vue/Vite SPA to web/dist (`npm ci` + `npm run build`). Required for recipes that pass `--web-dir web/dist`.
+web-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
+    cd web
+    npm ci
+    npm run build
 
 # Rebuilds clickup-agent and runs it via a2a stdio. Deploys through the embedded repository (publish + POST /deploy).
 # Requires: just build-release, curl
@@ -45,6 +85,9 @@ clickup-agent: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     (
       for _ in $(seq 1 120); do
         if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
@@ -59,6 +102,9 @@ clickup-agent-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     (
       for _ in $(seq 1 120); do
         if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
@@ -73,6 +119,9 @@ notion-agent: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     (
       for _ in $(seq 1 120); do
         if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
@@ -87,6 +136,9 @@ notion-agent-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     (
       for _ in $(seq 1 120); do
         if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
@@ -101,6 +153,9 @@ slack-agent: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     (
       for _ in $(seq 1 120); do
         if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
@@ -115,6 +170,9 @@ slack-agent-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     (
       for _ in $(seq 1 120); do
         if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
@@ -129,6 +187,9 @@ coordinator-agent: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     (
       for _ in $(seq 1 120); do
         if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
@@ -145,6 +206,9 @@ coordinator-agent-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     (
       for _ in $(seq 1 120); do
         if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
@@ -163,6 +227,9 @@ claude-session-agent: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     (
       for _ in $(seq 1 120); do
         if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
@@ -177,6 +244,9 @@ claude-session-agent-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     (
       for _ in $(seq 1 120); do
         if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
@@ -187,10 +257,13 @@ claude-session-agent-provenance: build-release
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
 # Rebuilds persona + notion and runs with provenance and UI (HTTP only).
-persona-notion: build-release
+persona-notion: web-build build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --web-dir web/dist &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
@@ -202,11 +275,14 @@ persona-notion: build-release
     {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     wait "$runner_pid"
 
-# Persona + Claude session + Notion, HTTP + provenance + web UI. Requires web/dist (`cd web && npm ci && npm run build`).
-persona-claude-notion: build-release
+# Persona + Claude session + Notion, HTTP + provenance + web UI.
+persona-claude-notion: web-build build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_persona_claude_notion_db}} --web-dir web/dist &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
@@ -220,12 +296,14 @@ persona-claude-notion: build-release
     wait "$runner_pid"
 
 # Full local dev stack: all primary dev agent packages, web UI, provenance.
-# `.env` is loaded via `set dotenv-load`. HTTP only (no --a2a-stdio) so the server stays up without a stdio client.
-# Requires: web/dist (cd web && npm ci && npm run build).
-dev-all-agents: build-release
+# HTTP only (no --a2a-stdio) so the server stays up without a stdio client.
+dev-all-agents: web-build build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --web-dir web/dist &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
@@ -249,6 +327,9 @@ persona-claude-extrospection-clickup: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
@@ -268,6 +349,9 @@ persona-claude-extrospection: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     (
       for _ in $(seq 1 120); do
         if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
@@ -285,6 +369,9 @@ persona-claude-extrospection-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     (
       for _ in $(seq 1 120); do
         if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
@@ -369,6 +456,12 @@ test-unit:
 # Export a Mermaid sequence diagram for a given context-id. Requires: just build-release
 # Usage: just provenance-mermaid ctx-1771426017780-2
 provenance-mermaid context_id: build-release
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
     {{graph_exporter_bin}} --db {{provenance_db}} --context-id {{context_id}} --simplify --format mermaid
 
 # SDK CLI: workspace integrity check
