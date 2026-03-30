@@ -10,7 +10,9 @@ use baml_rt_a2a::{A2aRequestHandler, a2a};
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister,
     AgentPackageName, AgentRouteKey, BamlRtError, DeploymentContentHash, DeploymentManager,
-    DeploymentRecord, DeploymentStatus, Result, UndeployResult, bus::BusStream, context,
+    DeploymentRecord, DeploymentStatus, Result, UndeployResult,
+    bus::BusStream,
+    context,
     ids::{ContextId, TaskId},
 };
 use baml_rt_observability::spans;
@@ -131,7 +133,7 @@ impl AgentRunner {
         match agent {
             Some(agent) => agent.has_in_flight_turn(context_id, Some(task_id)).await,
             None => {
-                warn!(
+                tracing::warn!(
                     requesting_agent_id,
                     context_id = %context_id,
                     task_id = %task_id,
