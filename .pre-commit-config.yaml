@@ -8,7 +8,11 @@ repos:
     rev: v4.5.0
     hooks:
       - id: trailing-whitespace
+        exclude: ^models/fastembed/
       - id: end-of-file-fixer
+        # HF hub layout: refs/main must be raw revision bytes (no trailing newline);
+        # tokenizer/config blobs must not be rewritten by EOF normalization.
+        exclude: ^models/fastembed/
       - id: check-yaml
       - id: check-json
       - id: check-toml
@@ -69,7 +73,8 @@ repos:
             \.snap$|
             \.tar\.gz$|
             node_modules/|
-            dist/
+            dist/|
+            models/fastembed/
           )
 
   # Cargo deny - disabled (license/source config not fully aligned with git deps)
