@@ -182,7 +182,15 @@ pub fn run(
             })?;
         }
         AgentTemplate::Coordinator => {
-            create_coordinator_agent(&output_dir, &slug, description, &tags, &subscriptions)
+            if !subscriptions.is_empty() {
+                eprintln!(
+                    "{}: coordinator agents are conversational orchestrators and do not implement \
+                     onDispatch. Subscriptions will be ignored. Use a simple or planner template \
+                     for event-driven agents.",
+                    console::style("warning").yellow().bold(),
+                );
+            }
+            create_coordinator_agent(&output_dir, &slug, description, &tags, &[])
                 .map_err(|e| {
                     anyhow!(
                         "Error: failed to scaffold coordinator template files.\nCause: {e}\nHint: verify write permissions for `{}`.",

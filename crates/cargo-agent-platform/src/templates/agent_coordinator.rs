@@ -5,6 +5,11 @@
 //! 2. Plan workflow DAG to decompose user requests
 //! 3. Execute workflow by delegating to specialists
 //! 4. Synthesize results into coherent response
+//!
+//! Coordinator agents handle orchestration via conversational A2A, not raw event
+//! ingress. They do not implement `onDispatch` and should not declare event
+//! subscriptions. For event-driven ingress, use the simple or planner template
+//! with an `onDispatch` handler (see `semantic-ingress-agent` as a reference).
 
 use baml_rt_core::{AgentManifest, EventSubscription, package::ManifestDiscovery};
 

@@ -1,3 +1,8 @@
+// Coordinator agents handle orchestration via conversational A2A, not raw event
+// ingress. They do not implement onDispatch and should not declare event
+// subscriptions. For event-driven ingress, use semantic-ingress-agent or create
+// an agent with an onDispatch handler using the simple/planner template.
+
 /// <reference path="./baml-runtime.d.ts" />
 import type {
   ReplyPart,
