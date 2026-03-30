@@ -181,7 +181,7 @@ fn extract_rpc_error(value: &Value) -> Option<String> {
     Some(parts.join(" | "))
 }
 
-fn terminal_state_from_chunk<'a>(chunk: &'a Value) -> Option<&'a str> {
+fn terminal_state_from_chunk(chunk: &Value) -> Option<&str> {
     chunk
         .get("task")
         .and_then(|t| t.get("status"))
@@ -357,7 +357,9 @@ async fn send_message_sse(
                 message_id: req.message_id,
                 context_id: req.context_id,
                 role: "ROLE_USER",
-                parts: vec![Part { text: req.message_text }],
+                parts: vec![Part {
+                    text: req.message_text,
+                }],
             },
         },
     };
@@ -393,9 +395,8 @@ async fn send_message_sse(
         match event_result {
             Ok(Event::Open) => {}
             Ok(Event::Message(msg)) => {
-                let event = serde_json::from_str::<Value>(&msg.data).map_err(|e| {
-                    tagged_error("JSON", format!("Invalid SSE JSON payload: {e}"))
-                })?;
+                let event = serde_json::from_str::<Value>(&msg.data)
+                    .map_err(|e| tagged_error("JSON", format!("Invalid SSE JSON payload: {e}")))?;
 
                 if req.verbose {
                     let (_kind, label) = classify_event_label(&event);
@@ -441,9 +442,7 @@ async fn send_message_sse(
                     };
 
                     if !delta.is_empty() {
-                        if !printed_any
-                            && let Some(pb) = spinner
-                        {
+                        if !printed_any && let Some(pb) = spinner {
                             pb.finish_and_clear();
                         }
                         write!(stdout, "{delta}")?;
@@ -455,9 +454,7 @@ async fn send_message_sse(
                 } else if let Some(text) = extract_input_required_text(chunk_value)
                     && !text.trim().is_empty()
                 {
-                    if !printed_any
-                        && let Some(pb) = spinner
-                    {
+                    if !printed_any && let Some(pb) = spinner {
                         pb.finish_and_clear();
                     }
                     write!(stdout, "{text}")?;
@@ -468,8 +465,8 @@ async fn send_message_sse(
                 if let Some(state) = terminal_state_from_chunk(chunk_value)
                     && is_failure_state(state)
                 {
-                    let failure_msg = terminal_message_from_chunk(chunk_value)
-                        .unwrap_or_else(|| {
+                    let failure_msg =
+                        terminal_message_from_chunk(chunk_value).unwrap_or_else(|| {
                             format!("Agent ended in terminal failure state: {state}")
                         });
                     if printed_any {
