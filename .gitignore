@@ -44,7 +44,7 @@ config.db
 crates/baml-agent-runner/.repository/
 crates/baml-agent-runner/.runner-state/
 
-# Local runtime state and debug artifacts (do not commit)
+# Repo-root local runner dev and debug artifacts (do not commit)
 /.repository/
 /.runner-state/
 /provenance_db

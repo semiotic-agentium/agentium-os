@@ -83,6 +83,8 @@ fn redact_variant_parts(v: Value) -> Value {
                         V::String("[prov_activity_anchor]".to_string())
                     }
                     "timestamp_ms" => V::String("[timestamp_ms]".to_string()),
+                    // Monotonic / wall-clock ordering from store; varies every run.
+                    "a2a_event_order" => V::String("[a2a_event_order]".to_string()),
                     // Wall-clock ms from Surreal / store; varies every run.
                     "prov_endTime" | "prov_startTime" => V::String("[timestamp_ms]".to_string()),
                     "type" => match &val {

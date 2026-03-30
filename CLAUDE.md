@@ -33,8 +33,8 @@ pre-commit run --all-files
 cargo insta review
 
 # Binaries
-cargo run -p baml-rt-builder --bin baml-agent-builder   # lint, compile, package agents
-cargo run -p baml-agent-runner                           # load packaged agents, serve A2A
+cargo run -p baml-rt-builder --bin baml-agent-builder   # lint, compile, package; `publish` → repository + deploy
+cargo run -p baml-agent-runner                           # HTTP A2A + embedded /repository; agents via publish + POST /deploy (options only, no positional tar paths)
 
 # Nextest (CI-style: one run, JUnit)
 cargo install cargo-nextest        # once
@@ -97,7 +97,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 **Top-level binaries and facades**
 - **baml-rt** — Facade crate re-exporting subcrates via feature flags (default: all enabled)
 - **baml-rt-builder** — Agent build pipeline: BAML type generation, tar.gz packaging. Binary: `baml-agent-builder`
-- **baml-agent-runner** — Loads packaged agent tar.gz, serves A2A requests. Binary: `baml-agent-runner`
+- **baml-agent-runner** — A2A host (stdio and/or HTTP); embedded agent repository and deploy-by-hash. Add agents with `baml-agent-builder publish` or `POST /deploy`. Binary: `baml-agent-runner`
 - **task-daemon** — Local polling daemon substrate for extracting actionable tasks from sources (Slack, etc.)
 
 **Test**

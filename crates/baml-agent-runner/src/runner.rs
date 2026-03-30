@@ -18,7 +18,6 @@ use baml_rt_provenance::ToolIndexConfig;
 use baml_rt_tools::ToolAccessPolicy;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
-use tracing::warn;
 
 use crate::{
     agent_package::{AgentPackage, BootedAgent, SnapshotAgentLister},
@@ -29,6 +28,16 @@ use crate::{
         split_agent_method, strip_stream_suffix, unix_timestamp_secs, wrap_plaintext_message,
     },
 };
+
+fn parse_repository_entry_version(value: &serde_json::Value) -> Option<u32> {
+    if let Some(n) = value.as_u64() {
+        return u32::try_from(n).ok();
+    }
+    if let Some(s) = value.as_str() {
+        return s.strip_prefix('v').unwrap_or(s).parse::<u32>().ok();
+    }
+    None
+}
 
 /// Agent runner host: manages agents and composes the tool catalogue at startup.
 pub(crate) struct AgentRunner {
@@ -210,18 +219,30 @@ impl AgentRunner {
                 content_hash.as_str()
             )))
         })?;
-        let version = value
-            .get("version_ref")
-            .and_then(|v| v.get("version"))
-            .and_then(|v| v.as_u64())
-            .and_then(|v| u32::try_from(v).ok());
-        Ok(version)
+        let Some(ver) = value.get("version_ref").and_then(|v| v.get("version")) else {
+            return Err(BamlRtError::Io(std::io::Error::other(format!(
+                "repository entry JSON missing version_ref for {}",
+                content_hash.as_str()
+            ))));
+        };
+        let Some(version) = parse_repository_entry_version(ver) else {
+            return Err(BamlRtError::Io(std::io::Error::other(format!(
+                "repository entry JSON has invalid version_ref.version for {}",
+                content_hash.as_str()
+            ))));
+        };
+        Ok(Some(version))
     }
 
-    /// Verify artifact integrity by recomputing canonical hash from source bundle.
+    /// Verifies that blob bytes are a valid packaged agent and that the canonical
+    /// [`SourceBundle::compute_hash`](baml_rt_repository::entry::SourceBundle::compute_hash)
+    /// after [`with_manifest_version`](baml_rt_repository::entry::SourceBundle::with_manifest_version)
+    /// with the repository entry's version equals `content_hash` (same scheme as
+    /// [`MetadataStore::insert_entry`](baml_rt_repository::storage::MetadataStore::insert_entry)).
     pub(crate) fn verify_artifact_integrity(
         content_hash: &DeploymentContentHash,
         bytes: &[u8],
+        repository_version: u32,
     ) -> Result<()> {
         let (_, source) =
             baml_rt_repository::package::source_bundle_from_tar_gz(bytes).map_err(|e| {
@@ -229,18 +250,20 @@ impl AgentRunner {
                     "Failed to extract source bundle from artifact: {e}"
                 ))
             })?;
-        let computed = source.compute_hash();
-        if computed.as_str() != content_hash.as_str() {
+        let canonical = source
+            .with_manifest_version(repository_version)
+            .compute_hash();
+        if canonical.as_str() != content_hash.as_str() {
             return Err(BamlRtError::InvalidArgument(format!(
-                "Artifact integrity check failed: declared hash {} does not match \
-                 computed hash {} from artifact source bundle",
-                content_hash.as_str(),
-                computed.as_str()
+                "Artifact content hash mismatch: deployment requests {expected}, but canonical hash from extracted bundle at repository version {repository_version} is {actual}",
+                expected = content_hash.as_str(),
+                actual = canonical.as_str(),
             )));
         }
         tracing::debug!(
             content_hash = content_hash.as_str(),
-            "Artifact integrity verified"
+            repository_version,
+            "Artifact blob verified (canonical hash matches repository content_hash)"
         );
         Ok(())
     }
@@ -622,22 +645,27 @@ impl DeploymentManager for AgentRunner {
             }
         }
 
-        let bytes = self.fetch_blob_from_repository(content_hash).await?;
-        AgentRunner::verify_artifact_integrity(content_hash, &bytes)?;
-
         let repository_version = match self.fetch_repository_version(content_hash).await {
-            Ok(version) => version,
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Repository has no entry for content hash {} — cannot verify artifact against canonical hash",
+                    content_hash.as_str()
+                )));
+            }
             Err(err) => {
-                warn!(
-                    error = %err,
-                    content_hash = %content_hash.as_str(),
-                    "Failed to resolve repository version; continuing without repository_version"
-                );
-                None
+                return Err(BamlRtError::Io(std::io::Error::other(format!(
+                    "Failed to load repository entry for {} (need version for canonical hash verification): {err}",
+                    content_hash.as_str()
+                ))));
             }
         };
+
+        let bytes = self.fetch_blob_from_repository(content_hash).await?;
+        AgentRunner::verify_artifact_integrity(content_hash, &bytes, repository_version)?;
+
         let (name, route_key, booted) = self
-            .boot_from_blob_bytes(&bytes, content_hash, repository_version)
+            .boot_from_blob_bytes(&bytes, content_hash, Some(repository_version))
             .await?;
 
         {

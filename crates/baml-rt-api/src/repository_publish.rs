@@ -9,6 +9,7 @@ use baml_rt_repository::{
     RepositoryService,
     commands::{PublishCommand, PublishResult},
     entry::SourceBundle,
+    package::source_bundle_from_tar_gz,
 };
 use http_api_problem::HttpApiProblem;
 
@@ -16,21 +17,44 @@ pub async fn publish_with_build(
     State(svc): State<Arc<RepositoryService>>,
     Json(cmd): Json<PublishCommand>,
 ) -> Result<Json<PublishResult>, HttpApiProblem> {
-    let result = svc.publish(cmd).await.map_err(HttpApiProblem::from)?;
-    let entry = svc
-        .get_by_hash(&result.hash)
+    let next_version = svc
+        .next_version_for_agent(&cmd.name)
         .await
-        .map_err(HttpApiProblem::from)?
-        .ok_or_else(|| {
-            HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
-                .detail("Published entry missing after metadata insert")
-        })?;
+        .map_err(HttpApiProblem::from)?;
 
-    let built = build_artifact(&entry.source).await.map_err(|e| {
+    let source_versioned = cmd.source.with_manifest_version(next_version);
+    let built = build_artifact(&source_versioned).await.map_err(|e| {
         HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
             .title("Artifact build failed")
             .detail(e.to_string())
     })?;
+
+    let (_, extracted) = source_bundle_from_tar_gz(&built).map_err(|e| {
+        HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
+            .title("Built artifact did not parse as a source bundle")
+            .detail(e.to_string())
+    })?;
+
+    let expected = extracted.with_manifest_version(next_version).compute_hash();
+
+    let cmd2 = PublishCommand {
+        name: cmd.name,
+        source: extracted,
+        rationale: cmd.rationale,
+        origin: cmd.origin,
+    };
+    let result = svc.publish(cmd2).await.map_err(HttpApiProblem::from)?;
+    if expected.as_str() != result.hash.as_str() {
+        return Err(
+            HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR).detail(
+                format!(
+                    "internal invariant: published hash {} != canonical hash {} from packaged artifact (same rules as insert_entry)",
+                    result.hash.as_str(),
+                    expected.as_str()
+                ),
+            ),
+        );
+    }
 
     svc.put_built_blob(&result.hash, &built)
         .await

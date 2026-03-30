@@ -7,12 +7,21 @@ cd "$ROOT_DIR"
 PORT="${SLACK_DEMO_PORT:-8083}"
 LOG_FILE="${SLACK_DEMO_LOG:-/tmp/slack-runner.log}"
 PID_FILE="${SLACK_DEMO_PID:-/tmp/slack-runner.pid}"
-PACKAGE_FILE="${SLACK_DEMO_PACKAGE:-/tmp/slack-agent.tar.gz}"
 STREAM_FILE="${SLACK_DEMO_STREAM:-/tmp/slack-demo-sse.log}"
 PROVENANCE_DB="${SLACK_DEMO_PROVENANCE_DB:-provenance.db}"
 
+RUNNER_URL="${SLACK_DEMO_RUNNER_URL:-http://127.0.0.1:${PORT}}"
+REPOSITORY_URL="${SLACK_DEMO_REPOSITORY_URL:-${RUNNER_URL}/repository}"
+STATE_DIR="${SLACK_DEMO_STATE_DIR:-/tmp/slack-demo-runner-state-${PORT}}"
+REPOSITORY_DIR="${SLACK_DEMO_REPOSITORY_DIR:-/tmp/slack-demo-repository-${PORT}}"
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required but not found in PATH" >&2
+  exit 1
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl is required but not found in PATH" >&2
   exit 1
 fi
 
@@ -23,15 +32,22 @@ if [ -f .env ]; then
   set +a
 fi
 
-cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- \
-  package --agent-dir agents/slack-agent --output "$PACKAGE_FILE"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+BUILDER_BIN="${SLACK_DEMO_BUILDER_BIN:-$CARGO_TARGET_DIR/debug/baml-agent-builder}"
 
+cargo build -p baml-rt-builder --features http-tools --bin baml-agent-builder
 cargo build -p baml-agent-runner --features http-tools
-RUNNER_BIN="${SLACK_DEMO_RUNNER_BIN:-target/debug/baml-agent-runner}"
+RUNNER_BIN="${SLACK_DEMO_RUNNER_BIN:-$CARGO_TARGET_DIR/debug/baml-agent-runner}"
 if [ ! -x "$RUNNER_BIN" ]; then
   echo "Runner binary not found: $RUNNER_BIN" >&2
   exit 1
 fi
+if [ ! -x "$BUILDER_BIN" ]; then
+  echo "Builder binary not found: $BUILDER_BIN" >&2
+  exit 1
+fi
+
+mkdir -p "$STATE_DIR" "$REPOSITORY_DIR"
 
 if [ -f "$PID_FILE" ]; then
   OLD_PID="$(cat "$PID_FILE" || true)"
@@ -44,24 +60,31 @@ fi
 
 RUST_LOG=${RUST_LOG:-baml_rt_a2a=debug,baml_rt_quickjs=debug,baml_rt_tools=debug} \
   nohup "$RUNNER_BIN" \
-    "$PACKAGE_FILE" \
     --serve-http "127.0.0.1:${PORT}" \
+    --repository-url "$REPOSITORY_URL" \
+    --state-dir "$STATE_DIR" \
+    --repository-dir "$REPOSITORY_DIR" \
     --provenance-db "$PROVENANCE_DB" \
     >"$LOG_FILE" 2>&1 &
 
 echo $! > "$PID_FILE"
 
-for _ in $(seq 1 60); do
-  if lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+for _ in $(seq 1 120); do
+  if curl -sf "${RUNNER_URL}/openapi.json" >/dev/null 2>&1; then
     break
   fi
   sleep 0.5
 done
 
-if ! lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Runner failed to start on port $PORT. See $LOG_FILE" >&2
+if ! curl -sf "${RUNNER_URL}/openapi.json" >/dev/null 2>&1; then
+  echo "Runner failed to become ready on ${RUNNER_URL}. See $LOG_FILE" >&2
   exit 1
 fi
+
+"$BUILDER_BIN" publish \
+  --agent-dir agents/slack-agent \
+  --repository-url "$REPOSITORY_URL" \
+  --deploy-url "$RUNNER_URL"
 
 if [ -n "${SLACK_DEMO_TEXT:-}" ]; then
   TEXT="$SLACK_DEMO_TEXT"
@@ -77,7 +100,7 @@ echo "Streaming demo request to slack-agent on :${PORT} (provenance db: ${PROVEN
 
 jq -n --arg text "$TEXT" \
   '{jsonrpc:"2.0", method:"message.sendStream", params:{message:{messageId:"msg-3",role:"ROLE_USER",parts:[{text:$text}]}}, id:"corr-1700000000000-3"}' | \
-  curl -s -N -X POST "http://127.0.0.1:${PORT}/agents/slack-agent/default/a2a/sse" \
+  curl -s -N -X POST "${RUNNER_URL}/agents/slack-agent/default/a2a/sse" \
     -H "Content-Type: application/json" \
     -H "Accept: text/event-stream" \
     -d @- | tee "$STREAM_FILE"
