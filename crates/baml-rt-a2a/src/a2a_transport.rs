@@ -469,6 +469,42 @@ impl A2aAgent {
         self.provenance_writer.clone()
     }
 
+    /// True when this agent still has an active turn for the given scope.
+    ///
+    /// This checks both live-stream activity and still-open tool sessions so
+    /// hosts can defer re-entrant host deliveries until the originating turn
+    /// has actually quiesced.
+    pub async fn has_in_flight_turn(
+        &self,
+        context_id: &ContextId,
+        task_id: Option<&TaskId>,
+    ) -> bool {
+        let requested_session_key =
+            LiveStreamSessionKey::from_context_and_task(context_id, task_id);
+        let context_session_key = LiveStreamSessionKey::from_context_id(context_id);
+        let has_in_flight_live_stream = {
+            let sessions = self.stream_sessions.lock().await;
+            sessions
+                .get(&requested_session_key)
+                .map(|session| session.in_flight)
+                .unwrap_or(false)
+                || task_id.is_some()
+                    && sessions
+                        .get(&context_session_key)
+                        .map(|session| session.in_flight)
+                        .unwrap_or(false)
+        };
+        if has_in_flight_live_stream {
+            return true;
+        }
+
+        let runtime = self.runtime.lock().await;
+        runtime
+            .open_session_count_for_scope(context_id, task_id)
+            .await
+            > 0
+    }
+
     /// Subscribe to task update events for this agent instance.
     pub fn subscribe_task_updates(&self) -> broadcast::Receiver<TaskUpdateEvent> {
         self.update_tx.subscribe()

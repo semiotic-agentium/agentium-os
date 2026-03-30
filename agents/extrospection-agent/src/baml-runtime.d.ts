@@ -8,11 +8,14 @@
 
 export interface AgentCardDto { name: string;
 version: string;
+content_hash: string | null;
+repository_version: number | null;
 agent_package: string;
 agent_instance_id: string;
 tools: string[];
 description: string | null;
 capabilities: string[];
+tags: string[];
 subscriptions: AgentEventSubscriptionDto[];
  }
 

@@ -10,7 +10,8 @@ use baml_rt_provenance::{
     ProvenanceResponseProfile,
 };
 use baml_rt_tools::{
-    ToolCapability, ToolFailure, ToolHandler, ToolSession, ToolSessionError, ToolStep,
+    OpaqueJson, ToolCapability, ToolFailure, ToolHandler, ToolSession, ToolSessionError, ToolStep,
+    opaque_json_map_from_object,
     tools::{HistoryContextV1, SessionReadMode, ToolFunctionMetadata, ToolSessionContext},
 };
 use serde_json::Value;
@@ -245,14 +246,14 @@ impl ProvenanceQuerySession {
 
 fn history_payload_from_provenance_output(
     output: &serde_json::Map<String, Value>,
-) -> Option<BTreeMap<String, Value>> {
+) -> Option<BTreeMap<String, OpaqueJson>> {
     if let Some(read_result) = output.get("readResult").and_then(Value::as_object) {
         let mut payload = BTreeMap::new();
         for (k, v) in read_result {
             if k == "refs" || k == "refId" || k == "ref_id" || k == "mode" {
                 continue;
             }
-            payload.insert(k.clone(), v.clone());
+            payload.insert(k.clone(), OpaqueJson::from(v.clone()));
         }
         return Some(payload);
     }
@@ -260,13 +261,7 @@ fn history_payload_from_provenance_output(
         .get("payloadJson")
         .and_then(Value::as_str)
         .and_then(|s| serde_json::from_str::<Value>(s).ok())
-        .and_then(|v| {
-            v.as_object().map(|obj| {
-                obj.iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect::<BTreeMap<_, _>>()
-            })
-        })
+        .map(opaque_json_map_from_object)
 }
 
 fn attach_history_context(value: &mut Value, hop: u32) {
@@ -280,7 +275,7 @@ fn attach_history_context(value: &mut Value, hop: u32) {
     let cursor = payload
         .as_ref()
         .and_then(|obj| obj.get("cursor"))
-        .and_then(Value::as_str)
+        .and_then(|value| value.as_value().as_str())
         .map(ToString::to_string);
     let payload_json_len = payload
         .as_ref()

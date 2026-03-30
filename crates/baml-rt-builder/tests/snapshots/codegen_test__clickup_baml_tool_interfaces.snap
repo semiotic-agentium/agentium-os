@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-builder/tests/codegen_test.rs
+assertion_line: 33
 expression: baml_output
 ---
 // Auto-generated tool interfaces
@@ -62,6 +63,11 @@ class SessionContext {
   selected_tool string?
   status_token string?
 }
+
+/// Opaque JSON transport value for host-managed tools and event payloads.
+/// Runtime validation accepts arbitrary JSON. The generated TypeScript surface
+/// renders this alias as `JsonValue`.
+type OpaqueJson = string
 
 // Structured reply types for synthesis functions
 enum ReplyMediaType {

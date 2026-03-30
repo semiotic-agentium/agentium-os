@@ -59,6 +59,11 @@ class SessionContext {
   status_token string?
 }
 
+/// Opaque JSON transport value for host-managed tools and event payloads.
+/// Runtime validation accepts arbitrary JSON. The generated TypeScript surface
+/// renders this alias as `JsonValue`.
+type OpaqueJson = string
+
 // Structured reply types for synthesis functions
 enum ReplyMediaType {
   TextPlain @alias("text/plain")
@@ -105,11 +110,14 @@ class AgentEventSubscriptionDto {
 class AgentCardDto {
   name string
   version string
+  content_hash string | null?
+  repository_version int | null?
   agent_package string
   agent_instance_id string
   tools string[]
   description string | null?
   capabilities string[]
+  tags string[]
   subscriptions AgentEventSubscriptionDto[]
 }
 
@@ -119,7 +127,7 @@ class HistoryContextV1 {
   status string
   truncated bool
   cursor string | null?
-  payload string | null?
+  payload map<string, OpaqueJson> | null?
 }
 
 class DiscoverAgentsNextOutput {
@@ -151,12 +159,14 @@ class ProvenancePayloadLlmCallDto {
   payload_ref string
   activity_ref string
   prompt_json string
+  source string
 }
 
 class ProvenancePayloadLlmResultDto {
   payload_ref string
   activity_ref string
   result_json string
+  source string
 }
 
 class ProvenancePayloadToolCallDto {
@@ -165,12 +175,14 @@ class ProvenancePayloadToolCallDto {
   tool_name string | null?
   phase string | null?
   args_json string
+  source string
 }
 
 class ProvenancePayloadToolResultDto {
   payload_ref string
   activity_ref string
   result_json string
+  source string
 }
 
 class ProvenanceArchiveRecordDto {

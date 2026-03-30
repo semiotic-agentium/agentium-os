@@ -25,6 +25,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::{
     bundles::BundleType,
     config_resolver::ConfigResolver,
+    opaque_json::OpaqueJson,
     tool_catalog::{InventoryCatalog, ToolCatalog},
     tool_error_classify::{ClassifiedToolError, ToolExecutionClassifier},
     tool_fsm::{
@@ -1217,6 +1218,7 @@ pub enum ToolOrigin {
 /// Context passed to a tool when a session is opened. context_id and agent_id (from invocation
 /// scope) are set by the executor so tools (e.g. internal_a2a) can attach context_id to
 /// outbound requests for session continuity; agent_id is used for workspace resolution etc.
+#[derive(Clone)]
 pub struct ToolSessionContext {
     pub session_id: ToolSessionId,
     pub tool_name: ToolName,
@@ -1267,10 +1269,11 @@ pub struct HistoryContextV1 {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
-    // `BTreeMap<String, Value>` auto-maps to `Record<string, any> | null` in TS
-    // and `{"type":"object","additionalProperties":{}} | null` in JSON Schema.
+    // History payloads are opaque host-side state carried across read hops.
+    // The explicit `OpaqueJson` wrapper keeps generated interfaces honest while
+    // preserving arbitrary JSON at runtime.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub payload: Option<BTreeMap<String, Value>>,
+    pub payload: Option<BTreeMap<String, OpaqueJson>>,
 }
 
 #[async_trait]
@@ -2492,6 +2495,231 @@ where
                 }
             };
             let future = handler(parsed);
+            Box::pin(async move {
+                let output = future.await?;
+                serialize_tool_output(output)
+            })
+        }));
+        Ok(Box::new(OneShotSession::new(ctx, executor)))
+    }
+}
+
+/// One-shot tool built from an async function and pre-built metadata.
+///
+/// Open validates `OI`, Send captures `I`, and the first Read executes the handler
+/// and returns a single `Done` payload.
+pub fn create_one_shot_tool_from_async<OI, I, O, F>(
+    metadata: ToolFunctionMetadata,
+    executor: F,
+) -> Arc<dyn ToolHandler>
+where
+    OI: crate::tool_schema::ToolType
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + DescribeAction
+        + Send
+        + Sync
+        + 'static,
+    I: crate::tool_schema::ToolType
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + DescribeAction
+        + Send
+        + Sync
+        + 'static,
+    O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
+    F: Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync + 'static,
+{
+    Arc::new(OneShotToolFromAsync::<OI, I, O, F> {
+        metadata,
+        executor: Arc::new(executor),
+        _phantom: PhantomData,
+    })
+}
+
+/// One-shot tool built from an async function and pre-built metadata, with access
+/// to the session context used to open the tool.
+pub fn create_one_shot_tool_from_async_with_context<OI, I, O, F>(
+    metadata: ToolFunctionMetadata,
+    executor: F,
+) -> Arc<dyn ToolHandler>
+where
+    OI: crate::tool_schema::ToolType
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + DescribeAction
+        + Send
+        + Sync
+        + 'static,
+    I: crate::tool_schema::ToolType
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + DescribeAction
+        + Send
+        + Sync
+        + 'static,
+    O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
+    F: Fn(ToolSessionContext, I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+{
+    Arc::new(OneShotToolFromAsyncWithContext::<OI, I, O, F> {
+        metadata,
+        executor: Arc::new(executor),
+        _phantom: PhantomData,
+    })
+}
+
+struct OneShotToolFromAsync<OI, I, O, F> {
+    metadata: ToolFunctionMetadata,
+    executor: Arc<F>,
+    _phantom: PhantomData<(OI, I, O)>,
+}
+
+struct OneShotToolFromAsyncWithContext<OI, I, O, F> {
+    metadata: ToolFunctionMetadata,
+    executor: Arc<F>,
+    _phantom: PhantomData<(OI, I, O)>,
+}
+
+#[async_trait]
+impl<OI, I, O, F> ToolHandler for OneShotToolFromAsync<OI, I, O, F>
+where
+    OI: crate::tool_schema::ToolType
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + DescribeAction
+        + Send
+        + Sync
+        + 'static,
+    I: crate::tool_schema::ToolType
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + DescribeAction
+        + Send
+        + Sync
+        + 'static,
+    O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
+    F: Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync + 'static,
+{
+    fn metadata(&self) -> &ToolFunctionMetadata {
+        &self.metadata
+    }
+
+    fn describe_invocation(&self, content: &Value) -> String {
+        let step = content.get("step").unwrap_or(content);
+        let tool_name = self.metadata.name.to_string();
+        let op = match step.get("op").and_then(Value::as_str) {
+            Some(op) => op,
+            None => return format!("using {tool_name}"),
+        };
+        match op {
+            "Open" => step
+                .get("input")
+                .and_then(|v| serde_json::from_value::<OI>(v.clone()).ok())
+                .map(|typed| typed.describe())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("using {tool_name}")),
+            "Send" => step
+                .get("input")
+                .and_then(|v| serde_json::from_value::<I>(v.clone()).ok())
+                .map(|typed| typed.describe())
+                .unwrap_or_else(|| format!("{tool_name}: send")),
+            "Read" | "Finish" | "Abort" => String::new(),
+            other => format!("{tool_name}: {other}"),
+        }
+    }
+
+    async fn open_session(
+        &self,
+        ctx: ToolSessionContext,
+        open_input: Value,
+    ) -> Result<Box<dyn ToolSession>> {
+        validate_open_input::<OI>(open_input)?;
+
+        let handler = self.executor.clone();
+        let executor: Box<dyn ToolExecutor> = Box::new(ExecutorAdapter::new(move |input| {
+            let parsed: I = match deserialize_tool_input(input) {
+                Ok(value) => value,
+                Err(err) => return Box::pin(async move { Err(err) }),
+            };
+            let future = handler(parsed);
+            Box::pin(async move {
+                let output = future.await?;
+                serialize_tool_output(output)
+            })
+        }));
+        Ok(Box::new(OneShotSession::new(ctx, executor)))
+    }
+}
+
+#[async_trait]
+impl<OI, I, O, F> ToolHandler for OneShotToolFromAsyncWithContext<OI, I, O, F>
+where
+    OI: crate::tool_schema::ToolType
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + DescribeAction
+        + Send
+        + Sync
+        + 'static,
+    I: crate::tool_schema::ToolType
+        + Serialize
+        + for<'de> Deserialize<'de>
+        + DescribeAction
+        + Send
+        + Sync
+        + 'static,
+    O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
+    F: Fn(ToolSessionContext, I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+{
+    fn metadata(&self) -> &ToolFunctionMetadata {
+        &self.metadata
+    }
+
+    fn describe_invocation(&self, content: &Value) -> String {
+        let step = content.get("step").unwrap_or(content);
+        let tool_name = self.metadata.name.to_string();
+        let op = match step.get("op").and_then(Value::as_str) {
+            Some(op) => op,
+            None => return format!("using {tool_name}"),
+        };
+        match op {
+            "Open" => step
+                .get("input")
+                .and_then(|v| serde_json::from_value::<OI>(v.clone()).ok())
+                .map(|typed| typed.describe())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("using {tool_name}")),
+            "Send" => step
+                .get("input")
+                .and_then(|v| serde_json::from_value::<I>(v.clone()).ok())
+                .map(|typed| typed.describe())
+                .unwrap_or_else(|| format!("{tool_name}: send")),
+            "Read" | "Finish" | "Abort" => String::new(),
+            other => format!("{tool_name}: {other}"),
+        }
+    }
+
+    async fn open_session(
+        &self,
+        ctx: ToolSessionContext,
+        open_input: Value,
+    ) -> Result<Box<dyn ToolSession>> {
+        validate_open_input::<OI>(open_input)?;
+
+        let session_ctx = ctx.clone();
+        let handler = self.executor.clone();
+        let executor: Box<dyn ToolExecutor> = Box::new(ExecutorAdapter::new(move |input| {
+            let parsed: I = match deserialize_tool_input(input) {
+                Ok(value) => value,
+                Err(err) => return Box::pin(async move { Err(err) }),
+            };
+            let future = handler(session_ctx.clone(), parsed);
             Box::pin(async move {
                 let output = future.await?;
                 serialize_tool_output(output)

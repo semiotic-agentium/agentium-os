@@ -1,9 +1,14 @@
 //! Structured request and response types for system tools.
 
 use baml_derive::BamlType;
+use baml_derive_core::{JsonSchemaType, TsType};
 use baml_rt_core::ids::{AgentId, ContextId, TaskId};
-use baml_rt_tools::tools::{HistoryContextV1, SessionReadEnvelope, SessionReadMode};
+use baml_rt_tools::{
+    OpaqueJson,
+    tools::{HistoryContextV1, SessionReadEnvelope, SessionReadMode},
+};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct InternalA2aTarget {
@@ -81,6 +86,234 @@ pub struct InternalA2aNextOutput {
     pub completion: Option<InternalA2aCompletion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_context: Option<HistoryContextV1>,
+}
+
+// --- system/callback ---
+
+fn tagged_union_variant_schema<T: JsonSchemaType>(tag_name: &str, tag_value: &str) -> Value {
+    let mut schema = match T::json_schema_inline() {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+
+    schema.insert("type".to_string(), Value::String("object".to_string()));
+
+    let mut properties = match schema.remove("properties") {
+        Some(Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    };
+    properties.insert(
+        tag_name.to_string(),
+        json!({
+            "type": "string",
+            "const": tag_value,
+        }),
+    );
+    schema.insert("properties".to_string(), Value::Object(properties));
+
+    let mut required = match schema.remove("required") {
+        Some(Value::Array(values)) => values,
+        _ => Vec::new(),
+    };
+    let tag_name_value = Value::String(tag_name.to_string());
+    if !required.iter().any(|value| value == &tag_name_value) {
+        required.push(tag_name_value);
+    }
+    schema.insert("required".to_string(), Value::Array(required));
+
+    Value::Object(schema)
+}
+
+fn tagged_union_schema(variants: Vec<Value>) -> Value {
+    json!({ "oneOf": variants })
+}
+
+fn tagged_union_ts_decl(
+    type_name: &str,
+    tag_name: &str,
+    variants: &[(&str, &str)],
+) -> Option<String> {
+    let union = variants
+        .iter()
+        .map(|(tag_value, inner_type)| {
+            format!("({{ {tag_name}: \"{tag_value}\" }} & {inner_type})")
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    Some(format!("export type {type_name} = {union};"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum CallbackToolInput {
+    Schedule(CallbackScheduleInput),
+    Cancel(CallbackCancelInput),
+}
+
+impl TsType for CallbackToolInput {
+    fn ts_type_name() -> &'static str {
+        "CallbackToolInput"
+    }
+
+    fn ts_decl() -> Option<String> {
+        tagged_union_ts_decl(
+            Self::ts_type_name(),
+            "op",
+            &[
+                ("schedule", "CallbackScheduleInput"),
+                ("cancel", "CallbackCancelInput"),
+            ],
+        )
+    }
+
+    fn ts_dependencies() -> Vec<&'static str> {
+        vec!["CallbackScheduleInput", "CallbackCancelInput"]
+    }
+}
+
+impl JsonSchemaType for CallbackToolInput {
+    fn json_schema_inline() -> Value {
+        tagged_union_schema(vec![
+            tagged_union_variant_schema::<CallbackScheduleInput>("op", "schedule"),
+            tagged_union_variant_schema::<CallbackCancelInput>("op", "cancel"),
+        ])
+    }
+}
+
+impl baml_rt_tools::DescribeAction for CallbackToolInput {
+    fn describe(&self) -> String {
+        match self {
+            Self::Schedule(input) => input.describe(),
+            Self::Cancel(input) => input.describe(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+#[serde(rename_all = "camelCase")]
+pub struct CallbackScheduleInput {
+    #[baml(description = "Delay before the callback event is emitted, in milliseconds.")]
+    pub after_ms: u64,
+    #[baml(
+        description = "Stable event source key for subscription matching, for example `workflow-intake:follow-up`."
+    )]
+    pub source_key: String,
+    #[baml(description = "Opaque JSON payload delivered back through onDispatch.")]
+    pub payload: OpaqueJson,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(
+        description = "Optional idempotency key scoped to the sourceKey. A pending callback with the same sourceKey + dedupeKey is reused instead of creating another row."
+    )]
+    pub dedupe_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(
+        description = "Optional continuation policy. Omit it for a detached callback. Use `resume_current_task` to re-enter the current task later in the same context after the current turn has quiesced."
+    )]
+    pub continuation: Option<CallbackContinuationMode>,
+}
+
+impl baml_rt_tools::DescribeAction for CallbackScheduleInput {
+    fn describe(&self) -> String {
+        format!(
+            "scheduling callback '{source_key}' in {after_ms} ms",
+            source_key = self.source_key,
+            after_ms = self.after_ms
+        )
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CallbackContinuationMode {
+    #[default]
+    Detached,
+    ResumeCurrentTask,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+#[serde(rename_all = "camelCase")]
+pub struct CallbackCancelInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(description = "Exact callback id to cancel.")]
+    pub callback_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(
+        description = "Source key for dedupe-key cancellation. Required when cancelling by dedupeKey."
+    )]
+    pub source_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(
+        description = "Optional dedupe key to cancel instead of a callback id. Requires sourceKey."
+    )]
+    pub dedupe_key: Option<String>,
+}
+
+impl baml_rt_tools::DescribeAction for CallbackCancelInput {
+    fn describe(&self) -> String {
+        match (&self.callback_id, &self.dedupe_key) {
+            (Some(callback_id), _) => format!("cancelling callback '{callback_id}'"),
+            (None, Some(dedupe_key)) => format!("cancelling deduped callback '{dedupe_key}'"),
+            _ => "cancelling callback".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum CallbackToolOutput {
+    Scheduled(CallbackScheduledOutput),
+    Cancelled(CallbackCancelledOutput),
+}
+
+impl TsType for CallbackToolOutput {
+    fn ts_type_name() -> &'static str {
+        "CallbackToolOutput"
+    }
+
+    fn ts_decl() -> Option<String> {
+        tagged_union_ts_decl(
+            Self::ts_type_name(),
+            "outcome",
+            &[
+                ("scheduled", "CallbackScheduledOutput"),
+                ("cancelled", "CallbackCancelledOutput"),
+            ],
+        )
+    }
+
+    fn ts_dependencies() -> Vec<&'static str> {
+        vec!["CallbackScheduledOutput", "CallbackCancelledOutput"]
+    }
+}
+
+impl JsonSchemaType for CallbackToolOutput {
+    fn json_schema_inline() -> Value {
+        tagged_union_schema(vec![
+            tagged_union_variant_schema::<CallbackScheduledOutput>("outcome", "scheduled"),
+            tagged_union_variant_schema::<CallbackCancelledOutput>("outcome", "cancelled"),
+        ])
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+#[serde(rename_all = "camelCase")]
+pub struct CallbackScheduledOutput {
+    pub callback_id: String,
+    pub source_key: String,
+    pub scheduled_for_unix_ms: u64,
+    pub deduped: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+#[serde(rename_all = "camelCase")]
+pub struct CallbackCancelledOutput {
+    pub cancelled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dedupe_key: Option<String>,
 }
 
 // --- system/discover_agents ---
@@ -292,7 +525,7 @@ pub struct ProvenanceQuerySendInput {
 
 impl baml_rt_tools::DescribeAction for ProvenanceQuerySendInput {
     fn describe(&self) -> String {
-        format!("querying provenance {}", self.resource)
+        format!("querying provenance {resource}", resource = self.resource)
     }
 }
 
@@ -376,14 +609,52 @@ pub struct ProvenancePayloadToolResultDto {
     pub result_json: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
-#[baml(union)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum ProvenanceArchivePayloadDto {
     LlmCall(ProvenancePayloadLlmCallDto),
     LlmResult(ProvenancePayloadLlmResultDto),
     ToolCall(ProvenancePayloadToolCallDto),
     ToolResult(ProvenancePayloadToolResultDto),
+}
+
+impl TsType for ProvenanceArchivePayloadDto {
+    fn ts_type_name() -> &'static str {
+        "ProvenanceArchivePayloadDto"
+    }
+
+    fn ts_decl() -> Option<String> {
+        tagged_union_ts_decl(
+            Self::ts_type_name(),
+            "source",
+            &[
+                ("llm_call", "ProvenancePayloadLlmCallDto"),
+                ("llm_result", "ProvenancePayloadLlmResultDto"),
+                ("tool_call", "ProvenancePayloadToolCallDto"),
+                ("tool_result", "ProvenancePayloadToolResultDto"),
+            ],
+        )
+    }
+
+    fn ts_dependencies() -> Vec<&'static str> {
+        vec![
+            "ProvenancePayloadLlmCallDto",
+            "ProvenancePayloadLlmResultDto",
+            "ProvenancePayloadToolCallDto",
+            "ProvenancePayloadToolResultDto",
+        ]
+    }
+}
+
+impl JsonSchemaType for ProvenanceArchivePayloadDto {
+    fn json_schema_inline() -> Value {
+        tagged_union_schema(vec![
+            tagged_union_variant_schema::<ProvenancePayloadLlmCallDto>("source", "llm_call"),
+            tagged_union_variant_schema::<ProvenancePayloadLlmResultDto>("source", "llm_result"),
+            tagged_union_variant_schema::<ProvenancePayloadToolCallDto>("source", "tool_call"),
+            tagged_union_variant_schema::<ProvenancePayloadToolResultDto>("source", "tool_result"),
+        ])
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]

@@ -118,6 +118,88 @@ fn test_baml_tool_interface_generation() {
     insta::assert_snapshot!("baml_tool_interfaces", baml_output);
 }
 
+#[test]
+fn test_system_callback_tool_baml_interfaces() {
+    let tool_names = vec!["system/callback".to_string()];
+    let baml_output =
+        render_baml_tool_interfaces(&tool_names).expect("Should generate callback BAML interfaces");
+
+    assert!(
+        baml_output.contains("type CallbackToolInput"),
+        "Expected CallbackToolInput union in generated BAML"
+    );
+    assert!(
+        baml_output.contains("type OpaqueJson = string"),
+        "Expected generated BAML prelude to declare the OpaqueJson transport type"
+    );
+    assert!(
+        baml_output.contains("payload OpaqueJson"),
+        "Expected callback payloads to use the explicit OpaqueJson transport type"
+    );
+    assert!(
+        baml_output.contains("op string"),
+        "Expected callback input variants to preserve the op discriminator in generated BAML"
+    );
+    assert!(
+        baml_output.contains("outcome string"),
+        "Expected callback output variants to preserve the outcome discriminator in generated BAML"
+    );
+    assert!(
+        baml_output.contains("class SystemCallbackOpenStep"),
+        "Expected system/callback session scaffolding in generated BAML"
+    );
+}
+
+#[test]
+fn test_schema_to_baml_rejects_unknown_json_schema_type() {
+    let mut schemas = HashMap::new();
+    let mut type_names = HashMap::new();
+
+    let schema: Value = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "mystery_field": { "type": "mystery" }
+        },
+        "required": ["mystery_field"]
+    });
+
+    schemas.insert("UnknownTypeTest".to_string(), schema);
+    type_names.insert("UnknownTypeTest".to_string(), "UnknownTypeTest".to_string());
+
+    let err = generate_baml_types_from_schemas(&schemas, &type_names)
+        .expect_err("unknown JSON Schema types should fail loudly");
+    let message = err.to_string();
+    assert!(
+        message.contains("unknown JSON Schema type `mystery`"),
+        "expected offending type in error, got: {message}"
+    );
+}
+
+#[test]
+fn test_schema_to_baml_rejects_open_object_without_opaque_marker() {
+    let mut schemas = HashMap::new();
+    let mut type_names = HashMap::new();
+
+    let schema: Value = serde_json::json!({
+        "type": "object"
+    });
+
+    schemas.insert("OpenObjectTest".to_string(), schema);
+    type_names.insert("OpenObjectTest".to_string(), "OpenObjectTest".to_string());
+
+    let err = generate_baml_types_from_schemas(&schemas, &type_names)
+        .expect_err("open object schema should require an explicit transport type");
+    let message = err.to_string();
+    assert!(
+        message.contains("object schema without properties or additionalProperties"),
+        "expected open object error, got: {message}"
+    );
+    assert!(
+        message.contains("OpaqueJson"),
+        "expected OpaqueJson guidance in error, got: {message}"
+    );
+}
+
 fn fixture_baml_src(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()

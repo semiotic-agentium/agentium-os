@@ -7,7 +7,8 @@ use baml_rt_provenance::ProvenanceOpsQuery;
 use baml_rt_tools::{ToolBundle, ToolBundleMetadata, ToolRegistry, bundles::BundleType};
 
 use crate::{
-    a2a_session::A2aSessionBundle, discover_bundle::DiscoverBundle,
+    a2a_session::A2aSessionBundle, callback_bundle::CallbackBundle,
+    discover_bundle::DiscoverBundle, metadata::system_callback_metadata,
     provenance_bundle::ProvenanceBundle,
 };
 
@@ -26,6 +27,7 @@ impl BundleType for System {
 /// Register this with the host tool registry so agents get all three tools.
 pub struct SystemBundle {
     a2a: A2aSessionBundle,
+    callback: CallbackBundle,
     discover: DiscoverBundle,
     provenance: Option<ProvenanceBundle>,
 }
@@ -38,6 +40,7 @@ impl SystemBundle {
     ) -> Self {
         Self {
             a2a: A2aSessionBundle::new(a2a_handler),
+            callback: CallbackBundle::new(),
             discover: DiscoverBundle::new(agent_list, tool_registry),
             provenance: None,
         }
@@ -51,6 +54,7 @@ impl SystemBundle {
     ) -> Self {
         Self {
             a2a: A2aSessionBundle::new(a2a_handler),
+            callback: CallbackBundle::new(),
             discover: DiscoverBundle::new(agent_list, tool_registry),
             provenance: Some(ProvenanceBundle::new(query)),
         }
@@ -59,11 +63,11 @@ impl SystemBundle {
 
 impl ToolBundle for SystemBundle {
     fn metadata(&self) -> ToolBundleMetadata {
-        let name = baml_rt_tools::BundleName::new("system".to_string())
-            .expect("system bundle name is valid");
+        let name = system_callback_metadata().bundle().clone();
         ToolBundleMetadata {
             name,
-            description: "System tools (A2A session, agent discovery, tool discovery).".to_string(),
+            description: "System tools (A2A session, callbacks, agent discovery, tool discovery)."
+                .to_string(),
             config_schema: None,
             secret_requests: Vec::new(),
         }
@@ -71,6 +75,7 @@ impl ToolBundle for SystemBundle {
 
     fn functions(&self) -> Vec<Arc<dyn baml_rt_tools::ToolHandler>> {
         let mut fns = self.a2a.functions();
+        fns.extend(self.callback.functions());
         fns.extend(self.discover.functions());
         if let Some(bundle) = &self.provenance {
             fns.extend(bundle.functions());

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt::{A2aRequestHandler, Result, tools::BamlTool};
 use baml_rt_core::A2aJsChatHost;
-use baml_rt_tools::bundles::Support;
+use baml_rt_tools::{OpaqueJson, bundles::Support};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::task;
@@ -66,14 +66,17 @@ impl BamlTool for A2aRelayTool {
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let handle = tokio::runtime::Handle::current();
-        let responses = task::block_in_place(|| handle.block_on(self.client.send(args.request)))?;
-        Ok(A2aRelayOutput { responses })
+        let request = args.request.into_inner();
+        let responses = task::block_in_place(|| handle.block_on(self.client.send(request)))?;
+        Ok(A2aRelayOutput {
+            responses: responses.into_iter().map(OpaqueJson::from).collect(),
+        })
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct A2aRelayInput {
-    request: Value,
+    request: OpaqueJson,
 }
 impl baml_rt_tools::DescribeAction for A2aRelayInput {
     fn describe(&self) -> String {
@@ -83,5 +86,5 @@ impl baml_rt_tools::DescribeAction for A2aRelayInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct A2aRelayOutput {
-    responses: Vec<Value>,
+    responses: Vec<OpaqueJson>,
 }

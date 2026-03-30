@@ -1,16 +1,13 @@
 //! discover_agents and discover_tools built via create_multi_send_session_tool_from_async
 //! (open + multiple send/read).
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 use baml_rt_core::{
     AgentLister, EventSubscription, EventSubscriptionFilter, subscriptions_match_filter,
 };
 use baml_rt_tools::{
-    ToolRegistry, create_multi_send_session_tool_from_async,
+    ToolRegistry, create_multi_send_session_tool_from_async, opaque_json_map_from_object,
     tools::{HistoryContextV1, ToolFunctionMetadata},
 };
 
@@ -170,10 +167,10 @@ pub fn discover_agents_handler(
                     status: "done".to_string(),
                     truncated: false,
                     cursor: None,
-                    payload: Some(BTreeMap::from([
-                        ("count".to_string(), serde_json::json!(agents.len())),
-                        ("query".to_string(), serde_json::json!(normalized_query)),
-                    ])),
+                    payload: Some(opaque_json_map_from_object(serde_json::json!({
+                        "count": agents.len(),
+                        "query": normalized_query
+                    }))),
                 }),
             })
         })
@@ -215,10 +212,10 @@ pub fn discover_tools_handler(
                     status: "done".to_string(),
                     truncated: false,
                     cursor: None,
-                    payload: Some(BTreeMap::from([
-                        ("count".to_string(), serde_json::json!(tools.len())),
-                        ("query".to_string(), serde_json::json!(send_input.query)),
-                    ])),
+                    payload: Some(opaque_json_map_from_object(serde_json::json!({
+                        "count": tools.len(),
+                        "query": send_input.query
+                    }))),
                 }),
             })
         })

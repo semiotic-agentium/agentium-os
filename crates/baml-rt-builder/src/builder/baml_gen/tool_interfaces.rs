@@ -2,7 +2,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use baml_rt_tools::{tool_catalog::resolve_manifest_tools, tools::ToolFunctionMetadata};
+use baml_rt_tools::{
+    OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY, tool_catalog::resolve_manifest_tools,
+    tools::ToolFunctionMetadata,
+};
 use baml_tools_calculator as _;
 use serde_json::Value;
 
@@ -172,7 +175,7 @@ fn summarize_input_schema(schema: &Value) -> String {
     sorted_keys.sort();
     for key in sorted_keys {
         let prop = &props[key];
-        let ty = prop.get("type").and_then(Value::as_str).unwrap_or("any");
+        let ty = summarize_schema_type(prop);
         let optional = if required.contains(key.as_str()) {
             ""
         } else {
@@ -181,6 +184,20 @@ fn summarize_input_schema(schema: &Value) -> String {
         parts.push(format!("{key}{optional}: {ty}"));
     }
     format!("{{ {} }}", parts.join(", "))
+}
+
+fn summarize_schema_type(schema: &Value) -> &str {
+    let Some(obj) = schema.as_object() else {
+        return "any";
+    };
+    if obj
+        .get(OPAQUE_JSON_SCHEMA_MARKER_KEY)
+        .and_then(Value::as_str)
+        .is_some_and(|marker| marker == OPAQUE_JSON_BAML_TYPE)
+    {
+        return OPAQUE_JSON_BAML_TYPE;
+    }
+    obj.get("type").and_then(Value::as_str).unwrap_or("any")
 }
 
 fn schema_allows_empty_or_null_open_input(schema: &Value) -> bool {

@@ -93,6 +93,26 @@ impl BamlRuntimeManager {
             .len()
     }
 
+    /// Number of open tool sessions for a specific task scope, or for the full context
+    /// when `task_id` is `None`.
+    pub async fn open_session_count_for_scope(
+        &self,
+        context_id: &baml_rt_core::ids::ContextId,
+        task_id: Option<&baml_rt_core::ids::TaskId>,
+    ) -> usize {
+        let handle = self.tool_session_handle();
+        match task_id {
+            Some(task_id) => handle
+                .collect_session_ids_for_task_scope(context_id, task_id)
+                .await
+                .len(),
+            None => handle
+                .collect_session_ids_for_context(context_id)
+                .await
+                .len(),
+        }
+    }
+
     /// Close all tool sessions for this context (teardown). Call when an invocation ends
     /// so sessions are not leaked. Best-effort: logs but does not fail on individual finish errors.
     pub async fn close_sessions_for_context(

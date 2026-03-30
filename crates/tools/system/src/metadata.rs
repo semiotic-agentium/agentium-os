@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, EventSourceKind, Result};
 use baml_rt_tools::{
     SessionPolicy, ToolHandler, parse_tool_name_and_class, register_tool,
     tool_schema::ToolType,
@@ -10,10 +10,10 @@ use baml_rt_tools::{
 };
 
 use crate::tools::{
-    DiscoverAgentsNextOutput, DiscoverAgentsOpenInput, DiscoverAgentsSendInput,
-    DiscoverToolsNextOutput, DiscoverToolsOpenInput, DiscoverToolsSendInput, InternalA2aNextOutput,
-    InternalA2aOpenInput, InternalA2aSendInput, ProvenanceQueryNextOutput,
-    ProvenanceQueryOpenInput, ProvenanceQuerySendInput,
+    CallbackToolInput, CallbackToolOutput, DiscoverAgentsNextOutput, DiscoverAgentsOpenInput,
+    DiscoverAgentsSendInput, DiscoverToolsNextOutput, DiscoverToolsOpenInput,
+    DiscoverToolsSendInput, InternalA2aNextOutput, InternalA2aOpenInput, InternalA2aSendInput,
+    ProvenanceQueryNextOutput, ProvenanceQueryOpenInput, ProvenanceQuerySendInput,
 };
 
 fn system_tool_build_unused() -> Result<Arc<dyn ToolHandler>> {
@@ -45,6 +45,25 @@ pub fn system_internal_a2a_metadata() -> ToolFunctionMetadata {
 }
 
 register_tool!(system_internal_a2a_metadata, system_tool_build_unused);
+
+pub fn system_callback_metadata() -> ToolFunctionMetadata {
+    let (name, class_name) =
+        parse_tool_name_and_class("system/callback").expect("static tool name");
+    TypeBasedMetadataBuilder::<(), CallbackToolInput, CallbackToolOutput>::new(
+        name,
+        class_name,
+        "Schedules or cancels durable host-side callback events. Use this to ask the host to emit a future `system.callback.v1` dispatch on a stable source key through the normal event-delivery path.".to_string(),
+    )
+    .with_tags(vec![
+        "system".to_string(),
+        "callback".to_string(),
+        "scheduler".to_string(),
+    ])
+    .with_event_sources(vec![
+        EventSourceKind::parse("system/callback").expect("system/callback is a valid source kind"),
+    ])
+    .build_metadata()
+}
 
 fn build_discover_metadata<Open, SendInput, Next>(
     tool_name: &str,
@@ -135,3 +154,4 @@ register_tool!(system_discover_agents_metadata, system_tool_build_unused);
 register_tool!(system_discover_tools_metadata, system_tool_build_unused);
 register_tool!(system_introspection_metadata, system_tool_build_unused);
 register_tool!(system_extrospection_metadata, system_tool_build_unused);
+register_tool!(system_callback_metadata, system_tool_build_unused);

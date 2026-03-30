@@ -1,9 +1,6 @@
 //! system/internal_a2a tool: session-based A2A conversation call.
 
-use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::Arc,
-};
+use std::{collections::VecDeque, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -12,7 +9,7 @@ use baml_rt_core::{
 };
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
-    ToolSession, ToolSessionError, ToolStep,
+    ToolSession, ToolSessionError, ToolStep, opaque_json_map_from_object,
     tools::{HistoryContextV1, ToolFunctionMetadata, ToolSessionContext, validate_open_input},
 };
 use futures_util::StreamExt;
@@ -496,19 +493,10 @@ impl ToolSession for A2aSession {
                 },
                 truncated: false,
                 cursor: None,
-                payload: Some(
-                    serde_json::json!({
-                        "chunkCount": merged.chunks.len(),
-                        "completion": merged.completion.as_ref().map(|c| format!("{:?}", c)),
-                    })
-                    .as_object()
-                    .map(|obj| {
-                        obj.iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect::<BTreeMap<_, _>>()
-                    })
-                    .unwrap_or_default(),
-                ),
+                payload: Some(opaque_json_map_from_object(serde_json::json!({
+                    "chunkCount": merged.chunks.len(),
+                    "completion": merged.completion.as_ref().map(|c| format!("{:?}", c)),
+                }))),
             });
             let value = serde_json::to_value(&merged).map_err(|e| {
                 ToolSessionError::Tool(ToolFailure::execution_failed(format!(
@@ -554,17 +542,10 @@ impl ToolSession for A2aSession {
                         },
                         truncated: false,
                         cursor: None,
-                        payload: Some(serde_json::json!({
+                        payload: Some(opaque_json_map_from_object(serde_json::json!({
                             "chunkCount": merged.chunks.len(),
                             "completion": merged.completion.as_ref().map(|c| format!("{:?}", c)),
-                        })
-                        .as_object()
-                        .map(|obj| {
-                            obj.iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect::<BTreeMap<_, _>>()
-                        })
-                        .unwrap_or_default()),
+                        }))),
                     });
                     let value = serde_json::to_value(&merged).map_err(|e| {
                         ToolSessionError::Tool(ToolFailure::execution_failed(format!(
@@ -620,19 +601,10 @@ impl ToolSession for A2aSession {
                                 status: "streaming".to_string(),
                                 truncated: false,
                                 cursor: None,
-                                payload: Some(
-                                    serde_json::json!({
-                                        "chunkCount": 1,
-                                        "completion": null
-                                    })
-                                    .as_object()
-                                    .map(|obj| {
-                                        obj.iter()
-                                            .map(|(k, v)| (k.clone(), v.clone()))
-                                            .collect::<BTreeMap<_, _>>()
-                                    })
-                                    .unwrap_or_default(),
-                                ),
+                                payload: Some(opaque_json_map_from_object(serde_json::json!({
+                                    "chunkCount": 1,
+                                    "completion": null
+                                }))),
                             }),
                         };
                         let value = serde_json::to_value(&out).map_err(|e| {

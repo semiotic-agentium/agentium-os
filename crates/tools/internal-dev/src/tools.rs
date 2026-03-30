@@ -1,8 +1,8 @@
 //! Internal development tool implementations (testing and dev only).
 
 use baml_derive::BamlType;
+use baml_rt_tools::OpaqueJson;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 // ---------- Calculator types (moved from baml-rt-tools::support) ----------
 
@@ -85,10 +85,10 @@ pub struct DelayedOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct A2aRelayInput {
-    pub request: Value,
+    pub request: OpaqueJson,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct A2aRelayOutput {
-    pub responses: Vec<Value>,
+    pub responses: Vec<OpaqueJson>,
 }

@@ -79,6 +79,7 @@ async fn setup_coordinator_agent_with_provenance()
         .expect("load coordinator schema");
     let allowlist: HashSet<String> = [
         "system/internal_a2a",
+        "system/callback",
         "system/discover_agents",
         "system/discover_tools",
     ]
@@ -138,6 +139,7 @@ async fn setup_workspace_coordinator_with_provenance()
         .expect("load coordinator schema");
     let allowlist: HashSet<String> = [
         "system/internal_a2a",
+        "system/callback",
         "system/discover_agents",
         "system/discover_tools",
     ]

@@ -182,7 +182,10 @@ impl BamlTool for A2aRelayTool {
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let handle = tokio::runtime::Handle::current();
-        let responses = task::block_in_place(|| handle.block_on(self.client.send(args.request)))?;
-        Ok(A2aRelayOutput { responses })
+        let request = args.request.into_inner();
+        let responses = task::block_in_place(|| handle.block_on(self.client.send(request)))?;
+        Ok(A2aRelayOutput {
+            responses: responses.into_iter().map(Into::into).collect(),
+        })
     }
 }

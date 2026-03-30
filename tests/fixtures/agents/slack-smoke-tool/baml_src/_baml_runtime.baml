@@ -59,6 +59,11 @@ class SessionContext {
   status_token string?
 }
 
+/// Opaque JSON transport value for host-managed tools and event payloads.
+/// Runtime validation accepts arbitrary JSON. The generated TypeScript surface
+/// renders this alias as `JsonValue`.
+type OpaqueJson = string
+
 // Structured reply types for synthesis functions
 enum ReplyMediaType {
   TextPlain @alias("text/plain")
