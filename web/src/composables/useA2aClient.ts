@@ -223,7 +223,26 @@ export function useA2aClient() {
   const provenanceDiagram = ref<string>("");
   /** Throttle diagram refetch during stream (ms); updated on each fetch */
   let lastDiagramFetchAt = 0;
-  const diagramThrottleMs = 500;
+  /** Provenance diagram refetch during SSE — keep low churn vs trace Mermaid cost */
+  const diagramThrottleMs = 2000;
+  /** Monotonic id so slower diagram HTTP responses cannot overwrite newer ones */
+  let diagramFetchSeq = 0;
+
+  /** Incremented (debounced) when SSE implies new provenance rows; ProvenancePane watches this */
+  const traceRefreshGeneration = ref(0);
+  let traceRefreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Dedupe task state bumps within a single stream */
+  let lastSeenTaskState: string | undefined;
+  const TRACE_REFRESH_DEBOUNCE_MS = 300;
+
+  function scheduleTraceRefreshBump(): void {
+    if (!_contextId.value) return;
+    if (traceRefreshDebounceTimer !== null) clearTimeout(traceRefreshDebounceTimer);
+    traceRefreshDebounceTimer = setTimeout(() => {
+      traceRefreshDebounceTimer = null;
+      traceRefreshGeneration.value += 1;
+    }, TRACE_REFRESH_DEBOUNCE_MS);
+  }
 
   async function fetchAgents(): Promise<void> {
     const res = await fetch("/agents");
@@ -241,6 +260,11 @@ export function useA2aClient() {
     provenanceDiagram.value = "";
     contextMetrics.value = null;
     workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
+    lastSeenTaskState = undefined;
+    if (traceRefreshDebounceTimer !== null) {
+      clearTimeout(traceRefreshDebounceTimer);
+      traceRefreshDebounceTimer = null;
+    }
   }
 
   function updateWorkflowPhase(text: string): void {
@@ -325,6 +349,7 @@ export function useA2aClient() {
 
     isLoading.value = true;
     workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
+    lastSeenTaskState = undefined;
 
     // Placeholder for streaming agent response (contentBlocks updated incrementally from stream)
     const agentMsgId = nextId("agent-msg");
@@ -376,6 +401,8 @@ export function useA2aClient() {
     _streamReader = reader;
     const decoder = new TextDecoder();
     let buffer = "";
+    /** Macrotask yield every N SSE data events so the stream loop is not one timer per line */
+    let sseYieldCounter = 0;
 
     for (;;) {
       const { done, value } = await reader.read();
@@ -392,12 +419,15 @@ export function useA2aClient() {
           try {
             const event: JSONRPCResponse = JSON.parse(jsonStr);
             processEvent(event, agentMsgId);
-            // Yield so the UI can paint incrementally as chunks arrive (not only when stream ends)
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            // Refresh provenance diagram as tool/message updates arrive (throttled)
+            // Yield occasionally so the UI can paint; avoid setTimeout per line on chatty streams
+            sseYieldCounter++;
+            if ((sseYieldCounter & 3) === 0) {
+              await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            // Refresh provenance diagram (throttled); do not await — keeps SSE ahead of HTTP latency
             if (_contextId.value && Date.now() - lastDiagramFetchAt >= diagramThrottleMs) {
               lastDiagramFetchAt = Date.now();
-              await fetchProvenanceDiagram();
+              void fetchProvenanceDiagram();
             }
           } catch {
             // skip malformed events
@@ -474,6 +504,7 @@ export function useA2aClient() {
       });
       if (completion === "DONE" && baseName) {
         markWorkflowNodeCompleted(baseName);
+        scheduleTraceRefreshBump();
       }
     } else if (result.toolStreamChunk && toolChunk) {
       // Phase chunk: toolStreamChunk true but no tool payload — statusUpdate.message only
@@ -527,6 +558,11 @@ export function useA2aClient() {
     // Check terminal state (state can be in task.status or nested statusUpdate.status_update.status)
     const state = getStateFromChunk(chunk);
 
+    if (state && state !== lastSeenTaskState) {
+      lastSeenTaskState = state;
+      scheduleTraceRefreshBump();
+    }
+
     // Record state transitions for the task timeline
     if (state) {
       updateMessage(messages, agentMsgId, (msg) => {
@@ -537,6 +573,10 @@ export function useA2aClient() {
           msg.stateTransitions.push({ state, timestamp: new Date() });
         }
       });
+    }
+
+    if (result.final) {
+      scheduleTraceRefreshBump();
     }
 
     if (
@@ -590,6 +630,7 @@ export function useA2aClient() {
 
   async function fetchProvenanceDiagram(): Promise<void> {
     if (!_contextId.value) return;
+    const seq = ++diagramFetchSeq;
     try {
       // Canonical API route is /contexts/{context_id}/mermaid.
       // Keep a legacy fallback while old backends/links still exist.
@@ -598,7 +639,9 @@ export function useA2aClient() {
         res = await fetch(`/mermaid/context/${_contextId.value}`);
       }
       if (res.ok) {
-        provenanceDiagram.value = await res.text();
+        const text = await res.text();
+        if (seq !== diagramFetchSeq) return;
+        provenanceDiagram.value = text;
       }
     } catch {
       // provenance endpoint not available; leave existing diagram
@@ -658,6 +701,7 @@ export function useA2aClient() {
     messages,
     isLoading,
     provenanceDiagram,
+    traceRefreshGeneration,
     contextMetrics,
     workflowProgress,
     contextId: computed(() => _contextId.value),

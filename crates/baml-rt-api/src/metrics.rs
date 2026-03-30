@@ -37,6 +37,11 @@ fn request_attributes(route: &str, result: &str) -> [KeyValue; 2] {
     ]
 }
 
+pub(crate) use baml_rt_observability::metrics::{
+    record_a2a_sse_first_data_duration_ms, record_a2a_sse_ttfb_from_handler_entry_ms,
+    record_live_stream_phase_duration,
+};
+
 /// Record completion of an HTTP API request (route and result for low cardinality).
 pub(crate) fn record_request(route: &str, result: &str, duration: Duration) {
     let attrs = request_attributes(route, result);

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 cd "$ROOT_DIR"
 
-PORT="${NOTION_DEMO_PORT:-8081}"
+PORT="${NOTION_DEMO_PORT:-8080}"
 LOG_FILE="${NOTION_DEMO_LOG:-/tmp/notion-runner.log}"
 PID_FILE="${NOTION_DEMO_PID:-/tmp/notion-runner.pid}"
 STREAM_FILE="${NOTION_DEMO_STREAM:-/tmp/notion-demo-sse.log}"

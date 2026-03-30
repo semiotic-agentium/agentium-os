@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -517,6 +517,9 @@ async fn wire_provenance_subsystems(
                 if s.is_empty() { None } else { Some(s) }
             },
         ));
+        // Otherwise the first IntentResolved / PlanGenerated blocks on ONNX init before any
+        // provenance row hits the store — the UI stays empty for ~tens of seconds.
+        subscriber.warm_drift_models().await;
         effect_emitter
             .subscribe_effect_subscriber(Arc::new(subscriber))
             .await;
@@ -1561,6 +1564,12 @@ impl A2aAgent {
         if let Some((key, session_context_id, turn_rx)) = spawn_payload {
             let agent = self.clone();
             let span = Span::current().clone();
+            tracing::debug!(
+                context_id = %session_context_id,
+                session_key = %key,
+                "live stream: spawning run_live_stream_session task"
+            );
+            metrics::record_live_stream_event("session_spawn");
             tokio::spawn(async move {
                 let _guard = span.enter();
                 agent
@@ -1595,6 +1604,15 @@ impl A2aAgent {
         let mut suspended: Option<SuspendedState> = None;
 
         while let Ok(turn) = turn_rx.recv().await {
+            let _turn_span = spans::live_stream_session_turn(session_context_id.as_str());
+            let _turn_guard = _turn_span.enter();
+            let turn_started = Instant::now();
+            metrics::record_live_stream_event("turn_dequeued");
+            tracing::debug!(
+                context_id = %session_context_id,
+                "live stream: turn dequeued"
+            );
+
             let request_value = turn.request.clone();
             let response_tx = turn.response_tx;
 
@@ -1614,6 +1632,7 @@ impl A2aAgent {
                     tracing::debug!("resume_tx send failed (collector dropped)");
                     break;
                 }
+                metrics::record_live_stream_event("resume_injected");
                 tracing::debug!(
                     context_id = %session_context_id,
                     "live stream resume: sent request on resume_tx, re-entering drain"
@@ -1687,6 +1706,9 @@ impl A2aAgent {
                     session.relay_tx = Some(relay_tx);
                     Some(relay_rx)
                 };
+                let _outcome_span = spans::live_stream_outcome_inner(session_context_id.as_str());
+                let _outcome_guard = _outcome_span.enter();
+                let outcome_inner_start = Instant::now();
                 let (request_id, outcome) = match self
                     .handle_a2a_outcome_inner(
                         request_value.clone(),
@@ -1698,6 +1720,17 @@ impl A2aAgent {
                 {
                     Ok(x) => x,
                     Err(err) => {
+                        metrics::record_live_stream_phase_duration(
+                            "outcome_inner",
+                            outcome_inner_start.elapsed(),
+                        );
+                        metrics::record_live_stream_event("outcome_inner_err");
+                        tracing::debug!(
+                            context_id = %session_context_id,
+                            error = %err,
+                            elapsed_ms = outcome_inner_start.elapsed().as_millis(),
+                            "live stream: handle_a2a_outcome_inner returned error"
+                        );
                         let formatter = JsonRpcResponseFormatter;
                         let request_id = a2a::extract_jsonrpc_id(&request_value);
                         let formatted = formatter.format_error(request_id, &err);
@@ -1717,9 +1750,19 @@ impl A2aAgent {
                         break;
                     }
                 };
+                metrics::record_live_stream_phase_duration(
+                    "outcome_inner",
+                    outcome_inner_start.elapsed(),
+                );
+                tracing::debug!(
+                    context_id = %session_context_id,
+                    elapsed_ms = outcome_inner_start.elapsed().as_millis(),
+                    "live stream: handle_a2a_outcome_inner returned ok"
+                );
 
                 match outcome {
                     a2a::A2aOutcome::Response(result) => {
+                        metrics::record_live_stream_event("outcome_response");
                         let formatted = self.response_formatter.format_success(request_id, result);
                         if response_tx
                             .send(LiveResponseChunk(formatted))
@@ -1730,15 +1773,18 @@ impl A2aAgent {
                         }
                         break;
                     }
-                    a2a::A2aOutcome::Stream(handle) => (
-                        handle.receiver,
-                        handle.resume_tx,
-                        handle.abort_tx, // keep alive: dropping closes abort_rx and terminates the collector
-                        response_tx,
-                        request_id,
-                        resolved_session_task_id,
-                        false,
-                    ),
+                    a2a::A2aOutcome::Stream(handle) => {
+                        metrics::record_live_stream_event("outcome_stream");
+                        (
+                            handle.receiver,
+                            handle.resume_tx,
+                            handle.abort_tx, // keep alive: dropping closes abort_rx and terminates the collector
+                            response_tx,
+                            request_id,
+                            resolved_session_task_id,
+                            false,
+                        )
+                    }
                 }
             };
 
@@ -1747,11 +1793,14 @@ impl A2aAgent {
             tracing::debug!(
                 context_id = %session_context_id,
                 from_resume,
+                elapsed_since_turn_start_ms = turn_started.elapsed().as_millis(),
                 "live stream drain started (store_result will run per chunk)"
             );
             let mut completion = None;
             let mut last_task_id: Option<String> = None;
             let mut resume_chunk_count: u32 = 0;
+            let drain_wait_start = Instant::now();
+            let mut first_drain_chunk = true;
 
             loop {
                 let outcome_msg = rx.recv().await;
@@ -1805,6 +1854,19 @@ impl A2aAgent {
                     }
                     break;
                 };
+                if first_drain_chunk {
+                    first_drain_chunk = false;
+                    let wait = drain_wait_start.elapsed();
+                    metrics::record_live_stream_phase_duration("drain_first_chunk", wait);
+                    metrics::record_live_stream_event("first_chunk_from_collector");
+                    tracing::debug!(
+                        context_id = %session_context_id,
+                        from_resume,
+                        wait_ms = wait.as_millis(),
+                        elapsed_since_turn_start_ms = turn_started.elapsed().as_millis(),
+                        "live stream: first chunk from collector (mpsc)"
+                    );
+                }
                 let (chunk, index, comp) = outcome_msg;
 
                 completion = comp;
@@ -2084,23 +2146,12 @@ impl A2aAgent {
             context::with_scope(scope, async move {
                 if let a2a::A2aParams::MessageSendStream(params) = &parsed_request.params {
                     let canonical_context_id = invocation_scope.context_id().clone();
-                    // Provenance invariant: use RECEIVER's (context_id, task_id), never sender's.
-                    // Scope is resolved from invocation_ctx; for delegation, message carries
-                    // worker's task_id; we override from scope so misattribution is impossible.
                     let receiver_task_id = invocation_scope.task_id_opt().cloned();
                     if let Some(ref task_id) = receiver_task_id {
                         self.task_store
                             .ensure_task_exists(task_id, Some(&canonical_context_id))
                             .await?;
                     }
-                    // Persist user message for conversation context (first turn has no task_id →
-                    // message_received_global; resume has task_id → message_received_task).
-                    // INVARIANT (read-after-write): insert_message completes before route() so
-                    // conversation_context(context_id, limit) read in BAML sees this message.
-                    //
-                    // Use scope's context_id and task_id so MessageReceived lands in receiver's
-                    // (agent_id, task_id). INVARIANT: (agent,task) is not shared; never use
-                    // message.task_id from the wire—it may be the sender's (coordinator's).
                     self.task_store
                         .insert_message_for_receiver(
                             &params.message,

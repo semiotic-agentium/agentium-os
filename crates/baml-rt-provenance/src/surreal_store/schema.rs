@@ -23,12 +23,13 @@ pub(super) async fn init_schema(db: &Surreal<Db>) -> Result<()> {
         format!("DEFINE INDEX IF NOT EXISTS idx_node_label ON {TBL_NODE} FIELDS label"),
         // Activity anchor index (used by payload joins)
         format!("DEFINE INDEX IF NOT EXISTS idx_node_activity_anchor ON {TBL_NODE} FIELDS props.a2a_activity_anchor"),
-        // Edge table: indexed by from/to and rel_type
-        format!("DEFINE INDEX IF NOT EXISTS idx_edge_from ON {TBL_EDGE} FIELDS from_id"),
-        format!("DEFINE INDEX IF NOT EXISTS idx_edge_to ON {TBL_EDGE} FIELDS to_id"),
-        format!("DEFINE INDEX IF NOT EXISTS idx_edge_rel ON {TBL_EDGE} FIELDS rel_type"),
+        // Edge table: composite + selective compound indexes (avoid redundant single-column idx).
+        format!("REMOVE INDEX IF EXISTS idx_edge_from ON {TBL_EDGE}"),
+        format!("REMOVE INDEX IF EXISTS idx_edge_to ON {TBL_EDGE}"),
+        format!("REMOVE INDEX IF EXISTS idx_edge_rel ON {TBL_EDGE}"),
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_composite ON {TBL_EDGE} FIELDS from_id, rel_type, to_id UNIQUE"),
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_to_rel ON {TBL_EDGE} FIELDS to_id, rel_type"),
+        format!("DEFINE INDEX IF NOT EXISTS idx_edge_to_rel_from_label ON {TBL_EDGE} FIELDS to_id, rel_type, from_label"),
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_from_label_rel ON {TBL_EDGE} FIELDS from_label, rel_type"),
         // Payload table: unique payload_id, indexed by activity_anchor_id and activity_id
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_id ON {TBL_PAYLOAD} FIELDS payload_id UNIQUE"),

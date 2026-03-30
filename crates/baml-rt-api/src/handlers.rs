@@ -473,8 +473,29 @@ pub async fn post_a2a_sse(
             return Err(domain_to_problem(&e, &agent_package, &agent_instance_id));
         }
     };
-    tracing::info!(%agent_package, "A2A SSE: stream obtained, forwarding incrementally");
-    let event_stream = stream.map(|chunk| {
+    let stream_obtained_at = Instant::now();
+    metrics::record_live_stream_phase_duration(
+        "http_handle_a2a_stream",
+        stream_obtained_at.duration_since(start),
+    );
+    tracing::info!(
+        %agent_package,
+        handle_wait_ms = stream_obtained_at.duration_since(start).as_millis(),
+        "A2A SSE: stream obtained, forwarding incrementally"
+    );
+    let mut first_bus_chunk = true;
+    let event_stream = stream.map(move |chunk| {
+        if first_bus_chunk {
+            first_bus_chunk = false;
+            let since_stream = stream_obtained_at.elapsed();
+            metrics::record_a2a_sse_first_data_duration_ms(since_stream);
+            metrics::record_a2a_sse_ttfb_from_handler_entry_ms(start.elapsed());
+            tracing::debug!(
+                since_stream_ms = since_stream.as_millis(),
+                ttfb_from_handler_entry_ms = start.elapsed().as_millis(),
+                "A2A SSE: first bus chunk mapped to SSE data event"
+            );
+        }
         let data = serde_json::to_string(chunk.as_ref()).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "SSE chunk serialization failed");
             r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"Chunk serialization failed"}}"#

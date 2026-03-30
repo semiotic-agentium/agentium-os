@@ -20,10 +20,12 @@ const props = defineProps<{
   selectedAgentId?: string;
   isStreaming: boolean;
   diagrams?: string[];
+  /** Bumps when A2A SSE signals new provenance (tool done, task state, final); edge-triggers Live refresh */
+  traceRefreshTick?: number;
 }>();
 
 const isOpen = ref(typeof window !== "undefined" ? window.innerWidth >= 1280 : true);
-const activeTab = ref<"live" | "failures" | "anomalies" | "drift" | "explore" | "episode">("live");
+const activeTab = ref<"live" | "failures" | "anomalies" | "drift" | "explore">("live");
 
 const { theme } = useTheme();
 const sources = computed(() => props.diagrams ?? []);
@@ -31,18 +33,6 @@ const { rendered } = useMermaidRenderer(sources, theme);
 const expandedIdx = ref<number | null>(null);
 
 const { createQuery } = useProvenanceOps();
-/** The task currently selected in the Episode tab. Initialized from props.taskId. */
-const selectedEpisodeTaskId = ref<string | null>(props.taskId ?? null);
-
-// Keep selectedEpisodeTaskId in sync when the chat moves to a new task.
-watch(
-  () => props.taskId,
-  (newId) => {
-    if (newId && newId !== selectedEpisodeTaskId.value) {
-      selectedEpisodeTaskId.value = newId;
-    }
-  },
-);
 
 const liveLlm = createQuery("llm_calls", {
   pageSize: 20,
@@ -152,9 +142,6 @@ async function refreshForActiveTab() {
     if (activeTab.value === "drift") {
       await refreshPlanning();
     }
-    if (activeTab.value === "episode") {
-      await refreshPlanning();
-    }
   } finally {
     pollInFlight.value = false;
   }
@@ -190,8 +177,9 @@ function stopPolling() {
 
 function schedulePolling(immediate = false) {
   stopPolling();
-  if (!props.contextId || activeTab.value === "explore" || activeTab.value === "episode") return;
-  const delay = immediate ? 0 : props.isStreaming ? 2500 : 12000;
+  if (!props.contextId || activeTab.value === "explore") return;
+  // While streaming, rely on traceRefreshTick edge triggers; long interval is a safety net only
+  const delay = immediate ? 0 : props.isStreaming ? 45000 : 12000;
   pollTimer.value = window.setTimeout(async () => {
     await refreshForActiveTab();
     schedulePolling(false);
@@ -372,21 +360,6 @@ const episodeTaskIds = computed<string[]>(() => {
   return ids;
 });
 
-// Auto-select first known task when nothing is selected yet (e.g. on tab open before chat).
-watch(
-  episodeTaskIds,
-  (ids) => {
-    if (!selectedEpisodeTaskId.value && ids.length > 0) {
-      selectedEpisodeTaskId.value = ids[0] ?? null;
-    }
-  },
-  { immediate: true },
-);
-
-function selectEpisodeTask(taskId: string): void {
-  selectedEpisodeTaskId.value = taskId;
-}
-
 function nonEmptyText(value: string | null | undefined): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -502,9 +475,7 @@ function taskHasDrift(task: ContextPlanningTaskSnapshot): boolean {
   return task.drift != null && task.drift.compositeSeverity != null;
 }
 
-async function downloadEpisodeText() {
-  const taskId = selectedEpisodeTaskId.value;
-  if (!taskId) return;
+async function downloadEpisodeText(taskId: string) {
   const response = await fetch(`/tasks/${taskId}/episode/text`);
   if (!response.ok) {
     console.error("episode/text fetch failed:", response.status);
@@ -1170,16 +1141,21 @@ watch(
 );
 
 watch(
+  () => props.traceRefreshTick ?? 0,
+  (tick, prev) => {
+    if (tick === prev) return;
+    if (!props.contextId || isExploreTab.value) return;
+    void refreshForActiveTab();
+    schedulePolling(false);
+  },
+);
+
+watch(
   () => [activeTab.value] as const,
   ([tab]) => {
     if (tab === "explore") {
       stopPolling();
       applyExploreQuery(true);
-      return;
-    }
-    if (tab === "episode") {
-      stopPolling();
-      if (props.contextId) void refreshPlanning();
       return;
     }
     schedulePolling(true);
@@ -1235,7 +1211,6 @@ onUnmounted(() => {
           Drift
         </button>
         <button class="provenance-tab" :class="{ active: activeTab === 'explore' }" @click="activeTab = 'explore'">Explore</button>
-        <button class="provenance-tab" :class="{ active: activeTab === 'episode' }" @click="activeTab = 'episode'">Episode</button>
       </div>
 
       <div class="provenance-body">
@@ -1413,6 +1388,47 @@ onUnmounted(() => {
                       {{ tool }}
                     </span>
                   </div>
+                </div>
+
+                <div class="trace-summary-group trace-summary-transcripts">
+                  <span class="trace-summary-group-label">Transcripts</span>
+                  <p v-if="episodeTaskIds.length > 1" class="trace-summary-transcripts-hint">
+                    {{ episodeTaskIds.length }} tasks in this context — download one per task.
+                  </p>
+                  <div v-if="planningState.loading && episodeTaskIds.length === 0" class="trace-summary-transcripts-empty">
+                    Loading tasks…
+                  </div>
+                  <div v-else-if="episodeTaskIds.length === 0" class="trace-summary-transcripts-empty">
+                    Complete a chat turn to generate episode transcripts for this context.
+                  </div>
+                  <ul v-else class="trace-summary-transcript-list" role="list">
+                    <li
+                      v-for="tid in episodeTaskIds"
+                      :key="`transcript-${tid}`"
+                      class="trace-summary-transcript-row"
+                    >
+                      <div class="trace-summary-transcript-meta">
+                        <span class="trace-summary-transcript-kind">{{ taskKindLabel(tid) }}</span>
+                        <span class="trace-summary-transcript-id">{{ shortId(tid) }}</span>
+                        <span
+                          v-if="tid === props.taskId && props.isStreaming"
+                          class="trace-summary-transcript-live"
+                          title="Active chat task"
+                        >●</span>
+                      </div>
+                      <button
+                        type="button"
+                        class="trace-summary-transcript-download"
+                        title="Download episode as plain-text transcript"
+                        @click="downloadEpisodeText(tid)"
+                      >
+                        Download
+                      </button>
+                    </li>
+                  </ul>
+                  <p class="trace-summary-transcripts-footnote">
+                    Generated on demand from the provenance graph; download after the task completes for full detail.
+                  </p>
                 </div>
               </div>
             </div>
@@ -1722,53 +1738,6 @@ onUnmounted(() => {
                 </div>
               </details>
             </article>
-          </div>
-        </template>
-
-        <template v-else-if="activeTab === 'episode'">
-          <!-- Task picker: appears whenever the context holds more than one task -->
-          <div v-if="episodeTaskIds.length > 1" class="episode-task-picker">
-            <div class="episode-task-picker-head">
-              <span class="episode-task-picker-count">{{ episodeTaskIds.length }} tasks in this context</span>
-            </div>
-            <div class="episode-task-picker-list">
-              <button
-                v-for="tid in episodeTaskIds"
-                :key="tid"
-                class="episode-task-btn"
-                :class="{
-                  'episode-task-btn-active': tid === selectedEpisodeTaskId,
-                  'episode-task-btn-live': tid === props.taskId && props.isStreaming,
-                }"
-                @click="selectEpisodeTask(tid)"
-              >
-                <span class="episode-task-btn-kind">{{ taskKindLabel(tid) }}</span>
-                <span class="episode-task-btn-id">{{ shortId(tid) }}</span>
-                <span
-                  v-if="tid === props.taskId && props.isStreaming"
-                  class="episode-task-live-dot"
-                  title="Active chat task"
-                >●</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- No task selected yet -->
-          <div v-if="!selectedEpisodeTaskId" class="provenance-empty">
-            {{ planningState.loading ? 'Loading tasks…' : 'Complete a chat turn to download its episode transcript.' }}
-          </div>
-
-          <!-- Download section — no live streaming; avoids SurrealDB read contention during agent execution -->
-          <div v-else class="episode-download-section">
-            <div class="episode-download-meta">
-              <span class="episode-download-task-id">{{ shortId(selectedEpisodeTaskId) }}</span>
-              <span class="episode-download-hint">
-                Episode transcripts are generated on demand. Download after the task completes for full detail.
-              </span>
-            </div>
-            <button class="episode-download-btn-large" @click="downloadEpisodeText" title="Download episode as plain-text transcript">
-              ⤓ Download episode transcript
-            </button>
           </div>
         </template>
 
@@ -2103,127 +2072,3 @@ onUnmounted(() => {
     </div>
   </Teleport>
 </template>
-
-<style scoped>
-/* Episode task picker: shown when a context contains multiple tasks */
-.episode-task-picker {
-  padding: 6px 10px 0;
-  border-bottom: 1px solid var(--border-color);
-  background: color-mix(in srgb, var(--bg-secondary) 70%, transparent);
-  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
-}
-
-.episode-task-picker-head {
-  margin-bottom: 6px;
-}
-
-.episode-task-picker-count {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-secondary);
-  font-weight: 600;
-}
-
-.episode-task-picker-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding-bottom: 8px;
-}
-
-.episode-task-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
-  font-size: 10px;
-  font-family: inherit;
-  background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: 3px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: background 0.1s, color 0.1s, border-color 0.1s;
-  white-space: nowrap;
-}
-
-.episode-task-btn:hover {
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  border-color: color-mix(in srgb, var(--text-secondary) 55%, transparent);
-}
-
-.episode-task-btn-active {
-  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
-  border-color: color-mix(in srgb, var(--text-secondary) 55%, transparent);
-  color: var(--text-primary);
-}
-
-.episode-task-btn-live {
-  border-color: color-mix(in srgb, #22c55e 70%, transparent);
-}
-
-.episode-task-btn-kind {
-  color: var(--text-secondary);
-  font-size: 9px;
-}
-
-.episode-task-btn-id {
-  font-weight: 600;
-}
-
-.episode-task-live-dot {
-  color: #22c55e;
-  font-size: 8px;
-  animation: episodePulse 1.2s ease-in-out infinite;
-}
-
-/* Episode download section */
-.episode-download-section {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 32px 20px;
-  text-align: center;
-}
-
-.episode-download-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.episode-download-task-id {
-  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.episode-download-hint {
-  font-size: 12px;
-  color: var(--text-secondary);
-  max-width: 260px;
-  line-height: 1.5;
-}
-
-.episode-download-btn-large {
-  padding: 10px 22px;
-  font-size: 13px;
-  font-weight: 600;
-  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--text-primary);
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-  white-space: nowrap;
-}
-
-.episode-download-btn-large:hover {
-  background: color-mix(in srgb, var(--text-secondary) 20%, transparent);
-  border-color: color-mix(in srgb, var(--text-secondary) 55%, transparent);
-}
-</style>

@@ -7,7 +7,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-BIND="${BIND:-127.0.0.1:8081}"
+BIND="${BIND:-127.0.0.1:8080}"
 RUNNER_URL="http://${BIND}"
 REPOSITORY_URL="${RUNNER_URL}/repository"
 AGENT_DIR="tests/fixtures/agents/tool-discovery-demo"

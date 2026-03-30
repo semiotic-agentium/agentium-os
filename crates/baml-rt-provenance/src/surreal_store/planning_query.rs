@@ -197,44 +197,106 @@ impl SurrealProvenanceStore {
     // Graph traversal helpers
     // -----------------------------------------------------------------------
 
-    pub async fn get_task_agent_id(&self, task_id: &TaskId) -> Result<Option<AgentId>> {
+    const TASK_AGENT_ID_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Two-hop graph traversal with a timeout guard.
+    ///
+    /// On databases with pathological query plans (large `prov_edge` tables where
+    /// nested sub-selects bypass indexes) this query can stall indefinitely,
+    /// blocking the entire `message.sendStream` critical path. The timeout
+    /// degrades gracefully to [`TaskAgentResolution::TimedOut`] so the event is
+    /// still written — just without agent-scoped normalization context.
+    pub(crate) async fn get_task_agent_id(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<crate::store::TaskAgentResolution> {
+        use crate::store::TaskAgentResolution;
+        match tokio::time::timeout(
+            Self::TASK_AGENT_ID_TIMEOUT,
+            self.get_task_agent_id_inner(task_id),
+        )
+        .await
+        {
+            Ok(inner) => inner,
+            Err(_elapsed) => {
+                tracing::warn!(
+                    task_id = task_id.as_str(),
+                    timeout_secs = Self::TASK_AGENT_ID_TIMEOUT.as_secs(),
+                    "get_task_agent_id timed out — agent-scoped normalization skipped for this event"
+                );
+                Ok(TaskAgentResolution::TimedOut)
+            }
+        }
+    }
+
+    async fn get_task_agent_id_inner(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<crate::store::TaskAgentResolution> {
         let task_entity_id = task_entity_id_string(task_id);
         // Two-hop traversal: Task -[WAS_CREATED_BY]-> TaskExecution -[WAS_EXECUTED_BY]-> AgentInstance
         // then read props.a2a_agent_id from the agent instance node, all in one query.
-        let query = format!(
-            "SELECT node_id, props.a2a_agent_id AS agent_id OMIT id FROM {TBL_NODE} \
-             WHERE node_id = (\
-               SELECT VALUE to_id FROM {TBL_EDGE} \
-               WHERE from_id = (\
-                 SELECT VALUE to_id FROM {TBL_EDGE} \
-                 WHERE from_id = $task_node AND rel_type = $rel_created LIMIT 1\
-               )[0] \
-               AND rel_type = $rel_executed LIMIT 1\
-             )[0] \
-             LIMIT 1"
+        //
+        // Rewritten as two sequential single-hop queries instead of nested sub-selects
+        // to avoid SurrealDB query-planner pathologies on large edge tables.
+        let hop1 = format!(
+            "SELECT VALUE to_id FROM {TBL_EDGE} \
+             WHERE from_id = $task_node AND rel_type = $rel_created LIMIT 1"
         );
-        let mut response = self
+        let mut r1 = self
             .db
-            .query(&query)
+            .query(&hop1)
             .bind(("task_node", task_entity_id))
             .bind(("rel_created", semantic_labels::WAS_CREATED_BY))
+            .await
+            .map_err(map_surreal_error)?;
+        use crate::store::TaskAgentResolution;
+
+        let execution_ids: Vec<Value> = query_take_zero(&mut r1, map_surreal_error)?;
+        let Some(execution_id) = execution_ids.first().and_then(Value::as_str) else {
+            return Ok(TaskAgentResolution::NotLinked);
+        };
+
+        let hop2 = format!(
+            "SELECT VALUE to_id FROM {TBL_EDGE} \
+             WHERE from_id = $exec_node AND rel_type = $rel_executed LIMIT 1"
+        );
+        let mut r2 = self
+            .db
+            .query(&hop2)
+            .bind(("exec_node", execution_id.to_string()))
             .bind(("rel_executed", semantic_labels::WAS_EXECUTED_BY))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let agent_node_ids: Vec<Value> = query_take_zero(&mut r2, map_surreal_error)?;
+        let Some(agent_node_id) = agent_node_ids.first().and_then(Value::as_str) else {
+            return Ok(TaskAgentResolution::NotLinked);
+        };
+
+        let hop3 = format!(
+            "SELECT props.a2a_agent_id AS agent_id OMIT id FROM {TBL_NODE} \
+             WHERE node_id = $agent_node LIMIT 1"
+        );
+        let mut r3 = self
+            .db
+            .query(&hop3)
+            .bind(("agent_node", agent_node_id.to_string()))
+            .await
+            .map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut r3, map_surreal_error)?;
         let Some(row) = rows.first() else {
-            return Ok(None);
+            return Ok(TaskAgentResolution::NotLinked);
         };
         let agent_id_str = row.get("agent_id").and_then(Value::as_str);
         let Some(agent_id_str) = agent_id_str else {
-            return Ok(None);
+            return Ok(TaskAgentResolution::NotLinked);
         };
         if agent_id_str.trim().is_empty() {
-            return Ok(None);
+            return Ok(TaskAgentResolution::NotLinked);
         }
         UuidId::parse_str(agent_id_str)
             .map(AgentId::from_uuid)
-            .map(Some)
+            .map(TaskAgentResolution::Resolved)
             .map_err(|e| ProvenanceError::InvalidEvent {
                 activity_anchor: String::new(),
                 reason: format!("task agent instance id invalid UUID: {agent_id_str:?}: {e}"),

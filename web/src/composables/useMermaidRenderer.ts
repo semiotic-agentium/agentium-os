@@ -1,4 +1,4 @@
-import { ref, watch, type Ref } from "vue";
+import { onUnmounted, ref, watch, type Ref } from "vue";
 import mermaid from "mermaid";
 
 export interface RenderedDiagram {
@@ -8,19 +8,27 @@ export interface RenderedDiagram {
 
 let seq = 0;
 
+const RENDER_DEBOUNCE_MS = 80;
+
 /**
  * Renders an array of mermaid diagram sources into SVG strings.
- * Re-renders whenever sources or theme changes.
+ * Debounces source updates to avoid re-rendering on every streaming chunk.
  */
 export function useMermaidRenderer(sources: Ref<string[]>, theme: Ref<string>) {
   const rendered = ref<RenderedDiagram[]>([]);
+  let initTheme: string | null = null;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function renderAll() {
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: theme.value === "dark" ? "dark" : "default",
-      securityLevel: "loose",
-    });
+    const t = theme.value === "dark" ? "dark" : "default";
+    if (initTheme !== t) {
+      initTheme = t;
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: t,
+        securityLevel: "loose",
+      });
+    }
     rendered.value = await Promise.all(sources.value.map(renderOne));
   }
 
@@ -34,7 +42,35 @@ export function useMermaidRenderer(sources: Ref<string[]>, theme: Ref<string>) {
     }
   }
 
-  watch([sources, theme], renderAll, { immediate: true, deep: true });
+  function scheduleRender() {
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      void renderAll();
+    }, RENDER_DEBOUNCE_MS);
+  }
+
+  let sourcesFirst = true;
+  watch(
+    () => JSON.stringify(sources.value),
+    () => {
+      if (sourcesFirst) {
+        sourcesFirst = false;
+        void renderAll();
+        return;
+      }
+      scheduleRender();
+    },
+    { immediate: true },
+  );
+
+  watch(theme, () => {
+    void renderAll();
+  });
+
+  onUnmounted(() => {
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
+  });
 
   return { rendered };
 }

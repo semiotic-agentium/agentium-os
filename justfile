@@ -8,7 +8,7 @@ set dotenv-load
 provenance_db := "provenance.db"
 # Separate SurrealKV store dirs (provenance + sibling config.db) so this stack can run alongside another runner using `provenance.db`.
 provenance_persona_claude_notion_db := "persona-claude-notion-provenance.db"
-runner_http_bind := "127.0.0.1:8081"
+runner_http_bind := "127.0.0.1:8080"
 # Runner: options only — no positional packages. Agents load via `baml-agent-builder publish` + POST /deploy.
 runner_base_url := "http://" + runner_http_bind
 repository_url := runner_base_url + "/repository"

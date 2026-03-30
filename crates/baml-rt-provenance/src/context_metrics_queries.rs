@@ -61,15 +61,27 @@ pub async fn turn_totals_by_context(
     store: &SurrealProvenanceStore,
     context_id: &str,
 ) -> Result<Vec<MetricsRow>> {
-    // Two-step approach: get edges, then resolve node properties per-message.
+    let ctx_node = context_entity_id_string(context_id);
+    let scoped = context_scope::SCOPED_TO;
     let was_invoked_by = semantic_labels::WAS_INVOKED_BY;
+
+    // Context-scoped only: both message-processing and LLM nodes must be linked to this context.
     let edge_query = format!(
-        "SELECT from_id, to_id OMIT id FROM prov_edge \
+        "SELECT from_id, to_id OMIT id FROM {TBL_EDGE} \
          WHERE rel_type = '{was_invoked_by}' \
            AND from_label = 'A2AMessageProcessing' \
-           AND to_label = 'LlmCall'"
+           AND to_label = 'LlmCall' \
+           AND from_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
+             WHERE to_id = $ctx_node AND rel_type = '{scoped}') \
+           AND to_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
+             WHERE to_id = $ctx_node AND rel_type = '{scoped}')"
     );
-    let mut edge_resp = store.db().query(edge_query).await.map_err(surreal_err)?;
+    let mut edge_resp = store
+        .db()
+        .query(&edge_query)
+        .bind(("ctx_node", ctx_node.clone()))
+        .await
+        .map_err(surreal_err)?;
     let edge_rows: Vec<Value> = edge_resp.take(0).map_err(surreal_err)?;
 
     let msg_ids: Vec<String> = edge_rows
@@ -85,31 +97,8 @@ pub async fn turn_totals_by_context(
         return Ok(Vec::new());
     }
 
-    let ctx_node = context_entity_id_string(context_id);
-    let scoped = context_scope::SCOPED_TO;
-
-    // Collect scoped node IDs for this context to filter edge results.
-    let scoped_ids_query = format!(
-        "SELECT VALUE from_id FROM {TBL_EDGE} \
-         WHERE to_id = $ctx_node AND rel_type = '{scoped}'"
-    );
-    let mut scoped_resp = store
-        .db()
-        .query(&scoped_ids_query)
-        .bind(("ctx_node", ctx_node))
-        .await
-        .map_err(surreal_err)?;
-    let scoped_ids: std::collections::HashSet<String> = scoped_resp
-        .take::<Vec<String>>(0)
-        .map_err(surreal_err)?
-        .into_iter()
-        .collect();
-
     let mut msg_rows: Vec<Value> = Vec::new();
     for nid in &msg_ids {
-        if !scoped_ids.contains(nid) {
-            continue;
-        }
         let mut resp = store
             .db()
             .query(format!(
@@ -133,9 +122,6 @@ pub async fn turn_totals_by_context(
 
     let mut llm_rows: Vec<Value> = Vec::new();
     for nid in &llm_ids {
-        if !scoped_ids.contains(nid) {
-            continue;
-        }
         let mut resp = store
             .db()
             .query(format!(

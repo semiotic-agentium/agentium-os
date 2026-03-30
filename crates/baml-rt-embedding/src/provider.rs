@@ -4,7 +4,7 @@
 //! [`FastEmbedProvider`] which wraps `fastembed::TextEmbedding` with
 //! `BAAI/bge-small-en-v1.5` (384-d, ~30 MB ONNX model).
 
-use std::{path::PathBuf, sync::Mutex};
+use std::{path::PathBuf, sync::Mutex, time::Instant};
 
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 
@@ -22,8 +22,16 @@ pub(crate) fn models_cache_dir() -> Option<PathBuf> {
     {
         let dir = PathBuf::from(base).join("fastembed");
         if dir.exists() {
+            tracing::info!(
+                cache_dir = %dir.display(),
+                "using BAML_MODELS_DIR for fastembed ONNX cache (in-repo or custom tree)"
+            );
             return Some(dir);
         }
+        tracing::warn!(
+            expected = %dir.display(),
+            "BAML_MODELS_DIR set but fastembed directory missing — falling back to workspace path or ~/.cache/fastembed (may download)"
+        );
     }
 
     // Compile-time fallback: look for models/ relative to this crate's location.
@@ -32,10 +40,17 @@ pub(crate) fn models_cache_dir() -> Option<PathBuf> {
     if let Some(workspace) = manifest.parent().and_then(|p| p.parent()) {
         let dir = workspace.join("models").join("fastembed");
         if dir.exists() {
+            tracing::info!(
+                cache_dir = %dir.display(),
+                "using workspace models/fastembed for ONNX (git LFS / just download-models)"
+            );
             return Some(dir);
         }
     }
 
+    tracing::warn!(
+        "no local fastembed model tree found (set BAML_MODELS_DIR to repo `models` or run `just download-models`)"
+    );
     None
 }
 
@@ -128,7 +143,15 @@ impl FastEmbedProvider {
         if let Some(dir) = cache_dir {
             opts = opts.with_cache_dir(dir);
         }
+        let t0 = Instant::now();
+        tracing::info!(
+            "FastEmbed TextEmbedding: loading ONNX session (CPU graph build can take 10-40s even from disk)"
+        );
         let embedding = TextEmbedding::try_new(opts).map_err(EmbeddingError::ModelInit)?;
+        tracing::info!(
+            elapsed_ms = t0.elapsed().as_millis(),
+            "FastEmbed TextEmbedding: ONNX session ready"
+        );
         let dim = embedding
             .embed(vec!["dim probe".to_string()], None)
             .map_err(EmbeddingError::Inference)?

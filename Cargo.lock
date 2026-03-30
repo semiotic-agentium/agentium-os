@@ -1525,6 +1525,7 @@ dependencies = [
  "baml-rt-core",
  "baml-rt-embedding",
  "baml-rt-llm-config",
+ "baml-rt-observability",
  "baml-rt-provenance",
  "baml-rt-repository",
  "baml-rt-tools",

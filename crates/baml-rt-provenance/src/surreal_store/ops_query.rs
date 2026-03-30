@@ -56,24 +56,35 @@ impl SurrealProvenanceStore {
         Ok(out)
     }
 
-    /// Load failure classification map: activity_id -> (failure_class, failure_evidence).
-    /// Uses label-filtered edges to find LlmCall/ToolCall→FailureClassification links,
-    /// then batch-fetches only the referenced FC nodes.
-    async fn load_failure_classification_map(&self) -> Result<HashMap<String, (String, String)>> {
-        // Single edge query filtered by from_label and to_label — replaces the old
-        // three-query pattern (FC nodes + Call IDs + unfiltered edges).
+    /// Load failure classification for the given activity node ids only (failed LLM/tool rows).
+    /// Traverses `WAS_CLASSIFIED_BY` → `FailureClassification` entity; no global graph scan.
+    async fn load_failure_classification_for_activity_ids(
+        &self,
+        activity_ids: &[String],
+    ) -> Result<HashMap<String, (String, String)>> {
+        if activity_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let classified_by = semantic_labels::WAS_CLASSIFIED_BY;
         let edge_query = format!(
             "SELECT from_id, to_id OMIT id FROM {TBL_EDGE} \
-             WHERE rel_type = '{}' AND from_label IN ['LlmCall', 'ToolCall'] AND to_label = 'FailureClassification'",
-            semantic_labels::WAS_USED_BY
+             WHERE rel_type = '{classified_by}' \
+               AND from_id IN $ids \
+               AND to_label = 'FailureClassification'"
         );
-        let edge_rows: Vec<Value> = self.query_sql_rows(&edge_query).await?;
+        let mut edge_response = self
+            .db
+            .query(&edge_query)
+            .bind(("ids", activity_ids.to_vec()))
+            .await
+            .map_err(map_surreal_error)?;
+        let edge_rows: Vec<Value> = query_take_zero(&mut edge_response, map_surreal_error)?;
 
         if edge_rows.is_empty() {
             return Ok(HashMap::new());
         }
 
-        // Collect the FC node IDs referenced by edges, then batch-fetch their properties.
         let fc_node_ids: Vec<String> = edge_rows
             .iter()
             .filter_map(|r| {
@@ -629,7 +640,6 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
 
         // Load enrichment maps for row post-processing.
         let identity_by_agent_id = self.load_agent_identity_map().await?;
-        let failure_by_activity_id = self.load_failure_classification_map().await?;
 
         let label = match request.resource {
             ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates => "LlmCall",
@@ -831,6 +841,32 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                 (HashMap::new(), HashMap::new())
             };
 
+        let needs_failure_enrichment = matches!(
+            request.resource,
+            ProvenanceOpsResource::LlmCalls
+                | ProvenanceOpsResource::ToolCalls
+                | ProvenanceOpsResource::Aggregates
+        );
+        let failure_by_activity_id = if needs_failure_enrichment {
+            let failed_ids: Vec<String> = ops_rows
+                .iter()
+                .filter(|row| ops_row_is_failed(row))
+                .filter_map(|row| row.get("activity_id").and_then(Value::as_str))
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            if failed_ids.is_empty() {
+                HashMap::new()
+            } else {
+                self.load_failure_classification_for_activity_ids(&failed_ids)
+                    .await?
+            }
+        } else {
+            HashMap::new()
+        };
+
         // Enrich rows with additional fields.
         // This adds: activity_ref, payload refs, structured payloads, agent identity, failure fields, drift nesting.
         for row in &mut ops_rows {
@@ -969,16 +1005,15 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                     }
                     nest_llm_drift_fields(row);
 
-                    // Add failure classification for failed calls (hard-fail if missing)
+                    // Add failure classification for failed calls (graph edge only; hard-fail if missing)
                     if ops_row_is_failed(row) {
                         let resolved =
                             failure_by_activity_id.get(&activity_id).ok_or_else(|| {
                                 ProvenanceError::InvalidEvent {
-                                activity_anchor: activity_id.clone(),
-                                reason:
-                                    "missing write-time failure classification for failed llm_call"
+                                    activity_anchor: activity_id.clone(),
+                                    reason: "missing WAS_CLASSIFIED_BY failure classification for failed llm_call"
                                         .to_string(),
-                            }
+                                }
                             })?;
                         row.insert(
                             "failure_class".to_string(),
@@ -1093,14 +1128,14 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                     row.remove("a2a_tool_call_payload_id");
                     row.remove("a2a_tool_result_payload_id");
 
-                    // Add failure classification for failed calls (hard-fail if missing)
+                    // Add failure classification for failed calls (graph edge only; hard-fail if missing)
                     if ops_row_is_failed(row) {
                         let resolved =
                             failure_by_activity_id.get(&activity_id).ok_or_else(|| {
                                 ProvenanceError::InvalidEvent {
                                 activity_anchor: activity_id.clone(),
                                 reason:
-                                    "missing write-time failure classification for failed tool_call"
+                                    "missing WAS_CLASSIFIED_BY failure classification for failed tool_call"
                                         .to_string(),
                             }
                             })?;

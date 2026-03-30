@@ -8,7 +8,7 @@ expression: snapshot
     "resource": "llm_calls",
     "rows": [
       {
-        "activity_id": "llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+        "activity_id": "llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:1",
         "a2a_activity_anchor": "[prov_activity_anchor]",
         "a2a_activity_outcome": "Success",
         "a2a_agent_id": "[uuid]",
@@ -50,7 +50,7 @@ expression: snapshot
         "activity_outcome": "Success",
         "activity_status": "Completed",
         "activity_kind": "llm_call",
-        "activity_ref": "prov:v1:activity:llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+        "activity_ref": "prov:v1:activity:llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:1",
         "llm_call_ref": "[prov_activity_anchor]",
         "llm_result_ref": "[prov_activity_anchor]",
         "drift": {
@@ -62,22 +62,62 @@ expression: snapshot
           "intentTextPreview": "Create a task titled Research",
           "responseTextPreview": "Create task in list 901325431486"
         }
+      },
+      {
+        "activity_id": "llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+        "a2a_activity_anchor": "[prov_activity_anchor]",
+        "a2a_activity_outcome": "Success",
+        "a2a_agent_id": "[uuid]",
+        "a2a_client": "openai",
+        "a2a_context_id": "ctx-100-1",
+        "a2a_duration_ms": 180,
+        "a2a_event_order": "[a2a_event_order]",
+        "a2a_function_name": "SummarizePrompt",
+        "llm_result": null,
+        "llm_call": {
+          "input": "hello"
+        },
+        "a2a_message_id": "msg-a",
+        "a2a_model": "gpt-4o-mini",
+        "a2a_prompt_name": "SummarizePrompt",
+        "a2a_usage_completion_tokens": 8,
+        "a2a_usage_prompt_tokens": 12,
+        "a2a_usage_total_tokens": 20,
+        "prov_endTime": "[timestamp_ms]",
+        "prov_type": "a2a:LlmCall",
+        "context_id": "ctx-100-1",
+        "message_id": "msg-a",
+        "agent_id": "[uuid]",
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "baml_prompt": "SummarizePrompt",
+        "duration_ms": 180,
+        "prompt_tokens": 12,
+        "completion_tokens": 8,
+        "total_tokens": 20,
+        "timestamp_ms": "[timestamp_ms]",
+        "activity_outcome": "Success",
+        "activity_status": "Completed",
+        "activity_kind": "llm_call",
+        "activity_ref": "prov:v1:activity:llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+        "llm_call_ref": "[prov_activity_anchor]",
+        "llm_result_ref": "[prov_activity_anchor]"
       }
     ],
     "summary": {
-      "count": 1,
+      "count": 2,
       "failedCount": 0,
-      "durationMsTotal": 181,
-      "totalTokens": 17,
-      "promptTokensTotal": 10,
-      "completionTokensTotal": 7,
+      "durationMsTotal": 361,
+      "totalTokens": 37,
+      "promptTokensTotal": 22,
+      "completionTokensTotal": 15,
       "latencyHotspots": {
         "p95": 181.0,
         "p99": 181.0
       },
       "tokenHotspots": {
-        "p95": 17.0,
-        "p99": 17.0
+        "p95": 20.0,
+        "p99": 20.0
       },
       "cachedInputTokensTotal": 0
     },
@@ -92,11 +132,11 @@ expression: snapshot
           "agent_id",
           "model"
         ],
-        "count": 1,
+        "count": 2,
         "failed": 0,
         "failureRate": 0.0,
-        "avgDurationMs": 181.0,
-        "avgTotalTokens": 17.0
+        "avgDurationMs": 180.5,
+        "avgTotalTokens": 18.5
       }
     ],
     "truncated": false,

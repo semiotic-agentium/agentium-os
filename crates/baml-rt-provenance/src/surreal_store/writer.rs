@@ -21,8 +21,17 @@ impl ProvenanceWriter for SurrealProvenanceStore {
         let mut payload_records = payload_records_from_event(&event)?;
         let context = match event.task_id() {
             Some(tid) => {
-                let task_agent_id = self.get_task_agent_id(tid).await?;
-                NormalizeContext { task_agent_id }
+                let resolution = self.get_task_agent_id(tid).await?;
+                if matches!(resolution, crate::store::TaskAgentResolution::TimedOut) {
+                    tracing::warn!(
+                        task_id = tid.as_str(),
+                        event_id = event.id().as_str(),
+                        "agent-scoped normalization skipped: get_task_agent_id timed out"
+                    );
+                }
+                NormalizeContext {
+                    task_agent_id: resolution.into_option(),
+                }
             }
             None => NormalizeContext::default(),
         };

@@ -1,6 +1,6 @@
 //! Provenance subscriber: converts EffectEvent to ProvEvent.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -763,6 +763,26 @@ impl ProvenanceEffectSubscriber {
         }
         *guard = Some(provider.clone());
         Some(provider)
+    }
+
+    /// Load ONNX embedding + JINA rerank models **before** the first chat turn.
+    ///
+    /// [`EffectEvent::IntentResolved`] and [`EffectEvent::PlanGenerated`] call
+    /// [`Self::drift_provider`] / [`Self::rerank_provider`] **before** emitting
+    /// provenance rows. Without a warm-up, the first effect on the critical path
+    /// blocks on `spawn_blocking(FastEmbedProvider::new)` (large GTE model) and
+    /// reranker init — often tens of seconds — so the UI shows no graph activity
+    /// until that completes.
+    pub async fn warm_drift_models(&self) {
+        let t0 = Instant::now();
+        let embedding_ok = self.drift_provider().await.is_some();
+        let rerank_ok = self.rerank_provider().await.is_some();
+        tracing::info!(
+            elapsed_ms = t0.elapsed().as_millis(),
+            embedding_ready = embedding_ok,
+            reranker_ready = rerank_ok,
+            "provenance drift models warm-up complete"
+        );
     }
 }
 

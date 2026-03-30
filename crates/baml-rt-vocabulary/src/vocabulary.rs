@@ -162,6 +162,8 @@ pub mod context_scope {
 
 pub mod semantic_labels {
     pub const WAS_USED_BY: &str = "WAS_USED_BY";
+    /// Failed LLM/tool call activity → `FailureClassification` entity (distinct from generic `WAS_USED_BY` usage edges).
+    pub const WAS_CLASSIFIED_BY: &str = "WAS_CLASSIFIED_BY";
     pub const WAS_CONSUMED_BY: &str = "WAS_CONSUMED_BY";
     pub const WAS_RECEIVED_BY: &str = "WAS_RECEIVED_BY";
     pub const WAS_SPAWNED_BY: &str = "WAS_SPAWNED_BY";

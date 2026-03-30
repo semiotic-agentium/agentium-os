@@ -21,7 +21,7 @@ pub(crate) fn semantic_used_label(from_label: &str, role: Option<&str>) -> &'sta
         Some(r) if r == a2a_roles::REJECTED_OUTPUT => semantic_labels::WAS_USED_BY,
         Some(r) if r == a2a_roles::DELEGATION_TARGET => semantic_labels::WAS_DELEGATED_TO,
         Some(r) if r == a2a_roles::FAILURE_CLASSIFICATION || r == a2a_roles::FAILURE_EVIDENCE => {
-            semantic_labels::WAS_USED_BY
+            semantic_labels::WAS_CLASSIFIED_BY
         }
         _ => semantic_labels::WAS_USED_BY,
     }

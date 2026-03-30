@@ -33,7 +33,7 @@
 //! injection. The cross-encoder severity is combined with the cosine composite
 //! via `worst_severity` — it can escalate but not lower the composite.
 
-use std::{path::PathBuf, sync::Mutex};
+use std::{path::PathBuf, sync::Mutex, time::Instant};
 
 use fastembed::{RerankInitOptions, RerankerModel, TextRerank};
 
@@ -150,8 +150,14 @@ impl FastRerankProvider {
             opts
         };
         if let Some(dir) = cache_dir {
+            tracing::info!("FastEmbed TextRerank (JINA): loading ONNX from local cache");
+            let t0 = Instant::now();
             match TextRerank::try_new(make_opts(Some(dir))) {
                 Ok(r) => {
+                    tracing::info!(
+                        elapsed_ms = t0.elapsed().as_millis(),
+                        "FastEmbed TextRerank (JINA): ONNX session ready"
+                    );
                     return Ok(Self {
                         model: Mutex::new(r),
                     });

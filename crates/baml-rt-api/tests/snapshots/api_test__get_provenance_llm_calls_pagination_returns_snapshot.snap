@@ -4,19 +4,211 @@ expression: snapshot
 ---
 {
   "page1": {
-    "status": 500,
+    "status": 200,
     "body": {
-      "status": 500,
-      "title": "Internal Server Error",
-      "detail": "invalid provenance activity anchor llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0: missing write-time failure classification for failed llm_call"
+      "resource": "llm_calls",
+      "rows": [
+        {
+          "activity_id": "llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
+          "a2a_activity_anchor": "[prov_activity_anchor]",
+          "a2a_activity_outcome": "Failed",
+          "a2a_agent_id": "[uuid]",
+          "a2a_client": "anthropic",
+          "a2a_context_id": "ctx-100-1",
+          "a2a_duration_ms": 650,
+          "a2a_event_order": "[a2a_event_order]",
+          "a2a_failure_class": "failed_graph_incomplete",
+          "a2a_failure_evidence": "metadata",
+          "a2a_function_name": "DraftPrompt",
+          "llm_result": null,
+          "llm_call": {
+            "input": "world"
+          },
+          "a2a_message_id": "msg-b",
+          "a2a_model": "claude-3-7-sonnet",
+          "a2a_prompt_name": "DraftPrompt",
+          "a2a_usage_completion_tokens": 5,
+          "a2a_usage_prompt_tokens": 20,
+          "a2a_usage_total_tokens": 25,
+          "prov_endTime": "[timestamp_ms]",
+          "prov_type": "a2a:LlmCall",
+          "context_id": "ctx-100-1",
+          "message_id": "msg-b",
+          "agent_id": "[uuid]",
+          "provider": "anthropic",
+          "model": "claude-3-7-sonnet",
+          "baml_prompt": "DraftPrompt",
+          "duration_ms": 650,
+          "prompt_tokens": 20,
+          "completion_tokens": 5,
+          "total_tokens": 25,
+          "timestamp_ms": "[timestamp_ms]",
+          "activity_outcome": "Failed",
+          "activity_status": "Completed",
+          "activity_kind": "llm_call",
+          "activity_ref": "prov:v1:activity:llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
+          "llm_call_ref": "[prov_activity_anchor]",
+          "llm_result_ref": "[prov_activity_anchor]",
+          "failure_class": "baml_validation_error",
+          "failure_evidence": "BAML validation failed: invalid response schema"
+        }
+      ],
+      "summary": {
+        "count": 3,
+        "failedCount": 1,
+        "durationMsTotal": 1011,
+        "totalTokens": 62,
+        "promptTokensTotal": 42,
+        "completionTokensTotal": 20,
+        "latencyHotspots": {
+          "p95": 650.0,
+          "p99": 650.0
+        },
+        "tokenHotspots": {
+          "p95": 25.0,
+          "p99": 25.0
+        },
+        "cachedInputTokensTotal": 0
+      },
+      "hotspotGroups": [
+        {
+          "groupKey": "[uuid]",
+          "groupValues": [
+            "[uuid]"
+          ],
+          "groupDimensions": [
+            "agent_id"
+          ],
+          "count": 1,
+          "failed": 1,
+          "failureRate": 1.0,
+          "avgDurationMs": 650.0,
+          "avgTotalTokens": 25.0
+        },
+        {
+          "groupKey": "[uuid]",
+          "groupValues": [
+            "[uuid]"
+          ],
+          "groupDimensions": [
+            "agent_id"
+          ],
+          "count": 2,
+          "failed": 0,
+          "failureRate": 0.0,
+          "avgDurationMs": 180.5,
+          "avgTotalTokens": 18.5
+        }
+      ],
+      "nextCursor": "1",
+      "truncated": true,
+      "appliedCaps": {
+        "page_size": 1,
+        "max_page_size": 200,
+        "top_k": 10
+      }
     }
   },
   "page2": {
-    "status": 500,
+    "status": 200,
     "body": {
-      "status": 500,
-      "title": "Internal Server Error",
-      "detail": "invalid provenance activity anchor llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0: missing write-time failure classification for failed llm_call"
+      "resource": "llm_calls",
+      "rows": [
+        {
+          "activity_id": "llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+          "a2a_activity_anchor": "[prov_activity_anchor]",
+          "a2a_activity_outcome": "Success",
+          "a2a_agent_id": "[uuid]",
+          "a2a_client": "openai",
+          "a2a_context_id": "ctx-100-1",
+          "a2a_duration_ms": 180,
+          "a2a_event_order": "[a2a_event_order]",
+          "a2a_function_name": "SummarizePrompt",
+          "llm_result": null,
+          "llm_call": {
+            "input": "hello"
+          },
+          "a2a_message_id": "msg-a",
+          "a2a_model": "gpt-4o-mini",
+          "a2a_prompt_name": "SummarizePrompt",
+          "a2a_usage_completion_tokens": 8,
+          "a2a_usage_prompt_tokens": 12,
+          "a2a_usage_total_tokens": 20,
+          "prov_endTime": "[timestamp_ms]",
+          "prov_type": "a2a:LlmCall",
+          "context_id": "ctx-100-1",
+          "message_id": "msg-a",
+          "agent_id": "[uuid]",
+          "provider": "openai",
+          "model": "gpt-4o-mini",
+          "baml_prompt": "SummarizePrompt",
+          "duration_ms": 180,
+          "prompt_tokens": 12,
+          "completion_tokens": 8,
+          "total_tokens": 20,
+          "timestamp_ms": "[timestamp_ms]",
+          "activity_outcome": "Success",
+          "activity_status": "Completed",
+          "activity_kind": "llm_call",
+          "activity_ref": "prov:v1:activity:llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+          "llm_call_ref": "[prov_activity_anchor]",
+          "llm_result_ref": "[prov_activity_anchor]"
+        }
+      ],
+      "summary": {
+        "count": 3,
+        "failedCount": 1,
+        "durationMsTotal": 1011,
+        "totalTokens": 62,
+        "promptTokensTotal": 42,
+        "completionTokensTotal": 20,
+        "latencyHotspots": {
+          "p95": 650.0,
+          "p99": 650.0
+        },
+        "tokenHotspots": {
+          "p95": 25.0,
+          "p99": 25.0
+        },
+        "cachedInputTokensTotal": 0
+      },
+      "hotspotGroups": [
+        {
+          "groupKey": "[uuid]",
+          "groupValues": [
+            "[uuid]"
+          ],
+          "groupDimensions": [
+            "agent_id"
+          ],
+          "count": 1,
+          "failed": 1,
+          "failureRate": 1.0,
+          "avgDurationMs": 650.0,
+          "avgTotalTokens": 25.0
+        },
+        {
+          "groupKey": "[uuid]",
+          "groupValues": [
+            "[uuid]"
+          ],
+          "groupDimensions": [
+            "agent_id"
+          ],
+          "count": 2,
+          "failed": 0,
+          "failureRate": 0.0,
+          "avgDurationMs": 180.5,
+          "avgTotalTokens": 18.5
+        }
+      ],
+      "nextCursor": "2",
+      "truncated": true,
+      "appliedCaps": {
+        "page_size": 1,
+        "max_page_size": 200,
+        "top_k": 10
+      }
     }
   }
 }

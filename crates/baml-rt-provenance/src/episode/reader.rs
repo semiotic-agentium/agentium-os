@@ -153,7 +153,7 @@ impl EpisodeReader {
         // Drift errors are non-fatal: log and continue without drift section.
         let (
             (token_summary, llm_earliest_ms),
-            agent_id_opt,
+            agent_id_resolution,
             mut items,
             intents_db,
             plans_db,
@@ -206,7 +206,9 @@ impl EpisodeReader {
             .unwrap_or(terminal_ts);
 
         let ref_prefix = EpisodeRefPrefix::from_task_id(task_id);
-        let agent_id = agent_id_opt.unwrap_or_else(|| AgentId::from_uuid(UuidId::new(Uuid::nil())));
+        let agent_id = agent_id_resolution
+            .into_option()
+            .unwrap_or_else(|| AgentId::from_uuid(UuidId::new(Uuid::nil())));
 
         items.sort_by_key(|i| i.timestamp_ms);
 

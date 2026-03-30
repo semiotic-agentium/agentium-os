@@ -81,7 +81,7 @@ provenance-backed observability in one arc.
 
 ## Useful Environment Overrides
 
-- `NOTION_DEMO_PORT` (default `8081`)
+- `NOTION_DEMO_PORT` (default `8080`)
 - `NOTION_DEMO_PROVENANCE_DB` (default `provenance.db`)
 - `NOTION_DEMO_LOG` (default `/tmp/notion-runner.log`)
 - `NOTION_DEMO_PID` (default `/tmp/notion-runner.pid`)

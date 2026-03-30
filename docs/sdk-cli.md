@@ -166,8 +166,19 @@ cargo agent-platform publish [options]
 Tags are read from `manifest.json` — not accepted as a CLI flag.
 
 ```bash
-cargo agent-platform publish --agent-dir ./agents/clickup-agent \
-  --origin iteration --rationale "Improved task sync reliability"
+# Publish current directory
+cargo agent-platform publish --agent-dir .
+
+# Publish to another repository URL
+cargo agent-platform publish \
+  --agent-dir ./agents/notion-agent \
+  --repository-url http://127.0.0.1:8080/repository
+
+# Publish as an iteration with explicit rationale
+cargo agent-platform publish \
+  --agent-dir ./agents/clickup-agent \
+  --origin iteration \
+  --rationale "Improved task sync reliability"
 ```
 
 Example output:

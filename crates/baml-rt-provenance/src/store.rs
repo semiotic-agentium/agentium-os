@@ -66,6 +66,27 @@ use serde_json::{Map, Value};
 
 use crate::{error::Result, events::ProvEvent};
 
+/// Outcome of resolving the agent that owns a task via graph traversal.
+///
+/// Distinguishes "no agent linked in the graph" from "query timed out" so
+/// callers on the write path can log degradation explicitly rather than
+/// silently skipping agent-scoped normalization.
+#[derive(Debug, Clone)]
+pub enum TaskAgentResolution {
+    Resolved(AgentId),
+    NotLinked,
+    TimedOut,
+}
+
+impl TaskAgentResolution {
+    pub fn into_option(self) -> Option<AgentId> {
+        match self {
+            Self::Resolved(id) => Some(id),
+            Self::NotLinked | Self::TimedOut => None,
+        }
+    }
+}
+
 #[async_trait]
 pub trait ProvenanceWriter: ProvenanceContextReader + Send + Sync {
     async fn add_event(&self, event: ProvEvent) -> Result<()>;

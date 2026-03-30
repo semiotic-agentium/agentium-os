@@ -336,6 +336,18 @@ pub fn live_stream_drain(context_id: &str) -> Span {
     tracing::debug_span!("baml_rt.live_stream_drain", context_id = context_id,)
 }
 
+/// Create span for one turn in `run_live_stream_session` (enqueue → outcome → drain).
+#[inline]
+pub fn live_stream_session_turn(context_id: &str) -> Span {
+    tracing::debug_span!("baml_rt.live_stream_session_turn", context_id = context_id,)
+}
+
+/// Create span around `handle_a2a_outcome_inner` for a live stream turn (pinpoints routing / QuickJS handover latency).
+#[inline]
+pub fn live_stream_outcome_inner(context_id: &str) -> Span {
+    tracing::debug_span!("baml_rt.live_stream_outcome_inner", context_id = context_id,)
+}
+
 /// Create span for applying one stream chunk via the result pipeline (store_result).
 ///
 /// Parent: live_stream_drain. Enter before calling store_result; record `store_result_ok` after.

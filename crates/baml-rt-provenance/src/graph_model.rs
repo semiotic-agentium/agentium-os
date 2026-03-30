@@ -83,6 +83,7 @@ impl GraphNodeLabel {
 }
 
 pub const EDGE_WAS_USED_BY: &str = semantic_labels::WAS_USED_BY;
+pub const EDGE_WAS_CLASSIFIED_BY: &str = semantic_labels::WAS_CLASSIFIED_BY;
 pub const EDGE_WAS_EXECUTED_BY: &str = semantic_labels::WAS_EXECUTED_BY;
 pub const EDGE_WAS_INVOKED_BY: &str = semantic_labels::WAS_INVOKED_BY;
 pub const EDGE_WAS_RECEIVED_BY: &str = semantic_labels::WAS_RECEIVED_BY;

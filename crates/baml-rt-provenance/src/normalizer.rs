@@ -1,4 +1,7 @@
-use std::{collections::HashMap, fmt};
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt,
+};
 
 use baml_rt_core::{
     BamlFunctionId,
@@ -111,7 +114,7 @@ pub trait ProvNormalizer: Send + Sync {
 /// Typed composite key for call-scope deduplication: `context_id:scope_id:agent_id`.
 ///
 /// `scope_id` is the message_id (Message scope) or task_id (Task scope).
-/// Used as the HashMap key in [`CallOrdinalState`] to track per-scope call counts.
+/// Used as the HashMap key in [`CallOrdinalState`] to track per-scope LLM/tool ordinal stacks.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ScopeKey {
     ctx: String,
@@ -125,6 +128,22 @@ impl fmt::Display for ScopeKey {
     }
 }
 
+/// FIFO queue of ordinals opened by `*Started` and consumed by matching `*Completed` events.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct OrdinalStack {
+    /// Ordinals for in-flight Started calls (same scope, same channel), in completion order.
+    open: VecDeque<u64>,
+    /// Next ordinal to assign for a new Started or for a Completed-without-Started (orphan).
+    next: u64,
+}
+
+/// LLM vs tool ordinal lanes: both use the same [`ScopeKey`] but must not share ordinals.
+#[derive(Debug, Clone, Copy)]
+enum CallOrdinalChannel {
+    Llm,
+    Tool,
+}
+
 /// State for deriving call ordinals from event stream order.
 /// Normalizer-internal write-time state for tracking call ordinals and supersession edges.
 ///
@@ -133,8 +152,10 @@ impl fmt::Display for ScopeKey {
 /// `event_order` property.
 #[derive(Debug, Default)]
 pub(crate) struct CallOrdinalState {
-    /// scope_key -> count of Started events seen (ordinal for next Started).
-    pub(crate) call_counts: HashMap<ScopeKey, u64>,
+    /// Per-scope LLM call ordinals (paired Started/Completed, or monotonic orphans).
+    pub(crate) llm_ordinals: HashMap<ScopeKey, OrdinalStack>,
+    /// Per-scope tool call ordinals (paired Started/Completed, or monotonic orphans).
+    pub(crate) tool_ordinals: HashMap<ScopeKey, OrdinalStack>,
     /// activity_anchor.as_str() -> (scope_key, ordinal) for completed LLM calls; used by PromptRejected.
     pub(crate) llm_event_to_scope_ordinal: HashMap<String, (ScopeKey, u64)>,
     /// `ToolCallCompleted` event anchor -> derived ToolCall activity id (session SendDone influence edges).
@@ -465,19 +486,35 @@ fn build_call_scope_key(
     })
 }
 
-/// Get ordinal for Started (increment after) or Completed (use current-1, no change to count).
+/// Assign ordinal for `*Started` / `*Completed` within one channel (`llm` vs `tool`) and scope.
+///
+/// - Each **Started** allocates `next`, pushes it onto `open`, and returns it.
+/// - Each **Completed** pops the front of `open` (FIFO — first started completes first).
+/// - **Orphan Completed** (no prior Started in this scope for this channel): allocate `next`
+///   and advance it so consecutive completed-only events do not collapse to the same derived
+///   activity id (which would drop failure-classification edges and corrupt ops rows).
 fn get_ordinal_for_call(
     call_state: &mut CallOrdinalState,
     scope_key: &ScopeKey,
     is_started: bool,
+    channel: CallOrdinalChannel,
 ) -> u64 {
-    let count = call_state.call_counts.entry(scope_key.clone()).or_insert(0);
+    let map = match channel {
+        CallOrdinalChannel::Llm => &mut call_state.llm_ordinals,
+        CallOrdinalChannel::Tool => &mut call_state.tool_ordinals,
+    };
+    let st = map.entry(scope_key.clone()).or_default();
     if is_started {
-        let o = *count;
-        *count += 1;
+        let o = st.next;
+        st.next += 1;
+        st.open.push_back(o);
         o
     } else {
-        count.saturating_sub(1)
+        st.open.pop_front().unwrap_or_else(|| {
+            let o = st.next;
+            st.next += 1;
+            o
+        })
     }
 }
 
@@ -510,7 +547,8 @@ fn normalize_event_with_registry(
             metadata,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
-            let ordinal = get_ordinal_for_call(call_state, &scope_key, true);
+            let ordinal =
+                get_ordinal_for_call(call_state, &scope_key, true, CallOrdinalChannel::Llm);
             let scope_key_str = scope_key.to_string();
             let activity_id = llm_activity_id(&scope_key_str, ordinal);
             let mut attrs = base_attrs(event);
@@ -610,7 +648,8 @@ fn normalize_event_with_registry(
             resolved_citations,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
-            let ordinal = get_ordinal_for_call(call_state, &scope_key, false);
+            let ordinal =
+                get_ordinal_for_call(call_state, &scope_key, false, CallOrdinalChannel::Llm);
             let scope_key_str = scope_key.to_string();
             call_state.llm_event_to_scope_ordinal.insert(
                 event.id().as_str().to_string(),
@@ -1012,7 +1051,8 @@ fn normalize_event_with_registry(
             delegation_target,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
-            let ordinal = get_ordinal_for_call(call_state, &scope_key, true);
+            let ordinal =
+                get_ordinal_for_call(call_state, &scope_key, true, CallOrdinalChannel::Tool);
             let scope_key_str = scope_key.to_string();
             let activity_id = tool_activity_id(&scope_key_str, ordinal);
             let mut attrs = base_attrs(event);
@@ -1124,7 +1164,8 @@ fn normalize_event_with_registry(
             delegation_target,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
-            let ordinal = get_ordinal_for_call(call_state, &scope_key, false);
+            let ordinal =
+                get_ordinal_for_call(call_state, &scope_key, false, CallOrdinalChannel::Tool);
             let scope_key_str = scope_key.to_string();
             let activity_id = tool_activity_id(&scope_key_str, ordinal);
             let mut attrs = base_attrs(event);
@@ -2534,6 +2575,26 @@ fn upsert_failure_classification(
     target: FailureClassificationTarget,
     resolution: &FailureResolution,
 ) {
+    // `PromptRejected` and similar events reference a failed call activity from a prior batch;
+    // that activity may be absent from this document. Insert a minimal phantom activity so
+    // `build_label_maps` records the correct `from_label` (LlmCall / ToolCall) on the FC edge.
+    if doc.activity(&target.failed_activity_id).is_none() {
+        let prov_type_for_failed = if target.call_kind == "tool_call" {
+            prov_type::<ToolCallActivityId>()
+        } else {
+            prov_type::<LlmCallActivityId>()
+        };
+        doc.insert_activity(
+            target.failed_activity_id.clone(),
+            Activity {
+                start_time_ms: None,
+                end_time_ms: None,
+                prov_type: Some(prov_type_for_failed),
+                attributes: HashMap::new(),
+            },
+        );
+    }
+
     let scope_key_str = target.scope_key.to_string();
     let classify_activity_id =
         failure_classification_activity_id(target.call_kind, &scope_key_str, target.ordinal);

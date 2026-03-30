@@ -12,6 +12,7 @@ axum = { workspace = true }
 baml-rt-a2a = { path = "../baml-rt-a2a" }
 baml-rt-config = { path = "../baml-rt-config" }
 baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-builder = { path = "../baml-rt-builder" }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
