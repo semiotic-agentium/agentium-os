@@ -90,16 +90,25 @@ function PlanClickUpWork(intent: string, operation_kind: string) -> StandardStru
 
     RULES:
     - agent_instance_id is always "default" for every step.
-    - At least one clickup-execute step, then end with exactly one clickup-format step.
-    - NEVER emit a plan whose only step is clickup-format — that is invalid. TypeScript coordination rejects it.
+    - End with exactly one clickup-format step.
+    - By default, include at least one clickup-execute step to fetch data from ClickUp.
+    - **FORMAT-ONLY exception (performance optimisation):** You may skip clickup-execute and emit
+      ONLY a single clickup-format step IF AND ONLY IF the conversation history below contains
+      actual ClickUp tool output blocks (look for @N references with tasks, items, counts, IDs).
+      A bare user message or assistant text summary is NOT sufficient — you need raw tool data.
+      Use format-only ONLY when the prior tool output already has the data needed to answer:
+        • Follow-up filters on an already-fetched task list (e.g. "in progress" → "to do")
+        • Re-counting or re-summarising tasks from a prior @N tool output
+        • Asking about details already visible in prior tool output
+      If there is NO prior tool output (no @N blocks with tasks/items), you MUST use clickup-execute.
     - Multiple clickup-execute steps when separate tool passes are needed (e.g. list teams then list tasks).
     - Respect operation_kind: read vs write vs delete in sub_messages (delete flow needs confirmation semantics in executor).
     - If the intent already names a task_id or list_id, fold that into the first execute sub_message.
-    - citations (optional): when conversation_history below is present, set citations to #N line refs; you may shorten later
-      execute sub_messages when IDs are already in history, but you MUST still include ≥1 clickup-execute before clickup-format.
+    - citations (optional): when conversation_history below is present, set citations to @N or #N refs
+      grounding which prior evidence the format step should use.
 
     {% if ctx.tags['conversation_history'] %}
-    Prior turn results — reuse known IDs in execute sub_messages; still end with [execute..., format]:
+    Prior turn results — use format-only ONLY if these contain @N tool output blocks with task data:
     {% for msg in ctx.tags['conversation_history'] %}
     {{ _.role(msg.role) }}
     {{ msg.content }}
@@ -160,6 +169,61 @@ function ChooseClickUpAction(
     {% endif %}
 
     session_context: {{ session_context }}
+  "#
+}
+
+/// Final user-facing answer from retrieved ClickUp evidence.
+/// This runs after execute hops are complete (clickup-format sentinel step).
+function ReactToClickUpResults(
+  goal: string,
+  user_message: string,
+  format_instructions: string,
+  tool_results_json: string,
+) -> StructuredReply {
+  client DefaultClient
+  prompt #"
+    You are the final response synthesizer for a ClickUp workspace assistant.
+    Use ONLY the provided tool evidence. Do not invent task IDs, counts, statuses, or URLs.
+
+    User message: {{ user_message }}
+    Goal: {{ goal }}
+    Formatting instructions: {{ format_instructions }}
+
+    Requirements:
+    - Return strictly valid StructuredReply JSON matching {{ ctx.output_format }}.
+    - Always return exactly 2 parts in order:
+      1) TextPart with a concise human summary for the user's actual request
+      2) DataPart with media_type "application/json" containing machine-readable JSON
+    - Use the structured tool evidence below as the authoritative source.
+    - For count/list/status questions, compute values from evidence and include only relevant tasks.
+    - Keep the text concise and cap listed tasks to at most 10, adding "...and N more" when needed.
+    - If evidence is incomplete, state what is missing.
+
+    DataPart JSON format (stringified JSON):
+    {
+      "metric": "<metric_name_for_this_question>",
+      "count": <number_or_null>,
+      "tasks": [
+        { "id": "...", "name": "...", "status": "...", "url": "..." }
+      ]
+    }
+
+    Tool evidence JSON (from this turn’s execute steps; may be [] if a format-only plan was used):
+    {{ tool_results_json }}
+
+    {% if ctx.tags['conversation_history'] %}
+    Conversation history (USE THIS when tool evidence above is empty or incomplete —
+    the data you need is likely already here from a prior turn’s tool calls):
+    - Look for archived tool outputs (@N blocks) containing tasks, items, counts.
+    - Extract and filter the relevant data to answer the user’s question.
+    - Do NOT re-list every task; summarise concisely and include only what the user asked for.
+    {% for msg in ctx.tags['conversation_history'] %}
+    {{ _.role(msg.role) }}
+    {{ msg.content }}
+    {% endfor %}
+    {% endif %}
+
+    {{ ctx.output_format }}
   "#
 }
 

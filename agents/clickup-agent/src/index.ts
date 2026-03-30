@@ -71,18 +71,49 @@ function stringifyUnknown(value: unknown, max: number): string {
 }
 
 /**
- * If this step wraps a list-shaped JSON body (common after a tool send), pull it for prettier lines.
- * Steps are still **best-effort**: the model may clarify, omit fields, or return unrelated shapes.
+ * If this step wraps a list-shaped tool body, pull it for prettier lines.
+ * Supports executor wrappers like:
+ * - step.result.{tasks|items}
+ * - step.output.result.{tasks|items}
+ * - step.output.{tasks|items}
+ * - step.{tasks|items}
  */
 function extractToolLikePayload(v: unknown): JsonObject | null {
-  if (isJsonObject(v) && (Array.isArray(v.tasks) || Array.isArray(v.items))) return v;
-  if (
-    isJsonObject(v) &&
-    isJsonObject(v.output) &&
-    (Array.isArray(v.output.tasks) || Array.isArray(v.output.items))
-  ) {
-    return v.output;
+  if (!isJsonObject(v)) return null;
+
+  const candidates: unknown[] = [
+    v.result,
+    isJsonObject(v.output) ? v.output.result : undefined,
+    v.output,
+    v,
+  ];
+
+  for (const c of candidates) {
+    if (!isJsonObject(c)) continue;
+    if (Array.isArray(c.tasks) || Array.isArray(c.items)) return c;
   }
+
+  return null;
+}
+
+/**
+ * Pull a plain message string from common executor wrappers.
+ */
+function extractStepMessageText(v: unknown): string | null {
+  if (!isJsonObject(v)) return null;
+
+  const candidates: unknown[] = [
+    v.result,
+    isJsonObject(v.output) ? v.output.result : undefined,
+    v.output,
+    v,
+  ];
+
+  for (const c of candidates) {
+    if (!isJsonObject(c)) continue;
+    if (typeof c.message === "string" && c.message.trim()) return c.message.trim();
+  }
+
   return null;
 }
 
@@ -99,8 +130,9 @@ function executorStepToPriorContextText(step: unknown): string {
   if (toolLike) {
     return `[tool_result]\n${formatListLikeToolPayload(toolLike)}`.trim();
   }
-  if (isJsonObject(step) && typeof step.message === "string" && step.message.trim()) {
-    return `[message]\n${step.message.trim()}`;
+  const stepMessage = extractStepMessageText(step);
+  if (stepMessage) {
+    return `[message]\n${stepMessage}`;
   }
   return `[raw]\n${stringifyUnknown(step, 3500)}`;
 }
@@ -115,6 +147,28 @@ function collectStepResultsForPriorContext(steps: unknown[]): string {
   if (joined.trim()) return joined.slice(0, PRIOR_RESULTS_MAX_CHARS);
   return stringifyUnknown(steps.slice(-5), PRIOR_RESULTS_MAX_CHARS);
 }
+
+/**
+ * Collect structured tool evidence for the final synthesis hop.
+ * Keep only tool-shaped payloads (tasks/items) — real API data from tool sessions.
+ * FinalResponse (LLM summaries) are intentionally excluded: they may hallucinate
+ * counts or facts. When tool evidence is empty, ReactToClickUpResults falls back
+ * to conversation history which contains the raw @N tool outputs.
+ */
+function collectToolResultsJson(steps: unknown[]): string {
+  const outputs: unknown[] = [];
+  for (const step of steps) {
+    const toolLike = extractToolLikePayload(step);
+    if (toolLike) outputs.push(toolLike);
+  }
+
+  try {
+    return JSON.stringify(outputs.length > 0 ? outputs : [], null, 2).slice(0, 12_000);
+  } catch {
+    return "[]";
+  }
+}
+
 
 function textReply(text: string): StructuredReply {
   const parts: ReplyPart[] = [{ type: "text", text }];
@@ -171,8 +225,9 @@ function extractFinalMessage(steps: unknown[]): StructuredReply {
     if (isFinalResponse(step)) return finalResponseToStructured(step);
     const toolLike = extractToolLikePayload(step);
     if (toolLike) return textReply(formatListLikeToolPayload(toolLike));
-    if (isJsonObject(step) && typeof step.message === "string" && step.message.trim()) {
-      return textReply(step.message.trim());
+    const stepMessage = extractStepMessageText(step);
+    if (stepMessage) {
+      return textReply(stepMessage);
     }
   }
   if (steps.length > 0) {
@@ -189,7 +244,7 @@ function filterPlanCitations(plan: StandardStructuredPlan): string[] {
 }
 
 /**
- * Validate plan_steps against clickup_prompt.baml (execute → … → single format at end).
+ * Validate plan_steps against clickup_prompt.baml (zero-or-more execute → single format at end).
  */
 function validateClickUpPlanForExecution(plan: StandardStructuredPlan): StandardAgentPlanStep[] | string {
   const raw = plan.plan_steps;
@@ -218,17 +273,17 @@ function validateClickUpPlanForExecution(plan: StandardStructuredPlan): Standard
     });
   }
 
-  let executeCount = 0;
   let formatCount = 0;
   for (const st of steps) {
     const p = st.agent_package.trim().toLowerCase();
-    if (p === PKG_CLICKUP_EXECUTE) executeCount++;
     if (p === PKG_CLICKUP_FORMAT) formatCount++;
   }
-  if (executeCount < 1) return "plan must include at least one clickup-execute step";
+  // Allow format-only plans when prior conversation already has enough ClickUp evidence.
   if (formatCount !== 1) return "plan must include exactly one clickup-format step";
   const lastPkg = steps[steps.length - 1]!.agent_package.trim().toLowerCase();
   if (lastPkg !== PKG_CLICKUP_FORMAT) return "last plan step must be clickup-format";
+  // Format-only plans (single clickup-format step) are valid — data comes from conversation history.
+  // No need to require execute steps.
 
   return steps;
 }
@@ -290,7 +345,22 @@ async function runClickUpStructuredPlan(
         priorResultsText = collectStepResultsForPriorContext(run.steps);
         if (executable) await executable.completeStep?.(stepId);
       } else if (pkg === PKG_CLICKUP_FORMAT) {
-        const finalMessage = extractFinalMessage(allStepOutputsNested.flat());
+        const allSteps = allStepOutputsNested.flat();
+        const toolResultsJson = collectToolResultsJson(allSteps);
+
+        let finalMessage: StructuredReply;
+        try {
+          finalMessage = await ReactToClickUpResults({
+            goal,
+            user_message: validatedIntent,
+            format_instructions: step.sub_message,
+            tool_results_json: toolResultsJson,
+          });
+        } catch (_) {
+          // Fallback keeps chat usable if synthesis parsing/provider call fails.
+          finalMessage = extractFinalMessage(allSteps);
+        }
+
         if (executable) await executable.completeStep?.(stepId);
         if (executable) await executable.finish?.();
         return { message: finalMessage };
