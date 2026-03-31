@@ -85,7 +85,7 @@ function formatTime(date: Date): string {
 }
 
 .timeline-dot.state-input {
-  background: #f59e0b;
+  background: var(--color-warning);
 }
 
 .timeline-dot.state-completed {
@@ -93,7 +93,7 @@ function formatTime(date: Date): string {
 }
 
 .timeline-dot.state-failed {
-  background: #ef4444;
+  background: var(--color-error);
 }
 
 .timeline-label {

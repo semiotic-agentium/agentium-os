@@ -253,7 +253,7 @@ watch(local, () => {
           <h3 class="config-section-title">Clients</h3>
           <p class="config-hint">LLM backends available for routing.</p>
         </div>
-        <button type="button" class="config-btn config-btn-secondary" @click="addClient">Add client</button>
+        <button type="button" class="btn btn--secondary" @click="addClient">Add client</button>
       </div>
 
       <div class="config-agent-cards">
@@ -271,7 +271,7 @@ watch(local, () => {
               <button
                 v-if="name !== defaultClientName"
                 type="button"
-                class="config-btn config-btn-ghost"
+                class="btn btn--ghost btn--sm"
                 title="Remove client"
                 @click="removeClient(name)"
               >Remove</button>

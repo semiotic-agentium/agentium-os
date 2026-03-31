@@ -126,7 +126,11 @@ function closeToolEditor() {
       </template>
 
       <template v-else>
-        <div class="settings-loading" role="status" aria-live="polite">Loading…</div>
+        <div class="settings-loading" role="status" aria-live="polite">
+          <div class="skeleton skeleton--text" style="width: 40%;"></div>
+          <div class="skeleton skeleton--text" style="width: 70%;"></div>
+          <div class="skeleton skeleton--text" style="width: 55%;"></div>
+        </div>
       </template>
     </div>
   </div>

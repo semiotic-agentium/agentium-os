@@ -237,13 +237,12 @@ const showGaps = ref(false);
   padding: 0.75rem 1rem;
   max-height: 20rem;
   overflow: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
-    monospace;
+  font-family: var(--font-mono);
   font-size: 0.8rem;
   line-height: 1.45;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--color-surface-elevated, #1e1e24) 88%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-border, #333) 80%, transparent);
+  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   white-space: pre-wrap;
   word-break: break-word;
 }

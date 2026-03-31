@@ -97,7 +97,7 @@ function tryClose() {
         <span v-if="saveStatus === 'saving'" class="config-autosave-saving">Saving…</span>
         <span v-else-if="saveStatus === 'saved'" class="config-autosave-saved">Saved (v{{ version }})</span>
         <span v-else-if="saveStatus === 'error'" class="config-autosave-error">Save failed</span>
-        <button type="button" class="config-btn config-btn-ghost" @click="tryClose">← Back</button>
+        <button type="button" class="btn btn--ghost btn--sm" @click="tryClose">← Back</button>
       </div>
     </div>
 
@@ -129,7 +129,7 @@ function tryClose() {
     <div v-if="defaultConfig !== undefined" class="config-form-actions">
       <button
         type="button"
-        class="config-btn config-btn-ghost"
+        class="btn btn--ghost btn--sm"
         @click="resetToDefault"
       >Reset to default</button>
     </div>

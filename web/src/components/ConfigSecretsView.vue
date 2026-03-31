@@ -113,7 +113,7 @@ function secretHint(name: string): string {
     <div class="config-secrets-toolbar">
       <button
         type="button"
-        class="config-secrets-refresh-btn"
+        class="btn btn--secondary btn--sm"
         :disabled="refreshing || secrets === null"
         @click="refresh"
       >
@@ -176,7 +176,7 @@ function secretHint(name: string): string {
               </select>
               <button
                 type="button"
-                class="config-btn config-btn-secondary"
+                class="btn btn--secondary btn--sm"
                 :disabled="!linkSelection[entry.name] || linkingKey === entry.name"
                 @click="onLink(entry.name)"
               >
@@ -246,7 +246,7 @@ function secretHint(name: string): string {
               </select>
               <button
                 type="button"
-                class="config-btn config-btn-secondary"
+                class="btn btn--secondary btn--sm"
                 :disabled="!linkSelection[entry.name] || linkingKey === entry.name"
                 @click="onLink(entry.name)"
               >
@@ -256,7 +256,7 @@ function secretHint(name: string): string {
             <div class="config-secret-unlink-section">
               <button
                 type="button"
-                class="config-secret-unlink-btn"
+                class="btn btn--ghost btn--sm"
                 :disabled="unlinkingKey === entry.name"
                 :aria-label="'Unlink ' + entry.name"
                 @click="onUnlink(entry.name)"

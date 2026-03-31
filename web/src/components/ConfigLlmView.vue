@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import { useConfigApi } from "../composables/useConfigApi";
+import { useToast } from "../composables/useToast";
 import type { LlmClientConfig } from "../types/config";
 import ConfigLlmForm from "./ConfigLlmForm.vue";
 
 const { fetchConfig, putConfig } = useConfigApi();
+const toast = useToast();
 const config = ref<LlmClientConfig | null>(null);
 const error = ref<string | null>(null);
 const saveStatus = ref<"idle" | "saving" | "saved" | "error">("idle");
@@ -71,11 +73,13 @@ async function doSave(payload: LlmClientConfig) {
   if ("error" in result) {
     saveStatus.value = "error";
     error.value = result.error.detail ?? result.error.title;
+    toast.error("LLM config save failed");
     return;
   }
   version.value = result.data.version;
   saveStatus.value = "saved";
   error.value = null;
+  toast.success(`LLM config saved (v${version.value})`);
 }
 </script>
 

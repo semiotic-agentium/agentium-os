@@ -89,7 +89,7 @@ watch(
 <template>
   <div class="chat-window">
     <WorkflowProgress v-if="workflowProgress && workflowProgress.phase !== 'idle' && workflowProgress.pipelineActive" :progress="workflowProgress" />
-    <div ref="messagesContainer" class="messages" @scroll="onMessagesScroll">
+    <div ref="messagesContainer" class="messages" role="log" aria-live="polite" @scroll="onMessagesScroll">
       <div v-if="messages.length === 0" class="empty-state">
         <!-- Chat icon -->
         <svg class="empty-state-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">

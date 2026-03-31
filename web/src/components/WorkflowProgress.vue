@@ -189,7 +189,7 @@ const showNodes = computed(
 }
 
 .workflow-node-dot.node-failed {
-  background: #ef4444;
+  background: var(--color-error);
 }
 
 .workflow-node-name {

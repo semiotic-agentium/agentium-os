@@ -14,7 +14,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <nav class="navbar">
+  <nav class="navbar" aria-label="Main navigation">
     <!-- Brand -->
     <div class="navbar-brand">
       <!-- Terminal icon -->
@@ -26,8 +26,8 @@ const emit = defineEmits<{
     </div>
 
     <!-- View tabs -->
-    <div class="navbar-tabs">
-      <button :class="['nav-tab', { active: view === 'dashboard' }]" @click="emit('changeView', 'dashboard')">
+    <div class="navbar-tabs" role="tablist" aria-label="Views">
+      <button :class="['nav-tab', { active: view === 'dashboard' }]" role="tab" :aria-selected="view === 'dashboard'" @click="emit('changeView', 'dashboard')">
         <!-- Grid icon -->
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
@@ -35,14 +35,14 @@ const emit = defineEmits<{
         </svg>
         Dashboard
       </button>
-      <button :class="['nav-tab', { active: view === 'chat' }]" @click="emit('changeView', 'chat')">
+      <button :class="['nav-tab', { active: view === 'chat' }]" role="tab" :aria-selected="view === 'chat'" @click="emit('changeView', 'chat')">
         <!-- Chat icon -->
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
         Chat Interface
       </button>
-      <button :class="['nav-tab', { active: view === 'settings' }]" @click="emit('changeView', 'settings')">
+      <button :class="['nav-tab', { active: view === 'settings' }]" role="tab" :aria-selected="view === 'settings'" @click="emit('changeView', 'settings')">
         <!-- Settings/gear icon -->
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3" />
@@ -62,7 +62,7 @@ const emit = defineEmits<{
         <span class="status-dot" />
         System: Online
       </span>
-      <button class="theme-toggle" @click="emit('toggleTheme')" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'">
+      <button class="btn btn--icon theme-toggle" @click="emit('toggleTheme')" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'">
         <!-- Sun icon (shown in dark mode) -->
         <svg v-if="theme === 'dark'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="5" />

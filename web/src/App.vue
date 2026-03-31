@@ -6,6 +6,7 @@ import Dashboard from "./components/Dashboard.vue";
 import Navbar from "./components/Navbar.vue";
 import ProvenancePane from "./components/ProvenancePane.vue";
 import SettingsView from "./components/SettingsView.vue";
+import ToastContainer from "./components/ToastContainer.vue";
 import { useProvenanceOps } from "./composables/useProvenanceOps";
 import { useA2aClient } from "./composables/useA2aClient";
 import { useTheme } from "./composables/useTheme";
@@ -163,5 +164,6 @@ onMounted(() => fetchAgents());
 
       <SettingsView v-else-if="view === 'settings'" />
     </div>
+    <ToastContainer />
   </div>
 </template>
