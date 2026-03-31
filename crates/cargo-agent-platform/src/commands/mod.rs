@@ -1,6 +1,7 @@
 //! CLI command implementations.
 
 pub mod build;
+pub mod chat;
 pub mod deploy;
 pub mod doctor;
 pub mod list_agents;
