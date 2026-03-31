@@ -178,6 +178,22 @@ async fn post_a2a_sse_collect(
     url: &str,
     body: &Value,
 ) -> Result<Vec<Value>, Box<dyn std::error::Error + Send + Sync>> {
+    let collect_timeout = Duration::from_secs(common::e2e_secs_ci_or_local(90, 60));
+    tokio::time::timeout(
+        collect_timeout,
+        post_a2a_sse_collect_inner(client, url, body),
+    )
+    .await
+    .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {
+        format!("SSE collect timed out after {collect_timeout:?}").into()
+    })?
+}
+
+async fn post_a2a_sse_collect_inner(
+    client: &reqwest::Client,
+    url: &str,
+    body: &Value,
+) -> Result<Vec<Value>, Box<dyn std::error::Error + Send + Sync>> {
     let mut response = client
         .post(url)
         .header("Accept", "text/event-stream")

@@ -32,7 +32,7 @@ const NORMALIZED_PAGE_ID: &str = "22222222-2222-2222-2222-222222222222";
 const NOTION_API_PREFIX: &str = "/v1";
 
 fn notion_direct_id_a2a_collect_timeout() -> Duration {
-    Duration::from_secs(e2e_secs_ci_or_local(360, 240))
+    Duration::from_secs(e2e_secs_ci_or_local(100, 120))
 }
 
 fn notion_api_path(suffix: &str) -> String {
@@ -224,7 +224,7 @@ async fn setup_notion_agent_with_provenance()
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
         .with_quickjs_config(
             baml_rt::QuickJSConfig::new()
-                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(300, 180))),
+                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(90, 120))),
         )
         .build()
         .await
@@ -268,7 +268,7 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
 
     let mut last_diag: Option<(Vec<String>, Vec<String>)> = None;
 
-    for attempt in 0..4u32 {
+    for attempt in 0..2u32 {
         mock_state.clear_hits().await;
         // Fresh context per attempt so provenance reads do not mix failed LLM runs.
         let context_id = ContextId::new(88, 70u64 + u64::from(attempt));

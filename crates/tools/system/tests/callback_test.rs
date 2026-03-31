@@ -666,7 +666,7 @@ async fn callback_plan_from_baml_invocation_executes_wrapped_payloads() {
     );
     manager.set_session_plan_functions(Some(plan_map));
 
-    let scope = InvocationScope::synthetic_message(test_agent_id());
+    let scope = InvocationScope::synthetic_task(test_agent_id());
     let invoke_result = context::with_scope(scope.as_scope().clone(), async {
         manager
             .invoke_function(
