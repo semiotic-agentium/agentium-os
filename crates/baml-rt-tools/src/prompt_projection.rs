@@ -13,6 +13,8 @@
 //!   production — never raw JSON dumps). Matches `remotes/semiotic-agentium/pud-squashed`.
 //! - `StatusOnly` items are discarded at the conversion boundary before reaching here.
 
+use std::collections::HashSet;
+
 use serde_json::{Value, json};
 
 use crate::{
@@ -138,13 +140,18 @@ pub fn project_prompt_context(
     archive_reader: Option<ArchiveReader<'_>>,
 ) -> Value {
     let mut history = Vec::with_capacity(items.len());
+    let mut inlined_archive_refs: HashSet<String> = HashSet::new();
+    let mut inlined_read_pages: HashSet<String> = HashSet::new();
+
     for item in items {
-        match render_projection_content(
+        match render_projection_content_with_state(
             &item,
             registry,
             ref_table,
             archive_reader,
             ProjectionRenderOptions::default(),
+            &mut inlined_archive_refs,
+            &mut inlined_read_pages,
         ) {
             RenderedEntry::Filtered => {}
             RenderedEntry::One(c) => {
@@ -156,6 +163,7 @@ pub fn project_prompt_context(
             }
         }
     }
+
     Value::Array(history)
 }
 
@@ -185,6 +193,32 @@ pub fn render_projection_content(
     ref_table: &RefTable,
     archive_reader: Option<ArchiveReader<'_>>,
     opts: ProjectionRenderOptions,
+) -> RenderedEntry {
+    let mut inlined_archive_refs = HashSet::new();
+    let mut inlined_read_pages = HashSet::new();
+    render_projection_content_with_state(
+        item,
+        registry,
+        ref_table,
+        archive_reader,
+        opts,
+        &mut inlined_archive_refs,
+        &mut inlined_read_pages,
+    )
+}
+
+fn read_view_key(archive_ref: &str, grep: Option<&str>, offset: usize, limit: usize) -> String {
+    format!("{archive_ref}|{}|{offset}|{limit}", grep.unwrap_or(""))
+}
+
+fn render_projection_content_with_state(
+    item: &PromptProjectionItem,
+    registry: &ToolRegistry,
+    ref_table: &RefTable,
+    archive_reader: Option<ArchiveReader<'_>>,
+    opts: ProjectionRenderOptions,
+    inlined_archive_refs: &mut HashSet<String>,
+    inlined_read_pages: &mut HashSet<String>,
 ) -> RenderedEntry {
     match &item.content {
         PromptProjectionContent::Message(text) => {
@@ -245,43 +279,57 @@ pub fn render_projection_content(
             }
         }
 
-        PromptProjectionContent::SessionStep { tool_name, op } => {
-            match op {
-                SessionStepProjection::Open => RenderedEntry::One(
-                    registry
-                        .describe_open_for(tool_name)
-                        .unwrap_or_else(|| format!("{tool_name} session opened")),
-                ),
-                SessionStepProjection::SendDone {
-                    archive_ref,
-                    header,
-                } => {
-                    // Two entries: header attributed to assistant, then the inline content
-                    // (CLI command + numbered output) also attributed to assistant.
-                    match archive_reader.and_then(|r| r(archive_ref, None, 0, opts.send_done.get()))
-                    {
-                        Some(content) => RenderedEntry::Two(header.clone(), content),
-                        None => RenderedEntry::One(header.clone()),
-                    }
+        PromptProjectionContent::SessionStep { tool_name, op } => match op {
+            SessionStepProjection::Open => RenderedEntry::One(
+                registry
+                    .describe_open_for(tool_name)
+                    .unwrap_or_else(|| format!("{tool_name} session opened")),
+            ),
+            SessionStepProjection::SendDone {
+                archive_ref,
+                header,
+            } => {
+                if inlined_archive_refs.contains(archive_ref) {
+                    return RenderedEntry::Two(header.clone(), format!("cat -n {archive_ref}"));
                 }
-                SessionStepProjection::Read {
-                    archive_ref,
-                    grep,
-                    offset,
-                    limit,
-                } => {
-                    // pud-squashed: command line when we cannot resolve the archive; otherwise the
-                    // reader returns grep_paginate/format_cat_n output only (controlled, not raw).
-                    let cmd = session_read_command_line(archive_ref, grep.as_deref());
-                    match archive_reader
-                        .and_then(|r| r(archive_ref, grep.as_deref(), *offset, *limit))
-                    {
-                        Some(output) => RenderedEntry::One(output),
-                        None => RenderedEntry::One(cmd),
+                inlined_archive_refs.insert(archive_ref.clone());
+
+                match archive_reader.and_then(|r| r(archive_ref, None, 0, opts.send_done.get())) {
+                    Some(content) => {
+                        inlined_read_pages.insert(read_view_key(
+                            archive_ref,
+                            None,
+                            0,
+                            opts.send_done.get(),
+                        ));
+                        RenderedEntry::Two(header.clone(), content)
                     }
+                    None => RenderedEntry::One(header.clone()),
                 }
             }
-        }
+            SessionStepProjection::Read {
+                archive_ref,
+                grep,
+                offset,
+                limit,
+            } => {
+                // pud-squashed: command line when we cannot resolve the archive; otherwise the
+                // reader returns grep_paginate/format_cat_n output only (controlled, not raw).
+                let cmd = session_read_command_line(archive_ref, grep.as_deref());
+                let read_key = read_view_key(archive_ref, grep.as_deref(), *offset, *limit);
+                if inlined_read_pages.contains(&read_key) {
+                    return RenderedEntry::One(cmd);
+                }
+                match archive_reader.and_then(|r| r(archive_ref, grep.as_deref(), *offset, *limit))
+                {
+                    Some(output) => {
+                        inlined_read_pages.insert(read_key);
+                        RenderedEntry::One(output)
+                    }
+                    None => RenderedEntry::One(cmd),
+                }
+            }
+        },
     }
 }
 
@@ -307,6 +355,189 @@ mod tests {
             arr[0]["content"].as_str(),
             Some("#1 what can you do"),
             "first history line allocates #1 for citation/drift alignment"
+        );
+    }
+
+    #[test]
+    fn repeated_send_done_for_same_archive_ref_should_not_reinline_payload() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![
+            PromptProjectionItem {
+                timestamp_ms: 1,
+                activity_anchor: "evt-1".to_string(),
+                role: "assistant".to_string(),
+                content: PromptProjectionContent::SessionStep {
+                    tool_name: "clickup/get_tasks".to_string(),
+                    op: SessionStepProjection::SendDone {
+                        archive_ref: "@15".to_string(),
+                        header: "@15 clickup/get_tasks 'found tasks' [209 lines, 6.3KB]"
+                            .to_string(),
+                    },
+                },
+            },
+            PromptProjectionItem {
+                timestamp_ms: 2,
+                activity_anchor: "evt-2".to_string(),
+                role: "assistant".to_string(),
+                content: PromptProjectionContent::SessionStep {
+                    tool_name: "clickup/get_tasks".to_string(),
+                    op: SessionStepProjection::SendDone {
+                        archive_ref: "@15".to_string(),
+                        header: "@15 clickup/get_tasks 'found tasks' [209 lines, 6.3KB]"
+                            .to_string(),
+                    },
+                },
+            },
+            PromptProjectionItem {
+                timestamp_ms: 3,
+                activity_anchor: "evt-3".to_string(),
+                role: "assistant".to_string(),
+                content: PromptProjectionContent::SessionStep {
+                    tool_name: "clickup/get_tasks".to_string(),
+                    op: SessionStepProjection::SendDone {
+                        archive_ref: "@15".to_string(),
+                        header: "@15 clickup/get_tasks 'found tasks' [209 lines, 6.3KB]"
+                            .to_string(),
+                    },
+                },
+            },
+        ];
+
+        let archive_reader =
+            |archive_ref: &str, _grep: Option<&str>, _offset: usize, _limit: usize| {
+                Some(format!("cat -n {archive_ref}\nTASK_LIST_PAYLOAD"))
+            };
+
+        let history = project_prompt_context(items, &registry, &ref_table, Some(&archive_reader));
+        let payload_occurrences = history
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|item| item.get("content").and_then(Value::as_str))
+            .filter(|content| content.contains("TASK_LIST_PAYLOAD"))
+            .count();
+
+        assert_eq!(
+            payload_occurrences, 1,
+            "archive payload should be inlined once per archive_ref to prevent history snowballing"
+        );
+    }
+
+    #[test]
+    fn repeated_read_same_view_should_not_reinline_payload() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![
+            PromptProjectionItem {
+                timestamp_ms: 1,
+                activity_anchor: "evt-r1".to_string(),
+                role: "assistant".to_string(),
+                content: PromptProjectionContent::SessionStep {
+                    tool_name: "clickup/get_tasks".to_string(),
+                    op: SessionStepProjection::Read {
+                        archive_ref: "@15".to_string(),
+                        grep: None,
+                        offset: 0,
+                        limit: 200,
+                    },
+                },
+            },
+            PromptProjectionItem {
+                timestamp_ms: 2,
+                activity_anchor: "evt-r2".to_string(),
+                role: "assistant".to_string(),
+                content: PromptProjectionContent::SessionStep {
+                    tool_name: "clickup/get_tasks".to_string(),
+                    op: SessionStepProjection::Read {
+                        archive_ref: "@15".to_string(),
+                        grep: None,
+                        offset: 0,
+                        limit: 200,
+                    },
+                },
+            },
+        ];
+
+        let archive_reader =
+            |archive_ref: &str, _grep: Option<&str>, offset: usize, limit: usize| {
+                Some(format!(
+                    "cat -n {archive_ref}  # lines {}-{}\nREAD_PAGE_PAYLOAD",
+                    offset + 1,
+                    offset + limit
+                ))
+            };
+
+        let history = project_prompt_context(items, &registry, &ref_table, Some(&archive_reader));
+        let payload_occurrences = history
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|item| item.get("content").and_then(Value::as_str))
+            .filter(|content| content.contains("READ_PAGE_PAYLOAD"))
+            .count();
+
+        assert_eq!(
+            payload_occurrences, 1,
+            "read payload should be inlined once per identical read view"
+        );
+    }
+
+    #[test]
+    fn read_default_view_after_send_done_should_not_reinline_payload() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![
+            PromptProjectionItem {
+                timestamp_ms: 1,
+                activity_anchor: "evt-s1".to_string(),
+                role: "assistant".to_string(),
+                content: PromptProjectionContent::SessionStep {
+                    tool_name: "clickup/get_tasks".to_string(),
+                    op: SessionStepProjection::SendDone {
+                        archive_ref: "@15".to_string(),
+                        header: "@15 clickup/get_tasks 'found tasks' [209 lines, 6.3KB]"
+                            .to_string(),
+                    },
+                },
+            },
+            PromptProjectionItem {
+                timestamp_ms: 2,
+                activity_anchor: "evt-r1".to_string(),
+                role: "assistant".to_string(),
+                content: PromptProjectionContent::SessionStep {
+                    tool_name: "clickup/get_tasks".to_string(),
+                    op: SessionStepProjection::Read {
+                        archive_ref: "@15".to_string(),
+                        grep: None,
+                        offset: 0,
+                        limit: 200,
+                    },
+                },
+            },
+        ];
+
+        let archive_reader =
+            |archive_ref: &str, _grep: Option<&str>, offset: usize, limit: usize| {
+                Some(format!(
+                    "cat -n {archive_ref}  # lines {}-{}\nCOMBINED_VIEW_PAYLOAD",
+                    offset + 1,
+                    offset + limit
+                ))
+            };
+
+        let history = project_prompt_context(items, &registry, &ref_table, Some(&archive_reader));
+        let payload_occurrences = history
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|item| item.get("content").and_then(Value::as_str))
+            .filter(|content| content.contains("COMBINED_VIEW_PAYLOAD"))
+            .count();
+
+        assert_eq!(
+            payload_occurrences, 1,
+            "default Read view should be compacted when SendDone already inlined the same page"
         );
     }
 }
