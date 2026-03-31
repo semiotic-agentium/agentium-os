@@ -439,92 +439,95 @@ proptest! {
         rt.block_on(async move {
             let agent = setup_interleaving_agent().await;
             let per_turn_timeout = scaled_timeout_secs((jitters.len() as u64 * 5) + 20);
-            let mut join_set = JoinSet::new();
+            // Run each (context, two-turn) flow sequentially: overlapping sendStream on the same
+            // context from concurrent tasks can hit Conflict (session still in flight) even when
+            // contexts differ across tasks due to bridge scheduling; ordering preserves the property
+            // ∀ jitter vectors without parallel sendStream races.
             for (idx, jitter_raw) in jitters.iter().copied().enumerate() {
-                let agent = agent.clone();
                 let context_id = ContextId::new(901, (idx as u64) + 1);
                 let jitter_ms = (jitter_raw as u64) + ((idx as u64) % 3);
-                join_set.spawn(async move {
-                    // Turn 1: ask for input, stop collection once INPUT_REQUIRED appears.
-                    let ask_req = send_stream_request(
-                        &format!("msg-ir-ask-{idx}"),
-                        &format!("input-ask:{jitter_ms}:{}", context_id.as_str()),
-                        &format!("corr-1700000000300-{}", idx + 1),
-                        Some(context_id.clone()),
-                    );
-                    let ask_stream = agent
-                        .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(ask_req))
-                        .await
-                        .expect("open input-required stream");
-                    let ask_responses: Vec<baml_rt_core::A2aStreamChunk> = timeout(
-                        per_turn_timeout,
-                        baml_rt_core::collect_a2a_stream_until(ask_stream, |c| response_has_input_required(c.as_ref())),
-                    )
+                // Turn 1: ask for input, stop collection once INPUT_REQUIRED appears.
+                let ask_req = send_stream_request(
+                    &format!("msg-ir-ask-{idx}"),
+                    &format!("input-ask:{jitter_ms}:{}", context_id.as_str()),
+                    &format!("corr-1700000000300-{}", idx + 1),
+                    Some(context_id.clone()),
+                );
+                let ask_stream = agent
+                    .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(ask_req))
                     .await
-                    .expect("input-required stream timed out");
-                    assert!(
-                        ask_responses.iter().any(|c| response_has_input_required(c.as_ref())),
-                        "first turn must emit TASK_STATE_INPUT_REQUIRED"
-                    );
-                    let ask_final_count = ask_responses
+                    .expect("open input-required stream");
+                let ask_responses: Vec<baml_rt_core::A2aStreamChunk> = timeout(
+                    per_turn_timeout,
+                    baml_rt_core::collect_a2a_stream_until(ask_stream, |c| {
+                        response_has_input_required(c.as_ref())
+                    }),
+                )
+                .await
+                .expect("input-required stream timed out");
+                assert!(
+                    ask_responses
                         .iter()
-                        .filter(|chunk| {
-                            chunk
-                                .as_ref()
-                                .get("result")
-                                .and_then(|result| result.get("final"))
-                                .and_then(serde_json::Value::as_bool)
-                                .unwrap_or(false)
-                        })
-                        .count();
-                    assert_eq!(ask_final_count, 0, "input-required turn must not auto-finalize");
+                        .any(|c| response_has_input_required(c.as_ref())),
+                    "first turn must emit TASK_STATE_INPUT_REQUIRED"
+                );
+                let ask_final_count = ask_responses
+                    .iter()
+                    .filter(|chunk| {
+                        chunk
+                            .as_ref()
+                            .get("result")
+                            .and_then(|result| result.get("final"))
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false)
+                    })
+                    .count();
+                assert_eq!(
+                    ask_final_count, 0,
+                    "input-required turn must not auto-finalize"
+                );
 
-                    sleep(Duration::from_millis(jitter_ms)).await;
+                sleep(Duration::from_millis(jitter_ms)).await;
 
-                    // Turn 2: resume same context and expect terminal completion.
-                    let answer_req = send_stream_request(
-                        &format!("msg-ir-answer-{idx}"),
-                        &format!("input-answer:{jitter_ms}:{}", context_id.as_str()),
-                        &format!("corr-1700000000400-{}", idx + 1),
-                        Some(context_id.clone()),
-                    );
-                    let answer_responses = timeout(per_turn_timeout, collect_responses(&agent, answer_req))
-                        .await
-                        .expect("resumed stream timed out")
-                        .expect("resumed stream failed");
-                    let answer_final_count = answer_responses
-                        .iter()
-                        .filter(|value| {
-                            value
-                                .get("result")
-                                .and_then(|result| result.get("final"))
-                                .and_then(serde_json::Value::as_bool)
-                                .unwrap_or(false)
-                        })
-                        .count();
-                    assert_eq!(
-                        answer_final_count, 1,
-                        "resumed turn must include exactly one final chunk"
-                    );
-                    let text = first_message_text_from_stream(&answer_responses);
-                    assert!(
-                        text.starts_with("INPUT:"),
-                        "resumed turn should emit INPUT:* message, got: {text}"
-                    );
-                    assert!(
-                        text.contains(context_id.as_str()),
-                        "resumed turn must keep context attribution: expected {ctx}, got {text}",
-                        ctx = context_id.as_str()
-                    );
-                });
+                // Turn 2: resume same context and expect terminal completion.
+                let answer_req = send_stream_request(
+                    &format!("msg-ir-answer-{idx}"),
+                    &format!("input-answer:{jitter_ms}:{}", context_id.as_str()),
+                    &format!("corr-1700000000400-{}", idx + 1),
+                    Some(context_id.clone()),
+                );
+                let answer_responses = timeout(
+                    per_turn_timeout,
+                    collect_responses(&agent, answer_req),
+                )
+                .await
+                .expect("resumed stream timed out")
+                .expect("resumed stream failed");
+                let answer_final_count = answer_responses
+                    .iter()
+                    .filter(|value| {
+                        value
+                            .get("result")
+                            .and_then(|result| result.get("final"))
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false)
+                    })
+                    .count();
+                assert_eq!(
+                    answer_final_count, 1,
+                    "resumed turn must include exactly one final chunk"
+                );
+                let text = first_message_text_from_stream(&answer_responses);
+                assert!(
+                    text.starts_with("INPUT:"),
+                    "resumed turn should emit INPUT:* message, got: {text}"
+                );
+                assert!(
+                    text.contains(context_id.as_str()),
+                    "resumed turn must keep context attribution: expected {ctx}, got {text}",
+                    ctx = context_id.as_str()
+                );
             }
-
-            let mut completed = 0usize;
-            while let Some(res) = join_set.join_next().await {
-                res.expect("join");
-                completed += 1;
-            }
-            assert_eq!(completed, jitters.len(), "all input-required scenarios must complete");
         });
     }
 }

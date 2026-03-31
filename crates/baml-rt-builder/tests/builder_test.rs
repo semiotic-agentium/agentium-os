@@ -80,7 +80,7 @@ async fn test_full_integration_package_load_execute() {
     use baml_rt_core::ids::{AgentId, UuidId};
     use baml_rt_quickjs::collect_into_channel_owned;
     use serde_json::json;
-    use tokio::sync::Mutex;
+    use tokio::sync::{Mutex, RwLock};
 
     // Use stream-baml-tool fixture
     ensure_fixture_runtime_types();
@@ -123,7 +123,7 @@ async fn test_full_integration_package_load_execute() {
         .load_schema(baml_src.to_str().unwrap())
         .unwrap();
     baml_manager.register_tool(CalculatorTool).await.unwrap();
-    let baml_manager = Arc::new(Mutex::new(baml_manager));
+    let baml_manager = Arc::new(RwLock::new(baml_manager));
 
     // Create QuickJS bridge
     let agent_id =

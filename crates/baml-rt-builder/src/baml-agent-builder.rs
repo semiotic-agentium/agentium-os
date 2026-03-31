@@ -97,11 +97,11 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         agent_dir: PathBuf,
 
-        /// Repository URL (e.g. http://127.0.0.1:8081/repository)
-        #[arg(short, long, default_value = "http://127.0.0.1:8081/repository")]
+        /// Repository URL (e.g. http://127.0.0.1:8080/repository)
+        #[arg(short, long, default_value = "http://127.0.0.1:8080/repository")]
         repository_url: String,
 
-        /// Runner URL for deployment after publishing (e.g. http://127.0.0.1:8081).
+        /// Runner URL for deployment after publishing (e.g. http://127.0.0.1:8080).
         /// When set, automatically sends POST /deploy after a successful publish.
         #[arg(long)]
         deploy_url: Option<String>,
@@ -611,7 +611,7 @@ async fn load_agent_package(
     };
 
     // Create QuickJS bridge
-    let runtime_manager_arc = Arc::new(Mutex::new(runtime_manager));
+    let runtime_manager_arc = Arc::new(tokio::sync::RwLock::new(runtime_manager));
     // Generate a temporary agent_id for builder context
     let temp_agent_id = AgentId::from_uuid(baml_rt_core::ids::UuidId::new(Uuid::new_v4()));
     let mut js_bridge = {

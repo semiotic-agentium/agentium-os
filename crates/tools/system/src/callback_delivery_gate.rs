@@ -1,20 +1,12 @@
+//! Process-wide registry for [`CallbackDeliveryGate`](baml_rt_core::CallbackDeliveryGate).
+//!
+//! The trait and [`StoredCallback`](baml_rt_core::StoredCallback) live in **`baml-rt-core`**;
+//! **`baml-agent-runner`** installs a gate implementation after the agent map is built.
+
 use std::sync::{Arc, OnceLock, RwLock};
 
-use async_trait::async_trait;
-use baml_rt_core::Result;
+pub use baml_rt_core::callback_store::CallbackDeliveryGate;
 use tracing::{error, warn};
-
-use crate::callback_store::StoredCallback;
-
-/// Host-installed gate for deciding whether a due callback may be emitted now.
-///
-/// This is intentionally optional. Hosts that do not install a gate get the
-/// default behavior: every due callback is eligible for delivery immediately.
-#[async_trait]
-pub trait CallbackDeliveryGate: Send + Sync {
-    /// Return true when the callback may be emitted on this poll cycle.
-    async fn can_emit_callback(&self, callback: &StoredCallback) -> Result<bool>;
-}
 
 fn callback_delivery_gate_slot() -> &'static RwLock<Option<Arc<dyn CallbackDeliveryGate>>> {
     static GATE: OnceLock<RwLock<Option<Arc<dyn CallbackDeliveryGate>>>> = OnceLock::new();

@@ -91,7 +91,7 @@ async fn test_llm_tool_calling_rust() {
     // Set up BAML runtime
     let baml_manager = setup_baml_runtime_default();
     {
-        let mut manager = baml_manager.lock().await;
+        let mut manager = baml_manager.write().await;
         manager.register_tool(WeatherTool).await.unwrap();
         manager.register_tool(CalculatorTool).await.unwrap();
     }
@@ -101,7 +101,7 @@ async fn test_llm_tool_calling_rust() {
         UuidId::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
     ));
     {
-        let manager = baml_manager.lock().await;
+        let manager = baml_manager.read().await;
 
         // Test weather tool
         let weather_result = manager
@@ -198,7 +198,7 @@ async fn test_llm_tool_calling_js() {
     }
 
     {
-        let mut manager = baml_manager.lock().await;
+        let mut manager = baml_manager.write().await;
         manager.register_tool(ReverseStringTool).await.unwrap();
     }
 
@@ -212,7 +212,7 @@ async fn test_llm_tool_calling_js() {
 
     // Test executing the tool from Rust (scope required)
     {
-        let manager = baml_manager.lock().await;
+        let manager = baml_manager.read().await;
         let result = manager
             .execute_tool_with_scope(
                 scope.as_scope(),
@@ -235,7 +235,7 @@ async fn test_e2e_voidship_baml_tool_calling() {
     ensure_fixture_runtime_types();
     let baml_manager = setup_baml_runtime_from_fixture("stream-baml-tool");
     {
-        let mut manager = baml_manager.lock().await;
+        let mut manager = baml_manager.write().await;
         manager.register_tool(CalculatorTool).await.unwrap();
         manager
             .register_llm_interceptor(StubChooseCalcToolStrictInterceptor)
@@ -246,7 +246,7 @@ async fn test_e2e_voidship_baml_tool_calling() {
     let scope = InvocationScope::synthetic_message(agent_id);
 
     let tool_choice = context::with_scope(scope.as_scope().clone(), async {
-        let manager = baml_manager.lock().await;
+        let manager = baml_manager.read().await;
         manager
             .invoke_function(
                 scope.as_scope(),
@@ -258,7 +258,7 @@ async fn test_e2e_voidship_baml_tool_calling() {
     .await
     .expect("ChooseCalcTool with strict stub should succeed (API key optional when interceptor substitutes)");
 
-    let manager = baml_manager.lock().await;
+    let manager = baml_manager.read().await;
     let value = execute_calc_session_strict(&manager, &scope, tool_choice)
         .await
         .expect("strict session execution should succeed");

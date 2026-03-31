@@ -83,6 +83,7 @@ impl GraphNodeLabel {
 }
 
 pub const EDGE_WAS_USED_BY: &str = semantic_labels::WAS_USED_BY;
+pub const EDGE_WAS_CLASSIFIED_BY: &str = semantic_labels::WAS_CLASSIFIED_BY;
 pub const EDGE_WAS_EXECUTED_BY: &str = semantic_labels::WAS_EXECUTED_BY;
 pub const EDGE_WAS_INVOKED_BY: &str = semantic_labels::WAS_INVOKED_BY;
 pub const EDGE_WAS_RECEIVED_BY: &str = semantic_labels::WAS_RECEIVED_BY;
@@ -94,6 +95,7 @@ pub const EDGE_WAS_TRANSITIONED_FROM: &str = semantic_labels::WAS_TRANSITIONED_F
 pub const EDGE_WAS_SPAWNED_BY: &str = semantic_labels::WAS_SPAWNED_BY;
 pub const EDGE_TASK_TRIGGERED_BY_MESSAGE: &str = semantic_labels::TASK_TRIGGERED_BY_MESSAGE;
 pub const EDGE_TASK_EMITTED_MESSAGE: &str = semantic_labels::TASK_EMITTED_MESSAGE;
+pub const EDGE_WAS_SCHEDULED_FROM: &str = semantic_labels::WAS_SCHEDULED_FROM;
 
 /// Event kinds mapped to graph relations/properties.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -115,9 +117,10 @@ pub enum EventGraphKind {
     MessageReceived,
     MessageSent,
     ToolSessionStep,
+    CallbackDispatchContextsLinked,
 }
 
-pub const ALL_EVENT_KINDS: [EventGraphKind; 17] = [
+pub const ALL_EVENT_KINDS: [EventGraphKind; 18] = [
     EventGraphKind::IntentResolved,
     EventGraphKind::PlanGenerated,
     EventGraphKind::PlanStepStatusChanged,
@@ -135,6 +138,7 @@ pub const ALL_EVENT_KINDS: [EventGraphKind; 17] = [
     EventGraphKind::MessageReceived,
     EventGraphKind::MessageSent,
     EventGraphKind::ToolSessionStep,
+    EventGraphKind::CallbackDispatchContextsLinked,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -293,6 +297,13 @@ const MAPPING_MESSAGE_SENT: EventGraphMapping = EventGraphMapping {
     required_properties: &[a2a::MESSAGE_ID, a2a::ROLE, a2a::CONTENT, a2a::DIRECTION],
 };
 
+const MAPPING_CALLBACK_DISPATCH_CONTEXTS_LINKED: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::CallbackDispatchContextsLinked,
+    primary_node: GraphNodeLabel::Task,
+    expected_edges: &[EDGE_WAS_SCHEDULED_FROM],
+    required_properties: &[a2a::TASK_ID, a2a::CONTEXT_ID],
+};
+
 pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
     match data {
         ProvEventData::IntentResolved { .. } => EventGraphKind::IntentResolved,
@@ -312,6 +323,9 @@ pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
         ProvEventData::MessageReceived { .. } => EventGraphKind::MessageReceived,
         ProvEventData::MessageSent { .. } => EventGraphKind::MessageSent,
         ProvEventData::ToolSessionStep { .. } => EventGraphKind::ToolSessionStep,
+        ProvEventData::CallbackDispatchContextsLinked { .. } => {
+            EventGraphKind::CallbackDispatchContextsLinked
+        }
     }
 }
 
@@ -334,6 +348,9 @@ pub fn mapping_for_event_kind(kind: EventGraphKind) -> &'static EventGraphMappin
         EventGraphKind::MessageReceived => &MAPPING_MESSAGE_RECEIVED,
         EventGraphKind::MessageSent => &MAPPING_MESSAGE_SENT,
         EventGraphKind::ToolSessionStep => &MAPPING_TOOL_SESSION_STEP,
+        EventGraphKind::CallbackDispatchContextsLinked => {
+            &MAPPING_CALLBACK_DISPATCH_CONTEXTS_LINKED
+        }
     }
 }
 

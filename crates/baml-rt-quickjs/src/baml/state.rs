@@ -7,6 +7,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use baml_rt_core::{
     bus::{EffectEmitter, EffectStartToken, ToolKind},
+    ids::ActivityAnchorId,
     types::FunctionSignature,
 };
 use baml_rt_interceptor::InterceptorRegistry;
@@ -37,6 +38,8 @@ pub(in crate::baml) struct BamlRuntimeState {
     pub(in crate::baml) tool_session_states: Arc<DashMap<ToolSessionId, ToolCallSessionState>>,
     pub(in crate::baml) tool_session_effect_tokens:
         Arc<DashMap<ToolSessionId, EffectStartToken<ToolKind>>>,
+    /// Latest read-phase tool completion anchor per session (pairs `SendDone` with graph `WAS_INFORMED_BY`).
+    pub(in crate::baml) read_completion_tool_anchors: Arc<DashMap<ToolSessionId, ActivityAnchorId>>,
     pub(in crate::baml) archive_ref_tables: Arc<baml_rt_tools::archive_refs::ContextRefTables>,
     pub(in crate::baml) effect_emitter: Option<Arc<dyn EffectEmitter>>,
     pub(in crate::baml) conversation_context_provider: Option<Arc<dyn ConversationContextProvider>>,
@@ -61,6 +64,7 @@ impl Default for BamlRuntimeState {
             tool_session_scopes: Arc::new(DashMap::new()),
             tool_session_states: Arc::new(DashMap::new()),
             tool_session_effect_tokens: Arc::new(DashMap::new()),
+            read_completion_tool_anchors: Arc::new(DashMap::new()),
             archive_ref_tables: Arc::new(baml_rt_tools::archive_refs::ContextRefTables::new()),
             effect_emitter: None,
             conversation_context_provider: None,

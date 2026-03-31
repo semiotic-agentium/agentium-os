@@ -163,6 +163,30 @@ impl RefTable {
     ) -> Option<dashmap::mapref::one::Ref<'_, u32, HistoryEntry>> {
         self.history.get(&r.as_u32())
     }
+
+    /// Insert an archive entry at an explicit `@N` index (historic replay, episodes).
+    ///
+    /// Does not allocate a new number; bumps the shared counter so later [`insert`](Self::insert)
+    /// calls never reuse `n`.
+    pub fn insert_virtual_archive(&self, n: u32, entry: ArchiveEntry) {
+        debug_assert!(n > 0, "ref indices start at 1");
+        self.entries.insert(n, entry);
+        self.next.fetch_max(n.saturating_add(1), Ordering::Relaxed);
+    }
+
+    /// Insert a history entry at an explicit `#N` index (historic replay, episodes).
+    pub fn insert_virtual_history(
+        &self,
+        n: u32,
+        entry: HistoryEntry,
+        content: impl Into<Arc<str>>,
+    ) {
+        debug_assert!(n > 0, "ref indices start at 1");
+        self.history_text_by_activity
+            .insert(entry.activity_anchor.clone(), content.into());
+        self.history.insert(n, entry);
+        self.next.fetch_max(n.saturating_add(1), Ordering::Relaxed);
+    }
 }
 
 /// Convenience: shared `RefTable` per context, created on first use.

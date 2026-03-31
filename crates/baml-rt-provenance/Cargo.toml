@@ -18,6 +18,7 @@ baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 baml-rt-vocabulary = { path = "../baml-rt-vocabulary" }
 dashmap = { workspace = true }
+futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

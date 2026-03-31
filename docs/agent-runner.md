@@ -1,12 +1,12 @@
 # Agent Runner
 
-`baml-agent-runner` loads packaged agents (`.tar.gz`) and runs them as an A2A host.
+`baml-agent-runner` is the A2A host: QuickJS + BAML, optional HTTP and/or stdio, embedded agent repository, and deploy-by-hash. **Positional package paths are not accepted** — add agents with `baml-agent-builder publish` (which POSTs to `/repository/publish` and can `POST /deploy`) or call `POST /deploy` yourself.
+
 It supports:
 
-- package boot from CLI arguments
 - HTTP and/or stdio serving
-- local repository-backed deploy/undeploy by content hash
-- startup restore of previously deployed hashes
+- local repository-backed publish/deploy/undeploy by content hash
+- startup restore of previously deployed hashes from `--state-dir`
 - optional file-backed provenance storage
 
 ## Build
@@ -20,15 +20,17 @@ For local development, `--all-features` is usually safest to avoid missing tool 
 ## Run
 
 ```bash
-./target/release/baml-agent-runner <agent1.tar.gz> [<agent2.tar.gz> ...] [flags]
+./target/release/baml-agent-runner [flags]
 ```
 
-Example:
+Example (empty registry at start; deploy after publish):
 
 ```bash
 ./target/release/baml-agent-runner \
-  ./dist/clickup-agent-1.0.0.tar.gz \
   --serve-http 127.0.0.1:8080 \
+  --repository-url http://127.0.0.1:8080/repository \
+  --state-dir ./.runner-state \
+  --repository-dir ./.repository \
   --provenance-db provenance.db
 ```
 
@@ -36,7 +38,6 @@ Example:
 
 | Option | Default | Description |
 |---|---|---|
-| `<AGENT_PACKAGE>...` | none | Package tarballs to boot at startup (optional; runner can start empty) |
 | `--serve-http <ADDR>` | unset | Bind HTTP API (example `127.0.0.1:8080`) |
 | `--a2a-stdio` | `false` | Run A2A JSON-RPC loop over stdio |
 | `--repository-url <URL>` | `http://127.0.0.1:8080/repository` | Base URL used for hash-based deploy/restore lookups |
@@ -69,9 +70,8 @@ For exact request/response DTOs, use `openapi.json`.
 
 Typical flow:
 
-1. `cargo agent-platform build`
-2. `cargo agent-platform publish --agent-dir ...`
-3. `POST /deploy` with `hash` (or resolve by `name+version` via deploy API)
+1. Start runner with `--serve-http` and repository flags (see above).
+2. `baml-agent-builder publish --agent-dir ... --repository-url http://127.0.0.1:8080/repository --deploy-url http://127.0.0.1:8080` (or `POST /deploy` with the printed `content_hash`).
 
 ## End-to-End Example (Publish -> Deploy -> Prompt)
 
@@ -81,13 +81,19 @@ Start runner:
 ./target/debug/baml-agent-runner \
   --a2a-stdio \
   --serve-http 127.0.0.1:8080 \
+  --repository-url http://127.0.0.1:8080/repository \
+  --state-dir ./.runner-state \
+  --repository-dir ./.repository \
   --provenance-db provenance.db
 ```
 
 Publish source:
 
 ```bash
-cargo agent-platform publish --agent-dir agents/clickup-agent
+baml-agent-builder publish \
+  --agent-dir agents/clickup-agent \
+  --repository-url http://127.0.0.1:8080/repository \
+  --deploy-url http://127.0.0.1:8080
 ```
 
 Deploy by content hash (the hash printed in publish result):

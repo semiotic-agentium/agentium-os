@@ -4,15 +4,24 @@ set -euo pipefail
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 cd "$ROOT_DIR"
 
-PORT="${NOTION_DEMO_PORT:-8081}"
+PORT="${NOTION_DEMO_PORT:-8080}"
 LOG_FILE="${NOTION_DEMO_LOG:-/tmp/notion-runner.log}"
 PID_FILE="${NOTION_DEMO_PID:-/tmp/notion-runner.pid}"
-PACKAGE_FILE="${NOTION_DEMO_PACKAGE:-/tmp/notion-agent.tar.gz}"
 STREAM_FILE="${NOTION_DEMO_STREAM:-/tmp/notion-demo-sse.log}"
 PROVENANCE_DB="${NOTION_DEMO_PROVENANCE_DB:-provenance.db}"
 
+RUNNER_URL="${NOTION_DEMO_RUNNER_URL:-http://127.0.0.1:${PORT}}"
+REPOSITORY_URL="${NOTION_DEMO_REPOSITORY_URL:-${RUNNER_URL}/repository}"
+STATE_DIR="${NOTION_DEMO_STATE_DIR:-/tmp/notion-demo-runner-state-${PORT}}"
+REPOSITORY_DIR="${NOTION_DEMO_REPOSITORY_DIR:-/tmp/notion-demo-repository-${PORT}}"
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required but not found in PATH" >&2
+  exit 1
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl is required but not found in PATH" >&2
   exit 1
 fi
 
@@ -24,17 +33,22 @@ if [ -f .env ]; then
   set +a
 fi
 
-# Build agent package
-cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- \
-  package --agent-dir agents/notion-agent --output "$PACKAGE_FILE"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+BUILDER_BIN="${NOTION_DEMO_BUILDER_BIN:-$CARGO_TARGET_DIR/debug/baml-agent-builder}"
 
-# Build runner binary so we can track its PID (cargo run wraps the process)
+cargo build -p baml-rt-builder --features http-tools --bin baml-agent-builder
 cargo build -p baml-agent-runner --features http-tools
-RUNNER_BIN="${NOTION_DEMO_RUNNER_BIN:-target/debug/baml-agent-runner}"
+RUNNER_BIN="${NOTION_DEMO_RUNNER_BIN:-$CARGO_TARGET_DIR/debug/baml-agent-runner}"
 if [ ! -x "$RUNNER_BIN" ]; then
   echo "Runner binary not found: $RUNNER_BIN" >&2
   exit 1
 fi
+if [ ! -x "$BUILDER_BIN" ]; then
+  echo "Builder binary not found: $BUILDER_BIN" >&2
+  exit 1
+fi
+
+mkdir -p "$STATE_DIR" "$REPOSITORY_DIR"
 
 # Stop existing runner if still running
 if [ -f "$PID_FILE" ]; then
@@ -46,28 +60,34 @@ if [ -f "$PID_FILE" ]; then
   rm -f "$PID_FILE"
 fi
 
-# Start runner in background
+# Start runner (no positional packages — deploy via repository publish + POST /deploy)
 RUST_LOG=${RUST_LOG:-baml_rt_a2a=debug,baml_rt_quickjs=debug,baml_rt_tools=debug} \
   nohup "$RUNNER_BIN" \
-    "$PACKAGE_FILE" \
     --serve-http "127.0.0.1:${PORT}" \
+    --repository-url "$REPOSITORY_URL" \
+    --state-dir "$STATE_DIR" \
+    --repository-dir "$REPOSITORY_DIR" \
     --provenance-db "$PROVENANCE_DB" \
     >"$LOG_FILE" 2>&1 &
 
 echo $! > "$PID_FILE"
 
-# Wait for server
-for _ in $(seq 1 60); do
-  if lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+for _ in $(seq 1 120); do
+  if curl -sf "${RUNNER_URL}/openapi.json" >/dev/null 2>&1; then
     break
   fi
   sleep 0.5
 done
 
-if ! lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Runner failed to start on port $PORT. See $LOG_FILE" >&2
+if ! curl -sf "${RUNNER_URL}/openapi.json" >/dev/null 2>&1; then
+  echo "Runner failed to become ready on ${RUNNER_URL}. See $LOG_FILE" >&2
   exit 1
 fi
+
+"$BUILDER_BIN" publish \
+  --agent-dir agents/notion-agent \
+  --repository-url "$REPOSITORY_URL" \
+  --deploy-url "$RUNNER_URL"
 
 if [ -n "${NOTION_DEMO_TEXT:-}" ]; then
   TEXT="$NOTION_DEMO_TEXT"
@@ -81,7 +101,7 @@ echo "Streaming demo request to notion-agent on :${PORT} (provenance db: ${PROVE
 
 jq -n --arg text "$TEXT" \
   '{jsonrpc:"2.0", method:"message.sendStream", params:{message:{messageId:"msg-2",role:"ROLE_USER",parts:[{text:$text}]}}, id:"corr-1700000000000-2"}' | \
-  curl -s -N -X POST "http://127.0.0.1:${PORT}/agents/notion-agent/default/a2a/sse" \
+  curl -s -N -X POST "${RUNNER_URL}/agents/notion-agent/default/a2a/sse" \
     -H "Content-Type: application/json" \
     -H "Accept: text/event-stream" \
     -d @- | tee "$STREAM_FILE"

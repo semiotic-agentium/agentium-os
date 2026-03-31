@@ -18,7 +18,7 @@ use std::sync::Arc;
 use baml_rt_core::{BamlFunctionId, BamlPromptName, BamlRtError, Result, VariantPhase, context};
 use baml_rt_tools::{ToolName, ToolSlug};
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 use crate::baml::BamlRuntimeManager;
 
@@ -231,7 +231,7 @@ fn extract_tool_binding(result: &Value) -> Option<ToolBinding> {
 /// (`__execution_session_invoke`, `__baml_invoke`) can interleave. Each hop:
 /// lock -> invoke_function -> unlock -> advance FSM.
 pub async fn run_step_executor_loop(
-    manager: &Arc<Mutex<BamlRuntimeManager>>,
+    manager: &Arc<RwLock<BamlRuntimeManager>>,
     scope: &context::RuntimeScope,
     function_name: &str,
     base_args: Value,
@@ -243,7 +243,7 @@ pub async fn run_step_executor_loop(
     let mut last = Value::Null;
 
     {
-        let guard = manager.lock().await;
+        let guard = manager.read().await;
         let p = guard.resolve_session_policy_for_function(function_name);
         tracing::info!(
             function = function_name,
@@ -265,7 +265,7 @@ pub async fn run_step_executor_loop(
         // error surfaces immediately rather than silently using the full-union base
         // function, which would let the LLM emit any op regardless of FSM state.
         {
-            let guard = manager.lock().await;
+            let guard = manager.read().await;
             if guard.get_function_signature(&candidate).is_none() {
                 return Err(BamlRtError::InvalidArgument(format!(
                     "step executor: phase function '{candidate}' not found in agent schema. \
@@ -294,7 +294,7 @@ pub async fn run_step_executor_loop(
         );
 
         let result = {
-            let guard = manager.lock().await;
+            let guard = manager.read().await;
             guard.invoke_function(scope, &current_function, args).await
         };
 

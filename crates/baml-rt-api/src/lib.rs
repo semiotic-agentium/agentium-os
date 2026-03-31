@@ -5,6 +5,7 @@
 
 mod config_handlers;
 mod context_metrics;
+pub mod episode;
 mod handlers;
 mod mermaid;
 mod metrics;
@@ -13,11 +14,17 @@ mod planning;
 mod provenance_ops;
 mod repository_publish;
 mod router;
+pub mod service_error;
 mod spans;
 
 pub use context_metrics::{
     ContextMetricsError, ContextMetricsResponseDto, ContextMetricsService,
     ContextSessionMetricsDto, ContextTurnMetricsDto, TokenUsageDto,
+};
+pub use episode::{
+    ArtifactSummaryDto, EpisodeContentDto, EpisodeDurationDto, EpisodeEntryDto, EpisodeError,
+    EpisodeOutcomeDto, EpisodeService, EpisodeSnapshotDto, IntentRevisionDto, PlanRevisionDto,
+    PlanStepEntryDto, StepTypeDto, TerminalStatusDto, TokenSummaryDto,
 };
 pub use mermaid::{MermaidError, MermaidService};
 pub use planning::{
@@ -29,3 +36,4 @@ pub use router::{
     ApiState, api_router, api_router_with_services, api_router_with_services_and_deploy, serve,
     serve_with_services, serve_with_services_and_deploy,
 };
+pub use service_error::{ServiceError, service_result_to_http};

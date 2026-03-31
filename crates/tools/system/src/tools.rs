@@ -313,6 +313,16 @@ pub struct CallbackScheduledOutput {
     pub source_key: String,
     pub scheduled_for_unix_ms: u64,
     pub deduped: bool,
+    /// Dispatch scope when the host minted a child context (detached).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_context_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_task_id: Option<String>,
+    /// Scheduling A2A scope used for delivery deferral.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduling_context_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduling_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]

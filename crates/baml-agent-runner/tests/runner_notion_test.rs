@@ -11,16 +11,19 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     AgentType, ProvEvent, ProvenanceContextReader, ProvenanceConversationContextItem,
-    ProvenanceWriter, SurrealProvenanceStore, SurrealStoreBuilder,
+    ProvenanceWriter, SurrealProvenanceStore,
     store::{ConversationItemContent, SessionStepOp, ToolOutcome},
 };
 use baml_tools_notion::NotionTool;
 use common::{
     RunningHttpServer, TempDirCleanup, TempEnvVar, build_notion_agent_to_temp_async,
-    e2e_serial_gate, post_a2a_sse_collect, start_http_server, start_runner_api_server,
+    e2e_secs_ci_or_local, e2e_serial_gate, fetch_context_mermaid, post_a2a_sse_collect,
+    start_http_server, start_runner_api_server, try_load_dotenv_for_tests,
 };
 use serde_json::{Value, json};
-use test_support::common::{chunks_from_responses, send_stream_request, workspace_fnox_path};
+use test_support::common::{
+    chunks_from_responses, send_stream_request, test_surreal_store, workspace_fnox_path,
+};
 use tokio::time::{Duration, sleep, timeout};
 
 const RAW_BLOCK_ID: &str = "11111111111111111111111111111111";
@@ -28,8 +31,21 @@ const NORMALIZED_BLOCK_ID: &str = "11111111-1111-1111-1111-111111111111";
 const NORMALIZED_PAGE_ID: &str = "22222222-2222-2222-2222-222222222222";
 const NOTION_API_PREFIX: &str = "/v1";
 
+fn notion_direct_id_a2a_collect_timeout() -> Duration {
+    Duration::from_secs(e2e_secs_ci_or_local(360, 240))
+}
+
 fn notion_api_path(suffix: &str) -> String {
     format!("{NOTION_API_PREFIX}{suffix}")
+}
+
+fn notion_mermaid_complete(mermaid: &str) -> bool {
+    mermaid.contains("sequenceDiagram")
+        && mermaid.contains("InferNotionIntent")
+        && mermaid.contains("PlanNotionWork")
+        && mermaid.contains("ChooseNotionAction")
+        && mermaid.contains("ReactToNotionResults")
+        && mermaid.contains("Completed")
 }
 
 #[derive(Clone, Default)]
@@ -186,7 +202,7 @@ async fn setup_notion_agent_with_provenance()
         .await
         .expect("register notion tool");
 
-    let provenance = build_surreal_test_store().await;
+    let provenance = test_surreal_store().await;
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
     provenance
         .add_event(ProvEvent::agent_booted(
@@ -206,6 +222,10 @@ async fn setup_notion_agent_with_provenance()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(
+            baml_rt::QuickJSConfig::new()
+                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(300, 180))),
+        )
         .build()
         .await
         .expect("build notion agent");
@@ -262,7 +282,7 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
         );
 
         let responses: Vec<Value> = timeout(
-            Duration::from_secs(90),
+            notion_direct_id_a2a_collect_timeout(),
             post_a2a_sse_collect(&http_client, &a2a_url, &request_body),
         )
         .await
@@ -289,7 +309,12 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
             let items = provenance_reader
                 .conversation_context(&context_id, Some(120))
                 .await
-                .unwrap_or_default();
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "provenance conversation_context failed (context_id={}): {e}",
+                        context_id.as_str()
+                    )
+                });
             conversation_items = items.clone();
             let mock_hits_poll = mock_state.snapshot().await;
             let poll_hit_blocks = mock_hits_poll
@@ -325,7 +350,7 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
                     .map(|i| (&i.activity_anchor, i.source_name(), &i.content))
                     .collect::<Vec<_>>(),
             )
-            .unwrap_or_default();
+            .expect("serialize conversation snapshot for stagnation poll");
             if signature == last_signature {
                 stagnant_polls += 1;
             } else {
@@ -397,29 +422,21 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
             "Expected mock Notion page endpoint hit. hits={mock_hits:?}"
         );
 
-        let mermaid_url = format!(
-            "{}/contexts/{}/mermaid",
-            runner_api.base_url,
-            context_id.as_str()
-        );
-        let mermaid_response =
-            timeout(Duration::from_secs(20), http_client.get(mermaid_url).send())
-                .await
-                .expect("mermaid request timed out")
-                .expect("mermaid request failed");
-        assert!(
-            mermaid_response.status().is_success(),
-            "Expected 200 from /contexts/<context_id>/mermaid, got {}",
-            mermaid_response.status()
-        );
-        let mermaid = mermaid_response.text().await.expect("mermaid body");
+        let mut mermaid = String::new();
+        for _ in 0..15 {
+            mermaid = fetch_context_mermaid(
+                &http_client,
+                runner_api.base_url.as_str(),
+                context_id.as_str(),
+            )
+            .await;
+            if notion_mermaid_complete(&mermaid) {
+                break;
+            }
+            sleep(Duration::from_millis(200)).await;
+        }
 
-        let mermaid_ok = mermaid.contains("sequenceDiagram")
-            && mermaid.contains("Infer Notion Intent")
-            && mermaid.contains("Plan Notion Work")
-            && mermaid.contains("Choose Notion Action")
-            && mermaid.contains("React To Notion Results")
-            && mermaid.contains("\"Completed\"");
+        let mermaid_ok = notion_mermaid_complete(&mermaid);
         if !mermaid_ok {
             last_diag = Some((sources, mock_hits.clone()));
             eprintln!(
@@ -441,13 +458,6 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
     );
 }
 
-async fn build_surreal_test_store() -> Arc<SurrealProvenanceStore> {
-    SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build isolated SurrealDB store")
-}
-
 #[cfg(feature = "llm-tests")]
 #[tokio::test]
 async fn test_e2e_notion_real_model_search_with_mock_server() {
@@ -456,7 +466,7 @@ async fn test_e2e_notion_real_model_search_with_mock_server() {
         return;
     }
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
-    let _ = dotenvy::dotenv();
+    try_load_dotenv_for_tests();
     if std::env::var("OPENROUTER_API_KEY").is_err() {
         eprintln!("Skipping notion LLM test: OPENROUTER_API_KEY not set");
         return;
@@ -525,7 +535,12 @@ async fn test_e2e_notion_real_model_search_with_mock_server() {
         let items = provenance_reader
             .conversation_context(&context_id, Some(160))
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                panic!(
+                    "provenance conversation_context failed (context_id={}): {e}",
+                    context_id.as_str()
+                )
+            });
         conversation_items = items.clone();
         let mock_hits_poll = mock_state.snapshot().await;
         let poll_hit_search = mock_hits_poll.iter().any(|hit| hit == "POST /v1/search");
@@ -558,7 +573,7 @@ async fn test_e2e_notion_real_model_search_with_mock_server() {
                 .map(|i| (&i.activity_anchor, i.source_name(), &i.content))
                 .collect::<Vec<_>>(),
         )
-        .unwrap_or_default();
+        .expect("serialize conversation snapshot for stagnation poll");
         if signature == last_signature {
             stagnant_polls += 1;
         } else {

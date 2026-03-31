@@ -227,16 +227,7 @@ mod tests {
                     response_embedding: &response_emb,
                     is_revised: false,
                 };
-                let tactical = crate::DriftAssessment {
-                    score: 0.0,
-                    severity: DriftSeverity::Acceptable,
-                    mode: crate::DriftMode::Audit,
-                    warn_min_score: config.intent_warn_min,
-                    block_min_score: config.intent_block_min,
-                    intent_text_preview: String::new(),
-                    response_text_preview: String::new(),
-                };
-                score_plan_drift(&inputs, tactical, &mut tracker, &config)
+                score_plan_drift(&inputs, &mut tracker, &config)
             } else if let Some(ref step) = scenario.step {
                 tracker.set_current_step(step.step_id.clone());
                 let step_emb = embed(provider, &step.description);
@@ -256,16 +247,7 @@ mod tests {
                     is_revised,
                     cross_encoder_step_score: xe_score,
                 };
-                let tactical = crate::DriftAssessment {
-                    score: 0.0,
-                    severity: DriftSeverity::Acceptable,
-                    mode: crate::DriftMode::Audit,
-                    warn_min_score: config.intent_warn_min,
-                    block_min_score: config.intent_block_min,
-                    intent_text_preview: String::new(),
-                    response_text_preview: String::new(),
-                };
-                score_plan_drift(&inputs, tactical, &mut tracker, &config)
+                score_plan_drift(&inputs, &mut tracker, &config)
             } else {
                 eprintln!("  SKIP {}: no step and not pre_plan", scenario.name);
                 continue;

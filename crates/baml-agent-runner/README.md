@@ -1,12 +1,14 @@
 # baml-agent-runner
 
-CLI for loading and executing packaged agents.
+CLI for the A2A host: embedded repository, deploy-by-hash, QuickJS + BAML execution.
 
 **Authoring agents:** [`docs/how-to-write-agents.md`](../../docs/how-to-write-agents.md) — manifests, BAML, and how turns surface to operators (`StructuredReply`, citations).
 
+**Deploy path:** `baml-agent-builder publish` (to `/repository`) then `POST /deploy` with the content hash, or restore from `--state-dir`. The CLI does not accept positional package paths.
+
 ## Responsibilities
 
-- Load and validate packaged agent archives (tar.gz with manifest, dist, baml_src).
+- Fetch and boot agent packages from the repository blob store (built tar.gz with manifest, dist, baml_src).
 - Initialize QuickJS runtime, inject the A2A shim, and register BAML functions.
 - Handle A2A requests (stdio or HTTP when built with `baml-rt-api`); invoke
   `onChatMessage(message)` so agent logic runs via the DSL (`run(ctx)` or

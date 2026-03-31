@@ -33,8 +33,8 @@ pre-commit run --all-files
 cargo insta review
 
 # Binaries
-cargo run -p baml-rt-builder --bin baml-agent-builder   # lint, compile, package agents
-cargo run -p baml-agent-runner                           # load packaged agents, serve A2A
+cargo run -p baml-rt-builder --bin baml-agent-builder   # lint, compile, package; `publish` → repository + deploy
+cargo run -p baml-agent-runner                           # HTTP A2A + embedded /repository; agents via publish + POST /deploy (options only, no positional tar paths)
 
 # Nextest (CI-style: one run, JUnit)
 cargo install cargo-nextest        # once
@@ -97,7 +97,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 **Top-level binaries and facades**
 - **baml-rt** — Facade crate re-exporting subcrates via feature flags (default: all enabled)
 - **baml-rt-builder** — Agent build pipeline: BAML type generation, tar.gz packaging. Binary: `baml-agent-builder`
-- **baml-agent-runner** — Loads packaged agent tar.gz, serves A2A requests. Binary: `baml-agent-runner`
+- **baml-agent-runner** — A2A host (stdio and/or HTTP); embedded agent repository and deploy-by-hash. Add agents with `baml-agent-builder publish` or `POST /deploy`. Binary: `baml-agent-runner`
 - **task-daemon** — Local polling daemon substrate for extracting actionable tasks from sources (Slack, etc.)
 
 **Test**
@@ -169,11 +169,16 @@ Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 - Never unwrap in production code; use `?` with proper error types
 - Never silently discard errors with `let _ =` without logging
 - Error variant names should describe the operation that failed (e.g., `VaultRetrieval`, not `External`)
-- Use discriminated unions / enums over Option fields to make invalid states unrepresentable
+- **`Option` is a type of last resort, not a default.** `Option` means "this value may be legitimately absent at this point in the program." It does not mean "I haven't built it yet" (use typestate), "it depends on the variant" (use an enum with different fields per variant), or "the DashMap might not have it" (fix the insertion guarantee or assert). Specifically:
+  - Model construction order with **typestate** (e.g., `Raw` → `Hydrated`), not `Option` bags where fields start as `None` and are filled in later.
+  - Model variant-specific data with **discriminated unions** (enum variants with different field sets), not flat structs with `Option` fields that are "only valid when op_kind is X."
+  - `DashMap::remove().map()` producing `Option` for a value that was structurally guaranteed to be inserted is a bug — fix the insertion or make the removal an assertion.
+  - Silent `None → skip` in write paths is prohibited — it produces invisible graph corruption far from the source. Use hard errors or logged degradation with a synthetic fallback.
 - Use newtype wrappers for domain IDs and values
 - Structured logging: static messages with dynamic data in fields (`tracing::info!(from = %from, event = "payment")`)
 - No version history in comments; describe current behavior in present tense
 - `#[allow(dead_code)]` requires a justifying comment explaining why the code is reserved
+- **Graph-first provenance reads:** All provenance read paths (conversation_context, episode assembly, drift scoring, graph export) must reconstruct data by traversing graph edges — never by parsing node ID prefixes, matching timestamps, or building HashMap joins from string keys. If a read path needs a relationship that isn't expressed as an edge, fix the write path. The edge table stores `from_label` and `to_label` — use them instead of string prefix matching on `from_id`/`to_id`. Ephemeral per-conversation indices (`@N`, `#N`) must be resolved at write time and not stored on graph edges.
 
 ## External Dependencies
 

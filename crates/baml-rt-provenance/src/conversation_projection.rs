@@ -19,7 +19,7 @@ pub fn provenance_item_to_projection_item(
     item: ProvenanceConversationContextItem,
 ) -> Option<PromptProjectionItem> {
     let content = match item.content {
-        ConversationItemContent::Message(text) => PromptProjectionContent::Message(text),
+        ConversationItemContent::Message { text, .. } => PromptProjectionContent::Message(text),
         ConversationItemContent::ToolCall(tc) => PromptProjectionContent::ToolCall {
             tool_name: tc.tool_name,
             args: tc.args,
@@ -41,6 +41,7 @@ pub fn provenance_item_to_projection_item(
                 SessionStepOp::SendDone {
                     archive_ref,
                     header,
+                    informed_by: _,
                 } => SessionStepProjection::SendDone {
                     archive_ref,
                     header,

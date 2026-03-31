@@ -5,8 +5,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DriftSeverity, assessment::DriftAssessment, reranker::RerankDriftConfig,
-    similarity::cosine_similarity, trajectory::TaskDriftTracker,
+    DriftMode, DriftSeverity, reranker::RerankDriftConfig, similarity::cosine_similarity,
+    trajectory::TaskDriftTracker,
 };
 
 /// Configuration for plan-anchored drift thresholds.
@@ -48,6 +48,12 @@ pub struct PlanDriftConfig {
     /// The reranker is always active in `PlanCommitted` scoring.
     #[serde(default)]
     pub rerank: RerankDriftConfig,
+
+    /// Operating mode for plan drift: whether to log-only or log-and-block.
+    /// Independent of the tactical `DriftConfig.mode` — operators may want to
+    /// enforce plan drift without enforcing tactical, or vice versa.
+    #[serde(default)]
+    pub mode: DriftMode,
 }
 
 /// Defaults derived from empirical evaluation on BIPIA-style injection attack
@@ -69,6 +75,7 @@ impl Default for PlanDriftConfig {
             early_step_weight: 1.5,
             revision_leniency: 0.10,
             rerank: RerankDriftConfig::default(),
+            mode: DriftMode::Audit,
         }
     }
 }
@@ -129,7 +136,6 @@ pub enum PlanDriftAssessment {
     /// Only intent alignment and trajectory drift are scored.
     #[serde(rename = "pre_plan")]
     PrePlan {
-        tactical: DriftAssessment,
         intent_alignment: f32,
         trajectory_drift: f32,
         plan_adherence_score: f32,
@@ -142,7 +148,6 @@ pub enum PlanDriftAssessment {
     /// configured and provides a complementary pairwise signal.
     #[serde(rename = "plan_committed")]
     PlanCommitted {
-        tactical: DriftAssessment,
         intent_alignment: f32,
         step_alignment: f32,
         trajectory_drift: f32,
@@ -237,7 +242,6 @@ pub enum PlanDriftInputs<'a> {
 /// matching assessment variant. No `Option` step scores, no phantom zeros.
 pub fn score_plan_drift(
     inputs: &PlanDriftInputs<'_>,
-    tactical: DriftAssessment,
     tracker: &mut TaskDriftTracker,
     config: &PlanDriftConfig,
 ) -> PlanDriftAssessment {
@@ -258,10 +262,12 @@ pub fn score_plan_drift(
                 config.effective_threshold(config.step_warn_min, *is_revised),
                 config.effective_threshold(config.step_block_min, *is_revised),
             );
-            let composite_severity = worst_severity(&[intent_sev, trajectory_sev, adherence_sev]);
+            let composite_severity = [intent_sev, trajectory_sev, adherence_sev]
+                .into_iter()
+                .max()
+                .unwrap_or(DriftSeverity::Acceptable);
 
             PlanDriftAssessment::PrePlan {
-                tactical,
                 intent_alignment,
                 trajectory_drift,
                 plan_adherence_score,
@@ -285,14 +291,14 @@ pub fn score_plan_drift(
             } else {
                 1.0
             };
-            // For PlanCommitted: the step IS the operative anchor. Intent is
-            // informational context — it contributes minimally so it doesn't
-            // penalise legitimate tool actions that are semantically close to
-            // their assigned step but distant from the broad user goal.
+            // For PlanCommitted: the step IS the operative anchor. Intent contributes
+            // only via plan_adherence_score (0.1 weight) — it must not independently
+            // trigger warn/block. A tool action semantically matching its assigned step
+            // is correct even when distant from the broad user goal. See docs/drift-catalogue.md
+            // §PlanCommitted-Composite for the calibration rationale.
             let plan_adherence_score =
                 (0.1 * intent_alignment + 0.9 * step_alignment * step_weight).clamp(0.0, 1.0);
 
-            let _intent_sev = config.classify_intent(intent_alignment, *is_revised);
             let step_sev = config.classify_step(step_alignment, *is_revised);
             let trajectory_sev = config.classify_trajectory(trajectory_drift, *is_revised);
             let adherence_sev = classify(
@@ -301,19 +307,14 @@ pub fn score_plan_drift(
                 config.effective_threshold(config.step_block_min, *is_revised),
             );
 
-            // XE signal always present in PlanCommitted. Incorporated as an
-            // additional severity dimension — can escalate but not reduce.
+            // XE signal always present in PlanCommitted — can escalate but not reduce.
             let xe_sev = config.rerank.classify(*cross_encoder_step_score);
-            // For PlanCommitted: the step is the operative anchor, not the
-            // intent. Intent contributes to adherence but should not
-            // independently trigger warn/block — a tool action matching its
-            // assigned step is correct even if semantically distant from the
-            // broad user goal.
-            let composite_severity =
-                worst_severity(&[step_sev, trajectory_sev, adherence_sev, xe_sev]);
+            let composite_severity = [step_sev, trajectory_sev, adherence_sev, xe_sev]
+                .into_iter()
+                .max()
+                .unwrap_or(DriftSeverity::Acceptable);
 
             PlanDriftAssessment::PlanCommitted {
-                tactical,
                 intent_alignment,
                 step_alignment,
                 trajectory_drift,
@@ -338,38 +339,9 @@ impl PlanDriftInputs<'_> {
     }
 }
 
-fn worst_severity(severities: &[DriftSeverity]) -> DriftSeverity {
-    if severities.contains(&DriftSeverity::Block) {
-        DriftSeverity::Block
-    } else if severities.contains(&DriftSeverity::Warn) {
-        DriftSeverity::Warn
-    } else {
-        DriftSeverity::Acceptable
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DriftMode;
-
-    fn mock_tactical(score: f32) -> DriftAssessment {
-        DriftAssessment {
-            score,
-            severity: if score < 0.25 {
-                DriftSeverity::Block
-            } else if score < 0.5 {
-                DriftSeverity::Warn
-            } else {
-                DriftSeverity::Acceptable
-            },
-            mode: DriftMode::Audit,
-            warn_min_score: 0.5,
-            block_min_score: 0.25,
-            intent_text_preview: "test intent".into(),
-            response_text_preview: "test response".into(),
-        }
-    }
 
     fn with_step<'a>(
         step: &'a [f32],
@@ -408,7 +380,6 @@ mod tests {
 
         let result = score_plan_drift(
             &with_step(&step_emb, &response_emb, 0, 3, false),
-            mock_tactical(0.9),
             &mut tracker,
             &config,
         );
@@ -442,7 +413,6 @@ mod tests {
 
         let result = score_plan_drift(
             &with_step(&step_emb, &response_emb, 0, 3, false),
-            mock_tactical(0.1),
             &mut tracker,
             &config,
         );
@@ -471,7 +441,6 @@ mod tests {
         tracker_no_rev.set_current_step("step-1".into());
         let result_no_rev = score_plan_drift(
             &with_step(&step_emb, &response_emb, 1, 4, false),
-            mock_tactical(0.6),
             &mut tracker_no_rev,
             &config,
         );
@@ -481,16 +450,12 @@ mod tests {
         tracker_rev.mark_revised();
         let result_rev = score_plan_drift(
             &with_step(&step_emb, &response_emb, 1, 4, true),
-            mock_tactical(0.6),
             &mut tracker_rev,
             &config,
         );
 
         assert!((result_no_rev.intent_alignment() - result_rev.intent_alignment()).abs() < 1e-6);
-        assert!(
-            severity_ord(result_rev.composite_severity())
-                <= severity_ord(result_no_rev.composite_severity()),
-        );
+        assert!(result_rev.composite_severity() <= result_no_rev.composite_severity());
     }
 
     #[test]
@@ -504,7 +469,6 @@ mod tests {
         tracker_early.set_current_step("step-0".into());
         let early = score_plan_drift(
             &with_step(&step_emb, &response_emb, 0, 4, false),
-            mock_tactical(0.8),
             &mut tracker_early,
             &config,
         );
@@ -513,7 +477,6 @@ mod tests {
         tracker_late.set_current_step("step-3".into());
         let late = score_plan_drift(
             &with_step(&step_emb, &response_emb, 3, 4, false),
-            mock_tactical(0.8),
             &mut tracker_late,
             &config,
         );
@@ -533,12 +496,7 @@ mod tests {
         let config = PlanDriftConfig::default();
         let mut tracker = TaskDriftTracker::new(intent_emb, config.ema_alpha);
 
-        let result = score_plan_drift(
-            &pre_plan(&response_emb, false),
-            mock_tactical(0.9),
-            &mut tracker,
-            &config,
-        );
+        let result = score_plan_drift(&pre_plan(&response_emb, false), &mut tracker, &config);
 
         assert!(
             matches!(result, PlanDriftAssessment::PrePlan { .. }),
@@ -560,7 +518,6 @@ mod tests {
 
         let result = score_plan_drift(
             &with_step(&step_emb, &response_emb, 0, 2, false),
-            mock_tactical(0.8),
             &mut tracker,
             &config,
         );
@@ -570,13 +527,5 @@ mod tests {
             "post-plan call should produce PlanCommitted variant"
         );
         assert!(result.step_alignment().is_some());
-    }
-
-    fn severity_ord(s: DriftSeverity) -> u8 {
-        match s {
-            DriftSeverity::Acceptable => 0,
-            DriftSeverity::Warn => 1,
-            DriftSeverity::Block => 2,
-        }
     }
 }

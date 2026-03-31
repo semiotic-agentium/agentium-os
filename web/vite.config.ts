@@ -1,5 +1,24 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
+import type { ProxyOptions } from "vite";
+
+// Same origin as `justfile` `runner_http_bind` and `baml-agent-runner` defaults (127.0.0.1:8080).
+const RUNNER_ORIGIN = "http://127.0.0.1:8080";
+
+/** Proxy to baml-agent-runner; avoid gzip on SSE so chunks are not buffered by the dev proxy. */
+function runnerProxy(): ProxyOptions {
+  return {
+    target: RUNNER_ORIGIN,
+    changeOrigin: true,
+    configure(proxy) {
+      proxy.on("proxyReq", (proxyReq, req) => {
+        if (req.url?.includes("sse")) {
+          proxyReq.setHeader("accept-encoding", "identity");
+        }
+      });
+    },
+  };
+}
 
 export default defineConfig({
   plugins: [vue()],
@@ -7,30 +26,13 @@ export default defineConfig({
     port: 5173,
     host: true, // listen on 0.0.0.0 so 127.0.0.1 and localhost both work
     proxy: {
-      "/agents": {
-        target: "http://127.0.0.1:8080",
-        changeOrigin: true,
-      },
-      "/config": {
-        target: "http://127.0.0.1:8080",
-        changeOrigin: true,
-      },
-      "/openapi.json": {
-        target: "http://127.0.0.1:8080",
-        changeOrigin: true,
-      },
-      "/mermaid": {
-        target: "http://127.0.0.1:8080",
-        changeOrigin: true,
-      },
-      "/contexts": {
-        target: "http://127.0.0.1:8080",
-        changeOrigin: true,
-      },
-      "/provenance": {
-        target: "http://127.0.0.1:8080",
-        changeOrigin: true,
-      },
+      "/agents": runnerProxy(),
+      "/config": runnerProxy(),
+      "/openapi.json": runnerProxy(),
+      "/mermaid": runnerProxy(),
+      "/contexts": runnerProxy(),
+      "/provenance": runnerProxy(),
+      "/tasks": runnerProxy(),
     },
   },
   build: {

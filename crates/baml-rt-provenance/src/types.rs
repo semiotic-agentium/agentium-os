@@ -61,9 +61,22 @@ define_prov_id_type!(
     ProvConstantEntitySemantics
 );
 
+impl ProvEntityId {
+    /// Construct from a write-time node ID for cross-event edge references.
+    ///
+    /// Used when the normalizer needs to reference a node created in a different
+    /// normalization pass (e.g. CITED edges from LlmCall to a SessionStep entity
+    /// that was normalized from a prior event). The caller must construct the ID
+    /// using the same semantic type that created the original node.
+    ///
+    /// **Write-time only.** Must never be used on the read path.
+    pub(crate) fn from_write_time_node_id(node_id: impl Into<String>) -> Self {
+        Self(node_id.into())
+    }
+}
+
 #[cfg(test)]
 impl ProvEntityId {
-    /// Construct a raw id for unit tests (large synthetic [`crate::normalizer::NormalizedProv`] graphs, etc.).
     pub fn test_only(raw: impl Into<String>) -> Self {
         Self(raw.into())
     }

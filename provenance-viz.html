@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BAML-RT Provenance — CRM Pipeline Agent</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Playfair+Display:wght@700;900&family=Source+Serif+4:ital,wght@0,300;0,400;1,300&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#080a0f;--card:#10131a;--bdr:#1a1e2a;--t:#b8c0cc;--td:#555e6e;--tb:#e8ecf2;
+--blue:#5b9cf5;--green:#45c760;--orange:#dba030;--red:#e8564a;--purple:#b088ee;--cyan:#35c5b5;--pink:#e870aa}
+body{background:var(--bg);color:var(--t);font-family:'JetBrains Mono',monospace;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+header{padding:12px 24px 8px;border-bottom:1px solid var(--bdr);flex-shrink:0;background:linear-gradient(180deg,rgba(91,156,245,.03),transparent)}
+header h1{font-family:'Playfair Display',serif;font-weight:900;font-size:18px;color:var(--tb)}
+header h1 b{color:var(--blue);font-weight:900}
+header p{font-family:'Source Serif 4',serif;font-size:10px;color:var(--td);margin-top:2px;font-style:italic}
+.ctl{display:flex;align-items:center;gap:8px;padding:6px 24px;border-bottom:1px solid var(--bdr);background:var(--card);flex-shrink:0}
+.ctl button{background:var(--bg);border:1px solid var(--bdr);color:var(--t);padding:4px 10px;border-radius:4px;font:inherit;font-size:10px;cursor:pointer;transition:.2s}
+.ctl button:hover{border-color:var(--blue);color:var(--blue)}
+.ctl button.on{border-color:var(--blue);color:var(--tb);background:rgba(91,156,245,.18)}
+.si{font-size:10px;color:var(--td);margin-left:auto}.si b{color:var(--blue)}
+.sc{display:flex;align-items:center;gap:4px}.sc label{font-size:9px;color:var(--td)}.sc input{width:56px;accent-color:var(--blue)}
+.wrap{display:grid;grid-template-columns:240px 1fr;flex:1;min-height:0}
+.tl{border-right:1px solid var(--bdr);overflow-y:auto;padding:6px 0}
+.te{padding:4px 8px 4px 12px;border-left:3px solid transparent;cursor:pointer;transition:.25s;opacity:.15;transform:translateX(-4px)}
+.te.v{opacity:1;transform:translateX(0)}.te.a{border-left-color:var(--blue);background:rgba(91,156,245,.04)}
+.te .l{font-size:8px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
+.te .d{font-size:8px;color:var(--td);font-family:'Source Serif 4',serif}
+.te .p{font-size:7px;color:var(--td);opacity:.5}
+.ga{position:relative;overflow:auto}
+svg{display:block;overflow:visible}svg text{font-family:'JetBrains Mono',monospace;pointer-events:none}
+.ip{position:absolute;top:6px;right:6px;width:240px;background:rgba(16,19,26,.96);border:1px solid var(--bdr);border-radius:5px;padding:10px;font-size:9px;backdrop-filter:blur(8px);transition:.3s;opacity:0;transform:translateY(-4px);pointer-events:none;max-height:calc(100vh - 140px);overflow-y:auto}
+.ip.v{opacity:1;transform:translateY(0);pointer-events:auto}
+.ip h3{font-size:10px;color:var(--tb);margin-bottom:3px}
+.ip .bg{display:inline;padding:1px 4px;border-radius:3px;font-size:7px;font-weight:600;text-transform:uppercase;letter-spacing:.3px;margin-left:3px}
+.ip .tx{color:var(--td);line-height:1.4;font-family:'Source Serif 4',serif;font-size:10px}
+.ip ul{margin-top:3px;list-style:none}.ip li{padding:1px 0;color:var(--td);font-size:8px}.ip li::before{content:'→';color:var(--blue);margin-right:3px}
+.lg{position:absolute;bottom:6px;left:6px;background:rgba(16,19,26,.93);border:1px solid var(--bdr);border-radius:4px;padding:5px 8px;display:flex;gap:12px;font-size:7px;backdrop-filter:blur(8px)}
+.lg span{display:flex;align-items:center;gap:3px}
+.lg i{width:6px;height:6px;border-radius:50%;display:inline-block}
+.node-enter{animation:nodeIn .4s ease-out both}
+.edge-enter{animation:edgeIn .5s ease-out both}
+@keyframes nodeIn{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:scale(1)}}
+@keyframes edgeIn{from{stroke-dashoffset:200;opacity:0}to{stroke-dashoffset:0;opacity:1}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Provenance <b>Graph</b> — CRM Pipeline Review</h1>
+  <p>W3C PROV-DM + A2A — per-step tool attribution · Salesforce · HubSpot · Gong · Slack</p>
+</header>
+<div class="ctl">
+  <button id="bR">⟲</button><button id="bP">◂</button><button id="bA">▶ Play</button><button id="bN">▸</button>
+  <div class="sc"><label>Speed</label><input type=range id=spd min=1 max=10 value=5></div>
+  <div class="si">Step <b id=sN>0</b>/<b id=sT>0</b> — <span id=sP>Ready</span></div>
+</div>
+<div class="wrap">
+  <div class="tl" id=tl></div>
+  <div class="ga" id=ga>
+    <svg id=svg xmlns="http://www.w3.org/2000/svg"></svg>
+    <div class="lg">
+      <span><i style="background:var(--cyan)"></i>Entity</span>
+      <span><i style="background:var(--blue)"></i>Activity</span>
+      <span><i style="background:var(--orange)"></i>Agent</span>
+      <span><i style="background:var(--green)"></i>Intent/Plan</span>
+      <span><i style="background:var(--purple)"></i>PlanStep</span>
+      <span><i style="background:var(--pink)"></i>Artifact</span>
+    </div>
+    <div class="ip" id=ip><h3 id=ipT></h3><div class="tx" id=ipD></div><ul id=ipE></ul></div>
+  </div>
+</div>
+<script>
+// ═══════════════ COLORS ═══════════════
+const C={
+  ent:'#35c5b5',act:'#5b9cf5',agt:'#dba030',int:'#45c760',pln:'#45c760',
+  stp:'#b088ee',msg:'#35c5b5',art:'#e870aa',st:'#dba030',ok:'#45c760',fail:'#e8564a',
+};
+const EC={prov:'#4a8de0',a2a:'#c89020',sup:'#d04a40',attr:'#9a70d8'};
+
+// ═══════════════ LAYOUT: 1700 × 1380 ═══════════════
+// Generous spacing. Tool calls DIRECTLY below their step.
+// ToolArgs BESIDE their tool (not below — saves vertical space).
+const W=1700,H=1380;
+
+// Pre-computed node definitions with FIXED sizes
+// {id, label, lines[], kind, color, x, y, w, h}
+function N(id,label,lines,kind,color,x,y){
+  const lh=13, pad=8;
+  const th=lines.length*lh;
+  const mw=Math.max(...lines.map(l=>l.length*6.8))+pad*2;
+  const w=Math.max(mw,80), h=Math.max(th+pad*2,32);
+  return {id,label,lines,kind,color,x,y,w,h};
+}
+
+const PH=[
+  'Agent Boot','Task Creation','Message Ingestion','Intent Synthesis',
+  'Plan Generation','LLM: Plan CRM Queries',
+  'Step 1 → Salesforce Contacts','Step 2 → HubSpot Deals',
+  'Step 3 → Salesforce Activities','User Refines (Turn 2)',
+  'Supersession: Refined Intent + Replaced Plan',
+  'Step 5 → Gong Transcripts','Step 4 → LLM: Synthesize Report',
+  'Evidence: Steps Complete','Artifact Emitted',
+  'Step 6 → Slack Notification','Status Transitions',
+  'Response Emission','Provenance Sealed',
+];
+
+// ═══════════════ SCENARIO ═══════════════
+const SC=[
+  // 0: Boot
+  {ph:0,ev:'AgentBooted',dt:'crm-pipeline-agent v2.1.0',cl:C.agt,
+   nodes:[
+     N('ar','AgentArchive',['AgentArchive','crm-pipeline v2.1'],'ent',C.ent,120,65),
+     N('bt','AgentBoot',['AgentBoot'],'act',C.act,340,65),
+     N('ag','AgentInstance',['CRM Agent Instance'],'agt',C.agt,560,65),
+     N('rn','Runner',['Runner'],'agt',C.agt,340,160),
+   ],
+   edges:[
+     {f:'bt',t:'ar',l:'USED',tp:'prov'},
+     {f:'ag',t:'bt',l:'WAS_GENERATED_BY',tp:'prov'},
+     {f:'bt',t:'rn',l:'WAS_ASSOCIATED_WITH',tp:'prov'},
+   ],
+   inf:{t:'Agent Boot',b:'Agent',bc:C.agt,
+     d:'CRM pipeline agent v2.1 instance forged. AgentBoot USES AgentArchive and is ASSOCIATED WITH Runner.',
+     e:['boot → archive (USED, a2a:archive)','instance ← boot (WAS_GENERATED_BY)','boot → runner (WAS_ASSOCIATED_WITH)']}},
+
+  // 1: Task
+  {ph:1,ev:'TaskExists + ExecutionStarted',dt:'task-q3-pipeline-review',cl:C.ent,
+   nodes:[
+     N('tk','A2ATask',['Task','q3-pipeline-review'],'ent',C.ent,800,65),
+     N('ex','TaskExecution',['TaskExecution'],'act',C.act,800,175),
+     N('ss','TaskState',['submitted'],'ent',C.st,1020,65),
+   ],
+   edges:[
+     {f:'tk',t:'ex',l:'WAS_CREATED_BY',tp:'prov'},
+     {f:'ex',t:'ag',l:'WAS_ASSOCIATED_WITH',tp:'prov'},
+     {f:'ex',t:'ss',l:'WAS_UPDATED_BY',tp:'prov'},
+   ],
+   inf:{t:'Task Materialization',b:'Entity',bc:C.ent,
+     d:'A2ATask entity upserted. TaskExecution begins, associated with agent. Initial state: submitted.',
+     e:['task ← exec (WAS_CREATED_BY)','exec → agent (WAS_ASSOCIATED_WITH)','exec → submitted (WAS_UPDATED_BY)']}},
+
+  // 2: Message
+  {ph:2,ev:'MessageReceived',dt:'"Generate Q3 pipeline review for enterprise"',cl:C.msg,
+   nodes:[
+     N('m1','Message',['Message [inbound]','"Generate Q3 pipeline','review for enterprise"'],'ent',C.msg,140,310),
+     N('mp','MsgProcessing',['MessageProcessing'],'act',C.act,420,310),
+   ],
+   edges:[
+     {f:'mp',t:'m1',l:'WAS_RECEIVED_BY',tp:'prov'},
+     {f:'tk',t:'m1',l:'TASK_TRIGGERED_BY_MSG',tp:'a2a'},
+   ],
+   inf:{t:'Message Received',b:'Entity',bc:C.msg,
+     d:'Inbound message entity created. MessageProcessing RECEIVES it. A2A TASK_TRIGGERED_BY_MESSAGE links task.',
+     e:['msgProc → msg (WAS_RECEIVED_BY)','task → msg (TASK_TRIGGERED_BY_MESSAGE)']}},
+
+  // 3: Intent
+  {ph:3,ev:'IntentResolved',dt:'"Analyze Q3 enterprise deals with metrics"',cl:C.int,
+   nodes:[
+     N('i1','Intent',['Intent v1','"Analyze Q3 enterprise','deals with metrics"'],'ent',C.int,680,310),
+   ],
+   edges:[
+     {f:'i1',t:'m1',l:'WAS_DERIVED_FROM',tp:'prov'},
+   ],
+   inf:{t:'Intent Synthesis',b:'Intent',bc:C.int,
+     d:'Agent synthesizes Intent from user message. WAS_DERIVED_FROM links to source.',
+     e:['intent ← msg (WAS_DERIVED_FROM)']}},
+
+  // 4: Plan
+  {ph:4,ev:'PlanGenerated',dt:'Plan v1 — 4 steps across SF + HubSpot',cl:C.pln,
+   nodes:[
+     N('p1','Plan',['Plan v1'],'ent',C.pln,940,310),
+     N('s1','PlanStep',['Step 1','Query SF Contacts'],'ent',C.stp,230,460),
+     N('s2','PlanStep',['Step 2','Fetch HS Deals'],'ent',C.stp,540,460),
+     N('s3','PlanStep',['Step 3','Get SF Activities'],'ent',C.stp,850,460),
+     N('s4','PlanStep',['Step 4','Generate Report'],'ent',C.stp,1160,460),
+   ],
+   edges:[
+     {f:'p1',t:'i1',l:'WAS_DERIVED_FROM',tp:'prov'},
+     {f:'s1',t:'p1',l:'PART_OF',tp:'a2a'},
+     {f:'s2',t:'p1',l:'PART_OF',tp:'a2a'},
+     {f:'s3',t:'p1',l:'PART_OF',tp:'a2a'},
+     {f:'s4',t:'p1',l:'PART_OF',tp:'a2a'},
+   ],
+   inf:{t:'Plan Generation — 4 Steps',b:'Plan',bc:C.pln,
+     d:'Plan derived from Intent: (1) SF contacts, (2) HS deals, (3) SF activities, (4) Synthesize report. Steps become attribution anchors.',
+     e:['plan ← intent (WAS_DERIVED_FROM)','step 1..4 → plan (PART_OF)']}},
+
+  // 5: LLM decides
+  {ph:5,ev:'LlmCall: PlanCRMQueries',dt:'gpt-4o · 2800ms ✓',cl:C.act,
+   nodes:[
+     N('l1','LlmCall',['LlmCall: PlanCRMQueries','gpt-4o · 2800ms ✓'],'act',C.act,1160,600),
+     N('pr','LlmPrompt',['LlmPrompt','(system+user+schema)'],'ent',C.ent,1420,600),
+   ],
+   edges:[
+     {f:'l1',t:'pr',l:'USED',tp:'prov'},
+     {f:'l1',t:'m1',l:'USED',tp:'prov'},
+     {f:'ex',t:'l1',l:'A2A_TASK_CALL',tp:'a2a'},
+     {f:'s4',t:'l1',l:'EXECUTED_BY',tp:'attr'},
+   ],
+   inf:{t:'LLM: Plan CRM Queries',b:'Activity',bc:C.act,
+     d:'gpt-4o decides which CRM queries to execute. ATTRIBUTED TO Step 4 (Generate Report).',
+     e:['llm → prompt (USED, a2a:prompt)','llm → msg (USED, input_message)','exec → llm (A2A_TASK_CALL)','step4 → llm (EXECUTED_BY ← attribution)']}},
+
+  // 6: Step 1 → SF Contacts
+  {ph:6,ev:'salesforce/QueryContacts',dt:'1340ms ✓ — 47 contacts',cl:C.act,
+   nodes:[
+     N('t1','ToolCall',['salesforce/QueryContacts','1340ms ✓'],'act',C.act,230,600),
+     N('a1','ToolArgs',['segment:"enterprise"','quarter:"Q3"'],'ent',C.ent,230,720),
+   ],
+   upd:[{id:'s1',nm:['Step 1','SF Contacts','⧖ running'],c:C.stp}],
+   edges:[
+     {f:'t1',t:'a1',l:'USED',tp:'prov'},
+     {f:'t1',t:'m1',l:'USED',tp:'prov'},
+     {f:'ex',t:'t1',l:'A2A_TASK_CALL',tp:'a2a'},
+     {f:'s1',t:'t1',l:'EXECUTED_BY',tp:'attr'},
+   ],
+   inf:{t:'Step 1 → SF QueryContacts',b:'ToolCall',bc:C.act,
+     d:'Salesforce QueryContacts: enterprise Q3. Returns 47 contacts. ATTRIBUTED TO Step 1.',
+     e:['tool → args (USED, a2a:args)','step1 → tool (EXECUTED_BY)','Result: 47 contacts, 12 with open deals']}},
+
+  // 7: Step 2 → HS Deals
+  {ph:7,ev:'hubspot/FetchDeals',dt:'890ms ✓ — $4.2M pipeline',cl:C.act,
+   nodes:[
+     N('t2','ToolCall',['hubspot/FetchDeals','890ms ✓'],'act',C.act,540,600),
+     N('a2','ToolArgs',['pipeline:"enterprise"','stage:"Q3-active"'],'ent',C.ent,540,720),
+   ],
+   upd:[{id:'s1',nm:['Step 1','SF Contacts','✓ 47 found'],c:C.ok},{id:'s2',nm:['Step 2','HS Deals','⧖ running'],c:C.stp}],
+   edges:[
+     {f:'t2',t:'a2',l:'USED',tp:'prov'},
+     {f:'t2',t:'m1',l:'USED',tp:'prov'},
+     {f:'ex',t:'t2',l:'A2A_TASK_CALL',tp:'a2a'},
+     {f:'s2',t:'t2',l:'EXECUTED_BY',tp:'attr'},
+   ],
+   inf:{t:'Step 2 → HubSpot FetchDeals',b:'ToolCall',bc:C.act,
+     d:'HubSpot FetchDeals: enterprise, Q3-active. Returns 23 deals, $4.2M. ATTRIBUTED TO Step 2.',
+     e:['step2 → tool (EXECUTED_BY)','Result: 23 deals, $4.2M pipeline']}},
+
+  // 8: Step 3 → SF Activities
+  {ph:8,ev:'salesforce/GetActivities',dt:'1120ms ✓ — 156 activities',cl:C.act,
+   nodes:[
+     N('t3','ToolCall',['salesforce/GetActivities','1120ms ✓'],'act',C.act,850,600),
+     N('a3','ToolArgs',['type:["Call","Meeting"]','days_back: 90'],'ent',C.ent,850,720),
+   ],
+   upd:[{id:'s2',nm:['Step 2','HS Deals','✓ $4.2M'],c:C.ok},{id:'s3',nm:['Step 3','SF Activities','⧖ running'],c:C.stp}],
+   edges:[
+     {f:'t3',t:'a3',l:'USED',tp:'prov'},
+     {f:'t3',t:'m1',l:'USED',tp:'prov'},
+     {f:'ex',t:'t3',l:'A2A_TASK_CALL',tp:'a2a'},
+     {f:'s3',t:'t3',l:'EXECUTED_BY',tp:'attr'},
+   ],
+   inf:{t:'Step 3 → SF GetActivities',b:'ToolCall',bc:C.act,
+     d:'Salesforce GetActivities: Calls+Meetings, 90d. Returns 156 activities. ATTRIBUTED TO Step 3.',
+     e:['step3 → tool (EXECUTED_BY)','Result: 34 meetings, 122 calls']}},
+
+  // 9: User refines
+  {ph:9,ev:'MessageReceived (turn 2)',dt:'"Include competitor intel from Gong"',cl:C.msg,
+   upd:[{id:'s3',nm:['Step 3','SF Activities','✓ 156 logged'],c:C.ok}],
+   nodes:[
+     N('m2','Message',['Message [inbound]','"Include competitor','intel from Gong calls"'],'ent',C.msg,140,870),
+   ],
+   edges:[{f:'tk',t:'m2',l:'TASK_TRIGGERED_BY_MSG',tp:'a2a'}],
+   inf:{t:'User Refines — Turn 2',b:'Message',bc:C.msg,
+     d:'Follow-up message requesting Gong competitor intelligence. Triggers supersession.',
+     e:['task → msg2 (TASK_TRIGGERED_BY_MESSAGE)']}},
+
+  // 10: Supersession
+  {ph:10,ev:'Intent refined + Plan replaced',dt:'v1 → v2 (+Gong, +Slack)',cl:C.int,
+   nodes:[
+     N('i2','Intent',['Intent v2','"Pipeline + competitor','analysis"'],'ent',C.int,460,870),
+     N('p2','Plan',['Plan v2 (+Gong +Slack)'],'ent',C.pln,740,870),
+     N('s5','PlanStep',['Step 5','Search Gong'],'ent',C.stp,540,1010),
+     N('s6','PlanStep',['Step 6','Slack Notify'],'ent',C.stp,850,1010),
+   ],
+   edges:[
+     {f:'i2',t:'m2',l:'WAS_DERIVED_FROM',tp:'prov'},
+     {f:'i2',t:'m1',l:'WAS_DERIVED_FROM',tp:'prov'},
+     {f:'i1',t:'i2',l:'REFINED_BY',tp:'sup'},
+     {f:'p2',t:'i2',l:'WAS_DERIVED_FROM',tp:'prov'},
+     {f:'p1',t:'p2',l:'REPLACED_BY',tp:'sup'},
+     {f:'s5',t:'p2',l:'PART_OF',tp:'a2a'},
+     {f:'s6',t:'p2',l:'PART_OF',tp:'a2a'},
+   ],
+   inf:{t:'Supersession',b:'Supersede',bc:C.fail,
+     d:'Intent v1 REFINED BY v2. Plan v1 REPLACED BY v2. History chain preserved.',
+     e:['intent:v1→v2 (REFINED_BY)','plan:v1→v2 (REPLACED_BY)','step5,6 → plan:v2 (PART_OF)']}},
+
+  // 11: Step 5 → Gong
+  {ph:11,ev:'gong/SearchTranscripts',dt:'2100ms ✓ — 8 snippets',cl:C.act,
+   nodes:[
+     N('t5','ToolCall',['gong/SearchTranscripts','2100ms ✓'],'act',C.act,540,1150),
+     N('a5','ToolArgs',['keywords:["competitor",','"pricing","switch"]'],'ent',C.ent,320,1190),
+   ],
+   upd:[{id:'s5',nm:['Step 5','Gong Search','⧖ running'],c:C.stp}],
+   edges:[
+     {f:'t5',t:'a5',l:'USED',tp:'prov'},
+     {f:'t5',t:'m2',l:'USED',tp:'prov'},
+     {f:'ex',t:'t5',l:'A2A_TASK_CALL',tp:'a2a'},
+     {f:'s5',t:'t5',l:'EXECUTED_BY',tp:'attr'},
+   ],
+   inf:{t:'Step 5 → Gong SearchTranscripts',b:'ToolCall',bc:C.act,
+     d:'Gong: searches competitor/pricing/switch keywords in enterprise call transcripts. ATTRIBUTED TO Step 5.',
+     e:['step5 → tool (EXECUTED_BY)','Result: 8 snippets, 3 competitor mentions']}},
+
+  // 12: Step 4 → LLM Synth
+  {ph:12,ev:'LlmCall: SynthesizeReport',dt:'gpt-4o · 5400ms ✓',cl:C.act,
+   nodes:[
+     N('l2','LlmCall',['LlmCall: SynthesizeReport','gpt-4o · 5400ms ✓'],'act',C.act,1160,1150),
+   ],
+   upd:[{id:'s5',nm:['Step 5','Gong Search','✓ 8 snippets'],c:C.ok},{id:'s4',nm:['Step 4','Report','⧖ synthesizing'],c:C.stp}],
+   edges:[
+     {f:'ex',t:'l2',l:'A2A_TASK_CALL',tp:'a2a'},
+     {f:'l2',t:'m1',l:'USED',tp:'prov'},
+     {f:'l2',t:'m2',l:'USED',tp:'prov'},
+     {f:'s4',t:'l2',l:'EXECUTED_BY',tp:'attr'},
+   ],
+   inf:{t:'Step 4 → SynthesizeReport',b:'Activity',bc:C.act,
+     d:'gpt-4o synthesizes full Q3 review from SF(47)+HS($4.2M)+SF(156)+Gong(8). ATTRIBUTED TO Step 4.',
+     e:['step4 → llm (EXECUTED_BY)','Consumes all tool outputs']}},
+
+  // 13: Evidence
+  {ph:13,ev:'PlanStepStatusChanged ×6',dt:'All steps with CRM evidence',cl:C.stp,
+   nodes:[],
+   upd:[
+     {id:'s1',nm:['Step 1 ✓','SF Contacts','47 found'],c:C.ok},
+     {id:'s2',nm:['Step 2 ✓','HS Deals','$4.2M pipe'],c:C.ok},
+     {id:'s3',nm:['Step 3 ✓','SF Activities','156 logged'],c:C.ok},
+     {id:'s4',nm:['Step 4 ✓','Report','synthesized'],c:C.ok},
+     {id:'s5',nm:['Step 5 ✓','Gong Intel','8 snippets'],c:C.ok},
+     {id:'s6',nm:['Step 6','Slack','⧖ pending'],c:C.stp},
+   ],
+   edges:[],
+   inf:{t:'Evidence Recording',b:'PlanStep',bc:C.stp,
+     d:'Each step updated with evidence: contact counts, pipeline value, activity volume, competitor signals.',
+     e:['s1: ✓ 47 contacts','s2: ✓ $4.2M pipeline','s3: ✓ 156 activities','s4: ✓ report synth','s5: ✓ 8 Gong snippets','s6: ⧖ pending']}},
+
+  // 14: Artifact
+  {ph:14,ev:'TaskArtifactGenerated',dt:'Q3-enterprise-pipeline-review.pdf',cl:C.art,
+   nodes:[
+     N('at','Artifact',['Artifact','Q3-enterprise-','pipeline-review.pdf'],'ent',C.art,1420,460),
+   ],
+   edges:[
+     {f:'at',t:'ex',l:'WAS_GENERATED_BY',tp:'prov'},
+     {f:'tk',t:'at',l:'A2A_TASK_ARTIFACT',tp:'a2a'},
+   ],
+   inf:{t:'Artifact — Pipeline Report',b:'Artifact',bc:C.art,
+     d:'Q3 Enterprise Pipeline Review PDF generated. WAS_GENERATED_BY → TaskExecution.',
+     e:['artifact ← exec (WAS_GENERATED_BY)','task → artifact (A2A_TASK_ARTIFACT)']}},
+
+  // 15: Step 6 → Slack
+  {ph:15,ev:'slack/PostMessage',dt:'340ms ✓ — #sales-ops',cl:C.act,
+   nodes:[
+     N('t6','ToolCall',['slack/PostMessage','#sales-ops · 340ms ✓'],'act',C.act,850,1150),
+     N('a6','ToolArgs',['channel:"#sales-ops"','attach: report.pdf'],'ent',C.ent,1050,1210),
+   ],
+   upd:[{id:'s6',nm:['Step 6 ✓','Slack','posted'],c:C.ok}],
+   edges:[
+     {f:'t6',t:'a6',l:'USED',tp:'prov'},
+     {f:'ex',t:'t6',l:'A2A_TASK_CALL',tp:'a2a'},
+     {f:'s6',t:'t6',l:'EXECUTED_BY',tp:'attr'},
+   ],
+   inf:{t:'Step 6 → Slack PostMessage',b:'ToolCall',bc:C.act,
+     d:'Posts report to #sales-ops with PDF. ATTRIBUTED TO Step 6.',
+     e:['step6 → tool (EXECUTED_BY)','Posted with attachment']}},
+
+  // 16: Status
+  {ph:16,ev:'TaskStatusChanged ×2',dt:'submitted → working → completed',cl:C.st,
+   nodes:[
+     N('sw','TaskState',['working'],'ent',C.st,1020,150),
+     N('sc','TaskState',['completed ✓'],'ent',C.ok,1200,150),
+   ],
+   edges:[
+     {f:'ss',t:'sw',l:'TRANSITIONED_TO',tp:'a2a'},
+     {f:'sw',t:'sc',l:'TRANSITIONED_TO',tp:'a2a'},
+     {f:'ex',t:'sw',l:'WAS_UPDATED_BY',tp:'prov'},
+     {f:'ex',t:'sc',l:'WAS_UPDATED_BY',tp:'prov'},
+   ],
+   inf:{t:'Status Transitions',b:'TaskState',bc:C.st,
+     d:'submitted → working → completed. Each WAS_UPDATED_BY TaskExecution.',
+     e:['submitted→working','working→completed']}},
+
+  // 17: Response
+  {ph:17,ev:'MessageSent',dt:'"Q3 review posted to #sales-ops"',cl:C.msg,
+   nodes:[
+     N('mo','Message',['Message [outbound]','"Q3 review complete.','Posted to #sales-ops"'],'ent',C.msg,1200,870),
+   ],
+   edges:[
+     {f:'mo',t:'mp',l:'WAS_EMITTED_BY',tp:'prov'},
+     {f:'tk',t:'mo',l:'TASK_EMITTED_MSG',tp:'a2a'},
+   ],
+   inf:{t:'Response Emission',b:'Message',bc:C.msg,
+     d:'Agent response WAS_EMITTED_BY MessageProcessing. TASK_EMITTED_MESSAGE to Task.',
+     e:['msg ← msgProc (WAS_EMITTED_BY)','task → msg (TASK_EMITTED_MSG)']}},
+
+  // 18: Sealed
+  {ph:18,ev:'TaskExecutionEnded',dt:'Full CRM audit trail sealed',cl:C.agt,
+   nodes:[],edges:[],done:true,
+   inf:{t:'Provenance Sealed',b:'Complete',bc:C.ok,
+     d:'5 tools (SF×2, HS, Gong, Slack) · 2 LLMs · 1 artifact · per-step attribution · supersession chain.',
+     e:['Per-step EXECUTED_BY attribution','Intent v1→v2 (refined)','Plan v1→v2 (replaced)','18 node types × 12+ edge types']}},
+];
+
+// ═══════════════ STATE ═══════════════
+let step=-1,playing=false,tmr=null,nMap={},vis=new Set(),eAll=[];
+
+// ═══════════════ VIEWPORT TRANSITION ═══════════════
+const HOME_VB={x:0,y:0,w:W,h:H};
+let curVB={...HOME_VB};
+let vbAnim=null; // {from, to, start, dur, ease, onDone}
+let zoomOutTimer=null;
+
+function lerpVB(a,b,t){
+  return{x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t, w:a.w+(b.w-a.w)*t, h:a.h+(b.h-a.h)*t};
+}
+function easeInOutCubic(t){return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2}
+function easeOutQuart(t){return 1-Math.pow(1-t,4)}
+
+function setVB(vb){
+  curVB=vb;
+  document.getElementById('svg').setAttribute('viewBox',`${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+}
+
+function animateVB(to,dur,easeFn,onDone){
+  if(vbAnim)vbAnim=null;
+  const from={...curVB};
+  const start=performance.now();
+  vbAnim={from,to,start,dur,ease:easeFn,onDone};
+}
+
+function tickVB(now){
+  if(!vbAnim)return;
+  const t=Math.min(1,(now-vbAnim.start)/vbAnim.dur);
+  const et=vbAnim.ease(t);
+  setVB(lerpVB(vbAnim.from,vbAnim.to,et));
+  if(t>=1){
+    const cb=vbAnim.onDone;
+    vbAnim=null;
+    if(cb)cb();
+  }
+}
+
+function runVBLoop(){
+  tickVB(performance.now());
+  requestAnimationFrame(runVBLoop);
+}
+
+function focusBBox(nodes,edges){
+  if(!nodes.length&&!edges.length)return null;
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  nodes.forEach(n=>{
+    const hw=n.w/2+20, hh=n.h/2+20;
+    minX=Math.min(minX,n.x-hw);maxX=Math.max(maxX,n.x+hw);
+    minY=Math.min(minY,n.y-hh);maxY=Math.max(maxY,n.y+hh);
+  });
+  // Include edge targets/sources
+  edges.forEach(e=>{
+    const fn=nMap[e.f],tn=nMap[e.t];
+    if(fn){minX=Math.min(minX,fn.x-fn.w/2-20);maxX=Math.max(maxX,fn.x+fn.w/2+20);minY=Math.min(minY,fn.y-fn.h/2-20);maxY=Math.max(maxY,fn.y+fn.h/2+20);}
+    if(tn){minX=Math.min(minX,tn.x-tn.w/2-20);maxX=Math.max(maxX,tn.x+tn.w/2+20);minY=Math.min(minY,tn.y-tn.h/2-20);maxY=Math.max(maxY,tn.y+tn.h/2+20);}
+  });
+  if(minX===Infinity)return null;
+
+  let bw=maxX-minX, bh=maxY-minY;
+  // Enforce minimum zoom (don't zoom in too far)
+  const minDim=400;
+  if(bw<minDim){const cx=(minX+maxX)/2;minX=cx-minDim/2;bw=minDim;}
+  if(bh<minDim*0.6){const cy=(minY+maxY)/2;minY=cy-minDim*0.3;bh=minDim*0.6;}
+
+  // Maintain aspect ratio of the SVG container
+  const ga=document.getElementById('ga');
+  const aspect=ga.clientWidth/ga.clientHeight;
+  const bAspect=bw/bh;
+  if(bAspect>aspect){bh=bw/aspect;} else {bw=bh*aspect;}
+
+  // Add padding
+  const pad=60;
+  return{x:minX-pad,y:minY-pad,w:bw+pad*2,h:bh+pad*2};
+}
+
+function viewportForStep(s){
+  if(s<0)return HOME_VB;
+  const sc=SC[s];
+  const affectedNodes=[];
+  const affectedEdges=sc.edges||[];
+  if(sc.nodes)sc.nodes.forEach(n=>{if(nMap[n.id])affectedNodes.push(nMap[n.id]);});
+  if(sc.upd)sc.upd.forEach(u=>{if(nMap[u.id])affectedNodes.push(nMap[u.id]);});
+  // For "sealed" step, show everything
+  if(sc.done)return HOME_VB;
+  const bbox=focusBBox(affectedNodes,affectedEdges);
+  return bbox||HOME_VB;
+}
+
+function transitionViewport(s){
+  clearTimeout(zoomOutTimer);
+  const target=viewportForStep(s);
+  const isHome=target.x===HOME_VB.x&&target.y===HOME_VB.y&&target.w===HOME_VB.w;
+
+  if(isHome){
+    animateVB(HOME_VB,700,easeInOutCubic);
+    return;
+  }
+
+  // Zoom in to affected area
+  const zoomInDur=450;
+  const dwellTime=Math.max(400, spd()*0.45);
+  const zoomOutDur=600;
+
+  animateVB(target,zoomInDur,easeOutQuart,()=>{
+    // After dwell, ease back to full view
+    zoomOutTimer=setTimeout(()=>{
+      animateVB(HOME_VB,zoomOutDur,easeInOutCubic);
+    },dwellTime);
+  });
+}
+
+function init(){
+  document.getElementById('sT').textContent=SC.length;
+  buildTL();bindCtl();setupSVG();
+  setVB(HOME_VB);
+  requestAnimationFrame(runVBLoop);
+  setTimeout(play,600);
+}
+
+function setupSVG(){
+  const s=document.getElementById('svg');
+  s.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  s.setAttribute('width','100%');s.setAttribute('height','100%');
+  s.style.minWidth='650px';s.style.minHeight='450px';
+
+  const d=ce('defs');
+  // Markers
+  Object.entries(EC).forEach(([k,c])=>{
+    const m=ce('marker');
+    m.setAttribute('id','a-'+k);m.setAttribute('viewBox','0 0 8 6');
+    m.setAttribute('refX','7');m.setAttribute('refY','3');
+    m.setAttribute('markerWidth','7');m.setAttribute('markerHeight','5');
+    m.setAttribute('orient','auto');
+    const p=ce('path');p.setAttribute('d','M0,0 L8,3 L0,6 Z');p.setAttribute('fill',c);
+    m.appendChild(p);d.appendChild(m);
+  });
+  // Glow filter
+  const flt=ce('filter');flt.id='glow';flt.setAttribute('x','-50%');flt.setAttribute('y','-50%');
+  flt.setAttribute('width','200%');flt.setAttribute('height','200%');
+  const gb=ce('feGaussianBlur');gb.setAttribute('stdDeviation','6');gb.setAttribute('result','blur');
+  flt.appendChild(gb);
+  const mg=ce('feMerge');
+  const m1=ce('feMergeNode');m1.setAttribute('in','blur');mg.appendChild(m1);
+  const m2=ce('feMergeNode');m2.setAttribute('in','SourceGraphic');mg.appendChild(m2);
+  flt.appendChild(mg);d.appendChild(flt);
+
+  s.appendChild(d);
+  ['zones','edges','nodes','labels'].forEach(id=>{const g=ce('g');g.id=id;s.appendChild(g);});
+}
+
+function ce(t){return document.createElementNS('http://www.w3.org/2000/svg',t)}
+
+// ═══════════════ EDGE ROUTING ═══════════════
+// Clip edge endpoints to node shape borders
+function clipToEllipse(cx,cy,rx,ry,tx,ty){
+  const dx=tx-cx,dy=ty-cy,a=Math.atan2(dy*rx,dx*ry);
+  return{x:cx+rx*Math.cos(a),y:cy+ry*Math.sin(a)};
+}
+function clipToRect(cx,cy,w,h,tx,ty){
+  const dx=tx-cx,dy=ty-cy;
+  if(dx===0&&dy===0)return{x:cx,y:cy};
+  const hw=w/2,hh=h/2;
+  const sx=hw/(Math.abs(dx)||1),sy=hh/(Math.abs(dy)||1);
+  const s=Math.min(sx,sy);
+  return{x:cx+dx*s,y:cy+dy*s};
+}
+function clipToNode(n,tx,ty){
+  const rx=n.w/2+6, ry=n.h/2+4;
+  if(n.kind==='act') return clipToRect(n.x,n.y,n.w+8,n.h+4,tx,ty);
+  return clipToEllipse(n.x,n.y,rx,ry,tx,ty);
+}
+
+// ═══════════════ TIMELINE ═══════════════
+function buildTL(){
+  const tl=document.getElementById('tl');
+  SC.forEach((s,i)=>{
+    const d=document.createElement('div');d.className='te';
+    d.innerHTML=`<div class="l" style="color:${s.cl}">${s.ev}</div><div class="d">${s.dt}</div><div class="p">${PH[s.ph]}</div>`;
+    d.onclick=()=>{stop();goTo(i);};
+    tl.appendChild(d);
+  });
+}
+function bindCtl(){
+  document.getElementById('bR').onclick=()=>{stop();goTo(-1);setVB(HOME_VB);};
+  document.getElementById('bP').onclick=()=>{stop();goTo(Math.max(-1,step-1));};
+  document.getElementById('bN').onclick=()=>{stop();goTo(Math.min(SC.length-1,step+1));};
+  document.getElementById('bA').onclick=()=>playing?stop():play();
+}
+function spd(){return 800+(10-document.getElementById('spd').value)*220}
+function play(){playing=true;document.getElementById('bA').textContent='⏸ Pause';document.getElementById('bA').classList.add('on');adv();}
+function stop(){playing=false;clearTimeout(tmr);document.getElementById('bA').textContent='▶ Play';document.getElementById('bA').classList.remove('on');}
+function adv(){if(!playing)return;if(step<SC.length-1){goTo(step+1);tmr=setTimeout(adv,spd());}else stop();}
+
+// ═══════════════ GO TO STEP ═══════════════
+function goTo(s){
+  step=s;nMap={};vis.clear();eAll=[];
+  for(let i=0;i<=s;i++){
+    const sc=SC[i];
+    if(sc.nodes)sc.nodes.forEach(n=>{
+      if(!nMap[n.id])nMap[n.id]={...n,_s:i};
+      else Object.assign(nMap[n.id],{...n,_s:i});
+      vis.add(n.id);
+    });
+    if(sc.upd)sc.upd.forEach(u=>{
+      if(nMap[u.id]){nMap[u.id].lines=u.nm;nMap[u.id].color=u.c;nMap[u.id]._s=i;
+        const lh=13,pad=8,th=u.nm.length*lh;
+        const mw=Math.max(...u.nm.map(l=>l.length*6.8))+pad*2;
+        nMap[u.id].w=Math.max(mw,80);nMap[u.id].h=Math.max(th+pad*2,32);
+      }
+    });
+    if(sc.edges)sc.edges.forEach(e=>{
+      const eid=`${e.f}>${e.t}:${e.l}:${i}`;
+      if(!eAll.find(a=>a._id===eid))eAll.push({...e,_id:eid,_s:i});
+    });
+  }
+  render();updateUI();
+  transitionViewport(s);
+}
+
+// ═══════════════ RENDER ═══════════════
+function render(){
+  ['zones','edges','nodes','labels'].forEach(id=>{document.getElementById(id).innerHTML='';});
+  const eG=document.getElementById('edges');
+  const nG=document.getElementById('nodes');
+  const lG=document.getElementById('labels');
+  const zG=document.getElementById('zones');
+
+  // Zone backgrounds for current phase
+  if(step>=0){
+    const zones=[
+      {steps:[0],    label:'Boot',       x:30, y:20, w:640, h:170, c:'#dba030'},
+      {steps:[1,16], label:'Task',       x:700,y:20, w:580, h:200, c:'#35c5b5'},
+      {steps:[2,3],  label:'Message → Intent', x:30, y:250,w:760, h:110,c:'#35c5b5'},
+      {steps:[4],    label:'Plan',       x:810,y:250,w:240, h:110,c:'#45c760'},
+      {steps:[4,5,6,7,8,13],label:'Execution', x:30, y:400,w:1500,h:370,c:'#5b9cf5'},
+      {steps:[9,10], label:'Revision',   x:30, y:810,w:840, h:130,c:'#e8564a'},
+      {steps:[10,11,12,15],label:'Revised Execution',x:30,y:950,w:1500,h:310,c:'#b088ee'},
+    ];
+    zones.forEach(z=>{
+      if(!z.steps.some(s=>s===step))return;
+      const r=ce('rect');
+      r.setAttribute('x',z.x);r.setAttribute('y',z.y);
+      r.setAttribute('width',z.w);r.setAttribute('height',z.h);
+      r.setAttribute('rx','8');r.setAttribute('fill',z.c);r.setAttribute('opacity','0.02');
+      r.setAttribute('stroke',z.c);r.setAttribute('stroke-width','0.5');r.setAttribute('stroke-opacity','0.08');
+      zG.appendChild(r);
+      const t=ce('text');
+      t.setAttribute('x',z.x+8);t.setAttribute('y',z.y+12);
+      t.setAttribute('fill',z.c);t.setAttribute('opacity','0.12');
+      t.setAttribute('font-size','9');t.setAttribute('font-weight','600');
+      t.textContent=z.label;
+      zG.appendChild(t);
+    });
+  }
+
+  // Collect IDs of nodes active at current step (new or updated)
+  const curNodeIds=new Set();
+  if(step>=0){
+    const sc=SC[step];
+    if(sc.nodes)sc.nodes.forEach(n=>curNodeIds.add(n.id));
+    if(sc.upd)sc.upd.forEach(u=>curNodeIds.add(u.id));
+  }
+
+  // Edges — three-tier opacity:
+  //   1. Edge from current step → 0.8 (bright, animated)
+  //   2. Edge touching an active node → 0.45 (moderate, shows structure)
+  //   3. Everything else → 0.1 (faded background)
+  eAll.forEach(e=>{
+    const fn=nMap[e.f],tn=nMap[e.t];
+    if(!fn||!tn||!vis.has(e.f)||!vis.has(e.t))return;
+    const cur=e._s===step;
+    const touchesCur=curNodeIds.has(e.f)||curNodeIds.has(e.t);
+    const op=cur?0.8:touchesCur?0.45:0.1;
+    const showLabel=cur||touchesCur;
+    const col=EC[e.tp]||EC.prov;
+
+    // Clip to node borders
+    const p1=clipToNode(fn,tn.x,tn.y);
+    const p2=clipToNode(tn,fn.x,fn.y);
+
+    const dx=p2.x-p1.x,dy=p2.y-p1.y;
+    const mx=(p1.x+p2.x)/2,my=(p1.y+p2.y)/2;
+    const curv=e.tp==='sup'?0.12:0.05;
+    const cx=mx-dy*curv,cy=my+dx*curv;
+
+    const path=ce('path');
+    path.setAttribute('d',`M${p1.x},${p1.y} Q${cx},${cy} ${p2.x},${p2.y}`);
+    path.setAttribute('fill','none');
+    path.setAttribute('stroke',col);
+    path.setAttribute('stroke-width',cur?( e.tp==='sup'?2.2:e.tp==='attr'?1.8:1.3 ):( touchesCur?(e.tp==='attr'?1.4:1):0.8 ));
+    path.setAttribute('opacity',op);
+    path.setAttribute('marker-end',`url(#a-${e.tp})`);
+    if(e.tp==='a2a')path.setAttribute('stroke-dasharray','5,3');
+    if(e.tp==='sup')path.setAttribute('stroke-dasharray','7,4');
+    if(e.tp==='attr')path.setAttribute('stroke-dasharray','3,2');
+    if(cur)path.classList.add('edge-enter');
+    eG.appendChild(path);
+
+    // Edge label — show for current step edges AND edges touching active nodes
+    if(showLabel){
+      const lt=ce('text');
+      lt.setAttribute('x',cx);lt.setAttribute('y',cy-5);
+      lt.setAttribute('text-anchor','middle');lt.setAttribute('fill',col);
+      lt.setAttribute('font-size',cur?'8':'7');
+      lt.setAttribute('opacity',cur?'0.7':'0.4');
+      lt.textContent=e.l;
+      lG.appendChild(lt);
+    }
+  });
+
+  // Build set of nodes connected to active nodes (one hop)
+  const connectedIds=new Set();
+  eAll.forEach(e=>{
+    if(curNodeIds.has(e.f)&&nMap[e.t])connectedIds.add(e.t);
+    if(curNodeIds.has(e.t)&&nMap[e.f])connectedIds.add(e.f);
+  });
+
+  // Nodes — three-tier: current=1, connected=0.55, background=0.25
+  Object.values(nMap).forEach(n=>{
+    if(!vis.has(n.id))return;
+    const cur=n._s===step;
+    const connected=connectedIds.has(n.id);
+    const op=cur?1:connected?0.55:0.25;
+
+    const g=ce('g');
+    g.setAttribute('opacity',op);
+    if(cur)g.classList.add('node-enter');
+
+    // Shape
+    if(n.kind==='act'){
+      const r=ce('rect');
+      r.setAttribute('x',n.x-n.w/2-4);r.setAttribute('y',n.y-n.h/2-2);
+      r.setAttribute('width',n.w+8);r.setAttribute('height',n.h+4);
+      r.setAttribute('rx','5');
+      r.setAttribute('fill',n.color+'10');r.setAttribute('stroke',n.color);
+      r.setAttribute('stroke-width',cur?1.4:0.6);
+      if(cur)r.setAttribute('filter','url(#glow)');
+      g.appendChild(r);
+    } else if(n.kind==='agt'){
+      const pts=[];const rad=Math.max(n.w,n.h)/2+6;
+      for(let i=0;i<5;i++){const a=(i*2*Math.PI/5)-Math.PI/2;pts.push(`${n.x+rad*Math.cos(a)},${n.y+rad*Math.sin(a)}`);}
+      const pg=ce('polygon');pg.setAttribute('points',pts.join(' '));
+      pg.setAttribute('fill',n.color+'10');pg.setAttribute('stroke',n.color);
+      pg.setAttribute('stroke-width',cur?1.4:0.6);
+      if(cur)pg.setAttribute('filter','url(#glow)');
+      g.appendChild(pg);
+    } else {
+      const el=ce('ellipse');
+      el.setAttribute('cx',n.x);el.setAttribute('cy',n.y);
+      el.setAttribute('rx',n.w/2+6);el.setAttribute('ry',n.h/2+4);
+      el.setAttribute('fill',n.color+'10');el.setAttribute('stroke',n.color);
+      el.setAttribute('stroke-width',cur?1.4:0.6);
+      if(cur)el.setAttribute('filter','url(#glow)');
+      g.appendChild(el);
+    }
+
+    // Text
+    const lh=13,sy=n.y-((n.lines.length-1)*lh)/2;
+    n.lines.forEach((l,li)=>{
+      const t=ce('text');
+      t.setAttribute('x',n.x);t.setAttribute('y',sy+li*lh);
+      t.setAttribute('text-anchor','middle');t.setAttribute('dominant-baseline','central');
+      t.setAttribute('fill',n.color);
+      t.setAttribute('font-size',li===0?'9':'8');
+      t.setAttribute('font-weight',li===0?'600':'400');
+      t.textContent=l;
+      g.appendChild(t);
+    });
+
+    // Type label
+    const tl=ce('text');
+    tl.setAttribute('x',n.x);tl.setAttribute('y',n.y+n.h/2+14);
+    tl.setAttribute('text-anchor','middle');tl.setAttribute('dominant-baseline','central');
+    tl.setAttribute('fill',n.color);tl.setAttribute('opacity','0.25');
+    tl.setAttribute('font-size','7');
+    tl.textContent=n.label;
+    g.appendChild(tl);
+
+    nG.appendChild(g);
+  });
+
+  // Sealed
+  if(step===SC.length-1&&SC[step].done){
+    const r=ce('rect');r.setAttribute('x','4');r.setAttribute('y','4');
+    r.setAttribute('width',W-8);r.setAttribute('height',H-8);r.setAttribute('rx','8');
+    r.setAttribute('fill','none');r.setAttribute('stroke','#45c760');
+    r.setAttribute('stroke-width','2');r.setAttribute('stroke-dasharray','12,6');r.setAttribute('opacity','0.25');
+    lG.appendChild(r);
+    const ct=ce('text');ct.setAttribute('x',W/2);ct.setAttribute('y',H-16);
+    ct.setAttribute('text-anchor','middle');ct.setAttribute('fill','#45c760');ct.setAttribute('opacity','0.4');
+    ct.setAttribute('font-size','13');ct.setAttribute('font-weight','700');
+    ct.setAttribute('font-family','Playfair Display,serif');
+    ct.textContent='⬡ PROVENANCE SEALED — 5 TOOLS · 2 LLM · PER-STEP ATTRIBUTION · FULL CRM AUDIT ⬡';
+    lG.appendChild(ct);
+  }
+}
+
+function updateUI(){
+  document.getElementById('sN').textContent=step+1;
+  document.getElementById('sP').textContent=step>=0?PH[SC[step].ph]:'Ready';
+  document.querySelectorAll('.te').forEach((el,i)=>{el.classList.toggle('v',i<=step);el.classList.toggle('a',i===step);});
+  const p=document.getElementById('ip');
+  if(step>=0&&SC[step].inf){
+    const inf=SC[step].inf;p.classList.add('v');
+    document.getElementById('ipT').innerHTML=`${inf.t} <span class="bg" style="background:${inf.bc}22;color:${inf.bc}">${inf.b}</span>`;
+    document.getElementById('ipD').textContent=inf.d;
+    const el=document.getElementById('ipE');el.innerHTML='';
+    (inf.e||[]).forEach(e=>{const li=document.createElement('li');li.textContent=e;el.appendChild(li);});
+  }else p.classList.remove('v');
+  if(step>=0){const ae=document.querySelector('.te.a');if(ae)ae.scrollIntoView({behavior:'smooth',block:'nearest'});}
+}
+
+init();
+</script>
+</body>
+</html>

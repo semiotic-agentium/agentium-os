@@ -4,12 +4,19 @@ mod common;
 use std::{
     fs,
     net::TcpListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    str::FromStr,
     time::{Duration, Instant},
 };
 
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
+use baml_rt_repository::{
+    commands::{PublishCommand, PublishOrigin, PublishResult},
+    entry::ChangeRationale,
+    ids::AgentName,
+    package::source_bundle_from_tar_gz,
+};
 use common::e2e_serial_gate;
 use reqwest::StatusCode;
 use serde_json::Value;
@@ -44,7 +51,7 @@ struct RunningRunnerProcess {
 }
 
 impl RunningRunnerProcess {
-    async fn start(package_paths: &[PathBuf], event_poll_interval_secs: u64) -> Self {
+    async fn start(event_poll_interval_secs: u64) -> Self {
         let reserved = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let addr = reserved.local_addr().expect("local address");
         drop(reserved);
@@ -70,11 +77,13 @@ impl RunningRunnerProcess {
         let stdout = fs::File::create(&log_path).expect("create runner log");
         let stderr = stdout.try_clone().expect("clone runner log handle");
 
+        let repository_url = format!("http://{addr}/repository");
         let mut command = Command::new(env!("CARGO_BIN_EXE_baml-agent-runner"));
         command
-            .args(package_paths)
             .arg("--serve-http")
             .arg(addr.to_string())
+            .arg("--repository-url")
+            .arg(&repository_url)
             .arg("--repository-dir")
             .arg(&repository_dir)
             .arg("--state-dir")
@@ -122,6 +131,45 @@ impl Drop for RunningRunnerProcess {
         let _ = fs::remove_file(&self.log_path);
         let _ = fs::remove_dir_all(&self.repository_dir);
         let _ = fs::remove_dir_all(&self.state_dir);
+    }
+}
+
+/// Publishes a built `.tar.gz` through the runner's `/repository/publish` then deploys via `POST /deploy`.
+async fn publish_and_deploy_fixture(client: &reqwest::Client, base_url: &str, tar_path: &Path) {
+    let bytes = fs::read(tar_path).expect("read package tar");
+    let (_, source) =
+        source_bundle_from_tar_gz(&bytes).expect("parse package as repository source bundle");
+    let name_str = source.manifest.name().expect("manifest name in package");
+    let cmd = PublishCommand {
+        name: AgentName::from_str(name_str).expect("valid AgentName"),
+        source,
+        rationale: ChangeRationale::new("runner_callback_test").expect("non-empty rationale"),
+        origin: PublishOrigin::Original,
+    };
+    let publish_url = format!("{base_url}/repository/publish");
+    let resp = client
+        .post(&publish_url)
+        .json(&cmd)
+        .send()
+        .await
+        .expect("POST /repository/publish");
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        panic!("publish failed: {text}");
+    }
+    let result: PublishResult = resp.json().await.expect("PublishResult JSON");
+    let hash = result.hash.to_string();
+
+    let deploy_url = format!("{base_url}/deploy");
+    let deploy_resp = client
+        .post(&deploy_url)
+        .json(&serde_json::json!({ "hash": hash }))
+        .send()
+        .await
+        .expect("POST /deploy");
+    if !deploy_resp.status().is_success() {
+        let text = deploy_resp.text().await.unwrap_or_default();
+        panic!("deploy failed: {text}");
     }
 }
 
@@ -259,6 +307,24 @@ async fn wait_for_provenance_tool_call_status(
     }
 }
 
+fn parse_labelled_field<'a>(message: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("{key}=");
+    let start = message.find(&needle)? + needle.len();
+    let rest = &message[start..];
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let value = rest[..end].trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn parse_minted_dispatch_scope(text: &str) -> Option<(ContextId, TaskId)> {
+    let ctx = parse_labelled_field(text, "dispatchContextId")?;
+    let task = parse_labelled_field(text, "dispatchTaskId")?;
+    Some((
+        ContextId::from(ctx),
+        TaskId::from_external(ExternalId::new(task.to_string())),
+    ))
+}
+
 #[tokio::test]
 async fn runner_callback_delivery_honors_continuation_policy() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
@@ -268,8 +334,9 @@ async fn runner_callback_delivery_honors_continuation_policy() {
         build_agent_package_archive_to_temp(agent_fixture("dispatch-echo"), "dispatch-echo").await;
     let _package_cleanup = TempFileCleanup::new(package_path.clone());
 
-    let runner = RunningRunnerProcess::start(&[package_path], 1).await;
+    let runner = RunningRunnerProcess::start(1).await;
     let client = reqwest::Client::new();
+    publish_and_deploy_fixture(&client, &runner.base_url, &package_path).await;
 
     let detached_task_id = TaskId::from_external(ExternalId::new("dispatch-echo-detached-task"));
     let detached_context_id = ContextId::new(730, 1);
@@ -295,7 +362,21 @@ async fn runner_callback_delivery_honors_continuation_policy() {
         "expected detached callback scheduling confirmation, got texts={detached_texts:?} responses={detached_responses:?}"
     );
 
-    wait_for_provenance_tool_call_status(&client, &runner.base_url, None, None, true).await;
+    let schedule_line = detached_texts
+        .iter()
+        .find(|t| t.contains("dispatchContextId=") && t.contains("dispatchTaskId="))
+        .expect("detached schedule should surface minted dispatch scope in assistant text");
+    let (child_ctx, child_task) = parse_minted_dispatch_scope(schedule_line)
+        .expect("parse minted dispatch context_id and task_id");
+
+    wait_for_provenance_tool_call_status(
+        &client,
+        &runner.base_url,
+        Some(&child_ctx),
+        Some(&child_task),
+        true,
+    )
+    .await;
     wait_for_provenance_tool_call_status(
         &client,
         &runner.base_url,
@@ -364,8 +445,9 @@ async fn runner_callback_resume_current_task_defers_immediate_delivery_until_tur
         build_agent_package_archive_to_temp(agent_fixture("dispatch-echo"), "dispatch-echo").await;
     let _package_cleanup = TempFileCleanup::new(package_path.clone());
 
-    let runner = RunningRunnerProcess::start(&[package_path], 1).await;
+    let runner = RunningRunnerProcess::start(1).await;
     let client = reqwest::Client::new();
+    publish_and_deploy_fixture(&client, &runner.base_url, &package_path).await;
 
     let task_id = TaskId::from_external(ExternalId::new("dispatch-echo-immediate-resume-task"));
     let context_id = ContextId::new(731, 1);

@@ -190,6 +190,7 @@ async fn seeded_store_for_context(
                 outcome: Outcome::Success,
                 drift: None,
                 citations: vec![],
+                resolved_citations: vec![],
             },
         }))
         .await
@@ -221,6 +222,7 @@ async fn seeded_store_for_context(
                 outcome: Outcome::Failure,
                 drift: None,
                 citations: vec![],
+                resolved_citations: vec![],
             },
         }))
         .await
@@ -253,6 +255,7 @@ async fn seeded_store_for_context(
             None,
             caller_agent.clone(),
             500,
+            Vec::new(),
         ))
         .await
         .unwrap();
@@ -325,6 +328,7 @@ async fn seeded_store_for_context(
             None,
             caller_agent.clone(),
             900,
+            Vec::new(),
         ))
         .await
         .unwrap();
@@ -368,6 +372,7 @@ async fn seeded_store_for_context(
                 outcome: Outcome::Success,
                 drift: None,
                 citations: vec![],
+                resolved_citations: vec![],
             },
         }))
         .await

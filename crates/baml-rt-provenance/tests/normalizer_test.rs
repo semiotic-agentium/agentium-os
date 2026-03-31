@@ -5,7 +5,7 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     A2aRelationType, DefaultProvNormalizer, LlmUsage, ProvEvent, ProvNormalizer, normalize_event,
-    vocabulary::{a2a_relations, a2a_roles},
+    vocabulary::{a2a_roles, semantic_labels},
 };
 
 #[test]
@@ -85,7 +85,7 @@ fn normalize_intent_and_plan_revisions_emit_replaced_by_relations() {
         .expect("plan v2");
     assert!(plan_v2.derived_relations.iter().any(|rel| {
         matches!(rel.relation, A2aRelationType::PlanReplacedBy)
-            && rel.relation.as_str() == a2a_relations::PLAN_REPLACED_BY
+            && rel.relation.as_str() == semantic_labels::WAS_REPLACED_BY
     }));
 }
 
@@ -334,6 +334,7 @@ fn normalize_message_role_aliases_to_wire_constants() {
         None,
         agent_id,
         1,
+        Vec::new(),
     );
 
     let normalized = normalize_event(&event).expect("normalize message role alias");

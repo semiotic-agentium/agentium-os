@@ -16,6 +16,7 @@
 use serde_json::{Value, json};
 
 use crate::{
+    archive_read::{PageLimit, session_read_command_line},
     archive_refs::{HistoryEntry, RefTable},
     tools::ToolRegistry,
 };
@@ -94,6 +95,38 @@ pub enum RenderedEntry {
 /// Arguments: `(archive_ref, grep_pattern, offset, limit)`.
 pub type ArchiveReader<'a> = &'a dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>;
 
+/// Line caps and tool-call behaviour for [`render_projection_content`].
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectionRenderOptions {
+    pub tool_result: PageLimit,
+    pub tool_error: PageLimit,
+    pub send_done: PageLimit,
+    /// When the registry yields no invocation description, fall back to pretty-printed JSON args.
+    pub tool_call_fallback_json: bool,
+}
+
+impl Default for ProjectionRenderOptions {
+    fn default() -> Self {
+        Self {
+            tool_result: PageLimit::new(40),
+            tool_error: PageLimit::new(10),
+            send_done: PageLimit::default(),
+            tool_call_fallback_json: false,
+        }
+    }
+}
+
+/// Wider caps for episode replay / UI session-history mirroring (still bounded by [`PageLimit::MAX`]).
+#[must_use]
+pub fn episode_session_history_projection_options() -> ProjectionRenderOptions {
+    ProjectionRenderOptions {
+        tool_result: PageLimit::new(PageLimit::MAX),
+        tool_error: PageLimit::new(PageLimit::MAX),
+        send_done: PageLimit::default(),
+        tool_call_fallback_json: true,
+    }
+}
+
 /// Produce the `conversation_history` array for `ctx.tags`.
 ///
 /// `ref_table`: receives `#N` allocations for messages and tool-call descriptions.
@@ -106,7 +139,13 @@ pub fn project_prompt_context(
 ) -> Value {
     let mut history = Vec::with_capacity(items.len());
     for item in items {
-        match render_content(&item, registry, ref_table, archive_reader) {
+        match render_projection_content(
+            &item,
+            registry,
+            ref_table,
+            archive_reader,
+            ProjectionRenderOptions::default(),
+        ) {
             RenderedEntry::Filtered => {}
             RenderedEntry::One(c) => {
                 history.push(json!({ "role": item.role, "content": c }));
@@ -120,11 +159,32 @@ pub fn project_prompt_context(
     Value::Array(history)
 }
 
-fn render_content(
+/// Same rules as [`project_prompt_context`], as `(role, content)` pairs for one item.
+#[must_use]
+pub fn projection_history_pairs(
     item: &PromptProjectionItem,
     registry: &ToolRegistry,
     ref_table: &RefTable,
     archive_reader: Option<ArchiveReader<'_>>,
+    opts: ProjectionRenderOptions,
+) -> Vec<(String, String)> {
+    let role = item.role.clone();
+    match render_projection_content(item, registry, ref_table, archive_reader, opts) {
+        RenderedEntry::Filtered => Vec::new(),
+        RenderedEntry::One(c) => vec![(role, c)],
+        // SendDone only: header stays on the step role; archive body is a Read analogue for UI.
+        RenderedEntry::Two(a, b) => vec![(role.clone(), a), ("read".to_string(), b)],
+    }
+}
+
+/// Render one projection item using the same rules as prompt injection, with explicit caps.
+#[must_use]
+pub fn render_projection_content(
+    item: &PromptProjectionItem,
+    registry: &ToolRegistry,
+    ref_table: &RefTable,
+    archive_reader: Option<ArchiveReader<'_>>,
+    opts: ProjectionRenderOptions,
 ) -> RenderedEntry {
     match &item.content {
         PromptProjectionContent::Message(text) => {
@@ -139,7 +199,10 @@ fn render_content(
         }
 
         PromptProjectionContent::ToolCall { tool_name, args } => {
-            let desc = registry.describe_invocation_with_hint(Some(tool_name.as_str()), args);
+            let mut desc = registry.describe_invocation_with_hint(Some(tool_name.as_str()), args);
+            if desc.trim().is_empty() && opts.tool_call_fallback_json {
+                desc = serde_json::to_string_pretty(args).unwrap_or_else(|_| args.to_string());
+            }
             if desc.trim().is_empty() {
                 return RenderedEntry::Filtered;
             }
@@ -156,7 +219,7 @@ fn render_content(
                 &rendered,
                 None,
                 crate::archive_read::LineOffset::default(),
-                crate::archive_read::PageLimit::new(40),
+                opts.tool_result,
             );
             let formatted = crate::archive_read::format_cat_n(&page.lines);
             if formatted.trim().is_empty() {
@@ -172,7 +235,7 @@ fn render_content(
                 &rendered,
                 None,
                 crate::archive_read::LineOffset::default(),
-                crate::archive_read::PageLimit::new(10),
+                opts.tool_error,
             );
             let formatted = crate::archive_read::format_cat_n(&page.lines);
             if formatted.trim().is_empty() {
@@ -195,14 +258,8 @@ fn render_content(
                 } => {
                     // Two entries: header attributed to assistant, then the inline content
                     // (CLI command + numbered output) also attributed to assistant.
-                    match archive_reader.and_then(|r| {
-                        r(
-                            archive_ref,
-                            None,
-                            0,
-                            crate::archive_read::PageLimit::DEFAULT,
-                        )
-                    }) {
+                    match archive_reader.and_then(|r| r(archive_ref, None, 0, opts.send_done.get()))
+                    {
                         Some(content) => RenderedEntry::Two(header.clone(), content),
                         None => RenderedEntry::One(header.clone()),
                     }
@@ -215,10 +272,7 @@ fn render_content(
                 } => {
                     // pud-squashed: command line when we cannot resolve the archive; otherwise the
                     // reader returns grep_paginate/format_cat_n output only (controlled, not raw).
-                    let cmd = match grep.as_deref().filter(|g| !g.is_empty()) {
-                        Some(pat) => format!("grep -n '{pat}' {archive_ref}"),
-                        None => format!("cat -n {archive_ref}"),
-                    };
+                    let cmd = session_read_command_line(archive_ref, grep.as_deref());
                     match archive_reader
                         .and_then(|r| r(archive_ref, grep.as_deref(), *offset, *limit))
                     {

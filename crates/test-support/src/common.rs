@@ -21,7 +21,7 @@ pub use test_tools::{
     AddNumbersInput, AddNumbersOutput, AddNumbersTool, DelayedResponseTool, UppercaseTool,
     WeatherTool,
 };
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 /// Effect subscriber that captures all emitted `EffectEvent`s into a `Vec`.
 ///
@@ -47,14 +47,14 @@ impl EffectSubscriber for CapturingEffectSubscriber {
 pub async fn make_capturing_bridge(
     agent_id: baml_rt_core::ids::AgentId,
 ) -> (QuickJSBridge, Arc<CapturingEffectSubscriber>) {
-    let manager = Arc::new(Mutex::new(
+    let manager = Arc::new(RwLock::new(
         BamlRuntimeManager::new().expect("create BamlRuntimeManager"),
     ));
     let effect_bus = Arc::new(BusWithEffects::new());
     let capture = Arc::new(CapturingEffectSubscriber::default());
     effect_bus.subscribe_effect(capture.clone()).await;
     {
-        let mut guard = manager.lock().await;
+        let mut guard = manager.write().await;
         guard.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     }
     let mut bridge = QuickJSBridge::new(manager, agent_id)
@@ -292,7 +292,7 @@ pub fn fnox_has_clickup_key() -> bool {
     false
 }
 
-pub fn setup_baml_runtime(schema_path: &str) -> Arc<Mutex<BamlRuntimeManager>> {
+pub fn setup_baml_runtime(schema_path: &str) -> Arc<RwLock<BamlRuntimeManager>> {
     let mut manager = BamlRuntimeManager::builder()
         .with_fnox_llm_resolver(workspace_fnox_path())
         .build()
@@ -300,7 +300,7 @@ pub fn setup_baml_runtime(schema_path: &str) -> Arc<Mutex<BamlRuntimeManager>> {
     manager
         .load_schema(schema_path)
         .expect("Should load schema");
-    Arc::new(Mutex::new(manager))
+    Arc::new(RwLock::new(manager))
 }
 
 pub fn setup_baml_runtime_manager(schema_path: &str) -> BamlRuntimeManager {
@@ -333,7 +333,7 @@ pub fn setup_baml_runtime_manager_no_llm() -> BamlRuntimeManager {
         .expect("BamlRuntimeManager::builder().build() must succeed")
 }
 
-pub fn setup_baml_runtime_default() -> Arc<Mutex<BamlRuntimeManager>> {
+pub fn setup_baml_runtime_default() -> Arc<RwLock<BamlRuntimeManager>> {
     setup_baml_runtime(
         workspace_root()
             .join("baml_src")
@@ -342,7 +342,7 @@ pub fn setup_baml_runtime_default() -> Arc<Mutex<BamlRuntimeManager>> {
     )
 }
 
-pub fn setup_baml_runtime_from_fixture(fixture_name: &str) -> Arc<Mutex<BamlRuntimeManager>> {
+pub fn setup_baml_runtime_from_fixture(fixture_name: &str) -> Arc<RwLock<BamlRuntimeManager>> {
     let agent_dir = agent_fixture(fixture_name);
     assert!(
         agent_dir.join("baml_src").exists(),
@@ -357,7 +357,7 @@ fn quickjs_config_for_tests() -> QuickJSConfig {
     QuickJSConfig::new().with_max_attempts_ms(Some(45_000))
 }
 
-pub async fn setup_bridge(baml_manager: Arc<Mutex<BamlRuntimeManager>>) -> QuickJSBridge {
+pub async fn setup_bridge(baml_manager: Arc<RwLock<BamlRuntimeManager>>) -> QuickJSBridge {
     use baml_rt_core::{
         bus::{BusWithEffects, EffectEmitter, EffectLiveness},
         ids::AgentId,
@@ -369,7 +369,7 @@ pub async fn setup_bridge(baml_manager: Arc<Mutex<BamlRuntimeManager>>) -> Quick
     // Keep effect emission/liveness wiring aligned with runtime builder semantics.
     let effect_bus = Arc::new(BusWithEffects::new());
     {
-        let mut manager = baml_manager.lock().await;
+        let mut manager = baml_manager.write().await;
         manager.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     }
     let mut bridge = QuickJSBridge::new_with_config(baml_manager, temp_agent_id, config)

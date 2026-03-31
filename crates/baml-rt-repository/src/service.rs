@@ -255,6 +255,15 @@ impl RepositoryService {
         self.metadata.list_agents().await
     }
 
+    /// Version number the next [`publish`](Self::publish) for this agent will receive
+    /// (matches [`MetadataStore::insert_entry`](crate::storage::MetadataStore::insert_entry) logic).
+    pub async fn next_version_for_agent(&self, name: &AgentName) -> Result<u32> {
+        Ok(match self.get_latest(name).await? {
+            Some(prev) => prev.version_ref.version.as_u32().saturating_add(1),
+            None => 1,
+        })
+    }
+
     // -----------------------------------------------------------------------
     // Blob operations
     // -----------------------------------------------------------------------

@@ -21,7 +21,7 @@ use quickjs_runtime::{
     values::JsValueFacade,
 };
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
 
 use crate::baml::BamlRuntimeManager;
 
@@ -60,7 +60,7 @@ use types::{
 /// without holding the bridge lock (deadlock-free resume path).
 pub struct QuickJSBridge {
     runtime: Arc<QuickJsRuntimeFacade>,
-    baml_manager: Arc<Mutex<BamlRuntimeManager>>,
+    baml_manager: Arc<RwLock<BamlRuntimeManager>>,
     js_tools: HashSet<String>, // Track JavaScript-only tools
     agent_id: baml_rt_core::ids::AgentId,
     effect_liveness: Option<Arc<dyn EffectLiveness>>,
@@ -105,7 +105,7 @@ impl QuickJSBridge {
     /// * `baml_manager` - The BAML runtime manager to use
     /// * `agent_id` - REQUIRED agent ID for this bridge instance
     pub async fn new(
-        baml_manager: Arc<Mutex<BamlRuntimeManager>>,
+        baml_manager: Arc<RwLock<BamlRuntimeManager>>,
         agent_id: baml_rt_core::ids::AgentId,
     ) -> Result<Self> {
         Self::new_with_config(
@@ -123,7 +123,7 @@ impl QuickJSBridge {
     /// * `agent_id` - REQUIRED agent ID for this bridge instance
     /// * `config` - QuickJS runtime configuration options
     pub async fn new_with_config(
-        baml_manager: Arc<Mutex<BamlRuntimeManager>>,
+        baml_manager: Arc<RwLock<BamlRuntimeManager>>,
         agent_id: baml_rt_core::ids::AgentId,
         config: crate::runtime::QuickJSConfig,
     ) -> Result<Self> {
@@ -231,14 +231,14 @@ impl QuickJSBridge {
     pub(crate) fn runtime(&self) -> &Arc<QuickJsRuntimeFacade> {
         &self.runtime
     }
-    pub(crate) fn baml_manager(&self) -> &Arc<Mutex<BamlRuntimeManager>> {
+    pub(crate) fn baml_manager(&self) -> &Arc<RwLock<BamlRuntimeManager>> {
         &self.baml_manager
     }
 
     /// List all BAML function names registered in this bridge's runtime manager.
     /// Used by the runner to populate agent discovery entries at boot time.
     pub async fn list_baml_functions(&self) -> Vec<String> {
-        self.baml_manager.lock().await.list_functions()
+        self.baml_manager.read().await.list_functions()
     }
     pub(crate) fn invocation_context_registry(&self) -> &InvocationContextRegistrySlot {
         &self.invocation_context_registry
@@ -339,13 +339,11 @@ impl QuickJSBridge {
         tracing::info!("Registering BAML functions with QuickJS");
 
         {
-            let mut manager = self.baml_manager.lock().await;
+            let mut manager = self.baml_manager.write().await;
             manager.set_execution_sessions(self.execution_sessions.clone());
         }
 
-        let manager = self.baml_manager.lock().await;
-        let functions = manager.list_functions();
-        drop(manager); // Release lock before async operation
+        let functions = self.baml_manager.read().await.list_functions();
 
         // First, register helper functions that JavaScript can call to invoke BAML functions
         self.register_baml_invoke_helper().await?;

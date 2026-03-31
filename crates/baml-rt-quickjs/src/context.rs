@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use baml_rt_core::{Result, ids::AgentId};
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 use crate::{baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
 
@@ -49,11 +49,11 @@ impl BamlContext {
     /// use baml_rt::baml::BamlRuntimeManager;
     /// use baml_rt_core::ids::{AgentId, UuidId};
     /// use std::sync::Arc;
-    /// use tokio::sync::Mutex;
+    /// use tokio::sync::RwLock;
     ///
     /// # tokio_test::block_on(async {
-    /// let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::builder().build()?));
-    /// baml_manager.lock().await.load_schema("baml_src")?;
+    /// let baml_manager = Arc::new(RwLock::new(BamlRuntimeManager::builder().build()?));
+    /// baml_manager.write().await.load_schema("baml_src")?;
     ///
     /// // Create isolated context for user/request
     /// let agent_id = AgentId::from_uuid(
@@ -81,7 +81,7 @@ impl BamlContext {
     /// # }).unwrap();
     /// ```
     pub async fn new(
-        baml_manager: Arc<Mutex<BamlRuntimeManager>>,
+        baml_manager: Arc<RwLock<BamlRuntimeManager>>,
         agent_id: AgentId,
         metadata: Option<ContextMetadata>,
     ) -> Result<Self> {

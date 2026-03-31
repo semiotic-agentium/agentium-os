@@ -72,6 +72,30 @@ pub fn e2e_serial_gate() -> &'static Semaphore {
     GATE.get_or_init(|| Semaphore::new(1))
 }
 
+/// Seconds to use in CI (`CI` set) vs local runs — for stream idle, wall-clock envelopes, etc.
+///
+/// Not every `tests/*.rs` binary links all helpers; integration targets are feature-split.
+#[allow(dead_code)]
+pub fn e2e_secs_ci_or_local(ci_secs: u64, local_secs: u64) -> u64 {
+    if std::env::var_os("CI").is_some() {
+        ci_secs
+    } else {
+        local_secs
+    }
+}
+
+/// Load workspace `.env` when present. Missing file is normal (CI); other I/O is surfaced.
+///
+/// Not every `tests/*.rs` binary links all helpers; integration targets are feature-split.
+#[allow(dead_code)]
+pub fn try_load_dotenv_for_tests() {
+    match dotenvy::dotenv() {
+        Ok(_) => {}
+        Err(e) if e.not_found() => {}
+        Err(e) => eprintln!("dotenvy::dotenv: {e}"),
+    }
+}
+
 #[cfg(any(
     feature = "clickup",
     feature = "notion",
@@ -172,7 +196,7 @@ impl AgentRegistry for SingleAgentRegistry {
     async fn handle_dispatch(
         &self,
         key: &AgentRouteKey,
-        _request: AgentDispatchRequest,
+        request: AgentDispatchRequest,
     ) -> baml_rt_core::Result<AgentDispatchAck> {
         if key.agent_package.as_str() != self.package
             || key.agent_instance_id.as_str() != self.instance_id
@@ -183,9 +207,7 @@ impl AgentRegistry for SingleAgentRegistry {
                 key.agent_instance_id.as_str()
             )));
         }
-        Err(baml_rt_core::BamlRtError::FunctionNotFound(
-            "onDispatch".to_string(),
-        ))
+        self.agent.handle_dispatch(request).await
     }
 }
 
@@ -413,6 +435,35 @@ pub async fn build_slack_agent_to_temp_async() -> PathBuf {
         .join("agents")
         .join("slack-agent");
     build_agent_dir_to_temp_async(slack_agent_dir, "slack-agent").await
+}
+
+/// GET `/contexts/{context_id}/mermaid` with a 20s per-request timeout; panics on non-success HTTP.
+///
+/// Not every `tests/*.rs` binary links all helpers; integration targets are feature-split.
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[allow(dead_code)]
+pub async fn fetch_context_mermaid(
+    client: &reqwest::Client,
+    base_url: &str,
+    context_id: &str,
+) -> String {
+    use tokio::time::{Duration, timeout};
+    let url = format!("{base_url}/contexts/{context_id}/mermaid");
+    let mermaid_response = timeout(Duration::from_secs(20), client.get(&url).send())
+        .await
+        .expect("mermaid request timed out")
+        .expect("mermaid request failed");
+    assert!(
+        mermaid_response.status().is_success(),
+        "Expected 200 from /contexts/<context_id>/mermaid, got {}",
+        mermaid_response.status()
+    );
+    mermaid_response.text().await.expect("mermaid body")
 }
 
 /// POST to /a2a/sse and collect all JSON-RPC responses from the SSE stream.

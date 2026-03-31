@@ -14,7 +14,10 @@ use crate::{
 pub const DEFAULT_TEXT_PREVIEW_CHARS: usize = 240;
 
 /// Threshold classification for a scored response.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Variant declaration order is ascending severity: `Acceptable < Warn < Block`.
+/// Deriving `Ord` uses this order, so `[Warn, Acceptable, Block].iter().max()` gives `Block`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DriftSeverity {
     Acceptable,
@@ -29,6 +32,50 @@ impl DriftSeverity {
             Self::Warn => "warn",
             Self::Block => "block",
         }
+    }
+
+    /// Parse the canonical wire form (`"acceptable"`, `"warn"`, `"block"`).
+    /// Returns `Acceptable` on unrecognised input and logs an error.
+    pub fn from_wire_str(s: &str) -> Self {
+        match s {
+            "block" => Self::Block,
+            "warn" => Self::Warn,
+            "acceptable" => Self::Acceptable,
+            other => {
+                tracing::error!(
+                    severity = other,
+                    "Unrecognised DriftSeverity wire value; treating as Acceptable"
+                );
+                Self::Acceptable
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for DriftSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Narrow capability trait for types that can supply the two inputs the BIPIA firewall
+/// needs: `mean_similarity` and a count of positive (non-negated) citations.
+///
+/// Implemented by both [`CitationDriftAssessment`] (the scorer-internal type) and
+/// `LlmCitationDriftInfo` (the provenance persistence type), so that
+/// [`score_bipia_signal`] can be called from either the embedding crate's own tests
+/// or from the live `effect_subscriber.rs` path without duplicating the threshold logic.
+pub trait BipiaSignalInputs {
+    fn mean_similarity(&self) -> f32;
+    fn positive_citation_count(&self) -> usize;
+}
+
+impl BipiaSignalInputs for CitationDriftAssessment {
+    fn mean_similarity(&self) -> f32 {
+        self.mean_similarity
+    }
+    fn positive_citation_count(&self) -> usize {
+        self.per_citation.iter().filter(|c| !c.negated).count()
     }
 }
 
@@ -420,23 +467,20 @@ pub struct BipiaSignal {
 /// "query CRM" or "send email". Use step type metadata from the plan when available.
 pub fn score_bipia_signal(
     step_alignment: f32,
-    citation_assessment: &CitationDriftAssessment,
+    citation_assessment: &impl BipiaSignalInputs,
     step_threshold: Option<f32>,
     cite_threshold: Option<f32>,
 ) -> BipiaSignal {
     let step_threshold = step_threshold.unwrap_or(BIPIA_STEP_ALIGN_THRESHOLD);
     let cite_threshold = cite_threshold.unwrap_or(BIPIA_CITE_MEAN_THRESHOLD);
-    let positive_citation_count = citation_assessment
-        .per_citation
-        .iter()
-        .filter(|c| !c.negated)
-        .count();
+    let positive_citation_count = citation_assessment.positive_citation_count();
+    let mean_similarity = citation_assessment.mean_similarity();
     let flagged = step_alignment < step_threshold
-        && citation_assessment.mean_similarity > cite_threshold
+        && mean_similarity > cite_threshold
         && positive_citation_count > 0;
     BipiaSignal {
         step_alignment,
-        cite_mean: citation_assessment.mean_similarity,
+        cite_mean: mean_similarity,
         positive_citation_count,
         flagged,
         step_threshold,

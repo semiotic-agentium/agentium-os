@@ -579,7 +579,7 @@ pub(super) async fn register_baml_invoke_helper(bridge: &QuickJSBridge) -> Resul
                 let _in_flight_guard = InFlightGuard(guard_counter);
                 let run = async move {
                     context::with_scope(scope, async move {
-                        let manager = manager_for_promise.lock().await;
+                        let manager = manager_for_promise.read().await;
                         let invocation_scope = InvocationScope::new(scope_for_tools.clone());
                         let value = manager
                             .invoke_function(&invocation_scope, &func_name_clone, args_json)
@@ -735,7 +735,7 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
                 let step_executor = payload.get("step_executor").and_then(Value::as_str);
                 let selected_tool = payload.get("selected_tool").and_then(Value::as_str);
                 let policy = manager_clone
-                    .try_lock()
+                    .try_read()
                     .map(|guard| resolve_session_policy(&guard, step_executor, selected_tool))
                     .unwrap_or_default();
                 let allowed = policy.step_executor_allowed_ops(session_open, last_status);
@@ -822,7 +822,7 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
                 }
                 let tool_name = args[0].get_str();
                 let result = manager_clone3
-                    .try_lock()
+                    .try_read()
                     .ok()
                     .and_then(|guard| guard.resolve_tool_step_executor(tool_name));
                 match result {
@@ -1086,7 +1086,7 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                                     supersession,
                                 };
 
-                                let manager = manager_for_promise.lock().await;
+                                let manager = manager_for_promise.read().await;
                                 manager
                                     .emit_planning_intent_resolved(
                                         &emit_scope,
@@ -1218,7 +1218,7 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                                     (scope, epoch)
                                 };
 
-                                let manager = manager_for_promise.lock().await;
+                                let manager = manager_for_promise.read().await;
                                 manager
                                     .emit_planning_plan_generated(
                                         &emit_scope,
@@ -1285,7 +1285,7 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                                     event
                                 };
 
-                                let manager = manager_for_promise.lock().await;
+                                let manager = manager_for_promise.read().await;
                                 manager
                                     .emit_planning_step_status_changed(
                                         &event.scope,
@@ -1415,7 +1415,7 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                                 };
 
                                 if !abort_events.is_empty() {
-                                    let manager = manager_for_promise.lock().await;
+                                    let manager = manager_for_promise.read().await;
                                     for evt in abort_events {
                                         manager
                                             .emit_planning_step_status_changed(
@@ -1590,7 +1590,7 @@ pub(super) async fn register_baml_stream_helper(bridge: &QuickJSBridge) -> Resul
                 let run = async move {
                     context::with_scope(scope_for_scope.clone(), async move {
                         let inv = {
-                            let manager = manager_for_promise.lock().await;
+                            let manager = manager_for_promise.read().await;
                             manager.invoke_function_stream(
                                 &scope_for_scope,
                                 &func_name_clone,
@@ -1725,7 +1725,7 @@ pub(super) async fn register_baml_invoke_session_helper(bridge: &QuickJSBridge) 
                 let _in_flight_guard = InFlightGuard(guard_counter);
                 let run = async move {
                     context::with_scope(scope, async move {
-                        let manager = manager_for_promise.lock().await;
+                        let manager = manager_for_promise.read().await;
                         let invocation_scope = InvocationScope::new(scope_for_tools.clone());
                         let value = manager
                             .invoke_function(&invocation_scope, &func_name, args_json)
@@ -1820,7 +1820,7 @@ pub(super) async fn register_baml_stream_session_helper(bridge: &QuickJSBridge) 
                 let run = async move {
                     context::with_scope(scope, async move {
                         let inv = manager_for_promise
-                            .lock()
+                            .read()
                             .await
                             .invoke_function_stream(
                                 &scope_for_run,

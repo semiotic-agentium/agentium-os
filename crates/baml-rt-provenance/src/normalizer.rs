@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt,
+};
 
 use baml_rt_core::{
     BamlFunctionId,
@@ -27,9 +30,10 @@ use crate::{
         MessageEntityInput, MessageProcessingActivityId, MessageProcessingActivityInput,
         PlanEntityId, PlanEntityInput, PlanStepEntityId, PlanStepEntityInput,
         PromptRejectedActivityId, PromptRejectedActivityInput, RunnerRuntimeInstanceId,
-        TaskEntityId, TaskEntityInput, TaskExecutionActivityId, TaskExecutionActivityInput,
-        TaskStateEntityId, TaskStateEntityInput, ToolArgsEntityId, ToolArgsEntityInput,
-        ToolCallActivityId, ToolCallActivityInput,
+        SessionStepEntityId, SessionStepEntityInput, TaskEntityId, TaskEntityInput,
+        TaskExecutionActivityId, TaskExecutionActivityInput, TaskStateEntityId,
+        TaskStateEntityInput, ToolArgsEntityId, ToolArgsEntityInput, ToolCallActivityId,
+        ToolCallActivityInput,
     },
     types::{
         Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef,
@@ -107,19 +111,59 @@ pub trait ProvNormalizer: Send + Sync {
     ) -> Result<NormalizedProv>;
 }
 
+/// Typed composite key for call-scope deduplication: `context_id:scope_id:agent_id`.
+///
+/// `scope_id` is the message_id (Message scope) or task_id (Task scope).
+/// Used as the HashMap key in [`CallOrdinalState`] to track per-scope LLM/tool ordinal stacks.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ScopeKey {
+    ctx: String,
+    scope: String,
+    agent: String,
+}
+
+impl fmt::Display for ScopeKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}:{}", self.ctx, self.scope, self.agent)
+    }
+}
+
+/// FIFO queue of ordinals opened by `*Started` and consumed by matching `*Completed` events.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct OrdinalStack {
+    /// Ordinals for in-flight Started calls (same scope, same channel), in completion order.
+    open: VecDeque<u64>,
+    /// Next ordinal to assign for a new Started or for a Completed-without-Started (orphan).
+    next: u64,
+}
+
+/// LLM vs tool ordinal lanes: both use the same [`ScopeKey`] but must not share ordinals.
+#[derive(Debug, Clone, Copy)]
+enum CallOrdinalChannel {
+    Llm,
+    Tool,
+}
+
 /// State for deriving call ordinals from event stream order.
-/// Tracks per-scope call counts and maps completed LLM event IDs to (scope_key, ordinal)
-/// for PromptRejected resolution.
+/// Normalizer-internal write-time state for tracking call ordinals and supersession edges.
+///
+/// This state exists only during the normalization phase (write path). It must **not** leak to
+/// read paths — read paths reconstruct ordering from graph edges and the persisted
+/// `event_order` property.
 #[derive(Debug, Default)]
-pub struct CallOrdinalState {
-    /// scope_key -> count of Started events seen (ordinal for next Started).
-    pub call_counts: HashMap<String, u64>,
+pub(crate) struct CallOrdinalState {
+    /// Per-scope LLM call ordinals (paired Started/Completed, or monotonic orphans).
+    pub(crate) llm_ordinals: HashMap<ScopeKey, OrdinalStack>,
+    /// Per-scope tool call ordinals (paired Started/Completed, or monotonic orphans).
+    pub(crate) tool_ordinals: HashMap<ScopeKey, OrdinalStack>,
     /// activity_anchor.as_str() -> (scope_key, ordinal) for completed LLM calls; used by PromptRejected.
-    pub llm_event_to_scope_ordinal: HashMap<String, (String, u64)>,
+    pub(crate) llm_event_to_scope_ordinal: HashMap<String, (ScopeKey, u64)>,
+    /// `ToolCallCompleted` event anchor -> derived ToolCall activity id (session SendDone influence edges).
+    pub(crate) tool_call_anchor_to_activity: HashMap<String, ProvActivityId>,
     /// task_id.as_str() -> latest canonical intent entity id.
-    pub latest_intent_entity_by_task: HashMap<String, ProvEntityId>,
+    pub(crate) latest_intent_entity_by_task: HashMap<String, ProvEntityId>,
     /// task_id.as_str() -> latest canonical plan entity id.
-    pub latest_plan_entity_by_task: HashMap<String, ProvEntityId>,
+    pub(crate) latest_plan_entity_by_task: HashMap<String, ProvEntityId>,
 }
 
 #[derive(Debug, Default)]
@@ -154,6 +198,7 @@ pub struct A2aDerivedRelation {
 #[derive(Debug, Clone, Copy)]
 pub enum A2aRelationType {
     TaskHasMessage,
+    TaskHasSessionStep,
     TaskHasArtifact,
     TaskCall,
     TaskStatusTransition,
@@ -164,21 +209,46 @@ pub enum A2aRelationType {
     PlanRefinedBy,
     /// Citation from archive / observation (`@N`); maps to `WAS_INFORMED_BY` when persisted as a derived edge.
     InformedByObservation,
+    /// `SendDone` session step informed by the tool invocation that produced the archived payload.
+    InformedByToolInvocation,
+    /// LLM decision cited a specific evidence source (`#N` history or `@N` archive).
+    CitedSource,
+    HasIntent,
+    HasPlan,
+    /// Detached callback: dispatch task → scheduling task ([`semantic_labels::WAS_SCHEDULED_FROM`]).
+    CallbackDispatchScheduledFrom,
 }
 
 impl A2aRelationType {
+    /// The DB `rel_type` string exactly as written to `prov_edge` by the write batch.
+    ///
+    /// For variants whose write-batch arm is special-cased (CitedSource, HasIntent, HasPlan,
+    /// IntentReplacedBy/Refined, PlanReplacedBy/Refined, InformedByToolInvocation), this
+    /// returns the `semantic_labels` value that is actually stored. The variants that are
+    /// handled by the write-batch's dynamic fall-through arm return the `a2a_relations` value
+    /// which doubles as their canonical rel_type string.
     pub fn as_str(&self) -> &'static str {
+        use crate::vocabulary::semantic_labels;
         match self {
+            // Dynamic arm: write batch calls `relation.relation.as_str()` — these strings ARE the DB rel_type.
             A2aRelationType::TaskHasMessage => a2a_relations::TASK_MESSAGE,
+            A2aRelationType::TaskHasSessionStep => a2a_relations::TASK_SESSION_STEP,
             A2aRelationType::TaskHasArtifact => a2a_relations::TASK_ARTIFACT,
             A2aRelationType::TaskCall => a2a_relations::TASK_CALL,
             A2aRelationType::TaskStatusTransition => a2a_relations::TASK_STATUS_TRANSITION,
             A2aRelationType::MessageCall => a2a_relations::MESSAGE_CALL,
-            A2aRelationType::IntentReplacedBy => a2a_relations::INTENT_REPLACED_BY,
-            A2aRelationType::IntentRefinedBy => a2a_relations::INTENT_REFINED_BY,
-            A2aRelationType::PlanReplacedBy => a2a_relations::PLAN_REPLACED_BY,
-            A2aRelationType::PlanRefinedBy => a2a_relations::PLAN_REFINED_BY,
+            // Reserved variant — never emitted; a2a_relation_types prov_type is used instead.
             A2aRelationType::InformedByObservation => a2a_relations::INFORMED_BY_OBSERVATION,
+            // Special-cased in write batch — return the semantic_labels value that IS stored.
+            A2aRelationType::IntentReplacedBy => semantic_labels::WAS_REPLACED_BY,
+            A2aRelationType::IntentRefinedBy => semantic_labels::WAS_REFINED_BY,
+            A2aRelationType::PlanReplacedBy => semantic_labels::WAS_REPLACED_BY,
+            A2aRelationType::PlanRefinedBy => semantic_labels::WAS_REFINED_BY,
+            A2aRelationType::InformedByToolInvocation => semantic_labels::WAS_INFORMED_BY,
+            A2aRelationType::CitedSource => semantic_labels::CITED,
+            A2aRelationType::HasIntent => semantic_labels::HAS_INTENT,
+            A2aRelationType::HasPlan => semantic_labels::HAS_PLAN,
+            A2aRelationType::CallbackDispatchScheduledFrom => semantic_labels::WAS_SCHEDULED_FROM,
         }
     }
 }
@@ -196,7 +266,7 @@ struct FailureResolution {
 
 struct FailureClassificationTarget {
     call_kind: &'static str,
-    scope_key: String,
+    scope_key: ScopeKey,
     ordinal: u64,
     failed_activity_id: ProvActivityId,
     evidence_entity: Option<ProvEntityId>,
@@ -229,6 +299,14 @@ fn metadata_json_field(metadata: &Value, key: &str) -> Option<Value> {
         Value::Object(map) if map.is_empty() => None,
         _ => Some(value),
     }
+}
+
+/// Extract `agent_id` from untyped metadata JSON.
+///
+/// Centralises the `metadata.get("agent_id").and_then(Value::as_str)` pattern so that
+/// the field name and extraction logic live in exactly one place.
+fn extract_agent_id(metadata: &Value) -> Option<&str> {
+    metadata.get("agent_id").and_then(Value::as_str)
 }
 
 fn model_from_value(value: &Value) -> Option<String> {
@@ -374,15 +452,18 @@ fn classify_failure_from_metadata(metadata: &Value) -> FailureResolution {
 
 /// Build deterministic scope key from operational identifiers: context_id:scope_id:agent_id.
 /// Scope_id is message_id (Message scope) or task_id (Task scope).
-fn build_call_scope_key(event: &ProvEvent, scope: &CallScope, metadata: &Value) -> Result<String> {
-    let context_id = event.context_id().as_str();
-    let agent_id = metadata
-        .get("agent_id")
-        .and_then(|v| v.as_str())
+fn build_call_scope_key(
+    event: &ProvEvent,
+    scope: &CallScope,
+    metadata: &Value,
+) -> Result<ScopeKey> {
+    let context_id = event.context_id().as_str().to_string();
+    let agent_id = extract_agent_id(metadata)
         .ok_or_else(|| ProvenanceError::MissingField {
             activity_anchor: event.id().as_str().to_string(),
             field: "metadata.agent_id".to_string(),
-        })?;
+        })?
+        .to_string();
     let scope_id = match scope {
         CallScope::Message { message_id } => message_id.as_str().to_string(),
         CallScope::Task { task_id } => {
@@ -401,25 +482,42 @@ fn build_call_scope_key(event: &ProvEvent, scope: &CallScope, metadata: &Value) 
             task_id.as_str().to_string()
         }
     };
-    Ok(format!("{context_id}:{scope_id}:{agent_id}"))
+    Ok(ScopeKey {
+        ctx: context_id,
+        scope: scope_id,
+        agent: agent_id,
+    })
 }
 
-/// Get ordinal for Started (increment after) or Completed (use current-1, no change to count).
+/// Assign ordinal for `*Started` / `*Completed` within one channel (`llm` vs `tool`) and scope.
+///
+/// - Each **Started** allocates `next`, pushes it onto `open`, and returns it.
+/// - Each **Completed** pops the front of `open` (FIFO — first started completes first).
+/// - **Orphan Completed** (no prior Started in this scope for this channel): allocate `next`
+///   and advance it so consecutive completed-only events do not collapse to the same derived
+///   activity id (which would drop failure-classification edges and corrupt ops rows).
 fn get_ordinal_for_call(
     call_state: &mut CallOrdinalState,
-    scope_key: &str,
+    scope_key: &ScopeKey,
     is_started: bool,
+    channel: CallOrdinalChannel,
 ) -> u64 {
-    let count = call_state
-        .call_counts
-        .entry(scope_key.to_string())
-        .or_insert(0);
+    let map = match channel {
+        CallOrdinalChannel::Llm => &mut call_state.llm_ordinals,
+        CallOrdinalChannel::Tool => &mut call_state.tool_ordinals,
+    };
+    let st = map.entry(scope_key.clone()).or_default();
     if is_started {
-        let o = *count;
-        *count += 1;
+        let o = st.next;
+        st.next += 1;
+        st.open.push_back(o);
         o
     } else {
-        count.saturating_sub(1)
+        st.open.pop_front().unwrap_or_else(|| {
+            let o = st.next;
+            st.next += 1;
+            o
+        })
     }
 }
 
@@ -452,8 +550,10 @@ fn normalize_event_with_registry(
             metadata,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
-            let ordinal = get_ordinal_for_call(call_state, &scope_key, true);
-            let activity_id = llm_activity_id(&scope_key, ordinal);
+            let ordinal =
+                get_ordinal_for_call(call_state, &scope_key, true, CallOrdinalChannel::Llm);
+            let scope_key_str = scope_key.to_string();
+            let activity_id = llm_activity_id(&scope_key_str, ordinal);
             let mut attrs = base_attrs(event);
             let (resolved_client, resolved_model) =
                 canonicalize_llm_client_model(event, client, model, prompt, metadata)?;
@@ -470,16 +570,9 @@ fn normalize_event_with_registry(
                     Value::String(fid.prompt_name().as_str().to_string()),
                 );
             }
-            let agent_id = metadata
-                .get("agent_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| ProvenanceError::MissingField {
-                    activity_anchor: event.id().as_str().to_string(),
-                    field: "metadata.agent_id".to_string(),
-                })?;
             attrs.insert(
                 a2a::AGENT_ID.to_string(),
-                Value::String(agent_id.to_string()),
+                Value::String(scope_key.agent.clone()),
             );
             if let Some(plan_id) = metadata_string_field(metadata, "plan_id") {
                 attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id));
@@ -509,7 +602,7 @@ fn normalize_event_with_registry(
                 },
             );
 
-            let prompt_id = llm_prompt_entity_id(&scope_key, ordinal);
+            let prompt_id = llm_prompt_entity_id(&scope_key_str, ordinal);
             let mut prompt_attrs = base_attrs(event);
             prompt_attrs.insert(a2a::PROMPT.to_string(), prompt.clone());
             doc.insert_entity(
@@ -555,14 +648,17 @@ fn normalize_event_with_registry(
             outcome,
             drift,
             citations,
+            resolved_citations,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
-            let ordinal = get_ordinal_for_call(call_state, &scope_key, false);
+            let ordinal =
+                get_ordinal_for_call(call_state, &scope_key, false, CallOrdinalChannel::Llm);
+            let scope_key_str = scope_key.to_string();
             call_state.llm_event_to_scope_ordinal.insert(
                 event.id().as_str().to_string(),
                 (scope_key.clone(), ordinal),
             );
-            let activity_id = llm_activity_id(&scope_key, ordinal);
+            let activity_id = llm_activity_id(&scope_key_str, ordinal);
             let mut attrs = base_attrs(event);
             let (resolved_client, resolved_model) =
                 canonicalize_llm_client_model(event, client, model, prompt, metadata)?;
@@ -579,16 +675,9 @@ fn normalize_event_with_registry(
                     Value::String(fid.prompt_name().as_str().to_string()),
                 );
             }
-            let agent_id = metadata
-                .get("agent_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| ProvenanceError::MissingField {
-                    activity_anchor: event.id().as_str().to_string(),
-                    field: "metadata.agent_id".to_string(),
-                })?;
             attrs.insert(
                 a2a::AGENT_ID.to_string(),
-                Value::String(agent_id.to_string()),
+                Value::String(scope_key.agent.clone()),
             );
             if let Some(plan_id) = metadata_string_field(metadata, "plan_id") {
                 attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id));
@@ -652,11 +741,16 @@ fn normalize_event_with_registry(
                 attrs.insert(a2a::DRIFT_SCORE.to_string(), serde_json::json!(drift.score));
                 attrs.insert(
                     a2a::DRIFT_SEVERITY.to_string(),
-                    Value::String(drift.severity.clone()),
+                    Value::String(drift.severity.as_str().to_owned()),
                 );
                 attrs.insert(
                     a2a::DRIFT_MODE.to_string(),
-                    Value::String(drift.mode.clone()),
+                    Value::String(
+                        serde_json::to_string(&drift.mode)
+                            .unwrap_or_default()
+                            .trim_matches('"')
+                            .to_owned(),
+                    ),
                 );
                 attrs.insert(
                     a2a::DRIFT_WARN_MIN_SCORE.to_string(),
@@ -696,7 +790,7 @@ fn normalize_event_with_registry(
                     );
                     attrs.insert(
                         a2a::PLAN_DRIFT_COMPOSITE_SEVERITY.to_string(),
-                        Value::String(plan_drift.composite_severity().to_string()),
+                        Value::String(plan_drift.composite_severity().as_str().to_owned()),
                     );
                     // PlanCommitted-only fields: step alignment and XE score.
                     if let LlmPlanDriftInfo::PlanCommitted {
@@ -721,9 +815,6 @@ fn normalize_event_with_registry(
                     attrs.insert(a2a::CITATION_DRIFT.to_string(), v);
                 }
             }
-            // Store raw citations on the activity for query API + future Phase 3 WAS_DERIVED_FROM edges.
-            // Full edge creation (resolving #N/@N → activity_anchor via RefTable) is deferred until
-            // the step executor passes resolved anchors alongside each citation.
             if !citations.is_empty() {
                 attrs.insert(
                     "citations".to_string(),
@@ -734,6 +825,39 @@ fn normalize_event_with_registry(
                             .collect(),
                     ),
                 );
+            }
+            for rc in resolved_citations {
+                // Write-time cross-reference: the target node was created in a prior
+                // normalization pass using SessionStepEntityId conventions. We reconstruct
+                // the same ID using the target_node_id which was built by the effect
+                // subscriber at event emission time.
+                let target_entity = ProvEntityId::from_write_time_node_id(&rc.target_node_id);
+                let mut edge_attrs = HashMap::new();
+                edge_attrs.insert(
+                    "prov_type".to_string(),
+                    Value::String(a2a_relation_types::CITED.to_string()),
+                );
+                if !rc.raw.is_empty() {
+                    edge_attrs.insert("raw".to_string(), Value::String(rc.raw.clone()));
+                }
+                if rc.negated {
+                    edge_attrs.insert("negated".to_string(), Value::Bool(true));
+                }
+                if let Some(sim) = rc.similarity {
+                    edge_attrs.insert("similarity".to_string(), serde_json::json!(sim));
+                }
+                if let Some(ls) = rc.line_start {
+                    edge_attrs.insert("line_start".to_string(), Value::from(ls as u64));
+                }
+                if let Some(le) = rc.line_end {
+                    edge_attrs.insert("line_end".to_string(), Value::from(le as u64));
+                }
+                derived_relations.push(A2aDerivedRelation {
+                    relation: A2aRelationType::CitedSource,
+                    from: ProvNodeRef::Activity(activity_id.clone()),
+                    to: ProvNodeRef::Entity(target_entity),
+                    attributes: edge_attrs,
+                });
             }
             let is_success = bool::from(*outcome);
             let failure_resolution = if is_success {
@@ -770,7 +894,7 @@ fn normalize_event_with_registry(
                 },
             );
 
-            let prompt_id = llm_prompt_entity_id(&scope_key, ordinal);
+            let prompt_id = llm_prompt_entity_id(&scope_key_str, ordinal);
             let mut prompt_attrs = base_attrs(event);
             prompt_attrs.insert(a2a::PROMPT.to_string(), prompt.clone());
             doc.insert_entity(
@@ -790,7 +914,7 @@ fn normalize_event_with_registry(
                 let resolution = failure_resolution
                     .as_ref()
                     .expect("failed outcome must carry failure resolution");
-                let evidence_prompt_id = llm_prompt_entity_id(&scope_key, ordinal);
+                let evidence_prompt_id = llm_prompt_entity_id(&scope_key_str, ordinal);
                 upsert_failure_classification(
                     &mut doc,
                     event,
@@ -837,7 +961,8 @@ fn normalize_event_with_registry(
                             .to_string(),
                 })?
                 .clone();
-            let activity_id = prompt_rejected_activity_id(&scope_key, ordinal);
+            let scope_key_str = scope_key.to_string();
+            let activity_id = prompt_rejected_activity_id(&scope_key_str, ordinal);
             let mut attrs = base_attrs(event);
             attrs.insert(a2a::REASON.to_string(), Value::String(reason.clone()));
             let ts = event.timestamp_ms();
@@ -850,7 +975,7 @@ fn normalize_event_with_registry(
                     attributes: attrs,
                 },
             );
-            let prompt_id = llm_prompt_entity_id(&scope_key, ordinal);
+            let prompt_id = llm_prompt_entity_id(&scope_key_str, ordinal);
             insert_used(
                 &mut doc,
                 activity_id.clone(),
@@ -888,8 +1013,8 @@ fn normalize_event_with_registry(
                     code: None,
                 }
             };
-            let failed_llm_activity = llm_activity_id(&scope_key, ordinal);
-            let evidence_prompt_id = llm_prompt_entity_id(&scope_key, ordinal);
+            let failed_llm_activity = llm_activity_id(&scope_key_str, ordinal);
+            let evidence_prompt_id = llm_prompt_entity_id(&scope_key_str, ordinal);
             upsert_failure_classification(
                 &mut doc,
                 event,
@@ -929,8 +1054,10 @@ fn normalize_event_with_registry(
             delegation_target,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
-            let ordinal = get_ordinal_for_call(call_state, &scope_key, true);
-            let activity_id = tool_activity_id(&scope_key, ordinal);
+            let ordinal =
+                get_ordinal_for_call(call_state, &scope_key, true, CallOrdinalChannel::Tool);
+            let scope_key_str = scope_key.to_string();
+            let activity_id = tool_activity_id(&scope_key_str, ordinal);
             let mut attrs = base_attrs(event);
             attrs.insert(a2a::TOOL_NAME.to_string(), Value::String(tool_name.clone()));
             if let Some(function_name) = function_name {
@@ -939,16 +1066,9 @@ fn normalize_event_with_registry(
                     Value::String(function_name.clone()),
                 );
             }
-            let agent_id = metadata
-                .get("agent_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| ProvenanceError::MissingField {
-                    activity_anchor: event.id().as_str().to_string(),
-                    field: "metadata.agent_id".to_string(),
-                })?;
             attrs.insert(
                 a2a::AGENT_ID.to_string(),
-                Value::String(agent_id.to_string()),
+                Value::String(scope_key.agent.clone()),
             );
             if let Some(plan_id) = metadata_string_field(metadata, "plan_id") {
                 attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id));
@@ -981,7 +1101,7 @@ fn normalize_event_with_registry(
                 },
             );
 
-            let args_id = tool_args_entity_id(&scope_key, ordinal);
+            let args_id = tool_args_entity_id(&scope_key_str, ordinal);
             let mut args_attrs = base_attrs(event);
             args_attrs.insert(a2a::ARGS.to_string(), args.clone());
             doc.insert_entity(
@@ -998,7 +1118,7 @@ fn normalize_event_with_registry(
                 Some(a2a_roles::ARGS.to_string()),
             );
             if let Some(agent_package) = delegation_target {
-                let delegation_id = delegation_target_entity_id(&scope_key, ordinal);
+                let delegation_id = delegation_target_entity_id(&scope_key_str, ordinal);
                 let mut delegation_attrs = base_attrs(event);
                 delegation_attrs.insert(
                     a2a::DELEGATION_TARGET.to_string(),
@@ -1047,8 +1167,10 @@ fn normalize_event_with_registry(
             delegation_target,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
-            let ordinal = get_ordinal_for_call(call_state, &scope_key, false);
-            let activity_id = tool_activity_id(&scope_key, ordinal);
+            let ordinal =
+                get_ordinal_for_call(call_state, &scope_key, false, CallOrdinalChannel::Tool);
+            let scope_key_str = scope_key.to_string();
+            let activity_id = tool_activity_id(&scope_key_str, ordinal);
             let mut attrs = base_attrs(event);
             attrs.insert(a2a::TOOL_NAME.to_string(), Value::String(tool_name.clone()));
             if let Some(function_name) = function_name {
@@ -1057,16 +1179,9 @@ fn normalize_event_with_registry(
                     Value::String(function_name.clone()),
                 );
             }
-            let agent_id = metadata
-                .get("agent_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| ProvenanceError::MissingField {
-                    activity_anchor: event.id().as_str().to_string(),
-                    field: "metadata.agent_id".to_string(),
-                })?;
             attrs.insert(
                 a2a::AGENT_ID.to_string(),
-                Value::String(agent_id.to_string()),
+                Value::String(scope_key.agent.clone()),
             );
             if let Some(plan_id) = metadata_string_field(metadata, "plan_id") {
                 attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id));
@@ -1135,8 +1250,11 @@ fn normalize_event_with_registry(
                     attributes: attrs,
                 },
             );
+            call_state
+                .tool_call_anchor_to_activity
+                .insert(event.id().as_str().to_string(), activity_id.clone());
 
-            let args_id = tool_args_entity_id(&scope_key, ordinal);
+            let args_id = tool_args_entity_id(&scope_key_str, ordinal);
             let mut args_attrs = base_attrs(event);
             args_attrs.insert(a2a::ARGS.to_string(), args.clone());
             doc.insert_entity(
@@ -1156,7 +1274,7 @@ fn normalize_event_with_registry(
                 let resolution = failure_resolution
                     .as_ref()
                     .expect("failed outcome must carry failure resolution");
-                let evidence_args_id = tool_args_entity_id(&scope_key, ordinal);
+                let evidence_args_id = tool_args_entity_id(&scope_key_str, ordinal);
                 upsert_failure_classification(
                     &mut doc,
                     event,
@@ -1171,7 +1289,7 @@ fn normalize_event_with_registry(
                 );
             }
             if let Some(agent_package) = delegation_target {
-                let delegation_id = delegation_target_entity_id(&scope_key, ordinal);
+                let delegation_id = delegation_target_entity_id(&scope_key_str, ordinal);
                 let mut delegation_attrs = base_attrs(event);
                 delegation_attrs.insert(
                     a2a::DELEGATION_TARGET.to_string(),
@@ -1260,9 +1378,12 @@ fn normalize_event_with_registry(
                 Some(a2a_roles::ARCHIVE.to_string()),
             );
 
-            // Create AgentRuntimeInstance agent (agent_id derivable from id: agent_instance:{agent_id}).
             let instance_agent_id = agent_runtime_instance_id(agent_id);
             let mut instance_attrs = base_attrs(event);
+            instance_attrs.insert(
+                a2a::AGENT_ID.to_string(),
+                Value::String(agent_id.as_str().to_string()),
+            );
             instance_attrs.insert(
                 a2a::AGENT_TYPE.to_string(),
                 Value::String(agent_type.as_str().to_string()),
@@ -1539,7 +1660,7 @@ fn normalize_event_with_registry(
             supersession,
             revision_intent_drift,
         } => {
-            let _task_entity = ensure_task_entity(&mut doc, task_id);
+            let task_entity = ensure_task_entity(&mut doc, task_id);
             let intent_entity = intent_entity_id(task_id, intent_id);
             let mut intent_attrs = base_attrs(event);
             intent_attrs.insert(
@@ -1577,6 +1698,13 @@ fn normalize_event_with_registry(
                 },
             );
 
+            derived_relations.push(A2aDerivedRelation {
+                relation: A2aRelationType::HasIntent,
+                from: ProvNodeRef::Entity(task_entity),
+                to: ProvNodeRef::Entity(intent_entity.clone()),
+                attributes: HashMap::new(),
+            });
+
             let task_key = task_id.as_str().to_string();
             if let Some(previous) = call_state
                 .latest_intent_entity_by_task
@@ -1605,7 +1733,7 @@ fn normalize_event_with_registry(
             steps,
             supersession,
         } => {
-            let _task_entity = ensure_task_entity(&mut doc, task_id);
+            let task_entity = ensure_task_entity(&mut doc, task_id);
             let intent_entity = intent_entity_id(task_id, intent_id);
             let mut intent_attrs = doc
                 .entity(&intent_entity)
@@ -1642,6 +1770,13 @@ fn normalize_event_with_registry(
                 },
             );
             insert_was_derived_from(&mut doc, plan_entity.clone(), intent_entity, None, None);
+
+            derived_relations.push(A2aDerivedRelation {
+                relation: A2aRelationType::HasPlan,
+                from: ProvNodeRef::Entity(task_entity),
+                to: ProvNodeRef::Entity(plan_entity.clone()),
+                attributes: HashMap::new(),
+            });
 
             for step in steps {
                 let step_entity = plan_step_entity_id(task_id, plan_id, &step.step_id);
@@ -1751,6 +1886,7 @@ fn normalize_event_with_registry(
             content,
             metadata: _,
             agent_id: _,
+            citations: _,
         }
         | ProvEventData::MessageSent {
             id,
@@ -1758,7 +1894,14 @@ fn normalize_event_with_registry(
             content,
             metadata: _,
             agent_id: _,
+            citations: _,
         } => {
+            // Collect citations only for MessageSent — MessageReceived citations are
+            // not expected in normal flows; we match them as _ above.
+            let msg_citations: &[baml_rt_core::Citation] = match event.data() {
+                ProvEventData::MessageSent { citations, .. } => citations,
+                _ => &[],
+            };
             let canonical_role = canonical_message_role(event, role)?;
             let message_id = message_entity_id(event.context_id(), id);
             let mut message_attrs = base_attrs(event);
@@ -1860,6 +2003,48 @@ fn normalize_event_with_registry(
                 _ => {}
             }
 
+            // Write CITED graph edges for each citation produced by the agent in this
+            // message. The `to_id` is a deterministic citation-stub entity whose ID encodes
+            // the context + raw citation string, so the edge is self-consistent without
+            // needing a live RefTable. The `raw` edge attribute carries the original
+            // citation string (#N, @N, …) for graph-traversal consumers.
+            for citation in msg_citations {
+                let raw = citation.as_str();
+                // Deterministic stub entity ID so re-normalizing the same event is idempotent.
+                let stub_id = ProvEntityId::from_write_time_node_id(format!(
+                    "citation-ref:{}:{raw}",
+                    event.context_id().as_str()
+                ));
+                // Upsert a lightweight stub entity so the edge target is valid.
+                doc.insert_entity(
+                    stub_id.clone(),
+                    Entity {
+                        prov_type: Some("CitationRef".to_string()),
+                        attributes: {
+                            let mut a = HashMap::new();
+                            a.insert("raw".to_string(), Value::String(raw.to_string()));
+                            a.insert(
+                                a2a::CONTEXT_ID.to_string(),
+                                Value::String(event.context_id().as_str().to_string()),
+                            );
+                            a
+                        },
+                    },
+                );
+                let mut edge_attrs = HashMap::new();
+                edge_attrs.insert(
+                    "prov_type".to_string(),
+                    Value::String(a2a_relation_types::CITED.to_string()),
+                );
+                edge_attrs.insert("raw".to_string(), Value::String(raw.to_string()));
+                derived_relations.push(A2aDerivedRelation {
+                    relation: A2aRelationType::CitedSource,
+                    from: ProvNodeRef::Entity(message_id.clone()),
+                    to: ProvNodeRef::Entity(stub_id),
+                    attributes: edge_attrs,
+                });
+            }
+
             if let Some(task_id) = event.task_id() {
                 let task_entity = ensure_task_entity(&mut doc, task_id);
 
@@ -1903,10 +2088,23 @@ fn normalize_event_with_registry(
             grep,
             offset: _,
             limit: _,
-            ..
+            scope,
+            informed_by_tool_activity_anchor,
         } => {
-            let step_id = format!("session-step:{}", event.id().as_str());
+            let session_scope_task: Option<&TaskId> = match scope {
+                CallScope::Task { task_id } => Some(task_id),
+                CallScope::Message { .. } => None,
+            };
+            let step_id = ProvEntityId::derived::<SessionStepEntityId>(SessionStepEntityInput {
+                event_anchor: event.id().as_str(),
+            });
             let mut attrs = base_attrs(event);
+            if let Some(tid) = session_scope_task {
+                attrs.insert(
+                    a2a::TASK_ID.to_string(),
+                    Value::String(tid.as_str().to_string()),
+                );
+            }
             attrs.insert(a2a::TOOL_NAME.to_string(), Value::String(tool_name.clone()));
             attrs.insert("session_id".to_string(), Value::String(session_id.clone()));
             attrs.insert("op_kind".to_string(), Value::String(op_kind.clone()));
@@ -1919,17 +2117,82 @@ fn normalize_event_with_registry(
             if let Some(g) = grep {
                 attrs.insert("grep".to_string(), Value::String(g.clone()));
             }
-            // Use serde round-trip to construct ProvEntityId from a raw string.
-            let entity_id: ProvEntityId =
-                serde_json::from_value(serde_json::Value::String(step_id.clone()))
-                    .expect("ProvEntityId serde is transparent String");
+            if let Some(a) = informed_by_tool_activity_anchor {
+                attrs.insert(
+                    "informed_by_tool_activity_anchor".to_string(),
+                    Value::String(a.clone()),
+                );
+            }
+            let entity_id = step_id;
             doc.insert_entity(
-                entity_id,
+                entity_id.clone(),
                 Entity {
-                    prov_type: Some("SessionStep".to_string()),
+                    prov_type: Some(prov_type::<SessionStepEntityId>()),
                     attributes: attrs,
                 },
             );
+            if let Some(tid) = session_scope_task {
+                let task_entity = ensure_task_entity(&mut doc, tid);
+                let mut edge_attrs = derived_attrs(event);
+                edge_attrs.insert(
+                    a2a::TASK_ID.to_string(),
+                    Value::String(tid.as_str().to_string()),
+                );
+                derived_relations.push(A2aDerivedRelation {
+                    relation: A2aRelationType::TaskHasSessionStep,
+                    from: ProvNodeRef::Entity(task_entity),
+                    to: ProvNodeRef::Entity(entity_id.clone()),
+                    attributes: edge_attrs,
+                });
+            }
+            if op_kind == "send_done" {
+                let and = informed_by_tool_activity_anchor
+                    .as_ref()
+                    .expect("SendDone must always carry informed_by anchor");
+                if let Some(tool_act) = call_state.tool_call_anchor_to_activity.get(and.as_str()) {
+                    let mut edge_attrs = HashMap::new();
+                    edge_attrs.insert(
+                        "prov_type".to_string(),
+                        Value::String(a2a_relation_types::INFORMED_BY_TOOL_INVOCATION.to_string()),
+                    );
+                    derived_relations.push(A2aDerivedRelation {
+                        relation: A2aRelationType::InformedByToolInvocation,
+                        from: ProvNodeRef::Entity(entity_id),
+                        to: ProvNodeRef::Activity(tool_act.clone()),
+                        attributes: edge_attrs,
+                    });
+                } else {
+                    tracing::warn!(
+                        anchor = %and,
+                        "SendDone informed_by anchor not found in call_state; ToolCallCompleted may have been normalized in a different session"
+                    );
+                }
+            }
+        }
+        ProvEventData::CallbackDispatchContextsLinked {
+            scheduling_context_id,
+            scheduling_task_id,
+            dispatch_context_id,
+            dispatch_task_id,
+            agent_id,
+        } => {
+            let _ = scheduling_context_id;
+            let _ = dispatch_context_id;
+            ensure_task_entity(&mut doc, dispatch_task_id);
+            ensure_task_entity(&mut doc, scheduling_task_id);
+            let dispatch_entity = task_entity_id(dispatch_task_id);
+            let scheduling_entity = task_entity_id(scheduling_task_id);
+            let mut edge_attrs = derived_attrs(event);
+            edge_attrs.insert(
+                a2a::AGENT_ID.to_string(),
+                Value::String(agent_id.as_str().to_string()),
+            );
+            derived_relations.push(A2aDerivedRelation {
+                relation: A2aRelationType::CallbackDispatchScheduledFrom,
+                from: ProvNodeRef::Entity(dispatch_entity),
+                to: ProvNodeRef::Entity(scheduling_entity),
+                attributes: edge_attrs,
+            });
         }
     }
 
@@ -2017,6 +2280,18 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
                 });
             }
         }
+        ProvEventData::CallbackDispatchContextsLinked {
+            dispatch_context_id,
+            ..
+        } => {
+            if event.context_id() != dispatch_context_id {
+                return Err(ProvenanceError::InvalidEvent {
+                    activity_anchor: event.id().as_str().to_string(),
+                    reason: "CallbackDispatchContextsLinked dispatch_context_id must match event context_id"
+                        .to_string(),
+                });
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -2072,6 +2347,12 @@ fn validate_call_scope(event: &ProvEvent, scope: &CallScope, call_kind: &str) ->
     }
 }
 
+/// Boundary validation point for call metadata (LLM calls, tool calls).
+///
+/// This is the **single** place where untyped `metadata` JSON from EffectEvents is
+/// validated and rejected if structurally incomplete. After this function succeeds,
+/// downstream normalisation code may assume `agent_id` (and `message_id` for
+/// message-scoped calls) are present and well-formed — no re-parsing needed.
 fn validate_required_call_metadata(
     event: &ProvEvent,
     scope: &CallScope,
@@ -2086,13 +2367,10 @@ fn validate_required_call_metadata(
             field: "metadata".to_string(),
         })?;
 
-    let agent_id = obj
-        .get("agent_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ProvenanceError::MissingField {
-            activity_anchor: event_id.clone(),
-            field: "metadata.agent_id".to_string(),
-        })?;
+    let agent_id = extract_agent_id(metadata).ok_or_else(|| ProvenanceError::MissingField {
+        activity_anchor: event_id.clone(),
+        field: "metadata.agent_id".to_string(),
+    })?;
     parse_agent_id(event, agent_id)?;
 
     if matches!(scope, CallScope::Message { .. })
@@ -2121,10 +2399,14 @@ fn base_attrs(event: &ProvEvent) -> HashMap<String, Value> {
             Value::String(task_id.as_str().to_string()),
         );
     }
-    attrs.insert(
-        a2a::ACTIVITY_ANCHOR.to_string(),
-        Value::String(event.id().as_str().to_string()),
-    );
+    let anchor = event.id().as_str().to_string();
+    if let Some(order) = anchor
+        .strip_prefix("prov-")
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        attrs.insert(a2a::EVENT_ORDER.to_string(), Value::Number(order.into()));
+    }
+    attrs.insert(a2a::ACTIVITY_ANCHOR.to_string(), Value::String(anchor));
     attrs
 }
 
@@ -2146,6 +2428,13 @@ fn derived_attrs(event: &ProvEvent) -> HashMap<String, Value> {
         a2a::TIMESTAMP_MS.to_string(),
         Value::Number(event.timestamp_ms().into()),
     );
+    let anchor = event.id().as_str();
+    if let Some(order) = anchor
+        .strip_prefix("prov-")
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        attrs.insert(a2a::EVENT_ORDER.to_string(), Value::Number(order.into()));
+    }
     attrs
 }
 
@@ -2326,8 +2615,29 @@ fn upsert_failure_classification(
     target: FailureClassificationTarget,
     resolution: &FailureResolution,
 ) {
+    // `PromptRejected` and similar events reference a failed call activity from a prior batch;
+    // that activity may be absent from this document. Insert a minimal phantom activity so
+    // `build_label_maps` records the correct `from_label` (LlmCall / ToolCall) on the FC edge.
+    if doc.activity(&target.failed_activity_id).is_none() {
+        let prov_type_for_failed = if target.call_kind == "tool_call" {
+            prov_type::<ToolCallActivityId>()
+        } else {
+            prov_type::<LlmCallActivityId>()
+        };
+        doc.insert_activity(
+            target.failed_activity_id.clone(),
+            Activity {
+                start_time_ms: None,
+                end_time_ms: None,
+                prov_type: Some(prov_type_for_failed),
+                attributes: HashMap::new(),
+            },
+        );
+    }
+
+    let scope_key_str = target.scope_key.to_string();
     let classify_activity_id =
-        failure_classification_activity_id(target.call_kind, &target.scope_key, target.ordinal);
+        failure_classification_activity_id(target.call_kind, &scope_key_str, target.ordinal);
     let mut classify_attrs = base_attrs(event);
     classify_attrs.insert(
         a2a::FAILURE_EVIDENCE.to_string(),
@@ -2344,7 +2654,7 @@ fn upsert_failure_classification(
     );
 
     let classify_entity_id =
-        failure_classification_entity_id(target.call_kind, &target.scope_key, target.ordinal);
+        failure_classification_entity_id(target.call_kind, &scope_key_str, target.ordinal);
     let mut classify_entity_attrs = base_attrs(event);
     classify_entity_attrs.insert(
         a2a::FAILURE_CLASS.to_string(),
@@ -2735,6 +3045,11 @@ fn plan_entity_id(task_id: &TaskId, plan_id: &PlanId) -> ProvEntityId {
         task_id,
         plan_id: plan_id.as_str(),
     })
+}
+
+/// Public helper so the store can build the plan entity id string for graph lookups.
+pub fn plan_entity_id_string(task_id: &TaskId, plan_id: &str) -> String {
+    ProvEntityId::derived::<PlanEntityId>(PlanEntityInput { task_id, plan_id }).into_string()
 }
 
 fn plan_step_entity_id(task_id: &TaskId, plan_id: &PlanId, step_id: &PlanStepId) -> ProvEntityId {

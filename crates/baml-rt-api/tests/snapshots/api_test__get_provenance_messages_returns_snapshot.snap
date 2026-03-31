@@ -8,11 +8,39 @@ expression: snapshot
     "resource": "messages",
     "rows": [
       {
+        "activity_id": "message:ctx-100-1:msg-a",
+        "a2a_activity_anchor": "[prov_activity_anchor]",
+        "message_text": "run analysis",
+        "a2a_context_id": "ctx-100-1",
+        "a2a_direction": "received",
+        "a2a_event_order": "[a2a_event_order]",
+        "a2a_message_id": "msg-a",
+        "a2a_role": "ROLE_USER",
+        "prov_type": "a2a:Message",
+        "context_id": "ctx-100-1",
+        "message_id": "msg-a",
+        "timestamp_ms": "[timestamp_ms]",
+        "activity_outcome": "Success",
+        "activity_status": "Completed",
+        "activity_kind": "message_turn",
+        "activity_ref": "prov:v1:activity:message:ctx-100-1:msg-a",
+        "llm_duration_ms_sum": 361,
+        "tool_duration_ms_sum": 420,
+        "total_processing_ms": 781,
+        "duration_ms": 781,
+        "message_content": [
+          "run analysis"
+        ],
+        "role": "ROLE_USER",
+        "direction": "received"
+      },
+      {
         "activity_id": "message:ctx-100-1:msg-b",
         "a2a_activity_anchor": "[prov_activity_anchor]",
         "message_text": "BAML validation failed: invalid response schema",
         "a2a_context_id": "ctx-100-1",
         "a2a_direction": "sent",
+        "a2a_event_order": "[a2a_event_order]",
         "a2a_message_id": "msg-b",
         "a2a_role": "ROLE_AGENT",
         "prov_type": "a2a:Message",
@@ -34,37 +62,12 @@ expression: snapshot
         "direction": "sent"
       },
       {
-        "activity_id": "message:ctx-100-1:msg-a",
-        "a2a_activity_anchor": "[prov_activity_anchor]",
-        "message_text": "run analysis",
-        "a2a_context_id": "ctx-100-1",
-        "a2a_direction": "received",
-        "a2a_message_id": "msg-a",
-        "a2a_role": "ROLE_USER",
-        "prov_type": "a2a:Message",
-        "context_id": "ctx-100-1",
-        "message_id": "msg-a",
-        "timestamp_ms": "[timestamp_ms]",
-        "activity_outcome": "Success",
-        "activity_status": "Completed",
-        "activity_kind": "message_turn",
-        "activity_ref": "prov:v1:activity:message:ctx-100-1:msg-a",
-        "llm_duration_ms_sum": 181,
-        "tool_duration_ms_sum": 420,
-        "total_processing_ms": 601,
-        "duration_ms": 601,
-        "message_content": [
-          "run analysis"
-        ],
-        "role": "ROLE_USER",
-        "direction": "received"
-      },
-      {
         "activity_id": "message:ctx-100-1:msg-c",
         "a2a_activity_anchor": "[prov_activity_anchor]",
         "message_text": "authentication failed: 401 unauthorized invalid api key",
         "a2a_context_id": "ctx-100-1",
         "a2a_direction": "sent",
+        "a2a_event_order": "[a2a_event_order]",
         "a2a_message_id": "msg-c",
         "a2a_role": "ROLE_AGENT",
         "prov_type": "a2a:Message",
@@ -89,13 +92,13 @@ expression: snapshot
     "summary": {
       "count": 3,
       "failedCount": 0,
-      "durationMsTotal": 1491,
+      "durationMsTotal": 1671,
       "totalTokens": 0,
       "promptTokensTotal": 0,
       "completionTokensTotal": 0,
       "latencyHotspots": {
-        "p95": 650.0,
-        "p99": 650.0
+        "p95": 781.0,
+        "p99": 781.0
       },
       "tokenHotspots": {
         "p95": 0.0,
@@ -116,7 +119,7 @@ expression: snapshot
         "count": 3,
         "failed": 0,
         "failureRate": 0.0,
-        "avgDurationMs": 497.0,
+        "avgDurationMs": 557.0,
         "avgTotalTokens": 0.0
       }
     ],

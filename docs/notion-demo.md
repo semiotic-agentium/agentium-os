@@ -81,10 +81,13 @@ provenance-backed observability in one arc.
 
 ## Useful Environment Overrides
 
-- `NOTION_DEMO_PORT` (default `8081`)
+- `NOTION_DEMO_PORT` (default `8080`)
 - `NOTION_DEMO_PROVENANCE_DB` (default `provenance.db`)
 - `NOTION_DEMO_LOG` (default `/tmp/notion-runner.log`)
 - `NOTION_DEMO_PID` (default `/tmp/notion-runner.pid`)
 - `NOTION_DEMO_STREAM` (default `/tmp/notion-demo-sse.log`)
-- `NOTION_DEMO_PACKAGE` (default `/tmp/notion-agent.tar.gz`)
-- `NOTION_DEMO_RUNNER_BIN` (default `target/debug/baml-agent-runner`)
+- `NOTION_DEMO_RUNNER_URL` (default `http://127.0.0.1:${NOTION_DEMO_PORT}`)
+- `NOTION_DEMO_REPOSITORY_URL` (default `${NOTION_DEMO_RUNNER_URL}/repository`)
+- `NOTION_DEMO_STATE_DIR` / `NOTION_DEMO_REPOSITORY_DIR` (defaults under `/tmp/notion-demo-*-${PORT}`)
+- `NOTION_DEMO_BUILDER_BIN` (default `${CARGO_TARGET_DIR:-target}/debug/baml-agent-builder`)
+- `NOTION_DEMO_RUNNER_BIN` (default `${CARGO_TARGET_DIR:-target}/debug/baml-agent-runner`)

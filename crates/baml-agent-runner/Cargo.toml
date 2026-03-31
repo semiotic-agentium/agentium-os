@@ -16,6 +16,7 @@ baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-config = { path = "../baml-rt-config" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-repository = { path = "../baml-rt-repository" }
+baml-rt-embedding = { path = "../baml-rt-embedding" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 baml-rt-tools-claude = { path = "../tools/claude" }
 baml-tools-system = { path = "../tools/system" }
@@ -42,6 +43,7 @@ sha2 = { workspace = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]
+baml-rt-repository = { path = "../baml-rt-repository" }
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
 baml-derive = { path = "../baml-derive" }

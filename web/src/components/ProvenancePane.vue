@@ -16,9 +16,12 @@ import type {
 
 const props = defineProps<{
   contextId?: string;
+  taskId?: string;
   selectedAgentId?: string;
   isStreaming: boolean;
   diagrams?: string[];
+  /** Bumps when A2A SSE signals new provenance (tool done, task state, final); edge-triggers Live refresh */
+  traceRefreshTick?: number;
 }>();
 
 const isOpen = ref(typeof window !== "undefined" ? window.innerWidth >= 1280 : true);
@@ -175,7 +178,8 @@ function stopPolling() {
 function schedulePolling(immediate = false) {
   stopPolling();
   if (!props.contextId || activeTab.value === "explore") return;
-  const delay = immediate ? 0 : props.isStreaming ? 2500 : 12000;
+  // While streaming, rely on traceRefreshTick edge triggers; long interval is a safety net only
+  const delay = immediate ? 0 : props.isStreaming ? 45000 : 12000;
   pollTimer.value = window.setTimeout(async () => {
     await refreshForActiveTab();
     schedulePolling(false);
@@ -338,6 +342,24 @@ const planningTasks = computed<ContextPlanningTaskSnapshot[]>(() => {
   return planningState.value.response?.tasks ?? [];
 });
 
+/** Ordered, deduplicated list of task ids visible in this context. The active chat task is always
+ *  first (even when planning hasn't recorded it yet), followed by planning tasks in server order. */
+const episodeTaskIds = computed<string[]>(() => {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  if (props.taskId) {
+    ids.push(props.taskId);
+    seen.add(props.taskId);
+  }
+  for (const t of planningTasks.value) {
+    if (!seen.has(t.taskId)) {
+      ids.push(t.taskId);
+      seen.add(t.taskId);
+    }
+  }
+  return ids;
+});
+
 function nonEmptyText(value: string | null | undefined): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -429,6 +451,7 @@ function stepStatusClass(status: string): string {
   return "step-status-pending";
 }
 
+
 function driftSeverityClass(severity: string | null | undefined): string {
   if (!severity) return "";
   const normalized = severity.toLowerCase();
@@ -450,6 +473,24 @@ function formatDriftScore(score: number | null | undefined): string {
 
 function taskHasDrift(task: ContextPlanningTaskSnapshot): boolean {
   return task.drift != null && task.drift.compositeSeverity != null;
+}
+
+async function downloadEpisodeText(taskId: string) {
+  const response = await fetch(`/tasks/${taskId}/episode/text`);
+  if (!response.ok) {
+    console.error("episode/text fetch failed:", response.status);
+    return;
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `episode-${taskId}.txt`;
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 function citationRefLabel(c: CitationDetail | CitationSimilarityOnRow): string {
@@ -1100,7 +1141,17 @@ watch(
 );
 
 watch(
-  () => [activeTab.value, props.isStreaming] as const,
+  () => props.traceRefreshTick ?? 0,
+  (tick, prev) => {
+    if (tick === prev) return;
+    if (!props.contextId || isExploreTab.value) return;
+    void refreshForActiveTab();
+    schedulePolling(false);
+  },
+);
+
+watch(
+  () => [activeTab.value] as const,
   ([tab]) => {
     if (tab === "explore") {
       stopPolling();
@@ -1337,6 +1388,47 @@ onUnmounted(() => {
                       {{ tool }}
                     </span>
                   </div>
+                </div>
+
+                <div class="trace-summary-group trace-summary-transcripts">
+                  <span class="trace-summary-group-label">Transcripts</span>
+                  <p v-if="episodeTaskIds.length > 1" class="trace-summary-transcripts-hint">
+                    {{ episodeTaskIds.length }} tasks in this context — download one per task.
+                  </p>
+                  <div v-if="planningState.loading && episodeTaskIds.length === 0" class="trace-summary-transcripts-empty">
+                    Loading tasks…
+                  </div>
+                  <div v-else-if="episodeTaskIds.length === 0" class="trace-summary-transcripts-empty">
+                    Complete a chat turn to generate episode transcripts for this context.
+                  </div>
+                  <ul v-else class="trace-summary-transcript-list" role="list">
+                    <li
+                      v-for="tid in episodeTaskIds"
+                      :key="`transcript-${tid}`"
+                      class="trace-summary-transcript-row"
+                    >
+                      <div class="trace-summary-transcript-meta">
+                        <span class="trace-summary-transcript-kind">{{ taskKindLabel(tid) }}</span>
+                        <span class="trace-summary-transcript-id">{{ shortId(tid) }}</span>
+                        <span
+                          v-if="tid === props.taskId && props.isStreaming"
+                          class="trace-summary-transcript-live"
+                          title="Active chat task"
+                        >●</span>
+                      </div>
+                      <button
+                        type="button"
+                        class="trace-summary-transcript-download"
+                        title="Download episode as plain-text transcript"
+                        @click="downloadEpisodeText(tid)"
+                      >
+                        Download
+                      </button>
+                    </li>
+                  </ul>
+                  <p class="trace-summary-transcripts-footnote">
+                    Generated on demand from the provenance graph; download after the task completes for full detail.
+                  </p>
                 </div>
               </div>
             </div>

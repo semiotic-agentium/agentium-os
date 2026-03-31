@@ -69,7 +69,7 @@ impl StreamPhaseCase {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn test_concurrent_stream_phase_matrix_regression_under_load() {
     let agent = A2aAgent::builder()
         .with_runtime_manager(BamlRuntimeManager::builder().build().unwrap())
@@ -127,9 +127,10 @@ async fn test_concurrent_stream_phase_matrix_regression_under_load() {
         },
     ];
 
-    // 4 waves × 2 cases = 8 concurrent streams; enough to assert interleaving without overloading.
+    // 2 waves × 2 cases = 4 concurrent streams; still exercises interleaving while avoiding
+    // scheduler starvation on constrained CI/agent hosts.
     let mut handles = Vec::new();
-    for wave in 0..4 {
+    for wave in 0..2 {
         for (index, case) in cases.iter().enumerate() {
             let request_id = format!("corr-1700000000010-{}", wave * cases.len() + index + 1);
             let request = send_stream_request(

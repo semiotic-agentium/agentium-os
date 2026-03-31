@@ -33,7 +33,7 @@
 //! injection. The cross-encoder severity is combined with the cosine composite
 //! via `worst_severity` — it can escalate but not lower the composite.
 
-use std::sync::Mutex;
+use std::{path::PathBuf, sync::Mutex, time::Instant};
 
 use fastembed::{RerankInitOptions, RerankerModel, TextRerank};
 
@@ -116,15 +116,62 @@ impl std::fmt::Debug for FastRerankProvider {
 }
 
 impl FastRerankProvider {
-    /// Create with `JINA-v1-turbo-en` (~50ms init on first use, ~6ms/call).
+    /// Create with `JINA-v1-turbo-en`.
+    ///
+    /// Respects `BAML_MODELS_DIR`: when set, loads from `$BAML_MODELS_DIR/fastembed/`
+    /// without network access. See [`crate::provider::models_cache_dir`].
     pub fn new() -> Result<Self, EmbeddingError> {
-        Self::with_model(RerankerModel::JINARerankerV1TurboEn)
+        Self::with_model_and_cache(
+            RerankerModel::JINARerankerV1TurboEn,
+            crate::provider::models_cache_dir(),
+        )
     }
 
     /// Create with a specific fastembed reranker model.
     pub fn with_model(model: RerankerModel) -> Result<Self, EmbeddingError> {
-        let opts = RerankInitOptions::new(model).with_show_download_progress(true);
-        let reranker = TextRerank::try_new(opts).map_err(EmbeddingError::ModelInit)?;
+        Self::with_model_and_cache(model, crate::provider::models_cache_dir())
+    }
+
+    /// Internal constructor: applies an explicit cache dir when provided.
+    ///
+    /// When a cache dir is supplied and model init fails (e.g. the cached
+    /// tokenizer was corrupted by a text-only tool), falls back to the fastembed
+    /// default cache (`~/.cache/fastembed/`) so a fresh download heals the issue
+    /// without hard-failing the runtime.
+    pub fn with_model_and_cache(
+        model: RerankerModel,
+        cache_dir: Option<PathBuf>,
+    ) -> Result<Self, EmbeddingError> {
+        let make_opts = |dir: Option<PathBuf>| {
+            let mut opts = RerankInitOptions::new(model.clone()).with_show_download_progress(false);
+            if let Some(d) = dir {
+                opts = opts.with_cache_dir(d);
+            }
+            opts
+        };
+        if let Some(dir) = cache_dir {
+            tracing::info!("FastEmbed TextRerank (JINA): loading ONNX from local cache");
+            let t0 = Instant::now();
+            match TextRerank::try_new(make_opts(Some(dir))) {
+                Ok(r) => {
+                    tracing::info!(
+                        elapsed_ms = t0.elapsed().as_millis(),
+                        "FastEmbed TextRerank (JINA): ONNX session ready"
+                    );
+                    return Ok(Self {
+                        model: Mutex::new(r),
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "JINA reranker failed to load from local models cache; \
+                         falling back to fastembed default (~/.cache/fastembed/)"
+                    );
+                }
+            }
+        }
+        let reranker = TextRerank::try_new(make_opts(None)).map_err(EmbeddingError::ModelInit)?;
         Ok(Self {
             model: Mutex::new(reranker),
         })

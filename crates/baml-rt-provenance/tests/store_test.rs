@@ -153,6 +153,7 @@ async fn test_snapshot_exemplary_mermaid_agent_flow() {
             None,
             agent_id.clone(),
             1_771_470_000_010,
+            Vec::new(),
         ))
         .await
         .expect("message_sent");
@@ -230,6 +231,7 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
             None,
             agent_id.clone(),
             1_771_470_111_003,
+            Vec::new(),
         ))
         .await
         .expect("message_sent_1");
@@ -304,6 +306,7 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
             None,
             agent_id.clone(),
             1_771_470_111_010,
+            Vec::new(),
         ))
         .await
         .expect("message_sent_2");
@@ -392,6 +395,7 @@ async fn task_scoped_messages_without_agent_metadata_still_render_sequence_activ
             None,
             agent_id.clone(),
             1_771_470_222_002,
+            Vec::new(),
         ))
         .await
         .expect("message_sent");

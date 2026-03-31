@@ -67,10 +67,6 @@ function isNotionIntent(v: unknown): v is NotionIntent {
     && !("question" in v) && !("reason" in v) && !("steps" in v);
 }
 
-function isNotionPlan(v: unknown): v is NotionPlan {
-  return isObject(v) && typeof v.goal === "string" && Array.isArray(v.steps);
-}
-
 function isReadOnlyResponse(action: unknown): action is ReadOnlyResponse {
   if (!action || typeof action !== "object") return false;
   const c = action as Record<string, unknown>;
@@ -312,15 +308,7 @@ __chat_register({
     // ── Phase 2: Planning ────────────────────────────────────────────────────
     // PlanNotionWork takes the validated intent and produces an explicit step plan.
     // No clarification needed here — intent is already resolved above.
-    const plan = await PlanNotionWork({ intent: validatedIntent });
-    const resolvedPlan: NotionPlan = isNotionPlan(plan) ? plan : {
-      goal: validatedIntent,
-      steps: [
-        { id: "step-search", description: "Search Notion for relevant content.", kind: "discover" },
-        { id: "step-synthesize", description: "Synthesize results into a response.", kind: "synthesize" },
-      ],
-    };
-
+    const resolvedPlan = await PlanNotionWork({ intent: validatedIntent });
     return runNotionPlan(ctx, text, resolvedPlan);
   },
 });

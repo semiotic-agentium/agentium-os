@@ -16,9 +16,7 @@ use baml_rt_core::{
     bus::BusWithEffects,
     ids::{AgentId, ContextId, UuidId},
 };
-use baml_rt_provenance::{
-    AgentType, ProvEvent, ProvenanceWriter, SurrealProvenanceStore, SurrealStoreBuilder,
-};
+use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, SurrealProvenanceStore};
 use baml_tools_system::SystemBundle;
 use common::{
     TempDirCleanup, build_agent_dir_to_temp_async, e2e_serial_gate, post_a2a_sse_collect,
@@ -27,7 +25,7 @@ use common::{
 use serde_json::Value;
 use test_support::common::{
     agent_fixture, chunks_from_responses, ensure_fixture_runtime_types, message_texts_from_chunks,
-    require_api_key, send_stream_request, workspace_fnox_path,
+    require_api_key, send_stream_request, test_surreal_store, workspace_fnox_path,
 };
 use tokio::time::{Duration, timeout};
 
@@ -51,13 +49,6 @@ impl A2aRequestHandler for EmptyA2aHandler {
             baml_rt_core::A2aStreamChunk,
         >()))
     }
-}
-
-async fn build_surreal_test_store() -> Arc<SurrealProvenanceStore> {
-    SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build isolated SurrealDB store")
 }
 
 async fn setup_coordinator_agent() -> (baml_rt::A2aAgent, Arc<SurrealProvenanceStore>, PathBuf) {
@@ -94,7 +85,7 @@ async fn setup_coordinator_agent() -> (baml_rt::A2aAgent, Arc<SurrealProvenanceS
         ))
         .expect("register SystemBundle");
 
-    let provenance = build_surreal_test_store().await;
+    let provenance = test_surreal_store().await;
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
     provenance
         .add_event(ProvEvent::agent_booted(

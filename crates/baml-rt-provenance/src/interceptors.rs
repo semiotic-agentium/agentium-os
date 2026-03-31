@@ -1,14 +1,18 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, Outcome, Result, context::RuntimeScope, ids::MessageId};
+use baml_rt_core::{
+    BamlRtError, Outcome, Result,
+    context::RuntimeScope,
+    ids::{ActivityAnchorId, MessageId},
+};
 use baml_rt_interceptor::{
     InterceptorDecision, LLMCallContext, LLMInterceptor, ToolCallContext, ToolInterceptor,
 };
 use serde_json::Value;
 
 use crate::{
-    events::{LlmUsage, ProvEvent},
+    events::{BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR, LlmUsage, ProvEvent},
     store::ProvenanceWriter,
 };
 
@@ -180,6 +184,18 @@ impl ToolInterceptor for ProvenanceInterceptor {
     ) {
         let outcome = Outcome::from(result.is_ok());
         let task_id = context.runtime_scope.task_id_opt().cloned();
+        let reserved_anchor = context
+            .metadata
+            .get(BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR)
+            .and_then(Value::as_str)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(ActivityAnchorId::from);
+        tracing::debug!(
+            tool_name = %context.tool_name,
+            has_reserved_anchor = reserved_anchor.is_some(),
+            "on_tool_call_complete: reserved anchor extraction"
+        );
         let metadata = metadata_with_tool_result(&context.metadata, &context.runtime_scope, result);
         let message_id = message_id_from_scope(&context.runtime_scope);
         if task_id.is_none() && message_id.is_none() {
@@ -187,17 +203,32 @@ impl ToolInterceptor for ProvenanceInterceptor {
             return;
         }
         let event = if let Some(task_id) = task_id {
-            ProvEvent::tool_call_completed_task(
-                context.runtime_scope.context_id().clone(),
-                task_id,
-                context.tool_name.clone(),
-                context.function_name.clone(),
-                context.args.clone(),
-                metadata.clone(),
-                duration_ms,
-                outcome,
-                context.delegation_target.clone(),
-            )
+            if let Some(id) = reserved_anchor {
+                ProvEvent::tool_call_completed_task_with_id(
+                    id,
+                    context.runtime_scope.context_id().clone(),
+                    task_id,
+                    context.tool_name.clone(),
+                    context.function_name.clone(),
+                    context.args.clone(),
+                    metadata.clone(),
+                    duration_ms,
+                    outcome,
+                    context.delegation_target.clone(),
+                )
+            } else {
+                ProvEvent::tool_call_completed_task(
+                    context.runtime_scope.context_id().clone(),
+                    task_id,
+                    context.tool_name.clone(),
+                    context.function_name.clone(),
+                    context.args.clone(),
+                    metadata.clone(),
+                    duration_ms,
+                    outcome,
+                    context.delegation_target.clone(),
+                )
+            }
         } else {
             let message_id = match message_id {
                 Some(message_id) => message_id,
@@ -206,17 +237,32 @@ impl ToolInterceptor for ProvenanceInterceptor {
                     return;
                 }
             };
-            ProvEvent::tool_call_completed_global(
-                context.runtime_scope.context_id().clone(),
-                message_id,
-                context.tool_name.clone(),
-                context.function_name.clone(),
-                context.args.clone(),
-                metadata.clone(),
-                duration_ms,
-                outcome,
-                context.delegation_target.clone(),
-            )
+            if let Some(id) = reserved_anchor {
+                ProvEvent::tool_call_completed_global_with_id(
+                    id,
+                    context.runtime_scope.context_id().clone(),
+                    message_id,
+                    context.tool_name.clone(),
+                    context.function_name.clone(),
+                    context.args.clone(),
+                    metadata.clone(),
+                    duration_ms,
+                    outcome,
+                    context.delegation_target.clone(),
+                )
+            } else {
+                ProvEvent::tool_call_completed_global(
+                    context.runtime_scope.context_id().clone(),
+                    message_id,
+                    context.tool_name.clone(),
+                    context.function_name.clone(),
+                    context.args.clone(),
+                    metadata.clone(),
+                    duration_ms,
+                    outcome,
+                    context.delegation_target.clone(),
+                )
+            }
         };
 
         self.writer
@@ -260,6 +306,7 @@ fn metadata_with_tool_result(
         Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
+    out.remove(BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR);
     match result {
         Ok(value) => {
             out.insert("result".to_string(), value.clone());

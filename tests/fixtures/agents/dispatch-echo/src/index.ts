@@ -77,7 +77,7 @@ async function runSingleSendSession(
   }
 }
 
-async function scheduleCallback(command: CallbackCommand): Promise<void> {
+async function scheduleCallback(command: CallbackCommand): Promise<string> {
   const sourceKey = `dispatch-echo:callback:${command.token}`;
   const input: Record<string, unknown> = {
     op: "schedule",
@@ -91,11 +91,18 @@ async function scheduleCallback(command: CallbackCommand): Promise<void> {
     input.continuation = "resume_current_task";
     input.dedupeKey = command.token;
   }
-  await runSingleSendSession(
-    "system/callback",
-    {},
-    input,
-  );
+  const raw = await runSingleSendSession("system/callback", {}, input);
+  let dispatchContextId = "";
+  let dispatchTaskId = "";
+  if (isObject(raw)) {
+    if (typeof raw.dispatchContextId === "string") {
+      dispatchContextId = raw.dispatchContextId;
+    }
+    if (typeof raw.dispatchTaskId === "string") {
+      dispatchTaskId = raw.dispatchTaskId;
+    }
+  }
+  return `scheduled callback ${command.continuation} ${command.token} dispatchContextId=${dispatchContextId} dispatchTaskId=${dispatchTaskId}`;
 }
 
 function callbackTokenFromRequest(request: HostDispatchRequest): string | null {
@@ -140,10 +147,8 @@ __chat_register({
   run: async (ctx): Promise<SessionResult> => {
     const callbackCommand = parseCallbackCommand(ctx.text);
     if (callbackCommand) {
-      await scheduleCallback(callbackCommand);
-      return {
-        message: `scheduled callback ${callbackCommand.continuation} ${callbackCommand.token}`,
-      };
+      const detail = await scheduleCallback(callbackCommand);
+      return { message: detail };
     }
     return { message: "dispatch-echo does not handle A2A messages" };
   },

@@ -26,7 +26,10 @@ use baml_rt_provenance::{
 use baml_rt_tools::{BamlTool, bundles::BundleType};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::{sync::Mutex, task::LocalSet};
+use tokio::{
+    sync::{Mutex, RwLock},
+    task::LocalSet,
+};
 
 // Test bundle for test tools
 struct Test;
@@ -41,7 +44,7 @@ impl BundleType for Test {
 #[tokio::test]
 async fn test_quickjs_bridge_creation() {
     // Test that we can create a QuickJS bridge
-    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::builder().build().unwrap()));
+    let baml_manager = Arc::new(RwLock::new(BamlRuntimeManager::builder().build().unwrap()));
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000010").unwrap());
     let bridge = QuickJSBridge::new(baml_manager, agent_id);
@@ -53,7 +56,7 @@ async fn test_quickjs_bridge_creation() {
 /// Property-style: for each of several expressions, evaluate returns Ok.
 #[tokio::test]
 async fn test_quickjs_evaluate_expressions() {
-    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::builder().build().unwrap()));
+    let baml_manager = Arc::new(RwLock::new(BamlRuntimeManager::builder().build().unwrap()));
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000011").unwrap());
     let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();
@@ -80,10 +83,10 @@ async fn test_quickjs_concurrent_scope_propagation() {
         .register_tool(ScopeEchoTool)
         .await
         .expect("register tool");
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = Arc::new(RwLock::new(manager));
     let effect_bus = Arc::new(BusWithEffects::new());
     {
-        let mut m = manager.lock().await;
+        let mut m = manager.write().await;
         m.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     }
     let agent_id =
@@ -194,10 +197,10 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
         .register_tool(ScopeEchoTool)
         .await
         .expect("register tool");
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = Arc::new(RwLock::new(manager));
     let effect_bus = Arc::new(BusWithEffects::new());
     {
-        let mut m = manager.lock().await;
+        let mut m = manager.write().await;
         m.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     }
     let agent_id =
@@ -321,11 +324,11 @@ async fn test_bridge_lock_not_held_across_async_work() {
     manager
         .register_tool(BarrierTool(barrier))
         .await
-        .expect("register barrier tool");
-    let manager = Arc::new(Mutex::new(manager));
+        .expect("register slow tool");
+    let manager = Arc::new(RwLock::new(manager));
     let effect_bus = Arc::new(BusWithEffects::new());
     {
-        let mut m = manager.lock().await;
+        let mut m = manager.write().await;
         m.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     }
     let agent_id =
@@ -600,10 +603,10 @@ impl PlanningResolver for CanonicalizingResolver {
 #[tokio::test]
 async fn test_failed_stream_does_not_leak_state() {
     let manager = BamlRuntimeManager::builder().build().unwrap();
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = Arc::new(RwLock::new(manager));
     let effect_bus = Arc::new(BusWithEffects::new());
     {
-        let mut m = manager.lock().await;
+        let mut m = manager.write().await;
         m.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     }
     let agent_id =
@@ -712,7 +715,7 @@ async fn test_failed_stream_does_not_leak_state() {
 async fn test_close_sessions_for_context_clears_sessions() {
     let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = Arc::new(RwLock::new(manager));
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000051").unwrap());
     let scope = InvocationScope::synthetic_message(agent_id);
@@ -720,7 +723,7 @@ async fn test_close_sessions_for_context_clears_sessions() {
 
     let _session_id = context::with_scope(scope.as_scope().clone(), async {
         manager
-            .lock()
+            .read()
             .await
             .open_tool_session(scope.as_scope(), "test/scope_echo", json!({}))
             .await
@@ -730,7 +733,7 @@ async fn test_close_sessions_for_context_clears_sessions() {
 
     assert_eq!(
         manager
-            .lock()
+            .read()
             .await
             .open_session_count_for_context(&context_id)
             .await,
@@ -739,7 +742,7 @@ async fn test_close_sessions_for_context_clears_sessions() {
     );
 
     manager
-        .lock()
+        .read()
         .await
         .close_sessions_for_context(&context_id)
         .await
@@ -747,7 +750,7 @@ async fn test_close_sessions_for_context_clears_sessions() {
 
     assert_eq!(
         manager
-            .lock()
+            .read()
             .await
             .open_session_count_for_context(&context_id)
             .await,
@@ -762,7 +765,7 @@ async fn test_close_sessions_for_context_clears_sessions() {
 async fn test_stream_finalize_closes_tool_sessions_no_leak() {
     let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = Arc::new(RwLock::new(manager));
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000050").unwrap());
     let bridge = Arc::new(Mutex::new(
@@ -830,7 +833,7 @@ async fn test_stream_finalize_closes_tool_sessions_no_leak() {
 
     // Finalize has run; no sessions must remain for this context.
     let count = manager
-        .lock()
+        .read()
         .await
         .open_session_count_for_context(&context_id)
         .await;
@@ -1069,7 +1072,7 @@ async fn test_step_executor_loop_drives_full_session_with_interceptor() {
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
     let scope = InvocationScope::synthetic_message(agent_id);
-    let manager = Arc::new(Mutex::new(manager));
+    let manager = Arc::new(RwLock::new(manager));
 
     let result = context::with_scope(
         scope.as_scope().clone(),
@@ -1273,7 +1276,7 @@ async fn test_invoke_function_with_explicit_scope_fails_for_missing_function() {
     manager.register_tool(ScopeEchoTool).await.unwrap();
 
     // invoke_function without scope (requires bridge)
-    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::builder().build().unwrap()));
+    let baml_manager = Arc::new(RwLock::new(BamlRuntimeManager::builder().build().unwrap()));
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000030").unwrap());
     let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();

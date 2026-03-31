@@ -1,6 +1,16 @@
-use std::sync::Arc;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use baml_rt_core::{BamlRtError, Result, event_subscription::EventSourceKey};
+use baml_rt_core::{
+    BamlRtError, Result, callback_now_unix_ms, callback_scheduling_scopes_differ_from_dispatch,
+    event_subscription::EventSourceKey,
+    ids::{ContextId, ExternalId, TaskId},
+};
 use baml_rt_tools::{
     ToolBundle, ToolBundleMetadata, ToolHandler,
     tools::{
@@ -8,16 +18,34 @@ use baml_rt_tools::{
     },
 };
 use tracing::debug;
+use uuid::Uuid;
 
 use crate::{
-    callback_store::{CancelCallbackSelector, ScheduleCallbackRequest, require_callback_store},
-    callback_time::callback_now_unix_ms,
+    callback_store::{
+        CancelCallbackSelector, ScheduleCallbackRequest, StoredCallback, require_callback_store,
+    },
     metadata::system_callback_metadata,
     tools::{
         CallbackCancelInput, CallbackCancelledOutput, CallbackContinuationMode,
         CallbackScheduleInput, CallbackScheduledOutput, CallbackToolInput, CallbackToolOutput,
     },
 };
+
+/// Monotonic suffix for [`ContextId`] minting on detached callback dispatch scope.
+static CALLBACK_DISPATCH_CONTEXT_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn mint_dispatch_context_id() -> ContextId {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let counter = CALLBACK_DISPATCH_CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    ContextId::new(millis, counter)
+}
+
+fn mint_dispatch_task_id() -> TaskId {
+    TaskId::from_external(ExternalId::new(Uuid::new_v4().to_string()))
+}
 
 #[derive(Default)]
 pub struct CallbackBundle;
@@ -71,22 +99,30 @@ async fn schedule_callback(
     let requested_at_unix_ms = callback_now_unix_ms("system_callback_schedule");
     let scheduled_for_unix_ms = requested_at_unix_ms.saturating_add(input.after_ms);
     let dedupe_key = normalize_optional_text(input.dedupe_key, "dedupeKey")?;
+    let scheduling_task_id = session_ctx.task_id.clone().ok_or_else(|| {
+        BamlRtError::InvalidArgument(
+            "system/callback schedule requires an active task scope (scheduling deferral)"
+                .to_string(),
+        )
+    })?;
+    let scheduling_context_id = session_ctx.context_id.clone();
+
     let (context_id, task_id) = match input.continuation.unwrap_or_default() {
-        CallbackContinuationMode::Detached => (None, None),
+        CallbackContinuationMode::Detached => (
+            Some(mint_dispatch_context_id()),
+            Some(mint_dispatch_task_id()),
+        ),
         CallbackContinuationMode::ResumeCurrentTask => {
-            let task_id = session_ctx.task_id.clone().ok_or_else(|| {
-                BamlRtError::InvalidArgument(
-                    "system/callback continuation=resume_current_task requires an active task scope"
-                        .to_string(),
-                )
-            })?;
             if dedupe_key.is_none() {
                 return Err(BamlRtError::InvalidArgument(
                     "system/callback continuation=resume_current_task requires dedupeKey"
                         .to_string(),
                 ));
             }
-            (Some(session_ctx.context_id.clone()), Some(task_id))
+            (
+                Some(scheduling_context_id.clone()),
+                Some(scheduling_task_id.clone()),
+            )
         }
     };
     let request = ScheduleCallbackRequest {
@@ -95,8 +131,10 @@ async fn schedule_callback(
         payload: input.payload.into_inner(),
         scheduled_for_unix_ms,
         requested_at_unix_ms,
-        context_id,
-        task_id,
+        context_id: context_id.clone(),
+        task_id: task_id.clone(),
+        scheduling_context_id: Some(scheduling_context_id.clone()),
+        scheduling_task_id: Some(scheduling_task_id.clone()),
         requesting_agent_id: Some(session_ctx.agent_id.as_str().to_string()),
         requesting_message_id: None,
     };
@@ -109,12 +147,42 @@ async fn schedule_callback(
         scheduled_for_unix_ms = scheduled.callback.scheduled_for_unix_ms,
         "system/callback scheduled callback"
     );
-    Ok(CallbackToolOutput::Scheduled(CallbackScheduledOutput {
-        callback_id: scheduled.callback.callback_id,
-        source_key: scheduled.callback.source_key,
-        scheduled_for_unix_ms: scheduled.callback.scheduled_for_unix_ms,
-        deduped: !scheduled.created,
-    }))
+    Ok(CallbackToolOutput::Scheduled(scheduled_output(
+        &scheduled.callback,
+        !scheduled.created,
+    )))
+}
+
+fn scheduled_output(callback: &StoredCallback, deduped: bool) -> CallbackScheduledOutput {
+    let detached_dispatch = match (
+        &callback.context_id,
+        &callback.task_id,
+        &callback.scheduling_context_id,
+        &callback.scheduling_task_id,
+    ) {
+        (Some(dc), Some(dt), Some(sc), Some(st))
+            if callback_scheduling_scopes_differ_from_dispatch(sc, st, dc, dt) =>
+        {
+            (Some(dc.as_str().to_string()), Some(dt.as_str().to_string()))
+        }
+        _ => (None, None),
+    };
+    CallbackScheduledOutput {
+        callback_id: callback.callback_id.clone(),
+        source_key: callback.source_key.clone(),
+        scheduled_for_unix_ms: callback.scheduled_for_unix_ms,
+        deduped,
+        dispatch_context_id: detached_dispatch.0,
+        dispatch_task_id: detached_dispatch.1,
+        scheduling_context_id: callback
+            .scheduling_context_id
+            .as_ref()
+            .map(|c| c.as_str().to_string()),
+        scheduling_task_id: callback
+            .scheduling_task_id
+            .as_ref()
+            .map(|t| t.as_str().to_string()),
+    }
 }
 
 async fn cancel_callback(

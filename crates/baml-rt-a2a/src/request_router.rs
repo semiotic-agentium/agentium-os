@@ -257,11 +257,27 @@ impl RequestRouter for MethodBasedRouter {
                         let inject_submitted =
                             request.method() == a2a::A2aMethod::MessageSendStream;
                         tokio::spawn(async move {
+                            let router_pipeline_start = Instant::now();
+                            let mut first_stream_output = true;
                             let mut normalizer = a2a::JsChunkNormalizer::new(&scope);
                             let mut index = 0_usize;
                             let mut last_completion = None;
                             let mut submitted_sent = false;
                             while let Some(output) = chunk_rx.recv().await {
+                                if first_stream_output {
+                                    first_stream_output = false;
+                                    let wait = router_pipeline_start.elapsed();
+                                    metrics::record_live_stream_phase_duration(
+                                        "router_first_handover_output",
+                                        wait,
+                                    );
+                                    metrics::record_live_stream_event("router_first_js_output");
+                                    tracing::debug!(
+                                        context_id = %scope.context_id().as_str(),
+                                        wait_ms = wait.as_millis(),
+                                        "stream router: first output from QuickJS handover channel"
+                                    );
+                                }
                                 let (raw_chunk, completion, is_relay) = match &output {
                                     StreamOutput::Chunk(v) => (v.clone(), None, false),
                                     StreamOutput::RelayChunk(v) => (v.clone(), None, true),

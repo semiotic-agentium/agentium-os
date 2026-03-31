@@ -103,6 +103,8 @@ The runtime wires `onDispatch` onto `globalThis`. When a dispatch request arrive
 
 Dispatch requests carry optional `context_id`, `task_id`, and `message_id` for provenance threading. The A2A transport layer creates scope from these fields via `scope_from_dispatch_request` in `crates/baml-rt-a2a/src/a2a_transport.rs`.
 
+For **`system/callback`** detached continuation, the host mints a **child** dispatch `context_id` / `task_id` on the emitted event while storing the **scheduling** A2A scope separately. Callback delivery deferral uses **only** the scheduling scope (with `requesting_agent_id`), not the minted dispatch ids. When dispatch is accepted, the runner may record a provenance link from the dispatch task to the scheduling task (`WAS_SCHEDULED_FROM`); see `crates/baml-rt-provenance/PROV_MAPPING.md`.
+
 ## Discovery
 
 Two system tools surface event-related metadata:

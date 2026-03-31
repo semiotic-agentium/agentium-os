@@ -16,6 +16,7 @@ expression: snapshot
           "a2a_client": "anthropic",
           "a2a_context_id": "ctx-100-1",
           "a2a_duration_ms": 650,
+          "a2a_event_order": "[a2a_event_order]",
           "a2a_failure_class": "failed_graph_incomplete",
           "a2a_failure_evidence": "metadata",
           "a2a_function_name": "DraftPrompt",
@@ -53,12 +54,12 @@ expression: snapshot
         }
       ],
       "summary": {
-        "count": 2,
+        "count": 3,
         "failedCount": 1,
-        "durationMsTotal": 831,
-        "totalTokens": 42,
-        "promptTokensTotal": 30,
-        "completionTokensTotal": 12,
+        "durationMsTotal": 1011,
+        "totalTokens": 62,
+        "promptTokensTotal": 42,
+        "completionTokensTotal": 20,
         "latencyHotspots": {
           "p95": 650.0,
           "p99": 650.0
@@ -92,11 +93,11 @@ expression: snapshot
           "groupDimensions": [
             "agent_id"
           ],
-          "count": 1,
+          "count": 2,
           "failed": 0,
           "failureRate": 0.0,
-          "avgDurationMs": 181.0,
-          "avgTotalTokens": 17.0
+          "avgDurationMs": 180.5,
+          "avgTotalTokens": 18.5
         }
       ],
       "nextCursor": "1",
@@ -120,25 +121,19 @@ expression: snapshot
           "a2a_agent_id": "[uuid]",
           "a2a_client": "openai",
           "a2a_context_id": "ctx-100-1",
-          "a2a_drift_block_min_score": 0.25,
-          "a2a_drift_mode": "audit",
-          "a2a_drift_score": 0.6179999709129333,
-          "a2a_drift_severity": "warn",
-          "a2a_drift_warn_min_score": 0.5,
-          "a2a_duration_ms": 181,
+          "a2a_duration_ms": 180,
+          "a2a_event_order": "[a2a_event_order]",
           "a2a_function_name": "SummarizePrompt",
-          "a2a_intent_text_preview": "Create a task titled Research",
           "llm_result": null,
           "llm_call": {
-            "input": "hello with drift"
+            "input": "hello"
           },
           "a2a_message_id": "msg-a",
           "a2a_model": "gpt-4o-mini",
           "a2a_prompt_name": "SummarizePrompt",
-          "a2a_response_text_preview": "Create task in list 901325431486",
-          "a2a_usage_completion_tokens": 7,
-          "a2a_usage_prompt_tokens": 10,
-          "a2a_usage_total_tokens": 17,
+          "a2a_usage_completion_tokens": 8,
+          "a2a_usage_prompt_tokens": 12,
+          "a2a_usage_total_tokens": 20,
           "prov_endTime": "[timestamp_ms]",
           "prov_type": "a2a:LlmCall",
           "context_id": "ctx-100-1",
@@ -147,35 +142,26 @@ expression: snapshot
           "provider": "openai",
           "model": "gpt-4o-mini",
           "baml_prompt": "SummarizePrompt",
-          "duration_ms": 181,
-          "prompt_tokens": 10,
-          "completion_tokens": 7,
-          "total_tokens": 17,
+          "duration_ms": 180,
+          "prompt_tokens": 12,
+          "completion_tokens": 8,
+          "total_tokens": 20,
           "timestamp_ms": "[timestamp_ms]",
           "activity_outcome": "Success",
           "activity_status": "Completed",
           "activity_kind": "llm_call",
           "activity_ref": "prov:v1:activity:llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
           "llm_call_ref": "[prov_activity_anchor]",
-          "llm_result_ref": "[prov_activity_anchor]",
-          "drift": {
-            "score": 0.6179999709129333,
-            "severity": "warn",
-            "mode": "audit",
-            "warnMinScore": 0.5,
-            "blockMinScore": 0.25,
-            "intentTextPreview": "Create a task titled Research",
-            "responseTextPreview": "Create task in list 901325431486"
-          }
+          "llm_result_ref": "[prov_activity_anchor]"
         }
       ],
       "summary": {
-        "count": 2,
+        "count": 3,
         "failedCount": 1,
-        "durationMsTotal": 831,
-        "totalTokens": 42,
-        "promptTokensTotal": 30,
-        "completionTokensTotal": 12,
+        "durationMsTotal": 1011,
+        "totalTokens": 62,
+        "promptTokensTotal": 42,
+        "completionTokensTotal": 20,
         "latencyHotspots": {
           "p95": 650.0,
           "p99": 650.0
@@ -209,13 +195,14 @@ expression: snapshot
           "groupDimensions": [
             "agent_id"
           ],
-          "count": 1,
+          "count": 2,
           "failed": 0,
           "failureRate": 0.0,
-          "avgDurationMs": 181.0,
-          "avgTotalTokens": 17.0
+          "avgDurationMs": 180.5,
+          "avgTotalTokens": 18.5
         }
       ],
+      "nextCursor": "2",
       "truncated": true,
       "appliedCaps": {
         "page_size": 1,

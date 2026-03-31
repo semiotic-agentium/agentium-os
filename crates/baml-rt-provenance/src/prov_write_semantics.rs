@@ -21,7 +21,7 @@ pub(crate) fn semantic_used_label(from_label: &str, role: Option<&str>) -> &'sta
         Some(r) if r == a2a_roles::REJECTED_OUTPUT => semantic_labels::WAS_USED_BY,
         Some(r) if r == a2a_roles::DELEGATION_TARGET => semantic_labels::WAS_DELEGATED_TO,
         Some(r) if r == a2a_roles::FAILURE_CLASSIFICATION || r == a2a_roles::FAILURE_EVIDENCE => {
-            semantic_labels::WAS_USED_BY
+            semantic_labels::WAS_CLASSIFIED_BY
         }
         _ => semantic_labels::WAS_USED_BY,
     }
@@ -68,12 +68,16 @@ pub(crate) fn semantic_associated_with_label(role: Option<&str>) -> &'static str
 }
 
 pub(crate) fn semantic_derived_from_label(prov_type: Option<&str>) -> &'static str {
-    use crate::vocabulary::{a2a_relation_types, a2a_relations};
+    use crate::vocabulary::a2a_relation_types;
     match prov_type {
         Some(t) if t == a2a_relation_types::STATUS_TRANSITION => {
             semantic_labels::WAS_TRANSITIONED_FROM
         }
-        Some(t) if t == a2a_relations::INFORMED_BY_OBSERVATION => semantic_labels::WAS_INFORMED_BY,
+        // Both observation-citation and tool-invocation derivations map to the same
+        // semantic label. The prov_type attribute preserves the distinction.
+        Some(t) if t == a2a_relation_types::INFORMED_BY_OBSERVATION => {
+            semantic_labels::WAS_INFORMED_BY
+        }
         _ => crate::vocabulary::prov_relations::WAS_DERIVED_FROM,
     }
 }

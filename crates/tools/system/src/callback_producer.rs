@@ -3,7 +3,7 @@ use std::{collections::HashSet, sync::Arc};
 use async_trait::async_trait;
 use baml_rt_core::{
     AgentDispatchRoutingKey, BamlRtError, EventSchemaVersion, EventSourceKind, ProducedEvent,
-    Result, event_subscription::EventSourceKey,
+    Result, callback_now_unix_ms, event_subscription::EventSourceKey,
 };
 use baml_rt_tools::{
     EventProducer, EventProducerBuildContext, EventProducerBuildFuture, EventProducerProvider,
@@ -16,12 +16,16 @@ use tracing::{debug, warn};
 use crate::{
     callback_delivery_gate::callback_delivery_gate,
     callback_store::{StoredCallback, callback_store},
-    callback_time::callback_now_unix_ms,
 };
 
 pub const CALLBACK_EVENT_SCHEMA_VERSION: &str = "system.callback.v1";
 pub const CALLBACK_EVENT_ROUTING_KEY: &str = "system:callback";
 pub const CALLBACK_SOURCE_KIND: &str = "system/callback";
+
+/// Re-export: canonical keys on [`AgentDispatchRequest::metadata`](baml_rt_core::AgentDispatchRequest).
+pub use baml_rt_core::{
+    DISPATCH_METADATA_SCHEDULING_CONTEXT_ID, DISPATCH_METADATA_SCHEDULING_TASK_ID,
+};
 
 const MAX_CALLBACKS_PER_POLL: usize = 100;
 
@@ -136,6 +140,23 @@ impl EventProducer for CallbackEventProducer {
                 MAX_CALLBACKS_PER_POLL,
             )
             .await?;
+        let due_callbacks: Vec<StoredCallback> = due_callbacks
+            .into_iter()
+            .filter(|callback| {
+                if callback.scheduling_context_id.is_none()
+                    || callback.scheduling_task_id.is_none()
+                {
+                    warn!(
+                        callback_id = %callback.callback_id,
+                        source_key = %callback.source_key,
+                        "skipping scheduled callback without scheduling scope (pre-cutover pending row or corrupt); not emitted"
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
         let due_callbacks = if let Some(gate) = callback_delivery_gate() {
             let mut deliverable = Vec::with_capacity(due_callbacks.len());
             let mut deferred_count = 0usize;
@@ -226,6 +247,22 @@ impl CallbackEventProducer {
         })?;
         let callback_id = callback.callback_id.clone();
 
+        let scheduling_context_str = callback
+            .scheduling_context_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
+        let scheduling_task_str = callback
+            .scheduling_task_id
+            .as_ref()
+            .map(|id| id.as_str().to_string());
+        let dispatch_metadata = match (&scheduling_context_str, &scheduling_task_str) {
+            (Some(sc), Some(st)) => Some(json!({
+                DISPATCH_METADATA_SCHEDULING_CONTEXT_ID: sc,
+                DISPATCH_METADATA_SCHEDULING_TASK_ID: st,
+            })),
+            _ => None,
+        };
+
         Ok(ProducedEvent {
             routing_key: self.routing_key.clone(),
             schema_version: self.schema_version.clone(),
@@ -246,6 +283,8 @@ impl CallbackEventProducer {
                 "request": {
                     "context_id": callback.context_id.as_ref().map(|id| id.as_str()),
                     "task_id": callback.task_id.as_ref().map(|id| id.as_str()),
+                    "scheduling_context_id": scheduling_context_str.as_deref(),
+                    "scheduling_task_id": scheduling_task_str.as_deref(),
                     "requesting_agent_id": callback.requesting_agent_id.as_deref(),
                     "requesting_message_id": callback
                         .requesting_message_id
@@ -259,7 +298,7 @@ impl CallbackEventProducer {
                 "system/callback:{callback_id}",
                 callback_id = callback_id
             )),
-            metadata: None,
+            metadata: dispatch_metadata,
         })
     }
 }

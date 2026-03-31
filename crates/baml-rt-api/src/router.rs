@@ -20,8 +20,8 @@ use utoipa::openapi::OpenApi as OpenApiSpec;
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
-    ContextMetricsService, MermaidService, PlanningService, ProvenanceOpsService, config_handlers,
-    handlers, repository_publish,
+    ContextMetricsService, EpisodeService, MermaidService, PlanningService, ProvenanceOpsService,
+    config_handlers, handlers, repository_publish,
 };
 
 /// Shared state for API handlers: registry, OpenAPI spec, and **injected** config/catalog/resolver.
@@ -33,6 +33,7 @@ pub struct ApiState {
     pub context_metrics: Option<Arc<dyn ContextMetricsService>>,
     pub provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     pub planning: Option<Arc<dyn PlanningService>>,
+    pub episode: Option<Arc<dyn EpisodeService>>,
     pub deployment_manager: Option<Arc<dyn DeploymentManager>>,
     pub repository_url: Option<String>,
     pub tool_catalog: Arc<dyn ToolCatalog>,
@@ -67,6 +68,7 @@ pub async fn api_router(
         None,
         None,
         None,
+        None,
         tool_catalog,
         config_service,
         secret_resolver,
@@ -84,6 +86,7 @@ pub fn api_router_with_services(
     context_metrics: Option<Arc<dyn ContextMetricsService>>,
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     planning: Option<Arc<dyn PlanningService>>,
+    episode: Option<Arc<dyn EpisodeService>>,
     tool_catalog: Arc<dyn ToolCatalog>,
     config_service: Arc<dyn ConfigService>,
     secret_resolver: Arc<dyn SecretResolver>,
@@ -96,6 +99,7 @@ pub fn api_router_with_services(
         context_metrics,
         provenance_ops,
         planning,
+        episode,
         None,
         None,
         None,
@@ -115,6 +119,7 @@ pub fn api_router_with_services_and_deploy(
     context_metrics: Option<Arc<dyn ContextMetricsService>>,
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     planning: Option<Arc<dyn PlanningService>>,
+    episode: Option<Arc<dyn EpisodeService>>,
     deployment_manager: Option<Arc<dyn DeploymentManager>>,
     repository_url: Option<String>,
     repository_service: Option<Arc<baml_rt_repository::RepositoryService>>,
@@ -152,6 +157,9 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(handlers::get_provenance_tool_calls))
         .routes(utoipa_axum::routes!(handlers::get_provenance_messages))
         .routes(utoipa_axum::routes!(handlers::get_provenance_aggregates))
+        .routes(utoipa_axum::routes!(handlers::get_episode))
+        .routes(utoipa_axum::routes!(handlers::get_episode_text))
+        .routes(utoipa_axum::routes!(handlers::get_episode_stream))
         .routes(utoipa_axum::routes!(handlers::post_deploy))
         .routes(utoipa_axum::routes!(handlers::post_undeploy))
         .routes(utoipa_axum::routes!(handlers::get_deployments))
@@ -202,6 +210,7 @@ pub fn api_router_with_services_and_deploy(
         context_metrics,
         provenance_ops,
         planning,
+        episode,
         deployment_manager,
         repository_url,
         tool_catalog,
@@ -257,6 +266,7 @@ pub async fn serve(
         None,
         None,
         None,
+        None,
         tool_catalog,
         config_service,
         secret_resolver,
@@ -275,6 +285,7 @@ pub async fn serve_with_services(
     context_metrics: Option<Arc<dyn ContextMetricsService>>,
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     planning: Option<Arc<dyn PlanningService>>,
+    episode: Option<Arc<dyn EpisodeService>>,
     tool_catalog: Arc<dyn ToolCatalog>,
     config_service: Arc<dyn ConfigService>,
     secret_resolver: Arc<dyn SecretResolver>,
@@ -288,6 +299,7 @@ pub async fn serve_with_services(
         context_metrics,
         provenance_ops,
         planning,
+        episode,
         None,
         None,
         None,
@@ -309,6 +321,7 @@ pub async fn serve_with_services_and_deploy(
     context_metrics: Option<Arc<dyn ContextMetricsService>>,
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     planning: Option<Arc<dyn PlanningService>>,
+    episode: Option<Arc<dyn EpisodeService>>,
     deployment_manager: Option<Arc<dyn DeploymentManager>>,
     repository_url: Option<String>,
     repository_service: Option<Arc<baml_rt_repository::RepositoryService>>,
@@ -324,6 +337,7 @@ pub async fn serve_with_services_and_deploy(
         context_metrics,
         provenance_ops,
         planning,
+        episode,
         deployment_manager,
         repository_url,
         repository_service,

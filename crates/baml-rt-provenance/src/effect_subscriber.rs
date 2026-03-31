@@ -1,6 +1,6 @@
 //! Provenance subscriber: converts EffectEvent to ProvEvent.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -8,9 +8,9 @@ use baml_rt_core::{
     ids::{ContextId, ExternalId, MessageId, TaskId},
 };
 use baml_rt_embedding::{
-    DriftConfig, DriftMode, EmbeddingProvider, FastEmbedProvider, PlanDriftConfig, PlanDriftInputs,
-    PlanStepAnchor, RerankProvider, TaskDriftTracker, score_citation_drift, score_drift,
-    score_plan_drift,
+    DriftConfig, DriftSeverity, EmbeddingProvider, FastEmbedProvider, PlanDriftConfig,
+    PlanDriftInputs, PlanStepAnchor, RerankProvider, TaskDriftTracker, score_bipia_signal,
+    score_citation_drift, score_drift, score_plan_drift,
 };
 use baml_rt_tools::{
     ToolRegistry,
@@ -26,9 +26,11 @@ use crate::{
     conversation_projection::provenance_item_to_projection_item,
     events::{
         CallScope, LlmCitationDriftInfo, LlmCitationSimilarity, LlmDriftInfo, LlmPlanDriftInfo,
-        LlmUsage, PlanStepSpec, ProvEvent,
+        LlmUsage, PlanStepSpec, ProvEvent, ResolvedCitationTarget,
     },
+    id_semantics::{SessionStepEntityId, SessionStepEntityInput},
     store::ProvenanceWriter,
+    types::ProvEntityId,
 };
 
 /// Event type for provenance event construction
@@ -106,7 +108,8 @@ where
     })
 }
 
-/// Helper for completion events that may skip on missing message_id
+/// Helper for completion events — always emits, using a synthetic message_id
+/// fallback when both task_id and message_id are absent from metadata.
 fn build_prov_event_completion<F, G>(
     context_id: &ContextId,
     metadata: &Value,
@@ -119,14 +122,16 @@ where
     G: FnOnce(ContextId, MessageId) -> ProvEvent,
 {
     let task_id = task_id_from_metadata(metadata);
-    let message_id = message_id_from_metadata(metadata);
+    let mut message_id = message_id_from_metadata(metadata);
 
     if task_id.is_none() && message_id.is_none() {
         tracing::error!(
             event_type = event_type.as_str(),
-            "completion missing metadata.message_id"
+            "completion missing both task_id and message_id; using synthetic fallback"
         );
-        return None;
+        let synthetic_msg_id =
+            MessageId::from_external(ExternalId::new(format!("ctx-msg:{}", context_id.as_str())));
+        message_id = Some(synthetic_msg_id);
     }
 
     Some(if let Some(task_id) = task_id {
@@ -202,6 +207,10 @@ impl std::fmt::Display for StepTransitionError {
 }
 
 /// A non-empty collection of plan steps. Constructor rejects empty input.
+///
+/// The struct and several accessor methods are retained for the `EvidenceAnchor` borrowing
+/// machinery. `#[allow(dead_code)]` is a smell; remove these suppression once the
+/// evidence-anchor visualization path is wired to the drift reporting API.
 #[allow(dead_code)]
 struct NonEmptySteps(Vec<StepState>);
 
@@ -260,6 +269,9 @@ enum StepExecutionPhase {
 struct CommittedPlanExecution {
     tracker: TaskDriftTracker,
     intent_description: String,
+    /// Plan objective text from `PlanGenerated`. Retained for future drift-report
+    /// rendering; not yet read after construction. `#[allow(dead_code)]` is a smell;
+    /// remove this field or surface it in the episode text once the rendering path exists.
     #[allow(dead_code)]
     plan_objective: String,
     is_revised_plan: bool,
@@ -269,6 +281,11 @@ struct CommittedPlanExecution {
 
 /// Borrowing view of the current evidence anchor for drift scoring.
 /// All embedding references borrow from the `CommittedPlanExecution`.
+///
+/// Reserved for step-attribution visualization; describes which plan step is
+/// currently driving LLM attribution. Not yet consumed by the drift reporting
+/// API. `#[allow(dead_code)]` is a smell; remove once the evidence anchor is
+/// wired to the provenance event or episode renderer.
 #[allow(dead_code)]
 enum EvidenceAnchor<'a> {
     /// LLM call during an active step — infallible attribution.
@@ -291,6 +308,9 @@ enum EvidenceAnchor<'a> {
     PostExecution,
 }
 
+/// `#[allow(dead_code)]` suppresses the lint on `evidence_anchor()`, which
+/// builds an `EvidenceAnchor` not yet consumed by the drift reporting API.
+/// Remove the suppression once `evidence_anchor` is wired downstream.
 #[allow(dead_code)]
 impl CommittedPlanExecution {
     fn new(
@@ -584,10 +604,19 @@ pub struct ProvenanceEffectSubscriber {
     action_describer: Option<Arc<ActionDescriber>>,
     /// Same registry as the runtime — used to rebuild [`RefTable`] for citation resolution.
     tool_registry: Option<Arc<ToolRegistry>>,
+    /// Live per-context archive ref tables, shared with the QuickJS/A2A layer.
+    /// When set, `@N` citations resolve to their actual tool-result content during
+    /// drift scoring. Without this the ref table is empty for archive refs, causing
+    /// `@N` citations to silently drop from the scored set.
+    archive_ref_tables: Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>,
 }
 
 impl ProvenanceEffectSubscriber {
-    pub fn new(writer: Arc<dyn ProvenanceWriter>) -> Self {
+    /// Base constructor: all optional fields at their zero / disabled state.
+    /// All public constructors delegate here and use struct update syntax to
+    /// override only the fields they need, so `None` / `DashMap::new()` are
+    /// written exactly once.
+    fn base(writer: Arc<dyn ProvenanceWriter>) -> Self {
         Self {
             writer,
             drift_config: DriftConfig::default(),
@@ -597,7 +626,12 @@ impl ProvenanceEffectSubscriber {
             plan_trackers: DashMap::new(),
             action_describer: None,
             tool_registry: None,
+            archive_ref_tables: None,
         }
+    }
+
+    pub fn new(writer: Arc<dyn ProvenanceWriter>) -> Self {
+        Self::base(writer)
     }
 
     pub fn new_with_embedding_provider(
@@ -606,14 +640,39 @@ impl ProvenanceEffectSubscriber {
         drift_provider: Arc<dyn EmbeddingProvider>,
     ) -> Self {
         Self {
-            writer,
             drift_config,
-            plan_drift_config: PlanDriftConfig::default(),
             drift_provider: RwLock::new(Some(drift_provider)),
-            rerank_provider: RwLock::new(None),
-            plan_trackers: DashMap::new(),
-            action_describer: None,
-            tool_registry: None,
+            ..Self::base(writer)
+        }
+    }
+
+    pub fn new_with_plan_drift(
+        writer: Arc<dyn ProvenanceWriter>,
+        drift_config: DriftConfig,
+        plan_drift_config: PlanDriftConfig,
+        drift_provider: Arc<dyn EmbeddingProvider>,
+    ) -> Self {
+        Self {
+            drift_config,
+            plan_drift_config,
+            drift_provider: RwLock::new(Some(drift_provider)),
+            ..Self::base(writer)
+        }
+    }
+
+    pub fn new_with_reranker(
+        writer: Arc<dyn ProvenanceWriter>,
+        drift_config: DriftConfig,
+        plan_drift_config: PlanDriftConfig,
+        drift_provider: Arc<dyn EmbeddingProvider>,
+        rerank_provider: Arc<dyn RerankProvider>,
+    ) -> Self {
+        Self {
+            drift_config,
+            plan_drift_config,
+            drift_provider: RwLock::new(Some(drift_provider)),
+            rerank_provider: RwLock::new(Some(rerank_provider)),
+            ..Self::base(writer)
         }
     }
 
@@ -629,41 +688,14 @@ impl ProvenanceEffectSubscriber {
         self.tool_registry = Some(registry);
     }
 
-    pub fn new_with_plan_drift(
-        writer: Arc<dyn ProvenanceWriter>,
-        drift_config: DriftConfig,
-        plan_drift_config: PlanDriftConfig,
-        drift_provider: Arc<dyn EmbeddingProvider>,
-    ) -> Self {
-        Self {
-            writer,
-            drift_config,
-            plan_drift_config,
-            drift_provider: RwLock::new(Some(drift_provider)),
-            rerank_provider: RwLock::new(None),
-            plan_trackers: DashMap::new(),
-            action_describer: None,
-            tool_registry: None,
-        }
-    }
-
-    pub fn new_with_reranker(
-        writer: Arc<dyn ProvenanceWriter>,
-        drift_config: DriftConfig,
-        plan_drift_config: PlanDriftConfig,
-        drift_provider: Arc<dyn EmbeddingProvider>,
-        rerank_provider: Arc<dyn RerankProvider>,
-    ) -> Self {
-        Self {
-            writer,
-            drift_config,
-            plan_drift_config,
-            drift_provider: RwLock::new(Some(drift_provider)),
-            rerank_provider: RwLock::new(Some(rerank_provider)),
-            plan_trackers: DashMap::new(),
-            action_describer: None,
-            tool_registry: None,
-        }
+    /// Wire the live per-context archive ref tables so `@N` citations resolve to
+    /// real tool-result content during drift scoring. Must be called before the
+    /// subscriber is handed to the effect bus.
+    pub fn set_archive_ref_tables(
+        &mut self,
+        tables: Arc<baml_rt_tools::archive_refs::ContextRefTables>,
+    ) {
+        self.archive_ref_tables = Some(tables);
     }
 
     async fn drift_provider(&self) -> Option<Arc<dyn EmbeddingProvider>> {
@@ -731,6 +763,26 @@ impl ProvenanceEffectSubscriber {
         }
         *guard = Some(provider.clone());
         Some(provider)
+    }
+
+    /// Load ONNX embedding + JINA rerank models **before** the first chat turn.
+    ///
+    /// [`EffectEvent::IntentResolved`] and [`EffectEvent::PlanGenerated`] call
+    /// [`Self::drift_provider`] / [`Self::rerank_provider`] **before** emitting
+    /// provenance rows. Without a warm-up, the first effect on the critical path
+    /// blocks on `spawn_blocking(FastEmbedProvider::new)` (large GTE model) and
+    /// reranker init — often tens of seconds — so the UI shows no graph activity
+    /// until that completes.
+    pub async fn warm_drift_models(&self) {
+        let t0 = Instant::now();
+        let embedding_ok = self.drift_provider().await.is_some();
+        let rerank_ok = self.rerank_provider().await.is_some();
+        tracing::info!(
+            elapsed_ms = t0.elapsed().as_millis(),
+            embedding_ready = embedding_ok,
+            reranker_ready = rerank_ok,
+            "provenance drift models warm-up complete"
+        );
     }
 }
 
@@ -802,11 +854,38 @@ impl ProvenanceEffectSubscriber {
         let citation_drift = self
             .compute_citation_drift_section(
                 context_id,
+                task_id,
                 decision_text.trim(),
                 citation_strings,
                 provider.as_ref(),
             )
             .await;
+
+        // 2D BIPIA firewall: low step_alignment + high cite_mean is the geometric
+        // fingerprint of a successful prompt injection. Individual 1D scores may
+        // remain at "warn" because the cosine gap is small, but the joint condition
+        // uniquely identifies injection vs normal drift or hallucination.
+        let plan_drift = match plan_drift {
+            Some(pd) => {
+                if let (Some(step_alignment), Some(cd)) = (pd.step_alignment(), &citation_drift) {
+                    let bipia = score_bipia_signal(step_alignment, cd, None, None);
+                    if bipia.flagged {
+                        tracing::warn!(
+                            step_alignment,
+                            cite_mean = bipia.cite_mean,
+                            positive_cite_count = bipia.positive_citation_count,
+                            "BIPIA injection fingerprint detected: escalating composite severity to block"
+                        );
+                        Some(pd.with_escalated_severity(DriftSeverity::Block))
+                    } else {
+                        Some(pd)
+                    }
+                } else {
+                    Some(pd)
+                }
+            }
+            None => None,
+        };
 
         if tactical.is_none() && plan_drift.is_none() && citation_drift.is_none() {
             return None;
@@ -826,8 +905,8 @@ impl ProvenanceEffectSubscriber {
             match &tactical {
                 Some(a) => (
                     a.score,
-                    a.severity_label().to_string(),
-                    drift_mode_label(a.mode).to_string(),
+                    a.severity,
+                    a.mode,
                     a.warn_min_score,
                     a.block_min_score,
                     a.intent_text_preview.clone(),
@@ -835,8 +914,8 @@ impl ProvenanceEffectSubscriber {
                 ),
                 None => (
                     0.0,
-                    String::new(),
-                    drift_mode_label(self.drift_config.mode).to_string(),
+                    DriftSeverity::Acceptable,
+                    self.drift_config.mode,
                     self.drift_config.warn_min_score,
                     self.drift_config.block_min_score,
                     baml_rt_embedding::preview_text(
@@ -865,6 +944,7 @@ impl ProvenanceEffectSubscriber {
     async fn compute_citation_drift_section(
         &self,
         context_id: &ContextId,
+        task_id: Option<&TaskId>,
         decision_text: &str,
         citation_strings: &[String],
         embed_provider: &dyn EmbeddingProvider,
@@ -875,14 +955,27 @@ impl ProvenanceEffectSubscriber {
         let registry = self.tool_registry.as_ref()?;
         let items = self
             .writer
-            .conversation_context(context_id, Some(320))
+            .conversation_context_with_task(context_id, Some(320), task_id)
             .await
             .ok()?;
         let projection_items: Vec<_> = items
             .into_iter()
             .filter_map(provenance_item_to_projection_item)
             .collect();
-        let ref_table = RefTable::new();
+        // Use the live per-context archive ref table when available so `@N` citations
+        // resolve to their actual tool-result content. Without this, the table is empty
+        // for archive refs and all `@N` citations silently drop from the scored set.
+        let ref_table: Arc<RefTable> = self
+            .archive_ref_tables
+            .as_ref()
+            .and_then(|tables| {
+                baml_rt_tools::archive_refs::get_ref_table(tables, context_id.as_str())
+            })
+            .unwrap_or_else(|| Arc::new(RefTable::new()));
+        // Called for the side effect of populating `ref_table` with `#N`/`@N`
+        // slots so that citation resolution below can look up archive content.
+        // The projected history pairs returned here are not needed; only the
+        // table state matters.
         let _history =
             project_prompt_context(projection_items, registry.as_ref(), &ref_table, None);
         // Parse each raw string and keep it paired so we can store it with the result.
@@ -1032,16 +1125,6 @@ impl ProvenanceEffectSubscriber {
         let (step_data, step_index, total_steps, is_revised, intent_desc, tracker) =
             phase.scoring_split();
 
-        let tactical_stub = baml_rt_embedding::DriftAssessment {
-            score: 0.0,
-            severity: baml_rt_embedding::DriftSeverity::Acceptable,
-            mode: self.drift_config.mode,
-            warn_min_score: self.drift_config.warn_min_score,
-            block_min_score: self.drift_config.block_min_score,
-            intent_text_preview: String::new(),
-            response_text_preview: String::new(),
-        };
-
         // Build the phase-discriminated input.
         // For PlanCommitted: call the reranker (always present) to get the XE
         // score alongside the cosine step embedding.
@@ -1076,8 +1159,7 @@ impl ProvenanceEffectSubscriber {
             },
         };
 
-        let plan_assessment =
-            score_plan_drift(&inputs, tactical_stub, tracker, &self.plan_drift_config);
+        let plan_assessment = score_plan_drift(&inputs, tracker, &self.plan_drift_config);
 
         let info = match plan_assessment {
             baml_rt_embedding::PlanDriftAssessment::PrePlan {
@@ -1085,12 +1167,13 @@ impl ProvenanceEffectSubscriber {
                 trajectory_drift,
                 plan_adherence_score,
                 composite_severity,
-                ..
             } => LlmPlanDriftInfo::PrePlan {
-                intent_alignment,
-                trajectory_drift,
-                plan_adherence_score,
-                composite_severity: composite_severity.as_str().to_string(),
+                scores: crate::events::PlanDriftScores {
+                    intent_alignment,
+                    trajectory_drift,
+                    plan_adherence_score,
+                    composite_severity,
+                },
             },
             baml_rt_embedding::PlanDriftAssessment::PlanCommitted {
                 intent_alignment,
@@ -1099,17 +1182,98 @@ impl ProvenanceEffectSubscriber {
                 trajectory_drift,
                 plan_adherence_score,
                 composite_severity,
-                ..
             } => LlmPlanDriftInfo::PlanCommitted {
-                intent_alignment,
+                scores: crate::events::PlanDriftScores {
+                    intent_alignment,
+                    trajectory_drift,
+                    plan_adherence_score,
+                    composite_severity,
+                },
                 step_alignment,
                 cross_encoder_step_score,
-                trajectory_drift,
-                plan_adherence_score,
-                composite_severity: composite_severity.as_str().to_string(),
             },
         };
         Some((info, intent_desc.to_string(), step_desc_text))
+    }
+
+    /// Build `ResolvedCitationTarget` entries from already-computed citation drift data.
+    ///
+    /// The citation drift section resolves each `#N`/`@N` via the live RefTable and computes
+    /// similarity. This function maps the resolved `activity_anchor` to a **write-time node ID**
+    /// using normalizer conventions, so the normalizer can emit CITED edges without the
+    /// ephemeral ref table.
+    ///
+    /// Node ID conventions (write-time, matching normalizer):
+    /// - History citations (`#N`): Message entity → `"message:{context_id}:{message_id}"`.
+    ///   Resolved by matching `activity_anchor` against conversation context items with
+    ///   `ConversationItemContent::Message`.
+    /// - Archive citations (`@N`): SessionStep entity → `"session-step:{activity_anchor}"`.
+    ///   SessionStep node IDs are `"session-step:{event_anchor}"` by normalizer convention.
+    fn extract_resolved_citations(
+        drift: &Option<Box<LlmDriftInfo>>,
+        conversation_items: &[crate::store::ProvenanceConversationContextItem],
+    ) -> Vec<ResolvedCitationTarget> {
+        let Some(drift) = drift.as_ref() else {
+            return vec![];
+        };
+        let Some(cd) = &drift.citation_drift else {
+            return vec![];
+        };
+
+        // Build activity_anchor → node_id map from conversation context items.
+        // Messages use derived IDs; SessionSteps use "session-step:{anchor}".
+        let mut anchor_to_node_id: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for item in conversation_items {
+            let anchor = item.activity_anchor.as_str();
+            match &item.content {
+                crate::store::ConversationItemContent::Message { .. } => {
+                    // Message node IDs are not trivially reconstructible from activity_anchor
+                    // alone (they need message_id from the MessageReceived event). Store the
+                    // activity_anchor itself — the normalizer already creates Message entities
+                    // and inserts them into entity maps, so the CITED edge will find them
+                    // by scanning the document. For now, skip Messages that can't be mapped.
+                }
+                crate::store::ConversationItemContent::SessionStep(_) => {
+                    let node_id =
+                        ProvEntityId::derived::<SessionStepEntityId>(SessionStepEntityInput {
+                            event_anchor: anchor,
+                        })
+                        .into_string();
+                    anchor_to_node_id.insert(anchor.to_string(), node_id);
+                }
+                _ => {}
+            }
+        }
+
+        cd.per_citation
+            .iter()
+            .filter_map(|c| {
+                if c.activity_anchor.is_empty() {
+                    return None;
+                }
+                // Archive refs (@N): look up the session-step node ID.
+                // History refs (#N): these cite Messages, but we don't have the Message
+                // entity node ID here. Skip for now — history citations are lower priority
+                // than archive citations for graph-edge representation.
+                let node_id = if c.is_history {
+                    // History citations: we cannot reliably construct the Message node ID
+                    // from just an activity_anchor (need context_id + message_id from the
+                    // original MessageReceived event). These remain as node attributes only.
+                    return None;
+                } else {
+                    anchor_to_node_id.get(&c.activity_anchor)?
+                };
+                Some(ResolvedCitationTarget {
+                    target_node_id: node_id.clone(),
+                    raw: c.raw.clone(),
+                    line_start: None,
+                    line_end: None,
+                    negated: c.negated,
+                    similarity: Some(c.similarity),
+                })
+            })
+            .collect()
     }
 
     /// Handle `IntentResolved`: transition to IntentResolved phase.
@@ -1431,6 +1595,13 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     )
                     .await
                     .map(Box::new);
+                let conv_items_for_citations = self
+                    .writer
+                    .conversation_context_with_task(context_id, Some(320), task_id.as_ref())
+                    .await
+                    .unwrap_or_default();
+                let resolved_citations =
+                    Self::extract_resolved_citations(&drift, &conv_items_for_citations);
                 let completion_metadata = match &metadata.metadata {
                     Value::Object(map) => {
                         let mut out = map.clone();
@@ -1459,6 +1630,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             *outcome,
                             drift.clone(),
                             citation_strings.clone(),
+                            resolved_citations.clone(),
                         )
                     },
                     |ctx_id, msg_id| {
@@ -1475,6 +1647,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             *outcome,
                             drift.clone(),
                             citation_strings.clone(),
+                            resolved_citations.clone(),
                         )
                     },
                 ) else {
@@ -1605,6 +1778,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 tool_name,
                 session_id,
                 op,
+                task_id,
             } => {
                 // Map the core SessionStepOp into the provenance variant.
                 let prov_op = match op {
@@ -1612,9 +1786,11 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     SessionStepOp::SendDone {
                         archive_ref,
                         header,
+                        informed_by,
                     } => crate::store::SessionStepOp::SendDone {
                         archive_ref: archive_ref.clone(),
                         header: header.clone(),
+                        informed_by: informed_by.clone(),
                     },
                     SessionStepOp::Read {
                         archive_ref,
@@ -1628,9 +1804,14 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                         limit: *limit,
                     },
                 };
-                // Attempt to find a message_id for scoping. If none, use a synthetic message_id
-                // from the context_id so the event is always stored.
-                let scope =
+                // Task-scoped runs: tie session steps to the task so task-filtered episode
+                // transcripts include Open / SendDone / Read rows. Otherwise fall back to
+                // message scope (synthetic id when the context has no messages yet).
+                let scope = if let Some(tid) = task_id {
+                    CallScope::Task {
+                        task_id: tid.clone(),
+                    }
+                } else {
                     self.writer
                         .context_messages(context_id, Some(1))
                         .await
@@ -1640,14 +1821,14 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             message_id: m.message_id,
                         })
                         .unwrap_or_else(|| {
-                            // No stored message yet — synthesize a stable message_id from context_id
                             let synthetic_msg_id = MessageId::from_external(ExternalId::new(
                                 format!("ctx-msg:{}", context_id.as_str()),
                             ));
                             CallScope::Message {
                                 message_id: synthetic_msg_id,
                             }
-                        });
+                        })
+                };
                 ProvEvent::tool_session_step(
                     context_id.clone(),
                     scope,
@@ -1665,6 +1846,11 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
     }
 }
 
+/// Boundary validation: extract a typed [`MessageId`] from untyped EffectEvent metadata.
+///
+/// Returns `None` when `message_id` is absent or non-string. Callers that require
+/// a message_id for correctness must treat `None` as a validation rejection at the
+/// boundary — downstream provenance code must not re-parse this field.
 fn message_id_from_metadata(metadata: &Value) -> Option<MessageId> {
     metadata
         .get("message_id")
@@ -1672,6 +1858,11 @@ fn message_id_from_metadata(metadata: &Value) -> Option<MessageId> {
         .map(|value| MessageId::from_external(ExternalId::new(value.to_string())))
 }
 
+/// Boundary validation: extract a typed [`TaskId`] from untyped EffectEvent metadata.
+///
+/// Returns `None` when `task_id` is absent or non-string. Callers that require
+/// a task_id for correctness must treat `None` as a validation rejection at the
+/// boundary — downstream provenance code must not re-parse this field.
 fn task_id_from_metadata(metadata: &Value) -> Option<TaskId> {
     metadata
         .get("task_id")
@@ -1684,13 +1875,6 @@ fn normalized_prompt(prompt: &Value) -> Value {
         Value::Object(serde_json::Map::new())
     } else {
         prompt.clone()
-    }
-}
-
-fn drift_mode_label(mode: DriftMode) -> &'static str {
-    match mode {
-        DriftMode::Audit => "audit",
-        DriftMode::Enforce => "enforce",
     }
 }
 
@@ -1843,8 +2027,8 @@ mod tests {
         match completed.data() {
             ProvEventData::LlmCallCompleted { drift, .. } => {
                 let drift = drift.as_ref().expect("drift info");
-                assert_eq!(drift.mode, "audit");
-                assert_eq!(drift.severity, "block");
+                assert_eq!(drift.mode, baml_rt_embedding::DriftMode::Audit);
+                assert_eq!(drift.severity, DriftSeverity::Block);
                 assert!(drift.score >= 0.0);
                 assert!(drift.intent_text_preview.contains("Create a task"));
                 assert!(drift.response_text_preview.contains("Ignore previous"));
@@ -1980,23 +2164,30 @@ mod tests {
                     .expect("plan_drift should be present after intent + plan + step lifecycle");
                 match plan {
                     LlmPlanDriftInfo::PlanCommitted {
-                        intent_alignment,
+                        scores,
                         step_alignment,
                         cross_encoder_step_score,
-                        trajectory_drift,
-                        plan_adherence_score,
-                        composite_severity,
                     } => {
-                        assert!(*intent_alignment > 0.0, "got {intent_alignment}");
+                        assert!(
+                            scores.intent_alignment > 0.0,
+                            "got {}",
+                            scores.intent_alignment
+                        );
                         assert!(*step_alignment > 0.0, "got {step_alignment}");
                         // XE score present (reranker always configured in PlanCommitted)
                         let _ = cross_encoder_step_score; // value depends on mock provider
-                        assert!(*trajectory_drift > 0.0, "got {trajectory_drift}");
-                        assert!(*plan_adherence_score > 0.0, "got {plan_adherence_score}");
                         assert!(
-                            ["acceptable", "warn", "block"].contains(&composite_severity.as_str()),
-                            "got {composite_severity}",
+                            scores.trajectory_drift > 0.0,
+                            "got {}",
+                            scores.trajectory_drift
                         );
+                        assert!(
+                            scores.plan_adherence_score > 0.0,
+                            "got {}",
+                            scores.plan_adherence_score
+                        );
+                        // DriftSeverity is an exhaustive enum — any value is valid here
+                        let _ = scores.composite_severity;
                     }
                     LlmPlanDriftInfo::PrePlan { .. } => {
                         panic!("post-plan LLM call should produce PlanCommitted, got PrePlan");
@@ -2130,27 +2321,25 @@ mod tests {
 
                 // Must be PrePlan variant (structurally no step alignment).
                 match plan {
-                    LlmPlanDriftInfo::PrePlan {
-                        intent_alignment,
-                        trajectory_drift,
-                        plan_adherence_score,
-                        composite_severity,
-                    } => {
+                    LlmPlanDriftInfo::PrePlan { scores } => {
                         assert!(
-                            *intent_alignment > 0.5,
-                            "pre-intent aligned response should have decent intent alignment, got {intent_alignment}"
+                            scores.intent_alignment > 0.5,
+                            "pre-intent aligned response should have decent intent alignment, got {}",
+                            scores.intent_alignment
                         );
                         assert!(
-                            *trajectory_drift > 0.5,
-                            "first call trajectory should be near intent, got {trajectory_drift}"
+                            scores.trajectory_drift > 0.5,
+                            "first call trajectory should be near intent, got {}",
+                            scores.trajectory_drift
                         );
                         assert!(
-                            *plan_adherence_score > 0.5,
-                            "pre-plan adherence is intent-only, should be decent, got {plan_adherence_score}"
+                            scores.plan_adherence_score > 0.5,
+                            "pre-plan adherence is intent-only, should be decent, got {}",
+                            scores.plan_adherence_score
                         );
                         assert_ne!(
-                            composite_severity.as_str(),
-                            "block",
+                            scores.composite_severity,
+                            DriftSeverity::Block,
                             "pre-intent aligned call must NOT be block — was the phantom zero bug"
                         );
                     }

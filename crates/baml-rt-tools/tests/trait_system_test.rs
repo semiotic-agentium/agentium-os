@@ -167,7 +167,7 @@ async fn test_e2e_trait_tool_registration_rust_execution() {
     let baml_manager = setup_baml_runtime_default();
 
     {
-        let mut manager = baml_manager.lock().await;
+        let mut manager = baml_manager.write().await;
         manager.register_tool(ArithmeticTool).await.unwrap();
         manager.register_tool(StringManipulationTool).await.unwrap();
     }
@@ -177,7 +177,7 @@ async fn test_e2e_trait_tool_registration_rust_execution() {
     ));
 
     context::with_scope(scope.as_scope().clone(), async {
-        let manager = baml_manager.lock().await;
+        let manager = baml_manager.read().await;
 
         let arithmetic_result = manager
             .execute_tool(
@@ -220,7 +220,7 @@ async fn test_e2e_trait_tool_js_registration() {
 
     // Register tools using trait system
     {
-        let mut manager = baml_manager.lock().await;
+        let mut manager = baml_manager.write().await;
         manager.register_tool(ArithmeticTool).await.unwrap();
     }
 
@@ -241,14 +241,14 @@ async fn test_e2e_trait_tool_metadata_and_listing() {
 
     // Register tools
     {
-        let mut manager = baml_manager.lock().await;
+        let mut manager = baml_manager.write().await;
         manager.register_tool(ArithmeticTool).await.unwrap();
         manager.register_tool(StringManipulationTool).await.unwrap();
     }
 
     // Test listing and metadata
     {
-        let manager = baml_manager.lock().await;
+        let manager = baml_manager.read().await;
         let tools = manager.list_tools().await;
 
         assert!(tools.contains(&"test/arithmetic".to_string()));

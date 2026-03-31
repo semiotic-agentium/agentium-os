@@ -125,6 +125,10 @@ class CallbackToolOutputVariant1 {
   source_key string
   scheduled_for_unix_ms int
   deduped bool
+  dispatch_context_id string | null?
+  dispatch_task_id string | null?
+  scheduling_context_id string | null?
+  scheduling_task_id string | null?
   outcome string
 }
 

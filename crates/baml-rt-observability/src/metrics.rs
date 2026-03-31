@@ -27,6 +27,10 @@ static TASK_STORE_OP_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static TASK_STORE_OP_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 static QUICKJS_INVOKE_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static QUICKJS_INVOKE_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static LIVE_STREAM_EVENT_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static LIVE_STREAM_PHASE_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static A2A_SSE_STREAM_TO_FIRST_DATA_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static A2A_SSE_TTFB_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 
 fn a2a_request_counter() -> &'static Counter<u64> {
     A2A_REQUEST_COUNTER.get_or_init(|| {
@@ -263,4 +267,58 @@ pub fn record_quickjs_invoke(mode: &str, result: &str, duration: Duration) {
     ];
     quickjs_invoke_counter().add(1, attributes);
     quickjs_invoke_histogram().record(duration.as_millis() as f64, attributes);
+}
+
+fn live_stream_event_counter() -> &'static Counter<u64> {
+    LIVE_STREAM_EVENT_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.a2a.live_stream.event_total")
+            .init()
+    })
+}
+
+fn live_stream_phase_histogram() -> &'static Histogram<f64> {
+    LIVE_STREAM_PHASE_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.a2a.live_stream.phase_duration_ms")
+            .init()
+    })
+}
+
+fn a2a_sse_stream_to_first_data_histogram() -> &'static Histogram<f64> {
+    A2A_SSE_STREAM_TO_FIRST_DATA_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.a2a.sse.first_data_from_stream_ms")
+            .init()
+    })
+}
+
+fn a2a_sse_ttfb_histogram() -> &'static Histogram<f64> {
+    A2A_SSE_TTFB_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.a2a.sse.ttfb_from_handler_entry_ms")
+            .init()
+    })
+}
+
+/// One-shot events on the HTTP `message.sendStream` live path (`event` is low-cardinality).
+pub fn record_live_stream_event(event: &'static str) {
+    let attributes = &[KeyValue::new("event", event.to_string())];
+    live_stream_event_counter().add(1, attributes);
+}
+
+/// Elapsed time between milestones on the live stream path (`phase` is low-cardinality).
+pub fn record_live_stream_phase_duration(phase: &'static str, duration: Duration) {
+    let attributes = &[KeyValue::new("phase", phase.to_string())];
+    live_stream_phase_histogram().record(duration.as_secs_f64() * 1000.0, attributes);
+}
+
+/// Time from successful `handle_a2a_stream` return until the first bus chunk is mapped to an SSE `data:` event.
+pub fn record_a2a_sse_first_data_duration_ms(duration: Duration) {
+    a2a_sse_stream_to_first_data_histogram().record(duration.as_secs_f64() * 1000.0, &[]);
+}
+
+/// Time from HTTP handler entry until the first application SSE data event is ready (includes `handle_a2a_stream` await).
+pub fn record_a2a_sse_ttfb_from_handler_entry_ms(duration: Duration) {
+    a2a_sse_ttfb_histogram().record(duration.as_secs_f64() * 1000.0, &[]);
 }

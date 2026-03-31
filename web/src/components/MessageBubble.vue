@@ -117,12 +117,6 @@ const showGaps = ref(false);
             <pre class="structured-data-pre">{{ formatStructuredBody(block.mediaType, block.data) }}</pre>
           </div>
         </template>
-        <div v-if="citationRefs.length" class="citation-chip-row" role="group" aria-label="Citations">
-          <span class="citation-section-label">Citations</span>
-          <div class="source-chips">
-            <span v-for="(ref, i) in citationRefs" :key="i" class="source-chip">{{ ref }}</span>
-          </div>
-        </div>
         <div v-if="showInlineStreamingDots && message.isStreaming" class="streaming-dots-row">
           <span class="thinking-dots"><span /><span /><span /></span>
         </div>
@@ -158,6 +152,13 @@ const showGaps = ref(false);
           </div>
         </div>
       </template>
+      <!-- Citation chips — rendered for both structured and legacy text messages -->
+      <div v-if="citationRefs.length" class="citation-chip-row" role="group" aria-label="Citations">
+        <span class="citation-section-label">Citations</span>
+        <div class="source-chips">
+          <span v-for="(ref, i) in citationRefs" :key="i" class="source-chip">{{ ref }}</span>
+        </div>
+      </div>
       <!-- Coordinator metadata footer (parsed from structured text) -->
       <div v-if="coordinatorData" class="coordinator-meta">
         <div v-if="coordinatorData.confidence !== null" class="coordinator-confidence">

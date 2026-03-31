@@ -10,7 +10,17 @@ import { useProvenanceOps } from "./composables/useProvenanceOps";
 import { useA2aClient } from "./composables/useA2aClient";
 import { useTheme } from "./composables/useTheme";
 import { parseMermaidBlocks } from "./utils/parseMermaid";
-import type { AgentDiscoveryEntry } from "./types/a2a";
+import type { AgentDiscoveryEntry, ChatMessage } from "./types/a2a";
+
+/** First inline mermaid block in agent messages (stops at first hit). */
+function firstInlineMermaidDiagram(messages: ChatMessage[]): string | null {
+  for (const m of messages) {
+    if (m.role !== "agent") continue;
+    const blocks = parseMermaidBlocks(m.text);
+    if (blocks.length > 0) return blocks[0]!;
+  }
+  return null;
+}
 
 const {
   agents,
@@ -18,8 +28,10 @@ const {
   messages,
   isLoading,
   provenanceDiagram,
+  traceRefreshGeneration,
   contextMetrics,
   contextId,
+  taskId,
   workflowProgress,
   awaitingInput,
   inputRequiredPrompt,
@@ -44,14 +56,12 @@ const { createQuery } = useProvenanceOps();
 // Active view — defaults to dashboard as landing page
 const view = ref<"dashboard" | "chat" | "settings">("dashboard");
 
-// Diagrams: provenance sequence diagram first, then any mermaid blocks in agent messages.
-const diagrams = computed(() => {
-  const inline = messages.value.flatMap((m) =>
-    m.role === "agent" ? parseMermaidBlocks(m.text) : [],
-  );
-  return provenanceDiagram.value
-    ? [provenanceDiagram.value, ...inline]
-    : inline;
+// Trace pane only displays the first diagram; avoid parsing/rendering all agent mermaid blocks.
+const provenancePaneDiagrams = computed(() => {
+  const prov = provenanceDiagram.value.trim();
+  if (prov.length > 0) return [prov];
+  const first = firstInlineMermaidDiagram(messages.value);
+  return first ? [first] : [];
 });
 
 const dashboardOps = createQuery("llm_calls", {
@@ -142,9 +152,11 @@ onMounted(() => fetchAgents());
           />
           <ProvenancePane
             :context-id="contextId"
+            :task-id="taskId ?? undefined"
             :selected-agent-id="undefined"
             :is-streaming="isLoading"
-            :diagrams="diagrams"
+            :diagrams="provenancePaneDiagrams"
+            :trace-refresh-tick="traceRefreshGeneration"
           />
         </div>
       </div>

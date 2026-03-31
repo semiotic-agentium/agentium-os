@@ -11,14 +11,23 @@
 
 pub mod cat_n;
 pub mod grep;
+pub mod read_resolve;
 pub mod render;
 pub mod rendered;
+pub mod session_read_body;
 pub mod types;
+pub mod virtual_source;
 
 pub use cat_n::{format_cat_n, format_cat_n_sequential};
 pub use grep::grep_paginate;
+pub use read_resolve::{ResolvedArchiveRead, resolve_archive_for_read};
 pub use render::render_to_lines;
 pub use rendered::RenderedContent;
+pub use session_read_body::{
+    format_grep_page_as_session_read_body, format_session_read_body_from_json_value,
+    format_session_read_body_from_rendered, session_read_command_line,
+};
 pub use types::{
     GrepPage, GrepPattern, HistoryRef, LineOffset, LineWithPosition, PageLimit, ShortRef,
 };
+pub use virtual_source::{VirtualArchiveRow, VirtualArchiveSource, VirtualHistoryRow};

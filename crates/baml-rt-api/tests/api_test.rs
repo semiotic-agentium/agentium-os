@@ -83,6 +83,8 @@ fn redact_variant_parts(v: Value) -> Value {
                         V::String("[prov_activity_anchor]".to_string())
                     }
                     "timestamp_ms" => V::String("[timestamp_ms]".to_string()),
+                    // Monotonic / wall-clock ordering from store; varies every run.
+                    "a2a_event_order" => V::String("[a2a_event_order]".to_string()),
                     // Wall-clock ms from Surreal / store; varies every run.
                     "prov_endTime" | "prov_startTime" => V::String("[timestamp_ms]".to_string()),
                     "type" => match &val {
@@ -152,6 +154,7 @@ async fn prov_test_router(
         None,
         provenance_ops,
         None, // planning
+        None, // episode
         tool_catalog,
         config_service,
         secret_resolver,
@@ -440,8 +443,8 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
             Outcome::Success,
             Some(Box::new(LlmDriftInfo {
                 score: 0.618,
-                severity: "warn".to_string(),
-                mode: "audit".to_string(),
+                severity: baml_rt_embedding::DriftSeverity::Warn,
+                mode: baml_rt_embedding::DriftMode::Audit,
                 warn_min_score: 0.5,
                 block_min_score: 0.25,
                 intent_text_preview: "Create a task titled Research".to_string(),
@@ -450,6 +453,7 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
                 plan_drift: None,
                 citation_drift: None,
             })),
+            vec![],
             vec![],
         ))
         .await
@@ -507,6 +511,7 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
                 outcome: Outcome::Failure,
                 drift: None,
                 citations: vec![],
+                resolved_citations: vec![],
             },
         }))
         .await
@@ -529,6 +534,7 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
             None,
             agent_b.clone(),
             4,
+            Vec::new(),
         ))
         .await
         .unwrap();
@@ -567,6 +573,7 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
             None,
             agent_a,
             6,
+            Vec::new(),
         ))
         .await
         .unwrap();

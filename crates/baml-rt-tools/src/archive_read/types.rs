@@ -18,6 +18,15 @@ impl ShortRef {
         s.strip_prefix('@')?.parse::<u32>().ok().map(Self)
     }
 
+    /// Parse `@N`, or the last `@N` suffix (e.g. episode-prefixed `abcd@8` in display strings).
+    pub fn parse_loose(s: &str) -> Option<Self> {
+        Self::parse(s.trim()).or_else(|| {
+            let t = s.trim();
+            let i = t.rfind('@')?;
+            Self::parse(&t[i..])
+        })
+    }
+
     pub fn as_u32(self) -> u32 {
         self.0
     }

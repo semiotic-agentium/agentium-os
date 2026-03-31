@@ -15,18 +15,20 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     AgentType, ProvEvent, ProvenanceContextReader, ProvenanceConversationContextItem,
-    ProvenanceWriter, SurrealProvenanceStore, SurrealStoreBuilder,
+    ProvenanceWriter, SurrealProvenanceStore,
     store::{ConversationItemContent, SessionStepOp, ToolOutcome},
 };
 use baml_tools_slack::SlackTool;
 use common::{
     RunningHttpServer, TempDirCleanup, TempEnvVar, build_slack_agent_to_temp_async,
-    e2e_serial_gate, post_a2a_sse_collect, start_http_server, start_runner_api_server,
+    e2e_serial_gate, fetch_context_mermaid, post_a2a_sse_collect, start_http_server,
+    start_runner_api_server,
 };
 use http_tool_test_helpers::contains_kv;
 use serde_json::{Value, json};
 use test_support::common::{
-    chunks_from_responses, message_texts_from_chunks, send_stream_request, workspace_fnox_path,
+    chunks_from_responses, message_texts_from_chunks, send_stream_request, test_surreal_store,
+    workspace_fnox_path,
 };
 use tokio::time::{Duration, sleep, timeout};
 
@@ -207,7 +209,7 @@ async fn setup_slack_agent_with_provenance()
         .await
         .expect("register slack tool");
 
-    let provenance = build_surreal_test_store().await;
+    let provenance = test_surreal_store().await;
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
     provenance
         .add_event(ProvEvent::agent_booted(
@@ -231,13 +233,6 @@ async fn setup_slack_agent_with_provenance()
         .await
         .expect("build slack agent");
     (agent, provenance, built)
-}
-
-async fn build_surreal_test_store() -> Arc<SurrealProvenanceStore> {
-    SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build isolated SurrealDB store")
 }
 
 #[tokio::test]
@@ -448,21 +443,12 @@ async fn test_e2e_slack_todo_extraction_with_mock_server_and_mermaid_http() {
         "Expected users.info endpoint hit for user resolution. hits={mock_hits:?}"
     );
 
-    let mermaid_url = format!(
-        "{}/contexts/{}/mermaid",
-        runner_api.base_url,
-        context_id.as_str()
-    );
-    let mermaid_response = timeout(Duration::from_secs(20), http_client.get(mermaid_url).send())
-        .await
-        .expect("mermaid request timed out")
-        .expect("mermaid request failed");
-    assert!(
-        mermaid_response.status().is_success(),
-        "Expected 200 from /contexts/<context_id>/mermaid, got {}",
-        mermaid_response.status()
-    );
-    let mermaid = mermaid_response.text().await.expect("mermaid body");
+    let mermaid = fetch_context_mermaid(
+        &http_client,
+        runner_api.base_url.as_str(),
+        context_id.as_str(),
+    )
+    .await;
     assert!(
         mermaid.contains("sequenceDiagram"),
         "Expected mermaid sequence output, got: {mermaid}"

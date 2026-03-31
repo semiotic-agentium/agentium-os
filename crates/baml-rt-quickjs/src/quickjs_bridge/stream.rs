@@ -244,7 +244,7 @@ impl QuickJSBridge {
         if let Some(ref scope) = runtime_scope {
             let cid = scope.context_id();
             let task_id = scope.task_id_opt();
-            let mgr = self.baml_manager.lock().await;
+            let mgr = self.baml_manager.read().await;
             if let Err(e) = mgr.close_sessions_for_scope(cid, task_id).await {
                 tracing::error!(
                     error = %e,
@@ -350,7 +350,7 @@ impl QuickJSBridge {
         // Pre-build conversation context tags for resume (stream path). Hold lock only for the async call.
         let context_tags = self
             .baml_manager
-            .lock()
+            .read()
             .await
             .build_conversation_context_tags(scope.as_scope())
             .await

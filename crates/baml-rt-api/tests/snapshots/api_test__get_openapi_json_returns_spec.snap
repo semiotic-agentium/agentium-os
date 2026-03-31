@@ -881,6 +881,121 @@ expression: snapshot
           }
         }
       },
+      "/tasks/{task_id}/episode": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "summary": "Episode snapshot by task_id",
+          "operationId": "get_episode",
+          "parameters": [
+            {
+              "name": "task_id",
+              "in": "path",
+              "description": "A2A task ID",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Episode snapshot",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EpisodeSnapshotDto"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "No episode found for task"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Episode service not available"
+            }
+          }
+        }
+      },
+      "/tasks/{task_id}/episode/stream": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "summary": "Streaming episode updates by task_id",
+          "operationId": "get_episode_stream",
+          "parameters": [
+            {
+              "name": "task_id",
+              "in": "path",
+              "description": "A2A task ID",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "SSE stream of episode snapshots",
+              "content": {
+                "text/event-stream": {}
+              }
+            },
+            "404": {
+              "description": "No episode found for task"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Episode service not available"
+            }
+          }
+        }
+      },
+      "/tasks/{task_id}/episode/text": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "summary": "Episode as canonical plain text",
+          "operationId": "get_episode_text",
+          "parameters": [
+            {
+              "name": "task_id",
+              "in": "path",
+              "description": "A2A task ID",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Episode plain text",
+              "content": {
+                "text/plain": {}
+              }
+            },
+            "404": {
+              "description": "No episode found for task"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Episode service not available"
+            }
+          }
+        }
+      },
       "/tasks/{task_id}/mermaid": {
         "get": {
           "tags": [
@@ -1166,6 +1281,24 @@ expression: snapshot
             }
           }
         },
+        "ArtifactSummaryDto": {
+          "type": "object",
+          "description": "Artifact summary for UI display.",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "media_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            }
+          }
+        },
         "ConfigVersionDto": {
           "type": "object",
           "description": "Config at a specific version.",
@@ -1366,6 +1499,592 @@ expression: snapshot
             }
           }
         },
+        "EpisodeContentDto": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "text",
+                "type"
+              ],
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "text"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "tool_name",
+                "description",
+                "type"
+              ],
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "tool_name": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "tool_invocation"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "tool_name",
+                "summary",
+                "line_count",
+                "byte_count",
+                "lines",
+                "type"
+              ],
+              "properties": {
+                "byte_count": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "line_count": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "lines": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "tool_name": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "tool_output"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "summary",
+                "type"
+              ],
+              "properties": {
+                "summary": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "plan_revision_ref"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "old",
+                "new",
+                "type"
+              ],
+              "properties": {
+                "message": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "new": {
+                  "type": "string"
+                },
+                "old": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "status_change"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "name",
+                "type"
+              ],
+              "properties": {
+                "media_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "artifact"
+                  ]
+                }
+              }
+            }
+          ],
+          "description": "Episode entry content for UI display."
+        },
+        "EpisodeDriftCallDto": {
+          "type": "object",
+          "description": "Per-LLM-call drift detail anchored to transcript for episodic evaluation.\n\n# Structural note\nThis type is field-for-field identical to [`baml_rt_provenance::EpisodeDriftCall`].\nThey are kept separate so the domain crate remains free of API (`utoipa`) dependencies.\nIf you add a field to either type, you **must** add it to both and update the\n`from_field_copy!` invocation below.",
+          "required": [
+            "activity_anchor",
+            "function_name",
+            "severity",
+            "intent_alignment",
+            "plan_adherence_score"
+          ],
+          "properties": {
+            "activity_anchor": {
+              "type": "string"
+            },
+            "citation_coverage": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "citation_mean_similarity": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "cross_encoder_step_score": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "function_name": {
+              "type": "string"
+            },
+            "intent_alignment": {
+              "type": "number",
+              "format": "float"
+            },
+            "plan_adherence_score": {
+              "type": "number",
+              "format": "float"
+            },
+            "severity": {
+              "type": "string"
+            },
+            "step_alignment": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "trajectory_drift": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            }
+          }
+        },
+        "EpisodeDriftSummaryDto": {
+          "type": "object",
+          "description": "Task-level drift summary for episodic evaluation and memory formation.\n\n# Structural note\nThis type is field-for-field identical to [`baml_rt_provenance::EpisodeDriftSummary`].\nThey are kept separate so the domain crate remains free of API (`utoipa`) dependencies.\nIf you add a field to either type, you **must** add it to both and update the\n`from_field_copy!` invocation below.",
+          "required": [
+            "composite_severity",
+            "intent_alignment",
+            "plan_adherence_score",
+            "scored_call_count",
+            "warn_count",
+            "block_count"
+          ],
+          "properties": {
+            "block_count": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "composite_severity": {
+              "type": "string"
+            },
+            "intent_alignment": {
+              "type": "number",
+              "format": "float"
+            },
+            "plan_adherence_score": {
+              "type": "number",
+              "format": "float"
+            },
+            "scored_call_count": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "step_alignment": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "trajectory_drift": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "float"
+            },
+            "warn_count": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        },
+        "EpisodeDurationDto": {
+          "type": "object",
+          "description": "Task duration breakdown for UI display.",
+          "required": [
+            "active_ms",
+            "wait_ms",
+            "wall_clock_ms"
+          ],
+          "properties": {
+            "active_ms": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "wait_ms": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "wall_clock_ms": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        },
+        "EpisodeEntryDto": {
+          "type": "object",
+          "description": "Episode transcript entry for UI display.",
+          "required": [
+            "seq",
+            "step_type",
+            "role",
+            "elapsed_ms",
+            "content",
+            "activity_anchor"
+          ],
+          "properties": {
+            "activity_anchor": {
+              "type": "string"
+            },
+            "citation_strings": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "content": {
+              "$ref": "#/components/schemas/EpisodeContentDto"
+            },
+            "elapsed_ms": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "role": {
+              "type": "string"
+            },
+            "seq": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "step_type": {
+              "$ref": "#/components/schemas/StepTypeDto"
+            }
+          }
+        },
+        "EpisodeOutcomeDto": {
+          "type": "object",
+          "description": "Episode outcome for UI display.",
+          "required": [
+            "artifacts",
+            "citation_strings",
+            "token_summary",
+            "duration"
+          ],
+          "properties": {
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ArtifactSummaryDto"
+              }
+            },
+            "citation_strings": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "duration": {
+              "$ref": "#/components/schemas/EpisodeDurationDto"
+            },
+            "final_message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "token_summary": {
+              "$ref": "#/components/schemas/TokenSummaryDto"
+            }
+          }
+        },
+        "EpisodeSnapshotDto": {
+          "type": "object",
+          "description": "Complete episode snapshot for SSE streaming and one-shot requests.",
+          "required": [
+            "task_id",
+            "context_id",
+            "agent_id",
+            "ref_prefix",
+            "status",
+            "started_timestamp_ms",
+            "duration",
+            "token_summary",
+            "prior_context",
+            "goal",
+            "transcript",
+            "session_history",
+            "intents",
+            "plans",
+            "outcome"
+          ],
+          "properties": {
+            "agent_id": {
+              "type": "string"
+            },
+            "context_id": {
+              "type": "string"
+            },
+            "drift_calls": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/EpisodeDriftCallDto"
+              },
+              "description": "Per-LLM-call drift detail anchored to transcript activity anchors."
+            },
+            "drift_summary": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/EpisodeDriftSummaryDto",
+                  "description": "Task-level drift summary. None when drift scoring was not enabled."
+                }
+              ]
+            },
+            "duration": {
+              "$ref": "#/components/schemas/EpisodeDurationDto"
+            },
+            "goal": {
+              "$ref": "#/components/schemas/EpisodeEntryDto"
+            },
+            "intents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/IntentRevisionDto"
+              }
+            },
+            "outcome": {
+              "$ref": "#/components/schemas/EpisodeOutcomeDto"
+            },
+            "plans": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PlanRevisionDto"
+              }
+            },
+            "prior_context": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/EpisodeEntryDto"
+              }
+            },
+            "ref_prefix": {
+              "type": "string"
+            },
+            "session_history": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SessionHistoryLineDto"
+              }
+            },
+            "started_timestamp_ms": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "status": {
+              "$ref": "#/components/schemas/TerminalStatusDto"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "token_summary": {
+              "$ref": "#/components/schemas/TokenSummaryDto"
+            },
+            "transcript": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/EpisodeEntryDto"
+              }
+            }
+          }
+        },
+        "IntentRevisionDto": {
+          "type": "object",
+          "description": "Intent revision for UI display.",
+          "required": [
+            "intent_id",
+            "description",
+            "activity_anchor",
+            "timestamp_ms",
+            "superseded_by_next",
+            "derived_citation_strings"
+          ],
+          "properties": {
+            "activity_anchor": {
+              "type": "string"
+            },
+            "derived_citation_strings": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": {
+              "type": "string"
+            },
+            "intent_id": {
+              "type": "string"
+            },
+            "superseded_by_next": {
+              "type": "boolean"
+            },
+            "supersession_from_previous": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "timestamp_ms": "[timestamp_ms]"
+          }
+        },
+        "PlanRevisionDto": {
+          "type": "object",
+          "description": "Plan revision for UI display.",
+          "required": [
+            "plan_id",
+            "intent_id",
+            "activity_anchor",
+            "timestamp_ms",
+            "superseded_by_next",
+            "steps"
+          ],
+          "properties": {
+            "activity_anchor": {
+              "type": "string"
+            },
+            "intent_id": {
+              "type": "string"
+            },
+            "plan_id": {
+              "type": "string"
+            },
+            "steps": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/PlanStepEntryDto"
+              }
+            },
+            "superseded_by_next": {
+              "type": "boolean"
+            },
+            "timestamp_ms": "[timestamp_ms]"
+          }
+        },
+        "PlanStepEntryDto": {
+          "type": "object",
+          "description": "Plan step entry for UI display.",
+          "required": [
+            "step_id",
+            "description",
+            "status",
+            "citation_strings"
+          ],
+          "properties": {
+            "citation_strings": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "step_id": {
+              "type": "string"
+            },
+            "timestamp_ms": "[timestamp_ms]"
+          }
+        },
         "ProvisionSecretDto": {
           "type": "object",
           "description": "Request body for linking a secret by name (PUT /config/secrets/{name}).\nOnly link_from is accepted; secrets are stored in the secret store (fnox), never sent as raw values.",
@@ -1462,6 +2181,113 @@ expression: snapshot
             },
             "secret_type": {
               "type": "string"
+            }
+          }
+        },
+        "SessionHistoryLineDto": {
+          "type": "object",
+          "description": "One line of session-style history (`conversation_history` mirror).",
+          "required": [
+            "role",
+            "content"
+          ],
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string"
+            }
+          }
+        },
+        "StepTypeDto": {
+          "type": "string",
+          "description": "Episode step type for UI display.",
+          "enum": [
+            "message",
+            "tool_call",
+            "tool_read",
+            "tool_result",
+            "plan_revision",
+            "status_transition",
+            "artifact_emitted"
+          ]
+        },
+        "TerminalStatusDto": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "completed"
+              ]
+            },
+            {
+              "type": "string",
+              "enum": [
+                "failed"
+              ]
+            },
+            {
+              "type": "string",
+              "enum": [
+                "canceled"
+              ]
+            },
+            {
+              "type": "string",
+              "enum": [
+                "rejected"
+              ]
+            },
+            {
+              "type": "object",
+              "required": [
+                "other"
+              ],
+              "properties": {
+                "other": {
+                  "type": "string"
+                }
+              }
+            }
+          ],
+          "description": "Terminal task outcome for UI display."
+        },
+        "TokenSummaryDto": {
+          "type": "object",
+          "description": "Token usage summary for UI display.",
+          "required": [
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "llm_call_count",
+            "llm_duration_ms"
+          ],
+          "properties": {
+            "completion_tokens": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "llm_call_count": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "llm_duration_ms": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "prompt_tokens": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "total_tokens": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
             }
           }
         },
