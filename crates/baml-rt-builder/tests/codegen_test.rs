@@ -129,12 +129,20 @@ fn test_system_callback_tool_baml_interfaces() {
         "Expected CallbackToolInput union in generated BAML"
     );
     assert!(
-        baml_output.contains("type OpaqueJson = string"),
-        "Expected generated BAML prelude to declare the OpaqueJson transport type"
+        baml_output.contains("class OpaqueJson"),
+        "Expected generated BAML prelude to declare the OpaqueJson wrapper class"
+    );
+    assert!(
+        baml_output.contains("opaque_json string @alias(\"__baml_opaque_json\")"),
+        "Expected generated BAML prelude to expose the serialized JSON wrapper alias"
     );
     assert!(
         baml_output.contains("payload OpaqueJson"),
         "Expected callback payloads to use the explicit OpaqueJson transport type"
+    );
+    assert!(
+        baml_output.contains("input_summary \"oneOf("),
+        "Expected callback tool cards to summarize tagged-union inputs"
     );
     assert!(
         baml_output.contains("op string"),

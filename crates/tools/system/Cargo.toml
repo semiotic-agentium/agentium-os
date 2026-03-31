@@ -23,6 +23,7 @@ async-channel = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+baml-rt = { path = "../../baml-rt" }
 baml-tools-calculator = { path = "../calculator" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 insta = { workspace = true, features = ["json"] }

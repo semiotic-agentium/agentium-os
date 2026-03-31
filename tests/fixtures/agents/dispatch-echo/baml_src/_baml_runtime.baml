@@ -59,10 +59,12 @@ class SessionContext {
   status_token string?
 }
 
-/// Opaque JSON transport value for host-managed tools and event payloads.
-/// Runtime validation accepts arbitrary JSON. The generated TypeScript surface
-/// renders this alias as `JsonValue`.
-type OpaqueJson = string
+/// Opaque JSON transport wrapper for host-managed tools and event payloads.
+/// Generated BAML callers pass serialized JSON in `__baml_opaque_json`.
+/// Direct host-side callers may still send arbitrary raw JSON.
+class OpaqueJson {
+  opaque_json string @alias("__baml_opaque_json") @description("Serialized JSON payload.")
+}
 
 // Structured reply types for synthesis functions
 enum ReplyMediaType {
@@ -103,7 +105,7 @@ class ArchiveReadInput {
 class CallbackToolInputVariant1 {
   after_ms int
   source_key string
-  payload OpaqueJson @description("Opaque JSON transport value. The runtime accepts any JSON payload; generated BAML surfaces this as the named OpaqueJson type.")
+  payload OpaqueJson @description("Opaque JSON transport value. Direct host callers may send raw JSON; generated BAML callers should use the OpaqueJson wrapper.")
   dedupe_key string | null?
   continuation string | null?
   op string
@@ -173,7 +175,7 @@ class SystemCallbackToolCard {
   tool_name "system/callback"
   description "Schedules or cancels durable host-side callback events. Use this to ask the host to emit a future `system.callback.v1` dispatch on a stable source key through the normal event-delivery path."
   session_policy "Strict"
-  input_summary "{}"
+  input_summary "oneOf({ after_ms: integer, continuation?: anyOf(enum(\"Detached\" | \"ResumeCurrentTask\") | null), dedupe_key?: anyOf(string | null), op: \"schedule\", payload: OpaqueJson, source_key: string } | { callback_id?: anyOf(string | null), dedupe_key?: anyOf(string | null), op: \"cancel\", source_key?: anyOf(string | null) })"
   tags string[] @description("Tool tags: system, callback, scheduler")
 }
 
@@ -213,7 +215,7 @@ class SystemDiscover_toolsToolCard {
   tool_name "system/discover_tools"
   description "Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times."
   session_policy "Strict"
-  input_summary "{ limit?: any, query?: any }"
+  input_summary "{ limit?: anyOf(integer | null), query?: anyOf(string | null) }"
   tags string[] @description("Tool tags: system, discovery")
 }
 

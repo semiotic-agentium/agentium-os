@@ -1,6 +1,5 @@
 ---
 source: crates/baml-rt-builder/tests/codegen_test.rs
-assertion_line: 33
 expression: baml_output
 ---
 // Auto-generated tool interfaces
@@ -64,10 +63,12 @@ class SessionContext {
   status_token string?
 }
 
-/// Opaque JSON transport value for host-managed tools and event payloads.
-/// Runtime validation accepts arbitrary JSON. The generated TypeScript surface
-/// renders this alias as `JsonValue`.
-type OpaqueJson = string
+/// Opaque JSON transport wrapper for host-managed tools and event payloads.
+/// Generated BAML callers pass serialized JSON in `__baml_opaque_json`.
+/// Direct host-side callers may still send arbitrary raw JSON.
+class OpaqueJson {
+  opaque_json string @alias("__baml_opaque_json") @description("Serialized JSON payload.")
+}
 
 // Structured reply types for synthesis functions
 enum ReplyMediaType {
@@ -188,7 +189,7 @@ class SupportClickupToolCard {
   tool_name "support/clickup"
   description "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
   session_policy "Strict"
-  input_summary "{}"
+  input_summary "anyOf({  } | { team_id: string } | { space_id: string } | { list_id: string } | { task_id: string } | { description?: anyOf(string | null), list_id: string, name: string, priority?: anyOf(integer | null) } | { description?: anyOf(string | null), priority?: anyOf(integer | null), status?: anyOf(string | null), task_id: string } | { confirm_delete: boolean, task_id: string })"
   tags string[] @description("Tool tags: support, clickup")
 }
 

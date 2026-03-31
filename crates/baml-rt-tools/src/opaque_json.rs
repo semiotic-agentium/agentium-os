@@ -1,21 +1,21 @@
 use std::collections::BTreeMap;
 
-use baml_derive_core::{BamlDefinition, BamlType, BamlUnionDef, JsonSchemaType, TsType};
+use baml_derive_core::{
+    BamlClassDef, BamlDefinition, BamlFieldDef, BamlType, JsonSchemaType, TsType,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 pub const OPAQUE_JSON_BAML_TYPE: &str = "OpaqueJson";
 pub const OPAQUE_JSON_SCHEMA_MARKER_KEY: &str = "x-baml-type";
-
-const WRAPPED_OPAQUE_JSON_FIELD: &str = "__baml_opaque_json";
+pub const OPAQUE_JSON_WRAPPER_FIELD: &str = "__baml_opaque_json";
 
 /// Opaque host-managed JSON payload.
 ///
 /// Runtime deserialization accepts either:
 /// - any raw JSON value directly
 /// - a wrapper object of the form `{ "__baml_opaque_json": "<serialized json>" }`
-///   for generated BAML interfaces that need an
-///   explicit transport shape.
+///   for generated BAML interfaces that need an explicit transport shape
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OpaqueJson(Value);
 
@@ -72,12 +72,19 @@ impl BamlType for OpaqueJson {
     }
 
     fn baml_definition() -> BamlDefinition {
-        BamlDefinition::Union(BamlUnionDef {
+        BamlDefinition::Class(BamlClassDef {
             name: OPAQUE_JSON_BAML_TYPE,
             doc: Some(
-                "Opaque JSON transport value. In generated BAML this is represented as a named scalar-like alias, while the runtime accepts arbitrary JSON and TypeScript renders it as JsonValue.",
+                "Opaque JSON transport wrapper. Generated BAML callers pass serialized JSON in `__baml_opaque_json`, while the runtime still accepts arbitrary raw JSON from direct host-side callers.",
             ),
-            variants: vec!["string"],
+            fields: vec![BamlFieldDef {
+                name: "opaque_json",
+                baml_type: "string".to_string(),
+                alias: Some(OPAQUE_JSON_WRAPPER_FIELD),
+                description: Some("Serialized JSON payload."),
+                skip: false,
+            }],
+            dynamic: false,
         })
     }
 }
@@ -96,7 +103,7 @@ impl JsonSchemaType for OpaqueJson {
     fn json_schema_inline() -> Value {
         serde_json::json!({
             OPAQUE_JSON_SCHEMA_MARKER_KEY: OPAQUE_JSON_BAML_TYPE,
-            "description": "Opaque JSON transport value. The runtime accepts any JSON payload; generated BAML surfaces this as the named OpaqueJson type."
+            "description": "Opaque JSON transport value. Direct host callers may send raw JSON; generated BAML callers should use the OpaqueJson wrapper."
         })
     }
 }
@@ -121,8 +128,8 @@ fn parse_opaque_json_value(value: Value) -> Result<Value, String> {
         return Ok(Value::Object(map));
     }
 
-    if let Some(raw_json) = map.remove(WRAPPED_OPAQUE_JSON_FIELD) {
-        return parse_raw_json_wrapper(raw_json, WRAPPED_OPAQUE_JSON_FIELD);
+    if let Some(raw_json) = map.remove(OPAQUE_JSON_WRAPPER_FIELD) {
+        return parse_raw_json_wrapper(raw_json, OPAQUE_JSON_WRAPPER_FIELD);
     }
 
     Ok(Value::Object(map))
