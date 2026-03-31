@@ -385,6 +385,25 @@ fn base_event(source_kind: &str, source_label: &str, derived_tasks: Vec<Value>) 
     })
 }
 
+fn raw_slack_source_event(source_label: &str, records: Vec<Value>) -> Value {
+    let source_suffix = source_label
+        .trim_start_matches('#')
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect::<String>();
+
+    json!({
+        "schema_version": "host.source-records.v1",
+        "emitted_at_unix": 1_735_720_111u64,
+        "source": {
+            "source_kind": "slack",
+            "source_key": format!("slack:C_{source_suffix}"),
+            "source_label": source_label
+        },
+        "records": records
+    })
+}
+
 fn with_workflow_seed(mut event: Value, workflow_seed: Value) -> Value {
     event["interpretation"]["workflow_seed"] = workflow_seed;
     event
@@ -468,6 +487,188 @@ async fn workflow_intake_routes_slack_events_to_clickup_creation_capability() {
 }
 
 #[tokio::test]
+async fn workflow_intake_routes_raw_slack_source_records_to_clickup_creation_capability() {
+    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
+        entries: vec![
+            discovery_entry("clickup-agent", &["clickup:create-task"]),
+            discovery_entry("coordinator-agent", &["coordination:routing"]),
+        ],
+    });
+    let handler = Arc::new(CapturingA2aHandler::default());
+    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let _built_dir_guard = TempDirCleanup::new(built_dir);
+
+    let request = task_daemon_request(
+        raw_slack_source_event(
+            "#agentium-eng",
+            vec![
+                json!({
+                    "ts": "1735720111.000001",
+                    "user": "U123",
+                    "user_name": "Ada",
+                    "text": "Please turn this Slack thread into a tracked task."
+                }),
+                json!({
+                    "ts": "1735720112.000001",
+                    "thread_ts": "1735720111.000001",
+                    "user": "U456",
+                    "user_name": "Grace",
+                    "text": "This is blocking the rollout until we follow up."
+                }),
+            ],
+        ),
+        "workflow-intake-raw-slack-1",
+        "corr-1735720000000-12",
+    );
+
+    let responses = collect_responses(&agent, request)
+        .await
+        .expect("workflow-intake response");
+    let texts = message_texts_from_chunks(&chunks_from_responses(&responses));
+    let calls = handler.snapshot_calls().await;
+
+    assert_eq!(
+        calls.len(),
+        1,
+        "expected one downstream delegation; texts={texts:?}; responses={responses:?}"
+    );
+    assert_eq!(calls[0].agent_package, "clickup-agent");
+    assert!(
+        calls[0]
+            .prompt
+            .contains("Create project-management work items from this semantic-ingress event."),
+        "expected semantic-ingress prompt header, got: {}",
+        calls[0].prompt
+    );
+    assert!(
+        calls[0]
+            .prompt
+            .contains("Ingress kind: raw Slack source ingress"),
+        "expected ingress-kind metadata in prompt, got: {}",
+        calls[0].prompt
+    );
+    assert!(
+        calls[0].prompt.contains("Source transcript:")
+            && calls[0]
+                .prompt
+                .contains("Please turn this Slack thread into a tracked task."),
+        "expected transcript details in prompt, got: {}",
+        calls[0].prompt
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("Routed create_pm_work to clickup-agent/default.")),
+        "expected route summary in response, got: {texts:?}"
+    );
+}
+
+#[tokio::test]
+async fn workflow_intake_noops_raw_slack_chatter_without_action_cues() {
+    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
+        entries: vec![
+            discovery_entry("clickup-agent", &["clickup:create-task"]),
+            discovery_entry("coordinator-agent", &["coordination:routing"]),
+        ],
+    });
+    let handler = Arc::new(CapturingA2aHandler::default());
+    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let _built_dir_guard = TempDirCleanup::new(built_dir);
+
+    let request = task_daemon_request(
+        raw_slack_source_event(
+            "#agentium-eng",
+            vec![
+                json!({
+                    "ts": "1735720211.000001",
+                    "user": "U123",
+                    "user_name": "Ada",
+                    "text": "Heads up, CI is green again."
+                }),
+                json!({
+                    "ts": "1735720212.000001",
+                    "thread_ts": "1735720211.000001",
+                    "user": "U456",
+                    "user_name": "Grace",
+                    "text": "Thanks for the update."
+                }),
+            ],
+        ),
+        "workflow-intake-raw-slack-noop-1",
+        "corr-1735720000000-13",
+    );
+
+    let responses = collect_responses(&agent, request)
+        .await
+        .expect("workflow-intake response");
+    let texts = message_texts_from_chunks(&chunks_from_responses(&responses));
+    let calls = handler.snapshot_calls().await;
+
+    assert!(
+        calls.is_empty(),
+        "expected no downstream delegation for non-actionable chatter; texts={texts:?}; calls={calls:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("did not contain a clear actionable request")),
+        "expected noop explanation in response, got: {texts:?}"
+    );
+}
+
+#[tokio::test]
+async fn workflow_intake_noops_mixed_raw_slack_batches_instead_of_merging_work() {
+    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
+        entries: vec![
+            discovery_entry("clickup-agent", &["clickup:create-task"]),
+            discovery_entry("coordinator-agent", &["coordination:routing"]),
+        ],
+    });
+    let handler = Arc::new(CapturingA2aHandler::default());
+    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let _built_dir_guard = TempDirCleanup::new(built_dir);
+
+    let request = task_daemon_request(
+        raw_slack_source_event(
+            "#agentium-eng",
+            vec![
+                json!({
+                    "ts": "1735720311.000001",
+                    "user": "U123",
+                    "user_name": "Ada",
+                    "text": "Please create a task for the flaky test fix."
+                }),
+                json!({
+                    "ts": "1735720411.000001",
+                    "user": "U456",
+                    "user_name": "Grace",
+                    "text": "Please open a separate task for release notes."
+                }),
+            ],
+        ),
+        "workflow-intake-raw-slack-mixed-1",
+        "corr-1735720000000-14",
+    );
+
+    let responses = collect_responses(&agent, request)
+        .await
+        .expect("workflow-intake response");
+    let texts = message_texts_from_chunks(&chunks_from_responses(&responses));
+    let calls = handler.snapshot_calls().await;
+
+    assert!(
+        calls.is_empty(),
+        "expected no downstream delegation for mixed raw batches; texts={texts:?}; calls={calls:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("spans 2 conversations")),
+        "expected mixed-batch noop explanation, got: {texts:?}"
+    );
+}
+
+#[tokio::test]
 async fn workflow_intake_dispatch_http_routes_to_real_on_dispatch_noop_ack() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
@@ -530,6 +731,56 @@ async fn workflow_intake_dispatch_http_routes_to_real_on_dispatch_noop_ack() {
                     == Some("workflow-intake-agent")
             })),
         "workflow-intake-agent must be discoverable: {agents:?}"
+    );
+}
+
+#[tokio::test]
+async fn workflow_intake_dispatch_http_accepts_raw_slack_source_noop_ack() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+    let package_path = build_agent_package_archive_to_temp(
+        workflow_intake_agent_dir(),
+        "workflow-intake-agent-raw-dispatch",
+    )
+    .await;
+    let _package_cleanup = TempFileCleanup::new(package_path.clone());
+
+    let runner = RunningRunnerProcess::start(&[package_path]).await;
+    let client = reqwest::Client::new();
+    let dispatch_url = format!(
+        "{}/agents/workflow-intake-agent/default/dispatch",
+        runner.base_url
+    );
+    let dispatch_body = json!({
+        "routing_key": "event:intake",
+        "message_type": "host.source-records.v1",
+        "context_id": "ctx-1735720000000-raw-42",
+        "task_id": "dispatch-task-1735720000000-raw",
+        "message_id": "dispatch-msg-1735720000000-raw",
+        "messages": [
+            raw_slack_source_event("#agentium-eng", vec![])
+        ]
+    });
+
+    let response = client
+        .post(&dispatch_url)
+        .json(&dispatch_body)
+        .send()
+        .await
+        .expect("dispatch request");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let ack: Value = response.json().await.expect("dispatch ack json");
+    assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(true));
+    let detail = ack
+        .get("detail")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        detail
+            .to_ascii_lowercase()
+            .contains("no readable conversation text"),
+        "expected noop detail in dispatch ack, got: {ack:?}"
     );
 }
 

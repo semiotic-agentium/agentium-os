@@ -1,5 +1,12 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { ReplyPart, RunContext, SessionResult, StructuredReply } from "./baml-runtime";
+import type {
+  HostDispatchAck,
+  HostDispatchRequest,
+  ReplyPart,
+  RunContext,
+  SessionResult,
+  StructuredReply,
+} from "./baml-runtime";
 
 function textReply(text: string): StructuredReply {
   const parts: ReplyPart[] = [{ type: "text", text }];
@@ -105,28 +112,39 @@ type TaskDaemonDerivedTask = {
   priority?: string;
 };
 
-type TaskDaemonInterpretationEvent = {
+type SemanticIngressKind = "task_daemon_interpretation" | "slack_raw_source_records";
+
+type SemanticIngressEvent = {
+  ingress_kind: SemanticIngressKind;
   schema_version: string;
   source: TaskDaemonSource;
   project: TaskDaemonProject;
   messages_scanned?: number;
   interpretation: TaskDaemonInterpretation;
   derived_tasks: TaskDaemonDerivedTask[];
+  transcript_lines: string[];
+  no_work_reason?: string;
 };
 
-type TaskDaemonDispatchRequest = {
-  routing_key: string;
-  message_type: string;
-  messages: unknown[];
-  context_id?: string;
-  task_id?: string;
-  message_id?: string;
-  metadata?: Record<string, unknown>;
+type SlackRawSourceRecord = {
+  ts?: string;
+  thread_ts?: string;
+  user?: string;
+  user_name?: string;
+  username?: string;
+  bot_id?: string;
+  text?: string;
+  subtype?: string;
 };
 
-type TaskDaemonDispatchAck = {
-  accepted: boolean;
-  detail?: string;
+type SlackConversationGroup = {
+  conversationKey: string;
+  records: SlackRawSourceRecord[];
+};
+
+type DispatchSemanticIngress = {
+  event: SemanticIngressEvent;
+  expectedRoutingKey: string;
 };
 
 type IntakeDecisionKind =
@@ -152,9 +170,13 @@ declare function openToolSession(
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION = "task-daemon.interpretation.v1";
+const RAW_SOURCE_SCHEMA_VERSION = "host.source-records.v1";
+const RAW_SOURCE_ROUTING_KEY = "event:intake";
 const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
 const MAX_DELEGATION_CONTINUE_STEPS = 64;
 const MAX_SUMMARY_CHARS = 1_200;
+const SLACK_ACTION_CUE_PATTERN =
+  /\b(please|can you|could you|need(?:s)? to|action item|todo|follow up|follow-up|next step|track (?:this|it)|create (?:a )?(?:task|ticket)|open (?:an )?(?:issue|ticket)|assign|blocking|blocker|urgent|asap)\b/i;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object";
@@ -502,7 +524,7 @@ async function discoverAgentsByCapabilities(
   const normalizedCapabilities = normalizeCapabilities(requiredCapabilities);
   const drained = await runSingleSendSession(
     DISCOVER_AGENTS_TOOL_NAME,
-    { reason: "Find the downstream agent that can handle this task-daemon event." },
+    { reason: "Find the downstream agent that can handle this semantic-ingress event." },
     { requiredCapabilities: normalizedCapabilities, limit: 100, offset: 0 },
     MAX_SINGLE_SEND_CONTINUE_STEPS,
   );
@@ -566,7 +588,16 @@ async function delegateToAgent(target: RouteTarget, prompt: string): Promise<str
   return collectDelegatedTexts(allOutputs);
 }
 
-function parseInterpretationEventValue(value: unknown): TaskDaemonInterpretationEvent | null {
+function parseInterpretationDerivedTasks(value: unknown): TaskDaemonDerivedTask[] {
+  return parseObjectArray(value).map((task) => ({
+    key: normalizeOptionalString(task.key) ?? undefined,
+    title: normalizeOptionalString(task.title) ?? undefined,
+    description: normalizeOptionalString(task.description) ?? undefined,
+    priority: normalizeOptionalString(task.priority) ?? undefined,
+  }));
+}
+
+function parseInterpretationEventValue(value: unknown): SemanticIngressEvent | null {
   if (!isObject(value)) return null;
 
   const schemaVersion = normalizeOptionalString(value.schema_version);
@@ -583,6 +614,7 @@ function parseInterpretationEventValue(value: unknown): TaskDaemonInterpretation
   if (!sourceKind || !sourceKey || !sourceLabel) return null;
 
   return {
+    ingress_kind: "task_daemon_interpretation",
     schema_version: schemaVersion,
     source: {
       source_key: sourceKey,
@@ -603,35 +635,218 @@ function parseInterpretationEventValue(value: unknown): TaskDaemonInterpretation
       current_objectives: parseStringArray(interpretation.current_objectives),
       workflow_seed: interpretation.workflow_seed,
     },
-    derived_tasks: parseObjectArray(value.derived_tasks).map((task) => ({
-      key: normalizeOptionalString(task.key) ?? undefined,
-      title: normalizeOptionalString(task.title) ?? undefined,
-      description: normalizeOptionalString(task.description) ?? undefined,
-      priority: normalizeOptionalString(task.priority) ?? undefined,
-    })),
+    derived_tasks: parseInterpretationDerivedTasks(value.derived_tasks),
+    transcript_lines: [],
+    no_work_reason: undefined,
   };
 }
 
-function extractInterpretationEvent(
+function parseSlackRawSourceRecord(value: unknown): SlackRawSourceRecord | null {
+  if (!isObject(value)) return null;
+  return {
+    ts: normalizeOptionalString(value.ts) ?? undefined,
+    thread_ts: normalizeOptionalString(value.thread_ts) ?? undefined,
+    user: normalizeOptionalString(value.user) ?? undefined,
+    user_name: normalizeOptionalString(value.user_name) ?? undefined,
+    username: normalizeOptionalString(value.username) ?? undefined,
+    bot_id: normalizeOptionalString(value.bot_id) ?? undefined,
+    text: normalizeOptionalString(value.text) ?? undefined,
+    subtype: normalizeOptionalString(value.subtype) ?? undefined,
+  };
+}
+
+function isSlackSystemSubtype(subtype: string | undefined): boolean {
+  return (
+    subtype === "channel_join" ||
+    subtype === "channel_leave" ||
+    subtype === "channel_topic" ||
+    subtype === "channel_purpose" ||
+    subtype === "channel_name" ||
+    subtype === "channel_archive" ||
+    subtype === "channel_unarchive"
+  );
+}
+
+function isSlackConversationRecord(record: SlackRawSourceRecord): boolean {
+  const text = normalizeOptionalString(record.text);
+  if (!text) return false;
+  return !isSlackSystemSubtype(record.subtype);
+}
+
+function slackConversationKey(record: SlackRawSourceRecord): string | null {
+  return normalizeOptionalString(record.thread_ts) ?? normalizeOptionalString(record.ts);
+}
+
+function groupSlackConversationRecords(records: SlackRawSourceRecord[]): SlackConversationGroup[] {
+  const groups = new Map<string, SlackRawSourceRecord[]>();
+  for (const record of records) {
+    const key = slackConversationKey(record);
+    if (!key) continue;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.push(record);
+      continue;
+    }
+    groups.set(key, [record]);
+  }
+  return Array.from(groups.entries()).map(([conversationKey, groupedRecords]) => ({
+    conversationKey,
+    records: groupedRecords,
+  }));
+}
+
+function renderSlackTranscriptLines(records: SlackRawSourceRecord[]): string[] {
+  const rendered: string[] = [];
+  for (const record of records) {
+    const text = normalizeOptionalString(record.text);
+    if (!text) continue;
+    const author =
+      record.user_name || record.user || record.username || record.bot_id;
+    const prefix = author ? `${author}: ` : "";
+    rendered.push(truncateText(`${prefix}${normalizeText(text)}`, 320));
+    if (rendered.length >= 12) break;
+  }
+  return rendered;
+}
+
+function summarizeSlackTranscript(transcriptLines: string[]): string | null {
+  if (transcriptLines.length === 0) return null;
+  return truncateText(transcriptLines.join(" | "), 600);
+}
+
+function slackTranscriptHasActionCue(transcriptLines: string[]): boolean {
+  return transcriptLines.some((line) => SLACK_ACTION_CUE_PATTERN.test(line));
+}
+
+function inferSlackPriority(summary: string | null): string | undefined {
+  const lowered = (summary || "").toLowerCase();
+  if (/(urgent|asap|blocker|critical|sev[0-9]?|p0|p1)/.test(lowered)) {
+    return "high";
+  }
+  if (/(todo|follow up|follow-up|action item|need to|please|next step)/.test(lowered)) {
+    return "medium";
+  }
+  return transcriptHasMeaning(summary) ? "medium" : undefined;
+}
+
+function transcriptHasMeaning(summary: string | null): boolean {
+  return typeof summary === "string" && summary.trim().length > 0;
+}
+
+function deriveSlackTaskTitle(sourceLabel: string, summary: string | null): string {
+  if (!summary) return `Review Slack discussion from ${sourceLabel}`;
+  return truncateText(`Review Slack discussion: ${summary}`, 96);
+}
+
+function parseSlackRawSourceEventValue(value: unknown): SemanticIngressEvent | null {
+  if (!isObject(value)) return null;
+
+  const schemaVersion = normalizeOptionalString(value.schema_version);
+  if (schemaVersion !== RAW_SOURCE_SCHEMA_VERSION) return null;
+
+  const source = parseObjectField(value, "source");
+  if (!source) return null;
+
+  const sourceKind = parseTaskDaemonSourceKind(source.source_kind);
+  const sourceKey = normalizeOptionalString(source.source_key);
+  const sourceLabel = normalizeOptionalString(source.source_label);
+  if (sourceKind !== "slack" || !sourceKey || !sourceLabel) return null;
+
+  const records = parseObjectArray(value.records)
+    .map((record) => parseSlackRawSourceRecord(record))
+    .filter((record): record is SlackRawSourceRecord => record != null);
+  const readableRecords = records.filter((record) => isSlackConversationRecord(record));
+  const conversationGroups = groupSlackConversationRecords(readableRecords);
+  const singleConversation = conversationGroups.length === 1 ? conversationGroups[0] : null;
+  const transcriptLines = singleConversation
+    ? renderSlackTranscriptLines(singleConversation.records)
+    : [];
+  const transcriptSummary = summarizeSlackTranscript(transcriptLines);
+  const hasActionCue = slackTranscriptHasActionCue(transcriptLines);
+  const noWorkReason =
+    readableRecords.length === 0
+      ? "The Slack raw batch contained no readable conversation text."
+      : conversationGroups.length === 0
+        ? "The Slack raw batch could not be grouped into a conversation."
+        : conversationGroups.length > 1
+          ? `The Slack raw batch spans ${conversationGroups.length} conversations; semantic ingress skipped task creation until conversation grouping is more precise.`
+          : !hasActionCue
+            ? "The Slack raw conversation did not contain a clear actionable request."
+            : undefined;
+  const derivedTasks =
+    transcriptSummary == null || !singleConversation || !hasActionCue
+      ? []
+      : [
+          {
+            key: `slack-raw:${sourceKey}:${singleConversation.conversationKey}`,
+            title: deriveSlackTaskTitle(sourceLabel, transcriptSummary),
+            description: `Interpret the Slack discussion from ${sourceLabel} and convert actionable requests into tracked PM work. Transcript: ${transcriptSummary}`,
+            priority: inferSlackPriority(transcriptSummary),
+          },
+        ];
+
+  return {
+    ingress_kind: "slack_raw_source_records",
+    schema_version: schemaVersion,
+    source: {
+      source_key: sourceKey,
+      source: sourceKind,
+      source_label: sourceLabel,
+    },
+    project: {},
+    messages_scanned: Array.isArray(value.records) ? value.records.length : records.length,
+    interpretation: {
+      executive_summary:
+        transcriptSummary == null
+          ? noWorkReason
+          : `Slack raw ingress captured ${singleConversation?.records.length ?? readableRecords.length} message(s) from ${sourceLabel}. ${transcriptSummary}`,
+      current_objectives:
+        transcriptSummary == null || !hasActionCue || !singleConversation
+          ? []
+          : [
+              "Interpret the Slack discussion and preserve the actionable request details.",
+              "Create tracked project-management work for follow-up.",
+            ],
+    },
+    derived_tasks: derivedTasks,
+    transcript_lines: transcriptLines,
+    no_work_reason: derivedTasks.length === 0 ? noWorkReason : undefined,
+  };
+}
+
+function extractSemanticIngressEvent(
   message: ChatMessage | null | undefined,
-): TaskDaemonInterpretationEvent | null {
+): SemanticIngressEvent | null {
   if (!message || !Array.isArray(message.parts)) return null;
 
   for (const part of message.parts) {
     if (!isObject(part)) continue;
     const event = parseInterpretationEventValue(part.data);
     if (event) return event;
+    const rawEvent = parseSlackRawSourceEventValue(part.data);
+    if (rawEvent) return rawEvent;
   }
 
   return null;
 }
 
-function extractInterpretationEventFromDispatch(
-  request: TaskDaemonDispatchRequest | null | undefined,
-): TaskDaemonInterpretationEvent | null {
+function extractTaskDaemonInterpretationEventFromDispatch(
+  request: HostDispatchRequest | null | undefined,
+): SemanticIngressEvent | null {
   if (!request || !Array.isArray(request.messages)) return null;
   for (const message of request.messages) {
     const event = parseInterpretationEventValue(message);
+    if (event) return event;
+  }
+  return null;
+}
+
+function extractSlackRawSourceEventFromDispatch(
+  request: HostDispatchRequest | null | undefined,
+): SemanticIngressEvent | null {
+  if (!request || !Array.isArray(request.messages)) return null;
+  for (const message of request.messages) {
+    const event = parseSlackRawSourceEventValue(message);
     if (event) return event;
   }
   return null;
@@ -657,11 +872,11 @@ function classifyClickupTaskKind(task: TaskDaemonDerivedTask): IntakeDecisionKin
   return "execute_existing_work";
 }
 
-function deriveDecision(event: TaskDaemonInterpretationEvent): IntakeDecision {
+function deriveDecision(event: SemanticIngressEvent): IntakeDecision {
   if (event.derived_tasks.length === 0) {
     return {
       kind: "noop",
-      reason: "The event produced no derived work items.",
+      reason: event.no_work_reason || "The event produced no derived work items.",
       requiredCapabilities: [],
     };
   }
@@ -669,7 +884,10 @@ function deriveDecision(event: TaskDaemonInterpretationEvent): IntakeDecision {
   if (event.source.source === "slack") {
     return {
       kind: "create_pm_work",
-      reason: "Slack-origin interpretations should become project-management work items.",
+      reason:
+        event.ingress_kind === "slack_raw_source_records"
+          ? "Slack raw ingress was interpreted into project-management follow-up work."
+          : "Slack-origin interpretations should become project-management work items.",
       requiredCapabilities: ["clickup:create-task"],
     };
   }
@@ -853,12 +1071,25 @@ function renderWorkflowFollowUpNodes(seed: unknown): string[] {
     .filter((entry): entry is string => entry != null);
 }
 
-function renderDecisionHeader(decision: IntakeDecision): string {
+function describeIngressKind(ingressKind: SemanticIngressKind): string {
+  if (ingressKind === "task_daemon_interpretation") {
+    return "task-daemon interpretation";
+  }
+  return "raw Slack source ingress";
+}
+
+function renderDecisionHeader(event: SemanticIngressEvent, decision: IntakeDecision): string {
   if (decision.kind === "create_pm_work") {
-    return "Create project-management work items from this task-daemon event.";
+    if (event.ingress_kind === "task_daemon_interpretation") {
+      return "Create project-management work items from this task-daemon event.";
+    }
+    return "Create project-management work items from this semantic-ingress event.";
   }
   if (decision.kind === "execute_existing_work") {
-    return "Execute or route the existing work item described by this task-daemon event.";
+    if (event.ingress_kind === "task_daemon_interpretation") {
+      return "Execute or route the existing work item described by this task-daemon event.";
+    }
+    return "Execute or route the existing work item described by this semantic-ingress event.";
   }
   if (decision.kind === "cancel_or_close_work") {
     return "Reconcile terminal or missing work and stop duplicate execution.";
@@ -867,12 +1098,14 @@ function renderDecisionHeader(decision: IntakeDecision): string {
 }
 
 function renderDownstreamPrompt(
-  event: TaskDaemonInterpretationEvent,
+  event: SemanticIngressEvent,
   decision: IntakeDecision,
 ): string {
   const lines: string[] = [];
-  lines.push(renderDecisionHeader(decision));
+  lines.push(renderDecisionHeader(event, decision));
   lines.push("");
+  lines.push(`Ingress kind: ${describeIngressKind(event.ingress_kind)}`);
+  lines.push(`Schema version: ${event.schema_version}`);
   lines.push(`Source: ${event.source.source} (${event.source.source_label})`);
   lines.push(`Source key: ${event.source.source_key}`);
   lines.push(`Project: ${event.project.project_key || "unscoped-project"}`);
@@ -930,6 +1163,10 @@ function renderDownstreamPrompt(
     );
   }
 
+  if (event.transcript_lines.length > 0) {
+    appendNumberedSection(lines, "Source transcript", event.transcript_lines);
+  }
+
   lines.push("");
   lines.push(`Derived tasks (${event.derived_tasks.length} total):`);
   lines.push(...renderDerivedTasks(event.derived_tasks));
@@ -954,9 +1191,7 @@ function renderRouteSummary(
   return lines.join("\n");
 }
 
-async function handleInterpretationEvent(
-  event: TaskDaemonInterpretationEvent,
-): Promise<SessionResult> {
+async function handleSemanticIngressEvent(event: SemanticIngressEvent): Promise<SessionResult> {
   try {
     const decision = deriveDecision(event);
     if (decision.kind === "noop") {
@@ -991,41 +1226,68 @@ async function handleInterpretationEvent(
 }
 
 async function run(ctx: RunContext): Promise<SessionResult> {
-  const event = extractInterpretationEvent(ctx.message);
+  const event = extractSemanticIngressEvent(ctx.message);
   if (!event) {
     return {
       error:
-        "workflow-intake-agent expects a task-daemon.interpretation.v1 payload in message.parts[].data.",
+        "workflow-intake-agent expects a task-daemon.interpretation.v1 or Slack host.source-records.v1 payload in message.parts[].data.",
     };
   }
 
-  return handleInterpretationEvent(event);
+  return handleSemanticIngressEvent(event);
 }
 
-async function onDispatch(
-  request: TaskDaemonDispatchRequest,
-): Promise<TaskDaemonDispatchAck> {
-  const routingKey = normalizeOptionalString(request.routing_key);
+function parseDispatchSemanticIngress(
+  request: HostDispatchRequest,
+): DispatchSemanticIngress | { error: string } {
   const messageType = normalizeOptionalString(request.message_type);
-  if (messageType !== TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION) {
+  if (messageType === TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION) {
+    const event = extractTaskDaemonInterpretationEventFromDispatch(request);
+    if (!event) {
+      return {
+        error:
+          "workflow-intake-agent expects task-daemon.interpretation.v1 payloads in dispatch.messages[].",
+      };
+    }
     return {
-      accepted: false,
-      detail:
-        `workflow-intake-agent expected message_type ` +
-        `${TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION}, got ${messageType ?? "missing"}.`,
+      event,
+      expectedRoutingKey: intakeRoutingKeyForSource(event.source.source),
     };
   }
 
-  const event = extractInterpretationEventFromDispatch(request);
-  if (!event) {
+  if (messageType === RAW_SOURCE_SCHEMA_VERSION) {
+    const event = extractSlackRawSourceEventFromDispatch(request);
+    if (!event) {
+      return {
+        error:
+          "workflow-intake-agent currently supports Slack host.source-records.v1 payloads in dispatch.messages[].",
+      };
+    }
     return {
-      accepted: false,
-      detail:
-        "workflow-intake-agent expects task-daemon.interpretation.v1 payloads in dispatch.messages[].",
+      event,
+      expectedRoutingKey: RAW_SOURCE_ROUTING_KEY,
     };
   }
 
-  const expectedRoutingKey = intakeRoutingKeyForSource(event.source.source);
+  return {
+    error:
+      `workflow-intake-agent expected message_type ` +
+      `${TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION} or ${RAW_SOURCE_SCHEMA_VERSION}, ` +
+      `got ${messageType ?? "missing"}.`,
+  };
+}
+
+async function onDispatch(request: HostDispatchRequest): Promise<HostDispatchAck> {
+  const parsed = parseDispatchSemanticIngress(request);
+  if ("error" in parsed) {
+    return {
+      accepted: false,
+      detail: parsed.error,
+    };
+  }
+
+  const { event, expectedRoutingKey } = parsed;
+  const routingKey = normalizeOptionalString(request.routing_key);
   if (routingKey !== expectedRoutingKey) {
     return {
       accepted: false,
@@ -1035,7 +1297,7 @@ async function onDispatch(
     };
   }
 
-  const result = await handleInterpretationEvent(event);
+  const result = await handleSemanticIngressEvent(event);
   if ("error" in result) {
     return {
       accepted: false,
@@ -1052,7 +1314,7 @@ async function onDispatch(
 }
 
 const dispatchGlobal = globalThis as typeof globalThis & {
-  onDispatch?: (request: TaskDaemonDispatchRequest) => Promise<TaskDaemonDispatchAck>;
+  onDispatch?: (request: HostDispatchRequest) => Promise<HostDispatchAck>;
 };
 dispatchGlobal.onDispatch = onDispatch;
 
