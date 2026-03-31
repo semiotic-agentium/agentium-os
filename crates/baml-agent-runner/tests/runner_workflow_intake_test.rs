@@ -773,18 +773,29 @@ async fn workflow_intake_dispatch_http_routes_to_real_on_dispatch_noop_ack() {
 async fn workflow_intake_dispatch_http_accepts_raw_slack_source_noop_ack() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
-    let package_path = build_agent_package_archive_to_temp(
-        workflow_intake_agent_dir(),
-        "workflow-intake-agent-raw-dispatch",
-    )
-    .await;
-    let _package_cleanup = TempFileCleanup::new(package_path.clone());
+    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
+        entries: vec![discovery_entry("clickup-agent", &["clickup:create-task"])],
+    });
+    let handler = Arc::new(CapturingA2aHandler::default());
+    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner = RunningRunnerProcess::start(&[package_path]).await;
+    let registry = Arc::new(DispatchRegistry::new(
+        "workflow-intake-agent",
+        "default",
+        "workflow-intake-agent",
+        "1.0.0",
+        agent,
+    )) as Arc<dyn AgentRegistry>;
+    let app = baml_rt_api::api_router(registry, None, None).await;
+    let server = start_dispatch_http_server(app)
+        .await
+        .expect("start dispatch http api");
+
     let client = reqwest::Client::new();
     let dispatch_url = format!(
         "{}/agents/workflow-intake-agent/default/dispatch",
-        runner.base_url
+        server.base_url
     );
     let dispatch_body = json!({
         "routing_key": "event:intake",
@@ -817,6 +828,8 @@ async fn workflow_intake_dispatch_http_accepts_raw_slack_source_noop_ack() {
             .contains("no readable conversation text"),
         "expected noop detail in dispatch ack, got: {ack:?}"
     );
+
+    server.stop().await;
 }
 
 #[tokio::test]
