@@ -268,7 +268,7 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
 
     let mut last_diag: Option<(Vec<String>, Vec<String>)> = None;
 
-    for attempt in 0..2u32 {
+    for attempt in 0..1u32 {
         mock_state.clear_hits().await;
         // Fresh context per attempt so provenance reads do not mix failed LLM runs.
         let context_id = ContextId::new(88, 70u64 + u64::from(attempt));
@@ -454,7 +454,7 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
 
     let (src, hits) = last_diag.unwrap_or_else(|| (vec![], vec![]));
     panic!(
-        "notion direct-id e2e failed after 4 attempts (live LLM/plan flakes). Last sources: {src:?}, mock hits: {hits:?}"
+        "notion direct-id e2e failed (live LLM/plan flake). sources: {src:?}, mock hits: {hits:?}"
     );
 }
 

@@ -129,9 +129,10 @@ filter = 'all()'
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
-# Notion direct-id e2e: extra retries (LLM plan extraction occasionally skips tool path)
+# Notion direct-id e2e: generous timeout for agent build + LLM call; retries for LLM plan flakes.
 [[profile.ci-llm.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
+slow-timeout = { period = "150s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 3, delay = "8s" }
 
 # =============================================================================
