@@ -7,6 +7,7 @@
 
 mod agent_package;
 mod builder;
+mod callback_delivery;
 mod config;
 mod deployment_state;
 mod package;
@@ -18,8 +19,7 @@ mod stdio;
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Context;
-use async_trait::async_trait;
-use baml_rt_core::{DeploymentManager, DeploymentStatus};
+use baml_rt_core::{CallbackStore, DeploymentManager, DeploymentStatus};
 use baml_rt_llm_config::{
     FnoxFileSecretResolver, OverlaySecretResolver, SECRET_LINKS_CONFIG_KEY, SecretLinksState,
     apply_secret_links_state,
@@ -44,9 +44,8 @@ use baml_tools_notion as _;
 use baml_tools_security_eval as _;
 #[cfg(feature = "slack")]
 use baml_tools_slack as _;
-use baml_tools_system::callback_delivery_gate::{
-    CallbackDeliveryGate, install_callback_delivery_gate,
-};
+use baml_tools_system::callback_delivery_gate::install_callback_delivery_gate;
+use callback_delivery::RunnerCallbackDeliveryGate;
 use clap::Parser;
 use config::{Cli, ProvenanceDb, provenance_config_builder};
 use serde_json::Value;
@@ -189,8 +188,9 @@ async fn main() -> anyhow::Result<()> {
             )
         },
     )?);
+    // Trait/object type: `baml_rt_core::CallbackStore`; process-wide slot: `baml_tools_system::callback_store`.
     baml_tools_system::callback_store::install_callback_store(
-        deployment_state.clone() as Arc<dyn baml_tools_system::callback_store::CallbackStore>
+        deployment_state.clone() as Arc<dyn CallbackStore>
     );
     let repository_service = Arc::new(RepositoryService::new(
         repository_store.clone() as Arc<dyn BlobStore>,
@@ -515,29 +515,6 @@ async fn run_event_poll_cycle(
                 );
             }
         }
-    }
-}
-
-struct RunnerCallbackDeliveryGate {
-    runner: Arc<crate::runner::AgentRunner>,
-}
-
-#[async_trait]
-impl CallbackDeliveryGate for RunnerCallbackDeliveryGate {
-    async fn can_emit_callback(
-        &self,
-        callback: &baml_tools_system::callback_store::StoredCallback,
-    ) -> baml_rt_core::Result<bool> {
-        let Some(requesting_agent_id) = callback.requesting_agent_id.as_deref() else {
-            return Ok(true);
-        };
-        let (Some(context_id), Some(task_id)) = (&callback.context_id, &callback.task_id) else {
-            return Ok(true);
-        };
-        Ok(!self
-            .runner
-            .requesting_task_still_in_flight(requesting_agent_id, context_id, task_id)
-            .await)
     }
 }
 

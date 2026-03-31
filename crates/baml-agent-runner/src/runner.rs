@@ -8,15 +8,17 @@ use std::{
 use async_trait::async_trait;
 use baml_rt_a2a::{A2aRequestHandler, a2a};
 use baml_rt_core::{
-    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister,
-    AgentPackageName, AgentRouteKey, BamlRtError, DeploymentContentHash, DeploymentManager,
-    DeploymentRecord, DeploymentStatus, Result, UndeployResult,
+    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
+    AgentDispatchRequest, AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey,
+    BamlRtError, DeploymentContentHash, DeploymentManager, DeploymentRecord, DeploymentStatus,
+    Result, UndeployResult,
     bus::BusStream,
-    context,
-    ids::{ContextId, TaskId},
+    callback_scheduling_scopes_differ_from_dispatch, context,
+    ids::{AgentId, ContextId, TaskId},
+    scheduling_scope_from_dispatch_metadata,
 };
 use baml_rt_observability::spans;
-use baml_rt_provenance::ToolIndexConfig;
+use baml_rt_provenance::{ProvEvent, ToolIndexConfig};
 use baml_rt_tools::ToolAccessPolicy;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
@@ -30,6 +32,31 @@ use crate::{
         split_agent_method, strip_stream_suffix, unix_timestamp_secs, wrap_plaintext_message,
     },
 };
+
+fn callback_dispatch_context_link_event(
+    request: &AgentDispatchRequest,
+    agent_id: &AgentId,
+) -> Option<ProvEvent> {
+    let meta = request.metadata.as_ref()?;
+    let (sched_ctx, sched_task) = scheduling_scope_from_dispatch_metadata(meta)?;
+    let dispatch_ctx = request.context_id.as_ref()?;
+    let dispatch_task = request.task_id.as_ref()?;
+    if !callback_scheduling_scopes_differ_from_dispatch(
+        &sched_ctx,
+        &sched_task,
+        dispatch_ctx,
+        dispatch_task,
+    ) {
+        return None;
+    }
+    Some(ProvEvent::callback_dispatch_contexts_linked(
+        dispatch_ctx.clone(),
+        sched_ctx,
+        sched_task,
+        dispatch_task.clone(),
+        agent_id.clone(),
+    ))
+}
 
 fn parse_repository_entry_version(value: &serde_json::Value) -> Option<u32> {
     if let Some(n) = value.as_u64() {
@@ -430,8 +457,8 @@ impl AgentRunner {
     pub(crate) async fn handle_dispatch_by_key(
         &self,
         key: &AgentRouteKey,
-        request: baml_rt_core::AgentDispatchRequest,
-    ) -> Result<baml_rt_core::AgentDispatchAck> {
+        request: AgentDispatchRequest,
+    ) -> Result<AgentDispatchAck> {
         let routed_agent = {
             let routed_agents = self.routed_agents.read().expect("RwLock poison");
             routed_agents.get(key).cloned().ok_or_else(|| {
@@ -442,7 +469,17 @@ impl AgentRunner {
                 ))
             })?
         };
-        routed_agent.handle_dispatch(request).await
+        let link_event = callback_dispatch_context_link_event(&request, routed_agent.agent_id());
+        let ack = routed_agent.handle_dispatch(request).await?;
+        if ack.accepted
+            && let Some(event) = link_event
+        {
+            routed_agent
+                .provenance_writer()
+                .add_event_with_logging(event, "runner callback dispatch context link")
+                .await;
+        }
+        Ok(ack)
     }
 
     // ── Stdio loop ───────────────────────────────────────────────────────────

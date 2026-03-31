@@ -603,6 +603,20 @@ pub enum ProvEventData {
         llm_call_activity_anchor: ActivityAnchorId,
         reason: String,
     },
+    /// Detached `system/callback`: minted dispatch task/context was scheduled from a parent A2A turn.
+    ///
+    /// The runner emits this after an accepted [`AgentDispatchRequest`](baml_rt_core::AgentDispatchRequest)
+    /// when dispatch `context_id`/`task_id` differ from the scheduling scope carried in request
+    /// metadata (`schedulingContextId` / `schedulingTaskId`; see
+    /// [`DISPATCH_METADATA_SCHEDULING_CONTEXT_ID`](baml_rt_core::DISPATCH_METADATA_SCHEDULING_CONTEXT_ID)).
+    /// The normalizer records [`WAS_SCHEDULED_FROM`](crate::vocabulary::semantic_labels::WAS_SCHEDULED_FROM).
+    CallbackDispatchContextsLinked {
+        scheduling_context_id: ContextId,
+        scheduling_task_id: TaskId,
+        dispatch_context_id: ContextId,
+        dispatch_task_id: TaskId,
+        agent_id: AgentId,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1477,6 +1491,28 @@ impl ProvEvent {
                 metadata,
                 agent_id,
                 citations,
+            },
+        })
+    }
+
+    /// Link a minted callback dispatch task to the scheduling A2A task (detached continuation).
+    pub fn callback_dispatch_contexts_linked(
+        dispatch_context_id: ContextId,
+        scheduling_context_id: ContextId,
+        scheduling_task_id: TaskId,
+        dispatch_task_id: TaskId,
+        agent_id: AgentId,
+    ) -> Self {
+        ProvEvent::Global(GlobalEvent {
+            id: next_activity_anchor_id(),
+            context_id: dispatch_context_id.clone(),
+            timestamp_ms: now_millis(),
+            data: ProvEventData::CallbackDispatchContextsLinked {
+                scheduling_context_id,
+                scheduling_task_id,
+                dispatch_context_id,
+                dispatch_task_id,
+                agent_id,
             },
         })
     }

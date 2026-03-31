@@ -4,6 +4,7 @@ pub mod a2a_handler;
 pub mod a2a_wire;
 pub mod agent_routing;
 pub mod bus;
+pub mod callback_store;
 pub mod context;
 pub mod correlation;
 pub mod deferred;
@@ -35,6 +36,10 @@ pub use bus::{
     EffectSubscriber, Envelope, InFlightCounts, LlmEffectMetadata, LlmKind, LlmUsage, Payload,
     Subscriber, ToolEffectMetadata, ToolKind,
 };
+pub use callback_store::{
+    CallbackDeliveryGate, CallbackStore, CancelCallbackSelector, ScheduleCallbackRequest,
+    ScheduleCallbackResult, StoredCallback, callback_now_unix_ms, callback_store_not_installed,
+};
 pub use context::{
     InvocationContext, InvocationScope, OutcomeInvocationContext, RequestScope, RuntimeScope,
     Scoped,
@@ -46,7 +51,9 @@ pub use deployment::{
 };
 pub use dispatch::{
     AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey,
-    invocation_scope_for_agent_dispatch,
+    DISPATCH_METADATA_SCHEDULING_CONTEXT_ID, DISPATCH_METADATA_SCHEDULING_TASK_ID,
+    callback_scheduling_scopes_differ_from_dispatch, invocation_scope_for_agent_dispatch,
+    scheduling_scope_from_dispatch_metadata,
 };
 pub use error::{
     BamlRtError, ClassifiedToolError, Result, SessionLifecycleError, baml_error_disposition,

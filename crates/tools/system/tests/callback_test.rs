@@ -16,7 +16,8 @@ use baml_rt::{
 };
 use baml_rt_core::{
     A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDiscoveryEntry, AgentLister,
-    BamlRtError, BusStream, ContextId, Result,
+    BamlRtError, BusStream, ContextId, DISPATCH_METADATA_SCHEDULING_CONTEXT_ID,
+    DISPATCH_METADATA_SCHEDULING_TASK_ID, Result,
     context::{self, InvocationScope},
     ids::{AgentId, ExternalId, MessageId, TaskId, UuidId},
 };
@@ -315,6 +316,8 @@ impl CallbackStore for MemoryCallbackStore {
             requested_at_unix_ms: request.requested_at_unix_ms,
             context_id: request.context_id,
             task_id: request.task_id,
+            scheduling_context_id: request.scheduling_context_id,
+            scheduling_task_id: request.scheduling_task_id,
             requesting_agent_id: request.requesting_agent_id,
             requesting_message_id: request.requesting_message_id,
         };
@@ -514,8 +517,25 @@ async fn callback_tool_schedules_and_dedupes_against_pending_rows() {
         rows[0].callback.dedupe_key.as_deref(),
         Some("same-follow-up")
     );
-    assert_eq!(rows[0].callback.context_id, None);
-    assert_eq!(rows[0].callback.task_id, None);
+    assert_eq!(
+        rows[0].callback.scheduling_context_id.as_ref(),
+        Some(&context_id)
+    );
+    assert_eq!(rows[0].callback.scheduling_task_id.as_ref(), Some(&task_id));
+    let expected_dispatch_ctx = first_output["dispatchContextId"]
+        .as_str()
+        .expect("detached default mints dispatchContextId");
+    let expected_dispatch_task = first_output["dispatchTaskId"]
+        .as_str()
+        .expect("detached default mints dispatchTaskId");
+    assert_eq!(
+        rows[0].callback.context_id.as_ref().map(|c| c.as_str()),
+        Some(expected_dispatch_ctx)
+    );
+    assert_eq!(
+        rows[0].callback.task_id.as_ref().map(|t| t.as_str()),
+        Some(expected_dispatch_task)
+    );
     assert_eq!(
         rows[0].callback.requesting_agent_id.as_deref(),
         Some(agent_id.as_str())
@@ -559,6 +579,11 @@ async fn callback_tool_resume_current_task_preserves_task_continuity() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].callback.context_id.as_ref(), Some(&context_id));
     assert_eq!(rows[0].callback.task_id.as_ref(), Some(&task_id));
+    assert_eq!(
+        rows[0].callback.scheduling_context_id.as_ref(),
+        Some(&context_id)
+    );
+    assert_eq!(rows[0].callback.scheduling_task_id.as_ref(), Some(&task_id));
 
     clear_callback_store();
 }
@@ -961,7 +986,7 @@ async fn callback_tool_cancel_validates_selector_combinations() {
 }
 
 #[tokio::test]
-async fn callback_tool_resume_current_task_requires_active_task_scope() {
+async fn callback_tool_schedule_requires_active_task_scope() {
     let _suite_guard = suite_lock().lock().await;
     clear_callback_store();
     install_callback_store(Arc::new(MemoryCallbackStore::default()));
@@ -985,9 +1010,11 @@ async fn callback_tool_resume_current_task_requires_active_task_scope() {
         }),
     )
     .await;
-    assert!(expect_error_message(step).ends_with(
-        "system/callback continuation=resume_current_task requires an active task scope"
-    ));
+    assert!(
+        expect_error_message(step).ends_with(
+            "system/callback schedule requires an active task scope (scheduling deferral)"
+        )
+    );
 
     clear_callback_store();
 }
@@ -1225,6 +1252,8 @@ async fn callback_producer_errors_on_invalid_stored_source_key() {
             requested_at_unix_ms: 0,
             context_id: None,
             task_id: None,
+            scheduling_context_id: Some(test_context_id()),
+            scheduling_task_id: Some(test_task_id()),
             requesting_agent_id: None,
             requesting_message_id: None,
         })
@@ -1277,6 +1306,8 @@ async fn callback_producer_defers_until_delivery_gate_opens() {
             requested_at_unix_ms: 0,
             context_id: Some(test_context_id()),
             task_id: Some(test_task_id()),
+            scheduling_context_id: Some(test_context_id()),
+            scheduling_task_id: Some(test_task_id()),
             requesting_agent_id: Some(test_agent_id().as_str().to_string()),
             requesting_message_id: None,
         })
@@ -1340,6 +1371,8 @@ async fn callback_producer_polls_and_reconciles_delivery() {
             requested_at_unix_ms: 0,
             context_id: Some(ContextId::new(50, 4)),
             task_id: Some(TaskId::from_external(ExternalId::new("task-resume-1"))),
+            scheduling_context_id: Some(ContextId::new(50, 4)),
+            scheduling_task_id: Some(TaskId::from_external(ExternalId::new("task-resume-1"))),
             requesting_agent_id: Some("agent-123".to_string()),
             requesting_message_id: Some(MessageId::from("msg-123")),
         })
@@ -1406,6 +1439,18 @@ async fn callback_producer_polls_and_reconciles_delivery() {
         first_poll.events[0].messages[0]["payload"],
         json!({"goal": "resume"})
     );
+    let meta = first_poll.events[0]
+        .metadata
+        .as_ref()
+        .expect("callback producer attaches scheduling metadata");
+    assert_eq!(
+        meta[DISPATCH_METADATA_SCHEDULING_CONTEXT_ID].as_str(),
+        Some(ContextId::new(50, 4).as_str())
+    );
+    assert_eq!(
+        meta[DISPATCH_METADATA_SCHEDULING_TASK_ID].as_str(),
+        Some("task-resume-1")
+    );
     assert!(first_poll.checkpoint.value().is_some());
     assert_eq!(
         serde_json::from_str::<Value>(first_poll.checkpoint.value().unwrap()).unwrap(),
@@ -1464,6 +1509,8 @@ async fn callback_producer_reconciles_after_simulated_restart() {
             requested_at_unix_ms: 0,
             context_id: Some(ContextId::new(50, 4)),
             task_id: None,
+            scheduling_context_id: Some(ContextId::new(50, 4)),
+            scheduling_task_id: Some(TaskId::from_external(ExternalId::new("sched-restart-1"))),
             requesting_agent_id: None,
             requesting_message_id: None,
         })
@@ -1551,6 +1598,8 @@ async fn callback_producer_redelivers_pending_rows_when_checkpoint_is_missing() 
             requested_at_unix_ms: 0,
             context_id: None,
             task_id: None,
+            scheduling_context_id: Some(test_context_id()),
+            scheduling_task_id: Some(test_task_id()),
             requesting_agent_id: Some("agent-123".to_string()),
             requesting_message_id: None,
         })
@@ -1607,6 +1656,10 @@ async fn callback_producer_respects_max_poll_limit() {
                 requested_at_unix_ms: 0,
                 context_id: None,
                 task_id: None,
+                scheduling_context_id: Some(ContextId::new(0, i)),
+                scheduling_task_id: Some(TaskId::from_external(ExternalId::new(format!(
+                    "bulk-sched-{i}"
+                )))),
                 requesting_agent_id: None,
                 requesting_message_id: None,
             })

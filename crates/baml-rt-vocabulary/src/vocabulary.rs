@@ -183,6 +183,8 @@ pub mod semantic_labels {
     pub const WAS_REFINED_BY: &str = "WAS_REFINED_BY";
     pub const WAS_RELATED_TO: &str = "WAS_RELATED_TO";
     pub const WAS_DELEGATED_TO: &str = "WAS_DELEGATED_TO";
+    /// Detached `system/callback` dispatch task was scheduled from a parent A2A scheduling task.
+    pub const WAS_SCHEDULED_FROM: &str = "WAS_SCHEDULED_FROM";
     pub const TASK_TRIGGERED_BY_MESSAGE: &str = "TASK_TRIGGERED_BY_MESSAGE";
     pub const TASK_EMITTED_MESSAGE: &str = "TASK_EMITTED_MESSAGE";
     /// LLM decision cited a specific evidence source (`#N` history or `@N` archive).

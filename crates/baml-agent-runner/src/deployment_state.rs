@@ -2,17 +2,18 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 
 use baml_rt_core::{
     BamlRtError, DeploymentContentHash, DeploymentRecord, DeploymentStatus, Result,
-};
-use baml_tools_system::{
+    callback_now_unix_ms,
     callback_store::{
-        CancelCallbackSelector, ScheduleCallbackRequest, ScheduleCallbackResult, StoredCallback,
+        CallbackStore, CancelCallbackSelector, ScheduleCallbackRequest, ScheduleCallbackResult,
+        StoredCallback,
     },
-    callback_time::callback_now_unix_ms,
 };
 use serde::Deserialize;
+#[cfg(test)]
+use surrealdb::engine::local::Mem;
 use surrealdb::{
     Surreal,
-    engine::local::{Db, Mem, SurrealKv},
+    engine::local::{Db, SurrealKv},
 };
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -52,6 +53,8 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE FIELD IF NOT EXISTS task_id ON scheduled_callbacks TYPE option<string>",
     "DEFINE FIELD IF NOT EXISTS requesting_agent_id ON scheduled_callbacks TYPE option<string>",
     "DEFINE FIELD IF NOT EXISTS requesting_message_id ON scheduled_callbacks TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS scheduling_context_id ON scheduled_callbacks TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS scheduling_task_id ON scheduled_callbacks TYPE option<string>",
     "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_id ON scheduled_callbacks FIELDS callback_id UNIQUE",
     "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_due ON scheduled_callbacks FIELDS status, scheduled_for_unix_ms",
     "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_dedupe ON scheduled_callbacks FIELDS source_key, dedupe_key, status",
@@ -79,6 +82,8 @@ impl DeploymentStateStore {
         Ok(store)
     }
 
+    /// In-memory Surreal backend for unit tests in this crate.
+    #[cfg(test)]
     pub async fn open_in_memory() -> Result<Self> {
         let db = Surreal::new::<Mem>(()).await.map_err(to_write_err)?;
         db.use_ns(NS).use_db(DB_NAME).await.map_err(to_write_err)?;
@@ -93,6 +98,27 @@ impl DeploymentStateStore {
     async fn init_schema(&self) -> Result<()> {
         for stmt in SCHEMA_QUERIES {
             self.db.query(*stmt).await.map_err(to_write_err)?;
+        }
+        self.purge_pre_cutover_pending_callbacks().await?;
+        Ok(())
+    }
+
+    /// Full cutover: pending rows without scheduling scope cannot be delivered safely.
+    async fn purge_pre_cutover_pending_callbacks(&self) -> Result<()> {
+        let mut resp = self
+            .db
+            .query(format!(
+                "DELETE FROM {TBL_SCHEDULED_CALLBACKS} WHERE status = 'pending' \
+                 AND (scheduling_context_id IS NONE OR scheduling_task_id IS NONE) RETURN BEFORE"
+            ))
+            .await
+            .map_err(to_write_err)?;
+        let rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+        if !rows.is_empty() {
+            warn!(
+                removed = rows.len(),
+                "removed pre-cutover pending scheduled_callbacks rows missing scheduling scope"
+            );
         }
         Ok(())
     }
@@ -227,6 +253,8 @@ impl DeploymentStateStore {
             requested_at_unix_ms: request.requested_at_unix_ms,
             context_id: request.context_id.clone(),
             task_id: request.task_id.clone(),
+            scheduling_context_id: request.scheduling_context_id.clone(),
+            scheduling_task_id: request.scheduling_task_id.clone(),
             requesting_agent_id: request.requesting_agent_id.clone(),
             requesting_message_id: request.requesting_message_id.clone(),
         };
@@ -273,6 +301,8 @@ impl DeploymentStateStore {
             requested_at_unix_ms: request.requested_at_unix_ms,
             context_id: request.context_id.clone(),
             task_id: request.task_id.clone(),
+            scheduling_context_id: request.scheduling_context_id.clone(),
+            scheduling_task_id: request.scheduling_task_id.clone(),
             requesting_agent_id: request.requesting_agent_id.clone(),
             requesting_message_id: request.requesting_message_id.clone(),
         };
@@ -337,7 +367,7 @@ impl DeploymentStateStore {
         let mut resp = self
             .db
             .query(format!(
-                "SELECT callback_id,source_key,dedupe_key,payload_json,scheduled_for_unix_ms,requested_at_unix_ms,context_id,task_id,requesting_agent_id,requesting_message_id \
+                "SELECT callback_id,source_key,dedupe_key,payload_json,scheduled_for_unix_ms,requested_at_unix_ms,context_id,task_id,scheduling_context_id,scheduling_task_id,requesting_agent_id,requesting_message_id \
                  FROM {TBL_SCHEDULED_CALLBACKS} \
                  WHERE status = 'pending' AND scheduled_for_unix_ms <= $scheduled_for_unix_ms \
                  ORDER BY scheduled_for_unix_ms ASC, callback_id ASC LIMIT $limit"
@@ -470,7 +500,7 @@ impl DeploymentStateStore {
         let mut resp = self
             .db
             .query(format!(
-                "SELECT callback_id,source_key,dedupe_key,payload_json,scheduled_for_unix_ms,requested_at_unix_ms,context_id,task_id,requesting_agent_id,requesting_message_id \
+                "SELECT callback_id,source_key,dedupe_key,payload_json,scheduled_for_unix_ms,requested_at_unix_ms,context_id,task_id,scheduling_context_id,scheduling_task_id,requesting_agent_id,requesting_message_id \
                  FROM {TBL_SCHEDULED_CALLBACKS} \
                  WHERE callback_id = $callback_id AND status = 'pending' AND emitted_at_unix_ms = NONE LIMIT 1"
             ))
@@ -489,7 +519,7 @@ impl DeploymentStateStore {
         let mut resp = self
             .db
             .query(format!(
-                "SELECT callback_id,source_key,dedupe_key,payload_json,scheduled_for_unix_ms,requested_at_unix_ms,context_id,task_id,requesting_agent_id,requesting_message_id \
+                "SELECT callback_id,source_key,dedupe_key,payload_json,scheduled_for_unix_ms,requested_at_unix_ms,context_id,task_id,scheduling_context_id,scheduling_task_id,requesting_agent_id,requesting_message_id \
                  FROM {TBL_SCHEDULED_CALLBACKS} \
                  WHERE source_key = $source_key AND dedupe_key = $dedupe_key AND status = 'pending' AND emitted_at_unix_ms = NONE LIMIT 1"
             ))
@@ -527,6 +557,8 @@ impl DeploymentStateStore {
                     cancelled_at_unix_ms = $cancelled_at_unix_ms, \
                     context_id = $context_id, \
                     task_id = $task_id, \
+                    scheduling_context_id = $scheduling_context_id, \
+                    scheduling_task_id = $scheduling_task_id, \
                     requesting_agent_id = $requesting_agent_id, \
                     requesting_message_id = $requesting_message_id \
                  WHERE callback_id = $callback_id"
@@ -564,6 +596,20 @@ impl DeploymentStateStore {
                 "task_id",
                 callback
                     .task_id
+                    .as_ref()
+                    .map(|value| value.as_str().to_string()),
+            ))
+            .bind((
+                "scheduling_context_id",
+                callback
+                    .scheduling_context_id
+                    .as_ref()
+                    .map(|value| value.as_str().to_string()),
+            ))
+            .bind((
+                "scheduling_task_id",
+                callback
+                    .scheduling_task_id
                     .as_ref()
                     .map(|value| value.as_str().to_string()),
             ))
@@ -628,6 +674,10 @@ fn parse_callback_row(row: serde_json::Value) -> Result<StoredCallback> {
         #[serde(default)]
         task_id: Option<String>,
         #[serde(default)]
+        scheduling_context_id: Option<String>,
+        #[serde(default)]
+        scheduling_task_id: Option<String>,
+        #[serde(default)]
         requesting_agent_id: Option<String>,
         #[serde(default)]
         requesting_message_id: Option<String>,
@@ -653,6 +703,12 @@ fn parse_callback_row(row: serde_json::Value) -> Result<StoredCallback> {
         task_id: parsed.task_id.map(|value| {
             baml_rt_core::ids::TaskId::from_external(baml_rt_core::ids::ExternalId::new(value))
         }),
+        scheduling_context_id: parsed
+            .scheduling_context_id
+            .map(|value| baml_rt_core::ids::ContextId::from(value.as_str())),
+        scheduling_task_id: parsed.scheduling_task_id.map(|value| {
+            baml_rt_core::ids::TaskId::from_external(baml_rt_core::ids::ExternalId::new(value))
+        }),
         requesting_agent_id: parsed.requesting_agent_id,
         requesting_message_id: parsed
             .requesting_message_id
@@ -672,8 +728,13 @@ fn to_read_err(err: surrealdb::Error) -> BamlRtError {
     )))
 }
 
+/// Surreal-backed [`CallbackStore`](baml_rt_core::CallbackStore) for runner state (`state.db`).
+///
+/// Registered at process start via [`install_callback_store`](baml_tools_system::callback_store::install_callback_store).
+/// Timestamps use [`callback_now_unix_ms`](baml_rt_core::callback_now_unix_ms) from core so this
+/// module does not depend on `baml-tools-system` for persistence-only clocking.
 #[async_trait::async_trait]
-impl baml_tools_system::callback_store::CallbackStore for DeploymentStateStore {
+impl CallbackStore for DeploymentStateStore {
     async fn schedule_callback(
         &self,
         request: ScheduleCallbackRequest,
@@ -880,6 +941,8 @@ mod tests {
                 requested_at_unix_ms: 5,
                 context_id: Some(ContextId::new(12, 2)),
                 task_id: Some(TaskId::from_external(ExternalId::new("task-99"))),
+                scheduling_context_id: Some(ContextId::new(12, 2)),
+                scheduling_task_id: Some(TaskId::from_external(ExternalId::new("task-99"))),
                 requesting_agent_id: Some("agent-42".to_string()),
                 requesting_message_id: Some(MessageId::from("msg-77")),
             })
@@ -894,6 +957,8 @@ mod tests {
                 requested_at_unix_ms: 6,
                 context_id: Some(ContextId::new(12, 2)),
                 task_id: Some(TaskId::from_external(ExternalId::new("task-99"))),
+                scheduling_context_id: Some(ContextId::new(12, 2)),
+                scheduling_task_id: Some(TaskId::from_external(ExternalId::new("task-99"))),
                 requesting_agent_id: Some("agent-42".to_string()),
                 requesting_message_id: Some(MessageId::from("msg-78")),
             })
@@ -933,6 +998,8 @@ mod tests {
                 requested_at_unix_ms: 5,
                 context_id: None,
                 task_id: None,
+                scheduling_context_id: Some(ContextId::new(99, 1)),
+                scheduling_task_id: Some(TaskId::from_external(ExternalId::new("sched-agent-42"))),
                 requesting_agent_id: Some("agent-42".to_string()),
                 requesting_message_id: None,
             })
@@ -958,6 +1025,8 @@ mod tests {
                 requested_at_unix_ms: 16,
                 context_id: None,
                 task_id: None,
+                scheduling_context_id: Some(ContextId::new(99, 1)),
+                scheduling_task_id: Some(TaskId::from_external(ExternalId::new("sched-agent-42"))),
                 requesting_agent_id: Some("agent-42".to_string()),
                 requesting_message_id: None,
             })

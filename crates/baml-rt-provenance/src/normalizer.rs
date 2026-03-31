@@ -215,6 +215,8 @@ pub enum A2aRelationType {
     CitedSource,
     HasIntent,
     HasPlan,
+    /// Detached callback: dispatch task → scheduling task ([`semantic_labels::WAS_SCHEDULED_FROM`]).
+    CallbackDispatchScheduledFrom,
 }
 
 impl A2aRelationType {
@@ -246,6 +248,7 @@ impl A2aRelationType {
             A2aRelationType::CitedSource => semantic_labels::CITED,
             A2aRelationType::HasIntent => semantic_labels::HAS_INTENT,
             A2aRelationType::HasPlan => semantic_labels::HAS_PLAN,
+            A2aRelationType::CallbackDispatchScheduledFrom => semantic_labels::WAS_SCHEDULED_FROM,
         }
     }
 }
@@ -2166,6 +2169,31 @@ fn normalize_event_with_registry(
                 }
             }
         }
+        ProvEventData::CallbackDispatchContextsLinked {
+            scheduling_context_id,
+            scheduling_task_id,
+            dispatch_context_id,
+            dispatch_task_id,
+            agent_id,
+        } => {
+            let _ = scheduling_context_id;
+            let _ = dispatch_context_id;
+            ensure_task_entity(&mut doc, dispatch_task_id);
+            ensure_task_entity(&mut doc, scheduling_task_id);
+            let dispatch_entity = task_entity_id(dispatch_task_id);
+            let scheduling_entity = task_entity_id(scheduling_task_id);
+            let mut edge_attrs = derived_attrs(event);
+            edge_attrs.insert(
+                a2a::AGENT_ID.to_string(),
+                Value::String(agent_id.as_str().to_string()),
+            );
+            derived_relations.push(A2aDerivedRelation {
+                relation: A2aRelationType::CallbackDispatchScheduledFrom,
+                from: ProvNodeRef::Entity(dispatch_entity),
+                to: ProvNodeRef::Entity(scheduling_entity),
+                attributes: edge_attrs,
+            });
+        }
     }
 
     Ok(NormalizedProv {
@@ -2248,6 +2276,18 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
                 return Err(ProvenanceError::InvalidEvent {
                     activity_anchor: event.id().as_str().to_string(),
                     reason: "message content must include at least one non-empty text part"
+                        .to_string(),
+                });
+            }
+        }
+        ProvEventData::CallbackDispatchContextsLinked {
+            dispatch_context_id,
+            ..
+        } => {
+            if event.context_id() != dispatch_context_id {
+                return Err(ProvenanceError::InvalidEvent {
+                    activity_anchor: event.id().as_str().to_string(),
+                    reason: "CallbackDispatchContextsLinked dispatch_context_id must match event context_id"
                         .to_string(),
                 });
             }

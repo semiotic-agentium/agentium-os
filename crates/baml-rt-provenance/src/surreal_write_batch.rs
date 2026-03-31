@@ -609,6 +609,11 @@ fn build_graph_fragment(normalized: &NormalizedProv, context_id: Option<&str>) -
                 GraphNodeLabel::Plan.as_str(),
                 semantic_labels::HAS_PLAN,
             ),
+            A2aRelationType::CallbackDispatchScheduledFrom => (
+                GraphNodeLabel::Task.as_str(),
+                GraphNodeLabel::Task.as_str(),
+                semantic_labels::WAS_SCHEDULED_FROM,
+            ),
             // All remaining derived relations use dynamic label resolution.
             // Every variant is handled — no silent skipping.
             // All remaining derived relations: resolve labels dynamically,

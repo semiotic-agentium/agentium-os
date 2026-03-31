@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::{
     EventSchemaVersion,
     context::{InvocationScope, RuntimeScope},
-    ids::{AgentId, ContextId, MessageId, TaskId},
+    ids::{AgentId, ContextId, ExternalId, MessageId, TaskId},
 };
 
 /// Strongly-typed route label for deterministic host-to-agent dispatch.
@@ -66,6 +66,34 @@ pub struct AgentDispatchRequest {
     pub metadata: Option<Value>,
 }
 
+/// JSON keys on [`AgentDispatchRequest::metadata`] and [`crate::ProducedEvent::metadata`] that
+/// carry the scheduling A2A scope for callback delivery deferral and provenance linking.
+pub const DISPATCH_METADATA_SCHEDULING_CONTEXT_ID: &str = "schedulingContextId";
+/// See [`DISPATCH_METADATA_SCHEDULING_CONTEXT_ID`].
+pub const DISPATCH_METADATA_SCHEDULING_TASK_ID: &str = "schedulingTaskId";
+
+/// Parse scheduling scope from dispatch metadata written by the callback event producer.
+pub fn scheduling_scope_from_dispatch_metadata(meta: &Value) -> Option<(ContextId, TaskId)> {
+    let sched_ctx = meta
+        .get(DISPATCH_METADATA_SCHEDULING_CONTEXT_ID)?
+        .as_str()?;
+    let sched_task = meta.get(DISPATCH_METADATA_SCHEDULING_TASK_ID)?.as_str()?;
+    Some((
+        ContextId::from(sched_ctx),
+        TaskId::from_external(ExternalId::new(sched_task.to_string())),
+    ))
+}
+
+/// `true` when minted dispatch scope differs from the scheduling A2A turn (detached continuation).
+pub fn callback_scheduling_scopes_differ_from_dispatch(
+    scheduling_context_id: &ContextId,
+    scheduling_task_id: &TaskId,
+    dispatch_context_id: &ContextId,
+    dispatch_task_id: &TaskId,
+) -> bool {
+    scheduling_context_id != dispatch_context_id || scheduling_task_id != dispatch_task_id
+}
+
 /// Buffered acknowledgement for deterministic host delivery.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentDispatchAck {
@@ -108,7 +136,39 @@ pub fn invocation_scope_for_agent_dispatch(
 
 #[cfg(test)]
 mod tests {
-    use super::AgentDispatchRoutingKey;
+    use serde_json::json;
+
+    use super::{
+        AgentDispatchRoutingKey, DISPATCH_METADATA_SCHEDULING_CONTEXT_ID,
+        DISPATCH_METADATA_SCHEDULING_TASK_ID, callback_scheduling_scopes_differ_from_dispatch,
+        scheduling_scope_from_dispatch_metadata,
+    };
+    use crate::ids::{ContextId, TaskId};
+
+    #[test]
+    fn scheduling_scope_from_dispatch_metadata_parses_callback_keys() {
+        let meta = json!({
+            DISPATCH_METADATA_SCHEDULING_CONTEXT_ID: "ctx-10-20",
+            DISPATCH_METADATA_SCHEDULING_TASK_ID: "task-parent",
+        });
+        let (ctx, task) = scheduling_scope_from_dispatch_metadata(&meta).expect("parse");
+        assert_eq!(ctx.as_str(), "ctx-10-20");
+        assert_eq!(task.as_str(), "task-parent");
+    }
+
+    #[test]
+    fn callback_scheduling_scopes_differ_from_dispatch_detects_detached() {
+        let sc = ContextId::new(1, 1);
+        let st = TaskId::from_external(crate::ids::ExternalId::new("a"));
+        let dc = ContextId::new(2, 2);
+        let dt = TaskId::from_external(crate::ids::ExternalId::new("b"));
+        assert!(callback_scheduling_scopes_differ_from_dispatch(
+            &sc, &st, &dc, &dt
+        ));
+        assert!(!callback_scheduling_scopes_differ_from_dispatch(
+            &sc, &st, &sc, &st
+        ));
+    }
 
     #[test]
     fn routing_key_parse_rejects_blank_values() {
