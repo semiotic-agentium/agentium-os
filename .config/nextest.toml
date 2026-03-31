@@ -136,6 +136,27 @@ slow-timeout = { period = "150s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 3, delay = "8s" }
 
 # =============================================================================
+# Profile: ci-llm-isolated
+# Dedicated lane for the historically flaky callback + notion direct-id tests.
+# Keeps a separate JUnit path so the main ci-llm report is not overwritten.
+# =============================================================================
+[profile.ci-llm-isolated]
+fail-fast = false
+[profile.ci-llm-isolated.junit]
+path = "junit-llm-isolated.xml"
+store-failure-output = true
+
+[[profile.ci-llm-isolated.overrides]]
+filter = 'all()'
+slow-timeout = { period = "120s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 1, delay = "5s" }
+
+[[profile.ci-llm-isolated.overrides]]
+filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
+slow-timeout = { period = "150s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 3, delay = "8s" }
+
+# =============================================================================
 # Profile: ci-non-llm
 # Non-LLM tests with higher parallelism (CPU/memory bound only).
 # Used by `just test` for the second pass with nproc/2 threads.

@@ -436,10 +436,12 @@ ci_features := "baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-
 
 # CI parity: run nextest in CI order (LLM suite first, then non-LLM suite).
 # Requires: cargo-nextest and OPENROUTER_API_KEY for LLM tests.
-# Both suites use full parallelism (no thread limits).
+# Bulk suites use full parallelism; the historically flaky callback + notion direct-id
+# coverage runs afterward in an isolated single-threaded lane.
 test:
-    cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
-    cargo nextest run --workspace --locked --profile ci-non-llm --no-fail-fast --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
+    cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast -E 'not ((package(baml-agent-runner) and binary(runner_callback_test)) or (package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http)))' --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
+    cargo nextest run --workspace --locked --profile ci-non-llm --no-fail-fast -E 'not ((package(baml-agent-runner) and binary(runner_callback_test)) or (package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http)))' --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
+    cargo nextest run --workspace --locked --profile ci-llm-isolated --no-fail-fast --test-threads 1 --retries 3 -E 'package(baml-agent-runner) and (binary(runner_callback_test) or test(~test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http))' --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
 
 # Same as `test` but only compile — useful for a quick pre-push check.
 test-build:
