@@ -1,9 +1,6 @@
 //! Standard tracing subscriber setup for CLI binaries.
 
-use tracing_subscriber::{
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Initialize tracing/logging and optionally OTLP export (traces + metrics) from env.
 ///
