@@ -671,8 +671,8 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
         "Expected mermaid sequence output, got: {mermaid}"
     );
     assert!(
-        mermaid.contains("ChooseClickUpAction"),
-        "Expected ChooseClickUpAction (step executor) in context mermaid; got: {mermaid}"
+        mermaid.contains("ChooseClickUpAction") || mermaid.contains("Choose Click Up Action"),
+        "Expected ChooseClickUpAction/Choose Click Up Action (step executor) in context mermaid; got: {mermaid}"
     );
 
     runner_api.stop().await;

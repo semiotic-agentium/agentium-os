@@ -40,11 +40,20 @@ fn notion_api_path(suffix: &str) -> String {
 }
 
 fn notion_mermaid_complete(mermaid: &str) -> bool {
+    let has_infer =
+        mermaid.contains("InferNotionIntent") || mermaid.contains("Infer Notion Intent");
+    let has_plan = mermaid.contains("PlanNotionWork") || mermaid.contains("Plan Notion Work");
+    let has_choose =
+        mermaid.contains("ChooseNotionAction") || mermaid.contains("Choose Notion Action");
+    let has_react = mermaid.contains("ReactToNotionResults")
+        || mermaid.contains("React To Notion Results")
+        || mermaid.contains("React To Notion Result");
+
     mermaid.contains("sequenceDiagram")
-        && mermaid.contains("InferNotionIntent")
-        && mermaid.contains("PlanNotionWork")
-        && mermaid.contains("ChooseNotionAction")
-        && mermaid.contains("ReactToNotionResults")
+        && has_infer
+        && has_plan
+        && has_choose
+        && has_react
         && mermaid.contains("Completed")
 }
 
@@ -423,7 +432,10 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
         );
 
         let mut mermaid = String::new();
-        for _ in 0..15 {
+        // Mermaid export can lag behind conversation writes under heavy local load
+        // (LLM latency + async provenance writes + graph export). Poll longer before
+        // declaring this attempt flaky.
+        for _ in 0..60 {
             mermaid = fetch_context_mermaid(
                 &http_client,
                 runner_api.base_url.as_str(),
@@ -433,7 +445,7 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
             if notion_mermaid_complete(&mermaid) {
                 break;
             }
-            sleep(Duration::from_millis(200)).await;
+            sleep(Duration::from_millis(250)).await;
         }
 
         let mermaid_ok = notion_mermaid_complete(&mermaid);

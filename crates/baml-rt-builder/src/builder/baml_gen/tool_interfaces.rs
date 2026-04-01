@@ -372,39 +372,6 @@ fn schema_allows_empty_or_null_open_input(schema: &Value) -> bool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::summarize_input_schema;
-
-    #[test]
-    fn summarize_input_schema_resolves_local_refs() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "payload": { "$ref": "#/$defs/Payload" }
-            },
-            "required": ["payload"],
-            "$defs": {
-                "Payload": {
-                    "type": "object",
-                    "properties": {
-                        "count": { "type": "integer" },
-                        "kind": { "type": "string" }
-                    },
-                    "required": ["count"]
-                }
-            }
-        });
-
-        assert_eq!(
-            summarize_input_schema(&schema),
-            "{ payload: { count: integer, kind?: string } }"
-        );
-    }
-}
-
 fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata) -> Result<()> {
     use crate::builder::error::write_line;
 
@@ -562,5 +529,38 @@ pub(crate) fn extract_nested_schemas(schema: &Value, type_names: &mut HashMap<St
         for item in schema_array {
             extract_nested_schemas(item, type_names);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::summarize_input_schema;
+
+    #[test]
+    fn summarize_input_schema_resolves_local_refs() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "payload": { "$ref": "#/$defs/Payload" }
+            },
+            "required": ["payload"],
+            "$defs": {
+                "Payload": {
+                    "type": "object",
+                    "properties": {
+                        "count": { "type": "integer" },
+                        "kind": { "type": "string" }
+                    },
+                    "required": ["count"]
+                }
+            }
+        });
+
+        assert_eq!(
+            summarize_input_schema(&schema),
+            "{ payload: { count: integer, kind?: string } }"
+        );
     }
 }

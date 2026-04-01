@@ -2283,15 +2283,15 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
         ProvEventData::CallbackDispatchContextsLinked {
             dispatch_context_id,
             ..
-        } => {
-            if event.context_id() != dispatch_context_id {
-                return Err(ProvenanceError::InvalidEvent {
-                    activity_anchor: event.id().as_str().to_string(),
-                    reason: "CallbackDispatchContextsLinked dispatch_context_id must match event context_id"
+        } if event.context_id() != dispatch_context_id => {
+            return Err(ProvenanceError::InvalidEvent {
+                activity_anchor: event.id().as_str().to_string(),
+                reason:
+                    "CallbackDispatchContextsLinked dispatch_context_id must match event context_id"
                         .to_string(),
-                });
-            }
+            });
         }
+        ProvEventData::CallbackDispatchContextsLinked { .. } => {}
         _ => {}
     }
     Ok(())
