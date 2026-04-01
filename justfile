@@ -75,38 +75,10 @@ build:
 # Run bare runner (HTTP + stdio) with OTEL defaults suitable for local docker observability stack.
 # Override by exporting OTEL_* in your shell or .env.
 runner: build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "$(git rev-parse --show-toplevel)"
-    set -a
-    [ -f .env ] && . ./.env
-    set +a
-    export OTEL_TRACES_EXPORTER="${OTEL_TRACES_EXPORTER:-otlp}"
-    export OTEL_METRICS_EXPORTER="${OTEL_METRICS_EXPORTER:-otlp}"
-    export OTEL_EXPORTER_OTLP_PROTOCOL="${OTEL_EXPORTER_OTLP_PROTOCOL:-{{otel_protocol}}}"
-    export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-{{otel_endpoint}}}"
-    export OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-baml-agent-runner}"
-    if [[ "${OTEL_AUTO_UP:-1}" == "1" ]]; then
-      ./scripts/otel-stack.sh up >/dev/null || echo "[runner] warning: otel stack auto-up failed; continuing"
-    fi
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
 # Same as `runner`, but persists provenance to provenance.db.
 runner-provenance: build
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "$(git rev-parse --show-toplevel)"
-    set -a
-    [ -f .env ] && . ./.env
-    set +a
-    export OTEL_TRACES_EXPORTER="${OTEL_TRACES_EXPORTER:-otlp}"
-    export OTEL_METRICS_EXPORTER="${OTEL_METRICS_EXPORTER:-otlp}"
-    export OTEL_EXPORTER_OTLP_PROTOCOL="${OTEL_EXPORTER_OTLP_PROTOCOL:-{{otel_protocol}}}"
-    export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-{{otel_endpoint}}}"
-    export OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-baml-agent-runner}"
-    if [[ "${OTEL_AUTO_UP:-1}" == "1" ]]; then
-      ./scripts/otel-stack.sh up >/dev/null || echo "[runner-provenance] warning: otel stack auto-up failed; continuing"
-    fi
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
 # Build Vue/Vite SPA to web/dist (`npm ci` + `npm run build`). Required for recipes that pass `--web-dir web/dist`.
