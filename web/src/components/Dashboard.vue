@@ -220,7 +220,7 @@ function shortToolName(tool: string): string {
           </svg>
           Last Sync
         </div>
-        <div class="stat-card-value" style="font-size: 22px; letter-spacing: -0.01em;">{{ lastSyncTime }}</div>
+        <div class="stat-card-value stat-card-value--sm">{{ lastSyncTime }}</div>
         <div class="stat-card-sub">{{ lastSyncAgo }}</div>
       </div>
 
@@ -269,7 +269,7 @@ function shortToolName(tool: string): string {
           </svg>
           Configuration
         </div>
-        <div class="stat-card-value" style="font-size: 14px; color: var(--text-secondary);">LLM &amp; Tools</div>
+        <div class="stat-card-value stat-card-value--label">LLM &amp; Tools</div>
         <div class="stat-card-sub">Configure clients and tool bundles</div>
       </button>
     </div>
@@ -416,15 +416,12 @@ function shortToolName(tool: string): string {
           </template>
 
           <!-- Empty state -->
-          <div v-else class="sparkline-empty-state">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
-                 style="width: 32px; height: 32px; color: var(--border);">
+          <div v-else class="empty-state" style="flex: 1;">
+            <svg class="empty-state-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
             </svg>
-            <p style="font-size: 12px; color: var(--text-muted); text-align: center; margin: 0;">
-              Run a conversation to see session metrics
-            </p>
+            <span class="empty-state-text">Run a conversation to see session metrics</span>
           </div>
 
           <!-- Provenance preview (when diagram available) -->
