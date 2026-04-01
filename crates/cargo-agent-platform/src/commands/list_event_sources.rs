@@ -8,26 +8,7 @@ use std::collections::BTreeMap;
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use console::style;
 
-use crate::text::truncate_for_display;
-
-/// Known schema versions for event delivery.
-///
-/// NOTE: Hardcoded for now. In the future, this should come from the same
-/// producer inventory used by the runner.
-const KNOWN_SCHEMA_VERSIONS: &[(&str, &str)] = &[
-    (
-        "host.source-records.v1",
-        "Generic raw source-ingress batch produced by host-managed event sources",
-    ),
-    (
-        "system.callback.v1",
-        "Durable host-native callback event emitted by system/callback",
-    ),
-    (
-        "task-daemon.interpretation.v1",
-        "Task daemon event interpretation (Slack, ClickUp, GitHub Issues)",
-    ),
-];
+use crate::{event_schemas::KNOWN_EVENT_SCHEMAS, text::truncate_for_display};
 
 pub fn run() -> anyhow::Result<()> {
     let catalog = InventoryCatalog::new();
@@ -100,8 +81,12 @@ pub fn run() -> anyhow::Result<()> {
         style("DESCRIPTION").bold()
     );
 
-    for (schema, desc) in KNOWN_SCHEMA_VERSIONS {
-        println!("  {:<40} {}", style(*schema).cyan(), desc);
+    for schema in KNOWN_EVENT_SCHEMAS {
+        println!(
+            "  {:<40} {}",
+            style(schema.version).cyan(),
+            schema.description
+        );
     }
 
     println!();
@@ -123,7 +108,7 @@ pub fn run() -> anyhow::Result<()> {
 
     // Print summary
     let total_sources = source_kinds.len();
-    let total_schemas = KNOWN_SCHEMA_VERSIONS.len();
+    let total_schemas = KNOWN_EVENT_SCHEMAS.len();
     println!(
         "{} {} event source kind(s), {} known schema version(s)",
         style("Total:").bold(),

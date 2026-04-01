@@ -23,6 +23,7 @@
 //! - `chat` — Interactive terminal chat with a deployed agent
 
 mod commands;
+mod event_schemas;
 mod generated_baml;
 mod interactive;
 mod patchers;
@@ -99,7 +100,7 @@ enum Commands {
         /// Event subscriptions to record in manifest.json for dispatch-capable agents.
         /// Not supported for the `coordinator` template; other templates may still require a manual `onDispatch`.
         /// Format: "schema=<version>,sources=<kind1,kind2>"
-        /// Example: --subscriptions "schema=task-daemon.interpretation.v1,sources=slack,clickup"
+        /// Example: --subscriptions "schema=host.source-records.v1,sources=slack"
         #[arg(long)]
         subscriptions: Option<String>,
 

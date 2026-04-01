@@ -111,6 +111,8 @@ cargo agent-platform new-agent [name] [options]
 
 **What it creates:** `agents/<name>/manifest.json`, `tsconfig.json`, `baml_src/<name>_prompt.baml`, `src/index.ts`, and generated type files.
 
+> `--subscriptions` records manifest subscriptions for dispatch-capable agents. The `coordinator` template rejects subscriptions, and other templates may still require a manual `onDispatch` implementation before they can actually receive dispatched events.
+
 ```bash
 cargo agent-platform new-agent github-agent \
   --tools support/github,system/internal_a2a \
@@ -120,7 +122,12 @@ cargo agent-platform new-agent github-agent \
 cargo agent-platform new-agent intake-agent \
   --tools system/internal_a2a \
   --template planner \
-  --subscriptions "schema=task-daemon.interpretation.v1,sources=slack,clickup"
+  --subscriptions "schema=host.source-records.v1,sources=slack"
+
+cargo agent-platform new-agent callback-handler-agent \
+  --tools system/internal_a2a \
+  --template planner \
+  --subscriptions "schema=system.callback.v1,sources=system/callback"
 ```
 
 ---
@@ -278,6 +285,12 @@ cargo agent-platform list-event-sources
 ```
 
 Use this to discover available source kinds and schema versions before creating agents with `--subscriptions`.
+
+Current built-in schema surfaces include:
+
+- `host.source-records.v1` for raw host-managed source ingress
+- `system.callback.v1` for durable host-native callback delivery
+- `task-daemon.interpretation.v1` as the compatibility bridge contract
 
 ---
 
