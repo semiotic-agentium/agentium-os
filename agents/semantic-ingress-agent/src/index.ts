@@ -89,6 +89,13 @@ type DownstreamSelection =
   | { kind: "matched"; agent: DiscoveredAgent }
   | { kind: "ambiguous"; candidates: string[] };
 
+type ThreadInterpretation = {
+  threadKey: string;
+  records: SlackRecord[];
+  interpretation: InterpretationResult;
+  decision: RoutingDecision;
+};
+
 // --- Utility functions ---
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -174,6 +181,12 @@ function groupRecordsByThread(records: SlackRecord[]): SlackRecord[][] {
     }
   }
   return [...groups.values()];
+}
+
+function threadKeyForRecords(records: SlackRecord[]): string {
+  const first = records[0];
+  if (!first) return "unknown-thread";
+  return first.thread_ts ?? first.ts ?? "unknown-thread";
 }
 
 // --- BAML interpretation ---
@@ -395,6 +408,28 @@ function renderDownstreamPrompt(
   return lines.join("\n");
 }
 
+function renderCombinedDownstreamPrompt(
+  source: SourceContext,
+  threads: ThreadInterpretation[],
+  decision: RoutingDecision,
+): string {
+  const lines: string[] = [];
+  lines.push(`Source: ${source.source_label} (${source.source_kind})`);
+  lines.push(`Decision: ${decision.kind} — ${decision.reason}`);
+  lines.push(`Actionable Threads: ${threads.length}`);
+  lines.push("");
+
+  for (const [index, thread] of threads.entries()) {
+    lines.push(`Thread ${index + 1}: ${thread.threadKey}`);
+    lines.push(`Messages: ${thread.records.length}`);
+    lines.push("");
+    lines.push(renderDownstreamPrompt(source, thread.interpretation, thread.decision));
+    lines.push("");
+  }
+
+  return lines.join("\n").trim();
+}
+
 // --- Delegation ---
 
 async function delegateToAgent(
@@ -418,6 +453,21 @@ async function delegateToAgent(
       const status =
         nextObj && typeof nextObj.status === "string" ? nextObj.status.toLowerCase() : null;
 
+      const output = nextObj && "output" in nextObj ? nextObj.output : next;
+      if (isObject(output) && Array.isArray(output.chunks)) {
+        for (const chunk of output.chunks) {
+          if (!isObject(chunk)) continue;
+          if (isObject(chunk.message) && Array.isArray(chunk.message.parts)) {
+            for (const part of chunk.message.parts) {
+              if (isObject(part) && typeof part.text === "string") {
+                const text = part.text.trim();
+                if (text.length > 0) texts.push(text);
+              }
+            }
+          }
+        }
+      }
+
       if (status === "streaming") continue;
 
       if (status === "suspended") {
@@ -439,26 +489,15 @@ async function delegateToAgent(
         throw new Error(errorMessage);
       }
 
-      const output = nextObj && "output" in nextObj ? nextObj.output : next;
-      if (isObject(output) && Array.isArray(output.chunks)) {
-        for (const chunk of output.chunks) {
-          if (!isObject(chunk)) continue;
-          if (isObject(chunk.message) && Array.isArray(chunk.message.parts)) {
-            for (const part of chunk.message.parts) {
-              if (isObject(part) && typeof part.text === "string") {
-                const text = part.text.trim();
-                if (text.length > 0) texts.push(text);
-              }
-            }
-          }
-        }
+      if (status === "done") {
+        break;
       }
 
       const completion =
         isObject(output) && typeof output.completion === "string"
           ? output.completion.toUpperCase()
           : null;
-      if (completion === "COMPLETED" || completion === "FAILED" || completion === "CANCELED") {
+      if (completion === "DONE") {
         break;
       }
     }
@@ -524,55 +563,91 @@ async function handleRawSourceDispatch(
   }
 
   const threadGroups = groupRecordsByThread(batch.records);
-  const summaries: string[] = [];
-  const failures: string[] = [];
+  const noopSummaries: string[] = [];
+  const actionableThreads: ThreadInterpretation[] = [];
+  let selectedDecision: RoutingDecision | null = null;
 
   for (const threadRecords of threadGroups) {
-    try {
-      const interpretation = await interpretRecords(batch.source, threadRecords);
-      const decision = deriveRoutingDecision(batch.source.source_kind, interpretation);
+    const interpretation = await interpretRecords(batch.source, threadRecords);
+    const decision = deriveRoutingDecision(batch.source.source_kind, interpretation);
+    const threadKey = threadKeyForRecords(threadRecords);
 
-      if (decision.kind === "noop") {
-        summaries.push(`thread(${threadRecords[0].ts}): ${decision.reason}`);
-        continue;
-      }
-
-      const agents = await discoverAgentsByCapabilities(decision.requiredCapabilities);
-      const selection = selectDownstreamAgent(agents, decision);
-
-      if (selection.kind === "none") {
-        failures.push(
-          `thread(${threadRecords[0].ts}): no agent matched capabilities ` +
-          `${decision.requiredCapabilities.join(", ")}`,
-        );
-        continue;
-      }
-      if (selection.kind === "ambiguous") {
-        failures.push(
-          `thread(${threadRecords[0].ts}): ambiguous agents ` +
-          `${selection.candidates.join(", ")}`,
-        );
-        continue;
-      }
-
-      const target = selection.agent;
-      const prompt = renderDownstreamPrompt(batch.source, interpretation, decision);
-      const downstreamTexts = await delegateToAgent(target, prompt);
-      summaries.push(renderRouteSummary(batch.source, decision, target, downstreamTexts));
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      failures.push(`thread(${threadRecords[0].ts}): ${reason}`);
+    if (decision.kind === "noop") {
+      noopSummaries.push(`thread(${threadKey}): ${decision.reason}`);
+      continue;
     }
+
+    if (selectedDecision && selectedDecision.kind !== decision.kind) {
+      return {
+        accepted: false,
+        detail:
+          `semantic-ingress-agent cannot mix routing decisions within one source batch: ` +
+          `${selectedDecision.kind} and ${decision.kind}.`,
+      };
+    }
+    selectedDecision = decision;
+    actionableThreads.push({
+      threadKey,
+      records: threadRecords,
+      interpretation,
+      decision,
+    });
   }
 
-  const allDetails = [...summaries, ...failures].join("\n");
+  if (actionableThreads.length === 0) {
+    const detail =
+      noopSummaries.join("\n") ||
+      `${batch.source.source_label}: processed ${threadGroups.length} thread(s) with no derived work.`;
+    return {
+      accepted: true,
+      detail: truncateText(detail, MAX_SUMMARY_CHARS),
+    };
+  }
+
+  const decision = selectedDecision;
+  if (!decision) {
+    return {
+      accepted: false,
+      detail: "semantic-ingress-agent internal error: actionable threads had no routing decision.",
+    };
+  }
+  const agents = await discoverAgentsByCapabilities(decision.requiredCapabilities);
+  const selection = selectDownstreamAgent(agents, decision);
+
+  if (selection.kind === "none") {
+    return {
+      accepted: false,
+      detail:
+        `No downstream agent matched required capabilities: ` +
+        `${decision.requiredCapabilities.join(", ")}.`,
+    };
+  }
+  if (selection.kind === "ambiguous") {
+    return {
+      accepted: false,
+      detail:
+        `Multiple downstream agents matched required capabilities ` +
+        `${decision.requiredCapabilities.join(", ")}: ${selection.candidates.join(", ")}.`,
+    };
+  }
+
+  const target = selection.agent;
+  const prompt = renderCombinedDownstreamPrompt(batch.source, actionableThreads, decision);
+  const downstreamTexts = await delegateToAgent(target, prompt);
+  const routedSummary =
+    `Processed ${threadGroups.length} thread(s); routed ${actionableThreads.length} actionable thread(s).`;
+  const detail = [
+    routedSummary,
+    renderRouteSummary(batch.source, decision, target, downstreamTexts),
+    ...noopSummaries,
+  ]
+    .filter((entry) => entry.trim().length > 0)
+    .join("\n");
+
   return {
-    accepted: failures.length === 0,
-    detail: truncateText(
-      allDetails || `${batch.source.source_label}: processed ${threadGroups.length} thread(s).`,
-      MAX_SUMMARY_CHARS,
-    ),
-  };
+    accepted: true,
+    detail: truncateText(detail, MAX_SUMMARY_CHARS),
+  }
 }
 
 __chat_register({
