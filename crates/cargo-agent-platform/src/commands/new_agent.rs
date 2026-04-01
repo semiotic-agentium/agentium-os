@@ -31,6 +31,18 @@ pub enum AgentTemplate {
     Coordinator,
 }
 
+fn validate_template_subscriptions(
+    template: AgentTemplate,
+    subscriptions: &[EventSubscription],
+) -> Result<()> {
+    if template == AgentTemplate::Coordinator && !subscriptions.is_empty() {
+        bail!(
+            "Error: coordinator template does not support `--subscriptions` yet.\nHint: coordinators currently scaffold conversational orchestration only; use a non-coordinator template and add `onDispatch` manually, or add dispatch support before enabling coordinator subscriptions."
+        );
+    }
+    Ok(())
+}
+
 impl AgentTemplate {
     fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -98,6 +110,7 @@ pub fn run(
 
     // Determine template
     let template = determine_template(template, &tool_ids)?;
+    validate_template_subscriptions(template, &subscriptions)?;
 
     // Find workspace root and determine output directory
     let workspace_root = find_workspace_root()?;
@@ -560,7 +573,7 @@ fn create_coordinator_agent(
     name: &str,
     description: &str,
     tags: &[String],
-    subscriptions: &[EventSubscription],
+    _subscriptions: &[EventSubscription],
 ) -> Result<()> {
     let slug = name.to_string();
     let prompt_name = slug.replace('-', "_");
@@ -576,9 +589,9 @@ fn create_coordinator_agent(
     std::fs::create_dir_all(output_dir.join("baml_src"))?;
     std::fs::create_dir_all(output_dir.join("src"))?;
 
-    // Generate manifest.json (with subscriptions)
-    let manifest =
-        agent_coordinator::generate_manifest(&slug, description, tags, &tool_ids, subscriptions);
+    // Generate manifest.json. Coordinators are orchestration-only until the
+    // template grows a real onDispatch path.
+    let manifest = agent_coordinator::generate_manifest(&slug, description, tags, &tool_ids);
     std::fs::write(output_dir.join("manifest.json"), manifest)?;
 
     // Generate planner.baml
@@ -727,7 +740,9 @@ Hint: run `cargo run -p cargo-agent-platform -- regen` manually from the workspa
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_subscriptions, validate_output_dir};
+    use super::{
+        AgentTemplate, parse_subscriptions, validate_output_dir, validate_template_subscriptions,
+    };
 
     #[test]
     fn validate_output_dir_allows_missing_or_empty_dir() {
@@ -819,5 +834,28 @@ mod tests {
             err.to_string().contains("`sources=` was provided"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn coordinator_template_rejects_subscriptions() {
+        let subscriptions =
+            parse_subscriptions("schema=task-daemon.interpretation.v1,sources=slack")
+                .expect("should parse");
+        let err = validate_template_subscriptions(AgentTemplate::Coordinator, &subscriptions)
+            .expect_err("coordinator subscriptions should fail");
+        assert!(
+            err.to_string()
+                .contains("does not support `--subscriptions`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn planner_template_allows_subscriptions() {
+        let subscriptions =
+            parse_subscriptions("schema=task-daemon.interpretation.v1,sources=slack")
+                .expect("should parse");
+        validate_template_subscriptions(AgentTemplate::Planner, &subscriptions)
+            .expect("planner subscriptions should remain allowed");
     }
 }

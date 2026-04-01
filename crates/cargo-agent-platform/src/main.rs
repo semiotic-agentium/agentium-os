@@ -9,7 +9,7 @@
 //! # Subcommands
 //!
 //! - `new-tool <name>` — Create a new tool crate with all necessary patches
-//! - `new-agent <name>` — Create a new agent package (supports `--subscriptions` for event delivery)
+//! - `new-agent <name>` — Create a new agent package (manifest subscriptions available; coordinator subscriptions rejected)
 //! - `build [name]` — Package an agent into a distributable tar.gz
 //! - `publish --agent-dir <path>` — Publish source bundle to repository
 //! - `deploy --hash <hash>` — Activate a deployed hash in a running runner
@@ -96,7 +96,8 @@ enum Commands {
         #[arg(long)]
         tags: Option<String>,
 
-        /// Event subscriptions for receiving dispatched events.
+        /// Event subscriptions to record in manifest.json for dispatch-capable agents.
+        /// Not supported for the `coordinator` template; other templates may still require a manual `onDispatch`.
         /// Format: "schema=<version>,sources=<kind1,kind2>"
         /// Example: --subscriptions "schema=task-daemon.interpretation.v1,sources=slack,clickup"
         #[arg(long)]
@@ -340,7 +341,9 @@ fn main() -> anyhow::Result<()> {
             // Handle subscriptions: from CLI flag or interactive prompt
             let subscriptions = match subscriptions {
                 Some(s) => Some(s),
-                None if interactive => interactive::prompt_subscriptions(&tool_ids)?,
+                None if interactive && template != "coordinator" => {
+                    interactive::prompt_subscriptions(&tool_ids)?
+                }
                 None => None,
             };
 
