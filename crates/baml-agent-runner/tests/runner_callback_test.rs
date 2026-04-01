@@ -110,7 +110,7 @@ impl RunningRunnerProcess {
         // local budget tight, but leave enough headroom in CI to avoid racing a
         // runner that is actually about to become ready.
         let readiness_deadline =
-            Instant::now() + Duration::from_secs(e2e_secs_ci_or_local(150, 60));
+            Instant::now() + Duration::from_secs(e2e_secs_ci_or_local(240, 60));
         while Instant::now() < readiness_deadline {
             if let Some(status) = child.try_wait().expect("poll runner process") {
                 let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "<unreadable>".into());
