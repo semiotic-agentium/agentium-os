@@ -89,6 +89,23 @@ HTTP demo script:
 SLACK_DEMO_THREAD_URL="https://<workspace>.slack.com/archives/C123.../p1735689600000000" just slack-demo
 ```
 
+## Slack Event-Ingress Pattern
+
+`support/slack` now participates in two different but complementary flows:
+
+1. **Producer flow**: the host polls configured channels and emits raw `host.source-records.v1` batches.
+2. **Invoke flow**: a semantic-ingress agent can call `support/slack` directly to enrich a candidate conversation with `GetConversationHistory` or `GetThreadReplies`.
+
+The intended steady-state flow for Slack-as-work is:
+
+- poll configured channels with `conversations.history`
+- group new records into conversation units
+- fetch full thread context with `conversations.replies` when the raw batch is incomplete
+- interpret the conversation into work intent
+- route that intent downstream
+
+This keeps Slack polling in the host/runtime layer and Slack meaning in semantic ingress.
+
 ## Known Limitations (MVP)
 
 - Read-only only (no `chat.postMessage`, edits, or deletes).

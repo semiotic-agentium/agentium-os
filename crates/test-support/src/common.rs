@@ -9,7 +9,11 @@ pub use a2a_test_helpers::{
 };
 mod test_tools;
 // Fixture helpers
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use baml_rt::{A2aAgent, QuickJSConfig, baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
@@ -234,37 +238,82 @@ pub fn ensure_fixture_runtime_types() {
 /// works regardless of test cwd (package dir vs workspace root).
 /// Canonicalizes when the file exists so the resolver always gets an absolute path.
 ///
-/// **First call** loads workspace `.env` (if present) into the process environment so fnox secret
+/// **First call** loads `.env` (if present) into the process environment so fnox secret
 /// resolution can substitute `env.*` / `$VAR` placeholders — same as a shell that ran `source .env`
-/// before `cargo test` / nextest.
+/// before `cargo test` / nextest. In git worktrees we also probe the shared repo-root `.env`.
 pub fn workspace_fnox_path() -> PathBuf {
     load_workspace_dotenv_once();
     let path = workspace_root().join("fnox.toml");
     path.canonicalize().unwrap_or(path)
 }
 
+fn shared_repo_root() -> Option<PathBuf> {
+    let git_path = workspace_root().join(".git");
+    if git_path.is_dir() {
+        return Some(workspace_root());
+    }
+    if !git_path.is_file() {
+        return None;
+    }
+
+    let raw = std::fs::read_to_string(&git_path).ok()?;
+    let gitdir = raw.strip_prefix("gitdir: ")?.trim();
+    let gitdir_path = {
+        let candidate = PathBuf::from(gitdir);
+        if candidate.is_absolute() {
+            candidate
+        } else {
+            workspace_root().join(candidate)
+        }
+    }
+    .canonicalize()
+    .ok()?;
+
+    gitdir_path
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .map(Path::to_path_buf)
+}
+
 fn load_workspace_dotenv_once() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        let dotenv_path = workspace_root().join(".env");
-        if dotenv_path.is_file()
-            && let Err(e) = dotenvy::from_path(&dotenv_path)
+        let workspace_dotenv = workspace_root().join(".env");
+        let shared_dotenv = shared_repo_root()
+            .map(|root| root.join(".env"))
+            .filter(|path| path != &workspace_dotenv);
+
+        for dotenv_path in [Some(workspace_dotenv), shared_dotenv]
+            .into_iter()
+            .flatten()
         {
-            tracing::debug!(
-                path = %dotenv_path.display(),
-                error = %e,
-                "test-support: optional workspace .env load failed"
-            );
+            if dotenv_path.is_file()
+                && let Err(e) = dotenvy::from_path(&dotenv_path)
+            {
+                tracing::debug!(
+                    path = %dotenv_path.display(),
+                    error = %e,
+                    "test-support: optional workspace .env load failed"
+                );
+            }
         }
     });
 }
 
-/// True if workspace `fnox.toml` resolves `OPENROUTER_API_KEY` for the default profile (after
-/// loading workspace `.env` once — see [`workspace_fnox_path`]).
+/// True if `OPENROUTER_API_KEY` is available from the process environment or workspace
+/// `fnox.toml` (after loading workspace `.env` once — see [`workspace_fnox_path`]).
 pub fn fnox_has_openrouter_key() -> bool {
     use baml_rt_llm_config::{FnoxFileSecretResolver, SecretResolver};
-    let resolver = FnoxFileSecretResolver::from_path(Some(workspace_fnox_path().as_path()));
+    let fnox_path = workspace_fnox_path();
+    if std::env::var("OPENROUTER_API_KEY")
+        .ok()
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        return true;
+    }
+    let resolver = FnoxFileSecretResolver::from_path(Some(fnox_path.as_path()));
     resolver
         .resolve("OPENROUTER_API_KEY")
         .is_some_and(|v| !v.as_str().trim().is_empty())
@@ -383,21 +432,23 @@ pub async fn setup_bridge(baml_manager: Arc<RwLock<BamlRuntimeManager>>) -> Quic
     bridge
 }
 
-/// Require that `OPENROUTER_API_KEY` resolves via workspace `fnox.toml` (after loading `.env` if
-/// present — see [`workspace_fnox_path`]).
+/// Require that `OPENROUTER_API_KEY` resolves either via workspace `fnox.toml` or directly from
+/// the process environment after loading workspace `.env` once (see [`workspace_fnox_path`]).
 ///
 /// Local dev: set secrets in `fnox.toml` (often with `env.OPENROUTER_API_KEY` pointing at vars from
 /// `.env`). CI: workflow writes fnox secrets.
 pub fn require_api_key() -> String {
     use baml_rt_llm_config::{FnoxFileSecretResolver, SecretResolver};
-    let resolver = FnoxFileSecretResolver::from_path(Some(workspace_fnox_path().as_path()));
+    let fnox_path = workspace_fnox_path();
+    let resolver = FnoxFileSecretResolver::from_path(Some(fnox_path.as_path()));
     resolver
         .resolve("OPENROUTER_API_KEY")
         .map(|v| v.into_string())
+        .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
         .filter(|s| !s.is_empty())
         .expect(
-            "OPENROUTER_API_KEY must be set in fnox.toml \
-             (local: configure fnox + `.env` for env-based secrets; CI: Write fnox secrets step)",
+            "OPENROUTER_API_KEY must be set via fnox.toml or environment \
+             (local: configure fnox and/or `.env`; CI: Write fnox secrets step)",
         )
 }
 

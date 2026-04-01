@@ -124,22 +124,37 @@ type SemanticIngressEvent = {
   derived_tasks: TaskDaemonDerivedTask[];
   transcript_lines: string[];
   no_work_reason?: string;
+  raw_source_records?: SlackRawSourceRecord[];
+  conversation_groups?: SlackConversationGroup[];
 };
 
 type SlackRawSourceRecord = {
+  channel_id?: string;
   ts?: string;
   thread_ts?: string;
+  user_id?: string;
   user?: string;
   user_name?: string;
   username?: string;
   bot_id?: string;
   text?: string;
   subtype?: string;
+  source_ref?: string;
+  permalink?: string;
 };
 
 type SlackConversationGroup = {
   conversationKey: string;
   records: SlackRawSourceRecord[];
+};
+
+type SlackConversationEvaluation = {
+  conversationKey: string;
+  records: SlackRawSourceRecord[];
+  transcriptLines: string[];
+  summary: string | null;
+  actionable: boolean;
+  usedThreadExpansion: boolean;
 };
 
 type DispatchSemanticIngress = {
@@ -169,12 +184,17 @@ declare function openToolSession(
 // agent-discovery and internal A2A tools directly.
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
+const SLACK_TOOL_NAME = "support/slack";
 const TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION = "task-daemon.interpretation.v1";
 const RAW_SOURCE_SCHEMA_VERSION = "host.source-records.v1";
 const RAW_SOURCE_ROUTING_KEY = "event:intake";
 const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
 const MAX_DELEGATION_CONTINUE_STEPS = 64;
 const MAX_SUMMARY_CHARS = 1_200;
+const MAX_SLACK_THREAD_REPLY_LIMIT = 50;
+const MAX_SLACK_TRANSCRIPT_LINES_PER_CONVERSATION = 8;
+const MAX_SLACK_TRANSCRIPT_LINES_PER_EVENT = 20;
+const MAX_SLACK_CONVERSATION_EVALUATIONS_CONCURRENCY = 4;
 const SLACK_ACTION_CUE_PATTERN =
   /\b(please|can you|could you|need(?:s)? to|action item|todo|follow up|follow-up|next step|track (?:this|it)|create (?:a )?(?:task|ticket)|open (?:an )?(?:issue|ticket)|assign|blocking|blocker|urgent|asap)\b/i;
 
@@ -644,14 +664,18 @@ function parseInterpretationEventValue(value: unknown): SemanticIngressEvent | n
 function parseSlackRawSourceRecord(value: unknown): SlackRawSourceRecord | null {
   if (!isObject(value)) return null;
   return {
+    channel_id: normalizeOptionalString(value.channel_id) ?? undefined,
     ts: normalizeOptionalString(value.ts) ?? undefined,
     thread_ts: normalizeOptionalString(value.thread_ts) ?? undefined,
+    user_id: normalizeOptionalString(value.user_id) ?? undefined,
     user: normalizeOptionalString(value.user) ?? undefined,
     user_name: normalizeOptionalString(value.user_name) ?? undefined,
     username: normalizeOptionalString(value.username) ?? undefined,
     bot_id: normalizeOptionalString(value.bot_id) ?? undefined,
     text: normalizeOptionalString(value.text) ?? undefined,
     subtype: normalizeOptionalString(value.subtype) ?? undefined,
+    source_ref: normalizeOptionalString(value.source_ref) ?? undefined,
+    permalink: normalizeOptionalString(value.permalink) ?? undefined,
   };
 }
 
@@ -695,16 +719,34 @@ function groupSlackConversationRecords(records: SlackRawSourceRecord[]): SlackCo
   }));
 }
 
-function renderSlackTranscriptLines(records: SlackRawSourceRecord[]): string[] {
+function preferredSlackChannelId(
+  _sourceKey: string,
+  records: SlackRawSourceRecord[],
+): string | null {
+  for (const record of records) {
+    const channelId = normalizeOptionalString(record.channel_id);
+    if (channelId) return channelId;
+  }
+  return null;
+}
+
+function renderSlackTranscriptLines(
+  records: SlackRawSourceRecord[],
+  maxLines: number = MAX_SLACK_TRANSCRIPT_LINES_PER_CONVERSATION,
+): string[] {
   const rendered: string[] = [];
   for (const record of records) {
     const text = normalizeOptionalString(record.text);
     if (!text) continue;
     const author =
-      record.user_name || record.user || record.username || record.bot_id;
+      record.user_name ||
+      record.username ||
+      record.user ||
+      record.user_id ||
+      record.bot_id;
     const prefix = author ? `${author}: ` : "";
     rendered.push(truncateText(`${prefix}${normalizeText(text)}`, 320));
-    if (rendered.length >= 12) break;
+    if (rendered.length >= maxLines) break;
   }
   return rendered;
 }
@@ -757,33 +799,12 @@ function parseSlackRawSourceEventValue(value: unknown): SemanticIngressEvent | n
     .filter((record): record is SlackRawSourceRecord => record != null);
   const readableRecords = records.filter((record) => isSlackConversationRecord(record));
   const conversationGroups = groupSlackConversationRecords(readableRecords);
-  const singleConversation = conversationGroups.length === 1 ? conversationGroups[0] : null;
-  const transcriptLines = singleConversation
-    ? renderSlackTranscriptLines(singleConversation.records)
-    : [];
-  const transcriptSummary = summarizeSlackTranscript(transcriptLines);
-  const hasActionCue = slackTranscriptHasActionCue(transcriptLines);
   const noWorkReason =
     readableRecords.length === 0
       ? "The Slack raw batch contained no readable conversation text."
       : conversationGroups.length === 0
-        ? "The Slack raw batch could not be grouped into a conversation."
-        : conversationGroups.length > 1
-          ? `The Slack raw batch spans ${conversationGroups.length} conversations; semantic ingress skipped task creation until conversation grouping is more precise.`
-          : !hasActionCue
-            ? "The Slack raw conversation did not contain a clear actionable request."
-            : undefined;
-  const derivedTasks =
-    transcriptSummary == null || !singleConversation || !hasActionCue
-      ? []
-      : [
-          {
-            key: `slack-raw:${sourceKey}:${singleConversation.conversationKey}`,
-            title: deriveSlackTaskTitle(sourceLabel, transcriptSummary),
-            description: `Interpret the Slack discussion from ${sourceLabel} and convert actionable requests into tracked PM work. Transcript: ${transcriptSummary}`,
-            priority: inferSlackPriority(transcriptSummary),
-          },
-        ];
+        ? "The Slack raw batch could not be grouped into conversation units."
+        : undefined;
 
   return {
     ingress_kind: "slack_raw_source_records",
@@ -797,15 +818,194 @@ function parseSlackRawSourceEventValue(value: unknown): SemanticIngressEvent | n
     messages_scanned: Array.isArray(value.records) ? value.records.length : records.length,
     interpretation: {
       executive_summary:
-        transcriptSummary == null
-          ? noWorkReason
-          : `Slack raw ingress captured ${singleConversation?.records.length ?? readableRecords.length} message(s) from ${sourceLabel}. ${transcriptSummary}`,
+        noWorkReason ||
+        `Slack raw ingress captured ${readableRecords.length} readable message(s) across ${conversationGroups.length} conversation unit(s) from ${sourceLabel}.`,
+      current_objectives: [],
+    },
+    derived_tasks: [],
+    transcript_lines: [],
+    no_work_reason: noWorkReason,
+    raw_source_records: records,
+    conversation_groups: conversationGroups,
+  };
+}
+
+function shouldExpandSlackConversationGroup(group: SlackConversationGroup): boolean {
+  return group.records.some((record) => normalizeOptionalString(record.thread_ts) != null);
+}
+
+function parseSlackToolOutputRecords(value: unknown): SlackRawSourceRecord[] {
+  const normalized = unwrapToolSessionNextOutput(value);
+  if (!isObject(normalized) || !Array.isArray(normalized.messages)) return [];
+
+  return normalized.messages
+    .map((message) => parseSlackRawSourceRecord(message))
+    .filter((record): record is SlackRawSourceRecord => record != null)
+    .filter((record) => isSlackConversationRecord(record));
+}
+
+async function fetchSlackConversationHistory(
+  sourceKey: string,
+  group: SlackConversationGroup,
+): Promise<{ records: SlackRawSourceRecord[]; usedThreadExpansion: boolean }> {
+  if (!shouldExpandSlackConversationGroup(group)) {
+    return { records: group.records, usedThreadExpansion: false };
+  }
+
+  const channelId = preferredSlackChannelId(sourceKey, group.records);
+  if (!channelId) {
+    return { records: group.records, usedThreadExpansion: false };
+  }
+
+  try {
+    const drained = await runSingleSendSession(
+      SLACK_TOOL_NAME,
+      {},
+      {
+        channel_id: channelId,
+        thread_ts: group.conversationKey,
+        inclusive: true,
+        limit: MAX_SLACK_THREAD_REPLY_LIMIT,
+        resolve_users: "none",
+      },
+      MAX_SINGLE_SEND_CONTINUE_STEPS,
+    );
+
+    if (drained.hitStepLimit) {
+      return { records: group.records, usedThreadExpansion: false };
+    }
+
+    const terminal = drained.steps[drained.steps.length - 1] || null;
+    if (terminal?.status === "error" || terminal?.status === "suspended") {
+      return { records: group.records, usedThreadExpansion: false };
+    }
+
+    const records = parseSlackToolOutputRecords(lastMeaningfulStepOutput(drained.steps));
+    if (records.length === 0) {
+      return { records: group.records, usedThreadExpansion: false };
+    }
+
+    return { records, usedThreadExpansion: true };
+  } catch (err) {
+    if (typeof console !== "undefined" && typeof console.warn === "function") {
+      console.warn(
+        `[workflow-intake-agent] Slack thread expansion failed for ${sourceKey}/${group.conversationKey}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return { records: group.records, usedThreadExpansion: false };
+  }
+}
+
+async function evaluateSlackConversationGroup(
+  sourceKey: string,
+  group: SlackConversationGroup,
+): Promise<SlackConversationEvaluation> {
+  const fetched = await fetchSlackConversationHistory(sourceKey, group);
+  const transcriptLines = renderSlackTranscriptLines(fetched.records);
+  const summary = summarizeSlackTranscript(transcriptLines);
+  const actionable = summary != null && slackTranscriptHasActionCue(transcriptLines);
+
+  return {
+    conversationKey: group.conversationKey,
+    records: fetched.records,
+    transcriptLines,
+    summary,
+    actionable,
+    usedThreadExpansion: fetched.usedThreadExpansion,
+  };
+}
+
+function renderSlackEventTranscript(evaluations: SlackConversationEvaluation[]): string[] {
+  const lines: string[] = [];
+  for (const [index, evaluation] of evaluations.entries()) {
+    const label =
+      evaluations.length > 1
+        ? `Conversation ${index + 1} (${evaluation.conversationKey})`
+        : null;
+    for (const line of evaluation.transcriptLines) {
+      lines.push(label ? `[${label}] ${line}` : line);
+      if (lines.length >= MAX_SLACK_TRANSCRIPT_LINES_PER_EVENT) {
+        return lines;
+      }
+    }
+  }
+  return lines;
+}
+
+function slackConversationNoWorkReason(
+  sourceLabel: string,
+  totalConversationCount: number,
+  actionableCount: number,
+): string | undefined {
+  if (totalConversationCount === 0) {
+    return "The Slack raw batch did not contain any conversation units.";
+  }
+  if (actionableCount === 0) {
+    return `Slack semantic ingress reviewed ${totalConversationCount} conversation unit(s) from ${sourceLabel} and did not find a clear actionable request.`;
+  }
+  return undefined;
+}
+
+async function materializeSlackSemanticIngressEvent(
+  event: SemanticIngressEvent,
+): Promise<SemanticIngressEvent> {
+  if (event.ingress_kind !== "slack_raw_source_records") {
+    return event;
+  }
+
+  const conversationGroups = event.conversation_groups ?? [];
+  if (conversationGroups.length === 0) {
+    return event;
+  }
+
+  const evaluations: SlackConversationEvaluation[] = [];
+  for (let i = 0; i < conversationGroups.length; i += MAX_SLACK_CONVERSATION_EVALUATIONS_CONCURRENCY) {
+    const batch = conversationGroups.slice(
+      i,
+      i + MAX_SLACK_CONVERSATION_EVALUATIONS_CONCURRENCY,
+    );
+    const batchEvaluations = await Promise.all(
+      batch.map((group) => evaluateSlackConversationGroup(event.source.source_key, group)),
+    );
+    evaluations.push(...batchEvaluations);
+  }
+  const actionable = evaluations.filter((evaluation) => evaluation.actionable);
+  const derivedTasks = actionable.map((evaluation) => ({
+    key: `slack-raw:${event.source.source_key}:${evaluation.conversationKey}`,
+    title: deriveSlackTaskTitle(event.source.source_label, evaluation.summary),
+    description: `Interpret the Slack discussion from ${event.source.source_label} and convert actionable requests into tracked PM work. Transcript: ${evaluation.summary}`,
+    priority: inferSlackPriority(evaluation.summary),
+  }));
+  const transcriptLines = renderSlackEventTranscript(
+    actionable.length > 0 ? actionable : evaluations.filter((evaluation) => evaluation.transcriptLines.length > 0),
+  );
+  const expandedConversationCount = evaluations.filter(
+    (evaluation) => evaluation.usedThreadExpansion,
+  ).length;
+  const noWorkReason = slackConversationNoWorkReason(
+    event.source.source_label,
+    evaluations.length,
+    actionable.length,
+  );
+  const executiveSummary =
+    derivedTasks.length === 0
+      ? noWorkReason ||
+        `Slack semantic ingress reviewed ${evaluations.length} conversation unit(s) from ${event.source.source_label}.`
+      : expandedConversationCount > 0
+        ? `Slack semantic ingress derived ${derivedTasks.length} actionable work item(s) from ${evaluations.length} conversation unit(s) in ${event.source.source_label}, including ${expandedConversationCount} expanded thread(s).`
+        : `Slack semantic ingress derived ${derivedTasks.length} actionable work item(s) from ${evaluations.length} conversation unit(s) in ${event.source.source_label}.`;
+
+  return {
+    ...event,
+    interpretation: {
+      ...event.interpretation,
+      executive_summary: executiveSummary,
       current_objectives:
-        transcriptSummary == null || !hasActionCue || !singleConversation
+        derivedTasks.length === 0
           ? []
           : [
-              "Interpret the Slack discussion and preserve the actionable request details.",
-              "Create tracked project-management work for follow-up.",
+              "Preserve the actionable request details from each Slack conversation.",
+              "Create tracked project-management follow-up for every actionable conversation.",
             ],
     },
     derived_tasks: derivedTasks,
@@ -1075,7 +1275,7 @@ function describeIngressKind(ingressKind: SemanticIngressKind): string {
   if (ingressKind === "task_daemon_interpretation") {
     return "task-daemon interpretation";
   }
-  return "raw Slack source ingress";
+  return "Slack semantic ingress from raw source records";
 }
 
 function renderDecisionHeader(event: SemanticIngressEvent, decision: IntakeDecision): string {
@@ -1193,7 +1393,8 @@ function renderRouteSummary(
 
 async function handleSemanticIngressEvent(event: SemanticIngressEvent): Promise<SessionResult> {
   try {
-    const decision = deriveDecision(event);
+    const materializedEvent = await materializeSlackSemanticIngressEvent(event);
+    const decision = deriveDecision(materializedEvent);
     if (decision.kind === "noop") {
       return { message: textReply(decision.reason) };
     }
@@ -1214,7 +1415,7 @@ async function handleSemanticIngressEvent(event: SemanticIngressEvent): Promise<
     }
 
     const target = selection.agent;
-    const prompt = renderDownstreamPrompt(event, decision);
+    const prompt = renderDownstreamPrompt(materializedEvent, decision);
     const downstreamTexts = await delegateToAgent(target, prompt);
     return {
       message: textReply(renderRouteSummary(decision, target, downstreamTexts)),

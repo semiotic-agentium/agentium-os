@@ -44,6 +44,17 @@ For API details and invariants, see [crates/baml-rt-quickjs/README.md](../crates
 
 **Multi-turn lifecycle reference:** [task-lifecycle-demo](../tests/fixtures/agents/task-lifecycle-demo/src/index.ts) (`awaitInput`, sequential phases).
 
+### Event-driven semantic ingress
+
+Agents can also register `onDispatch(request)` for host-delivered events. This is the right place for source-family semantic ingress:
+
+- accept raw or interpreted event payloads
+- normalize them into your domain event shape
+- optionally call a host tool for enrichment
+- route only after the meaning is clear
+
+For example, a Slack semantic-ingress agent can receive `host.source-records.v1`, group records into conversations, call `support/slack` to expand a thread, and only then hand off tracked work to ClickUp or a coordinator.
+
 ---
 
 ## 3. BAML host tools: allowlist, session plans, and calling from TypeScript

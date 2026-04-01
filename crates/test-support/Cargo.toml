@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 baml-rt = { path = "../baml-rt", features = ["testing"] }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
-baml-rt-builder = { path = "../baml-rt-builder" }
+baml-rt-builder = { path = "../baml-rt-builder", default-features = false }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 baml-tools-calculator = { path = "../tools/calculator" }
@@ -27,3 +27,4 @@ uuid = { workspace = true }
 
 [features]
 default = []
+slack = ["baml-rt-builder/slack"]
