@@ -58,6 +58,10 @@ We keep **one authoritative E2E per behavior** to avoid overlapping coverage and
 - **Streaming E2E (full agent → stream):**
   `crates/baml-agent-runner/tests/runner_test.rs`
   - `test_e2e_stream_baml_tool`, `test_e2e_stream_js_tool` — full runner + fixture package + stream.
+- **Semantic-ingress dispatch E2E (raw Slack source → downstream route):**
+  `crates/baml-agent-runner/tests/runner_semantic_ingress_test.rs`
+  - `semantic_ingress_dispatch_http_batches_actionable_threads_into_one_downstream_route` — authoritative for `semantic-ingress-agent` HTTP dispatch batching and one-shot downstream delegation.
+  - `semantic_ingress_dispatch_http_rejects_noncanonical_raw_source_routing_key` — authoritative for the raw-source routing-key guard on the semantic-ingress dispatch surface.
 - **Tool/LLM E2E (single request):**
   `crates/baml-rt/tests/tool_calling_test.rs`
   - `test_e2e_voidship_baml_tool_calling` — single-request tool E2E from fixture.
@@ -107,6 +111,7 @@ Single source of truth for each behavior; do not add overlapping coverage elsewh
 
 | Behavior | Authoritative location | Do not duplicate in |
 |----------|-------------------------|---------------------|
+| Semantic-ingress raw-source dispatch batching and routing-key guard | `baml-agent-runner/tests/runner_semantic_ingress_test.rs` — `semantic_ingress_dispatch_http_batches_actionable_threads_into_one_downstream_route`, `semantic_ingress_dispatch_http_rejects_noncanonical_raw_source_routing_key` | Additional semantic-ingress runner tests re-covering the same dispatch batching / routing-key contract |
 | Schema/function discovery | `baml-rt/tests/invoke_test.rs` — `test_load_schema_discovers_functions` | `execution_test.rs` or other invoke tests |
 | SimpleGreeting invocation (direct runtime) | `baml-rt/tests/invoke_test.rs` — `test_invoke_simple_greeting`; `execution_test.rs` — `test_load_and_execute_simple_greeting` (superset: list + invoke) | Additional tests that only assert “invoke SimpleGreeting” via same API |
 | Tool result contract (no success wrapper, steps/result shape) | `baml-rt/tests/contracts_test.rs` — one direct BAML path, one JS-wrapper path | Extra contract tests with same setup and same assertions |

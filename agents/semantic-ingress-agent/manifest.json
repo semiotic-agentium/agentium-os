@@ -1,0 +1,34 @@
+{
+  "version": "1.0.0",
+  "name": "semantic-ingress-agent",
+  "entry_point": "src/index.ts",
+  "signature": "semantic-ingress-agent@1.0.0",
+  "tools": [
+    "system/discover_agents",
+    "system/discover_tools",
+    "system/internal_a2a"
+  ],
+  "tags": [
+    "ingress",
+    "semantic",
+    "event-driven",
+    "interpretation"
+  ],
+  "discovery": {
+    "description": "Interprets raw source records into structured task events via LLM analysis and delegates to downstream intake agents.",
+    "capabilities": [
+      "ingress:semantic-interpretation",
+      "event:intake"
+    ],
+    "subscriptions": [
+      {
+        "schema_versions": [
+          "host.source-records.v1"
+        ],
+        "source_kinds": [
+          "slack"
+        ]
+      }
+    ]
+  }
+}

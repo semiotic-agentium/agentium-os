@@ -25,6 +25,14 @@
       },
       {
         "schema_versions": [
+          "host.source-records.v1"
+        ],
+        "source_kinds": [
+          "slack"
+        ]
+      },
+      {
+        "schema_versions": [
           "system.callback.v1"
         ],
         "source_kinds": [
