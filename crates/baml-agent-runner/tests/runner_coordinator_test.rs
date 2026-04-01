@@ -9,9 +9,11 @@ use baml_rt::{A2aRequestHandler, baml::BamlRuntimeManager};
 use baml_rt_core::{
     AgentDiscoveryEntry, AgentLister,
     bus::BusWithEffects,
-    ids::{AgentId, ContextId, UuidId},
+    ids::{AgentId, ContextId, ExternalId, TaskId, UuidId},
 };
-use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, SurrealProvenanceStore};
+use baml_rt_provenance::{
+    AgentType, ProvEvent, ProvenancePlanningQuery, ProvenanceWriter, SurrealProvenanceStore,
+};
 use baml_tools_system::SystemBundle;
 use common::{
     TempDirCleanup, build_agent_dir_to_temp_async, e2e_serial_gate, post_a2a_sse_collect,
@@ -20,9 +22,10 @@ use common::{
 use serde_json::{Value, json};
 use test_support::common::{
     agent_fixture, chunks_from_responses, ensure_fixture_runtime_types, message_texts_from_chunks,
-    require_api_key, send_stream_request, test_surreal_store, workspace_fnox_path, workspace_root,
+    require_api_key, send_stream_request, send_stream_request_with_task, test_surreal_store,
+    workspace_fnox_path, workspace_root,
 };
-use tokio::time::{Duration, timeout};
+use tokio::time::{Duration, sleep, timeout};
 
 struct EmptyAgentList;
 
@@ -233,6 +236,91 @@ async fn test_coordinator_smoke_direct_answer() {
     assert!(
         merged_text.contains('4') || merged_text.to_lowercase().contains("four"),
         "Expected response to contain '4' for a simple math query. Got: {merged_text}"
+    );
+
+    runner_api.stop().await;
+}
+
+/// End-to-end test covering direct-answer execution-session step completion on the workspace coordinator.
+#[tokio::test]
+async fn test_workspace_coordinator_direct_answer_completes_planned_steps() {
+    let _openrouter_api_key = require_api_key();
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+    let (agent, provenance, built_dir) = setup_workspace_coordinator_with_provenance().await;
+    let _built_dir_guard = TempDirCleanup::new(built_dir);
+
+    let runner_api =
+        match start_runner_api_server("coordinator-agent", agent, provenance.clone()).await {
+            Ok(v) => v,
+            Err(err) => {
+                eprintln!("Skipping coordinator test: cannot bind runner API server: {err}");
+                return;
+            }
+        };
+
+    let context_id = ContextId::new(99, 12);
+    let planning_task_id =
+        TaskId::from_external(ExternalId::new("coord-direct-answer-execution-session"));
+    let correlation_id = baml_rt_core::correlation::generate_correlation_id();
+    let request_body = send_stream_request_with_task(
+        "coord-direct-answer-1",
+        "What is 2 + 2?",
+        correlation_id.as_str(),
+        Some(context_id.clone()),
+        Some(planning_task_id.clone()),
+    );
+
+    let http_client = reqwest::Client::new();
+    let a2a_url = format!(
+        "{base}/agents/coordinator-agent/default/a2a/sse",
+        base = runner_api.base_url,
+    );
+    let responses: Vec<Value> = timeout(
+        Duration::from_secs(300),
+        post_a2a_sse_collect(&http_client, &a2a_url, &request_body),
+    )
+    .await
+    .expect("coordinator A2A SSE request timed out")
+    .expect("coordinator A2A SSE request failed");
+
+    assert!(
+        !responses.is_empty(),
+        "Expected non-empty JSON-RPC response array from coordinator /a2a/sse"
+    );
+
+    let chunks = chunks_from_responses(&responses);
+    let texts = message_texts_from_chunks(&chunks);
+    let merged_text = texts.join("\n");
+    assert!(
+        merged_text.contains('4') || merged_text.to_lowercase().contains("four"),
+        "Expected response to contain '4' for a simple math query. Got: {merged_text}"
+    );
+
+    let mut plan = None;
+    for _ in 0..80 {
+        plan = provenance
+            .query_current_plan(&planning_task_id)
+            .await
+            .ok()
+            .flatten();
+        if plan.is_some() {
+            break;
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+
+    let plan = plan.expect(
+        "Expected persisted coordinator plan for direct-answer run; ensure execution session submitPlan completed",
+    );
+    assert!(
+        !plan.steps.is_empty(),
+        "Expected persisted coordinator plan to include at least one step"
+    );
+    assert!(
+        plan.steps.iter().all(|step| step.status == "completed"),
+        "Expected all direct-answer plan steps to be completed before finish. Steps: {:?}",
+        plan.steps
     );
 
     runner_api.stop().await;

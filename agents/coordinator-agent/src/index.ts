@@ -78,6 +78,13 @@ type ToolSessionHandle = {
   abort(reason?: string): Promise<unknown>;
 };
 
+type WorkflowExecutionHandle = {
+  startStep?: (stepId: string, citations?: string[]) => Promise<unknown>;
+  completeStep?: (stepId: string, citations?: string[]) => Promise<unknown>;
+  finish(): Promise<unknown>;
+  abort?: (reason: string) => Promise<unknown>;
+};
+
 type RouteTarget = {
   agent_package: string;
   agent_instance_id: string;
@@ -192,6 +199,10 @@ type NodeArtifact = {
   ended_at?: string;
 };
 
+type WorkflowExecutionOutcome =
+  | { kind: "final"; result: SessionResult; tracked_steps_completed: boolean }
+  | { kind: "await_input"; prompt: string };
+
 // ---------------------------------------------------------------------------
 // Utility helpers
 // ---------------------------------------------------------------------------
@@ -217,6 +228,10 @@ function normalizeOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function workflowExecutionStepId(nodeId: string): string {
+  return "step-" + nodeId;
 }
 
 function isMeaningfulDelegatedText(text: string): boolean {
@@ -2256,10 +2271,42 @@ async function executeWorkflowNode(
   }
 }
 
+function workflowExecutionFailureArtifact(nodeId: string, err: unknown): NodeArtifact {
+  const now = new Date().toISOString();
+  return {
+    node_id: nodeId,
+    status: "failed",
+    error: err instanceof Error ? err.message : String(err),
+    started_at: now,
+    ended_at: now,
+  };
+}
+
+async function executeTrackedWorkflowNode(
+  node: WorkflowNode,
+  artifacts: Map<string, NodeArtifact>,
+  executable?: WorkflowExecutionHandle | null,
+): Promise<NodeArtifact> {
+  try {
+    const trackImmediately = node.kind === "call_agent" || node.kind === "direct_answer";
+    if (executable != null && trackImmediately) {
+      await executable.startStep?.(workflowExecutionStepId(node.id));
+    }
+    const artifact = await executeWorkflowNode(node, artifacts);
+    if (executable != null && trackImmediately && artifact.status === "completed") {
+      await executable.completeStep?.(workflowExecutionStepId(node.id));
+    }
+    return artifact;
+  } catch (err) {
+    return workflowExecutionFailureArtifact(node.id, err);
+  }
+}
+
 async function executeWave(
   wave: WorkflowNode[],
   artifacts: Map<string, NodeArtifact>,
   emit?: SessionEmitter,
+  executable?: WorkflowExecutionHandle | null,
 ): Promise<NodeArtifact[]> {
   const targetExecutionKey = (node: WorkflowNode): string => {
     if (node.kind === "call_agent" && node.target) {
@@ -2305,7 +2352,7 @@ async function executeWave(
       );
     }
     const settled = await Promise.allSettled(
-      batch.map((node) => executeWorkflowNode(node, artifacts)),
+      batch.map((node) => executeTrackedWorkflowNode(node, artifacts, executable)),
     );
     for (let j = 0; j < settled.length; j++) {
       const outcome = settled[j];
@@ -2328,10 +2375,6 @@ async function executeWave(
   }
   return outputs;
 }
-
-type WorkflowExecutionOutcome =
-  | { kind: "final"; result: SessionResult }
-  | { kind: "await_input"; prompt: string };
 
 function findFinalWorkflowNode(plan: WorkflowPlan): WorkflowNode | null {
   if (plan.final_node_id) {
@@ -2531,8 +2574,10 @@ async function executeWorkflowPlanPhase3(
   userText: string,
   conversationSummary: string | null,
   emit?: SessionEmitter,
+  executable?: WorkflowExecutionHandle | null,
 ): Promise<WorkflowExecutionOutcome> {
   const artifacts = new Map<string, NodeArtifact>();
+  const trackedNodeIds = new Set(plan.nodes.map((node) => node.id));
   const maxPasses = MAX_WORKFLOW_NODES + MAX_FOREACH_EXPANSIONS + 10;
 
   for (let pass = 0; pass < maxPasses; pass++) {
@@ -2561,12 +2606,18 @@ async function executeWorkflowPlanPhase3(
         if (artifacts.has(node.id)) continue;
         if (node.kind !== "foreach") continue;
         if (!nodeDependenciesCompleted(node, artifacts)) continue;
-        const expansionArtifact = await expandForeachNodeInPlan(
-          plan,
-          node,
-          artifacts,
-          userText,
-        );
+        let expansionArtifact: NodeArtifact;
+        try {
+          if (executable != null) {
+            await executable.startStep?.(workflowExecutionStepId(node.id));
+          }
+          expansionArtifact = await expandForeachNodeInPlan(plan, node, artifacts, userText);
+          if (executable != null && expansionArtifact.status === "completed") {
+            await executable.completeStep?.(workflowExecutionStepId(node.id));
+          }
+        } catch (err) {
+          expansionArtifact = workflowExecutionFailureArtifact(node.id, err);
+        }
         artifacts.set(node.id, expansionArtifact);
         progressed = true;
       }
@@ -2587,7 +2638,7 @@ async function executeWorkflowPlanPhase3(
         };
       }
 
-      const results = await executeWave(ready, artifacts, emit);
+      const results = await executeWave(ready, artifacts, emit, executable);
       for (const result of results) {
         artifacts.set(result.node_id, result);
       }
@@ -2603,6 +2654,11 @@ async function executeWorkflowPlanPhase3(
 
   finalizeUnresolvedNodes(plan, artifacts);
   const summary = summarizeWorkflowExecution(plan, artifacts);
+  // Finish is only legal when every submitted plan step reached completed.
+  // Skipped/failed nodes must force an abort so execution-session state remains honest.
+  const tracked_steps_completed = Array.from(trackedNodeIds).every(
+    (nodeId) => artifacts.get(nodeId)?.status === "completed",
+  );
 
   const appendExecutionNotes = (base: StructuredReply): SessionResult => {
     if (summary.failed > 0 || summary.skipped > 0 || summary.unresolved > 0) {
@@ -2640,21 +2696,34 @@ async function executeWorkflowPlanPhase3(
       return {
         kind: "final",
         result: appendExecutionNotes(textReply(finalArtifact.output_text)),
+        tracked_steps_completed,
       };
     }
 
     if (finalNode.kind === "synthesize") {
       const scope = collectAncestorNodeIds(plan, finalNode.id);
       scope.delete(finalNode.id);
-      const transcript = buildWorkflowTranscript(plan, artifacts, scope);
-      if (transcript) {
-        const synthesisUserMessage = buildSynthesisUserMessage(
-          userText,
-          finalNode.synthesis_template,
-        );
-        const base = await synthesize(synthesisUserMessage, transcript, conversationSummary);
-        return { kind: "final", result: appendExecutionNotes(base) };
+      const scopedTranscript = buildWorkflowTranscript(plan, artifacts, scope);
+      const fallbackTranscript = buildWorkflowTranscript(plan, artifacts);
+      const transcript = scopedTranscript || fallbackTranscript;
+      if (executable != null) {
+        await executable.startStep?.(workflowExecutionStepId(finalNode.id));
       }
+      const base = transcript
+        ? await synthesize(
+            buildSynthesisUserMessage(userText, finalNode.synthesis_template),
+            transcript,
+            conversationSummary,
+          )
+        : textReply("I delegated according to the workflow plan, but received no usable evidence.");
+      if (executable != null) {
+        await executable.completeStep?.(workflowExecutionStepId(finalNode.id));
+      }
+      return {
+        kind: "final",
+        result: appendExecutionNotes(base),
+        tracked_steps_completed,
+      };
     }
   }
 
@@ -2672,9 +2741,14 @@ async function executeWorkflowPlanPhase3(
       return {
         kind: "final",
         result: { message: textReply("No direct response was produced by the workflow plan.") },
+        tracked_steps_completed,
       };
     }
-    return { kind: "final", result: appendExecutionNotes(textReply(message)) };
+    return {
+      kind: "final",
+      result: appendExecutionNotes(textReply(message)),
+      tracked_steps_completed,
+    };
   }
 
   const transcript = buildWorkflowTranscript(plan, artifacts);
@@ -2686,10 +2760,11 @@ async function executeWorkflowPlanPhase3(
           "I delegated according to the workflow plan, but received no usable evidence.",
         ),
       ),
+      tracked_steps_completed,
     };
   }
   const base = await synthesize(userText, transcript, conversationSummary);
-  return { kind: "final", result: appendExecutionNotes(base) };
+  return { kind: "final", result: appendExecutionNotes(base), tracked_steps_completed };
 }
 
 async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
@@ -2699,11 +2774,7 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   if (!baseUserText) {
     return { message: textReply("Please share what you want me to coordinate.") };
   }
-  const executionSession = typeof openA2aExecutionSession === "function"
-    ? await openA2aExecutionSession("coordinator-" + Date.now().toString())
-    : null;
   const rootIntentId = "intent-" + slugToken(baseUserText, "coordinate-request");
-  let executionExecutable: { finish(): Promise<unknown> } | null = null;
 
   ctx.emit.statusChanged("TASK_STATE_WORKING");
   if (plannerUserText.structuredHandoff) {
@@ -2763,54 +2834,90 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
       };
     }
 
-    if (executionSession != null && executionExecutable == null) {
-      const intentPhase = await executionSession.submitIntent({
+    // Each replan gets a fresh execution session so plan revisions never mutate a closed lineage.
+    const executionSession = typeof openA2aExecutionSession === "function"
+      ? await openA2aExecutionSession("coordinator-" + Date.now().toString())
+      : null;
+    const intentPhase = executionSession != null
+      ? await executionSession.submitIntent({
         intentId: rootIntentId,
         description: plan.goal || "Coordinate specialists to satisfy user request.",
-      });
-      executionExecutable = await intentPhase.submitPlan({
-        intentId: rootIntentId,
-        planId: "plan-" + slugToken(plan.goal || effectiveUserText, "workflow"),
-        steps: plan.nodes.map((node, idx) => ({
-          stepId: "step-" + node.id,
-          description: `Execute workflow node ${node.id} (${node.kind})`,
-          order: idx,
-          dependsOn: (node.depends_on || []).map((depId) => "step-" + depId),
-        })),
-      });
-    }
-    const outcome = await executeWorkflowPlanPhase3(
-      plan,
-      effectiveUserText,
-      conversationSummary.length > 0 ? conversationSummary : null,
-      ctx.emit,
-    );
-    if (outcome.kind === "final") {
-      if (executionExecutable != null) {
-        await executionExecutable.finish();
+      })
+      : null;
+    const executionExecutable = intentPhase != null
+      ? await intentPhase.submitPlan({
+          intentId: rootIntentId,
+          planId: "plan-" + slugToken(plan.goal || effectiveUserText, "workflow"),
+          steps: plan.nodes.map((node, idx) => ({
+            stepId: "step-" + node.id,
+            description: `Execute workflow node ${node.id} (${node.kind})`,
+            order: idx,
+            dependsOn: (node.depends_on || []).map((depId) => "step-" + depId),
+          })),
+        })
+      : null;
+    let executionClosed = false;
+    try {
+      const outcome = await executeWorkflowPlanPhase3(
+        plan,
+        effectiveUserText,
+        conversationSummary.length > 0 ? conversationSummary : null,
+        ctx.emit,
+        executionExecutable,
+      );
+      if (outcome.kind === "final") {
+        if (executionExecutable != null) {
+          if (outcome.tracked_steps_completed) {
+            await executionExecutable.finish();
+          } else {
+            await executionExecutable.abort?.(
+              "workflow completed without all tracked steps reaching completed status",
+            );
+          }
+          executionClosed = true;
+        }
+        return outcome.result;
       }
-      return outcome.result;
-    }
 
-    if (iteration >= MAX_WORKFLOW_ITERATIONS - 1) {
-      return {
-        message: textReply(
-          `${outcome.prompt}\n\nReached clarification iteration limit. Please send a more specific request.`,
-        ),
-      };
-    }
+      if (executionExecutable != null) {
+        await executionExecutable.abort?.(
+          "workflow replanned after clarification was required",
+        );
+        executionClosed = true;
+      }
 
-    const nextMessage = await ctx.emit.awaitInput(outcome.prompt);
-    const userReply = normalizeOptionalString(getChatMessageText(nextMessage));
-    if (!userReply) {
-      return {
-        message: textReply(
-          "No clarification was provided. Please resend your request with details.",
-        ),
-      };
-    }
+      if (iteration >= MAX_WORKFLOW_ITERATIONS - 1) {
+        return {
+          message: textReply(
+            `${outcome.prompt}\n\nReached clarification iteration limit. Please send a more specific request.`,
+          ),
+        };
+      }
 
-    clarificationTurns.push(`- ${sanitizeUntrustedBlockContent(userReply)}`);
+      const nextMessage = await ctx.emit.awaitInput(outcome.prompt);
+      const userReply = normalizeOptionalString(getChatMessageText(nextMessage));
+      if (!userReply) {
+        return {
+          message: textReply(
+            "No clarification was provided. Please resend your request with details.",
+          ),
+        };
+      }
+
+      clarificationTurns.push(`- ${sanitizeUntrustedBlockContent(userReply)}`);
+    } catch (err) {
+      if (executionExecutable != null && !executionClosed) {
+        try {
+          await executionExecutable.abort?.(
+            err instanceof Error ? err.message : String(err),
+          );
+          executionClosed = true;
+        } catch {
+          // Best-effort cleanup only.
+        }
+      }
+      throw err;
+    }
   }
 
   return {

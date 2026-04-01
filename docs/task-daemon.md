@@ -18,6 +18,8 @@ That means task-daemon should stay focused on:
 
 It should not become the place where downstream workflow policy lives.
 
+That is now a compatibility shape, not the only target model. The longer-term direction is host-managed source polling plus source-family semantic ingress agents that interpret raw events after delivery.
+
 Each poll produces:
 - a project interpretation (what changed, decisions, risks, open questions)
 - a workflow seed (investigations, clarifications, follow-ups)

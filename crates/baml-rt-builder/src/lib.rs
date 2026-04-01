@@ -4,6 +4,18 @@ pub mod builder;
 
 use std::path::Path;
 
+use baml_rt_tools_claude as _;
+#[cfg(feature = "clickup")]
+use baml_tools_clickup as _;
+#[cfg(feature = "memory")]
+use baml_tools_memory as _;
+#[cfg(feature = "notion")]
+use baml_tools_notion as _;
+#[cfg(feature = "security-eval")]
+use baml_tools_security_eval as _;
+#[cfg(feature = "slack")]
+use baml_tools_slack as _;
+use baml_tools_system as _;
 pub use builder::*;
 
 use crate::builder::error::Result;

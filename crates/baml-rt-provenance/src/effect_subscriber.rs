@@ -1288,15 +1288,16 @@ impl ProvenanceEffectSubscriber {
         description: &str,
         is_supersession: bool,
     ) -> Option<f32> {
-        let provider = self.drift_provider().await?;
-
-        let new_emb = match provider.embed_batch(&[description]) {
-            Ok(mut embs) if !embs.is_empty() => embs.remove(0),
-            Ok(_) => return None,
-            Err(e) => {
-                tracing::warn!(error = %e, "Plan drift: failed to embed intent description");
-                return None;
-            }
+        let new_emb = match self.drift_provider().await {
+            Some(provider) => match provider.embed_batch(&[description]) {
+                Ok(mut embs) if !embs.is_empty() => embs.remove(0),
+                Ok(_) => Vec::new(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Plan drift: failed to embed intent description");
+                    Vec::new()
+                }
+            },
+            None => Vec::new(),
         };
 
         // Compute revision drift: does the execution centroid (EMA of all
@@ -1309,7 +1310,7 @@ impl ProvenanceEffectSubscriber {
         //   goal while the new intent describes a completely different task.
         // - If no LLM calls have been made yet, centroid == initial intent
         //   embedding, so the score degrades gracefully to pairwise.
-        let revision_drift = if is_supersession {
+        let revision_drift = if is_supersession && !new_emb.is_empty() {
             self.plan_trackers.get(task_id).map(|entry| {
                 baml_rt_embedding::cosine_similarity(entry.tracker().centroid(), &new_emb)
             })
@@ -1336,22 +1337,21 @@ impl ProvenanceEffectSubscriber {
         steps: &[PlanStepSpec],
         is_supersession: bool,
     ) {
-        let Some(provider) = self.drift_provider().await else {
-            return;
-        };
-
         let step_texts: Vec<&str> = steps.iter().map(|s| s.description.as_str()).collect();
         if step_texts.is_empty() {
             tracing::warn!(%task_id, "PlanGenerated with zero steps — cannot commit plan");
             return;
         }
 
-        let step_embeddings = match provider.embed_batch(&step_texts) {
-            Ok(embs) => embs,
-            Err(e) => {
-                tracing::warn!(error = %e, "Plan drift: failed to embed plan step descriptions");
-                return;
-            }
+        let step_embeddings = match self.drift_provider().await {
+            Some(provider) => match provider.embed_batch(&step_texts) {
+                Ok(embs) => embs,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Plan drift: failed to embed plan step descriptions");
+                    vec![Vec::new(); step_texts.len()]
+                }
+            },
+            None => vec![Vec::new(); step_texts.len()],
         };
 
         let step_states: Vec<StepState> = steps
@@ -1372,6 +1372,16 @@ impl ProvenanceEffectSubscriber {
         let Some(non_empty) = NonEmptySteps::new(step_states) else {
             return; // unreachable given the empty check above, but safe
         };
+
+        if !self.plan_trackers.contains_key(task_id) {
+            self.plan_trackers.insert(
+                task_id.clone(),
+                TrackerPhase::IntentResolved {
+                    tracker: TaskDriftTracker::new(Vec::new(), self.plan_drift_config.ema_alpha),
+                    intent_description: String::new(),
+                },
+            );
+        }
 
         if let Some(mut entry) = self.plan_trackers.get_mut(task_id) {
             let prev_tracker = entry.tracker_mut().clone();
@@ -2195,6 +2205,90 @@ mod tests {
                 }
             }
             other => panic!("expected LlmCallCompleted, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn plan_lifecycle_tracks_steps_without_embedding_provider() {
+        let writer = Arc::new(RecordingWriter::default());
+        let subscriber = ProvenanceEffectSubscriber::new(writer);
+        let context_id = ContextId::new(9, 9);
+        let task_id = TaskId::from_external(ExternalId::new("task-no-embeddings".to_string()));
+
+        let intent_event = EffectEvent::IntentResolved {
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            intent_id: baml_rt_core::ids::IntentId::from("intent-no-embeddings".to_string()),
+            description: "Answer directly".to_string(),
+            citations: vec![],
+            supersession: None,
+            epoch: Some(1),
+        };
+        subscriber
+            .on_effect(&intent_event)
+            .await
+            .expect("intent resolved");
+
+        let plan_event = EffectEvent::PlanGenerated {
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            intent_id: baml_rt_core::ids::IntentId::from("intent-no-embeddings".to_string()),
+            plan_id: baml_rt_core::ids::PlanId::from("plan-no-embeddings".to_string()),
+            steps: json!([
+                {"step_id": "step-direct", "description": "Answer directly", "order": 0, "depends_on": []}
+            ]),
+            supersession: None,
+            epoch: Some(2),
+        };
+        subscriber
+            .on_effect(&plan_event)
+            .await
+            .expect("plan generated");
+
+        let start_event = EffectEvent::PlanStepStatusChanged {
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            intent_id: baml_rt_core::ids::IntentId::from("intent-no-embeddings".to_string()),
+            plan_id: baml_rt_core::ids::PlanId::from("plan-no-embeddings".to_string()),
+            step_id: baml_rt_core::ids::PlanStepId::from("step-direct".to_string()),
+            old_status: Some("pending".to_string()),
+            new_status: "in_progress".to_string(),
+            citations: vec![],
+            epoch: Some(3),
+        };
+        subscriber
+            .on_effect(&start_event)
+            .await
+            .expect("step started");
+
+        let complete_event = EffectEvent::PlanStepStatusChanged {
+            context_id,
+            task_id: task_id.clone(),
+            intent_id: baml_rt_core::ids::IntentId::from("intent-no-embeddings".to_string()),
+            plan_id: baml_rt_core::ids::PlanId::from("plan-no-embeddings".to_string()),
+            step_id: baml_rt_core::ids::PlanStepId::from("step-direct".to_string()),
+            old_status: Some("in_progress".to_string()),
+            new_status: "completed".to_string(),
+            citations: vec![],
+            epoch: Some(4),
+        };
+        subscriber
+            .on_effect(&complete_event)
+            .await
+            .expect("step completed");
+
+        let tracker = subscriber
+            .plan_trackers
+            .get(&task_id)
+            .expect("tracker should exist even when embeddings are unavailable");
+        match &*tracker {
+            TrackerPhase::PlanCommitted(exec) => {
+                assert!(matches!(exec.phase, StepExecutionPhase::AllStepsResolved));
+                let step = exec.steps.first();
+                assert_eq!(step.anchor.step_id, "step-direct");
+                assert_eq!(step.status, StepStatus::Completed);
+            }
+            _ => panic!("expected committed plan tracker"),
         }
     }
 
