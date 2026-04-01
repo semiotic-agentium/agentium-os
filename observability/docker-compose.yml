@@ -1,0 +1,55 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.126.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC (agents/runner send here)
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus scrape endpoint (collector-exported metrics)
+    depends_on:
+      - prometheus
+      - tempo
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo query API
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_DEFAULT_THEME=dark
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  tempo-data:

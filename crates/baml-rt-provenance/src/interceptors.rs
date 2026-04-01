@@ -9,6 +9,7 @@ use baml_rt_core::{
 use baml_rt_interceptor::{
     InterceptorDecision, LLMCallContext, LLMInterceptor, ToolCallContext, ToolInterceptor,
 };
+use baml_rt_observability::metrics;
 use serde_json::Value;
 
 use crate::{
@@ -23,6 +24,21 @@ pub struct ProvenanceInterceptor {
 impl ProvenanceInterceptor {
     pub fn new(writer: Arc<dyn ProvenanceWriter>) -> Self {
         Self { writer }
+    }
+}
+
+fn prompt_bytes(prompt: &Value) -> usize {
+    prompt.to_string().len()
+}
+
+fn usage_tokens(usage: &LlmUsage) -> (Option<u64>, Option<u64>) {
+    match usage {
+        LlmUsage::Known {
+            prompt_tokens,
+            completion_tokens,
+            ..
+        } => (Some(*prompt_tokens), Some(*completion_tokens)),
+        LlmUsage::Unknown => (None, None),
     }
 }
 
@@ -89,6 +105,36 @@ impl LLMInterceptor for ProvenanceInterceptor {
             tracing::error!("LLM call completion missing metadata.message_id");
             return;
         }
+
+        let function_name = context.function_id.full_name();
+        let result_label = if result.is_ok() { "success" } else { "error" };
+        let prompt_size = prompt_bytes(&context.prompt);
+        let (tokens_in, tokens_out) = usage_tokens(&usage);
+        metrics::record_llm_call(
+            &function_name,
+            &context.client,
+            &context.model,
+            result_label,
+            std::time::Duration::from_millis(duration_ms),
+            prompt_size,
+            tokens_in,
+            tokens_out,
+        );
+        tracing::info!(
+            event = "llm_call_attribution",
+            function_name = %function_name,
+            client = %context.client,
+            model = %context.model,
+            duration_ms,
+            prompt_bytes = prompt_size,
+            tokens_in,
+            tokens_out,
+            context_id = %context.runtime_scope.context_id(),
+            task_id = ?context.runtime_scope.task_id_opt(),
+            message_id = %context.runtime_scope.message_id(),
+            result = result_label,
+        );
+
         let event = if let Some(task_id) = task_id {
             ProvEvent::llm_call_completed_task(
                 context.runtime_scope.context_id().clone(),
@@ -202,6 +248,19 @@ impl ToolInterceptor for ProvenanceInterceptor {
             tracing::error!("Tool call completion missing metadata.message_id");
             return;
         }
+
+        let result_label = if result.is_ok() { "success" } else { "error" };
+        tracing::info!(
+            event = "tool_call_attribution",
+            tool_name = %context.tool_name,
+            function_name = ?context.function_name,
+            duration_ms,
+            context_id = %context.runtime_scope.context_id(),
+            task_id = ?context.runtime_scope.task_id_opt(),
+            message_id = %context.runtime_scope.message_id(),
+            result = result_label,
+        );
+
         let event = if let Some(task_id) = task_id {
             if let Some(id) = reserved_anchor {
                 ProvEvent::tool_call_completed_task_with_id(

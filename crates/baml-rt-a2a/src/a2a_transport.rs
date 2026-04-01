@@ -530,9 +530,9 @@ async fn wire_provenance_subsystems(
     // interceptor — without it, WAS_INFORMED_BY edges between SessionStep(SendDone)
     // and ToolCall nodes are never created.
     {
-        let prov_interceptor = ProvenanceInterceptor::new(writer.clone());
         let mut registry = interceptor_registry.lock().await;
-        registry.register_tool_interceptor(prov_interceptor);
+        registry.register_tool_interceptor(ProvenanceInterceptor::new(writer.clone()));
+        registry.register_llm_interceptor(ProvenanceInterceptor::new(writer.clone()));
     }
 
     // Subsystem 3: ConversationContextProvider → runtime.
@@ -2174,8 +2174,27 @@ impl A2aAgent {
         .await;
 
         let duration = start.elapsed();
+        let (context_id_log, task_id_log) = match &resolved_scope {
+            RequestScope::MessageScoped { context_id, .. } => (context_id.to_string(), None),
+            RequestScope::TaskScoped {
+                context_id,
+                task_id,
+                ..
+            } => (context_id.to_string(), Some(task_id.to_string())),
+        };
+
         match &outcome {
-            Ok(_) => metrics::record_a2a_request(method.as_str(), "success", invocation, duration),
+            Ok(_) => {
+                metrics::record_a2a_request(method.as_str(), "success", invocation, duration);
+                tracing::info!(
+                    event = "turn_attribution",
+                    method = ?method,
+                    turn_total_ms = duration.as_millis() as u64,
+                    context_id = %context_id_log,
+                    task_id = ?task_id_log,
+                    result = "success",
+                );
+            }
             Err(err) => {
                 tracing::warn!(error = ?err, "handle_a2a: routing error");
                 metrics::record_a2a_request(method.as_str(), "error", invocation, duration);
@@ -2183,6 +2202,14 @@ impl A2aAgent {
                     method.as_str(),
                     self.error_classifier.classify(err),
                     invocation,
+                );
+                tracing::info!(
+                    event = "turn_attribution",
+                    method = ?method,
+                    turn_total_ms = duration.as_millis() as u64,
+                    context_id = %context_id_log,
+                    task_id = ?task_id_log,
+                    result = "error",
                 );
             }
         }

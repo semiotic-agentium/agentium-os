@@ -1,6 +1,16 @@
 //! Standard tracing subscriber setup for CLI binaries.
 
-/// Initialize a tracing subscriber with env-based filtering.
+use tracing_subscriber::{
+    layer::SubscriberExt,
+    util::SubscriberInitExt,
+};
+
+/// Initialize tracing/logging and optionally OTLP export (traces + metrics) from env.
+///
+/// OTLP export is enabled when env settings request it (see `otel_env.rs`), e.g.:
+/// - `OTEL_TRACES_EXPORTER=otlp`
+/// - `OTEL_METRICS_EXPORTER=otlp`
+/// - `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`
 ///
 /// Default directives:
 /// - `baml_rt=info`
@@ -23,5 +33,14 @@ pub fn init_tracing() {
                 .unwrap_or_default(),
         );
 
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let fmt_layer = tracing_subscriber::fmt::layer();
+    let registry = tracing_subscriber::registry().with(filter).with(fmt_layer);
+
+    if let Some(tracer) = crate::otel_env::install_otel_collectors_from_env() {
+        registry
+            .with(tracing_opentelemetry::layer().with_tracer(tracer))
+            .init();
+    } else {
+        registry.init();
+    }
 }

@@ -16,6 +16,10 @@ repository_url := runner_base_url + "/repository"
 runner_state_dir := ".runner-state"
 runner_repository_dir := ".repository"
 slack_channel := "agentium-eng"
+# OTEL defaults for local dev visor (collector from ./observability/docker-compose.yml).
+# Safe defaults in code: if these are unset, OTLP export stays disabled.
+otel_endpoint := "http://localhost:4317"
+otel_protocol := "grpc"
 
 # Binaries (build once with `just build-release`, then agent recipes use these).
 # Respect CARGO_TARGET_DIR when present (.env sets it in some dev setups).
@@ -58,6 +62,7 @@ build-release:
     cargo build -p baml-rt-provenance --bin graph_exporter --features cli
 
 # Build the runner in debug mode (fast local iteration).
+# Note: build does not require OTEL env vars; export wiring is runtime-only.
 build:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -66,6 +71,43 @@ build:
     [ -f .env ] && . ./.env
     set +a
     cargo build -p baml-agent-runner --all-features
+
+# Run bare runner (HTTP + stdio) with OTEL defaults suitable for local docker observability stack.
+# Override by exporting OTEL_* in your shell or .env.
+runner: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
+    export OTEL_TRACES_EXPORTER="${OTEL_TRACES_EXPORTER:-otlp}"
+    export OTEL_METRICS_EXPORTER="${OTEL_METRICS_EXPORTER:-otlp}"
+    export OTEL_EXPORTER_OTLP_PROTOCOL="${OTEL_EXPORTER_OTLP_PROTOCOL:-{{otel_protocol}}}"
+    export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-{{otel_endpoint}}}"
+    export OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-baml-agent-runner}"
+    if [[ "${OTEL_AUTO_UP:-1}" == "1" ]]; then
+      ./scripts/otel-stack.sh up >/dev/null || echo "[runner] warning: otel stack auto-up failed; continuing"
+    fi
+    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
+
+# Same as `runner`, but persists provenance to provenance.db.
+runner-provenance: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
+    export OTEL_TRACES_EXPORTER="${OTEL_TRACES_EXPORTER:-otlp}"
+    export OTEL_METRICS_EXPORTER="${OTEL_METRICS_EXPORTER:-otlp}"
+    export OTEL_EXPORTER_OTLP_PROTOCOL="${OTEL_EXPORTER_OTLP_PROTOCOL:-{{otel_protocol}}}"
+    export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-{{otel_endpoint}}}"
+    export OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-baml-agent-runner}"
+    if [[ "${OTEL_AUTO_UP:-1}" == "1" ]]; then
+      ./scripts/otel-stack.sh up >/dev/null || echo "[runner-provenance] warning: otel stack auto-up failed; continuing"
+    fi
+    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
 # Build Vue/Vite SPA to web/dist (`npm ci` + `npm run build`). Required for recipes that pass `--web-dir web/dist`.
 web-build:
@@ -78,6 +120,101 @@ web-build:
     cd web
     npm ci
     npm run build
+
+# Start local OpenTelemetry stack (Collector + Prometheus + Tempo + Grafana).
+otel-up:
+    ./scripts/otel-stack.sh up
+
+# Stop local OpenTelemetry stack.
+otel-down:
+    ./scripts/otel-stack.sh down
+
+# Show local OpenTelemetry stack status.
+otel-ps:
+    ./scripts/otel-stack.sh ps
+
+# Tail local OpenTelemetry stack logs.
+otel-logs:
+    ./scripts/otel-stack.sh logs
+
+# Print a text summary of top latency consumers from Prometheus metrics.
+# Example: just otel-summary 15m
+otel-summary window='30m':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PROM_URL="${PROM_URL:-http://localhost:9090}"
+    W='{{window}}'
+
+    q() {
+      local expr="$1"
+      curl -sG "$PROM_URL/api/v1/query" --data-urlencode "query=$expr"
+    }
+
+    fmt_ms() {
+      local v="${1:-0}"
+      awk -v v="$v" 'BEGIN {
+        if (v == "" || v == "null" || v == "NaN") { print "n/a"; exit }
+        if (v >= 1000) { printf "%.2fs", v/1000.0; exit }
+        printf "%.0fms", v
+      }'
+    }
+
+    fmt_n() {
+      local v="${1:-0}"
+      awk -v v="$v" 'BEGIN {
+        if (v == "" || v == "null" || v == "NaN") { print "n/a"; exit }
+        printf "%.0f", v
+      }'
+    }
+
+    echo "== OTEL summary (window: $W) =="
+    echo
+
+    echo "-- Total time split --"
+    llm_total=$(q "sum(increase(baml_rt_llm_call_duration_ms_sum[$W]))" | jq -r '.data.result[0].value[1] // "0"')
+    tool_total=$(q "sum(increase(baml_rt_tool_invocation_duration_ms_sum[$W]))" | jq -r '.data.result[0].value[1] // "0"')
+    echo "LLM total:  $(fmt_ms "$llm_total")"
+    echo "Tool total: $(fmt_ms "$tool_total")"
+    echo
+
+    echo "-- LLM total time by function (desc) --"
+    while IFS=$'\t' read -r fn v; do
+      [[ -z "${fn:-}" ]] && continue
+      printf "%-45s %10s\n" "$fn" "$(fmt_ms "$v")"
+    done < <(
+      q "sort_desc(sum by (function) (increase(baml_rt_llm_call_duration_ms_sum[$W])))" \
+        | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.value[1])"'
+    )
+    echo
+
+    echo "-- LLM average latency by function --"
+    while IFS=$'\t' read -r fn v; do
+      [[ -z "${fn:-}" ]] && continue
+      printf "%-45s %10s\n" "$fn" "$(fmt_ms "$v")"
+    done < <(
+      q "(sum by (function) (increase(baml_rt_llm_call_duration_ms_sum[$W])) / sum by (function) (increase(baml_rt_llm_call_duration_ms_count[$W]))) and on (function) (sum by (function) (increase(baml_rt_llm_call_duration_ms_count[$W])) > 0)" \
+        | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.value[1])"'
+    )
+    echo
+
+    echo "-- Tool total time by tool (desc) --"
+    while IFS=$'\t' read -r tool v; do
+      [[ -z "${tool:-}" ]] && continue
+      printf "%-45s %10s\n" "$tool" "$(fmt_ms "$v")"
+    done < <(
+      q "sort_desc(sum by (tool) (increase(baml_rt_tool_invocation_duration_ms_sum[$W])))" \
+        | jq -r '.data.result[]? | "\(.metric.tool // "unknown")\t\(.value[1])"'
+    )
+    echo
+
+    echo "-- Tool calls by tool --"
+    while IFS=$'\t' read -r tool v; do
+      [[ -z "${tool:-}" ]] && continue
+      printf "%-45s %10s\n" "$tool" "$(fmt_n "$v")"
+    done < <(
+      q "sum by (tool) (increase(baml_rt_tool_invocation_total[$W]))" \
+        | jq -r '.data.result[]? | "\(.metric.tool // "unknown")\t\(.value[1])"'
+    )
 
 # Rebuilds clickup-agent and runs it via a2a stdio. Deploys through the embedded repository (publish + POST /deploy).
 # Requires: just build-release, curl

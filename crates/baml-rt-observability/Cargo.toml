@@ -6,8 +6,9 @@ authors = { workspace = true }
 publish = false
 
 [dependencies]
-# opentelemetry_sdk = { workspace = true }
-# tracing-opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+tracing-opentelemetry = { workspace = true }
+opentelemetry-otlp = { version = "0.26", features = ["grpc-tonic", "http-proto", "trace", "metrics"] }
 baml-rt-core = { path = "../baml-rt-core" }
 opentelemetry = { workspace = true }
 tracing = { workspace = true }
