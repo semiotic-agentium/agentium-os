@@ -719,10 +719,23 @@ function groupSlackConversationRecords(records: SlackRawSourceRecord[]): SlackCo
   }));
 }
 
+function slackChannelIdFromSourceKey(sourceKey: string): string | null {
+  const normalized = normalizeOptionalString(sourceKey);
+  if (!normalized) return null;
+  const separatorIndex = normalized.indexOf(":");
+  if (separatorIndex < 0) return null;
+  const sourceKind = normalized.slice(0, separatorIndex).toLowerCase();
+  if (sourceKind !== "slack") return null;
+  const channelId = normalized.slice(separatorIndex + 1).trim();
+  return channelId.length > 0 ? channelId : null;
+}
+
 function preferredSlackChannelId(
-  _sourceKey: string,
+  sourceKey: string,
   records: SlackRawSourceRecord[],
 ): string | null {
+  const sourceKeyChannelId = slackChannelIdFromSourceKey(sourceKey);
+  if (sourceKeyChannelId) return sourceKeyChannelId;
   for (const record of records) {
     const channelId = normalizeOptionalString(record.channel_id);
     if (channelId) return channelId;

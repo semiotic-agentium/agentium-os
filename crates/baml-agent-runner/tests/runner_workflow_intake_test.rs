@@ -421,14 +421,16 @@ fn raw_slack_source_event(source_label: &str, records: Vec<Value>) -> Value {
         .trim_start_matches('#')
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect::<String>();
+        .collect::<String>()
+        .replace('_', "")
+        .to_uppercase();
 
     json!({
         "schema_version": "host.source-records.v1",
         "emitted_at_unix": 1_735_720_111u64,
         "source": {
             "source_kind": "slack",
-            "source_key": format!("slack:C_{source_suffix}"),
+            "source_key": format!("slack:C{source_suffix}"),
             "source_label": source_label
         },
         "records": records
@@ -810,7 +812,6 @@ async fn workflow_intake_expands_slack_threads_before_deriving_work() {
         raw_slack_source_event(
             "#agentium-eng",
             vec![json!({
-                "channel_id": "Cagentiumeng",
                 "ts": "1735720511.000001",
                 "thread_ts": "1735720511.000001",
                 "user": "U123",
