@@ -37,6 +37,7 @@ type SourceContext = {
 
 type SlackRecord = {
   ts: string;
+  thread_ts: string | null;
   user: string | null;
   text: string;
 };
@@ -131,6 +132,7 @@ function parseRawSourceBatch(message: unknown): RawSourceBatch | null {
 
   const records = parseObjectArray(message.records).map((record) => ({
     ts: normalizeOptionalString(record.ts) ?? "",
+    thread_ts: normalizeOptionalString(record.thread_ts),
     user: normalizeOptionalString(record.user),
     text: normalizeOptionalString(record.text) ?? "",
   }));
@@ -156,6 +158,22 @@ function extractRawSourceBatchFromDispatch(
     if (batch) return batch;
   }
   return null;
+}
+
+// --- Thread grouping ---
+
+function groupRecordsByThread(records: SlackRecord[]): SlackRecord[][] {
+  const groups = new Map<string, SlackRecord[]>();
+  for (const record of records) {
+    const key = record.thread_ts ?? record.ts;
+    const group = groups.get(key);
+    if (group) {
+      group.push(record);
+    } else {
+      groups.set(key, [record]);
+    }
+  }
+  return [...groups.values()];
 }
 
 // --- BAML interpretation ---
@@ -279,7 +297,7 @@ async function discoverAgentsByCapabilities(
   const output = await runSingleSendSession(
     DISCOVER_AGENTS_TOOL_NAME,
     { reason: "semantic-ingress routing" },
-    { required_capabilities: requiredCapabilities },
+    { requiredCapabilities },
   );
   const normalized = isObject(output) && "output" in output ? output.output : output;
   if (!isObject(normalized) || !Array.isArray(normalized.agents)) return [];
@@ -402,6 +420,15 @@ async function delegateToAgent(
 
       if (status === "streaming") continue;
 
+      if (status === "suspended") {
+        await toolSession.abort("downstream agent suspended (requires input/auth); cannot fulfill dispatch");
+        toolSession = null;
+        throw new Error(
+          `delegation to ${target.agent_package}/${target.agent_instance_id} suspended — ` +
+          `downstream agent requires interactive input that dispatch cannot provide`,
+        );
+      }
+
       if (status === "error") {
         const errorMessage =
           nextObj &&
@@ -496,44 +523,53 @@ async function handleRawSourceDispatch(
     };
   }
 
-  const interpretation = await interpretRecords(batch.source, batch.records);
-  const decision = deriveRoutingDecision(batch.source.source_kind, interpretation);
+  const threadGroups = groupRecordsByThread(batch.records);
+  const summaries: string[] = [];
+  const failures: string[] = [];
 
-  if (decision.kind === "noop") {
-    return {
-      accepted: true,
-      detail: `${batch.source.source_label}: ${decision.reason}`,
-    };
+  for (const threadRecords of threadGroups) {
+    try {
+      const interpretation = await interpretRecords(batch.source, threadRecords);
+      const decision = deriveRoutingDecision(batch.source.source_kind, interpretation);
+
+      if (decision.kind === "noop") {
+        summaries.push(`thread(${threadRecords[0].ts}): ${decision.reason}`);
+        continue;
+      }
+
+      const agents = await discoverAgentsByCapabilities(decision.requiredCapabilities);
+      const selection = selectDownstreamAgent(agents, decision);
+
+      if (selection.kind === "none") {
+        failures.push(
+          `thread(${threadRecords[0].ts}): no agent matched capabilities ` +
+          `${decision.requiredCapabilities.join(", ")}`,
+        );
+        continue;
+      }
+      if (selection.kind === "ambiguous") {
+        failures.push(
+          `thread(${threadRecords[0].ts}): ambiguous agents ` +
+          `${selection.candidates.join(", ")}`,
+        );
+        continue;
+      }
+
+      const target = selection.agent;
+      const prompt = renderDownstreamPrompt(batch.source, interpretation, decision);
+      const downstreamTexts = await delegateToAgent(target, prompt);
+      summaries.push(renderRouteSummary(batch.source, decision, target, downstreamTexts));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      failures.push(`thread(${threadRecords[0].ts}): ${reason}`);
+    }
   }
 
-  const agents = await discoverAgentsByCapabilities(decision.requiredCapabilities);
-  const selection = selectDownstreamAgent(agents, decision);
-
-  if (selection.kind === "none") {
-    return {
-      accepted: false,
-      detail:
-        `No downstream agent matched required capabilities: ` +
-        `${decision.requiredCapabilities.join(", ")}.`,
-    };
-  }
-  if (selection.kind === "ambiguous") {
-    return {
-      accepted: false,
-      detail:
-        `Multiple downstream agents matched required capabilities ` +
-        `${decision.requiredCapabilities.join(", ")}: ${selection.candidates.join(", ")}.`,
-    };
-  }
-
-  const target = selection.agent;
-  const prompt = renderDownstreamPrompt(batch.source, interpretation, decision);
-  const downstreamTexts = await delegateToAgent(target, prompt);
-
+  const allDetails = [...summaries, ...failures].join("\n");
   return {
-    accepted: true,
+    accepted: failures.length === 0,
     detail: truncateText(
-      renderRouteSummary(batch.source, decision, target, downstreamTexts),
+      allDetails || `${batch.source.source_label}: processed ${threadGroups.length} thread(s).`,
       MAX_SUMMARY_CHARS,
     ),
   };

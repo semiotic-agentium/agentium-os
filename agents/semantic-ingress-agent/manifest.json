@@ -17,7 +17,8 @@
   "discovery": {
     "description": "Interprets raw source records into structured task events via LLM analysis and delegates to downstream intake agents.",
     "capabilities": [
-      "ingress:semantic-interpretation"
+      "ingress:semantic-interpretation",
+      "slack:intake"
     ],
     "subscriptions": [
       {
