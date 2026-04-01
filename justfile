@@ -81,6 +81,19 @@ runner: build
 runner-provenance: build
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
+# Profile runner CPU hotspots with flamegraph.
+# Requires: cargo-flamegraph (`cargo install flamegraph`) and Linux perf permissions.
+# Output: flamegraph.svg in repo root.
+profile-runner:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
+    cargo flamegraph -p baml-agent-runner --bin baml-agent-runner -- \
+      --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
+
 # Build Vue/Vite SPA to web/dist (`npm ci` + `npm run build`). Required for recipes that pass `--web-dir web/dist`.
 web-build:
     #!/usr/bin/env bash
