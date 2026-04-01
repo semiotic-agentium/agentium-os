@@ -9,14 +9,10 @@ use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use inquire::{Confirm, MultiSelect, Select, Text};
 
 use crate::{
-    event_schemas::KNOWN_EVENT_SCHEMAS,
+    event_schemas::{KNOWN_COMPATIBILITY_SOURCE_KINDS, KNOWN_EVENT_SCHEMAS},
     text::truncate_for_display,
     tool_catalog::{load_cli_tools, load_cli_tools_for_picker},
 };
-
-/// Common source kinds that agents typically subscribe to.
-/// These are suggested even if no tools currently declare them as event_sources.
-const COMMON_SOURCE_KINDS: &[&str] = &["slack", "clickup", "github_issues", "system/callback"];
 
 /// Bundle type options for new-tool.
 #[derive(Debug, Clone)]
@@ -359,9 +355,15 @@ pub fn prompt_subscriptions(selected_tools: &[String]) -> Result<Option<String>>
         }
     }
 
-    // Add common source kinds that might not be in tools yet
-    for common in COMMON_SOURCE_KINDS {
-        if !seen_sources.contains(*common) {
+    // Add common source kinds that might not be in tools yet.
+    // This keeps the interactive surface aligned with task-daemon compatibility
+    // plus the host-native system/callback source.
+    for common in KNOWN_COMPATIBILITY_SOURCE_KINDS
+        .iter()
+        .map(|source| source.kind)
+        .chain(std::iter::once("system/callback"))
+    {
+        if !seen_sources.contains(common) {
             seen_sources.insert(common.to_string());
             source_options.push(SourceKindOption {
                 value: common.to_string(),
