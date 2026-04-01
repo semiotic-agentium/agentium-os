@@ -96,7 +96,7 @@ impl RunningRunnerProcess {
         let mut child = command.spawn().expect("spawn baml-agent-runner");
         let client = reqwest::Client::new();
         let agents_url = format!("{base_url}/agents");
-        for _ in 0..300 {
+        for _ in 0..600 {
             if let Some(status) = child.try_wait().expect("poll runner process") {
                 let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "<unreadable>".into());
                 panic!("runner exited before serving HTTP (status: {status}). Log:\n{log}");
