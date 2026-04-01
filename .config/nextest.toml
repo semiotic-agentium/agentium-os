@@ -79,6 +79,12 @@ filter = 'package(baml-rt-a2a) and binary(task_streaming_test)'
 slow-timeout = { period = "60s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "3s" }
 
+# Callback tests spawn a runner subprocess; SurrealDB init can take >120s in CI.
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_callback_test)'
+slow-timeout = { period = "180s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "5s" }
+
 # Workflow intake tests spawn subprocesses with HTTP servers; flaky under load.
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_workflow_intake_test)'
@@ -140,6 +146,12 @@ fail-fast = false
 [profile.ci-non-llm.junit]
 path = "junit-non-llm.xml"
 store-failure-output = true
+
+# Callback tests spawn a runner subprocess; SurrealDB init can take >120s in CI.
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_callback_test)'
+slow-timeout = { period = "180s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "5s" }
 
 # Workflow intake tests spawn subprocesses with HTTP servers; flaky under load.
 [[profile.ci-non-llm.overrides]]
