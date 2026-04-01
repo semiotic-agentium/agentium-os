@@ -16,7 +16,7 @@
     "delegation"
   ],
   "discovery": {
-    "description": "Consumes task-daemon interpretation events plus Slack raw-source semantic ingress and delegates follow-up work.",
+    "description": "Consumes task-daemon interpretation events and delegates follow-up work.",
     "capabilities": [
       "slack:intake",
       "clickup:intake",
@@ -31,14 +31,6 @@
           "slack",
           "clickup",
           "github_issues"
-        ]
-      },
-      {
-        "schema_versions": [
-          "host.source-records.v1"
-        ],
-        "source_kinds": [
-          "slack"
         ]
       }
     ]

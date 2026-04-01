@@ -9,6 +9,7 @@ import type {
 // --- Constants ---
 
 const RAW_SOURCE_SCHEMA_VERSION = "host.source-records.v1";
+const RAW_SOURCE_ROUTING_KEY = "event:intake";
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
@@ -667,6 +668,16 @@ __chat_register({
         detail:
           `semantic-ingress-agent expected message_type ${RAW_SOURCE_SCHEMA_VERSION}, ` +
           `got ${messageType ?? "missing"}.`,
+      };
+    }
+
+    const routingKey = normalizeOptionalString(request.routing_key);
+    if (routingKey !== RAW_SOURCE_ROUTING_KEY) {
+      return {
+        accepted: false,
+        detail:
+          `semantic-ingress-agent expected routing_key ${RAW_SOURCE_ROUTING_KEY}, ` +
+          `got ${routingKey ?? "missing"}.`,
       };
     }
 

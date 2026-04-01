@@ -245,7 +245,7 @@ async fn semantic_ingress_dispatch_http_batches_actionable_threads_into_one_down
         runner_api.base_url
     );
     let dispatch_body = json!({
-        "routing_key": "slack:intake",
+        "routing_key": "event:intake",
         "message_type": "host.source-records.v1",
         "context_id": "ctx-1735720000000-semantic-ingress-1",
         "task_id": "dispatch-task-1735720000000-semantic-ingress",
@@ -323,6 +323,76 @@ async fn semantic_ingress_dispatch_http_batches_actionable_threads_into_one_down
         calls[0].prompt.contains("Thread 2: 1735720411.000001"),
         "expected second thread key in combined prompt, got: {}",
         calls[0].prompt
+    );
+
+    runner_api.stop().await;
+}
+
+#[tokio::test]
+async fn semantic_ingress_dispatch_http_rejects_noncanonical_raw_source_routing_key() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
+        entries: vec![discovery_entry("clickup-agent", &["clickup:create-task"])],
+    });
+    let handler = Arc::new(CapturingA2aHandler::default());
+    let (agent, provenance, built_dir) =
+        setup_semantic_ingress_agent(agent_list, handler.clone()).await;
+    let _built_dir_guard = TempDirCleanup::new(built_dir);
+
+    let runner_api = match start_runner_api_server("semantic-ingress-agent", agent, provenance)
+        .await
+    {
+        Ok(server) => server,
+        Err(err) => {
+            eprintln!(
+                "Skipping semantic-ingress routing-key guard test: cannot bind runner API server: {err}"
+            );
+            return;
+        }
+    };
+
+    let client = reqwest::Client::new();
+    let dispatch_url = format!(
+        "{}/agents/semantic-ingress-agent/default/dispatch",
+        runner_api.base_url
+    );
+    let dispatch_body = json!({
+        "routing_key": "slack:intake",
+        "message_type": "host.source-records.v1",
+        "context_id": "ctx-1735720000000-semantic-ingress-bad-routing",
+        "task_id": "dispatch-task-1735720000000-semantic-ingress-bad-routing",
+        "message_id": "dispatch-msg-1735720000000-semantic-ingress-bad-routing",
+        "messages": [
+            raw_slack_source_event("#agentium-eng", vec![])
+        ]
+    });
+
+    let response = timeout(
+        Duration::from_secs(30),
+        client.post(&dispatch_url).json(&dispatch_body).send(),
+    )
+    .await
+    .expect("semantic-ingress bad-routing dispatch timed out")
+    .expect("semantic-ingress bad-routing dispatch request");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let ack: Value = response
+        .json()
+        .await
+        .expect("semantic-ingress bad-routing dispatch ack");
+    assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
+    let detail = ack
+        .get("detail")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        detail.contains("semantic-ingress-agent expected routing_key event:intake"),
+        "expected routing-key rejection detail, got: {ack:?}"
+    );
+    assert!(
+        handler.snapshot_calls().await.is_empty(),
+        "unexpected downstream delegation for rejected routing key"
     );
 
     runner_api.stop().await;
