@@ -15,6 +15,7 @@ store-failure-output = true
 # resource contention.
 [test-groups]
 provenance = { max-threads = 1 }
+runner-subprocess = { max-threads = 1 }
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-provenance) and binary(tool_index_test)'
@@ -117,6 +118,11 @@ fail-fast = false
 path = "junit-llm.xml"
 store-failure-output = true
 
+# Full runner subprocess tests need real cross-process serialization under nextest.
+[[profile.ci-llm.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_callback_test)'
+test-group = "runner-subprocess"
+
 # Default timeouts and retries for LLM tests
 [[profile.ci-llm.overrides]]
 filter = 'all()'
@@ -140,6 +146,11 @@ fail-fast = false
 [profile.ci-non-llm.junit]
 path = "junit-non-llm.xml"
 store-failure-output = true
+
+# Full runner subprocess tests need real cross-process serialization under nextest.
+[[profile.ci-non-llm.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_callback_test)'
+test-group = "runner-subprocess"
 
 # Workflow intake tests spawn subprocesses with HTTP servers; flaky under load.
 [[profile.ci-non-llm.overrides]]

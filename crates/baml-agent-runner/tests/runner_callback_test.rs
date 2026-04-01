@@ -17,7 +17,7 @@ use baml_rt_repository::{
     ids::AgentName,
     package::source_bundle_from_tar_gz,
 };
-use common::e2e_serial_gate;
+use common::{e2e_secs_ci_or_local, e2e_serial_gate};
 use reqwest::StatusCode;
 use serde_json::Value;
 use test_support::common::{
@@ -80,6 +80,9 @@ impl RunningRunnerProcess {
         let repository_url = format!("http://{addr}/repository");
         let mut command = Command::new(env!("CARGO_BIN_EXE_baml-agent-runner"));
         command
+            // Keep this subprocess hermetic: these tests exercise host callback
+            // delivery and do not need workspace-level secrets or config.
+            .current_dir(&state_dir)
             .arg("--serve-http")
             .arg(addr.to_string())
             .arg("--repository-url")
@@ -90,13 +93,25 @@ impl RunningRunnerProcess {
             .arg(&state_dir)
             .arg("--event-poll-interval-secs")
             .arg(event_poll_interval_secs.to_string())
+            .env_remove("BAML_FNOX_CONFIG")
+            .env_remove("OPENROUTER_API_KEY")
+            .env_remove("CLICKUP_API_KEY")
+            .env_remove("NOTION_API_TOKEN")
+            .env_remove("SLACK_BOT_TOKEN")
+            .env_remove("SLACK_USER_TOKEN")
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
 
         let mut child = command.spawn().expect("spawn baml-agent-runner");
         let client = reqwest::Client::new();
         let agents_url = format!("{base_url}/agents");
-        for _ in 0..600 {
+        // CI runner startup can legitimately take well over a minute when the
+        // child process is compiling/loading runtime assets under load. Keep the
+        // local budget tight, but leave enough headroom in CI to avoid racing a
+        // runner that is actually about to become ready.
+        let readiness_deadline =
+            Instant::now() + Duration::from_secs(e2e_secs_ci_or_local(150, 60));
+        while Instant::now() < readiness_deadline {
             if let Some(status) = child.try_wait().expect("poll runner process") {
                 let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "<unreadable>".into());
                 panic!("runner exited before serving HTTP (status: {status}). Log:\n{log}");
