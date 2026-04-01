@@ -197,6 +197,8 @@ export interface ContextPlanningTaskSnapshot {
 
 export interface ContextPlanningResponse {
   contextId: string;
+  /** Distinct task ids from provenance messages (first-seen order). Episode/transcript discovery. */
+  allTaskIds?: string[];
   tasks: ContextPlanningTaskSnapshot[];
 }
 
