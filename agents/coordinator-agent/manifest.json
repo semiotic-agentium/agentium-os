@@ -16,7 +16,7 @@
     "multi-agent"
   ],
   "discovery": {
-    "description": "Coordinator agent that delegates to specialist sub-agents and synthesises their results",
+    "description": "Coordinator agent for downstream specialist orchestration and synthesis",
     "capabilities": ["coordination:routing", "coordination:synthesis"]
   }
 }
