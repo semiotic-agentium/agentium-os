@@ -305,11 +305,15 @@ fn main() -> anyhow::Result<()> {
                 None if interactive => interactive::prompt_template()?,
                 None => "simple".to_string(),
             };
+            let normalized_template = template.to_ascii_lowercase();
 
             // For interactive mode with basic-tools or planner, prompt for tools
             let tools = match tools {
                 Some(t) => Some(t),
-                None if interactive && (template == "basic-tools" || template == "planner") => {
+                None if interactive
+                    && (normalized_template == "basic-tools"
+                        || normalized_template == "planner") =>
+                {
                     interactive::prompt_tools()?
                 }
                 None => None,
@@ -341,7 +345,7 @@ fn main() -> anyhow::Result<()> {
             // Handle subscriptions: from CLI flag or interactive prompt
             let subscriptions = match subscriptions {
                 Some(s) => Some(s),
-                None if interactive && template != "coordinator" => {
+                None if interactive && normalized_template != "coordinator" => {
                     interactive::prompt_subscriptions(&tool_ids)?
                 }
                 None => None,
