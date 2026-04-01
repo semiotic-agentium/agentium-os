@@ -15,9 +15,11 @@ This repository includes a ready-to-run local telemetry stack in `observability/
 ```bash
 just otel-up
 just runner            # or: just runner-provenance
+just otel-summary 15m
 ```
 
 - `just otel-up/down/ps/logs` delegates to `scripts/otel-stack.sh`.
+- `just otel-summary <window>` prints a plain-text Prometheus summary (LLM vs tool time split, top functions/tools).
 - `just runner` and `just runner-provenance` set OTEL env defaults (otlp/grpc to `localhost:4317`) and auto-start the OTEL stack unless `OTEL_AUTO_UP=0`.
 
 ### Current exported runtime metrics (selected)

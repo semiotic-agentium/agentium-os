@@ -159,10 +159,12 @@ This repo ships a local telemetry stack under `observability/`:
 just otel-up
 just otel-ps
 just otel-logs
+just otel-summary 15m
 just otel-down
 ```
 
-These commands call `scripts/otel-stack.sh`.
+- `otel-up/down/ps/logs` call `scripts/otel-stack.sh`.
+- `otel-summary <window>` prints a Prometheus text summary (e.g. top LLM/tool latency consumers). Example: `just otel-summary 15m`.
 
 ### Runner defaults and behavior
 
