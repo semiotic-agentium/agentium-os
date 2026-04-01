@@ -182,10 +182,10 @@ body {
   font-family: inherit;
   outline: none;
   cursor: pointer;
-  padding-right: 16px;
+  padding-right: 24px;
   background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23a1a1aa' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 0 center;
+  background-position: right 4px center;
 }
 
 .agent-selector select:disabled {
@@ -1458,6 +1458,15 @@ body {
   padding: 6px 8px;
   font-size: 12px;
   min-width: 0;
+}
+
+.explore-controls select {
+  appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23a1a1aa' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  cursor: pointer;
 }
 
 .action-btn {
@@ -2923,14 +2932,18 @@ a.source-chip:hover {
 }
 
 .config-secret-combo {
+  appearance: none;
   font-size: 13px;
-  padding: 8px 10px;
+  padding: 8px 32px 8px 10px;
   min-width: 200px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23a1a1aa' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
 }
 
 .config-secret-combo:disabled {
@@ -3073,6 +3086,15 @@ a.source-chip:hover {
 .config-input:focus {
   outline: none;
   border-color: var(--primary);
+}
+
+select.config-input {
+  appearance: none;
+  padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23a1a1aa' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  cursor: pointer;
 }
 
 .config-select {
@@ -3377,8 +3399,9 @@ a.source-chip:hover {
 
 .config-select-sm {
   font-size: 12px;
-  padding: 4px 8px;
+  padding: 4px 28px 4px 8px;
   max-width: 200px;
+  background-position: right 8px center;
 }
 
 /* ── Per-function override rows ── */
