@@ -9,7 +9,7 @@ use baml_rt_core::{
 use baml_rt_interceptor::{
     InterceptorDecision, LLMCallContext, LLMInterceptor, ToolCallContext, ToolInterceptor,
 };
-use baml_rt_observability::metrics;
+use baml_rt_observability::metrics::{self, LlmCallMetrics};
 use serde_json::Value;
 
 use crate::{
@@ -110,16 +110,16 @@ impl LLMInterceptor for ProvenanceInterceptor {
         let result_label = if result.is_ok() { "success" } else { "error" };
         let prompt_size = prompt_bytes(&context.prompt);
         let (tokens_in, tokens_out) = usage_tokens(&usage);
-        metrics::record_llm_call(
-            &function_name,
-            &context.client,
-            &context.model,
-            result_label,
-            std::time::Duration::from_millis(duration_ms),
-            prompt_size,
+        metrics::record_llm_call(&LlmCallMetrics {
+            function_name: &function_name,
+            client: &context.client,
+            model: &context.model,
+            result: result_label,
+            duration: std::time::Duration::from_millis(duration_ms),
+            prompt_bytes: prompt_size,
             tokens_in,
             tokens_out,
-        );
+        });
         tracing::info!(
             event = "llm_call_attribution",
             function_name = %function_name,
