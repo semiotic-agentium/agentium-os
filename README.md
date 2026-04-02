@@ -144,6 +144,77 @@ the short timeout (warm-up window). To isolate locally, run with
 `RUST_LOG=baml_rt_quickjs=trace` and check for “LlmStarted emitting” vs
 “poll_promise: effect-gated timeout sample” timing (see `crates/baml-rt/tests/llm_test.rs`).
 
+## Observability (OTEL) Quickstart
+
+This repo ships a local telemetry stack under `observability/`:
+
+- OpenTelemetry Collector (OTLP ingest)
+- Prometheus (metrics store)
+- Tempo (trace store)
+- Grafana (dashboards)
+
+### Start/stop the stack
+
+```bash
+just otel-up
+just otel-ps
+just otel-logs
+just otel-summary 15m
+just otel-down
+```
+
+- `otel-up/down/ps/logs` call `scripts/otel-stack.sh`.
+- `otel-summary <window>` prints a Prometheus text summary (e.g. top LLM/tool latency consumers). Example: `just otel-summary 15m`.
+
+### Runner defaults and behavior
+
+`just runner` and `just runner-provenance` now set OTEL defaults automatically (unless already set in your shell or `.env`):
+
+- `OTEL_TRACES_EXPORTER=otlp`
+- `OTEL_METRICS_EXPORTER=otlp`
+- `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`
+- `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`
+- `OTEL_SERVICE_NAME=baml-agent-runner`
+
+They also auto-start the local OTEL docker stack by default (`OTEL_AUTO_UP=1`).
+Disable this with:
+
+```bash
+OTEL_AUTO_UP=0 just runner
+```
+
+Because telemetry is emitted from runtime/runner code, any agent package running inside the runner contributes metrics/traces (including multiple agents concurrently).
+
+### Initial Grafana setup
+
+After `just otel-up`:
+
+- Grafana: `http://localhost:3000` (`admin` / `admin`)
+- Prometheus: `http://localhost:9090`
+
+A provisioned dashboard is included:
+
+- **Agent Platform / Agent Platform Overview** (`observability/grafana/dashboards/agent-platform-overview.json`)
+
+### Currently exported metrics (key set)
+
+OTEL instrument names (before Prometheus normalization) include:
+
+- `baml_rt.a2a.request_total`
+- `baml_rt.a2a.request_duration_ms`
+- `baml_rt.a2a.error_total`
+- `baml_rt.tool.invocation_total`
+- `baml_rt.tool.invocation_duration_ms`
+- `baml_rt.quickjs.invoke_total`
+- `baml_rt.quickjs.invoke_duration_ms`
+- `baml_rt.llm.call_total`
+- `baml_rt.llm.call_duration_ms`
+- `baml_rt.llm.prompt_bytes`
+- `baml_rt.llm.tokens_in_total`
+- `baml_rt.llm.tokens_out_total`
+
+(Collector/Prometheus will expose normalized names with `_` separators.)
+
 ### Tracing defaults (`RUST_LOG`)
 
 Binaries that call `baml_rt_observability::init_tracing()` merge defaults such as

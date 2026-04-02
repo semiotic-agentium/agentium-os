@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Agent Platform Dashboards
+    orgId: 1
+    folder: Agent Platform
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

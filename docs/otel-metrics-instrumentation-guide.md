@@ -6,6 +6,38 @@ Based on `credit-accounting`, `credit-onramp`, and `database-support` implementa
 
 ---
 
+## Agent Platform Local OTEL Wiring (this repo)
+
+This repository includes a ready-to-run local telemetry stack in `observability/` (Collector + Prometheus + Tempo + Grafana).
+
+### Day-1 commands
+
+```bash
+just otel-up
+just runner            # or: just runner-provenance
+just otel-summary 15m
+```
+
+- `just otel-up/down/ps/logs` delegates to `scripts/otel-stack.sh`.
+- `just otel-summary <window>` prints a plain-text Prometheus summary (LLM vs tool time split, top functions/tools).
+- `just runner` and `just runner-provenance` set OTEL env defaults (otlp/grpc to `localhost:4317`) and auto-start the OTEL stack unless `OTEL_AUTO_UP=0`.
+
+### Current exported runtime metrics (selected)
+
+- `baml_rt.a2a.request_total`
+- `baml_rt.a2a.request_duration_ms`
+- `baml_rt.a2a.error_total`
+- `baml_rt.tool.invocation_total`
+- `baml_rt.tool.invocation_duration_ms`
+- `baml_rt.llm.call_total`
+- `baml_rt.llm.call_duration_ms`
+- `baml_rt.llm.prompt_bytes`
+- `baml_rt.llm.tokens_in_total`
+- `baml_rt.llm.tokens_out_total`
+
+A starter Grafana dashboard is provisioned at:
+`observability/grafana/dashboards/agent-platform-overview.json`.
+
 ## Design Goals
 
 1. **Separation of Concerns**: Metrics instrumentation lives in a separate module, not mixed with business logic

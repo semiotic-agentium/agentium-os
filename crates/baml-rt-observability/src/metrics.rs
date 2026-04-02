@@ -31,6 +31,11 @@ static LIVE_STREAM_EVENT_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static LIVE_STREAM_PHASE_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 static A2A_SSE_STREAM_TO_FIRST_DATA_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 static A2A_SSE_TTFB_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static LLM_CALL_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static LLM_CALL_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static LLM_PROMPT_BYTES_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static LLM_TOKENS_IN_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static LLM_TOKENS_OUT_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 
 fn a2a_request_counter() -> &'static Counter<u64> {
     A2A_REQUEST_COUNTER.get_or_init(|| {
@@ -299,6 +304,76 @@ fn a2a_sse_ttfb_histogram() -> &'static Histogram<f64> {
             .f64_histogram("baml_rt.a2a.sse.ttfb_from_handler_entry_ms")
             .init()
     })
+}
+
+fn llm_call_counter() -> &'static Counter<u64> {
+    LLM_CALL_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.llm.call_total")
+            .init()
+    })
+}
+
+fn llm_call_histogram() -> &'static Histogram<f64> {
+    LLM_CALL_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.llm.call_duration_ms")
+            .init()
+    })
+}
+
+fn llm_prompt_bytes_histogram() -> &'static Histogram<f64> {
+    LLM_PROMPT_BYTES_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.llm.prompt_bytes")
+            .init()
+    })
+}
+
+fn llm_tokens_in_counter() -> &'static Counter<u64> {
+    LLM_TOKENS_IN_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.llm.tokens_in_total")
+            .init()
+    })
+}
+
+fn llm_tokens_out_counter() -> &'static Counter<u64> {
+    LLM_TOKENS_OUT_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.llm.tokens_out_total")
+            .init()
+    })
+}
+
+/// Record LLM call timing, prompt payload size, and optional token usage.
+pub fn record_llm_call(
+    function_name: &str,
+    client: &str,
+    model: &str,
+    result: &str,
+    duration: Duration,
+    prompt_bytes: usize,
+    tokens_in: Option<u64>,
+    tokens_out: Option<u64>,
+) {
+    let attributes = &[
+        KeyValue::new("function", function_name.to_string()),
+        KeyValue::new("client", client.to_string()),
+        KeyValue::new("model", model.to_string()),
+        KeyValue::new("result", result.to_string()),
+    ];
+
+    llm_call_counter().add(1, attributes);
+    llm_call_histogram().record(duration.as_millis() as f64, attributes);
+    llm_prompt_bytes_histogram().record(prompt_bytes as f64, attributes);
+
+    if let Some(v) = tokens_in {
+        llm_tokens_in_counter().add(v, attributes);
+    }
+    if let Some(v) = tokens_out {
+        llm_tokens_out_counter().add(v, attributes);
+    }
 }
 
 /// One-shot events on the HTTP `message.sendStream` live path (`event` is low-cardinality).
