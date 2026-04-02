@@ -270,8 +270,8 @@ fn validate_output_dir(output_dir: &Path) -> Result<()> {
 /// "schema=<version1,version2>,sources=<kind1,kind2>"
 ///
 /// Examples:
-/// - "schema=task-daemon.interpretation.v1,sources=slack,clickup"
-/// - "schema=task-daemon.interpretation.v1,custom.schema.v2,sources=slack"
+/// - "schema=host.source-records.v1,sources=slack,clickup"
+/// - "schema=system.callback.v1,sources=system/callback"
 fn parse_subscriptions(input: &str) -> Result<Vec<EventSubscription>> {
     let mut schema_versions = Vec::new();
     let mut source_kinds = Vec::new();
@@ -354,7 +354,7 @@ fn parse_subscriptions(input: &str) -> Result<Vec<EventSubscription>> {
 
     if schema_versions.is_empty() && source_kinds.is_empty() {
         bail!(
-            "Error: invalid subscription format.\nHint: expected `schema=<version>,sources=<kind1,kind2>`.\nExample: --subscriptions \"schema=task-daemon.interpretation.v1,sources=slack,clickup\""
+            "Error: invalid subscription format.\nHint: expected `schema=<version>,sources=<kind1,kind2>`.\nExample: --subscriptions \"schema=host.source-records.v1,sources=slack\""
         );
     }
 
@@ -776,7 +776,7 @@ mod tests {
 
     #[test]
     fn parse_subscriptions_single_schema_and_sources() {
-        let parsed = parse_subscriptions("schema=task-daemon.interpretation.v1,sources=slack")
+        let parsed = parse_subscriptions("schema=host.source-records.v1,sources=slack")
             .expect("should parse");
 
         assert_eq!(parsed.len(), 1);
@@ -786,7 +786,7 @@ mod tests {
                 .iter()
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>(),
-            vec!["task-daemon.interpretation.v1"]
+            vec!["host.source-records.v1"]
         );
         assert_eq!(
             sub.source_kinds
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn parse_subscriptions_supports_multiple_schema_versions() {
         let parsed = parse_subscriptions(
-            "schema=task-daemon.interpretation.v1,task-daemon.interpretation.v2,sources=slack,clickup",
+            "schema=host.source-records.v1,system.callback.v1,sources=slack,system/callback",
         )
         .expect("should parse");
 
@@ -811,17 +811,14 @@ mod tests {
                 .iter()
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "task-daemon.interpretation.v1",
-                "task-daemon.interpretation.v2"
-            ]
+            vec!["host.source-records.v1", "system.callback.v1"]
         );
         assert_eq!(
             sub.source_kinds
                 .iter()
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>(),
-            vec!["slack", "clickup"]
+            vec!["slack", "system/callback"]
         );
     }
 
@@ -836,8 +833,8 @@ mod tests {
 
     #[test]
     fn parse_subscriptions_rejects_empty_sources_value_when_sources_key_present() {
-        let err = parse_subscriptions("schema=task-daemon.interpretation.v1,sources=")
-            .expect_err("should fail");
+        let err =
+            parse_subscriptions("schema=host.source-records.v1,sources=").expect_err("should fail");
         assert!(
             err.to_string().contains("`sources=` was provided"),
             "unexpected error: {err}"
@@ -846,9 +843,8 @@ mod tests {
 
     #[test]
     fn coordinator_template_rejects_subscriptions() {
-        let subscriptions =
-            parse_subscriptions("schema=task-daemon.interpretation.v1,sources=slack")
-                .expect("should parse");
+        let subscriptions = parse_subscriptions("schema=host.source-records.v1,sources=slack")
+            .expect("should parse");
         let err = validate_template_subscriptions(AgentTemplate::Coordinator, &subscriptions)
             .expect_err("coordinator subscriptions should fail");
         assert!(
@@ -860,9 +856,8 @@ mod tests {
 
     #[test]
     fn planner_template_allows_subscriptions() {
-        let subscriptions =
-            parse_subscriptions("schema=task-daemon.interpretation.v1,sources=slack")
-                .expect("should parse");
+        let subscriptions = parse_subscriptions("schema=host.source-records.v1,sources=slack")
+            .expect("should parse");
         validate_template_subscriptions(AgentTemplate::Planner, &subscriptions)
             .expect("planner subscriptions should remain allowed");
     }

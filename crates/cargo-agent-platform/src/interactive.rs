@@ -9,20 +9,10 @@ use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use inquire::{Confirm, MultiSelect, Select, Text};
 
 use crate::{
+    event_schemas::{KNOWN_COMPATIBILITY_SOURCE_KINDS, KNOWN_EVENT_SCHEMAS},
     text::truncate_for_display,
     tool_catalog::{load_cli_tools, load_cli_tools_for_picker},
 };
-
-/// Known schema versions for event delivery.
-///
-/// NOTE: Hardcoded for now. The task-daemon is currently the only event producer,
-/// so `task-daemon.interpretation.v1` is the only known schema version.
-/// When adding new event producers, add their schema versions here.
-pub const KNOWN_SCHEMA_VERSIONS: &[&str] = &["task-daemon.interpretation.v1"];
-
-/// Common source kinds that agents typically subscribe to.
-/// These are suggested even if no tools currently declare them as event_sources.
-const COMMON_SOURCE_KINDS: &[&str] = &["slack", "clickup", "github_issues"];
 
 /// Bundle type options for new-tool.
 #[derive(Debug, Clone)]
@@ -277,11 +267,12 @@ pub fn prompt_tools() -> Result<Option<String>> {
 #[derive(Debug, Clone)]
 pub struct SchemaOption {
     pub value: String,
+    pub description: &'static str,
 }
 
 impl std::fmt::Display for SchemaOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.value)
+        write!(f, "{:<32} {}", self.value, self.description)
     }
 }
 
@@ -310,7 +301,7 @@ pub fn prompt_subscriptions(selected_tools: &[String]) -> Result<Option<String>>
     let wants_events = Confirm::new("Does this agent need to receive events?")
         .with_default(false)
         .with_help_message(
-            "Event subscriptions allow the agent to receive dispatched events from sources like Slack, ClickUp",
+            "Event subscriptions allow the agent to receive dispatched events from raw host ingress, task-daemon, or system/callback",
         )
         .prompt()?;
 
@@ -319,10 +310,11 @@ pub fn prompt_subscriptions(selected_tools: &[String]) -> Result<Option<String>>
     }
 
     // Select schema versions
-    let schema_options: Vec<SchemaOption> = KNOWN_SCHEMA_VERSIONS
+    let schema_options: Vec<SchemaOption> = KNOWN_EVENT_SCHEMAS
         .iter()
-        .map(|s| SchemaOption {
-            value: s.to_string(),
+        .map(|schema| SchemaOption {
+            value: schema.version.to_string(),
+            description: schema.description,
         })
         .collect();
 
@@ -363,9 +355,15 @@ pub fn prompt_subscriptions(selected_tools: &[String]) -> Result<Option<String>>
         }
     }
 
-    // Add common source kinds that might not be in tools yet
-    for common in COMMON_SOURCE_KINDS {
-        if !seen_sources.contains(*common) {
+    // Add common source kinds that might not be in tools yet.
+    // This keeps the interactive surface aligned with task-daemon compatibility
+    // plus the host-native system/callback source.
+    for common in KNOWN_COMPATIBILITY_SOURCE_KINDS
+        .iter()
+        .map(|source| source.kind)
+        .chain(std::iter::once("system/callback"))
+    {
+        if !seen_sources.contains(common) {
             seen_sources.insert(common.to_string());
             source_options.push(SourceKindOption {
                 value: common.to_string(),
