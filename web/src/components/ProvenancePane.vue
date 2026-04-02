@@ -342,14 +342,21 @@ const planningTasks = computed<ContextPlanningTaskSnapshot[]>(() => {
   return planningState.value.response?.tasks ?? [];
 });
 
-/** Ordered, deduplicated list of task ids visible in this context. The active chat task is always
- *  first (even when planning hasn't recorded it yet), followed by planning tasks in server order. */
+/** Ordered, deduplicated list of task ids visible in this context. The active chat task is first when
+ *  present, then `allTaskIds` from planning (every message-scoped task), then any planning snapshots
+ *  not already listed. */
 const episodeTaskIds = computed<string[]>(() => {
   const ids: string[] = [];
   const seen = new Set<string>();
   if (props.taskId) {
     ids.push(props.taskId);
     seen.add(props.taskId);
+  }
+  for (const tid of planningState.value.response?.allTaskIds ?? []) {
+    if (!seen.has(tid)) {
+      ids.push(tid);
+      seen.add(tid);
+    }
   }
   for (const t of planningTasks.value) {
     if (!seen.has(t.taskId)) {

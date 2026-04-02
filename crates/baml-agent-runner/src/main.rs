@@ -985,6 +985,83 @@ globalThis.onChatMessage = async function(_message) {
         );
     }
 
+    #[tokio::test]
+    async fn test_planning_service_all_task_ids_includes_tasks_without_planning() {
+        use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
+        use baml_rt_provenance::{ProvEvent, ProvenanceWriter};
+
+        let prov = test_provenance_config().await;
+        let store = prov.store().clone();
+        let writer = store.clone() as Arc<dyn ProvenanceWriter>;
+
+        let context_id = ContextId::new(42, 2);
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
+
+        let task_with_planning =
+            TaskId::from_external(ExternalId::new("planning-all-tasks-a".to_string()));
+        let task_plain = TaskId::from_external(ExternalId::new("planning-all-tasks-b".to_string()));
+
+        writer
+            .add_event(ProvEvent::message_received_task(
+                context_id.clone(),
+                task_with_planning.clone(),
+                MessageId::from_external(ExternalId::new("msg-all-tasks-1".to_string())),
+                "user".to_string(),
+                vec!["first turn".to_string()],
+                None,
+                agent_id.clone(),
+                100,
+            ))
+            .await
+            .expect("message 1");
+
+        writer
+            .add_event(ProvEvent::message_received_task(
+                context_id.clone(),
+                task_plain.clone(),
+                MessageId::from_external(ExternalId::new("msg-all-tasks-2".to_string())),
+                "user".to_string(),
+                vec!["second turn".to_string()],
+                None,
+                agent_id.clone(),
+                200,
+            ))
+            .await
+            .expect("message 2");
+
+        writer
+            .add_event(ProvEvent::intent_resolved(
+                context_id.clone(),
+                task_with_planning.clone(),
+                "intent-all-tasks-test",
+                "Do something".to_string(),
+                vec![],
+                None,
+                None,
+            ))
+            .await
+            .expect("intent");
+
+        let svc = PlanningServiceImpl::new(store);
+        let result = svc
+            .planning_for_context(context_id.as_str())
+            .await
+            .expect("planning ok");
+
+        assert_eq!(result.all_task_ids.len(), 2);
+        assert!(
+            result
+                .all_task_ids
+                .contains(&task_with_planning.to_string())
+                && result.all_task_ids.contains(&task_plain.to_string()),
+            "all_task_ids={:?}",
+            result.all_task_ids
+        );
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].task_id, task_with_planning.to_string());
+    }
+
     // TODO: update to current EffectEvent API (bus shapes changed after this test was written)
     #[allow(dead_code)]
     #[cfg(any())]

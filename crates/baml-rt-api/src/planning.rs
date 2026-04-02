@@ -150,6 +150,10 @@ pub struct TaskPlanningSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ContextPlanningResponse {
     pub context_id: String,
+    /// Distinct task ids from provenance message rows for this context (first-seen order by ascending
+    /// message time). Use for context-wide episode / transcript discovery. The `tasks` field only
+    /// includes tasks that have intent or plan history.
+    pub all_task_ids: Vec<String>,
     pub tasks: Vec<TaskPlanningSnapshot>,
 }
 

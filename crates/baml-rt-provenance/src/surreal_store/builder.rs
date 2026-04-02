@@ -215,6 +215,7 @@ async fn init_store_in_namespace(
         db,
         normalizer: Arc::new(DefaultProvNormalizer::default()),
         mermaid_cache,
+        task_agent_id_cache: dashmap::DashMap::new(),
     };
     Ok(Arc::new(store))
 }
