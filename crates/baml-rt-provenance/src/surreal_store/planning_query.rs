@@ -211,13 +211,21 @@ impl SurrealProvenanceStore {
         task_id: &TaskId,
     ) -> Result<crate::store::TaskAgentResolution> {
         use crate::store::TaskAgentResolution;
+        if let Some(entry) = self.task_agent_id_cache.get(task_id) {
+            return Ok(TaskAgentResolution::Resolved(entry.value().clone()));
+        }
         match tokio::time::timeout(
             Self::TASK_AGENT_ID_TIMEOUT,
             self.get_task_agent_id_inner(task_id),
         )
         .await
         {
-            Ok(inner) => inner,
+            Ok(Ok(TaskAgentResolution::Resolved(agent))) => {
+                self.task_agent_id_cache
+                    .insert(task_id.clone(), agent.clone());
+                Ok(TaskAgentResolution::Resolved(agent))
+            }
+            Ok(other) => other,
             Err(_elapsed) => {
                 tracing::warn!(
                     task_id = task_id.as_str(),
@@ -648,5 +656,84 @@ impl SurrealProvenanceStore {
             superseded.insert(source_anchor);
         }
         Ok(superseded)
+    }
+}
+
+#[cfg(test)]
+mod task_agent_id_cache_tests {
+    use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
+
+    use crate::{
+        AgentType, ProvEvent, ProvenanceWriter,
+        surreal_store::{SurrealProvenanceStore, SurrealStoreBuilder},
+    };
+
+    #[tokio::test]
+    async fn get_task_agent_id_resolved_is_cached_across_add_events() {
+        let store: std::sync::Arc<SurrealProvenanceStore> =
+            SurrealStoreBuilder::in_memory_isolated()
+                .build()
+                .await
+                .expect("build isolated store");
+        let context_id = ContextId::new(1_771_470_222_000, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-cache-test-1"));
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
+
+        store
+            .add_event(ProvEvent::agent_booted(
+                agent_id.clone(),
+                AgentType::new("clickup_agent").expect("agent_type"),
+                "1.0.0".to_string(),
+                "clickup@1.0.0".to_string(),
+            ))
+            .await
+            .expect("agent_booted");
+        store
+            .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+            .await
+            .expect("task_exists");
+        store
+            .add_event(ProvEvent::task_execution_started(
+                context_id.clone(),
+                task_id.clone(),
+                agent_id.clone(),
+            ))
+            .await
+            .expect("task_execution_started");
+
+        assert_eq!(store.task_agent_id_cache_len_for_test(), 0);
+
+        store
+            .add_event(ProvEvent::message_received_task(
+                context_id.clone(),
+                task_id.clone(),
+                MessageId::from_external(ExternalId::new("msg-cache-1")),
+                "user".to_string(),
+                vec!["first".to_string()],
+                None,
+                agent_id.clone(),
+                1_771_470_000_001,
+            ))
+            .await
+            .expect("message_received 1");
+
+        assert_eq!(store.task_agent_id_cache_len_for_test(), 1);
+
+        store
+            .add_event(ProvEvent::message_received_task(
+                context_id,
+                task_id.clone(),
+                MessageId::from_external(ExternalId::new("msg-cache-2")),
+                "user".to_string(),
+                vec!["second".to_string()],
+                None,
+                agent_id,
+                1_771_470_000_002,
+            ))
+            .await
+            .expect("message_received 2");
+
+        assert_eq!(store.task_agent_id_cache_len_for_test(), 1);
     }
 }

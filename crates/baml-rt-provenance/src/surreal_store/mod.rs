@@ -67,7 +67,9 @@ mod writer;
 
 use std::sync::Arc;
 
+use baml_rt_core::ids::{AgentId, TaskId};
 pub use builder::{SurrealBackend, SurrealStoreBuilder};
+use dashmap::DashMap;
 use serde_json::Value;
 use surrealdb::{Surreal, engine::local::Db};
 
@@ -79,6 +81,11 @@ pub struct SurrealProvenanceStore {
     db: Surreal<Db>,
     normalizer: Arc<dyn ProvNormalizer>,
     mermaid_cache: Option<Arc<MermaidCache>>,
+    /// In-process cache of successful task → agent resolution for [`SurrealProvenanceStore::get_task_agent_id`].
+    ///
+    /// Only [`crate::store::TaskAgentResolution::Resolved`] outcomes are stored so that a transient
+    /// [`crate::store::TaskAgentResolution::NotLinked`] (edges not yet written) is never pinned.
+    task_agent_id_cache: DashMap<TaskId, AgentId>,
 }
 
 impl SurrealProvenanceStore {
@@ -115,5 +122,12 @@ impl SurrealProvenanceStore {
         }
         q.await.map_err(map_surreal_error)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl SurrealProvenanceStore {
+    pub(crate) fn task_agent_id_cache_len_for_test(&self) -> usize {
+        self.task_agent_id_cache.len()
     }
 }
