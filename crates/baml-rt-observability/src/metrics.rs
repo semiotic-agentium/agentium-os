@@ -346,32 +346,35 @@ fn llm_tokens_out_counter() -> &'static Counter<u64> {
     })
 }
 
+/// Metrics collected for a single LLM call.
+pub struct LlmCallMetrics<'a> {
+    pub function_name: &'a str,
+    pub client: &'a str,
+    pub model: &'a str,
+    pub result: &'a str,
+    pub duration: Duration,
+    pub prompt_bytes: usize,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+}
+
 /// Record LLM call timing, prompt payload size, and optional token usage.
-pub fn record_llm_call(
-    function_name: &str,
-    client: &str,
-    model: &str,
-    result: &str,
-    duration: Duration,
-    prompt_bytes: usize,
-    tokens_in: Option<u64>,
-    tokens_out: Option<u64>,
-) {
+pub fn record_llm_call(m: &LlmCallMetrics<'_>) {
     let attributes = &[
-        KeyValue::new("function", function_name.to_string()),
-        KeyValue::new("client", client.to_string()),
-        KeyValue::new("model", model.to_string()),
-        KeyValue::new("result", result.to_string()),
+        KeyValue::new("function", m.function_name.to_string()),
+        KeyValue::new("client", m.client.to_string()),
+        KeyValue::new("model", m.model.to_string()),
+        KeyValue::new("result", m.result.to_string()),
     ];
 
     llm_call_counter().add(1, attributes);
-    llm_call_histogram().record(duration.as_millis() as f64, attributes);
-    llm_prompt_bytes_histogram().record(prompt_bytes as f64, attributes);
+    llm_call_histogram().record(m.duration.as_millis() as f64, attributes);
+    llm_prompt_bytes_histogram().record(m.prompt_bytes as f64, attributes);
 
-    if let Some(v) = tokens_in {
+    if let Some(v) = m.tokens_in {
         llm_tokens_in_counter().add(v, attributes);
     }
-    if let Some(v) = tokens_out {
+    if let Some(v) = m.tokens_out {
         llm_tokens_out_counter().add(v, attributes);
     }
 }
