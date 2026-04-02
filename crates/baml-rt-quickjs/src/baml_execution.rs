@@ -488,7 +488,20 @@ impl BamlExecutor {
             };
             let function_result = match result {
                 Ok(r) => r,
-                Err(e) => return Err(BamlRtError::ExecutionFailed { source: e }),
+                Err(e) => {
+                    // Ensure LLM completion interceptors/OTEL attribution still run on
+                    // terminal call_function errors (including planner-hop failures).
+                    if let Some(ref collector) = collector
+                        && let Err(trace_err) = collector.process_trace_events(scope).await
+                    {
+                        tracing::warn!(
+                            function = function_name,
+                            error = ?trace_err,
+                            "Failed to process LLM trace events after call_function error"
+                        );
+                    }
+                    return Err(BamlRtError::ExecutionFailed { source: e });
+                }
             };
             let parsed_result = function_result.parsed().as_ref().ok_or_else(|| {
                 BamlRtError::BamlRuntime("Function returned no parsed result".to_string())
@@ -523,6 +536,15 @@ impl BamlExecutor {
                     last_parse_err = Some(anyhow::Error::msg(e.to_string()));
                     if attempt + 1 >= max_attempts {
                         if let Some(ref collector) = collector {
+                            // Exhausted parse retries: still attribute the underlying LLM call(s)
+                            // so OTEL/provenance reflect hop cost even when parse fails.
+                            if let Err(trace_err) = collector.process_trace_events(scope).await {
+                                tracing::warn!(
+                                    function = function_name,
+                                    error = ?trace_err,
+                                    "Failed to process LLM trace events after parse failure"
+                                );
+                            }
                             collector
                                 .complete_pending_effects(
                                     Outcome::Failure,
