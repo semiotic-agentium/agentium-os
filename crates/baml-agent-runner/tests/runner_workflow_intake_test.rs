@@ -30,6 +30,11 @@ use test_support::common::{
 };
 use tokio::sync::Mutex;
 
+// Keep this aligned with the Slack tool's registered bundle name in
+// `crates/tools/slack/src/lib.rs`. If that changes, this stitched e2e should
+// fail loudly instead of silently loading no producer config.
+const SLACK_BUNDLE_NAME: &str = "support_slack";
+
 #[derive(Clone)]
 struct StaticAgentList {
     entries: Vec<AgentDiscoveryEntry>,
@@ -1033,7 +1038,7 @@ async fn slack_producer_poll_and_deliver_reaches_semantic_ingress_and_downstream
 
     let config_resolver = Arc::new(StaticConfigResolver {
         configs: HashMap::from([(
-            "support_slack".to_string(),
+            SLACK_BUNDLE_NAME.to_string(),
             json!({ "channels": ["C123ABC456"] }),
         )]),
     }) as Arc<dyn ConfigResolver>;
@@ -1045,6 +1050,10 @@ async fn slack_producer_poll_and_deliver_reaches_semantic_ingress_and_downstream
     )
     .await
     .expect("load configured event producers");
+    assert!(
+        !producers.is_empty(),
+        "expected at least one configured event producer; bundle {SLACK_BUNDLE_NAME} may no longer match the Slack provider registration"
+    );
 
     let mut dispatcher = EventDispatcher::new(registry);
     for producer in producers {
