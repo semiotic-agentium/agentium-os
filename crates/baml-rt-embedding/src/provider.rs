@@ -139,19 +139,49 @@ impl FastEmbedProvider {
         model: EmbeddingModel,
         cache_dir: Option<PathBuf>,
     ) -> Result<Self, EmbeddingError> {
-        let mut opts = InitOptions::new(model).with_show_download_progress(false);
-        if let Some(dir) = cache_dir {
-            opts = opts.with_cache_dir(dir);
-        }
-        let t0 = Instant::now();
-        tracing::info!(
-            "FastEmbed TextEmbedding: loading ONNX session (CPU graph build can take 10-40s even from disk)"
-        );
-        let embedding = TextEmbedding::try_new(opts).map_err(EmbeddingError::ModelInit)?;
-        tracing::info!(
-            elapsed_ms = t0.elapsed().as_millis(),
-            "FastEmbed TextEmbedding: ONNX session ready"
-        );
+        let make_opts = |dir: Option<PathBuf>| {
+            let mut opts = InitOptions::new(model.clone()).with_show_download_progress(false);
+            if let Some(d) = dir {
+                opts = opts.with_cache_dir(d);
+            }
+            opts
+        };
+
+        let embedding = if let Some(dir) = cache_dir {
+            tracing::info!(
+                "FastEmbed TextEmbedding: loading ONNX session from local cache (CPU graph build can take 10-40s even from disk)"
+            );
+            let t0 = Instant::now();
+            match TextEmbedding::try_new(make_opts(Some(dir))) {
+                Ok(e) => {
+                    tracing::info!(
+                        elapsed_ms = t0.elapsed().as_millis(),
+                        "FastEmbed TextEmbedding: ONNX session ready"
+                    );
+                    e
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Embedding model failed to load from local models cache; \
+                         falling back to fastembed default (~/.cache/fastembed/)"
+                    );
+                    TextEmbedding::try_new(make_opts(None)).map_err(EmbeddingError::ModelInit)?
+                }
+            }
+        } else {
+            tracing::info!(
+                "FastEmbed TextEmbedding: loading ONNX session (CPU graph build can take 10-40s even from disk)"
+            );
+            let t0 = Instant::now();
+            let e = TextEmbedding::try_new(make_opts(None)).map_err(EmbeddingError::ModelInit)?;
+            tracing::info!(
+                elapsed_ms = t0.elapsed().as_millis(),
+                "FastEmbed TextEmbedding: ONNX session ready"
+            );
+            e
+        };
+
         let dim = embedding
             .embed(vec!["dim probe".to_string()], None)
             .map_err(EmbeddingError::Inference)?
