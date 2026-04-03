@@ -19,6 +19,13 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_INCREMENTAL: "false"
   CARGO_PROFILE_TEST_INCREMENTAL: "false"
+  # Disable OTEL exporters in CI tests to avoid noisy collector connection errors
+  # and timing variance when no collector is available.
+  OTEL_SDK_DISABLED: "true"
+  OTEL_TRACES_EXPORTER: "none"
+  OTEL_METRICS_EXPORTER: "none"
+  OTEL_LOGS_EXPORTER: "none"
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
 
 jobs:
   nextest:
