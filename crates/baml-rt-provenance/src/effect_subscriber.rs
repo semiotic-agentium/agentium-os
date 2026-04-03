@@ -850,6 +850,11 @@ impl ProvenanceEffectSubscriber {
         .map_err(InferenceError::Join)?;
         let run_ms = run_start.elapsed().as_millis();
 
+        metrics::record_onnx_inference(
+            "embed_batch",
+            std::time::Duration::from_millis(wait_ms as u64),
+            std::time::Duration::from_millis(run_ms as u64),
+        );
         tracing::debug!(wait_ms, run_ms, "ONNX embed_batch offloaded");
         join.map_err(InferenceError::Embedding)
     }
@@ -874,6 +879,11 @@ impl ProvenanceEffectSubscriber {
             .map_err(InferenceError::Join)?;
         let run_ms = run_start.elapsed().as_millis();
 
+        metrics::record_onnx_inference(
+            "rerank_pair",
+            std::time::Duration::from_millis(wait_ms as u64),
+            std::time::Duration::from_millis(run_ms as u64),
+        );
         tracing::debug!(wait_ms, run_ms, "ONNX rerank offloaded");
         join.map_err(InferenceError::Embedding)
     }
@@ -901,6 +911,11 @@ impl ProvenanceEffectSubscriber {
         .await;
         let run_ms = run_start.elapsed().as_millis();
 
+        metrics::record_onnx_inference(
+            "citation_drift",
+            std::time::Duration::from_millis(wait_ms as u64),
+            std::time::Duration::from_millis(run_ms as u64),
+        );
         tracing::debug!(wait_ms, run_ms, "ONNX citation drift scoring offloaded");
         match join {
             Ok(v) => v,

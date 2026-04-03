@@ -94,6 +94,50 @@
           "legendFormat": "{{tool}} {{result}}"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "ONNX Inference Wait (avg ms) by Operation",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+      "targets": [
+        {
+          "expr": "sum by (operation) (rate(baml_rt_onnx_wait_ms_sum[$__rate_interval])) / sum by (operation) (rate(baml_rt_onnx_wait_ms_count[$__rate_interval]))",
+          "legendFormat": "{{operation}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "ONNX Inference Run (avg ms) by Operation",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+      "targets": [
+        {
+          "expr": "sum by (operation) (rate(baml_rt_onnx_run_ms_sum[$__rate_interval])) / sum by (operation) (rate(baml_rt_onnx_run_ms_count[$__rate_interval]))",
+          "legendFormat": "{{operation}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "ONNX Wait/Run Ratio (avg) by Operation",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+      "targets": [
+        {
+          "expr": "sum by (operation) (rate(baml_rt_onnx_wait_to_run_ratio_sum[$__rate_interval])) / sum by (operation) (rate(baml_rt_onnx_wait_to_run_ratio_count[$__rate_interval]))",
+          "legendFormat": "{{operation}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "ONNX Wait-Dominant Events / sec by Operation",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+      "targets": [
+        {
+          "expr": "sum by (operation) (rate(baml_rt_onnx_wait_dominant_total[$__rate_interval]))",
+          "legendFormat": "{{operation}}"
+        }
+      ]
     }
   ],
   "refresh": "5s",
@@ -106,6 +150,6 @@
   "timezone": "",
   "title": "Agent Platform Overview",
   "uid": "agent-platform-overview",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

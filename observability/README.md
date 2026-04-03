@@ -63,6 +63,9 @@ It contains:
 - Prompt payload bytes by function
 - Tokens in/out by function
 - Tool call rate + latency
+- ONNX inference wait/run (avg ms) by operation
+- ONNX wait-to-run ratio by operation
+- ONNX wait-dominant events/sec by operation
 
 ## Notes
 
