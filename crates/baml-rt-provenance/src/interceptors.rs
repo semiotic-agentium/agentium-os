@@ -42,6 +42,10 @@ fn usage_tokens(usage: &LlmUsage) -> (Option<u64>, Option<u64>) {
     }
 }
 
+// NOTE: `ProvenanceInterceptor` still implements `LLMInterceptor` for compatibility,
+// but A2A wiring intentionally does NOT register it for LLM provenance writes.
+// LLM start/completion provenance is sourced from `EffectEvent` via
+// `ProvenanceEffectSubscriber` to prevent duplicate `LlmCallCompleted` events.
 #[async_trait]
 impl LLMInterceptor for ProvenanceInterceptor {
     async fn intercept_llm_call(&self, context: &LLMCallContext) -> Result<InterceptorDecision> {

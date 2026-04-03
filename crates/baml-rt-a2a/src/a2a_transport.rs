@@ -526,20 +526,14 @@ async fn wire_provenance_subsystems(
     }
 
     // Subsystem 2: ProvenanceInterceptor → tool pipeline of the interceptor registry.
-    // The reserved-anchor mechanism on tool_session_read completions targets this
-    // interceptor — without it, WAS_INFORMED_BY edges between SessionStep(SendDone)
-    // and ToolCall nodes are never created.
+    // IMPORTANT: interception is for influencing runtime behavior, not provenance recording.
+    // LLM provenance writes are effect-bus only (`ProvenanceEffectSubscriber`) to avoid
+    // duplicate `LlmCallCompleted` events and keep drift/citation enrichment authoritative.
+    // We keep only the tool interceptor wiring because reserved-anchor handling on
+    // tool_session_read completions still depends on it for WAS_INFORMED_BY edges.
     {
         let mut registry = interceptor_registry.lock().await;
         registry.register_tool_interceptor(ProvenanceInterceptor::new(writer.clone()));
-        registry.register_llm_interceptor(ProvenanceInterceptor::new(writer.clone()));
-        tracing::info!(
-            event = "provenance_wiring",
-            tool_interceptor = true,
-            llm_interceptor = true,
-            effect_subscriber = true,
-            "Provenance wiring complete: effect-subscriber + tool/llm interceptors registered"
-        );
     }
 
     // Subsystem 3: ConversationContextProvider → runtime.

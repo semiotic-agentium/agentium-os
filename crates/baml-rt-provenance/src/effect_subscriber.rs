@@ -12,6 +12,7 @@ use baml_rt_embedding::{
     PlanDriftInputs, PlanStepAnchor, RerankProvider, TaskDriftTracker, score_bipia_signal,
     score_citation_drift, score_drift_from_embeddings, score_plan_drift, tactical_drift_texts,
 };
+use baml_rt_observability::metrics::{self, LlmCallMetrics};
 use baml_rt_tools::{
     ToolRegistry,
     archive_refs::RefTable,
@@ -1776,6 +1777,23 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 let prov_usage_clone = prov_usage.clone();
                 let prompt = normalized_prompt(&metadata.prompt);
                 let task_id = task_id_from_metadata(&metadata.metadata);
+                let result_label = if bool::from(*outcome) {
+                    "success"
+                } else {
+                    "error"
+                };
+                let prompt_size = prompt_bytes(&metadata.prompt);
+                let (tokens_in, tokens_out) = usage_tokens(&prov_usage);
+                metrics::record_llm_call(&LlmCallMetrics {
+                    function_name: &metadata.function_name,
+                    client: &metadata.client,
+                    model: &metadata.model,
+                    result: result_label,
+                    duration: std::time::Duration::from_millis(*duration_ms),
+                    prompt_bytes: prompt_size,
+                    tokens_in,
+                    tokens_out,
+                });
                 let citation_strings = result_payload
                     .as_ref()
                     .map(extract_citation_strings_from_llm_result)
@@ -1858,6 +1876,16 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     return Ok(()); // Skip on missing message_id
                 };
                 let completed_id = completed_event.id().clone();
+                let client_alias = metadata
+                    .metadata
+                    .get("client_alias")
+                    .and_then(Value::as_str)
+                    .unwrap_or("-");
+                let model_alias = metadata
+                    .metadata
+                    .get("model_alias")
+                    .and_then(Value::as_str)
+                    .unwrap_or("-");
                 tracing::info!(
                     event = "provenance_emit",
                     source = "effect_subscriber.llm_completion",
@@ -1865,6 +1893,8 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     function_name = %metadata.function_name,
                     client = %metadata.client,
                     model = %metadata.model,
+                    client_alias = client_alias,
+                    model_alias = model_alias,
                     context_id = %context_id,
                     task_id = ?task_id,
                     citations_count = citation_strings.len(),
@@ -2085,6 +2115,21 @@ fn task_id_from_metadata(metadata: &Value) -> Option<TaskId> {
         .get("task_id")
         .and_then(|value| value.as_str())
         .map(|value| TaskId::from_external(ExternalId::new(value.to_string())))
+}
+
+fn prompt_bytes(prompt: &Value) -> usize {
+    prompt.to_string().len()
+}
+
+fn usage_tokens(usage: &LlmUsage) -> (Option<u64>, Option<u64>) {
+    match usage {
+        LlmUsage::Known {
+            prompt_tokens,
+            completion_tokens,
+            ..
+        } => (Some(*prompt_tokens), Some(*completion_tokens)),
+        LlmUsage::Unknown => (None, None),
+    }
 }
 
 fn normalized_prompt(prompt: &Value) -> Value {
