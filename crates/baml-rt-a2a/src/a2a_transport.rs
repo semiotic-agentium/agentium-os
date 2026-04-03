@@ -533,6 +533,13 @@ async fn wire_provenance_subsystems(
         let mut registry = interceptor_registry.lock().await;
         registry.register_tool_interceptor(ProvenanceInterceptor::new(writer.clone()));
         registry.register_llm_interceptor(ProvenanceInterceptor::new(writer.clone()));
+        tracing::info!(
+            event = "provenance_wiring",
+            tool_interceptor = true,
+            llm_interceptor = true,
+            effect_subscriber = true,
+            "Provenance wiring complete: effect-subscriber + tool/llm interceptors registered"
+        );
     }
 
     // Subsystem 3: ConversationContextProvider → runtime.

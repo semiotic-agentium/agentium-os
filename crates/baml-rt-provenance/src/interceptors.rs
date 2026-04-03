@@ -169,6 +169,18 @@ impl LLMInterceptor for ProvenanceInterceptor {
                 outcome,
             )
         };
+        tracing::info!(
+            event = "provenance_emit",
+            source = "interceptor.llm_completion",
+            prov_event_id = %event.id(),
+            function_name = %function_name,
+            client = %context.client,
+            model = %context.model,
+            context_id = %context.runtime_scope.context_id(),
+            task_id = ?context.runtime_scope.task_id_opt(),
+            message_id = %context.runtime_scope.message_id(),
+            "Emitting LLM completion provenance event from interceptor path"
+        );
         self.writer
             .add_event_with_logging(event, "LLM call completion")
             .await;
@@ -324,6 +336,17 @@ impl ToolInterceptor for ProvenanceInterceptor {
             }
         };
 
+        tracing::info!(
+            event = "provenance_emit",
+            source = "interceptor.tool_completion",
+            prov_event_id = %event.id(),
+            tool_name = %context.tool_name,
+            function_name = ?context.function_name,
+            context_id = %context.runtime_scope.context_id(),
+            task_id = ?context.runtime_scope.task_id_opt(),
+            message_id = %context.runtime_scope.message_id(),
+            "Emitting tool completion provenance event from interceptor path"
+        );
         self.writer
             .add_event_with_logging(event, "tool call completion")
             .await;

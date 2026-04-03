@@ -28,7 +28,8 @@ pub use assessment::{
     BIPIA_CITE_MEAN_THRESHOLD, BIPIA_STEP_ALIGN_THRESHOLD, BIPIA_SYNTHESIS_CITE_THRESHOLD,
     BIPIA_SYNTHESIS_STEP_THRESHOLD, BipiaSignal, BipiaSignalInputs, CitationDriftAssessment,
     CitationSimilarity, DEFAULT_TEXT_PREVIEW_CHARS, DriftAssessment, DriftSeverity, classify_score,
-    preview_text, score_bipia_signal, score_citation_drift, score_drift,
+    preview_text, score_bipia_signal, score_citation_drift, score_drift, score_drift_from_embeddings,
+    score_drift_from_texts, tactical_drift_texts,
 };
 pub use config::{DriftConfig, DriftMode};
 pub use plan_assessment::{

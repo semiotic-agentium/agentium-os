@@ -97,6 +97,76 @@ impl DriftAssessment {
     }
 }
 
+/// Extract tactical drift input texts from prompt/response.
+///
+/// `intent_override` takes precedence when provided and non-empty.
+pub fn tactical_drift_texts(
+    prompt: &Value,
+    response: &Value,
+    intent_override: Option<&str>,
+) -> Option<(String, String)> {
+    let intent_text = match intent_override {
+        Some(text) if !text.trim().is_empty() => text.to_owned(),
+        _ => extract_intent_from_prompt(prompt)?,
+    };
+    let response_text = extract_response_text(response);
+    Some((intent_text, response_text))
+}
+
+/// Build a drift assessment from precomputed texts + embeddings.
+///
+/// Callers are responsible for ensuring `intent_embedding` and
+/// `response_embedding` were produced from `intent_text`/`response_text`.
+pub fn score_drift_from_embeddings(
+    intent_text: &str,
+    response_text: &str,
+    intent_embedding: &[f32],
+    response_embedding: &[f32],
+    config: &DriftConfig,
+) -> DriftAssessment {
+    let score = cosine_similarity(intent_embedding, response_embedding);
+    DriftAssessment {
+        score,
+        severity: classify_score(score, config),
+        mode: config.mode,
+        warn_min_score: config.warn_min_score,
+        block_min_score: config.block_min_score,
+        intent_text_preview: preview_text(intent_text, DEFAULT_TEXT_PREVIEW_CHARS),
+        response_text_preview: preview_text(response_text, DEFAULT_TEXT_PREVIEW_CHARS),
+    }
+}
+
+/// Compute drift between extracted tactical texts.
+pub fn score_drift_from_texts(
+    intent_text: &str,
+    response_text: &str,
+    config: &DriftConfig,
+    provider: &dyn EmbeddingProvider,
+) -> Option<DriftAssessment> {
+    let embeddings = match provider.embed_batch(&[intent_text, response_text]) {
+        Ok(embeddings) if embeddings.len() == 2 => embeddings,
+        Ok(embeddings) => {
+            tracing::error!(
+                count = embeddings.len(),
+                "Embedding provider returned unexpected batch size during drift scoring"
+            );
+            return None;
+        }
+        Err(error) => {
+            tracing::error!(%error, "Embedding computation failed during drift scoring");
+            return None;
+        }
+    };
+
+    Some(score_drift_from_embeddings(
+        intent_text,
+        response_text,
+        &embeddings[0],
+        &embeddings[1],
+        config,
+    ))
+}
+
 /// Compute drift between a prompt and a completed LLM response.
 ///
 /// `intent_override` — when `Some`, use this text as the intent anchor instead
@@ -112,36 +182,8 @@ pub fn score_drift(
     provider: &dyn EmbeddingProvider,
     intent_override: Option<&str>,
 ) -> Option<DriftAssessment> {
-    let intent_text = match intent_override {
-        Some(text) if !text.trim().is_empty() => text.to_owned(),
-        _ => extract_intent_from_prompt(prompt)?,
-    };
-    let response_text = extract_response_text(response);
-    let embeddings = match provider.embed_batch(&[&intent_text, &response_text]) {
-        Ok(embeddings) if embeddings.len() == 2 => embeddings,
-        Ok(embeddings) => {
-            tracing::error!(
-                count = embeddings.len(),
-                "Embedding provider returned unexpected batch size during drift scoring"
-            );
-            return None;
-        }
-        Err(error) => {
-            tracing::error!(%error, "Embedding computation failed during drift scoring");
-            return None;
-        }
-    };
-
-    let score = cosine_similarity(&embeddings[0], &embeddings[1]);
-    Some(DriftAssessment {
-        score,
-        severity: classify_score(score, config),
-        mode: config.mode,
-        warn_min_score: config.warn_min_score,
-        block_min_score: config.block_min_score,
-        intent_text_preview: preview_text(&intent_text, DEFAULT_TEXT_PREVIEW_CHARS),
-        response_text_preview: preview_text(&response_text, DEFAULT_TEXT_PREVIEW_CHARS),
-    })
+    let (intent_text, response_text) = tactical_drift_texts(prompt, response, intent_override)?;
+    score_drift_from_texts(&intent_text, &response_text, config, provider)
 }
 
 pub fn classify_score(score: f32, config: &DriftConfig) -> DriftSeverity {
