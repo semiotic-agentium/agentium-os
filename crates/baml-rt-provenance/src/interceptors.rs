@@ -1,44 +1,23 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use baml_rt_core::{
-    BamlRtError, Outcome, Result,
-    context::RuntimeScope,
-    ids::{ActivityAnchorId, MessageId},
-};
+use baml_rt_core::Result;
+#[cfg(test)]
+use baml_rt_core::context::RuntimeScope;
 use baml_rt_interceptor::{
     InterceptorDecision, LLMCallContext, LLMInterceptor, ToolCallContext, ToolInterceptor,
 };
-use baml_rt_observability::metrics::{self, LlmCallMetrics};
 use serde_json::Value;
 
-use crate::{
-    events::{BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR, LlmUsage, ProvEvent},
-    store::ProvenanceWriter,
-};
+#[cfg(test)]
+use crate::events::LlmUsage;
+use crate::store::ProvenanceWriter;
 
-pub struct ProvenanceInterceptor {
-    writer: Arc<dyn ProvenanceWriter>,
-}
+pub struct ProvenanceInterceptor;
 
 impl ProvenanceInterceptor {
-    pub fn new(writer: Arc<dyn ProvenanceWriter>) -> Self {
-        Self { writer }
-    }
-}
-
-fn prompt_bytes(prompt: &Value) -> usize {
-    prompt.to_string().len()
-}
-
-fn usage_tokens(usage: &LlmUsage) -> (Option<u64>, Option<u64>) {
-    match usage {
-        LlmUsage::Known {
-            prompt_tokens,
-            completion_tokens,
-            ..
-        } => (Some(*prompt_tokens), Some(*completion_tokens)),
-        LlmUsage::Unknown => (None, None),
+    pub fn new(_writer: Arc<dyn ProvenanceWriter>) -> Self {
+        Self
     }
 }
 
@@ -48,319 +27,35 @@ fn usage_tokens(usage: &LlmUsage) -> (Option<u64>, Option<u64>) {
 // `ProvenanceEffectSubscriber` to prevent duplicate `LlmCallCompleted` events.
 #[async_trait]
 impl LLMInterceptor for ProvenanceInterceptor {
-    async fn intercept_llm_call(&self, context: &LLMCallContext) -> Result<InterceptorDecision> {
-        let task_id = context.runtime_scope.task_id_opt().cloned();
-        let metadata = metadata_with_runtime_scope(&context.metadata, &context.runtime_scope);
-        let prompt = normalized_prompt(&context.prompt);
-        let message_id = message_id_from_scope(&context.runtime_scope);
-        if task_id.is_none() && message_id.is_none() {
-            return Err(BamlRtError::InvalidArgument(
-                "LLM call missing metadata.message_id".to_string(),
-            ));
-        }
-        let event = if let Some(task_id) = task_id {
-            ProvEvent::llm_call_started_task(
-                context.runtime_scope.context_id().clone(),
-                task_id,
-                context.client.clone(),
-                context.model.clone(),
-                context.function_id.full_name(),
-                prompt.clone(),
-                metadata.clone(),
-            )
-        } else {
-            let message_id = match message_id {
-                Some(message_id) => message_id,
-                None => {
-                    return Err(BamlRtError::InvalidArgument(
-                        "LLM call missing metadata.message_id".to_string(),
-                    ));
-                }
-            };
-            ProvEvent::llm_call_started_global(
-                context.runtime_scope.context_id().clone(),
-                message_id,
-                context.client.clone(),
-                context.model.clone(),
-                context.function_id.full_name(),
-                prompt.clone(),
-                metadata.clone(),
-            )
-        };
-        self.writer
-            .add_event_with_logging(event, "LLM call start")
-            .await;
+    async fn intercept_llm_call(&self, _context: &LLMCallContext) -> Result<InterceptorDecision> {
         Ok(InterceptorDecision::Allow)
     }
 
     async fn on_llm_call_complete(
         &self,
-        context: &LLMCallContext,
-        result: &Result<Value>,
-        duration_ms: u64,
+        _context: &LLMCallContext,
+        _result: &Result<Value>,
+        _duration_ms: u64,
     ) {
-        let outcome = Outcome::from(result.is_ok());
-        let task_id = context.runtime_scope.task_id_opt().cloned();
-        let metadata = metadata_with_llm_result(&context.metadata, &context.runtime_scope, result);
-        let prompt = normalized_prompt(&context.prompt);
-        let message_id = message_id_from_scope(&context.runtime_scope);
-        let usage = extract_usage_from_metadata(&context.metadata);
-        if task_id.is_none() && message_id.is_none() {
-            tracing::error!("LLM call completion missing metadata.message_id");
-            return;
-        }
-
-        let function_name = context.function_id.full_name();
-        let result_label = if result.is_ok() { "success" } else { "error" };
-        let prompt_size = prompt_bytes(&context.prompt);
-        let (tokens_in, tokens_out) = usage_tokens(&usage);
-        metrics::record_llm_call(&LlmCallMetrics {
-            function_name: &function_name,
-            client: &context.client,
-            model: &context.model,
-            result: result_label,
-            duration: std::time::Duration::from_millis(duration_ms),
-            prompt_bytes: prompt_size,
-            tokens_in,
-            tokens_out,
-        });
-        tracing::info!(
-            event = "llm_call_attribution",
-            function_name = %function_name,
-            client = %context.client,
-            model = %context.model,
-            duration_ms,
-            prompt_bytes = prompt_size,
-            tokens_in,
-            tokens_out,
-            context_id = %context.runtime_scope.context_id(),
-            task_id = ?context.runtime_scope.task_id_opt(),
-            message_id = %context.runtime_scope.message_id(),
-            result = result_label,
-        );
-
-        let event = if let Some(task_id) = task_id {
-            ProvEvent::llm_call_completed_task(
-                context.runtime_scope.context_id().clone(),
-                task_id,
-                context.client.clone(),
-                context.model.clone(),
-                context.function_id.full_name(),
-                prompt.clone(),
-                metadata.clone(),
-                usage,
-                duration_ms,
-                outcome,
-            )
-        } else {
-            let message_id = match message_id {
-                Some(message_id) => message_id,
-                None => {
-                    tracing::error!("LLM call completion missing metadata.message_id");
-                    return;
-                }
-            };
-            ProvEvent::llm_call_completed_global(
-                context.runtime_scope.context_id().clone(),
-                message_id,
-                context.client.clone(),
-                context.model.clone(),
-                context.function_id.full_name(),
-                prompt.clone(),
-                metadata.clone(),
-                usage,
-                duration_ms,
-                outcome,
-            )
-        };
-        tracing::info!(
-            event = "provenance_emit",
-            source = "interceptor.llm_completion",
-            prov_event_id = %event.id(),
-            function_name = %function_name,
-            client = %context.client,
-            model = %context.model,
-            context_id = %context.runtime_scope.context_id(),
-            task_id = ?context.runtime_scope.task_id_opt(),
-            message_id = %context.runtime_scope.message_id(),
-            "Emitting LLM completion provenance event from interceptor path"
-        );
-        self.writer
-            .add_event_with_logging(event, "LLM call completion")
-            .await;
     }
 }
 
 #[async_trait]
 impl ToolInterceptor for ProvenanceInterceptor {
-    async fn intercept_tool_call(&self, context: &ToolCallContext) -> Result<InterceptorDecision> {
-        let task_id = context.runtime_scope.task_id_opt().cloned();
-        let metadata = metadata_with_runtime_scope(&context.metadata, &context.runtime_scope);
-        let message_id = message_id_from_scope(&context.runtime_scope);
-        if task_id.is_none() && message_id.is_none() {
-            return Err(BamlRtError::InvalidArgument(
-                "Tool call missing metadata.message_id".to_string(),
-            ));
-        }
-        let event = if let Some(task_id) = task_id {
-            ProvEvent::tool_call_started_task(
-                context.runtime_scope.context_id().clone(),
-                task_id,
-                context.tool_name.clone(),
-                context.function_name.clone(),
-                context.args.clone(),
-                metadata.clone(),
-                context.delegation_target.clone(),
-            )
-        } else {
-            let message_id = match message_id {
-                Some(message_id) => message_id,
-                None => {
-                    return Err(BamlRtError::InvalidArgument(
-                        "Tool call missing metadata.message_id".to_string(),
-                    ));
-                }
-            };
-            ProvEvent::tool_call_started_global(
-                context.runtime_scope.context_id().clone(),
-                message_id,
-                context.tool_name.clone(),
-                context.function_name.clone(),
-                context.args.clone(),
-                metadata.clone(),
-                context.delegation_target.clone(),
-            )
-        };
-
-        self.writer
-            .add_event_with_logging(event, "tool call start")
-            .await;
+    async fn intercept_tool_call(&self, _context: &ToolCallContext) -> Result<InterceptorDecision> {
         Ok(InterceptorDecision::Allow)
     }
 
     async fn on_tool_call_complete(
         &self,
-        context: &ToolCallContext,
-        result: &Result<Value>,
-        duration_ms: u64,
+        _context: &ToolCallContext,
+        _result: &Result<Value>,
+        _duration_ms: u64,
     ) {
-        let outcome = Outcome::from(result.is_ok());
-        let task_id = context.runtime_scope.task_id_opt().cloned();
-        let reserved_anchor = context
-            .metadata
-            .get(BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR)
-            .and_then(Value::as_str)
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(ActivityAnchorId::from);
-        tracing::debug!(
-            tool_name = %context.tool_name,
-            has_reserved_anchor = reserved_anchor.is_some(),
-            "on_tool_call_complete: reserved anchor extraction"
-        );
-        let metadata = metadata_with_tool_result(&context.metadata, &context.runtime_scope, result);
-        let message_id = message_id_from_scope(&context.runtime_scope);
-        if task_id.is_none() && message_id.is_none() {
-            tracing::error!("Tool call completion missing metadata.message_id");
-            return;
-        }
-
-        let result_label = if result.is_ok() { "success" } else { "error" };
-        tracing::info!(
-            event = "tool_call_attribution",
-            tool_name = %context.tool_name,
-            function_name = ?context.function_name,
-            duration_ms,
-            context_id = %context.runtime_scope.context_id(),
-            task_id = ?context.runtime_scope.task_id_opt(),
-            message_id = %context.runtime_scope.message_id(),
-            result = result_label,
-        );
-
-        let event = if let Some(task_id) = task_id {
-            if let Some(id) = reserved_anchor {
-                ProvEvent::tool_call_completed_task_with_id(
-                    id,
-                    context.runtime_scope.context_id().clone(),
-                    task_id,
-                    context.tool_name.clone(),
-                    context.function_name.clone(),
-                    context.args.clone(),
-                    metadata.clone(),
-                    duration_ms,
-                    outcome,
-                    context.delegation_target.clone(),
-                )
-            } else {
-                ProvEvent::tool_call_completed_task(
-                    context.runtime_scope.context_id().clone(),
-                    task_id,
-                    context.tool_name.clone(),
-                    context.function_name.clone(),
-                    context.args.clone(),
-                    metadata.clone(),
-                    duration_ms,
-                    outcome,
-                    context.delegation_target.clone(),
-                )
-            }
-        } else {
-            let message_id = match message_id {
-                Some(message_id) => message_id,
-                None => {
-                    tracing::error!("Tool call completion missing metadata.message_id");
-                    return;
-                }
-            };
-            if let Some(id) = reserved_anchor {
-                ProvEvent::tool_call_completed_global_with_id(
-                    id,
-                    context.runtime_scope.context_id().clone(),
-                    message_id,
-                    context.tool_name.clone(),
-                    context.function_name.clone(),
-                    context.args.clone(),
-                    metadata.clone(),
-                    duration_ms,
-                    outcome,
-                    context.delegation_target.clone(),
-                )
-            } else {
-                ProvEvent::tool_call_completed_global(
-                    context.runtime_scope.context_id().clone(),
-                    message_id,
-                    context.tool_name.clone(),
-                    context.function_name.clone(),
-                    context.args.clone(),
-                    metadata.clone(),
-                    duration_ms,
-                    outcome,
-                    context.delegation_target.clone(),
-                )
-            }
-        };
-
-        tracing::info!(
-            event = "provenance_emit",
-            source = "interceptor.tool_completion",
-            prov_event_id = %event.id(),
-            tool_name = %context.tool_name,
-            function_name = ?context.function_name,
-            context_id = %context.runtime_scope.context_id(),
-            task_id = ?context.runtime_scope.task_id_opt(),
-            message_id = %context.runtime_scope.message_id(),
-            "Emitting tool completion provenance event from interceptor path"
-        );
-        self.writer
-            .add_event_with_logging(event, "tool call completion")
-            .await;
     }
 }
 
-fn message_id_from_scope(scope: &RuntimeScope) -> Option<MessageId> {
-    Some(scope.message_id().clone())
-}
-
+#[cfg(test)]
 fn metadata_with_runtime_scope(metadata: &Value, scope: &RuntimeScope) -> Value {
     let mut out = match metadata {
         Value::Object(map) => map.clone(),
@@ -383,27 +78,7 @@ fn metadata_with_runtime_scope(metadata: &Value, scope: &RuntimeScope) -> Value 
     Value::Object(out)
 }
 
-fn metadata_with_tool_result(
-    metadata: &Value,
-    scope: &RuntimeScope,
-    result: &Result<Value>,
-) -> Value {
-    let mut out = match metadata_with_runtime_scope(metadata, scope) {
-        Value::Object(map) => map,
-        _ => serde_json::Map::new(),
-    };
-    out.remove(BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR);
-    match result {
-        Ok(value) => {
-            out.insert("result".to_string(), value.clone());
-        }
-        Err(error) => {
-            out.insert("error".to_string(), Value::String(error.to_string()));
-        }
-    }
-    Value::Object(out)
-}
-
+#[cfg(test)]
 fn metadata_with_llm_result(
     metadata: &Value,
     scope: &RuntimeScope,
@@ -424,20 +99,13 @@ fn metadata_with_llm_result(
     Value::Object(out)
 }
 
-fn normalized_prompt(prompt: &Value) -> Value {
-    if prompt.is_null() {
-        Value::Object(serde_json::Map::new())
-    } else {
-        prompt.clone()
-    }
-}
-
 /// Extract LLM token usage from interceptor call metadata.
 ///
 /// `BamlLLMCollector::extract_context_from_llm_call` places the BAML trace
 /// `call.usage` value under `metadata["usage"]`. This function attempts to
 /// parse that JSON into `LlmUsage::Known`; if the field is absent or
 /// malformed, it falls back to `LlmUsage::Unknown`.
+#[cfg(test)]
 fn extract_usage_from_metadata(metadata: &Value) -> LlmUsage {
     let usage = match metadata.get("usage") {
         Some(v) if !v.is_null() => v,
@@ -498,6 +166,7 @@ fn extract_usage_from_metadata(metadata: &Value) -> LlmUsage {
     }
 }
 
+#[cfg(test)]
 fn parse_u64_value(value: &Value) -> Option<u64> {
     value
         .as_u64()

@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Instant};
 use async_trait::async_trait;
 use baml_rt_core::{
     bus::{EffectEvent, EffectSubscriber, SessionStepOp},
-    ids::{ContextId, ExternalId, MessageId, TaskId},
+    ids::{ActivityAnchorId, ContextId, ExternalId, MessageId, TaskId},
 };
 use baml_rt_embedding::{
     DriftConfig, DriftSeverity, EmbeddingProvider, FastEmbedProvider, PlanDriftConfig,
@@ -26,8 +26,9 @@ use tokio::sync::{RwLock, Semaphore};
 use crate::{
     conversation_projection::provenance_item_to_projection_item,
     events::{
-        CallScope, LlmCitationDriftInfo, LlmCitationSimilarity, LlmDriftInfo, LlmPlanDriftInfo,
-        LlmUsage, PlanStepSpec, ProvEvent, ResolvedCitationTarget,
+        BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR, CallScope, LlmCitationDriftInfo,
+        LlmCitationSimilarity, LlmDriftInfo, LlmPlanDriftInfo, LlmUsage, PlanStepSpec, ProvEvent,
+        ResolvedCitationTarget,
     },
     id_semantics::{SessionStepEntityId, SessionStepEntityInput},
     store::ProvenanceWriter,
@@ -1660,47 +1661,83 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 outcome,
                 result,
             } => {
-                // Merge the result (if any) into the metadata map so the provenance store
-                // can write it to the tool_result payload. Without this the result is null.
-                let enriched_metadata = if let Some(result_value) = result {
-                    let mut map = match &metadata.metadata {
-                        serde_json::Value::Object(m) => m.clone(),
-                        _ => serde_json::Map::new(),
-                    };
-                    map.insert("result".to_string(), result_value.clone());
-                    serde_json::Value::Object(map)
-                } else {
-                    metadata.metadata.clone()
+                // Merge the result (if any) into metadata so the provenance store can write
+                // it to the tool_result payload. Reserved anchor (if present) is consumed for
+                // event-id assignment and removed from persisted metadata.
+                let mut map = match &metadata.metadata {
+                    serde_json::Value::Object(m) => m.clone(),
+                    _ => serde_json::Map::new(),
                 };
+                let reserved_anchor = map
+                    .get(BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ActivityAnchorId::from);
+                map.remove(BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR);
+                if let Some(result_value) = result {
+                    map.insert("result".to_string(), result_value.clone());
+                }
+                let enriched_metadata = serde_json::Value::Object(map);
                 let event = match build_prov_event_completion(
                     context_id,
                     &enriched_metadata,
                     ProvenanceEventType::ToolCall,
                     |ctx_id, task_id| {
-                        ProvEvent::tool_call_completed_task(
-                            ctx_id,
-                            task_id,
-                            metadata.tool_name.clone(),
-                            metadata.function_name.clone(),
-                            metadata.args.clone(),
-                            enriched_metadata.clone(),
-                            *duration_ms,
-                            *outcome,
-                            metadata.delegation_target.clone(),
-                        )
+                        if let Some(id) = reserved_anchor.clone() {
+                            ProvEvent::tool_call_completed_task_with_id(
+                                id,
+                                ctx_id,
+                                task_id,
+                                metadata.tool_name.clone(),
+                                metadata.function_name.clone(),
+                                metadata.args.clone(),
+                                enriched_metadata.clone(),
+                                *duration_ms,
+                                *outcome,
+                                metadata.delegation_target.clone(),
+                            )
+                        } else {
+                            ProvEvent::tool_call_completed_task(
+                                ctx_id,
+                                task_id,
+                                metadata.tool_name.clone(),
+                                metadata.function_name.clone(),
+                                metadata.args.clone(),
+                                enriched_metadata.clone(),
+                                *duration_ms,
+                                *outcome,
+                                metadata.delegation_target.clone(),
+                            )
+                        }
                     },
                     |ctx_id, msg_id| {
-                        ProvEvent::tool_call_completed_global(
-                            ctx_id,
-                            msg_id,
-                            metadata.tool_name.clone(),
-                            metadata.function_name.clone(),
-                            metadata.args.clone(),
-                            enriched_metadata.clone(),
-                            *duration_ms,
-                            *outcome,
-                            metadata.delegation_target.clone(),
-                        )
+                        if let Some(id) = reserved_anchor.clone() {
+                            ProvEvent::tool_call_completed_global_with_id(
+                                id,
+                                ctx_id,
+                                msg_id,
+                                metadata.tool_name.clone(),
+                                metadata.function_name.clone(),
+                                metadata.args.clone(),
+                                enriched_metadata.clone(),
+                                *duration_ms,
+                                *outcome,
+                                metadata.delegation_target.clone(),
+                            )
+                        } else {
+                            ProvEvent::tool_call_completed_global(
+                                ctx_id,
+                                msg_id,
+                                metadata.tool_name.clone(),
+                                metadata.function_name.clone(),
+                                metadata.args.clone(),
+                                enriched_metadata.clone(),
+                                *duration_ms,
+                                *outcome,
+                                metadata.delegation_target.clone(),
+                            )
+                        }
                     },
                 ) {
                     Some(event) => event,

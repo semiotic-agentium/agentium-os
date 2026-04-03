@@ -503,8 +503,18 @@ impl ToolSessionExecutionHandle {
                 if let Some(scope_entry) = self.tool_session_scopes.get(session_id)
                     && let Some(emitter) = self.ctx.effect_emitter.as_ref()
                 {
-                    let read_meta_val =
+                    let reserved_anchor = ReservedAnchor::allocate();
+                    let reserved_anchor_id = reserved_anchor.into_id();
+                    let mut read_meta_val =
                         build_metadata_map_with_phase(&scope_entry.scope, Some("read"));
+                    if let Value::Object(ref mut m) = read_meta_val {
+                        m.insert(
+                            BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR.to_string(),
+                            Value::String(reserved_anchor_id.as_str().to_string()),
+                        );
+                    }
+                    self.read_completion_tool_anchors
+                        .insert(session_id.clone(), reserved_anchor_id.clone());
                     let mut read_metadata = ToolEffectMetadata {
                         tool_name: scope_entry.tool_name.clone(),
                         function_name: None,
@@ -589,33 +599,32 @@ impl ToolSessionExecutionHandle {
                         );
                     }
                 }
-                let anchor = ReservedAnchor::allocate();
+                let anchor_id = self
+                    .read_completion_tool_anchors
+                    .get(session_id)
+                    .map(|entry| entry.clone())
+                    .unwrap_or_else(|| {
+                        tracing::error!(
+                            session_id = %session_id,
+                            "tool_session_read: missing reserved anchor; allocating fallback"
+                        );
+                        let fallback = ReservedAnchor::allocate().into_id();
+                        self.read_completion_tool_anchors
+                            .insert(session_id.clone(), fallback.clone());
+                        fallback
+                    });
                 let mut notify_ctx = state.context.clone();
                 if let Value::Object(ref mut m) = notify_ctx.metadata {
                     m.insert(
                         BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR.to_string(),
-                        Value::String(anchor.as_str().to_string()),
-                    );
-                } else {
-                    tracing::error!(
-                        session_id = %session_id,
-                        metadata_type = ?std::mem::discriminant(&notify_ctx.metadata),
-                        "tool_session_read: metadata is not an Object; reserved anchor injection failed"
+                        Value::String(anchor_id.as_str().to_string()),
                     );
                 }
-                tracing::debug!(
-                    session_id = %session_id,
-                    anchor = %anchor,
-                    tool_name = %notify_ctx.tool_name,
-                    "tool_session_read: injected reserved anchor into completion context"
-                );
                 let interceptor_registry = self.ctx.interceptor_registry.lock().await;
                 interceptor_registry
                     .notify_tool_call_complete(&notify_ctx, &completion_result, duration_ms)
                     .await;
                 drop(interceptor_registry);
-                self.read_completion_tool_anchors
-                    .insert(session_id.clone(), anchor.into_id());
                 let metric_result = if completion_result.is_ok() {
                     "success"
                 } else {
