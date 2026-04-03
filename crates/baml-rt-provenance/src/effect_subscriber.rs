@@ -1260,42 +1260,68 @@ impl ProvenanceEffectSubscriber {
             );
         }
 
-        let response_emb = match self
-            .embed_batch_async(provider.clone(), vec![response_text.to_string()])
-            .await
-        {
+        // Resolve rerank input without holding mutable tracker state across await.
+        let step_desc_for_rerank = self
+            .plan_trackers
+            .get(task_id)
+            .and_then(|entry| entry.current_step_description());
+
+        let parallel_start = Instant::now();
+        let response_text_owned = response_text.to_string();
+        let response_text_for_rerank = response_text_owned.clone();
+
+        let response_embed_future = async {
+            let start = Instant::now();
+            let result = self
+                .embed_batch_async(provider.clone(), vec![response_text_owned])
+                .await;
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            (result, elapsed_ms)
+        };
+
+        let rerank_future = async {
+            let start = Instant::now();
+            let score = if let Some(step_desc) = step_desc_for_rerank {
+                match self.rerank_provider().await {
+                    Some(rerank) => self
+                        .rerank_score_async(rerank, step_desc, response_text_for_rerank)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                error = %e,
+                                "Reranker scoring failed; XE score defaulting to 0.0"
+                            );
+                            0.0
+                        }),
+                    None => {
+                        tracing::warn!("Reranker unavailable; XE score defaulting to 0.0");
+                        0.0
+                    }
+                }
+            } else {
+                0.0
+            };
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            (score, elapsed_ms)
+        };
+
+        let ((response_emb_result, embedding_ms), (xe_score, rerank_ms)) =
+            tokio::join!(response_embed_future, rerank_future);
+        let parallel_total_ms = parallel_start.elapsed().as_millis() as u64;
+        tracing::debug!(
+            embedding_ms,
+            rerank_ms,
+            parallel_total_ms,
+            "Plan drift parallel scoring timings"
+        );
+
+        let response_emb = match response_emb_result {
             Ok(mut embs) if !embs.is_empty() => embs.remove(0),
             Ok(_) => return None,
             Err(e) => {
                 tracing::warn!(error = %e, "Plan drift: failed to embed response text");
                 return None;
             }
-        };
-
-        // Resolve rerank input without holding mutable tracker state across await.
-        let step_desc_for_rerank = self
-            .plan_trackers
-            .get(task_id)
-            .and_then(|entry| entry.current_step_description());
-        let xe_score = if let Some(step_desc) = step_desc_for_rerank {
-            match self.rerank_provider().await {
-                Some(rerank) => self
-                    .rerank_score_async(rerank, step_desc, response_text.to_string())
-                    .await
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(
-                            error = %e,
-                            "Reranker scoring failed; XE score defaulting to 0.0"
-                        );
-                        0.0
-                    }),
-                None => {
-                    tracing::warn!("Reranker unavailable; XE score defaulting to 0.0");
-                    0.0
-                }
-            }
-        } else {
-            0.0
         };
 
         let mut entry = self.plan_trackers.get_mut(task_id)?;
