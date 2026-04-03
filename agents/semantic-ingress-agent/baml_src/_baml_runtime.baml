@@ -101,41 +101,26 @@ class ArchiveReadInput {
   limit int? @description("Maximum lines to return. Omit for default page size.")
   grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
 }
-// Domain types generated from #[derive(BamlType)]
-/// A binary arithmetic expression: left OP right.
-/// Provide integer operands and choose one of the four arithmetic operations.
-class Expression {
-  left int @description("Left-hand integer operand.")
-  operation MathOperation @description("Arithmetic operation to apply.")
-  right int @description("Right-hand integer operand. Must not be 0 when operation is Divide.")
-}
-
-/// Arithmetic operation for a binary expression.
-/// Accepted as the variant name (e.g. 'Add') or its symbolic alias ('+', '-', '*', '/').
-enum MathOperation {
-  Add @alias("+")
-  Subtract @alias("-")
-  Multiply @alias("*")
-  Divide @alias("/")
-}
-
-/// Input to the calculator tool. Construct an Expression and submit it to evaluate.
-class CalculatorInput {
-  expression Expression @description("The binary expression to evaluate.")
-}
-
-class CalculatorOutput {
-  expression string
-  result float
-  formatted string
-}
 // Domain types generated from JSON schemas
-class ToolDiscoveryRecordDto {
+class AgentEventSubscriptionDto {
+  schema_versions string[]
+  source_kinds string[]
+  source_keys string[]
+  source_key_prefixes string[]
+}
+
+class AgentCardDto {
   name string
-  bundle string
-  description string
+  version string
+  content_hash string | null?
+  repository_version int | null?
+  agent_package string
+  agent_instance_id string
+  tools string[]
+  description string | null?
+  capabilities string[]
   tags string[]
-  event_sources string[]
+  subscriptions AgentEventSubscriptionDto[]
 }
 
 class HistoryContextV1 {
@@ -145,6 +130,33 @@ class HistoryContextV1 {
   truncated bool
   cursor string | null?
   payload map<string, OpaqueJson> | null?
+}
+
+class DiscoverAgentsNextOutput {
+  agents AgentCardDto[]
+  done bool
+  history_context HistoryContextV1 | null?
+}
+
+class DiscoverAgentsOpenInput {
+  reason string | null?
+}
+
+class DiscoverAgentsSendInput {
+  query string | null?
+  required_capabilities string[] | null?
+  required_schema_versions string[] | null?
+  required_source_kinds string[] | null?
+  limit int | null?
+  offset int | null?
+}
+
+class ToolDiscoveryRecordDto {
+  name string
+  bundle string
+  description string
+  tags string[]
+  event_sources string[]
 }
 
 class DiscoverToolsNextOutput {
@@ -160,6 +172,86 @@ class DiscoverToolsOpenInput {
 class DiscoverToolsSendInput {
   query string | null?
   limit int | null?
+}
+
+class ConversationPart {
+  text string | null?
+  raw string | null?
+  url string | null?
+  filename string | null?
+  media_type string | null?
+}
+
+class ConversationMessage {
+  role string | null?
+  parts ConversationPart[]
+}
+
+class ConversationChunk {
+  message ConversationMessage | null?
+  task string | null?
+  status_update string | null?
+  artifact_update string | null?
+}
+
+class InternalA2aNextOutput {
+  chunks ConversationChunk[]
+  completion string | null?
+  history_context HistoryContextV1 | null?
+}
+
+class InternalA2aTarget {
+  agent_package string
+  agent_instance_id string
+}
+
+class InternalA2aOpenInput {
+  target InternalA2aTarget
+}
+
+class InternalA2aSendInput {
+  parts ConversationPart[]
+}
+
+/// Tool card for system/discover_agents: metadata for polymorphic Open selection.
+class SystemDiscover_agentsToolCard {
+  tool_name "system/discover_agents"
+  description "Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents."
+  session_policy "Strict"
+  input_summary "{ limit?: anyOf(integer | null), offset?: anyOf(integer | null), query?: anyOf(string | null), required_capabilities?: anyOf(string[] | null), required_schema_versions?: anyOf(string[] | null), required_source_kinds?: anyOf(string[] | null) }"
+  tags string[] @description("Tool tags: system, discovery")
+}
+
+class SystemDiscover_agentsOpenStep {
+  op "Open"
+  tool_name "system/discover_agents" @description("Tool to open")
+  initial_input DiscoverAgentsOpenInput? @description("Optional open payload.")
+}
+
+class SystemDiscover_agentsSendStep {
+  op "Send"
+  input DiscoverAgentsSendInput @description("Payload for this step.")
+  citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
+}
+
+class SystemDiscover_agentsReadStep {
+  op "Read"
+  input ArchiveReadInput @description("Archive ref and optional pagination/grep params.")
+}
+
+class SystemDiscover_agentsFinishStep {
+  op "Finish"
+}
+
+class SystemDiscover_agentsAbortStep {
+  op "Abort"
+}
+
+type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep
+
+class SystemDiscover_agentsSessionPlan {
+  step SystemDiscover_agentsSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
+  citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
 }
 
 /// Tool card for system/discover_tools: metadata for polymorphic Open selection.
@@ -203,121 +295,43 @@ class SystemDiscover_toolsSessionPlan {
   citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
 }
 
-/// Tool card for support/calculate: metadata for polymorphic Open selection.
-class SupportCalculateToolCard {
-  tool_name "support/calculate"
-  description "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division."
-  session_policy "Strict"
-  input_summary "{ expression: { left: integer, operation: enum(\"Add\" | \"Divide\" | \"Multiply\" | \"Subtract\"), right: integer } }"
-  tags string[] @description("Tool tags: support, calculate")
+/// Tool card for system/internal_a2a: metadata for polymorphic Open selection.
+class SystemInternal_a2aToolCard {
+  tool_name "system/internal_a2a"
+  description "Opens a conversational session to another agent. Send a message (text or parts), Read the response, then Send follow-ups or Finish. Multiple Send/Read rounds are allowed within one session — use this for multi-turn conversations with the delegated agent."
+  session_policy "MultiSend"
+  input_summary "{ parts: { filename?: anyOf(string | null), media_type?: anyOf(string | null), raw?: anyOf(string | null), text?: anyOf(string | null), url?: anyOf(string | null) }[] }"
+  tags string[] @description("Tool tags: system, a2a")
 }
 
-class SupportCalculateOpenStep {
+class SystemInternal_a2aOpenStep {
   op "Open"
-  tool_name "support/calculate" @description("Tool to open")
+  tool_name "system/internal_a2a" @description("Tool to open")
+  initial_input InternalA2aOpenInput @description("Required open payload.")
 }
 
-class SupportCalculateSendStep {
+class SystemInternal_a2aSendStep {
   op "Send"
-  input CalculatorInput @description("Payload for this step.")
+  input InternalA2aSendInput @description("Conversational message payload. Set text to a non-empty string. Never null, never omit text.")
   citations string[] @description("Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.")
 }
 
-class SupportCalculateReadStep {
+class SystemInternal_a2aReadStep {
   op "Read"
   input ArchiveReadInput @description("Archive ref and optional pagination/grep params.")
 }
 
-class SupportCalculateFinishStep {
+class SystemInternal_a2aFinishStep {
   op "Finish"
 }
 
-class SupportCalculateAbortStep {
+class SystemInternal_a2aAbortStep {
   op "Abort"
 }
 
-type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep
+type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep
 
-class SupportCalculateSessionPlan {
-  step SupportCalculateSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
+class SystemInternal_a2aSessionPlan {
+  step SystemInternal_a2aSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send (input.text MUST be non-empty); Send done → Finish or Read @N.")
   citations string[] @description("History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.")
-}
-
-
-
-// ── builder: per-phase step executors (from IR) ──
-
-// Auto-generated per-phase step executor functions.
-// Each phase narrows the return type to only the legal FSM ops.
-
-/// Phase: select — open a tool session.
-function ChooseDiscoverToolsQuery__select(
-  user_message: string,
-  session_context: SessionContext
-) -> SystemDiscover_toolsOpenStep {
-
-  client DefaultClient
-  prompt #"[OPEN] Open a session with: system/discover_tools.\n\nFind tools that can help with: {{ user_message }}
-For Send: set input.query to a concise search term derived from the user message.
-
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{% for msg in ctx.tags['conversation_history'] %}
-{{ msg.role }}: {{ msg.content }}
-{% endfor %}
-{% endif %}
-
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
-"#
-
-}
-
-/// Phase: act — send query to system/discover_tools.
-function ChooseDiscoverToolsQuery__act__system_discover_tools(
-  user_message: string,
-  session_context: SessionContext
-) -> SystemDiscover_toolsSendStep {
-
-  client DefaultClient
-  prompt #"[SEND] A system/discover_tools session is open. Emit Send with your query.\n\nFind tools that can help with: {{ user_message }}
-For Send: set input.query to a concise search term derived from the user message.
-
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{% for msg in ctx.tags['conversation_history'] %}
-{{ msg.role }}: {{ msg.content }}
-{% endfor %}
-{% endif %}
-
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
-"#
-
-}
-
-/// Phase: continue — read, send again, or finish system/discover_tools.
-function ChooseDiscoverToolsQuery__continue__system_discover_tools(
-  user_message: string,
-  session_context: SessionContext
-) -> SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep {
-
-  client DefaultClient
-  prompt #"[CONTINUE] system/discover_tools result is archived.\nCheck session history:\n- See \"@N system/discover_tools\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_tools\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_tools\" with no content yet → emit Read archive_ref=\"@N\"\n\nFind tools that can help with: {{ user_message }}
-For Send: set input.query to a concise search term derived from the user message.
-
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{% for msg in ctx.tags['conversation_history'] %}
-{{ msg.role }}: {{ msg.content }}
-{% endfor %}
-{% endif %}
-
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object.
-"#
-
 }

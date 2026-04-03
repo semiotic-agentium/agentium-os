@@ -310,7 +310,10 @@ Session open (host FSM): {{ session_context.session_open }}
 Respond with a single JSON object matching the output schema below.
 Follow ctx.output_format exactly — do not add wrapper fields like "step".
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+"#
 
 }
 
@@ -347,7 +350,10 @@ Session open (host FSM): {{ session_context.session_open }}
 Respond with a single JSON object matching the output schema below.
 Follow ctx.output_format exactly — do not add wrapper fields like "step".
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
+"#
 
 }
 
@@ -384,7 +390,10 @@ Session open (host FSM): {{ session_context.session_open }}
 Respond with a single JSON object matching the output schema below.
 Follow ctx.output_format exactly — do not add wrapper fields like "step".
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object.
+"#
 
 }
 
@@ -421,7 +430,10 @@ Session open (host FSM): {{ session_context.session_open }}
 Respond with a single JSON object matching the output schema below.
 Follow ctx.output_format exactly — do not add wrapper fields like "step".
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
+"#
 
 }
 
@@ -458,6 +470,9 @@ Session open (host FSM): {{ session_context.session_open }}
 Respond with a single JSON object matching the output schema below.
 Follow ctx.output_format exactly — do not add wrapper fields like "step".
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object.
+"#
 
 }

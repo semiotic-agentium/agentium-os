@@ -89,7 +89,7 @@ use baml_rt_api::serve;
 use std::sync::Arc;
 
 let registry: Arc<dyn AgentRegistry> = Arc::new(my_registry);
-serve(registry, "127.0.0.1:8080", None, None).await?;
+serve(registry, "127.0.0.1:18080", None, None).await?;
 ```
 
 **Use only the router** (e.g. to mount under a prefix or add middleware):

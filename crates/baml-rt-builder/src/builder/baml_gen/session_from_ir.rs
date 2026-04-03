@@ -7,6 +7,27 @@ use internal_baml_core::ir::ir_hasher::IRSignature;
 
 use crate::builder::error::{Result, write_line};
 
+/// Appended to the shared session-coordination prompt on **select** hops so the model does not
+/// emit a step wrapper when the IR return type is a bare Open step (parse failure).
+///
+/// No ASCII double quotes inside: text is concatenated into BAML `prompt #""#` literals.
+const PHASE_STEP_EXECUTOR_SUFFIX_SELECT: &str = r#"
+
+PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+"#;
+
+/// Appended on **act** (Send-only) hops — the coordination prompt still mentions Report/AskUser.
+const PHASE_STEP_EXECUTOR_SUFFIX_ACT: &str = r#"
+
+PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
+"#;
+
+/// Appended on **continue** hops (Send | Read | Finish).
+const PHASE_STEP_EXECUTOR_SUFFIX_CONTINUE: &str = r#"
+
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object.
+"#;
+
 /// Generate polymorphic session BAML types AND per-phase step executor functions from the
 /// compiled IR. Single source of truth — no source text parsing.
 ///
@@ -110,8 +131,16 @@ pub fn render_generated_session_baml_from_ir(
                 .collect()
         };
 
-        let make_body = |preamble: &str| -> String {
-            format!("\n  client {client_name}\n  prompt #\"{preamble}{prompt_template}\"#\n")
+        // Build prompt with concatenation so IR prompt text (and phase suffixes) are not
+        // reinterpreted by format! — JSON examples may contain `{`/`}`.
+        let make_body = |preamble: &str, phase_suffix: &str| -> String {
+            let mut s = String::new();
+            s.push_str(&format!("\n  client {client_name}\n  prompt #\""));
+            s.push_str(preamble);
+            s.push_str(prompt_template);
+            s.push_str(phase_suffix);
+            s.push_str("\"#\n");
+            s
         };
 
         let open_types: Vec<String> = candidates
@@ -137,7 +166,10 @@ pub fn render_generated_session_baml_from_ir(
                 select_return.join(" | ")
             ),
         )?;
-        write_line(&mut phase_out, &make_body(&select_preamble))?;
+        write_line(
+            &mut phase_out,
+            &make_body(&select_preamble, PHASE_STEP_EXECUTOR_SUFFIX_SELECT),
+        )?;
         write_line(&mut phase_out, "}")?;
         write_line(&mut phase_out, "")?;
 
@@ -160,7 +192,10 @@ pub fn render_generated_session_baml_from_ir(
                 &mut phase_out,
                 &format!("function {act_name}{args_block} -> {send_type} {{"),
             )?;
-            write_line(&mut phase_out, &make_body(&act_preamble))?;
+            write_line(
+                &mut phase_out,
+                &make_body(&act_preamble, PHASE_STEP_EXECUTOR_SUFFIX_ACT),
+            )?;
             write_line(&mut phase_out, "}")?;
             write_line(&mut phase_out, "")?;
 
@@ -182,7 +217,10 @@ pub fn render_generated_session_baml_from_ir(
                     "function {continue_name}{args_block} -> {send_type} | {read_type} | {finish_type} {{"
                 ),
             )?;
-            write_line(&mut phase_out, &make_body(&continue_preamble))?;
+            write_line(
+                &mut phase_out,
+                &make_body(&continue_preamble, PHASE_STEP_EXECUTOR_SUFFIX_CONTINUE),
+            )?;
             write_line(&mut phase_out, "}")?;
             write_line(&mut phase_out, "")?;
         }

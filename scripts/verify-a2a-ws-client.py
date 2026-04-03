@@ -18,7 +18,7 @@ except ImportError:
 
 
 async def main():
-    url = sys.argv[1] if len(sys.argv) > 1 else "ws://127.0.0.1:8080/agents/stream-baml-tool/default/a2a/ws"
+    url = sys.argv[1] if len(sys.argv) > 1 else "ws://127.0.0.1:18080/agents/stream-baml-tool/default/a2a/ws"
     request = {"jsonrpc": "2.0", "method": "tasks.list", "params": {}, "id": None}
     print(f"Connecting to {url} ...")
     async with websockets.connect(url) as ws:

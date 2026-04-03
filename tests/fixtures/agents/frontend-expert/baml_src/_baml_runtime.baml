@@ -207,7 +207,7 @@ function ChooseClaudeDevAction(
     You control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
     RULES:
-    0. CRITICAL: Emit exactly one step object per reply (field name: step). Never return a steps array.
+    0. CRITICAL: When returning ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: the model must emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, Read, Finish, or Abort, with NO outer step wrapper. Never return a steps array.
     1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
     2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
     3. Initialization is two-hop under host FSM:
@@ -225,9 +225,9 @@ function ChooseClaudeDevAction(
     8. Never emit Open except on the Open/select phase (session not yet open).
     9. Never emit tool_call objects.
 
-    SESSION PLAN FORMAT: one-step session fragment only (`step`). Keep reason short when present.
+    SESSION PLAN FORMAT: For ClaudeDevSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
 
-    OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: {"action":"Report","message":"..."} or {"action":"AskUser","prompt":"..."} or {"step":{op,...}}.
+    OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
 
     {{ ctx.output_format }}
 
@@ -274,7 +274,7 @@ function ChooseClaudeDevAction__select(
   prompt #"[OPEN] Open a session with: claude/dev.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
-0. CRITICAL: Emit exactly one step object per reply (field name: step). Never return a steps array.
+0. CRITICAL: When returning ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: the model must emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, Read, Finish, or Abort, with NO outer step wrapper. Never return a steps array.
 1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
 2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
 3. Initialization is two-hop under host FSM:
@@ -292,9 +292,9 @@ RULES:
 8. Never emit Open except on the Open/select phase (session not yet open).
 9. Never emit tool_call objects.
 
-SESSION PLAN FORMAT: one-step session fragment only (`step`). Keep reason short when present.
+SESSION PLAN FORMAT: For ClaudeDevSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
 
-OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: {"action":"Report","message":"..."} or {"action":"AskUser","prompt":"..."} or {"step":{op,...}}.
+OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
 
 {{ ctx.output_format }}
 
@@ -318,7 +318,10 @@ last_tool_output:
 user_approval_intent (approved | rejected | empty):
 {{ user_approval_intent }}
 
-Session open (host FSM): {{ session_context.session_open }}"#
+Session open (host FSM): {{ session_context.session_open }}
+
+PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+"#
 
 }
 
@@ -335,7 +338,7 @@ function ChooseClaudeDevAction__act__claude_dev(
   prompt #"[SEND] A claude/dev session is open. Emit Send with your query.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
-0. CRITICAL: Emit exactly one step object per reply (field name: step). Never return a steps array.
+0. CRITICAL: When returning ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: the model must emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, Read, Finish, or Abort, with NO outer step wrapper. Never return a steps array.
 1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
 2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
 3. Initialization is two-hop under host FSM:
@@ -353,9 +356,9 @@ RULES:
 8. Never emit Open except on the Open/select phase (session not yet open).
 9. Never emit tool_call objects.
 
-SESSION PLAN FORMAT: one-step session fragment only (`step`). Keep reason short when present.
+SESSION PLAN FORMAT: For ClaudeDevSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
 
-OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: {"action":"Report","message":"..."} or {"action":"AskUser","prompt":"..."} or {"step":{op,...}}.
+OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
 
 {{ ctx.output_format }}
 
@@ -379,7 +382,10 @@ last_tool_output:
 user_approval_intent (approved | rejected | empty):
 {{ user_approval_intent }}
 
-Session open (host FSM): {{ session_context.session_open }}"#
+Session open (host FSM): {{ session_context.session_open }}
+
+PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
+"#
 
 }
 
@@ -396,7 +402,7 @@ function ChooseClaudeDevAction__continue__claude_dev(
   prompt #"[CONTINUE] claude/dev result is archived.\nCheck session history:\n- See \"@N claude/dev\" followed by numbered lines → content is inline; emit Finish\n- See \"@N claude/dev\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N claude/dev\" with no content yet → emit Read archive_ref=\"@N\"\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
-0. CRITICAL: Emit exactly one step object per reply (field name: step). Never return a steps array.
+0. CRITICAL: When returning ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: the model must emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, Read, Finish, or Abort, with NO outer step wrapper. Never return a steps array.
 1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
 2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
 3. Initialization is two-hop under host FSM:
@@ -414,9 +420,9 @@ RULES:
 8. Never emit Open except on the Open/select phase (session not yet open).
 9. Never emit tool_call objects.
 
-SESSION PLAN FORMAT: one-step session fragment only (`step`). Keep reason short when present.
+SESSION PLAN FORMAT: For ClaudeDevSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
 
-OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: {"action":"Report","message":"..."} or {"action":"AskUser","prompt":"..."} or {"step":{op,...}}.
+OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
 
 {{ ctx.output_format }}
 
@@ -440,6 +446,9 @@ last_tool_output:
 user_approval_intent (approved | rejected | empty):
 {{ user_approval_intent }}
 
-Session open (host FSM): {{ session_context.session_open }}"#
+Session open (host FSM): {{ session_context.session_open }}
+
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object.
+"#
 
 }

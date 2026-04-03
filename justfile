@@ -8,7 +8,9 @@ set dotenv-load
 provenance_db := "provenance.db"
 # Separate SurrealKV store dirs (provenance + sibling config.db) so this stack can run alongside another runner using `provenance.db`.
 provenance_persona_claude_notion_db := "persona-claude-notion-provenance.db"
-runner_http_bind := "127.0.0.1:8080"
+# Default HTTP bind for `just` recipes. Port 8080 is a frequent conflict (e.g. inference gateways that 503
+# every route until a huge model loads). To use 8080, change the assignment below to `127.0.0.1:8080`.
+runner_http_bind := "127.0.0.1:18080"
 # Runner: options only — no positional packages. Agents load via `baml-agent-builder publish` + POST /deploy.
 runner_base_url := "http://" + runner_http_bind
 repository_url := runner_base_url + "/repository"
@@ -21,11 +23,11 @@ slack_channel := "agentium-eng"
 otel_endpoint := "http://localhost:4317"
 otel_protocol := "grpc"
 
-# Binaries (build once with `just build-release`, then agent recipes use these).
+# Binaries (build with `just build` / `just build-release`; paths default to release).
 # Respect CARGO_TARGET_DIR when present (.env sets it in some dev setups).
-builder_bin := "${CARGO_TARGET_DIR:-target}/debug/baml-agent-builder"
-runner_bin := "${CARGO_TARGET_DIR:-target}/debug/baml-agent-runner"
-graph_exporter_bin := "${CARGO_TARGET_DIR:-target}/debug/graph_exporter"
+builder_bin := "${CARGO_TARGET_DIR:-target}/release/baml-agent-builder"
+runner_bin := "${CARGO_TARGET_DIR:-target}/release/baml-agent-runner"
+graph_exporter_bin := "${CARGO_TARGET_DIR:-target}/release/graph_exporter"
 
 # Regenerate `_baml_runtime.baml` + `src/baml-runtime.d.ts` for every fixture under `tests/fixtures/agents/` and agent under `agents/`. Requires all tool crates (same as build-release).
 regen-fixtures:
@@ -35,7 +37,7 @@ regen-fixtures:
     set -a
     [ -f .env ] && . ./.env
     set +a
-    cargo run -p baml-rt-builder --all-features --bin regen_fixtures
+    cargo run --release -p baml-rt-builder --all-features --bin regen_fixtures
 
 # Pre-download fastembed ONNX models to models/fastembed/ (git-LFS tracked).
 # Run once after a fresh clone or when models/ is empty.
@@ -47,7 +49,7 @@ download-models:
     set -a
     [ -f .env ] && . ./.env
     set +a
-    cargo run -p baml-rt-embedding --bin download_models
+    cargo run --release -p baml-rt-embedding --bin download_models
 
 # Build release versions of builder, runner, and graph_exporter. Run once before using agent recipes.
 build-release:
@@ -57,13 +59,23 @@ build-release:
     set -a
     [ -f .env ] && . ./.env
     set +a
-    cargo build -p baml-rt-builder --bin baml-agent-builder --all-features
-    cargo build -p baml-agent-runner --all-features
-    cargo build -p baml-rt-provenance --bin graph_exporter --features cli
+    cargo build --release -p baml-rt-builder --bin baml-agent-builder --all-features
+    cargo build --release -p baml-agent-runner --all-features
+    cargo build --release -p baml-rt-provenance --bin graph_exporter --features cli
 
-# Build the runner in debug mode (fast local iteration).
+# Build the runner in release mode (default; matches `runner_bin`).
 # Note: build does not require OTEL env vars; export wiring is runtime-only.
 build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
+    cargo build --release -p baml-agent-runner --all-features
+
+# Build the runner in debug mode (binary: target/debug/baml-agent-runner).
+build-debug:
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
@@ -91,7 +103,7 @@ profile-runner:
     set -a
     [ -f .env ] && . ./.env
     set +a
-    cargo flamegraph -p baml-agent-runner --bin baml-agent-runner -- \
+    cargo flamegraph --release -p baml-agent-runner --bin baml-agent-runner -- \
       --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
 
 # Build Vue/Vite SPA to web/dist (`npm ci` + `npm run build`). Required for recipes that pass `--web-dir web/dist`.
@@ -526,11 +538,11 @@ slack-demo-stop:
 
 # Runs one polling cycle of the local Slack task daemon.
 task-daemon-slack-once:
-    cargo run -p baml-task-daemon -- run --channel {{slack_channel}} --once
+    cargo run --release -p baml-task-daemon -- run --channel {{slack_channel}} --once
 
 # Runs the local Slack task daemon in watch mode.
 task-daemon-slack:
-    cargo run -p baml-task-daemon -- run --channel {{slack_channel}} --interval-seconds 120
+    cargo run --release -p baml-task-daemon -- run --channel {{slack_channel}} --interval-seconds 120
 
 # Runs the leadership-oriented task-daemon demo flow (Slack -> LLM -> coordinator -> provenance).
 task-daemon-demo:
@@ -588,12 +600,12 @@ provenance-mermaid context_id: build-release
 
 # SDK CLI: workspace integrity check
 doctor:
-    cargo run -p cargo-agent-platform -- doctor
+    cargo run --release -p cargo-agent-platform -- doctor
 
 # SDK CLI: list all registered tools
 list-tools:
-    cargo run -p cargo-agent-platform -- list-tools
+    cargo run --release -p cargo-agent-platform -- list-tools
 
 # SDK CLI: list all agent packages
 list-agents:
-    cargo run -p cargo-agent-platform -- list-agents
+    cargo run --release -p cargo-agent-platform -- list-agents

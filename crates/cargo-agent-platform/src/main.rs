@@ -144,7 +144,7 @@ enum Commands {
         agent_dir: String,
 
         /// Repository base URL where repository routes are mounted
-        #[arg(long, default_value = "http://127.0.0.1:8080/repository")]
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
         repository_url: String,
 
         /// Why this publish happened
@@ -163,7 +163,7 @@ enum Commands {
         hash: String,
 
         /// Runner base URL (without /repository)
-        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        #[arg(long, default_value = "http://127.0.0.1:18080")]
         url: String,
     },
 
@@ -174,14 +174,14 @@ enum Commands {
         hash: String,
 
         /// Runner base URL (without /repository)
-        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        #[arg(long, default_value = "http://127.0.0.1:18080")]
         url: String,
     },
 
     /// List deployed agent instances from a running runner
     ListDeployedInstances {
         /// Runner base URL (without /repository)
-        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        #[arg(long, default_value = "http://127.0.0.1:18080")]
         url: String,
     },
 
@@ -210,7 +210,7 @@ enum Commands {
         agent: String,
 
         /// Runner base URL
-        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        #[arg(long, default_value = "http://127.0.0.1:18080")]
         url: String,
 
         /// Agent instance identifier

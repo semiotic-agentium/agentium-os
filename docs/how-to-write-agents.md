@@ -83,6 +83,10 @@ Every host tool the agent will call must appear in the **`tools`** array or regi
 }
 ```
 
+### 3.1a BAML `T | T[]` vs Rust `Vec<T>` on tool inputs
+
+BAML unions such as **one block or an array of blocks** deserialize from the LLM as either a **JSON object** or an **array**. If the Rust tool DTO uses `Vec<T>` or `Option<Vec<T>>`, serde’s default JSON mapping accepts **only arrays**, so a single object fails with `invalid type: map, expected a sequence`. When you implement or evolve host-tool Rust types that mirror such BAML shapes, wire **`baml_rt_core::serde_one_or_many::deserialize_optional_vec_or_one`** (or **`deserialize_vec_or_one`** for required fields) via **`#[serde(deserialize_with = "...")]`** — see [`crates/baml-rt-core/src/serde_one_or_many.rs`](../crates/baml-rt-core/src/serde_one_or_many.rs).
+
 ### 3.2 Write the BAML: planning function + polymorphic step executor
 
 After `regen_fixtures`, **`_baml_runtime.baml`** contains generated session types for each allowlisted tool (`SupportCrmOpenStep`, `SupportCrmSendStep`, `SupportEmailOpenStep`, etc.), tool cards (`SupportCrmToolCard`, `SupportEmailToolCard`), and the polymorphic union that links them. Your agent-specific BAML sits alongside that prelude.

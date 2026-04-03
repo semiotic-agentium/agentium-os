@@ -189,7 +189,10 @@ IMPORTANT: Return a top-level JSON object with a `step` field (and optional `rea
 Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.
 {{ ctx.output_format }}
 {{ _.role('user') }}
-{{ user_message }}"#
+{{ user_message }}
+
+PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+"#
 
 }
 
@@ -206,7 +209,10 @@ IMPORTANT: Return a top-level JSON object with a `step` field (and optional `rea
 Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.
 {{ ctx.output_format }}
 {{ _.role('user') }}
-{{ user_message }}"#
+{{ user_message }}
+
+PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
+"#
 
 }
 
@@ -223,6 +229,9 @@ IMPORTANT: Return a top-level JSON object with a `step` field (and optional `rea
 Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.
 {{ ctx.output_format }}
 {{ _.role('user') }}
-{{ user_message }}"#
+{{ user_message }}
+
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object.
+"#
 
 }

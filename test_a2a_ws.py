@@ -16,7 +16,7 @@ except ImportError:
     sys.exit(1)
 
 
-async def test_a2a_websocket(uri: str = "ws://127.0.0.1:8080"):
+async def test_a2a_websocket(uri: str = "ws://127.0.0.1:18080"):
     """Test A2A WebSocket interface with a simple request."""
 
     print(f"Connecting to {uri}...")
@@ -181,7 +181,7 @@ async def test_a2a_websocket(uri: str = "ws://127.0.0.1:8080"):
 
 async def main():
     """Main entry point."""
-    uri = sys.argv[1] if len(sys.argv) > 1 else "ws://127.0.0.1:8080"
+    uri = sys.argv[1] if len(sys.argv) > 1 else "ws://127.0.0.1:18080"
 
     print("="*60)
     print("A2A WebSocket Interface Test")
