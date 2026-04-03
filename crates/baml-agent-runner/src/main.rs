@@ -58,8 +58,11 @@ use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load dotenv before tracing/OTEL bootstrap so OTEL_* from .env are visible
+    // to `init_tracing()` and exporter wiring.
+    let dotenv_result = dotenvy::dotenv();
     tracing_setup::init_tracing();
-    match dotenvy::dotenv() {
+    match dotenv_result {
         Ok(path) => tracing::debug!(path = ?path, "Loaded .env"),
         Err(err) => tracing::debug!(error = ?err, "No .env loaded"),
     }
