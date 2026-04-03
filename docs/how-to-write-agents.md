@@ -392,6 +392,8 @@ The stack uses a **unified citation contract** tied to a **ref table** built whe
 
 Intents, step transitions, and effects carry **`citations: string[]`** using **these exact strings** so downstream systems **parse, resolve, and check** claims against the same ref table the model saw — not parallel "evidence prose."
 
+The builder centralizes long `@description` text for **`StructuredReply.citations`**, session-plan and Send **citations**, and **`ArchiveReadInput`** (grep-first, bounded **limit**, **offset** paging) in [`crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs`](../crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs); `regen_fixtures` refreshes `_baml_runtime.baml` from that source.
+
 Full rationale vs PUD-style evidence strings: [citable-history-and-checked-citations.md](citable-history-and-checked-citations.md).
 
 ### 6.2 Worked example: projected history for the reporting agent

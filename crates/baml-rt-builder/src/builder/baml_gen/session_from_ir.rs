@@ -25,7 +25,7 @@ PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op mu
 /// Appended on **continue** hops (Send | Read | Finish).
 const PHASE_STEP_EXECUTOR_SUFFIX_CONTINUE: &str = r#"
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object.
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
 "#;
 
 /// Generate polymorphic session BAML types AND per-phase step executor functions from the
@@ -63,8 +63,8 @@ pub fn render_generated_session_baml_from_ir(
         "// Each phase narrows the return type to only the legal FSM ops.",
     )?;
     write_line(&mut phase_out, "")?;
-    // SessionContext lives in the static prelude (`generated_tools_prelude.baml`) so tool coordination
-    // BAML can reference it when merged into `_baml_runtime.baml` before this section.
+    // SessionContext lives in the shared prelude (`prompt_copy::render_generated_tools_prelude`) so tool
+    // coordination BAML can reference it when merged into `_baml_runtime.baml` before this section.
 
     for func in ir.walk_functions() {
         let func_name = func.name();
@@ -204,7 +204,8 @@ pub fn render_generated_session_baml_from_ir(
                  Check session history:\\n\
                  - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
                  - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit Read to paginate\\n\
-                 - See \\\"@N {tool_name_str}\\\" with no content yet → emit Read archive_ref=\\\"@N\\\"\\n\\n"
+                 - See \\\"@N {tool_name_str}\\\" with no content yet → emit Read archive_ref=\\\"@N\\\"\\n\
+                 - Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\\n\\n"
             );
             let continue_name = SessionTypeNames::r#continue(func_name, &slug);
             write_line(

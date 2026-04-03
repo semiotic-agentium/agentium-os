@@ -1,7 +1,7 @@
 //! BAML text generation: one emitted prelude ([`GENERATED_BAML_PRELUDE_FILE`]), analogous to `src/baml-runtime.d.ts`.
 //!
 //! ## Layout
-//! - [`prelude`] — static `.baml` fragments under [`templates`](templates) (`include_str!`).
+//! - [`prelude`] + [`prompt_copy`] — shared `_baml_runtime` header types (`render_generated_tools_prelude`); module docs define prompt style (Must / Use / Optional, emit vs return).
 //! - [`writer`] — small line-oriented buffer ([`writer::BamlWriter`]); BAML is not JS/Rust, so we do
 //! - [`tool_interfaces`] — manifest-driven tool cards + FSM step types.
 //! - [`session_from_ir`] — polymorphic plans + per-phase executors from compiled IR.
@@ -10,6 +10,7 @@
 
 mod escape;
 mod prelude;
+mod prompt_copy;
 mod session_from_ir;
 mod tool_interfaces;
 pub mod writer;

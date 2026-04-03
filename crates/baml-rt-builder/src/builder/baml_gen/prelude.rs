@@ -1,5 +1,8 @@
-//! Static BAML fragments shipped as real `.baml` files under [`templates/`](templates)
-//! so editors and reviewers see syntax-highlighted source instead of Rust string soup.
+//! Shared prelude for `_baml_runtime.baml`: emitted by [`super::prompt_copy::render_generated_tools_prelude`]
+//! so citation and Read/grep policy stay aligned with per-tool session interfaces.
 
-/// Shared header, FSM docs, planning types, `StructuredReply` / part types, `ArchiveReadInput`.
-pub const GENERATED_TOOLS_PRELUDE: &str = include_str!("templates/generated_tools_prelude.baml");
+/// Renders shared header, FSM docs, planning types, `StructuredReply` / part types, `ArchiveReadInput`.
+#[must_use]
+pub fn generated_tools_prelude() -> String {
+    super::prompt_copy::render_generated_tools_prelude()
+}

@@ -10,7 +10,8 @@ use baml_tools_calculator as _;
 use serde_json::Value;
 
 use super::{
-    escape::escape_baml_description, prelude::GENERATED_TOOLS_PRELUDE, writer::BamlWriter,
+    escape::escape_baml_description, prelude::generated_tools_prelude, prompt_copy,
+    writer::BamlWriter,
 };
 use crate::builder::{error::Result, schema_to_baml};
 
@@ -29,7 +30,7 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
 
     let tool_metadata = resolve_manifest_tools(tool_names)?;
     let mut w = BamlWriter::new();
-    w.push_block(GENERATED_TOOLS_PRELUDE);
+    w.push_block(&generated_tools_prelude());
     let out = w.as_mut_string();
 
     // --- Domain type generation ---
@@ -402,9 +403,9 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
         "Payload for this step."
     };
     let step_desc = if is_claude_or_a2a {
-        "Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send (input.text MUST be non-empty); Send done → Finish or Read @N."
+        prompt_copy::STEP_DESC_CLAUDE_OR_A2A
     } else {
-        "Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again."
+        prompt_copy::STEP_DESC_DEFAULT
     };
 
     write_line(output, &format!("class {} {{", open_step_name))?;
@@ -453,7 +454,10 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     )?;
     write_line(
         output,
-        "  citations string[] @description(\"Evidence refs grounding this Send action. #N = session/history lines; @N = archived tool output; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! for counter-evidence. Required: cite what informed this action.\")",
+        &format!(
+            "  citations string[] @description(\"{}\")",
+            escape_baml_description(prompt_copy::CITATIONS_SEND_STEP)
+        ),
     )?;
     write_line(output, "}")?;
     write_line(output, "")?;
@@ -462,7 +466,10 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     write_line(output, "  op \"Read\"")?;
     write_line(
         output,
-        "  input ArchiveReadInput @description(\"Archive ref and optional pagination/grep params.\")",
+        &format!(
+            "  input ArchiveReadInput @description(\"{}\")",
+            escape_baml_description(prompt_copy::READ_STEP_INPUT_DESCRIPTION)
+        ),
     )?;
     write_line(output, "}")?;
     write_line(output, "")?;
@@ -501,7 +508,10 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     )?;
     write_line(
         output,
-        "  citations string[] @description(\"History refs justifying this decision. #N = session/history lines (user, assistant, tool-calls); @N = archived Send/tool output only; @N:L / @N:L1-L2 for lines inside an archive. Prefix with ! (e.g. !#N or !@N) for counter-evidence that this decision overrides. Copy each ref exactly as labeled. Do not use # for archives or @ for history—these prefixes are different namespaces.\")",
+        &format!(
+            "  citations string[] @description(\"{}\")",
+            escape_baml_description(prompt_copy::CITATIONS_DECISION_OR_SYNTHESIS)
+        ),
     )?;
     write_line(output, "}")?;
 
