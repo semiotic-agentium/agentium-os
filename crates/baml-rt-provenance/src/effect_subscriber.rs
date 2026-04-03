@@ -798,6 +798,7 @@ impl ProvenanceEffectSubscriber {
         task_id: Option<&TaskId>,
         context_id: &ContextId,
         citation_strings: &[String],
+        conversation_items_for_citations: &[crate::store::ProvenanceConversationContextItem],
     ) -> Option<LlmDriftInfo> {
         if !bool::from(outcome) || !self.drift_config.should_monitor(function_name) {
             return None;
@@ -854,10 +855,10 @@ impl ProvenanceEffectSubscriber {
         let citation_drift = self
             .compute_citation_drift_section(
                 context_id,
-                task_id,
                 decision_text.trim(),
                 citation_strings,
                 provider.as_ref(),
+                conversation_items_for_citations,
             )
             .await;
 
@@ -944,22 +945,18 @@ impl ProvenanceEffectSubscriber {
     async fn compute_citation_drift_section(
         &self,
         context_id: &ContextId,
-        task_id: Option<&TaskId>,
         decision_text: &str,
         citation_strings: &[String],
         embed_provider: &dyn EmbeddingProvider,
+        conversation_items: &[crate::store::ProvenanceConversationContextItem],
     ) -> Option<LlmCitationDriftInfo> {
         if citation_strings.is_empty() || decision_text.is_empty() {
             return None;
         }
         let registry = self.tool_registry.as_ref()?;
-        let items = self
-            .writer
-            .conversation_context_with_task(context_id, Some(320), task_id)
-            .await
-            .ok()?;
-        let projection_items: Vec<_> = items
-            .into_iter()
+        let projection_items: Vec<_> = conversation_items
+            .iter()
+            .cloned()
             .filter_map(provenance_item_to_projection_item)
             .collect();
         // Use the live per-context archive ref table when available so `@N` citations
@@ -1592,6 +1589,16 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     .as_ref()
                     .map(extract_citation_strings_from_llm_result)
                     .unwrap_or_default();
+                // Single store read for citation-grounded drift + resolved-citation extraction.
+                // This avoids duplicate conversation_context_with_task reads on the LlmCompleted hot path.
+                let conv_items_for_citations = if citation_strings.is_empty() {
+                    Vec::new()
+                } else {
+                    self.writer
+                        .conversation_context_with_task(context_id, Some(320), task_id.as_ref())
+                        .await
+                        .unwrap_or_default()
+                };
                 let drift = self
                     .compute_drift(
                         &metadata.function_name,
@@ -1602,14 +1609,10 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                         task_id.as_ref(),
                         context_id,
                         &citation_strings,
+                        &conv_items_for_citations,
                     )
                     .await
                     .map(Box::new);
-                let conv_items_for_citations = self
-                    .writer
-                    .conversation_context_with_task(context_id, Some(320), task_id.as_ref())
-                    .await
-                    .unwrap_or_default();
                 let resolved_citations =
                     Self::extract_resolved_citations(&drift, &conv_items_for_citations);
                 let completion_metadata = match &metadata.metadata {
