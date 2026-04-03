@@ -1169,11 +1169,7 @@ impl ProvenanceEffectSubscriber {
             .map(|r| (r.n, r.is_history, r.negated, r.content.clone()))
             .collect();
         let assessment = self
-            .score_citation_drift_async(
-                embed_provider,
-                decision_text.to_string(),
-                scoring_input,
-            )
+            .score_citation_drift_async(embed_provider, decision_text.to_string(), scoring_input)
             .await?;
 
         // Zip assessment results with resolved metadata. `score_citation_drift` preserves
@@ -1522,7 +1518,10 @@ impl ProvenanceEffectSubscriber {
         }
 
         let step_embeddings = match self.drift_provider().await {
-            Some(provider) => match self.embed_batch_async(provider.clone(), step_texts.clone()).await {
+            Some(provider) => match self
+                .embed_batch_async(provider.clone(), step_texts.clone())
+                .await
+            {
                 Ok(embs) => embs,
                 Err(e) => {
                     tracing::warn!(error = %e, "Plan drift: failed to embed plan step descriptions");

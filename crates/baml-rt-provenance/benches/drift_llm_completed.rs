@@ -1,8 +1,11 @@
 //! Criterion benchmarks for `ProvenanceEffectSubscriber` LLM-completion drift path.
-//! 
+//!
 //! Goal: isolate local runtime/provenance overhead (no real LLM network calls).
 
-use std::{sync::{Arc, Mutex}, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -12,8 +15,8 @@ use baml_rt_core::{
 };
 use baml_rt_embedding::{DriftConfig, EmbeddingProvider, provider::EmbeddingError};
 use baml_rt_provenance::{
-    ProvEvent, ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
-    ProvenanceEffectSubscriber, ProvenanceWriter,
+    ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
+    ProvenanceConversationContextItem, ProvenanceEffectSubscriber, ProvenanceWriter,
 };
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use serde_json::json;
@@ -144,18 +147,22 @@ fn bench_llm_completed_drift(c: &mut Criterion) {
     });
 
     for batch in [4usize, 16usize, 64usize] {
-        g.bench_with_input(BenchmarkId::new("batch_events", batch), &batch, |b, &batch| {
-            b.iter(|| {
-                rt.block_on(async {
-                    for i in 0..batch {
-                        subscriber
-                            .on_effect(&mk_event(i))
-                            .await
-                            .expect("on_effect should succeed");
-                    }
+        g.bench_with_input(
+            BenchmarkId::new("batch_events", batch),
+            &batch,
+            |b, &batch| {
+                b.iter(|| {
+                    rt.block_on(async {
+                        for i in 0..batch {
+                            subscriber
+                                .on_effect(&mk_event(i))
+                                .await
+                                .expect("on_effect should succeed");
+                        }
+                    })
                 })
-            })
-        });
+            },
+        );
     }
 
     g.finish();
