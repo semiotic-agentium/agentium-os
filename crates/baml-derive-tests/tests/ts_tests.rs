@@ -34,6 +34,23 @@ fn simple_struct_ts_name() {
     assert_eq!(TsSimpleInput::ts_type_name(), "TsSimpleInput");
 }
 
+// ─── #[baml(vec_or_one)] — T | T[] ───────────────────────────────
+
+#[derive(BamlType)]
+struct TsVecOrOne {
+    #[baml(vec_or_one)]
+    pub items: Option<Vec<String>>,
+}
+
+#[test]
+fn vec_or_one_ts_decl() {
+    insta::assert_snapshot!(TsVecOrOne::ts_decl().unwrap(), @r"
+    export interface TsVecOrOne {
+      items: (string | string[]) | null;
+    }
+    ");
+}
+
 // ─── Struct with Option, Vec, HashMap ────────────────────────────
 
 #[derive(BamlType)]

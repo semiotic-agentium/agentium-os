@@ -8,6 +8,8 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Type;
 
+use crate::schema_resolve::{vec_or_one_element_type, vec_or_one_is_optional};
+
 /// Generate a `TokenStream` expression that evaluates to the TypeScript type
 /// string for the given Rust type.  Inserted into the generated `TsType` impl.
 ///
@@ -157,4 +159,28 @@ fn extract_two_generic_args(segment: &syn::PathSegment) -> Result<(Type, Type), 
 
 fn has_generic_args(segment: &syn::PathSegment) -> bool {
     !matches!(segment.arguments, syn::PathArguments::None)
+}
+
+/// TypeScript for `Vec<T>` / `Option<Vec<T>>` when wire may send one `T` or `T[]`.
+pub(crate) fn resolve_ts_tokens_for_vec_or_one_field(
+    field_ty: &Type,
+) -> Result<TokenStream, syn::Error> {
+    let elem_ty = vec_or_one_element_type(field_ty)?;
+    let elem_ts = resolve_ts_type_tokens(&elem_ty)?;
+    let optional = vec_or_one_is_optional(field_ty);
+    if optional {
+        Ok(quote! {
+            {
+                let __e = #elem_ts;
+                format!("({} | {}[]) | null", __e, __e)
+            }
+        })
+    } else {
+        Ok(quote! {
+            {
+                let __e = #elem_ts;
+                format!("{} | {}[]", __e, __e)
+            }
+        })
+    }
 }

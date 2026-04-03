@@ -3,7 +3,10 @@
 //! BAML unions such as `Block | Block[]` often deserialize from the LLM as a **single object**;
 //! Rust DTOs typically use `Vec<T>` or `Option<Vec<T>>`, which serde maps from JSON **arrays only**.
 //! Use [`deserialize_optional_vec_or_one`] or [`deserialize_vec_or_one`] with `#[serde(deserialize_with = "...")]`
-//! so wire shapes stay compatible.
+//! so wire shapes stay compatible. Pair with `#[baml(vec_or_one)]` on the same field for JSON Schema / TS.
+//!
+//! Boilerplate shims (turbofish cannot appear in `deserialize_with` string paths):
+//! [`define_optional_vec_or_one_shim!`], [`define_vec_or_one_shim!`].
 
 use serde::{Deserialize, Deserializer};
 
@@ -40,6 +43,34 @@ where
         OneOrMany::One(b) => vec![b],
         OneOrMany::Many(v) => v,
     })
+}
+
+/// Defines `fn $name<'de, D>(D) -> Result<Option<Vec<$T>>, D::Error>` for use with `deserialize_with`.
+#[macro_export]
+macro_rules! define_optional_vec_or_one_shim {
+    ($fn_name:ident, $T:ty) => {
+        fn $fn_name<'de, D>(
+            deserializer: D,
+        ) -> ::std::result::Result<::std::option::Option<::std::vec::Vec<$T>>, D::Error>
+        where
+            D: ::serde::Deserializer<'de>,
+        {
+            $crate::serde_one_or_many::deserialize_optional_vec_or_one(deserializer)
+        }
+    };
+}
+
+/// Defines `fn $name<'de, D>(D) -> Result<Vec<$T>, D::Error>` for use with `deserialize_with`.
+#[macro_export]
+macro_rules! define_vec_or_one_shim {
+    ($fn_name:ident, $T:ty) => {
+        fn $fn_name<'de, D>(deserializer: D) -> ::std::result::Result<::std::vec::Vec<$T>, D::Error>
+        where
+            D: ::serde::Deserializer<'de>,
+        {
+            $crate::serde_one_or_many::deserialize_vec_or_one(deserializer)
+        }
+    };
 }
 
 #[cfg(test)]

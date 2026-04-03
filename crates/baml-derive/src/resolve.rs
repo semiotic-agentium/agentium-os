@@ -9,6 +9,8 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::Type;
 
+use crate::schema_resolve::{vec_or_one_element_type, vec_or_one_is_optional};
+
 /// Generate a `TokenStream` expression that evaluates to the BAML type string
 /// for the given Rust type. This is inserted into the generated `BamlType` impl.
 ///
@@ -174,4 +176,28 @@ fn extract_two_generic_args(segment: &syn::PathSegment) -> Result<(Type, Type), 
 /// Check whether a path segment has generic arguments.
 fn has_generic_args(segment: &syn::PathSegment) -> bool {
     !matches!(segment.arguments, syn::PathArguments::None)
+}
+
+/// BAML `T | T[]` or `(T | T[])?` for `#[baml(vec_or_one)]` fields.
+pub(crate) fn resolve_type_tokens_for_vec_or_one_field(
+    field_ty: &Type,
+) -> Result<TokenStream, syn::Error> {
+    let elem_ty = vec_or_one_element_type(field_ty)?;
+    let elem_tokens = resolve_type_tokens(&elem_ty)?;
+    let optional = vec_or_one_is_optional(field_ty);
+    if optional {
+        Ok(quote! {
+            {
+                let __e = #elem_tokens;
+                format!("({} | {}[])?", __e, __e)
+            }
+        })
+    } else {
+        Ok(quote! {
+            {
+                let __e = #elem_tokens;
+                format!("({} | {}[])", __e, __e)
+            }
+        })
+    }
 }

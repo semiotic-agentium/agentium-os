@@ -117,7 +117,7 @@ class HistoryContextV1 {
 }
 
 class ClaudeToolNextOutput {
-  events ClaudeToolNextOutputEvents | ClaudeToolNextOutputEvents | ClaudeToolNextOutputEvents | ClaudeToolNextOutputEvents | ClaudeToolNextOutputEvents | ClaudeToolNextOutputEvents | ClaudeToolNextOutputEvents[]
+  events ClaudeToolNextOutputEvents[]
   completion string | null?
   history_context HistoryContextV1 | null?
 }
@@ -133,7 +133,7 @@ class ClaudeToolSendInputContent {
 
 class ClaudeToolSendInput {
   prompt string | null?
-  content ClaudeToolSendInputContent | ClaudeToolSendInputContent | ClaudeToolSendInputContent[] | null?
+  content (ClaudeToolSendInputContent | ClaudeToolSendInputContent[]) | null?
 }
 
 /// Tool card for claude/dev: metadata for polymorphic Open selection.
@@ -141,7 +141,7 @@ class ClaudeDevToolCard {
   tool_name "claude/dev"
   description "Host-managed Claude streaming session. Open once, send prompt/content, then call next() until completion is DONE/INTERRUPTED or INPUT_REQUIRED for resume."
   session_policy "Strict"
-  input_summary "{ content?: anyOf(oneOf({ kind: \"text\", text: string } | { kind: \"image_url\", url: string } | { data: string, kind: \"image_base64\", media_type: string })[] | null), prompt?: anyOf(string | null) }"
+  input_summary "{ content?: anyOf(oneOf(oneOf({ kind: \"text\", text: string } | { kind: \"image_url\", url: string } | { data: string, kind: \"image_base64\", media_type: string }) | oneOf({ kind: \"text\", text: string } | { kind: \"image_url\", url: string } | { data: string, kind: \"image_base64\", media_type: string })[]) | null), prompt?: anyOf(string | null) }"
   tags string[] @description("Tool tags: claude, stream, session")
 }
 

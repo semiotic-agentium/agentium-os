@@ -812,6 +812,24 @@ fn json_schema_to_baml_type(
 
     // Handle oneOf (union types)
     if let Some(one_of) = schema_obj.get("oneOf").and_then(|v| v.as_array()) {
+        // #[baml(vec_or_one)] wire schema: oneOf [ item, { type: array, items: item } ] with the same
+        // `item` Value twice — expand once to avoid duplicate inline classes (e.g. T | T | … | T[]).
+        if one_of.len() == 2
+            && let Some(second) = one_of[1].as_object()
+            && second.get("type").and_then(|t| t.as_str()) == Some("array")
+            && let Some(items) = second.get("items")
+            && items == &one_of[0]
+        {
+            let t = json_schema_to_baml_type(
+                output,
+                items,
+                generated,
+                all_schemas,
+                type_names,
+                inline_name_hint,
+            )?;
+            return Ok(format!("({t} | {t}[])"));
+        }
         let mut types = Vec::new();
         for variant in one_of {
             types.push(json_schema_to_baml_type(
@@ -823,7 +841,16 @@ fn json_schema_to_baml_type(
                 inline_name_hint,
             )?);
         }
-        return Ok(types.join(" | "));
+        // Multiple JSON Schema arms may map to the same generated BAML name (e.g. inline oneOf
+        // object variants sharing a nested class title); keep a stable deduped union.
+        let mut seen = HashSet::new();
+        let mut deduped: Vec<String> = Vec::new();
+        for t in types {
+            if seen.insert(t.clone()) {
+                deduped.push(t);
+            }
+        }
+        return Ok(deduped.join(" | "));
     }
 
     // Resolve the effective scalar type string.

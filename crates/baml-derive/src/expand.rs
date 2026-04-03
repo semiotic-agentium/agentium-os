@@ -11,9 +11,12 @@ use syn::{DataEnum, DataStruct, DeriveInput, Fields, Type};
 
 use crate::{
     attrs::{extract_doc_comment, parse_container_attrs, parse_field_attrs, parse_variant_attrs},
-    resolve::resolve_type_tokens,
-    schema_resolve::{is_option_type, resolve_schema_tokens},
-    ts_resolve::resolve_ts_type_tokens,
+    resolve::{resolve_type_tokens, resolve_type_tokens_for_vec_or_one_field},
+    schema_resolve::{
+        is_option_type, resolve_schema_tokens, resolve_schema_tokens_for_vec_or_one_field,
+        vec_or_one_element_type,
+    },
+    ts_resolve::{resolve_ts_tokens_for_vec_or_one_field, resolve_ts_type_tokens},
 };
 
 /// Main entry point: expand `#[derive(BamlType)]` for any supported data type.
@@ -80,11 +83,35 @@ fn expand_struct(
         let desc_tokens = option_str_tokens(&field_attrs.description);
         let skip = field_attrs.skip;
 
+        if field_attrs.vec_or_one {
+            if skip {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "`#[baml(vec_or_one)]` cannot be used with `#[baml(skip)]`",
+                ));
+            }
+            if field_attrs.type_override.is_some() {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "`#[baml(vec_or_one)]` cannot be combined with `#[baml(type = ...)]`",
+                ));
+            }
+            if field_attrs.ts_type.is_some() {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "`#[baml(vec_or_one)]` cannot be combined with `#[baml(ts_type = ...)]`",
+                ));
+            }
+            let _ = vec_or_one_element_type(&field.ty)?;
+        }
+
         // Resolve the BAML type string expression.
         let baml_type_expr = if let Some(ref override_type) = field_attrs.type_override {
             quote! { ::std::string::String::from(#override_type) }
         } else if skip {
             quote! { ::std::string::String::new() }
+        } else if field_attrs.vec_or_one {
+            resolve_type_tokens_for_vec_or_one_field(&field.ty)?
         } else {
             resolve_type_tokens(&field.ty)?
         };
@@ -104,6 +131,11 @@ fn expand_struct(
                 quote! { ::std::string::String::from(#explicit) }
             } else if field_attrs.type_override.is_some() {
                 quote! { ::std::string::String::from("any") }
+            } else if field_attrs.vec_or_one {
+                match resolve_ts_tokens_for_vec_or_one_field(&field.ty) {
+                    Ok(expr) => expr,
+                    Err(_) => quote! { ::std::string::String::from("any") },
+                }
             } else {
                 match resolve_ts_type_tokens(&field.ty) {
                     Ok(expr) => expr,
@@ -117,6 +149,11 @@ fn expand_struct(
             // Otherwise auto-resolve; fall back to `{}` on failure.
             let schema_expr = if field_attrs.type_override.is_some() {
                 quote! { ::serde_json::json!({}) }
+            } else if field_attrs.vec_or_one {
+                match resolve_schema_tokens_for_vec_or_one_field(&field.ty) {
+                    Ok(expr) => expr,
+                    Err(_) => quote! { ::serde_json::json!({}) },
+                }
             } else {
                 match resolve_schema_tokens(&field.ty) {
                     Ok(expr) => expr,
