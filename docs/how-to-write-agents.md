@@ -83,6 +83,10 @@ Every host tool the agent will call must appear in the **`tools`** array or regi
 }
 ```
 
+### 3.1a BAML `T | T[]` vs Rust `Vec<T>` on tool inputs
+
+BAML unions such as **one block or an array of blocks** deserialize from the LLM as either a **JSON object** or an **array**. If the Rust tool DTO uses `Vec<T>` or `Option<Vec<T>>`, serde’s default JSON mapping accepts **only arrays**, so a single object fails with `invalid type: map, expected a sequence`. When you implement or evolve host-tool Rust types that mirror such BAML shapes, wire **`baml_rt_core::serde_one_or_many::deserialize_optional_vec_or_one`** (or **`deserialize_vec_or_one`** for required fields) via **`#[serde(deserialize_with = "...")]`** — see [`crates/baml-rt-core/src/serde_one_or_many.rs`](../crates/baml-rt-core/src/serde_one_or_many.rs).
+
 ### 3.2 Write the BAML: planning function + polymorphic step executor
 
 After `regen_fixtures`, **`_baml_runtime.baml`** contains generated session types for each allowlisted tool (`SupportCrmOpenStep`, `SupportCrmSendStep`, `SupportEmailOpenStep`, etc.), tool cards (`SupportCrmToolCard`, `SupportEmailToolCard`), and the polymorphic union that links them. Your agent-specific BAML sits alongside that prelude.
@@ -387,6 +391,8 @@ The stack uses a **unified citation contract** tied to a **ref table** built whe
 | **`!#N`**, **`!@N`**, … | **Negation** — counter-evidence or explicit exclusion; parsed in `ParsedCitation` (`citations.rs`). |
 
 Intents, step transitions, and effects carry **`citations: string[]`** using **these exact strings** so downstream systems **parse, resolve, and check** claims against the same ref table the model saw — not parallel "evidence prose."
+
+The builder centralizes long `@description` text for **`StructuredReply.citations`**, session-plan and Send **citations**, and **`ArchiveReadInput`** (grep-first, bounded **limit**, **offset** paging) in [`crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs`](../crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs); `regen_fixtures` refreshes `_baml_runtime.baml` from that source.
 
 Full rationale vs PUD-style evidence strings: [citable-history-and-checked-citations.md](citable-history-and-checked-citations.md).
 

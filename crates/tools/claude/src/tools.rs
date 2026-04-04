@@ -67,12 +67,22 @@ pub enum ClaudeUserContentBlockDto {
     ImageBase64 { media_type: String, data: String },
 }
 
+baml_rt_core::define_optional_vec_or_one_shim!(
+    deserialize_claude_send_content,
+    ClaudeUserContentBlockDto
+);
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeToolSendInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_claude_send_content"
+    )]
+    #[baml(vec_or_one)]
     pub content: Option<Vec<ClaudeUserContentBlockDto>>,
     /// Structured input (e.g. UserInput::ToolApproval). When present, session uses the right type; for ToolApproval, prompt or display_text is sent and permission is applied. Not in TS/schema (opaque JSON).
     #[serde(skip_serializing_if = "Option::is_none", rename = "userInput")]

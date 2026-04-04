@@ -197,7 +197,7 @@ pub enum BamlRtError {
     },
 
     /// Parsed result conversion failed
-    #[error("Parsed result conversion failed")]
+    #[error("Parsed result conversion failed: {source}")]
     ParsedResultFailed {
         #[source]
         source: AnyhowError,

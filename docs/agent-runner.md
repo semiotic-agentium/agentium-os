@@ -27,8 +27,8 @@ Example (empty registry at start; deploy after publish):
 
 ```bash
 ./target/release/baml-agent-runner \
-  --serve-http 127.0.0.1:8080 \
-  --repository-url http://127.0.0.1:8080/repository \
+  --serve-http 127.0.0.1:18080 \
+  --repository-url http://127.0.0.1:18080/repository \
   --state-dir ./.runner-state \
   --repository-dir ./.repository \
   --provenance-db provenance.db
@@ -38,9 +38,9 @@ Example (empty registry at start; deploy after publish):
 
 | Option | Default | Description |
 |---|---|---|
-| `--serve-http <ADDR>` | unset | Bind HTTP API (example `127.0.0.1:8080`) |
+| `--serve-http <ADDR>` | unset | Bind HTTP API (example `127.0.0.1:18080`) |
 | `--a2a-stdio` | `false` | Run A2A JSON-RPC loop over stdio |
-| `--repository-url <URL>` | `http://127.0.0.1:8080/repository` | Base URL used for hash-based deploy/restore lookups |
+| `--repository-url <URL>` | `http://127.0.0.1:18080/repository` | Base URL used for hash-based deploy/restore lookups |
 | `--repository-dir <DIR>` | `./.repository` | Local repository storage directory used by mounted `/repository` routes |
 | `--state-dir <DIR>` | `./.runner-state` | Runner-local deployment state DB directory |
 | `--provenance-db <PATH>` | `:memory:` | Provenance storage (`:memory:` or file-backed path) |
@@ -71,7 +71,7 @@ For exact request/response DTOs, use `openapi.json`.
 Typical flow:
 
 1. Start runner with `--serve-http` and repository flags (see above).
-2. `baml-agent-builder publish --agent-dir ... --repository-url http://127.0.0.1:8080/repository --deploy-url http://127.0.0.1:8080` (or `POST /deploy` with the printed `content_hash`).
+2. `baml-agent-builder publish --agent-dir ... --repository-url http://127.0.0.1:18080/repository --deploy-url http://127.0.0.1:18080` (or `POST /deploy` with the printed `content_hash`).
 
 ## End-to-End Example (Publish -> Deploy -> Prompt)
 
@@ -80,8 +80,8 @@ Start runner:
 ```bash
 ./target/debug/baml-agent-runner \
   --a2a-stdio \
-  --serve-http 127.0.0.1:8080 \
-  --repository-url http://127.0.0.1:8080/repository \
+  --serve-http 127.0.0.1:18080 \
+  --repository-url http://127.0.0.1:18080/repository \
   --state-dir ./.runner-state \
   --repository-dir ./.repository \
   --provenance-db provenance.db
@@ -92,14 +92,14 @@ Publish source:
 ```bash
 baml-agent-builder publish \
   --agent-dir agents/clickup-agent \
-  --repository-url http://127.0.0.1:8080/repository \
-  --deploy-url http://127.0.0.1:8080
+  --repository-url http://127.0.0.1:18080/repository \
+  --deploy-url http://127.0.0.1:18080
 ```
 
 Deploy by content hash (the hash printed in publish result):
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/deploy \
+curl -sS -X POST http://127.0.0.1:18080/deploy \
   -H 'content-type: application/json' \
   -d '{"hash":"bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83"}' | jq
 ```
@@ -107,7 +107,7 @@ curl -sS -X POST http://127.0.0.1:8080/deploy \
 Discover routing key:
 
 ```bash
-curl -sS http://127.0.0.1:8080/agents \
+curl -sS http://127.0.0.1:18080/agents \
   | jq '.[].agent_card | {agent_package, agent_instance_id, name}'
 ```
 
@@ -124,7 +124,7 @@ Expected shape:
 Send prompt (non-stream endpoint):
 
 ```bash
-curl -sS -X POST "http://127.0.0.1:8080/agents/clickup-agent/default/a2a" \
+curl -sS -X POST "http://127.0.0.1:18080/agents/clickup-agent/default/a2a" \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc":"2.0",
@@ -158,7 +158,7 @@ Typical error if wrong:
 Stream mode (SSE):
 
 ```bash
-curl -N -X POST "http://127.0.0.1:8080/agents/clickup-agent/default/a2a/sse" \
+curl -N -X POST "http://127.0.0.1:18080/agents/clickup-agent/default/a2a/sse" \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc":"2.0",

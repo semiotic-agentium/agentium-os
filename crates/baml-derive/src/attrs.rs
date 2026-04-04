@@ -30,6 +30,10 @@ pub(crate) struct FieldAttrs {
     /// pub payload: Option<BTreeMap<String, serde_json::Value>>,
     /// ```
     pub ts_type: Option<String>,
+    /// `#[baml(vec_or_one)]` — field is `Vec<T>` or `Option<Vec<T>>` but wire JSON may be one `T` or
+    /// `T[]`. JSON Schema and TS use `T | T[]` (and `| null` when optional); pair with
+    /// `serde_one_or_many` + `deserialize_with` on the Rust field.
+    pub vec_or_one: bool,
 }
 
 /// Variant-level attributes from `#[baml(...)]`.
@@ -96,8 +100,12 @@ pub(crate) fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> 
                 result.ts_type = Some(parse_string_value(&meta)?);
                 return Ok(());
             }
+            if meta.path.is_ident("vec_or_one") {
+                result.vec_or_one = true;
+                return Ok(());
+            }
             Err(meta.error(
-                "unknown baml field attribute; expected `alias`, `description`, `skip`, `type`, or `ts_type`",
+                "unknown baml field attribute; expected `alias`, `description`, `skip`, `type`, `ts_type`, or `vec_or_one`",
             ))
         })?;
     }

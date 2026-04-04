@@ -421,6 +421,36 @@ fn test_schema_to_baml_array_types() {
 }
 
 #[test]
+fn test_schema_to_baml_one_of_item_or_array_strings() {
+    let mut schemas = HashMap::new();
+    let mut type_names = HashMap::new();
+
+    let class_schema: Value = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "content": {
+                "oneOf": [
+                    { "type": "string" },
+                    { "type": "array", "items": { "type": "string" } }
+                ]
+            }
+        },
+        "required": ["content"]
+    });
+
+    schemas.insert("OneOfVecTest".to_string(), class_schema);
+    type_names.insert("OneOfVecTest".to_string(), "OneOfVecTest".to_string());
+
+    let baml_output = generate_baml_types_from_schemas(&schemas, &type_names)
+        .expect("Should generate BAML for oneOf string | string[]");
+
+    assert!(
+        baml_output.contains("string | string[]"),
+        "expected BAML union for one object or array wire shape; got:\n{baml_output}"
+    );
+}
+
+#[test]
 fn test_schema_to_baml_description_escaping() {
     let mut schemas = HashMap::new();
     let mut type_names = HashMap::new();

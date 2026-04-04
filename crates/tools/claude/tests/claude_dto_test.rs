@@ -27,6 +27,22 @@ fn claude_send_input_roundtrip() {
 }
 
 #[test]
+fn claude_send_input_content_single_object_deserializes_like_one_element_array() {
+    // BAML / LLM often emit one content block as an object, not a one-element array.
+    let value = json!({
+        "prompt": "go",
+        "content": { "kind": "text", "text": "hello" }
+    });
+    let decoded: ClaudeToolSendInput = serde_json::from_value(value).expect("deserialize");
+    let blocks = decoded.content.as_ref().expect("content");
+    assert_eq!(blocks.len(), 1);
+    assert!(matches!(
+        &blocks[0],
+        ClaudeUserContentBlockDto::Text { text } if text == "hello"
+    ));
+}
+
+#[test]
 fn claude_send_input_with_user_input_tool_approval_roundtrip() {
     // BAML-facing: userInput has no requestId.
     let input = ClaudeToolSendInput {

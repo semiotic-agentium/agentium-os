@@ -166,7 +166,7 @@ cargo agent-platform publish [options]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--agent-dir <path>` | `.` | Path to agent source directory (`manifest.json` + `baml_src/`) |
-| `--repository-url <url>` | `http://127.0.0.1:8080/repository` | Repository base URL |
+| `--repository-url <url>` | `http://127.0.0.1:18080/repository` | Repository base URL |
 | `--rationale <text>` | `published from source directory` | Change rationale in publish metadata |
 | `--origin <kind>` | `iteration` | `original` or `iteration` |
 
@@ -179,7 +179,7 @@ cargo agent-platform publish --agent-dir .
 # Publish to another repository URL
 cargo agent-platform publish \
   --agent-dir ./agents/notion-agent \
-  --repository-url http://127.0.0.1:8080/repository
+  --repository-url http://127.0.0.1:18080/repository
 
 # Publish as an iteration with explicit rationale
 cargo agent-platform publish \
@@ -211,7 +211,7 @@ cargo agent-platform deploy [options]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--hash <sha256>` | *(required)* | Content hash returned by `publish` |
-| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL |
+| `--url <base-url>` | `http://127.0.0.1:18080` | Runner base URL |
 
 ```bash
 cargo agent-platform deploy --hash bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
@@ -230,7 +230,7 @@ cargo agent-platform undeploy [options]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--hash <sha256>` | *(required)* | Content hash of the deployed package |
-| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL |
+| `--url <base-url>` | `http://127.0.0.1:18080` | Runner base URL |
 
 ```bash
 cargo agent-platform undeploy --hash bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
@@ -248,7 +248,7 @@ cargo agent-platform list-deployed-instances [options]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL |
+| `--url <base-url>` | `http://127.0.0.1:18080` | Runner base URL |
 
 ---
 
@@ -348,7 +348,7 @@ cargo agent-platform chat --agent <name> [options]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--agent <name>` | *(required)* | Agent name or package from discovery |
-| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL |
+| `--url <base-url>` | `http://127.0.0.1:18080` | Runner base URL |
 | `--instance <id>` | `default` | Agent instance identifier |
 | `-v, --verbose` | off | Print debug info (message IDs, context IDs, raw errors) |
 

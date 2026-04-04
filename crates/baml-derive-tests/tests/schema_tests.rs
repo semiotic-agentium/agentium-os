@@ -78,6 +78,46 @@ fn vec_field_schema() {
     assert_eq!(counts_schema["items"]["type"], "integer");
 }
 
+// ─── #[baml(vec_or_one)] — one T or T[] on the wire ─────────────────
+
+#[derive(BamlType)]
+struct SchVecOrOneOpt {
+    #[baml(vec_or_one)]
+    pub items: Option<Vec<String>>,
+}
+
+#[derive(BamlType)]
+struct SchVecOrOneReq {
+    #[baml(vec_or_one)]
+    pub items: Vec<String>,
+}
+
+#[test]
+fn vec_or_one_optional_schema() {
+    let schema = SchVecOrOneOpt::json_schema_inline();
+    let items = &schema["properties"]["items"];
+    let any_of = items["anyOf"].as_array().expect("anyOf");
+    assert_eq!(any_of.len(), 2);
+    let inner = &any_of[0];
+    let one_of = inner["oneOf"].as_array().expect("oneOf");
+    assert_eq!(one_of.len(), 2);
+    assert_eq!(one_of[0]["type"], "string");
+    assert_eq!(one_of[1]["type"], "array");
+    assert_eq!(one_of[1]["items"]["type"], "string");
+    assert_eq!(any_of[1]["type"], "null");
+}
+
+#[test]
+fn vec_or_one_required_schema() {
+    let schema = SchVecOrOneReq::json_schema_inline();
+    let items = &schema["properties"]["items"];
+    let one_of = items["oneOf"].as_array().expect("oneOf");
+    assert_eq!(one_of.len(), 2);
+    assert_eq!(one_of[0]["type"], "string");
+    assert_eq!(one_of[1]["type"], "array");
+    assert_eq!(one_of[1]["items"]["type"], "string");
+}
+
 // ─── HashMap<K,V> → additionalProperties schema ───────────────────
 
 #[derive(BamlType)]

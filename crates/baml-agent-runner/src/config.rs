@@ -40,11 +40,11 @@ pub(crate) struct RunnerConfig {
                   Positional package paths are no longer accepted — all deployment goes through the repository."
 )]
 pub(crate) struct Cli {
-    /// Repository base URL used for hash-based deploy/restore (e.g. http://127.0.0.1:8080/repository).
+    /// Repository base URL used for hash-based deploy/restore (e.g. http://127.0.0.1:18080/repository).
     #[arg(
         long,
         value_name = "URL",
-        default_value = "http://127.0.0.1:8080/repository"
+        default_value = "http://127.0.0.1:18080/repository"
     )]
     pub(crate) repository_url: String,
 
@@ -60,7 +60,7 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) a2a_stdio: bool,
 
-    /// Bind HTTP API (discovery + A2A routing) on the given address (e.g. 127.0.0.1:8080).
+    /// Bind HTTP API (discovery + A2A routing) on the given address (e.g. 127.0.0.1:18080).
     #[arg(long, value_name = "ADDR")]
     pub(crate) serve_http: Option<String>,
 

@@ -625,7 +625,7 @@ globalThis.onChatMessage = async function(_message) {
             None,
             baml_rt_tools::ToolAccessPolicy::default(),
             None,
-            "http://127.0.0.1:8080/repository".to_string(),
+            "http://127.0.0.1:18080/repository".to_string(),
         ));
         runner.internal_a2a_router().set_runner(Arc::clone(&runner));
         runner

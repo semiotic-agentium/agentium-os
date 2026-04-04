@@ -35,6 +35,23 @@ fn simple_struct_definition() {
     ");
 }
 
+// ─── #[baml(vec_or_one)] — BAML T | T[] ───────────────────────────
+
+#[derive(BamlType)]
+struct VecOrOneInput {
+    #[baml(vec_or_one)]
+    pub items: Option<Vec<String>>,
+}
+
+#[test]
+fn vec_or_one_baml_decl() {
+    insta::assert_snapshot!(VecOrOneInput::baml_decl(), @r"
+    class VecOrOneInput {
+      items (string | string[])?
+    }
+    ");
+}
+
 // ─── Struct with Optional, Vec, HashMap ──────────────────────────
 
 #[derive(BamlType)]

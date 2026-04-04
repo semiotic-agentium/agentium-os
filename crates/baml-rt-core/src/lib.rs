@@ -18,6 +18,7 @@ pub mod ids;
 pub mod json;
 pub mod package;
 pub mod semantics;
+pub mod serde_one_or_many;
 pub mod stream_completion;
 pub mod types;
 
