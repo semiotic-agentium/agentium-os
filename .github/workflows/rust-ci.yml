@@ -33,11 +33,27 @@ jobs:
     runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Ensure zstd available
         run: |
           if ! command -v zstd &>/dev/null; then
             sudo apt-get update && sudo apt-get install -y zstd
+          fi
+
+      - name: Ensure ONNX model artifacts are materialized (git-lfs)
+        run: |
+          if ! command -v git-lfs &>/dev/null; then
+            sudo apt-get update && sudo apt-get install -y git-lfs
+          fi
+          git lfs install --local
+          git lfs pull --include="models/fastembed/**"
+
+          # Guard: fail fast if any fastembed file is still an LFS pointer.
+          if grep -R "version https://git-lfs.github.com/spec/v1" models/fastembed -n; then
+            echo "error: unresolved git-lfs pointers under models/fastembed"
+            exit 1
           fi
 
       - name: Install Rust (stable)
@@ -139,6 +155,13 @@ jobs:
           RUSTUP_TOOLCHAIN: stable
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OTEL_SDK_DISABLED: "true"
+          OTEL_TRACES_EXPORTER: "none"
+          OTEL_METRICS_EXPORTER: "none"
+          OTEL_LOGS_EXPORTER: "none"
+          OTEL_EXPORTER_OTLP_ENDPOINT: ""
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ""
+          OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ""
 
       - name: Run nextest (non-LLM suite)
         run: |
@@ -151,6 +174,13 @@ jobs:
           RUSTUP_TOOLCHAIN: stable
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OTEL_SDK_DISABLED: "true"
+          OTEL_TRACES_EXPORTER: "none"
+          OTEL_METRICS_EXPORTER: "none"
+          OTEL_LOGS_EXPORTER: "none"
+          OTEL_EXPORTER_OTLP_ENDPOINT: ""
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ""
+          OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ""
 
       - name: Publish JUnit report (LLM suite)
         if: always()
