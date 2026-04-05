@@ -16,7 +16,11 @@ mod runner;
 mod services;
 mod stdio;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::Context;
 use baml_rt_core::{CallbackStore, DeploymentManager, DeploymentStatus};
@@ -183,14 +187,16 @@ async fn main() -> anyhow::Result<()> {
         )
     })?;
     let repository_db_path = config.repository_dir.join("repository.db");
-    let repository_store = Arc::new(SurrealStore::open(&repository_db_path).await.with_context(
-        || {
-            format!(
-                "Failed to initialize repository DB at {}",
-                repository_db_path.display()
-            )
-        },
-    )?);
+    let repository_store = Arc::new(
+        open_repository_store_with_retry(&repository_db_path, 12, Duration::from_millis(250))
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to initialize repository DB at {}",
+                    repository_db_path.display()
+                )
+            })?,
+    );
     // Trait/object type: `baml_rt_core::CallbackStore`; process-wide slot: `baml_tools_system::callback_store`.
     baml_tools_system::callback_store::install_callback_store(
         deployment_state.clone() as Arc<dyn CallbackStore>
@@ -445,6 +451,43 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Agent Runner completed successfully");
     Ok(())
+}
+
+/// Open repository store with bounded retries to absorb transient embedded
+/// SurrealKV startup errors seen under CI/process churn.
+async fn open_repository_store_with_retry(
+    path: &Path,
+    max_attempts: usize,
+    delay: Duration,
+) -> anyhow::Result<SurrealStore> {
+    let mut last_error: Option<baml_rt_repository::RepositoryError> = None;
+
+    for attempt in 1..=max_attempts {
+        match SurrealStore::open(path).await {
+            Ok(store) => return Ok(store),
+            Err(err) => {
+                tracing::warn!(
+                    attempt,
+                    max_attempts,
+                    path = %path.display(),
+                    error = %err,
+                    "repository store open failed; retrying"
+                );
+                last_error = Some(err);
+                if attempt < max_attempts {
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+
+    match last_error {
+        Some(err) => Err(anyhow::anyhow!(err))
+            .with_context(|| format!("repository store open retries exhausted ({max_attempts})")),
+        None => Err(anyhow::anyhow!(
+            "repository store open retries exhausted without attempts"
+        )),
+    }
 }
 
 /// Background poll loop for registered event producers.
