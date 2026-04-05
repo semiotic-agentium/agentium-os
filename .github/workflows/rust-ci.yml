@@ -19,6 +19,8 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_INCREMENTAL: "false"
   CARGO_PROFILE_TEST_INCREMENTAL: "false"
+  # Prefer workspace-local ONNX model cache in CI for deterministic loading.
+  BAML_MODELS_DIR: ${{ github.workspace }}/models
   # Disable OTEL exporters in CI tests to avoid noisy collector connection errors
   # and timing variance when no collector is available.
   OTEL_SDK_DISABLED: "true"
@@ -46,13 +48,9 @@ jobs:
             sudo apt-get update && sudo apt-get install -y git-lfs
           fi
           git lfs install --local
+          # Best-effort hydrate checked-in model blobs; validation/repair happens
+          # in the dedicated warm-up step via fastembed model initialization.
           git lfs pull --include="models/fastembed/**"
-
-          # Guard: fail fast if any fastembed file is still an LFS pointer.
-          if grep -R "version https://git-lfs.github.com/spec/v1" models/fastembed -n; then
-            echo "error: unresolved git-lfs pointers under models/fastembed"
-            exit 1
-          fi
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -72,6 +70,16 @@ jobs:
           cache-on-failure: true
           cache-targets: "true"
 
+      - name: Cache ONNX model artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            models/fastembed
+            ~/.cache/fastembed
+          key: ${{ runner.os }}-fastembed-v1-${{ hashFiles('crates/baml-rt-embedding/Cargo.toml', 'crates/baml-rt-embedding/src/bin/download_models.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-fastembed-v1-
+
       - name: Install build dependencies
         run: |
           sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev libclang-dev util-linux lld
@@ -90,6 +98,12 @@ jobs:
             echo "error: expected global tsc 6.x (got $(tsc --version))"
             exit 1
           }
+
+      - name: Warm ONNX caches and validate model load
+        run: |
+          cargo run -p baml-rt-embedding --bin download_models
+        env:
+          RUSTUP_TOOLCHAIN: stable
 
       - name: Workspace integrity check
         run: cargo run -p cargo-agent-platform -- doctor --ci
