@@ -33,8 +33,6 @@ jobs:
     runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Ensure zstd available
         run: |
