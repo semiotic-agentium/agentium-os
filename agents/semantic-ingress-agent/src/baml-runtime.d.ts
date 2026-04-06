@@ -6,58 +6,9 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ClarificationNode { question: string;
-blocking: boolean;
-suggested_owner: string | null;
-depends_on: string[];
- }
-
-export interface DerivedTask { key: string;
-title: string;
-description: string;
-priority: string;
- }
-
-export interface FollowUpNode { kind: string;
-prompt: string;
-urgency: string;
- }
-
-export interface InterpretationResult { executive_summary: string;
-current_objectives: string[];
-workflow_seed: WorkflowSeed;
-derived_tasks: DerivedTask[];
- }
-
-export interface InvestigationNode { title: string;
-goal: string;
-prompt: string;
-when_to_run: string;
-depends_on: string[];
-confidence: string;
- }
-
-export interface SlackRecord { ts: string;
-user: string | null;
-text: string;
- }
-
-export interface SourceContext { source_kind: string;
-source_key: string;
-source_label: string;
- }
-
-export interface WorkflowSeed { goal: string;
-investigation_nodes: InvestigationNode[];
-clarification_nodes: ClarificationNode[];
-follow_up_nodes: FollowUpNode[];
- }
-
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
-
-declare function InterpretSlackRecords(args: { source: SourceContext; records: SlackRecord[] } & { __baml_invocation_token?: string }): Promise<InterpretationResult>;
 
 }
 

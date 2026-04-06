@@ -4,6 +4,7 @@
   "entry_point": "src/index.ts",
   "signature": "semantic-ingress-agent@1.0.0",
   "tools": [
+    "support/slack",
     "system/discover_agents",
     "system/discover_tools",
     "system/internal_a2a"
@@ -15,10 +16,10 @@
     "interpretation"
   ],
   "discovery": {
-    "description": "Interprets raw source records into structured task events via LLM analysis and delegates to downstream intake agents.",
+    "description": "Slack source-family semantic ingress boundary for raw host-delivered source records.",
     "capabilities": [
       "ingress:semantic-interpretation",
-      "event:intake"
+      "slack:intake"
     ],
     "subscriptions": [
       {

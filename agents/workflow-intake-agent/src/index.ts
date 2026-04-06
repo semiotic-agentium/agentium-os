@@ -1,5 +1,6 @@
 /// <reference path="./baml-runtime.d.ts" />
 import type {
+  ChatMessage,
   HostDispatchAck,
   HostDispatchRequest,
   ReplyPart,
@@ -86,6 +87,7 @@ type DelegatedTaskStateMatch = {
 };
 
 type TaskDaemonSourceKind = "slack" | "clickup" | "github_issues";
+type SupportedTaskDaemonSourceKind = Exclude<TaskDaemonSourceKind, "slack">;
 
 type TaskDaemonSource = {
   source_key: string;
@@ -112,49 +114,14 @@ type TaskDaemonDerivedTask = {
   priority?: string;
 };
 
-type SemanticIngressKind = "task_daemon_interpretation" | "slack_raw_source_records";
-
 type SemanticIngressEvent = {
-  ingress_kind: SemanticIngressKind;
+  ingress_kind: "task_daemon_interpretation";
   schema_version: string;
   source: TaskDaemonSource;
   project: TaskDaemonProject;
   messages_scanned?: number;
   interpretation: TaskDaemonInterpretation;
   derived_tasks: TaskDaemonDerivedTask[];
-  transcript_lines: string[];
-  no_work_reason?: string;
-  raw_source_records?: SlackRawSourceRecord[];
-  conversation_groups?: SlackConversationGroup[];
-};
-
-type SlackRawSourceRecord = {
-  channel_id?: string;
-  ts?: string;
-  thread_ts?: string;
-  user_id?: string;
-  user?: string;
-  user_name?: string;
-  username?: string;
-  bot_id?: string;
-  text?: string;
-  subtype?: string;
-  source_ref?: string;
-  permalink?: string;
-};
-
-type SlackConversationGroup = {
-  conversationKey: string;
-  records: SlackRawSourceRecord[];
-};
-
-type SlackConversationEvaluation = {
-  conversationKey: string;
-  records: SlackRawSourceRecord[];
-  transcriptLines: string[];
-  summary: string | null;
-  actionable: boolean;
-  usedThreadExpansion: boolean;
 };
 
 type DispatchSemanticIngress = {
@@ -163,7 +130,6 @@ type DispatchSemanticIngress = {
 };
 
 type IntakeDecisionKind =
-  | "create_pm_work"
   | "execute_existing_work"
   | "cancel_or_close_work"
   | "noop";
@@ -184,19 +150,10 @@ declare function openToolSession(
 // agent-discovery and internal A2A tools directly.
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
-const SLACK_TOOL_NAME = "support/slack";
 const TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION = "task-daemon.interpretation.v1";
-const RAW_SOURCE_SCHEMA_VERSION = "host.source-records.v1";
-const RAW_SOURCE_ROUTING_KEY = "event:intake";
 const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
 const MAX_DELEGATION_CONTINUE_STEPS = 64;
 const MAX_SUMMARY_CHARS = 1_200;
-const MAX_SLACK_THREAD_REPLY_LIMIT = 50;
-const MAX_SLACK_TRANSCRIPT_LINES_PER_CONVERSATION = 8;
-const MAX_SLACK_TRANSCRIPT_LINES_PER_EVENT = 20;
-const MAX_SLACK_CONVERSATION_EVALUATIONS_CONCURRENCY = 4;
-const SLACK_ACTION_CUE_PATTERN =
-  /\b(please|can you|could you|need(?:s)? to|action item|todo|follow up|follow-up|next step|track (?:this|it)|create (?:a )?(?:task|ticket)|open (?:an )?(?:issue|ticket)|assign|blocking|blocker|urgent|asap)\b/i;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object";
@@ -255,6 +212,22 @@ function parseTaskDaemonSourceKind(value: unknown): TaskDaemonSourceKind | null 
     return value;
   }
   return null;
+}
+
+function isSupportedTaskDaemonSourceKind(
+  source: TaskDaemonSourceKind,
+): source is SupportedTaskDaemonSourceKind {
+  return source === "clickup" || source === "github_issues";
+}
+
+function unsupportedSourceError(source: TaskDaemonSourceKind): string {
+  if (source === "slack") {
+    return (
+      "workflow-intake-agent no longer routes Slack task-daemon interpretation events. " +
+      "semantic-ingress-agent owns the Slack ingress boundary."
+    );
+  }
+  return `workflow-intake-agent does not support source ${source}.`;
 }
 
 function parseDiscoveredAgent(value: unknown): DiscoveredAgent | null {
@@ -458,7 +431,6 @@ async function runSingleSendSession(
   openInput: Record<string, unknown>,
   sendInput: Record<string, unknown>,
   maxSteps: number,
-  abortReasonForOutputs?: (steps: ParsedToolSessionStep[]) => string | null,
 ): Promise<DrainToolSessionResult> {
   let sessionHandle: ToolSessionHandle | null = null;
   try {
@@ -470,7 +442,6 @@ async function runSingleSendSession(
       (drained.hitStepLimit
         ? `${toolName} did not finish within ${maxSteps} continue steps.`
         : null) ||
-      abortReasonForOutputs?.(drained.steps) ||
       (terminal?.status === "suspended"
         ? `${toolName} suspended and cannot be resumed from this workflow-intake turn.`
         : null) ||
@@ -572,10 +543,6 @@ async function delegateToAgent(target: RouteTarget, prompt: string): Promise<str
     { target },
     { parts: [{ text: prompt }] },
     MAX_DELEGATION_CONTINUE_STEPS,
-    (steps) => {
-      const outputs = steps.map((step) => step.output);
-      return delegatedFailureMessage(outputs) || delegatedSuspensionMessage(outputs);
-    },
   );
 
   if (drained.hitStepLimit) {
@@ -656,377 +623,8 @@ function parseInterpretationEventValue(value: unknown): SemanticIngressEvent | n
       workflow_seed: interpretation.workflow_seed,
     },
     derived_tasks: parseInterpretationDerivedTasks(value.derived_tasks),
-    transcript_lines: [],
-    no_work_reason: undefined,
   };
 }
-
-function parseSlackRawSourceRecord(value: unknown): SlackRawSourceRecord | null {
-  if (!isObject(value)) return null;
-  return {
-    channel_id: normalizeOptionalString(value.channel_id) ?? undefined,
-    ts: normalizeOptionalString(value.ts) ?? undefined,
-    thread_ts: normalizeOptionalString(value.thread_ts) ?? undefined,
-    user_id: normalizeOptionalString(value.user_id) ?? undefined,
-    user: normalizeOptionalString(value.user) ?? undefined,
-    user_name: normalizeOptionalString(value.user_name) ?? undefined,
-    username: normalizeOptionalString(value.username) ?? undefined,
-    bot_id: normalizeOptionalString(value.bot_id) ?? undefined,
-    text: normalizeOptionalString(value.text) ?? undefined,
-    subtype: normalizeOptionalString(value.subtype) ?? undefined,
-    source_ref: normalizeOptionalString(value.source_ref) ?? undefined,
-    permalink: normalizeOptionalString(value.permalink) ?? undefined,
-  };
-}
-
-function isSlackSystemSubtype(subtype: string | undefined): boolean {
-  return (
-    subtype === "channel_join" ||
-    subtype === "channel_leave" ||
-    subtype === "channel_topic" ||
-    subtype === "channel_purpose" ||
-    subtype === "channel_name" ||
-    subtype === "channel_archive" ||
-    subtype === "channel_unarchive"
-  );
-}
-
-function isSlackConversationRecord(record: SlackRawSourceRecord): boolean {
-  const text = normalizeOptionalString(record.text);
-  if (!text) return false;
-  return !isSlackSystemSubtype(record.subtype);
-}
-
-function slackConversationKey(record: SlackRawSourceRecord): string | null {
-  return normalizeOptionalString(record.thread_ts) ?? normalizeOptionalString(record.ts);
-}
-
-function groupSlackConversationRecords(records: SlackRawSourceRecord[]): SlackConversationGroup[] {
-  const groups = new Map<string, SlackRawSourceRecord[]>();
-  for (const record of records) {
-    const key = slackConversationKey(record);
-    if (!key) continue;
-    const existing = groups.get(key);
-    if (existing) {
-      existing.push(record);
-      continue;
-    }
-    groups.set(key, [record]);
-  }
-  return Array.from(groups.entries()).map(([conversationKey, groupedRecords]) => ({
-    conversationKey,
-    records: groupedRecords,
-  }));
-}
-
-function slackChannelIdFromSourceKey(sourceKey: string): string | null {
-  const normalized = normalizeOptionalString(sourceKey);
-  if (!normalized) return null;
-  const separatorIndex = normalized.indexOf(":");
-  if (separatorIndex < 0) return null;
-  const sourceKind = normalized.slice(0, separatorIndex).toLowerCase();
-  if (sourceKind !== "slack") return null;
-  const channelId = normalized.slice(separatorIndex + 1).trim();
-  return channelId.length > 0 ? channelId : null;
-}
-
-function preferredSlackChannelId(
-  sourceKey: string,
-  records: SlackRawSourceRecord[],
-): string | null {
-  const sourceKeyChannelId = slackChannelIdFromSourceKey(sourceKey);
-  if (sourceKeyChannelId) return sourceKeyChannelId;
-  for (const record of records) {
-    const channelId = normalizeOptionalString(record.channel_id);
-    if (channelId) return channelId;
-  }
-  return null;
-}
-
-function renderSlackTranscriptLines(
-  records: SlackRawSourceRecord[],
-  maxLines: number = MAX_SLACK_TRANSCRIPT_LINES_PER_CONVERSATION,
-): string[] {
-  const rendered: string[] = [];
-  for (const record of records) {
-    const text = normalizeOptionalString(record.text);
-    if (!text) continue;
-    const author =
-      record.user_name ||
-      record.username ||
-      record.user ||
-      record.user_id ||
-      record.bot_id;
-    const prefix = author ? `${author}: ` : "";
-    rendered.push(truncateText(`${prefix}${normalizeText(text)}`, 320));
-    if (rendered.length >= maxLines) break;
-  }
-  return rendered;
-}
-
-function summarizeSlackTranscript(transcriptLines: string[]): string | null {
-  if (transcriptLines.length === 0) return null;
-  return truncateText(transcriptLines.join(" | "), 600);
-}
-
-function slackTranscriptHasActionCue(transcriptLines: string[]): boolean {
-  return transcriptLines.some((line) => SLACK_ACTION_CUE_PATTERN.test(line));
-}
-
-function inferSlackPriority(summary: string | null): string | undefined {
-  const lowered = (summary || "").toLowerCase();
-  if (/(urgent|asap|blocker|critical|sev[0-9]?|p0|p1)/.test(lowered)) {
-    return "high";
-  }
-  if (/(todo|follow up|follow-up|action item|need to|please|next step)/.test(lowered)) {
-    return "medium";
-  }
-  return transcriptHasMeaning(summary) ? "medium" : undefined;
-}
-
-function transcriptHasMeaning(summary: string | null): boolean {
-  return typeof summary === "string" && summary.trim().length > 0;
-}
-
-function deriveSlackTaskTitle(sourceLabel: string, summary: string | null): string {
-  if (!summary) return `Review Slack discussion from ${sourceLabel}`;
-  return truncateText(`Review Slack discussion: ${summary}`, 96);
-}
-
-function parseSlackRawSourceEventValue(value: unknown): SemanticIngressEvent | null {
-  if (!isObject(value)) return null;
-
-  const schemaVersion = normalizeOptionalString(value.schema_version);
-  if (schemaVersion !== RAW_SOURCE_SCHEMA_VERSION) return null;
-
-  const source = parseObjectField(value, "source");
-  if (!source) return null;
-
-  const sourceKind = parseTaskDaemonSourceKind(source.source_kind);
-  const sourceKey = normalizeOptionalString(source.source_key);
-  const sourceLabel = normalizeOptionalString(source.source_label);
-  if (sourceKind !== "slack" || !sourceKey || !sourceLabel) return null;
-
-  const records = parseObjectArray(value.records)
-    .map((record) => parseSlackRawSourceRecord(record))
-    .filter((record): record is SlackRawSourceRecord => record != null);
-  const readableRecords = records.filter((record) => isSlackConversationRecord(record));
-  const conversationGroups = groupSlackConversationRecords(readableRecords);
-  const noWorkReason =
-    readableRecords.length === 0
-      ? "The Slack raw batch contained no readable conversation text."
-      : conversationGroups.length === 0
-        ? "The Slack raw batch could not be grouped into conversation units."
-        : undefined;
-
-  return {
-    ingress_kind: "slack_raw_source_records",
-    schema_version: schemaVersion,
-    source: {
-      source_key: sourceKey,
-      source: sourceKind,
-      source_label: sourceLabel,
-    },
-    project: {},
-    messages_scanned: Array.isArray(value.records) ? value.records.length : records.length,
-    interpretation: {
-      executive_summary:
-        noWorkReason ||
-        `Slack raw ingress captured ${readableRecords.length} readable message(s) across ${conversationGroups.length} conversation unit(s) from ${sourceLabel}.`,
-      current_objectives: [],
-    },
-    derived_tasks: [],
-    transcript_lines: [],
-    no_work_reason: noWorkReason,
-    raw_source_records: records,
-    conversation_groups: conversationGroups,
-  };
-}
-
-function shouldExpandSlackConversationGroup(group: SlackConversationGroup): boolean {
-  return group.records.some((record) => normalizeOptionalString(record.thread_ts) != null);
-}
-
-function parseSlackToolOutputRecords(value: unknown): SlackRawSourceRecord[] {
-  const normalized = unwrapToolSessionNextOutput(value);
-  if (!isObject(normalized) || !Array.isArray(normalized.messages)) return [];
-
-  return normalized.messages
-    .map((message) => parseSlackRawSourceRecord(message))
-    .filter((record): record is SlackRawSourceRecord => record != null)
-    .filter((record) => isSlackConversationRecord(record));
-}
-
-async function fetchSlackConversationHistory(
-  sourceKey: string,
-  group: SlackConversationGroup,
-): Promise<{ records: SlackRawSourceRecord[]; usedThreadExpansion: boolean }> {
-  if (!shouldExpandSlackConversationGroup(group)) {
-    return { records: group.records, usedThreadExpansion: false };
-  }
-
-  const channelId = preferredSlackChannelId(sourceKey, group.records);
-  if (!channelId) {
-    return { records: group.records, usedThreadExpansion: false };
-  }
-
-  try {
-    const drained = await runSingleSendSession(
-      SLACK_TOOL_NAME,
-      {},
-      {
-        channel_id: channelId,
-        thread_ts: group.conversationKey,
-        inclusive: true,
-        limit: MAX_SLACK_THREAD_REPLY_LIMIT,
-        resolve_users: "none",
-      },
-      MAX_SINGLE_SEND_CONTINUE_STEPS,
-    );
-
-    if (drained.hitStepLimit) {
-      return { records: group.records, usedThreadExpansion: false };
-    }
-
-    const terminal = drained.steps[drained.steps.length - 1] || null;
-    if (terminal?.status === "error" || terminal?.status === "suspended") {
-      return { records: group.records, usedThreadExpansion: false };
-    }
-
-    const records = parseSlackToolOutputRecords(lastMeaningfulStepOutput(drained.steps));
-    if (records.length === 0) {
-      return { records: group.records, usedThreadExpansion: false };
-    }
-
-    return { records, usedThreadExpansion: true };
-  } catch (err) {
-    if (typeof console !== "undefined" && typeof console.warn === "function") {
-      console.warn(
-        `[workflow-intake-agent] Slack thread expansion failed for ${sourceKey}/${group.conversationKey}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-    return { records: group.records, usedThreadExpansion: false };
-  }
-}
-
-async function evaluateSlackConversationGroup(
-  sourceKey: string,
-  group: SlackConversationGroup,
-): Promise<SlackConversationEvaluation> {
-  const fetched = await fetchSlackConversationHistory(sourceKey, group);
-  const transcriptLines = renderSlackTranscriptLines(fetched.records);
-  const summary = summarizeSlackTranscript(transcriptLines);
-  const actionable = summary != null && slackTranscriptHasActionCue(transcriptLines);
-
-  return {
-    conversationKey: group.conversationKey,
-    records: fetched.records,
-    transcriptLines,
-    summary,
-    actionable,
-    usedThreadExpansion: fetched.usedThreadExpansion,
-  };
-}
-
-function renderSlackEventTranscript(evaluations: SlackConversationEvaluation[]): string[] {
-  const lines: string[] = [];
-  for (const [index, evaluation] of evaluations.entries()) {
-    const label =
-      evaluations.length > 1
-        ? `Conversation ${index + 1} (${evaluation.conversationKey})`
-        : null;
-    for (const line of evaluation.transcriptLines) {
-      lines.push(label ? `[${label}] ${line}` : line);
-      if (lines.length >= MAX_SLACK_TRANSCRIPT_LINES_PER_EVENT) {
-        return lines;
-      }
-    }
-  }
-  return lines;
-}
-
-function slackConversationNoWorkReason(
-  sourceLabel: string,
-  totalConversationCount: number,
-  actionableCount: number,
-): string | undefined {
-  if (totalConversationCount === 0) {
-    return "The Slack raw batch did not contain any conversation units.";
-  }
-  if (actionableCount === 0) {
-    return `Slack semantic ingress reviewed ${totalConversationCount} conversation unit(s) from ${sourceLabel} and did not find a clear actionable request.`;
-  }
-  return undefined;
-}
-
-async function materializeSlackSemanticIngressEvent(
-  event: SemanticIngressEvent,
-): Promise<SemanticIngressEvent> {
-  if (event.ingress_kind !== "slack_raw_source_records") {
-    return event;
-  }
-
-  const conversationGroups = event.conversation_groups ?? [];
-  if (conversationGroups.length === 0) {
-    return event;
-  }
-
-  const evaluations: SlackConversationEvaluation[] = [];
-  for (let i = 0; i < conversationGroups.length; i += MAX_SLACK_CONVERSATION_EVALUATIONS_CONCURRENCY) {
-    const batch = conversationGroups.slice(
-      i,
-      i + MAX_SLACK_CONVERSATION_EVALUATIONS_CONCURRENCY,
-    );
-    const batchEvaluations = await Promise.all(
-      batch.map((group) => evaluateSlackConversationGroup(event.source.source_key, group)),
-    );
-    evaluations.push(...batchEvaluations);
-  }
-  const actionable = evaluations.filter((evaluation) => evaluation.actionable);
-  const derivedTasks = actionable.map((evaluation) => ({
-    key: `slack-raw:${event.source.source_key}:${evaluation.conversationKey}`,
-    title: deriveSlackTaskTitle(event.source.source_label, evaluation.summary),
-    description: `Interpret the Slack discussion from ${event.source.source_label} and convert actionable requests into tracked PM work. Transcript: ${evaluation.summary}`,
-    priority: inferSlackPriority(evaluation.summary),
-  }));
-  const transcriptLines = renderSlackEventTranscript(
-    actionable.length > 0 ? actionable : evaluations.filter((evaluation) => evaluation.transcriptLines.length > 0),
-  );
-  const expandedConversationCount = evaluations.filter(
-    (evaluation) => evaluation.usedThreadExpansion,
-  ).length;
-  const noWorkReason = slackConversationNoWorkReason(
-    event.source.source_label,
-    evaluations.length,
-    actionable.length,
-  );
-  const executiveSummary =
-    derivedTasks.length === 0
-      ? noWorkReason ||
-        `Slack semantic ingress reviewed ${evaluations.length} conversation unit(s) from ${event.source.source_label}.`
-      : expandedConversationCount > 0
-        ? `Slack semantic ingress derived ${derivedTasks.length} actionable work item(s) from ${evaluations.length} conversation unit(s) in ${event.source.source_label}, including ${expandedConversationCount} expanded thread(s).`
-        : `Slack semantic ingress derived ${derivedTasks.length} actionable work item(s) from ${evaluations.length} conversation unit(s) in ${event.source.source_label}.`;
-
-  return {
-    ...event,
-    interpretation: {
-      ...event.interpretation,
-      executive_summary: executiveSummary,
-      current_objectives:
-        derivedTasks.length === 0
-          ? []
-          : [
-              "Preserve the actionable request details from each Slack conversation.",
-              "Create tracked project-management follow-up for every actionable conversation.",
-            ],
-    },
-    derived_tasks: derivedTasks,
-    transcript_lines: transcriptLines,
-    no_work_reason: derivedTasks.length === 0 ? noWorkReason : undefined,
-  };
-}
-
 function extractSemanticIngressEvent(
   message: ChatMessage | null | undefined,
 ): SemanticIngressEvent | null {
@@ -1036,8 +634,6 @@ function extractSemanticIngressEvent(
     if (!isObject(part)) continue;
     const event = parseInterpretationEventValue(part.data);
     if (event) return event;
-    const rawEvent = parseSlackRawSourceEventValue(part.data);
-    if (rawEvent) return rawEvent;
   }
 
   return null;
@@ -1054,18 +650,7 @@ function extractTaskDaemonInterpretationEventFromDispatch(
   return null;
 }
 
-function extractSlackRawSourceEventFromDispatch(
-  request: HostDispatchRequest | null | undefined,
-): SemanticIngressEvent | null {
-  if (!request || !Array.isArray(request.messages)) return null;
-  for (const message of request.messages) {
-    const event = parseSlackRawSourceEventValue(message);
-    if (event) return event;
-  }
-  return null;
-}
-
-function intakeRoutingKeyForSource(source: TaskDaemonSourceKind): string {
+function intakeRoutingKeyForSource(source: SupportedTaskDaemonSourceKind): string {
   if (source === "github_issues") return "github_issues:intake";
   return `${source}:intake`;
 }
@@ -1085,27 +670,23 @@ function classifyClickupTaskKind(task: TaskDaemonDerivedTask): IntakeDecisionKin
   return "execute_existing_work";
 }
 
-function deriveDecision(event: SemanticIngressEvent): IntakeDecision {
+function assertNever(value: never): never {
+  throw new Error(`workflow-intake-agent encountered unsupported source kind ${value}`);
+}
+
+function deriveDecision(
+  event: SemanticIngressEvent,
+  source: SupportedTaskDaemonSourceKind,
+): IntakeDecision {
   if (event.derived_tasks.length === 0) {
     return {
       kind: "noop",
-      reason: event.no_work_reason || "The event produced no derived work items.",
+      reason: "The event produced no derived work items.",
       requiredCapabilities: [],
     };
   }
 
-  if (event.source.source === "slack") {
-    return {
-      kind: "create_pm_work",
-      reason:
-        event.ingress_kind === "slack_raw_source_records"
-          ? "Slack raw ingress was interpreted into project-management follow-up work."
-          : "Slack-origin interpretations should become project-management work items.",
-      requiredCapabilities: ["clickup:create-task"],
-    };
-  }
-
-  if (event.source.source === "clickup") {
+  if (source === "clickup") {
     const kinds = new Set(event.derived_tasks.map((task) => classifyClickupTaskKind(task)));
     if (kinds.has("cancel_or_close_work")) {
       return {
@@ -1121,7 +702,7 @@ function deriveDecision(event: SemanticIngressEvent): IntakeDecision {
     };
   }
 
-  if (event.source.source === "github_issues") {
+  if (source === "github_issues") {
     return {
       kind: "execute_existing_work",
       reason:
@@ -1130,15 +711,10 @@ function deriveDecision(event: SemanticIngressEvent): IntakeDecision {
     };
   }
 
-  return {
-    kind: "execute_existing_work",
-    reason: "Unknown sources fall back to the generic execution path.",
-    requiredCapabilities: ["coordination:routing"],
-  };
+  return assertNever(source);
 }
 
 function preferredPackageTiebreakerForDecision(decision: IntakeDecision): string | null {
-  if (decision.kind === "create_pm_work") return "clickup-agent";
   if (
     decision.kind === "execute_existing_work" ||
     decision.kind === "cancel_or_close_work"
@@ -1284,25 +860,9 @@ function renderWorkflowFollowUpNodes(seed: unknown): string[] {
     .filter((entry): entry is string => entry != null);
 }
 
-function describeIngressKind(ingressKind: SemanticIngressKind): string {
-  if (ingressKind === "task_daemon_interpretation") {
-    return "task-daemon interpretation";
-  }
-  return "Slack semantic ingress from raw source records";
-}
-
-function renderDecisionHeader(event: SemanticIngressEvent, decision: IntakeDecision): string {
-  if (decision.kind === "create_pm_work") {
-    if (event.ingress_kind === "task_daemon_interpretation") {
-      return "Create project-management work items from this task-daemon event.";
-    }
-    return "Create project-management work items from this semantic-ingress event.";
-  }
+function renderDecisionHeader(decision: IntakeDecision): string {
   if (decision.kind === "execute_existing_work") {
-    if (event.ingress_kind === "task_daemon_interpretation") {
-      return "Execute or route the existing work item described by this task-daemon event.";
-    }
-    return "Execute or route the existing work item described by this semantic-ingress event.";
+    return "Execute or route the existing work item described by this task-daemon event.";
   }
   if (decision.kind === "cancel_or_close_work") {
     return "Reconcile terminal or missing work and stop duplicate execution.";
@@ -1315,9 +875,9 @@ function renderDownstreamPrompt(
   decision: IntakeDecision,
 ): string {
   const lines: string[] = [];
-  lines.push(renderDecisionHeader(event, decision));
+  lines.push(renderDecisionHeader(decision));
   lines.push("");
-  lines.push(`Ingress kind: ${describeIngressKind(event.ingress_kind)}`);
+  lines.push("Ingress kind: task-daemon interpretation");
   lines.push(`Schema version: ${event.schema_version}`);
   lines.push(`Source: ${event.source.source} (${event.source.source_label})`);
   lines.push(`Source key: ${event.source.source_key}`);
@@ -1376,10 +936,6 @@ function renderDownstreamPrompt(
     );
   }
 
-  if (event.transcript_lines.length > 0) {
-    appendNumberedSection(lines, "Source transcript", event.transcript_lines);
-  }
-
   lines.push("");
   lines.push(`Derived tasks (${event.derived_tasks.length} total):`);
   lines.push(...renderDerivedTasks(event.derived_tasks));
@@ -1406,8 +962,11 @@ function renderRouteSummary(
 
 async function handleSemanticIngressEvent(event: SemanticIngressEvent): Promise<SessionResult> {
   try {
-    const materializedEvent = await materializeSlackSemanticIngressEvent(event);
-    const decision = deriveDecision(materializedEvent);
+    if (!isSupportedTaskDaemonSourceKind(event.source.source)) {
+      return { error: unsupportedSourceError(event.source.source) };
+    }
+
+    const decision = deriveDecision(event, event.source.source);
     if (decision.kind === "noop") {
       return { message: textReply(decision.reason) };
     }
@@ -1428,7 +987,7 @@ async function handleSemanticIngressEvent(event: SemanticIngressEvent): Promise<
     }
 
     const target = selection.agent;
-    const prompt = renderDownstreamPrompt(materializedEvent, decision);
+    const prompt = renderDownstreamPrompt(event, decision);
     const downstreamTexts = await delegateToAgent(target, prompt);
     return {
       message: textReply(renderRouteSummary(decision, target, downstreamTexts)),
@@ -1444,7 +1003,7 @@ async function run(ctx: RunContext): Promise<SessionResult> {
   if (!event) {
     return {
       error:
-        "workflow-intake-agent expects a task-daemon.interpretation.v1 or Slack host.source-records.v1 payload in message.parts[].data.",
+        "workflow-intake-agent expects a task-daemon.interpretation.v1 payload in message.parts[].data.",
     };
   }
 
@@ -1463,30 +1022,19 @@ function parseDispatchSemanticIngress(
           "workflow-intake-agent expects task-daemon.interpretation.v1 payloads in dispatch.messages[].",
       };
     }
+    if (!isSupportedTaskDaemonSourceKind(event.source.source)) {
+      return { error: unsupportedSourceError(event.source.source) };
+    }
     return {
       event,
       expectedRoutingKey: intakeRoutingKeyForSource(event.source.source),
     };
   }
 
-  if (messageType === RAW_SOURCE_SCHEMA_VERSION) {
-    const event = extractSlackRawSourceEventFromDispatch(request);
-    if (!event) {
-      return {
-        error:
-          "workflow-intake-agent currently supports Slack host.source-records.v1 payloads in dispatch.messages[].",
-      };
-    }
-    return {
-      event,
-      expectedRoutingKey: RAW_SOURCE_ROUTING_KEY,
-    };
-  }
-
   return {
     error:
       `workflow-intake-agent expected message_type ` +
-      `${TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION} or ${RAW_SOURCE_SCHEMA_VERSION}, ` +
+      `${TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION}, ` +
       `got ${messageType ?? "missing"}.`,
   };
 }
@@ -1527,9 +1075,4 @@ async function onDispatch(request: HostDispatchRequest): Promise<HostDispatchAck
   };
 }
 
-const dispatchGlobal = globalThis as typeof globalThis & {
-  onDispatch?: (request: HostDispatchRequest) => Promise<HostDispatchAck>;
-};
-dispatchGlobal.onDispatch = onDispatch;
-
-__chat_register({ run });
+__chat_register({ run, onDispatch });

@@ -103,6 +103,7 @@ pub fn try_load_dotenv_for_tests() {
     feature = "llm-tests"
 ))]
 #[derive(Clone)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub struct SingleAgentRegistry {
     package: String,
     instance_id: String,
@@ -118,6 +119,7 @@ pub struct SingleAgentRegistry {
     feature = "llm-tests"
 ))]
 impl SingleAgentRegistry {
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
     pub fn new(
         package: &str,
         instance_id: &str,
@@ -184,10 +186,10 @@ impl AgentRegistry for SingleAgentRegistry {
         if key.agent_package.as_str() != self.package
             || key.agent_instance_id.as_str() != self.instance_id
         {
+            let pkg = key.agent_package.as_str();
+            let inst = key.agent_instance_id.as_str();
             return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "Agent {}/{} not found",
-                key.agent_package.as_str(),
-                key.agent_instance_id.as_str()
+                "Agent {pkg}/{inst} not found",
             )));
         }
         self.agent.handle_a2a_stream(request).await
@@ -201,10 +203,10 @@ impl AgentRegistry for SingleAgentRegistry {
         if key.agent_package.as_str() != self.package
             || key.agent_instance_id.as_str() != self.instance_id
         {
+            let pkg = key.agent_package.as_str();
+            let inst = key.agent_instance_id.as_str();
             return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "Agent {}/{} not found",
-                key.agent_package.as_str(),
-                key.agent_instance_id.as_str()
+                "Agent {pkg}/{inst} not found",
             )));
         }
         self.agent.handle_dispatch(request).await
@@ -217,6 +219,7 @@ impl AgentRegistry for SingleAgentRegistry {
     feature = "slack",
     feature = "llm-tests"
 ))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub struct TestMermaidService {
     store: Arc<SurrealProvenanceStore>,
 }
@@ -228,6 +231,7 @@ pub struct TestMermaidService {
     feature = "llm-tests"
 ))]
 impl TestMermaidService {
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
     pub fn new(store: Arc<SurrealProvenanceStore>) -> Self {
         Self { store }
     }
@@ -274,25 +278,15 @@ impl baml_rt_api::MermaidService for TestMermaidService {
     }
 }
 
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub struct RunningHttpServer {
     pub base_url: String,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
 
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
 impl RunningHttpServer {
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
     fn new(
         base_url: String,
         shutdown_tx: tokio::sync::oneshot::Sender<()>,
@@ -305,6 +299,7 @@ impl RunningHttpServer {
         }
     }
 
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
     pub async fn stop(mut self) {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(());
@@ -316,12 +311,7 @@ impl RunningHttpServer {
 }
 
 /// Single place for `http://host:port` + optional API root (e.g. `/v1`, `/api/v2`). Canonicalized once.
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 fn http_server_base_url(addr: std::net::SocketAddr, base_path: Option<&str>) -> String {
     let root = format!("http://{addr}");
     let Some(path) = base_path else {
@@ -335,12 +325,6 @@ fn http_server_base_url(addr: std::net::SocketAddr, base_path: Option<&str>) -> 
     format!("{root}/{path}")
 }
 
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
 impl Drop for RunningHttpServer {
     fn drop(&mut self) {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
@@ -352,12 +336,7 @@ impl Drop for RunningHttpServer {
     }
 }
 
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub async fn start_http_server(
     app: axum::Router,
     base_path: Option<&str>,
@@ -386,6 +365,7 @@ pub async fn start_http_server(
     feature = "slack",
     feature = "llm-tests"
 ))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub async fn start_runner_api_server(
     agent_package: &str,
     agent: baml_rt::A2aAgent,
@@ -473,6 +453,7 @@ pub async fn fetch_context_mermaid(
     feature = "slack",
     feature = "llm-tests"
 ))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub async fn post_a2a_sse_collect(
     client: &reqwest::Client,
     url: &str,
