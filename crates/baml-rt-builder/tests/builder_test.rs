@@ -4,9 +4,9 @@
 //! the package structure and execution flow.
 
 use tempfile::TempDir;
-use test_support::common::{
-    CalculatorTool, agent_fixture, ensure_fixture_runtime_types, workspace_root,
-};
+use test_support::common::workspace_root;
+#[cfg(feature = "llm-tests")]
+use test_support::common::{CalculatorTool, agent_fixture, ensure_fixture_runtime_types};
 
 #[tokio::test]
 async fn test_cli_package_agent() {

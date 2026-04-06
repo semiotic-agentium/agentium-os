@@ -1,12 +1,11 @@
-//! Agent routing identity: package + instance id for strict HTTP path routing.
-//! Used by the runner registry and the HTTP API surface.
+//! Typed route identity: package name, instance id, and route key parsing from A2A requests.
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{BamlRtError, EventSubscription, Result};
+use crate::{BamlRtError, Result};
 
 fn is_valid_identifier(value: &str) -> bool {
     value
@@ -117,91 +116,6 @@ impl AgentRouteKey {
     }
 }
 
-/// Cut-down A2A-like agent card for discovery (included in every GET /agents entry).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentCard {
-    pub name: String,
-    pub version: String,
-    /// Repository content hash identity (sha256 tar.gz), when known.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_hash: Option<String>,
-    /// Repository monotonic version number, when deployed from repository metadata.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repository_version: Option<u32>,
-    /// Route key for A2A dispatch.
-    pub agent_package: String,
-    pub agent_instance_id: String,
-    /// Tool names declared in manifest.
-    #[serde(default)]
-    pub tools: Vec<String>,
-    /// BAML function names registered in the agent's runtime (populated at boot).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub baml_functions: Vec<String>,
-    /// From manifest.discovery when present.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<String>,
-    /// Manifest tags (single source of truth).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tags: Vec<String>,
-    /// Event subscriptions declared by this agent.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subscriptions: Vec<EventSubscription>,
-}
-
-/// Narrow trait: lists running agents. HTTP GET /agents and system/discover_agents depend on this.
-pub trait AgentLister: Send + Sync {
-    fn list_agents(&self) -> Vec<AgentDiscoveryEntry>;
-}
-
-/// Holder for the agent-list catalogue (legacy/compatibility).
-/// Prefer injecting a concrete `AgentLister` (e.g. registry) at construction time so
-/// discovery never runs with an unset provider. If used, the host must call `set()`
-/// before any call to `list_agents()`; otherwise this implementation panics with a clear message.
-pub struct AgentListCatalogueHolder {
-    inner: crate::deferred::DeferredHolder<dyn AgentLister>,
-}
-
-impl AgentListCatalogueHolder {
-    pub fn new() -> Self {
-        Self {
-            inner: crate::deferred::DeferredHolder::new(),
-        }
-    }
-
-    pub fn set(&self, provider: std::sync::Arc<dyn AgentLister>) {
-        self.inner.set(provider);
-    }
-}
-
-impl Default for AgentListCatalogueHolder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl AgentLister for AgentListCatalogueHolder {
-    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
-        self.inner
-            .get()
-            .expect("AgentListCatalogueHolder not set: host must call set() before list_agents()")
-            .list_agents()
-    }
-}
-
-/// Discovery entry for one running agent instance (GET /agents).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentDiscoveryEntry {
-    pub agent_package: String,
-    pub agent_instance_id: String,
-    /// Manifest name (human-readable).
-    pub name: String,
-    pub version: String,
-    /// Agent card (cut-down shape) for discovery.
-    pub agent_card: AgentCard,
-}
-
 /// Extract route key from a JSON-RPC A2A request (params.metadata.target from system/internal_a2a).
 /// Centralizes the protocol so all consumers use the same parsing.
 pub fn route_key_from_request(request: impl AsRef<Value>) -> Result<AgentRouteKey> {
@@ -247,7 +161,7 @@ pub fn route_key_from_request(request: impl AsRef<Value>) -> Result<AgentRouteKe
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentInstanceId, AgentListCatalogueHolder, AgentLister, AgentPackageName};
+    use super::{AgentInstanceId, AgentPackageName};
 
     #[test]
     fn package_name_parse_rejects_invalid_characters() {
@@ -265,13 +179,5 @@ mod tests {
         assert!(AgentInstanceId::parse("").is_none());
         assert!(AgentInstanceId::parse(" staging ").is_none());
         assert!(AgentInstanceId::parse("..\0").is_none());
-    }
-
-    /// Construction-order invariant: list_agents() panics when holder was never set.
-    #[test]
-    #[should_panic(expected = "AgentListCatalogueHolder not set")]
-    fn catalogue_holder_list_agents_panics_when_unset() {
-        let holder = AgentListCatalogueHolder::new();
-        let _ = holder.list_agents();
     }
 }

@@ -27,8 +27,8 @@ pub use a2a_handler::{
 };
 pub use a2a_wire::{A2aStreamChunk, A2aWireRequest};
 pub use agent_routing::{
-    AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentListCatalogueHolder, AgentLister,
-    AgentPackageName, AgentRouteKey, route_key_from_request,
+    AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey,
+    route_key_from_request,
 };
 pub use baml_rt_citation::Citation;
 pub use bus::{
