@@ -1,6 +1,6 @@
 //! In-process A2A routing and registry adapters.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use baml_rt_a2a::{A2aRequestHandler, AgentRegistry, a2a};
@@ -25,6 +25,38 @@ impl AgentLister for RunnerRegistry {
         tracing::info!(
             count = entries.len(),
             "Discovery list_agents called (same registry as HTTP GET /agents)"
+        );
+        entries
+    }
+}
+
+/// Dynamic discovery list for [`crate::agent_package::AgentPackage::boot`]: each `list_agents`
+/// reflects the **current** deployed registry (same data as HTTP `GET /agents`).
+///
+/// Frozen snapshots at boot were wrong for the first deployed agent (empty map) and never picked up
+/// agents deployed later. This uses [`Weak`] so the tool registry does not retain a strong
+/// `Arc<AgentRunner>` cycle with the booted agent.
+#[derive(Clone)]
+pub(crate) struct LiveAgentLister {
+    runner: Weak<AgentRunner>,
+}
+
+impl LiveAgentLister {
+    pub(crate) fn new(runner: Weak<AgentRunner>) -> Self {
+        Self { runner }
+    }
+}
+
+impl AgentLister for LiveAgentLister {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        let Some(runner) = self.runner.upgrade() else {
+            tracing::warn!("LiveAgentLister: runner host dropped; returning empty discovery list");
+            return Vec::new();
+        };
+        let entries = runner.discovery_entries();
+        tracing::debug!(
+            count = entries.len(),
+            "LiveAgentLister list_agents (dynamic, matches HTTP GET /agents)"
         );
         entries
     }
@@ -80,6 +112,10 @@ impl InternalA2aRouter {
                 "InternalA2aRouter::set_runner called after runner already set; duplicate wiring ignored"
             );
         }
+    }
+
+    pub(crate) fn try_runner(&self) -> Option<Arc<AgentRunner>> {
+        self.runner.get().cloned()
     }
 
     pub(crate) async fn route_from(

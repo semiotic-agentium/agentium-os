@@ -28,6 +28,14 @@ const PHASE_STEP_EXECUTOR_SUFFIX_CONTINUE: &str = r#"
 PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
 "#;
 
+/// Injected into **act** and **continue** preambles for `system/discover_agents` only.
+/// Models often add `required_capabilities` / subscription filters from inferred intent; those
+/// filters are strict server-side and frequently yield zero rows, which bypasses query-only
+/// fallback and looks like no agents exist.
+const DISCOVER_AGENTS_SEND_DISCIPLINE: &str = r#"DISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+
+"#;
+
 /// Generate polymorphic session BAML types AND per-phase step executor functions from the
 /// compiled IR. Single source of truth — no source text parsing.
 ///
@@ -180,9 +188,16 @@ pub fn render_generated_session_baml_from_ir(
             let read_type = format!("{}ReadStep", tool.class_name);
             let finish_type = format!("{}FinishStep", tool.class_name);
 
-            let act_preamble = format!(
-                "[SEND] A {tool_name_str} session is open. Emit Send with your query.\\n\\n"
-            );
+            let act_preamble = if tool_name_str == "system/discover_agents" {
+                format!(
+                    "[SEND] A {tool_name_str} session is open. Emit Send with your query.\\n\\n{}",
+                    DISCOVER_AGENTS_SEND_DISCIPLINE
+                )
+            } else {
+                format!(
+                    "[SEND] A {tool_name_str} session is open. Emit Send with your query.\\n\\n"
+                )
+            };
             let act_name = SessionTypeNames::act(func_name, &slug);
             write_line(
                 &mut phase_out,
@@ -199,14 +214,27 @@ pub fn render_generated_session_baml_from_ir(
             write_line(&mut phase_out, "}")?;
             write_line(&mut phase_out, "")?;
 
-            let continue_preamble = format!(
-                "[CONTINUE] {tool_name_str} result is archived.\\n\
-                 Check session history:\\n\
-                 - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
-                 - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit Read to paginate\\n\
-                 - See \\\"@N {tool_name_str}\\\" with no content yet → emit Read archive_ref=\\\"@N\\\"\\n\
-                 - Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\\n\\n"
-            );
+            let continue_preamble = if tool_name_str == "system/discover_agents" {
+                format!(
+                    "[CONTINUE] {tool_name_str} result is archived.\\n\
+                     Check session history:\\n\
+                     - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
+                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit Read to paginate\\n\
+                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit Read archive_ref=\\\"@N\\\"\\n\
+                     - Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\\n\\n\
+                     {}",
+                    DISCOVER_AGENTS_SEND_DISCIPLINE
+                )
+            } else {
+                format!(
+                    "[CONTINUE] {tool_name_str} result is archived.\\n\
+                     Check session history:\\n\
+                     - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
+                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit Read to paginate\\n\
+                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit Read archive_ref=\\\"@N\\\"\\n\
+                     - Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\\n\\n"
+                )
+            };
             let continue_name = SessionTypeNames::r#continue(func_name, &slug);
             write_line(
                 &mut phase_out,

@@ -660,6 +660,144 @@ async fn discover_agents_session_filters_by_required_capabilities() {
 }
 
 #[tokio::test]
+async fn discover_agents_natural_language_query_miss_falls_back_to_first_page() {
+    let _suite_guard = suite_lock().lock().await;
+    let entries = vec![
+        entry_with_card("pkg-a", "Agent A", "0.1.0", Some("Does A")),
+        entry_with_card("pkg-b", "Agent B", "0.2.0", Some("Does B")),
+    ];
+    let agent_list = Arc::new(MockAgentList::new(entries));
+    let registry = Arc::new(ToolRegistry::new());
+    let a2a_handler = Arc::new(MockA2aHandler);
+    registry
+        .register_bundle(SystemBundle::new(agent_list, registry.clone(), a2a_handler))
+        .unwrap();
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000014").unwrap());
+    let session_id = registry
+        .open_session(
+            "system/discover_agents",
+            json!({}),
+            &ContextId::new(1, 14),
+            &agent_id,
+        )
+        .await
+        .unwrap();
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "query": "conversational agents for casual greetings and general chat",
+                "limit": 10
+            }),
+        )
+        .await
+        .unwrap();
+
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+    match &step {
+        ToolStep::Done {
+            output: Some(output),
+        } => {
+            let agents = output.get("agents").and_then(|a| a.as_array()).unwrap();
+            assert_eq!(agents.len(), 2);
+            let payload = output
+                .pointer("/historyContext/payload")
+                .expect("historyContext.payload");
+            assert_eq!(
+                payload.get("registry_count").and_then(|v| v.as_u64()),
+                Some(2)
+            );
+            assert_eq!(
+                payload.get("returned_count").and_then(|v| v.as_u64()),
+                Some(2)
+            );
+            assert_eq!(
+                payload.get("fallback_applied").and_then(|v| v.as_bool()),
+                Some(true)
+            );
+        }
+        other => panic!("expected Done(Some(output)), got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn discover_agents_subscription_filter_is_not_overridden_by_query_fallback() {
+    let entries = vec![entry_with_subscriptions(
+        "workflow-intake-agent",
+        "Workflow Intake",
+        "1.0.0",
+        Some("Consumes task-daemon Slack events"),
+        vec![EventSubscription {
+            schema_versions: vec![
+                baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap(),
+            ],
+            source_kinds: vec![baml_rt_core::EventSourceKind::parse("slack").unwrap()],
+            ..EventSubscription::default()
+        }],
+    )];
+    let agent_list = Arc::new(MockAgentList::new(entries));
+    let registry = Arc::new(ToolRegistry::new());
+    let a2a_handler = Arc::new(MockA2aHandler);
+    registry
+        .register_bundle(SystemBundle::new(agent_list, registry.clone(), a2a_handler))
+        .unwrap();
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000015").unwrap());
+    let session_id = registry
+        .open_session(
+            "system/discover_agents",
+            json!({}),
+            &ContextId::new(1, 15),
+            &agent_id,
+        )
+        .await
+        .unwrap();
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "query": "no-match-natural-language",
+                "requiredSourceKinds": ["clickup"],
+                "limit": 10
+            }),
+        )
+        .await
+        .unwrap();
+
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+    match &step {
+        ToolStep::Done {
+            output: Some(output),
+        } => {
+            let agents = output.get("agents").and_then(|a| a.as_array()).unwrap();
+            assert!(
+                agents.is_empty(),
+                "subscription filtering must remain authoritative when query fallback would otherwise return all agents"
+            );
+            let payload = output
+                .pointer("/historyContext/payload")
+                .expect("historyContext.payload");
+            assert_eq!(
+                payload.get("fallback_applied").and_then(|v| v.as_bool()),
+                Some(false)
+            );
+        }
+        other => panic!("expected Done(Some(output)), got {:?}", other),
+    }
+}
+
+#[tokio::test]
 async fn discover_agents_capability_filter_is_not_overridden_by_query_fallback() {
     let entries = vec![entry_with_capabilities(
         "clickup-agent",
@@ -711,6 +849,13 @@ async fn discover_agents_capability_filter_is_not_overridden_by_query_fallback()
             assert!(
                 agents.is_empty(),
                 "capability filtering must remain authoritative when query fallback would otherwise return all agents"
+            );
+            let payload = output
+                .pointer("/historyContext/payload")
+                .expect("historyContext.payload");
+            assert_eq!(
+                payload.get("fallback_applied").and_then(|v| v.as_bool()),
+                Some(false)
             );
         }
         other => panic!("expected Done(Some(output)), got {:?}", other),
