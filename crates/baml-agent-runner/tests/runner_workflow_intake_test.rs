@@ -3,18 +3,13 @@ mod common;
 
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
-use async_trait::async_trait;
-use baml_rt::{A2aRequestHandler, BamlRtError, baml::BamlRuntimeManager};
+use baml_rt::{A2aRequestHandler, baml::BamlRuntimeManager};
 use baml_rt_a2a::AgentRegistry;
-use baml_rt_core::{
-    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
-    AgentDispatchRequest, AgentLister, AgentRouteKey,
-    bus::{BusStream, BusWithEffects},
-};
+use baml_rt_core::{A2aStreamChunk, A2aWireRequest, AgentLister, bus::BusWithEffects};
 use baml_tools_system::SystemBundle;
 use common::{
-    CapturingA2aHandler, FailingA2aHandler, StaticAgentList, StreamingA2aHandler, discovery_entry,
-    e2e_serial_gate, start_http_server,
+    CapturingA2aHandler, DispatchRegistry, FailingA2aHandler, StaticAgentList, StreamingA2aHandler,
+    discovery_entry, e2e_serial_gate, start_http_server,
 };
 use serde_json::{Value, json};
 use test_support::common::{
@@ -30,98 +25,6 @@ fn workflow_intake_agent_dir() -> PathBuf {
     workspace_root()
         .join("agents")
         .join("workflow-intake-agent")
-}
-
-/// Minimal registry for HTTP API tests: forwards dispatch to [`baml_rt::A2aAgent`] (real `onDispatch`).
-#[derive(Clone)]
-struct DispatchRegistry {
-    package: String,
-    instance_id: String,
-    name: String,
-    version: String,
-    agent: baml_rt::A2aAgent,
-}
-
-impl DispatchRegistry {
-    fn new(
-        package: &str,
-        instance_id: &str,
-        name: &str,
-        version: &str,
-        agent: baml_rt::A2aAgent,
-    ) -> Self {
-        Self {
-            package: package.to_string(),
-            instance_id: instance_id.to_string(),
-            name: name.to_string(),
-            version: version.to_string(),
-            agent,
-        }
-    }
-}
-
-#[async_trait]
-impl AgentLister for DispatchRegistry {
-    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
-        let agent_card = AgentCard {
-            name: self.name.clone(),
-            version: self.version.clone(),
-            content_hash: None,
-            repository_version: None,
-            agent_package: self.package.clone(),
-            agent_instance_id: self.instance_id.clone(),
-            tools: Vec::new(),
-            baml_functions: Vec::new(),
-            description: None,
-            capabilities: Vec::new(),
-            tags: Vec::new(),
-            subscriptions: Vec::new(),
-        };
-        vec![AgentDiscoveryEntry {
-            agent_package: self.package.clone(),
-            agent_instance_id: self.instance_id.clone(),
-            name: self.name.clone(),
-            version: self.version.clone(),
-            agent_card,
-        }]
-    }
-}
-
-#[async_trait]
-impl AgentRegistry for DispatchRegistry {
-    async fn handle_a2a_stream(
-        &self,
-        key: &AgentRouteKey,
-        request: A2aWireRequest,
-    ) -> baml_rt_core::Result<BusStream<A2aStreamChunk>> {
-        if key.agent_package.as_str() != self.package
-            || key.agent_instance_id.as_str() != self.instance_id
-        {
-            let pkg = key.agent_package.as_str();
-            let inst = key.agent_instance_id.as_str();
-            return Err(BamlRtError::InvalidArgument(format!(
-                "Agent {pkg}/{inst} not found",
-            )));
-        }
-        self.agent.handle_a2a_stream(request).await
-    }
-
-    async fn handle_dispatch(
-        &self,
-        key: &AgentRouteKey,
-        request: AgentDispatchRequest,
-    ) -> baml_rt_core::Result<AgentDispatchAck> {
-        if key.agent_package.as_str() != self.package
-            || key.agent_instance_id.as_str() != self.instance_id
-        {
-            let pkg = key.agent_package.as_str();
-            let inst = key.agent_instance_id.as_str();
-            return Err(BamlRtError::InvalidArgument(format!(
-                "Agent {pkg}/{inst} not found",
-            )));
-        }
-        self.agent.handle_dispatch(request).await
-    }
 }
 
 async fn setup_workflow_intake_agent_unlocked(

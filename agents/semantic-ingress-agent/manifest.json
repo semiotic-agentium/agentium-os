@@ -6,7 +6,6 @@
   "tools": [
     "support/slack",
     "system/discover_agents",
-    "system/discover_tools",
     "system/internal_a2a"
   ],
   "tags": [

@@ -30,7 +30,7 @@ use baml_rt_core::A2aRequestHandler;
 ))]
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
-    AgentDispatchRequest, AgentLister, AgentRouteKey,
+    AgentDispatchRequest, AgentLister, AgentRouteKey, event_subscription::EventSubscription,
 };
 #[cfg(any(
     feature = "clickup",
@@ -178,6 +178,131 @@ impl AgentLister for SingleAgentRegistry {
 ))]
 #[::async_trait::async_trait]
 impl AgentRegistry for SingleAgentRegistry {
+    async fn handle_a2a_stream(
+        &self,
+        key: &AgentRouteKey,
+        request: A2aWireRequest,
+    ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<A2aStreamChunk>> {
+        if key.agent_package.as_str() != self.package
+            || key.agent_instance_id.as_str() != self.instance_id
+        {
+            let pkg = key.agent_package.as_str();
+            let inst = key.agent_instance_id.as_str();
+            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
+                "Agent {pkg}/{inst} not found",
+            )));
+        }
+        self.agent.handle_a2a_stream(request).await
+    }
+
+    async fn handle_dispatch(
+        &self,
+        key: &AgentRouteKey,
+        request: AgentDispatchRequest,
+    ) -> baml_rt_core::Result<AgentDispatchAck> {
+        if key.agent_package.as_str() != self.package
+            || key.agent_instance_id.as_str() != self.instance_id
+        {
+            let pkg = key.agent_package.as_str();
+            let inst = key.agent_instance_id.as_str();
+            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
+                "Agent {pkg}/{inst} not found",
+            )));
+        }
+        self.agent.handle_dispatch(request).await
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[derive(Clone)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub struct DispatchRegistry {
+    pub package: String,
+    pub instance_id: String,
+    pub name: String,
+    pub version: String,
+    pub subscriptions: Vec<EventSubscription>,
+    pub agent: baml_rt::A2aAgent,
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+impl DispatchRegistry {
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+    pub fn new(
+        package: &str,
+        instance_id: &str,
+        name: &str,
+        version: &str,
+        agent: baml_rt::A2aAgent,
+    ) -> Self {
+        Self {
+            package: package.to_string(),
+            instance_id: instance_id.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            subscriptions: Vec::new(),
+            agent,
+        }
+    }
+
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+    pub fn with_subscriptions(mut self, subscriptions: Vec<EventSubscription>) -> Self {
+        self.subscriptions = subscriptions;
+        self
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[::async_trait::async_trait]
+impl AgentLister for DispatchRegistry {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        let agent_card = AgentCard {
+            name: self.name.clone(),
+            version: self.version.clone(),
+            content_hash: None,
+            repository_version: None,
+            agent_package: self.package.clone(),
+            agent_instance_id: self.instance_id.clone(),
+            tools: Vec::new(),
+            baml_functions: Vec::new(),
+            description: None,
+            capabilities: Vec::new(),
+            tags: Vec::new(),
+            subscriptions: self.subscriptions.clone(),
+        };
+        vec![AgentDiscoveryEntry {
+            agent_package: self.package.clone(),
+            agent_instance_id: self.instance_id.clone(),
+            name: self.name.clone(),
+            version: self.version.clone(),
+            agent_card,
+        }]
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[::async_trait::async_trait]
+impl AgentRegistry for DispatchRegistry {
     async fn handle_a2a_stream(
         &self,
         key: &AgentRouteKey,

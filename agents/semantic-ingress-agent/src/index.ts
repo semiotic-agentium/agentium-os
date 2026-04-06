@@ -789,11 +789,17 @@ async function fetchSlackConversationHistory(
     );
 
     if (drained.hitStepLimit) {
+      console.warn(
+        `[semantic-ingress-agent] Slack thread expansion hit step limit for ${sourceKey}/${group.conversationKey}; falling back to original records.`,
+      );
       return { records: group.records, usedThreadExpansion: false };
     }
 
     const terminal = drained.steps[drained.steps.length - 1] || null;
     if (terminal?.status === "error" || terminal?.status === "suspended") {
+      console.warn(
+        `[semantic-ingress-agent] Slack thread expansion returned status "${terminal.status}" for ${sourceKey}/${group.conversationKey}; falling back to original records.`,
+      );
       return { records: group.records, usedThreadExpansion: false };
     }
 
@@ -957,13 +963,14 @@ function deriveDecision(event: SlackSemanticIngressEvent): IntakeDecision {
   };
 }
 
-function selectDownstreamAgent(agents: DiscoveredAgent[]): DownstreamSelection {
+function selectDownstreamAgent(
+  agents: DiscoveredAgent[],
+  requiredCapabilities: string[],
+): DownstreamSelection {
   if (agents.length === 0) {
     return {
       kind: "none",
-      reason:
-        `No downstream agent matched required capabilities: ` +
-        `${PROJECT_MANAGEMENT_CREATE_TASK_CAPABILITY}`,
+      reason: `No downstream agent matched required capabilities: ${requiredCapabilities.join(", ")}`,
     };
   }
   if (agents.length === 1) {
@@ -973,7 +980,7 @@ function selectDownstreamAgent(agents: DiscoveredAgent[]): DownstreamSelection {
     kind: "ambiguous",
     reason:
       `Multiple downstream agents matched required capabilities ` +
-      `${PROJECT_MANAGEMENT_CREATE_TASK_CAPABILITY}: ` +
+      `${requiredCapabilities.join(", ")}: ` +
       `${agents.map((agent) => `${agent.agent_package}/${agent.agent_instance_id}`).join(", ")}`,
   };
 }
@@ -1072,7 +1079,7 @@ async function handleSlackSemanticIngressEvent(
   }
 
   const agents = await discoverAgentsByCapabilities(decision.requiredCapabilities);
-  const selection = selectDownstreamAgent(agents);
+  const selection = selectDownstreamAgent(agents, decision.requiredCapabilities);
   if (selection.kind === "none" || selection.kind === "ambiguous") {
     return {
       accepted: false,
