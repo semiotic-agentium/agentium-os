@@ -201,14 +201,14 @@ async fn dispatch_sink_discovers_matching_subscribers_and_delivers_to_them() {
         state.push_hit("GET /agents".to_string()).await;
         Json(json!([
             {
-                "agent_package": "workflow-intake-agent",
+                "agent_package": "semantic-ingress-agent",
                 "agent_instance_id": "default",
-                "name": "workflow-intake-agent",
+                "name": "semantic-ingress-agent",
                 "version": "1.0.0",
                 "agent_card": {
-                    "name": "workflow-intake-agent",
+                    "name": "semantic-ingress-agent",
                     "version": "1.0.0",
-                    "agent_package": "workflow-intake-agent",
+                    "agent_package": "semantic-ingress-agent",
                     "agent_instance_id": "default",
                     "tools": ["system/internal_a2a"],
                     "baml_functions": [],
@@ -235,7 +235,7 @@ async fn dispatch_sink_discovers_matching_subscribers_and_delivers_to_them() {
                     "tools": ["system/internal_a2a"],
                     "baml_functions": [],
                     "description": "Different subscription",
-                    "capabilities": ["slack:intake"],
+                    "capabilities": ["clickup:intake"],
                     "subscriptions": [{
                         "schema_versions": ["task-daemon.interpretation.v1"],
                         "source_kinds": ["clickup"],
@@ -261,7 +261,7 @@ async fn dispatch_sink_discovers_matching_subscribers_and_delivers_to_them() {
     let app = Router::new()
         .route("/agents", get(list_agents_handler))
         .route(
-            "/agents/workflow-intake-agent/default/dispatch",
+            "/agents/semantic-ingress-agent/default/dispatch",
             post(dispatch_handler),
         )
         .with_state(state.clone());
@@ -277,7 +277,7 @@ async fn dispatch_sink_discovers_matching_subscribers_and_delivers_to_them() {
     assert!(hits.iter().any(|hit| hit == "GET /agents"));
     assert!(
         hits.iter()
-            .any(|hit| hit.contains("/agents/workflow-intake-agent/default/dispatch"))
+            .any(|hit| hit.contains("/agents/semantic-ingress-agent/default/dispatch"))
     );
     assert!(
         !hits
@@ -358,14 +358,14 @@ async fn dispatch_sink_reports_partial_subscriber_delivery_failures_with_success
         state.push_hit("GET /agents".to_string()).await;
         Json(json!([
             {
-                "agent_package": "workflow-intake-agent",
+                "agent_package": "semantic-ingress-agent",
                 "agent_instance_id": "default",
-                "name": "workflow-intake-agent",
+                "name": "semantic-ingress-agent",
                 "version": "1.0.0",
                 "agent_card": {
-                    "name": "workflow-intake-agent",
+                    "name": "semantic-ingress-agent",
                     "version": "1.0.0",
-                    "agent_package": "workflow-intake-agent",
+                    "agent_package": "semantic-ingress-agent",
                     "agent_instance_id": "default",
                     "tools": ["system/internal_a2a"],
                     "baml_functions": [],
@@ -428,7 +428,7 @@ async fn dispatch_sink_reports_partial_subscriber_delivery_failures_with_success
     let app = Router::new()
         .route("/agents", get(list_agents_handler))
         .route(
-            "/agents/workflow-intake-agent/default/dispatch",
+            "/agents/semantic-ingress-agent/default/dispatch",
             post(ok_handler),
         )
         .route("/agents/audit-agent/default/dispatch", post(bad_handler))
@@ -444,7 +444,7 @@ async fn dispatch_sink_reports_partial_subscriber_delivery_failures_with_success
 
     let msg = format!("{err:#}");
     assert!(msg.contains("delivered to 1 of 2 subscribed agents"));
-    assert!(msg.contains("workflow-intake-agent/default"));
+    assert!(msg.contains("semantic-ingress-agent/default"));
     assert!(msg.contains("audit-agent/default"));
     assert!(msg.contains("downstream failure"));
 

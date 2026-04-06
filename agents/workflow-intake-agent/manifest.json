@@ -4,7 +4,6 @@
   "entry_point": "src/index.ts",
   "signature": "workflow-intake-agent@1.0.0",
   "tools": [
-    "support/slack",
     "system/discover_agents",
     "system/discover_tools",
     "system/internal_a2a"
@@ -16,9 +15,8 @@
     "delegation"
   ],
   "discovery": {
-    "description": "Consumes task-daemon interpretation events and delegates follow-up work.",
+    "description": "Routes task-daemon interpretation events from ClickUp and GitHub to downstream agents based on source kind and derived work classification.",
     "capabilities": [
-      "slack:intake",
       "clickup:intake",
       "github_issues:intake"
     ],
@@ -28,7 +26,6 @@
           "task-daemon.interpretation.v1"
         ],
         "source_kinds": [
-          "slack",
           "clickup",
           "github_issues"
         ]

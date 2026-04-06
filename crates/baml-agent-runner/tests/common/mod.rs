@@ -30,7 +30,7 @@ use baml_rt_core::A2aRequestHandler;
 ))]
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
-    AgentDispatchRequest, AgentLister, AgentRouteKey,
+    AgentDispatchRequest, AgentLister, AgentRouteKey, event_subscription::EventSubscription,
 };
 #[cfg(any(
     feature = "clickup",
@@ -103,6 +103,7 @@ pub fn try_load_dotenv_for_tests() {
     feature = "llm-tests"
 ))]
 #[derive(Clone)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub struct SingleAgentRegistry {
     package: String,
     instance_id: String,
@@ -118,6 +119,7 @@ pub struct SingleAgentRegistry {
     feature = "llm-tests"
 ))]
 impl SingleAgentRegistry {
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
     pub fn new(
         package: &str,
         instance_id: &str,
@@ -184,10 +186,10 @@ impl AgentRegistry for SingleAgentRegistry {
         if key.agent_package.as_str() != self.package
             || key.agent_instance_id.as_str() != self.instance_id
         {
+            let pkg = key.agent_package.as_str();
+            let inst = key.agent_instance_id.as_str();
             return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "Agent {}/{} not found",
-                key.agent_package.as_str(),
-                key.agent_instance_id.as_str()
+                "Agent {pkg}/{inst} not found",
             )));
         }
         self.agent.handle_a2a_stream(request).await
@@ -201,10 +203,10 @@ impl AgentRegistry for SingleAgentRegistry {
         if key.agent_package.as_str() != self.package
             || key.agent_instance_id.as_str() != self.instance_id
         {
+            let pkg = key.agent_package.as_str();
+            let inst = key.agent_instance_id.as_str();
             return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "Agent {}/{} not found",
-                key.agent_package.as_str(),
-                key.agent_instance_id.as_str()
+                "Agent {pkg}/{inst} not found",
             )));
         }
         self.agent.handle_dispatch(request).await
@@ -217,6 +219,337 @@ impl AgentRegistry for SingleAgentRegistry {
     feature = "slack",
     feature = "llm-tests"
 ))]
+#[derive(Clone)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub struct DispatchRegistry {
+    pub package: String,
+    pub instance_id: String,
+    pub name: String,
+    pub version: String,
+    pub subscriptions: Vec<EventSubscription>,
+    pub agent: baml_rt::A2aAgent,
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+impl DispatchRegistry {
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+    pub fn new(
+        package: &str,
+        instance_id: &str,
+        name: &str,
+        version: &str,
+        agent: baml_rt::A2aAgent,
+    ) -> Self {
+        Self {
+            package: package.to_string(),
+            instance_id: instance_id.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            subscriptions: Vec::new(),
+            agent,
+        }
+    }
+
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+    pub fn with_subscriptions(mut self, subscriptions: Vec<EventSubscription>) -> Self {
+        self.subscriptions = subscriptions;
+        self
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[::async_trait::async_trait]
+impl AgentLister for DispatchRegistry {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        let agent_card = AgentCard {
+            name: self.name.clone(),
+            version: self.version.clone(),
+            content_hash: None,
+            repository_version: None,
+            agent_package: self.package.clone(),
+            agent_instance_id: self.instance_id.clone(),
+            tools: Vec::new(),
+            baml_functions: Vec::new(),
+            description: None,
+            capabilities: Vec::new(),
+            tags: Vec::new(),
+            subscriptions: self.subscriptions.clone(),
+        };
+        vec![AgentDiscoveryEntry {
+            agent_package: self.package.clone(),
+            agent_instance_id: self.instance_id.clone(),
+            name: self.name.clone(),
+            version: self.version.clone(),
+            agent_card,
+        }]
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[::async_trait::async_trait]
+impl AgentRegistry for DispatchRegistry {
+    async fn handle_a2a_stream(
+        &self,
+        key: &AgentRouteKey,
+        request: A2aWireRequest,
+    ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<A2aStreamChunk>> {
+        if key.agent_package.as_str() != self.package
+            || key.agent_instance_id.as_str() != self.instance_id
+        {
+            let pkg = key.agent_package.as_str();
+            let inst = key.agent_instance_id.as_str();
+            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
+                "Agent {pkg}/{inst} not found",
+            )));
+        }
+        self.agent.handle_a2a_stream(request).await
+    }
+
+    async fn handle_dispatch(
+        &self,
+        key: &AgentRouteKey,
+        request: AgentDispatchRequest,
+    ) -> baml_rt_core::Result<AgentDispatchAck> {
+        if key.agent_package.as_str() != self.package
+            || key.agent_instance_id.as_str() != self.instance_id
+        {
+            let pkg = key.agent_package.as_str();
+            let inst = key.agent_instance_id.as_str();
+            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
+                "Agent {pkg}/{inst} not found",
+            )));
+        }
+        self.agent.handle_dispatch(request).await
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[derive(Clone)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub struct StaticAgentList {
+    pub entries: Vec<AgentDiscoveryEntry>,
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+impl AgentLister for StaticAgentList {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        self.entries.clone()
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub struct DelegationCall {
+    pub agent_package: String,
+    pub agent_instance_id: String,
+    pub prompt: String,
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[derive(Clone, Default)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub struct CapturingA2aHandler {
+    pub calls: std::sync::Arc<tokio::sync::Mutex<Vec<DelegationCall>>>,
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+impl CapturingA2aHandler {
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+    pub async fn snapshot_calls(&self) -> Vec<DelegationCall> {
+        self.calls.lock().await.clone()
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[::async_trait::async_trait]
+impl A2aRequestHandler for CapturingA2aHandler {
+    async fn handle_a2a_stream(
+        &self,
+        request: A2aWireRequest,
+    ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<A2aStreamChunk>> {
+        use serde_json::Value;
+        let target_package = request
+            .as_ref()
+            .pointer("/params/metadata/target/agent_package")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let target_instance = request
+            .as_ref()
+            .pointer("/params/metadata/target/agent_instance_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let prompt = request
+            .as_ref()
+            .pointer("/params/message/parts/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+
+        self.calls.lock().await.push(DelegationCall {
+            agent_package: target_package.clone(),
+            agent_instance_id: target_instance,
+            prompt,
+        });
+
+        let response = serde_json::json!({
+            "result": {
+                "message": {
+                    "parts": [{"text": format!("delegated to {target_package}")}]
+                }
+            }
+        });
+
+        Ok(Box::pin(futures_util::stream::iter(vec![
+            A2aStreamChunk::from(response),
+        ])))
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[derive(Clone, Default)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub struct FailingA2aHandler;
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[::async_trait::async_trait]
+impl A2aRequestHandler for FailingA2aHandler {
+    async fn handle_a2a_stream(
+        &self,
+        _request: A2aWireRequest,
+    ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<A2aStreamChunk>> {
+        Err(baml_rt_core::BamlRtError::InvalidArgument(
+            "downstream agent unavailable".to_string(),
+        ))
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[derive(Clone)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub struct StreamingA2aHandler {
+    pub chunks: Vec<serde_json::Value>,
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[::async_trait::async_trait]
+impl A2aRequestHandler for StreamingA2aHandler {
+    async fn handle_a2a_stream(
+        &self,
+        _request: A2aWireRequest,
+    ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<A2aStreamChunk>> {
+        Ok(Box::pin(futures_util::stream::iter(
+            self.chunks.clone().into_iter().map(A2aStreamChunk::from),
+        )))
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub fn discovery_entry(package: &str, capabilities: &[&str]) -> AgentDiscoveryEntry {
+    let card = AgentCard {
+        name: package.to_string(),
+        version: "1.0.0".to_string(),
+        content_hash: None,
+        repository_version: None,
+        agent_package: package.to_string(),
+        agent_instance_id: "default".to_string(),
+        tools: Vec::new(),
+        baml_functions: Vec::new(),
+        description: Some(format!("{package} test agent")),
+        capabilities: capabilities.iter().map(|v| (*v).to_string()).collect(),
+        tags: Vec::new(),
+        subscriptions: Vec::new(),
+    };
+
+    AgentDiscoveryEntry {
+        agent_package: package.to_string(),
+        agent_instance_id: "default".to_string(),
+        name: package.to_string(),
+        version: "1.0.0".to_string(),
+        agent_card: card,
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub struct TestMermaidService {
     store: Arc<SurrealProvenanceStore>,
 }
@@ -228,6 +561,7 @@ pub struct TestMermaidService {
     feature = "llm-tests"
 ))]
 impl TestMermaidService {
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
     pub fn new(store: Arc<SurrealProvenanceStore>) -> Self {
         Self { store }
     }
@@ -274,25 +608,15 @@ impl baml_rt_api::MermaidService for TestMermaidService {
     }
 }
 
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub struct RunningHttpServer {
     pub base_url: String,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
 
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
 impl RunningHttpServer {
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
     fn new(
         base_url: String,
         shutdown_tx: tokio::sync::oneshot::Sender<()>,
@@ -305,6 +629,7 @@ impl RunningHttpServer {
         }
     }
 
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
     pub async fn stop(mut self) {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(());
@@ -316,12 +641,7 @@ impl RunningHttpServer {
 }
 
 /// Single place for `http://host:port` + optional API root (e.g. `/v1`, `/api/v2`). Canonicalized once.
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 fn http_server_base_url(addr: std::net::SocketAddr, base_path: Option<&str>) -> String {
     let root = format!("http://{addr}");
     let Some(path) = base_path else {
@@ -335,12 +655,6 @@ fn http_server_base_url(addr: std::net::SocketAddr, base_path: Option<&str>) -> 
     format!("{root}/{path}")
 }
 
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
 impl Drop for RunningHttpServer {
     fn drop(&mut self) {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
@@ -352,12 +666,7 @@ impl Drop for RunningHttpServer {
     }
 }
 
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub async fn start_http_server(
     app: axum::Router,
     base_path: Option<&str>,
@@ -386,6 +695,7 @@ pub async fn start_http_server(
     feature = "slack",
     feature = "llm-tests"
 ))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub async fn start_runner_api_server(
     agent_package: &str,
     agent: baml_rt::A2aAgent,
@@ -473,6 +783,7 @@ pub async fn fetch_context_mermaid(
     feature = "slack",
     feature = "llm-tests"
 ))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub async fn post_a2a_sse_collect(
     client: &reqwest::Client,
     url: &str,
