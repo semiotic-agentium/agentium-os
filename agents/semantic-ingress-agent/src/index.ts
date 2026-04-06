@@ -441,13 +441,18 @@ async function runSingleSendSession(
 
 function collectDelegatedTexts(outputs: unknown[]): string[] {
   const texts = new Set<string>();
+  const visited = new WeakSet<object>();
 
   const visit = (candidate: unknown): void => {
     if (Array.isArray(candidate)) {
+      if (visited.has(candidate)) return;
+      visited.add(candidate);
       for (const entry of candidate) visit(entry);
       return;
     }
     if (!isObject(candidate)) return;
+    if (visited.has(candidate)) return;
+    visited.add(candidate);
 
     const message = candidate.message;
     if (isObject(message) && Array.isArray(message.parts)) {
@@ -494,7 +499,13 @@ async function discoverAgentsByCapabilities(
     throw new Error(terminal.errorMessage || "discover_agents returned error status.");
   }
 
-  const parsed = parseDiscoverAgentsOutput(lastMeaningfulStepOutput(drained.steps));
+  const rawOutput = lastMeaningfulStepOutput(drained.steps);
+  const parsed = parseDiscoverAgentsOutput(rawOutput);
+  if (parsed === null && rawOutput != null) {
+    throw new Error(
+      `discover_agents returned data but no entries could be parsed: ${JSON.stringify(rawOutput).slice(0, 200)}`,
+    );
+  }
   return (parsed?.agents ?? []).filter((agent) =>
     agentMatchesRequiredCapabilities(agent, normalizedCapabilities),
   );

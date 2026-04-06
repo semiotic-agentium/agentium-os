@@ -219,6 +219,211 @@ impl AgentRegistry for SingleAgentRegistry {
     feature = "slack",
     feature = "llm-tests"
 ))]
+#[derive(Clone)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub struct StaticAgentList {
+    pub entries: Vec<AgentDiscoveryEntry>,
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+impl AgentLister for StaticAgentList {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        self.entries.clone()
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub struct DelegationCall {
+    pub agent_package: String,
+    pub agent_instance_id: String,
+    pub prompt: String,
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[derive(Clone, Default)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub struct CapturingA2aHandler {
+    pub calls: std::sync::Arc<tokio::sync::Mutex<Vec<DelegationCall>>>,
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+impl CapturingA2aHandler {
+    #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+    pub async fn snapshot_calls(&self) -> Vec<DelegationCall> {
+        self.calls.lock().await.clone()
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[::async_trait::async_trait]
+impl A2aRequestHandler for CapturingA2aHandler {
+    async fn handle_a2a_stream(
+        &self,
+        request: A2aWireRequest,
+    ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<A2aStreamChunk>> {
+        use serde_json::Value;
+        let target_package = request
+            .as_ref()
+            .pointer("/params/metadata/target/agent_package")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let target_instance = request
+            .as_ref()
+            .pointer("/params/metadata/target/agent_instance_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let prompt = request
+            .as_ref()
+            .pointer("/params/message/parts/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+
+        self.calls.lock().await.push(DelegationCall {
+            agent_package: target_package.clone(),
+            agent_instance_id: target_instance,
+            prompt,
+        });
+
+        let response = serde_json::json!({
+            "result": {
+                "message": {
+                    "parts": [{"text": format!("delegated to {target_package}")}]
+                }
+            }
+        });
+
+        Ok(Box::pin(futures_util::stream::iter(vec![
+            A2aStreamChunk::from(response),
+        ])))
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[derive(Clone, Default)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub struct FailingA2aHandler;
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[::async_trait::async_trait]
+impl A2aRequestHandler for FailingA2aHandler {
+    async fn handle_a2a_stream(
+        &self,
+        _request: A2aWireRequest,
+    ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<A2aStreamChunk>> {
+        Err(baml_rt_core::BamlRtError::InvalidArgument(
+            "downstream agent unavailable".to_string(),
+        ))
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[derive(Clone)]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub struct StreamingA2aHandler {
+    pub chunks: Vec<serde_json::Value>,
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[::async_trait::async_trait]
+impl A2aRequestHandler for StreamingA2aHandler {
+    async fn handle_a2a_stream(
+        &self,
+        _request: A2aWireRequest,
+    ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<A2aStreamChunk>> {
+        Ok(Box::pin(futures_util::stream::iter(
+            self.chunks.clone().into_iter().map(A2aStreamChunk::from),
+        )))
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub fn discovery_entry(package: &str, capabilities: &[&str]) -> AgentDiscoveryEntry {
+    let card = AgentCard {
+        name: package.to_string(),
+        version: "1.0.0".to_string(),
+        content_hash: None,
+        repository_version: None,
+        agent_package: package.to_string(),
+        agent_instance_id: "default".to_string(),
+        tools: Vec::new(),
+        baml_functions: Vec::new(),
+        description: Some(format!("{package} test agent")),
+        capabilities: capabilities.iter().map(|v| (*v).to_string()).collect(),
+        tags: Vec::new(),
+        subscriptions: Vec::new(),
+    };
+
+    AgentDiscoveryEntry {
+        agent_package: package.to_string(),
+        agent_instance_id: "default".to_string(),
+        name: package.to_string(),
+        version: "1.0.0".to_string(),
+        agent_card: card,
+    }
+}
+
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 #[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub struct TestMermaidService {
     store: Arc<SurrealProvenanceStore>,

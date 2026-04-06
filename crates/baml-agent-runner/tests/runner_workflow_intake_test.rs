@@ -12,151 +12,15 @@ use baml_rt_core::{
     bus::{BusStream, BusWithEffects},
 };
 use baml_tools_system::SystemBundle;
-use common::{e2e_serial_gate, start_http_server};
+use common::{
+    CapturingA2aHandler, FailingA2aHandler, StaticAgentList, StreamingA2aHandler, discovery_entry,
+    e2e_serial_gate, start_http_server,
+};
 use serde_json::{Value, json};
 use test_support::common::{
     TempDirCleanup, build_agent_package_to_temp, chunks_from_responses, message_texts_from_chunks,
     test_surreal_store, workspace_fnox_path, workspace_root,
 };
-use tokio::sync::Mutex;
-
-#[derive(Clone)]
-struct StaticAgentList {
-    entries: Vec<AgentDiscoveryEntry>,
-}
-
-impl AgentLister for StaticAgentList {
-    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
-        self.entries.clone()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DelegationCall {
-    agent_package: String,
-    agent_instance_id: String,
-    prompt: String,
-}
-
-#[derive(Clone, Default)]
-struct CapturingA2aHandler {
-    calls: Arc<Mutex<Vec<DelegationCall>>>,
-}
-
-impl CapturingA2aHandler {
-    async fn snapshot_calls(&self) -> Vec<DelegationCall> {
-        self.calls.lock().await.clone()
-    }
-}
-
-#[async_trait]
-impl A2aRequestHandler for CapturingA2aHandler {
-    async fn handle_a2a_stream(
-        &self,
-        request: A2aWireRequest,
-    ) -> baml_rt::Result<BusStream<A2aStreamChunk>> {
-        let target_package = request
-            .as_ref()
-            .pointer("/params/metadata/target/agent_package")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let target_instance = request
-            .as_ref()
-            .pointer("/params/metadata/target/agent_instance_id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        let prompt = request
-            .as_ref()
-            .pointer("/params/message/parts/0/text")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-
-        self.calls.lock().await.push(DelegationCall {
-            agent_package: target_package.clone(),
-            agent_instance_id: target_instance,
-            prompt,
-        });
-
-        let response = json!({
-            "result": {
-                "message": {
-                    "parts": [
-                        {
-                            "text": format!("delegated to {target_package}")
-                        }
-                    ]
-                }
-            }
-        });
-
-        Ok(Box::pin(futures_util::stream::iter(vec![
-            A2aStreamChunk::from(response),
-        ])))
-    }
-}
-
-#[derive(Clone, Default)]
-struct FailingA2aHandler;
-
-#[async_trait]
-impl A2aRequestHandler for FailingA2aHandler {
-    async fn handle_a2a_stream(
-        &self,
-        _request: A2aWireRequest,
-    ) -> baml_rt::Result<BusStream<A2aStreamChunk>> {
-        Err(BamlRtError::InvalidArgument(
-            "downstream agent unavailable".to_string(),
-        ))
-    }
-}
-
-#[derive(Clone)]
-struct StreamingA2aHandler {
-    chunks: Vec<Value>,
-}
-
-#[async_trait]
-impl A2aRequestHandler for StreamingA2aHandler {
-    async fn handle_a2a_stream(
-        &self,
-        _request: A2aWireRequest,
-    ) -> baml_rt::Result<BusStream<A2aStreamChunk>> {
-        Ok(Box::pin(futures_util::stream::iter(
-            self.chunks.clone().into_iter().map(A2aStreamChunk::from),
-        )))
-    }
-}
-
-fn discovery_entry(package: &str, capabilities: &[&str]) -> AgentDiscoveryEntry {
-    let card = AgentCard {
-        name: package.to_string(),
-        version: "1.0.0".to_string(),
-        content_hash: None,
-        repository_version: None,
-        agent_package: package.to_string(),
-        agent_instance_id: "default".to_string(),
-        tools: Vec::new(),
-        baml_functions: Vec::new(),
-        description: Some(format!("{package} test agent")),
-        capabilities: capabilities
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect(),
-        tags: Vec::new(),
-        subscriptions: Vec::new(),
-    };
-
-    AgentDiscoveryEntry {
-        agent_package: package.to_string(),
-        agent_instance_id: "default".to_string(),
-        name: package.to_string(),
-        version: "1.0.0".to_string(),
-        agent_card: card,
-    }
-}
 
 async fn build_workspace_workflow_intake_agent() -> PathBuf {
     build_agent_package_to_temp(workflow_intake_agent_dir(), "workflow-intake-agent").await
