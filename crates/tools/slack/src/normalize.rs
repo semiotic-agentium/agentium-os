@@ -84,10 +84,7 @@ pub struct SlackNormalizedMessageRecord {
     pub source_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permalink: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_ts: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub raw: Option<Value>,
+    pub raw: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -121,13 +118,10 @@ impl SlackNormalizedRecord {
         self.as_message().and_then(|record| record.user.as_deref())
     }
 
-    pub fn event_ts(&self) -> Option<&str> {
-        self.as_message()
-            .and_then(|record| record.event_ts.as_deref())
-    }
-
-    pub fn raw(&self) -> Option<&Value> {
-        self.as_message().and_then(|record| record.raw.as_ref())
+    pub fn raw(&self) -> &Value {
+        match self {
+            Self::Message(record) => &record.raw,
+        }
     }
 }
 
@@ -198,11 +192,10 @@ fn normalize_polling_record(channel_id: &str, message: &Value) -> SlackNormalize
             .as_deref()
             .map(|value| slack_source_ref(channel_id, value)),
         permalink: string_field(message, "permalink"),
-        event_ts: None,
         // Preserve the original Slack message payload at the raw boundary so
         // semantic ingress and future source-family logic can recover fields
         // that this normalized projection does not surface explicitly.
-        raw: Some(message.clone()),
+        raw: message.clone(),
     })
 }
 

@@ -1647,10 +1647,9 @@ mod tests {
             Some("Track the OAuth docs follow-up.")
         );
         assert_eq!(batch.records[0].user(), None);
-        assert_eq!(batch.records[0].event_ts(), None);
         assert_eq!(
             batch.records[0].raw(),
-            Some(&json!({
+            &json!({
                 "type": "message",
                 "user": "U123",
                 "text": "Track the OAuth docs follow-up.",
@@ -1658,7 +1657,7 @@ mod tests {
                 "thread_ts": "1700000001.000001",
                 "reply_count": 1,
                 "latest_reply": "1700000002.000001"
-            }))
+            })
         );
     }
 
