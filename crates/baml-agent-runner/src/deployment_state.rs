@@ -292,6 +292,8 @@ impl DeploymentStateStore {
         Ok(true)
     }
 
+    /// Lock-free read: callers must tolerate stale results because
+    /// `mark_ingress_emitted` does the authoritative claim under `ingress_lock`.
     pub async fn list_pending_ingress_items(&self, limit: usize) -> Result<Vec<IngressItem>> {
         let mut resp = self
             .db
@@ -344,64 +346,42 @@ impl DeploymentStateStore {
             .collect::<Vec<_>>();
         let _guard = self.ingress_lock.lock().await;
 
-        #[derive(Deserialize)]
-        struct IngressEmissionRow {
-            ingress_id: IngressId,
-        }
-
+        // Single UPDATE — returned rows are exactly the ones that were eligible
+        // and claimed. No separate SELECT needed.
         let mut resp = self
             .db
             .query(format!(
-                "SELECT ingress_id \
-                 FROM {TBL_INGRESS_INBOX} \
+                "UPDATE {TBL_INGRESS_INBOX} SET \
+                    status = 'emitted', \
+                    emitted_at_unix_ms = $emitted_at_unix_ms \
                  WHERE ingress_id INSIDE $ingress_ids \
                    AND status = 'pending' \
                    AND emitted_at_unix_ms = NONE"
             ))
-            .bind(("ingress_ids", ingress_ids.to_vec()))
+            .bind(("ingress_ids", ingress_ids))
+            .bind((
+                "emitted_at_unix_ms",
+                unix_ms_to_db_int(emitted_at_unix_ms, "ingress emitted_at_unix_ms")?,
+            ))
             .await
-            .map_err(to_read_err)?;
-        let pending_rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
-        let emission_rows = pending_rows
+            .map_err(to_write_err)?;
+        let updated_rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+
+        updated_rows
             .into_iter()
             .map(|row| {
-                let parsed: IngressEmissionRow = serde_json::from_value(row).map_err(|err| {
+                #[derive(Deserialize)]
+                struct EmittedRow {
+                    ingress_id: IngressId,
+                }
+                let parsed: EmittedRow = serde_json::from_value(row).map_err(|err| {
                     BamlRtError::InvalidArgument(format!(
                         "invalid ingress emission row from state DB: {err}"
                     ))
                 })?;
-                Ok(parsed)
+                Ok(parsed.ingress_id)
             })
-            .collect::<Result<Vec<_>>>()?;
-        let eligible_ids = emission_rows
-            .iter()
-            .map(|row| row.ingress_id.clone())
-            .collect::<Vec<_>>();
-        if !eligible_ids.is_empty() {
-            let eligible_ids_str = eligible_ids
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>();
-            let mut resp = self
-                .db
-                .query(format!(
-                    "UPDATE {TBL_INGRESS_INBOX} SET \
-                        status = 'emitted', \
-                        emitted_at_unix_ms = $emitted_at_unix_ms \
-                     WHERE ingress_id INSIDE $ingress_ids \
-                       AND status = 'pending' \
-                       AND emitted_at_unix_ms = NONE"
-                ))
-                .bind(("ingress_ids", eligible_ids_str))
-                .bind((
-                    "emitted_at_unix_ms",
-                    unix_ms_to_db_int(emitted_at_unix_ms, "ingress emitted_at_unix_ms")?,
-                ))
-                .await
-                .map_err(to_write_err)?;
-            let _updated_rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
-        }
-        Ok(eligible_ids)
+            .collect()
     }
 
     pub async fn mark_ingress_delivered(
@@ -946,7 +926,12 @@ fn parse_ingress_row(row: serde_json::Value) -> Result<IngressItem> {
         ingress_id: parsed.ingress_id,
         source_key: parsed.source_key,
         payload_json: parsed.payload_json,
-        enqueued_at_unix_ms: parsed.enqueued_at_unix_ms.max(0) as u64,
+        enqueued_at_unix_ms: u64::try_from(parsed.enqueued_at_unix_ms).map_err(|_| {
+            BamlRtError::InvalidArgument(format!(
+                "negative enqueued_at_unix_ms ({value}) in ingress row from state DB",
+                value = parsed.enqueued_at_unix_ms
+            ))
+        })?,
     })
 }
 
