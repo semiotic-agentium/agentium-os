@@ -19,7 +19,7 @@ mod stdio;
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Context;
-use baml_rt_core::{CallbackStore, DeploymentManager, DeploymentStatus};
+use baml_rt_core::{CallbackStore, DeploymentManager, DeploymentStatus, IngressStore};
 use baml_rt_llm_config::{
     FnoxFileSecretResolver, OverlaySecretResolver, SECRET_LINKS_CONFIG_KEY, SecretLinksState,
     apply_secret_links_state,
@@ -191,6 +191,9 @@ async fn main() -> anyhow::Result<()> {
     // Trait/object type: `baml_rt_core::CallbackStore`; process-wide slot: `baml_tools_system::callback_store`.
     baml_tools_system::callback_store::install_callback_store(
         deployment_state.clone() as Arc<dyn CallbackStore>
+    );
+    baml_rt_tools::ingress_store::install_ingress_store(
+        deployment_state.clone() as Arc<dyn IngressStore>
     );
     let repository_service = Arc::new(RepositoryService::new(
         repository_store.clone() as Arc<dyn BlobStore>,

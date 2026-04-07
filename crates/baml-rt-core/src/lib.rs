@@ -15,6 +15,7 @@ pub mod event_producer;
 pub mod event_subscription;
 pub mod function_id;
 pub mod ids;
+pub mod ingress_store;
 pub mod json;
 pub mod package;
 pub mod semantics;
@@ -70,6 +71,7 @@ pub use ids::{
     ActivityAnchorId, AgentId, ArtifactId, ContextId, CorrelationId, ExecutionSessionId, IntentId,
     MessageId, PlanId, PlanStepId, TaskId,
 };
+pub use ingress_store::{IngressId, IngressItem, IngressStore, ingress_store_not_installed};
 pub use json::to_json_value;
 pub use package::AgentManifest;
 pub use semantics::{ActivityOutcome, ErrorDisposition, InvocationKind, Outcome, Retryability};
