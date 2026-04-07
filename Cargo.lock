@@ -2166,6 +2166,7 @@ dependencies = [
  "reqwest 0.12.26",
  "serde",
  "serde_json",
+ "sha2",
  "test-support",
  "thiserror 2.0.18",
  "tokio",

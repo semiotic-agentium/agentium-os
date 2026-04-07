@@ -8,7 +8,10 @@
 //! - user resolution by ID
 //! - message search (user-token scope)
 
+mod normalize;
 mod producer;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -17,6 +20,10 @@ use baml_derive::BamlType;
 use baml_rt_core::{BamlRtError, Result, semantics::ErrorDisposition};
 use baml_rt_tools::{ClassifiedToolError, baml_tool, bundles::Support, tools::BamlTool};
 use integrations_slack_read::{self as slack_read, SlackReadClient, SlackReadError};
+pub use normalize::{
+    SlackNormalizedBatch, SlackNormalizedMessageRecord, SlackNormalizedRecord,
+    SlackNormalizedSource, SlackTransportAuthorization, SlackTransportKind, SlackTransportMetadata,
+};
 pub use producer::{RAW_SOURCE_ROUTING_KEY, RAW_SOURCE_SCHEMA_VERSION, SlackEventProducerConfig};
 use serde::{Deserialize, Serialize};
 
