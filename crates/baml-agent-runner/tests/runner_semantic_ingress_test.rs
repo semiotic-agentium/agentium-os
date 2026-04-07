@@ -1298,7 +1298,7 @@ async fn slack_inbox_producer_poll_and_deliver_reaches_semantic_ingress_and_down
 
     let first_results = dispatcher.poll_and_deliver().await;
     assert_eq!(
-        store.pending_count().await,
+        store.undelivered_count().await,
         1,
         "poll receiver should enqueue one durable Slack ingress item"
     );
@@ -1342,7 +1342,7 @@ async fn slack_inbox_producer_poll_and_deliver_reaches_semantic_ingress_and_down
         .as_ref()
         .expect("second-cycle inbox poll should succeed");
     assert_eq!(second_inbox_outcome.subscribers_matched, 0);
-    assert_eq!(store.pending_count().await, 0);
+    assert_eq!(store.undelivered_count().await, 0);
 
     let calls = handler.snapshot_calls().await;
     let hits = mock_state.snapshot_hits().await;

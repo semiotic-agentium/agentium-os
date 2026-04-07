@@ -110,7 +110,7 @@ impl IngressStore for MemoryIngressStore {
 }
 
 impl MemoryIngressStore {
-    pub async fn pending_count(&self) -> usize {
+    pub async fn undelivered_count(&self) -> usize {
         self.rows
             .lock()
             .await

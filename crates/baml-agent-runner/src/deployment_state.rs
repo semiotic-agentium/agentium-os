@@ -316,7 +316,7 @@ impl DeploymentStateStore {
                 "UPDATE {TBL_INGRESS_INBOX} SET \
                     status = 'pending', \
                     emitted_at_unix_ms = NONE \
-                 WHERE status != 'delivered' \
+                 WHERE status = 'emitted' \
                    AND emitted_at_unix_ms != NONE \
                    AND emitted_at_unix_ms <= $emitted_before_unix_ms"
             ))
