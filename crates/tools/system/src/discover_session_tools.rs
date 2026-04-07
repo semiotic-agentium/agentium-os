@@ -10,6 +10,7 @@ use baml_rt_tools::{
     ToolRegistry, create_multi_send_session_tool_from_async, opaque_json_map_from_object,
     tools::{HistoryContextV1, ToolFunctionMetadata},
 };
+use tracing::info;
 
 use crate::tools::{
     AgentCardDto, AgentEventSubscriptionDto, DiscoverAgentsNextOutput, DiscoverAgentsOpenInput,
@@ -134,6 +135,7 @@ pub fn discover_agents_handler(
                 send_input.required_source_kinds.unwrap_or_default(),
             );
             let entries = list.list_agents();
+            let registry_count = entries.len();
             let mut agents = filter_and_page(
                 &entries,
                 normalized_query,
@@ -142,13 +144,21 @@ pub fn discover_agents_handler(
                 limit,
                 offset,
             );
-            // If query filtered out everything but we have agents, return first page of all (e.g. "which agents are ready?").
+            let pre_fallback_count = agents.len();
+            // If a meaningful query produced no rows (not merely empty pagination), but the registry
+            // is non-empty and no strict filters are set, return the same page of all agents.
+            // Use `normalized_query` (not raw `query`) so sentinels/whitespace do not skew this.
+            // Only when `offset == 0`: a non-zero offset can be "past end" of matches and must not
+            // trigger fallback.
+            let mut fallback_applied = false;
             if agents.is_empty()
-                && !entries.is_empty()
-                && send_input.query.is_some()
+                && registry_count > 0
+                && offset == 0
+                && normalized_query.is_some()
                 && required_capabilities.is_empty()
                 && subscription_filter.is_empty()
             {
+                fallback_applied = true;
                 agents = filter_and_page(
                     &entries,
                     None,
@@ -158,6 +168,15 @@ pub fn discover_agents_handler(
                     offset,
                 );
             }
+            let post_fallback_count = agents.len();
+            info!(
+                registry_count = registry_count,
+                query = normalized_query.unwrap_or(""),
+                pre_fallback_count = pre_fallback_count,
+                post_fallback_count = post_fallback_count,
+                fallback_applied = fallback_applied,
+                "discover_agents completed"
+            );
             Ok(DiscoverAgentsNextOutput {
                 agents: agents.clone(),
                 done: true,
@@ -168,7 +187,10 @@ pub fn discover_agents_handler(
                     truncated: false,
                     cursor: None,
                     payload: Some(opaque_json_map_from_object(serde_json::json!({
-                        "count": agents.len(),
+                        "count": post_fallback_count,
+                        "returned_count": post_fallback_count,
+                        "registry_count": registry_count,
+                        "fallback_applied": fallback_applied,
                         "query": normalized_query
                     }))),
                 }),

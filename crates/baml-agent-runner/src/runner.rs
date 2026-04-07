@@ -26,7 +26,7 @@ use tokio::io::AsyncWriteExt;
 use crate::{
     agent_package::{AgentPackage, BootedAgent, SnapshotAgentLister},
     config::ProvenanceConfig,
-    routing::{InternalA2aRouter, ScopedInternalA2aRouter, scope_from_request},
+    routing::{InternalA2aRouter, LiveAgentLister, ScopedInternalA2aRouter, scope_from_request},
     stdio::{
         is_a2a_method, map_a2a_error, select_implicit_stdio_agent, serialize_a2a_response,
         split_agent_method, strip_stream_suffix, unix_timestamp_secs, wrap_plaintext_message,
@@ -324,9 +324,14 @@ impl AgentRunner {
             route_key.clone(),
             self.internal_a2a_router().clone(),
         ));
-        let catalogue = Arc::new(SnapshotAgentLister {
-            entries: self.discovery_entries(),
-        }) as Arc<dyn AgentLister>;
+        let catalogue: Arc<dyn AgentLister> =
+            if let Some(runner_arc) = self.internal_a2a_router().try_runner() {
+                Arc::new(LiveAgentLister::new(Arc::downgrade(&runner_arc)))
+            } else {
+                Arc::new(SnapshotAgentLister {
+                    entries: self.discovery_entries(),
+                })
+            };
         let (agent, _agent_id) = package
             .boot(
                 self.provenance_config(),

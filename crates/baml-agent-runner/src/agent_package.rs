@@ -342,7 +342,9 @@ impl BootedAgent {
     }
 }
 
-/// Frozen snapshot of discovery entries used during boot to avoid listing the agent being booted.
+/// Fallback discovery list when the internal A2A router has no [`Arc<crate::runner::AgentRunner>`]
+/// yet (tests). Prefer [`crate::routing::LiveAgentLister`] in production so `system/discover_agents`
+/// matches the live registry after deploy.
 #[derive(Clone)]
 pub(crate) struct SnapshotAgentLister {
     pub(crate) entries: Vec<AgentDiscoveryEntry>,
