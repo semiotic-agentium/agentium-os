@@ -57,6 +57,8 @@ function InferClickUpIntent(user_message: string) -> NeedClarification | NotRele
     {% for msg in ctx.tags['conversation_history'] %}
     {{ _.role(msg.role) }}
     {{ msg.content }}
+    ---
+
     {% endfor %}
     {% endif %}
 
@@ -103,6 +105,8 @@ function PlanClickUpWork(intent: string, operation_kind: string) -> StandardStru
     {% for msg in ctx.tags['conversation_history'] %}
     {{ _.role(msg.role) }}
     {{ msg.content }}
+    ---
+
     {% endfor %}
     {% endif %}
 
@@ -141,8 +145,22 @@ function ChooseClickUpAction(
     - For delete operations: require explicit confirmation flow. First send confirm_delete=false; only send confirm_delete=true after clear user confirmation in prior results/history.
     - For final formatting steps, return FinalResponse with a user-ready message grounded in retrieved results.
 
-    This invocation uses a narrowed output schema for the current hop.
-    Emit exactly one JSON object that matches ctx.output_format.
+    Archive-ref retrieval protocol (critical):
+    - Treat each @N as a retrievable evidence node (summary + pointer to full archived output).
+    - If required evidence is not visible yet, emit Read on the relevant @N.
+    - For large @N, prefer bounded drilldown: grep + small limit + offset paging.
+    - If history shows "more lines" / "offset=... for next page" and the step still depends on unseen rows, Finish is invalid for this hop.
+    - Do not substitute Finish just to satisfy schema validity. Keep retrieving until evidence is sufficient, then Finish.
+
+    Continue-phase decision table:
+    - Need more rows from latest @N -> Read
+    - Need a new upstream query -> Send
+    - Evidence sufficient for this step -> Finish
+
+    Output discipline:
+    - Emit exactly one JSON object that matches ctx.output_format.
+    - No prose, no markdown, no tags, no second JSON object.
+    - If your reasoning suggests Read, final JSON must be Read (not Finish).
 
     {{ ctx.output_format }}
 
@@ -156,6 +174,8 @@ function ChooseClickUpAction(
     {% for msg in ctx.tags['conversation_history'] %}
     {{ _.role(msg.role) }}
     {{ msg.content }}
+    ---
+
     {% endfor %}
     {% endif %}
 
@@ -165,9 +185,18 @@ function ChooseClickUpAction(
 
 client DefaultClient {
   provider openai-generic
+  retry_policy ParseRetry
   options {
     model "x-ai/grok-4.1-fast"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
+  }
+}
+
+retry_policy ParseRetry {
+  max_retries 2
+  strategy {
+    type constant_delay
+    delay_ms 200
   }
 }

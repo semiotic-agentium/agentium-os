@@ -118,13 +118,35 @@ impl baml_rt_tools::DescribeAction for ClickUpInput {
     fn describe(&self) -> String {
         match self {
             ClickUpInput::ListTeams(_) => "listing ClickUp teams".to_string(),
-            ClickUpInput::ListSpaces(_) => "listing ClickUp spaces".to_string(),
-            ClickUpInput::ListLists(_) => "listing ClickUp task lists".to_string(),
-            ClickUpInput::ListTasks(_) => "listing ClickUp tasks".to_string(),
-            ClickUpInput::GetTask(_) => "retrieving ClickUp task details".to_string(),
-            ClickUpInput::CreateTask(p) => format!("creating ClickUp task '{}'", p.name),
-            ClickUpInput::UpdateTask(_) => "updating ClickUp task".to_string(),
-            ClickUpInput::DeleteTask(_) => "deleting ClickUp task".to_string(),
+            ClickUpInput::ListSpaces(input) => {
+                let team_id = input.team_id.as_str();
+                format!("listing ClickUp spaces (team_id={team_id})")
+            }
+            ClickUpInput::ListLists(input) => {
+                let space_id = input.space_id.as_str();
+                format!("listing ClickUp lists (space_id={space_id})")
+            }
+            ClickUpInput::ListTasks(input) => {
+                let list_id = input.list_id.as_str();
+                format!("listing ClickUp tasks (list_id={list_id})")
+            }
+            ClickUpInput::GetTask(input) => {
+                let task_id = input.task_id.as_str();
+                format!("retrieving ClickUp task details (task_id={task_id})")
+            }
+            ClickUpInput::CreateTask(input) => {
+                let name = input.name.as_str();
+                let list_id = input.list_id.as_str();
+                format!("creating ClickUp task '{name}' (list_id={list_id})")
+            }
+            ClickUpInput::UpdateTask(input) => {
+                let task_id = input.task_id.as_str();
+                format!("updating ClickUp task (task_id={task_id})")
+            }
+            ClickUpInput::DeleteTask(input) => {
+                let task_id = input.task_id.as_str();
+                format!("deleting ClickUp task (task_id={task_id})")
+            }
         }
     }
 }
@@ -728,5 +750,25 @@ impl BamlTool for ClickUpTool {
             }
         }
         c
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use baml_rt_tools::DescribeAction;
+
+    use super::{ClickUpInput, ListListsInput, ListTasksInput};
+
+    #[test]
+    fn describe_action_includes_runtime_ids_for_disambiguation() {
+        let lists = ClickUpInput::ListLists(ListListsInput {
+            space_id: "space-123".to_string(),
+        });
+        let tasks = ClickUpInput::ListTasks(ListTasksInput {
+            list_id: "list-456".to_string(),
+        });
+
+        assert_eq!(lists.describe(), "listing ClickUp lists (space_id=space-123)");
+        assert_eq!(tasks.describe(), "listing ClickUp tasks (list_id=list-456)");
     }
 }

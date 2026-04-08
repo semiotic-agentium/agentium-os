@@ -155,11 +155,11 @@ pub fn project_prompt_context(
         ) {
             RenderedEntry::Filtered => {}
             RenderedEntry::One(c) => {
-                history.push(json!({ "role": item.role, "content": c }));
+                history.push(json!({ "role": item.role, "content": ensure_entry_boundary(c) }));
             }
             RenderedEntry::Two(first, second) => {
-                history.push(json!({ "role": item.role, "content": first }));
-                history.push(json!({ "role": item.role, "content": second }));
+                history.push(json!({ "role": item.role, "content": ensure_entry_boundary(first) }));
+                history.push(json!({ "role": item.role, "content": ensure_entry_boundary(second) }));
             }
         }
     }
@@ -209,6 +209,23 @@ pub fn render_projection_content(
 
 fn read_view_key(archive_ref: &str, grep: Option<&str>, offset: usize, limit: usize) -> String {
     format!("{archive_ref}|{}|{offset}|{limit}", grep.unwrap_or(""))
+}
+
+fn ensure_trailing_newline(s: String) -> String {
+    if s.ends_with('\n') {
+        s
+    } else {
+        format!("{s}\n")
+    }
+}
+
+fn ensure_entry_boundary(s: String) -> String {
+    let with_newline = ensure_trailing_newline(s);
+    if with_newline.ends_with("\n\n") {
+        with_newline
+    } else {
+        format!("{with_newline}\n")
+    }
 }
 
 fn render_projection_content_with_state(
@@ -280,17 +297,23 @@ fn render_projection_content_with_state(
         }
 
         PromptProjectionContent::SessionStep { tool_name, op } => match op {
-            SessionStepProjection::Open => RenderedEntry::One(
-                registry
+            SessionStepProjection::Open => {
+                let open_text = registry
                     .describe_open_for(tool_name)
-                    .unwrap_or_else(|| format!("{tool_name} session opened")),
-            ),
+                    .unwrap_or_else(|| format!("{tool_name} session opened"));
+                // Keep an explicit trailing newline so adjacent same-role session-step rows
+                // (e.g. Open followed by SendDone header) never collapse into one token run.
+                RenderedEntry::One(format!("{open_text}\n"))
+            },
             SessionStepProjection::SendDone {
                 archive_ref,
                 header,
             } => {
                 if inlined_archive_refs.contains(archive_ref) {
-                    return RenderedEntry::Two(header.clone(), format!("cat -n {archive_ref}"));
+                    return RenderedEntry::Two(
+                        ensure_trailing_newline(header.clone()),
+                        ensure_trailing_newline(format!("cat -n {archive_ref}")),
+                    );
                 }
                 inlined_archive_refs.insert(archive_ref.clone());
 
@@ -302,9 +325,12 @@ fn render_projection_content_with_state(
                             0,
                             opts.send_done.get(),
                         ));
-                        RenderedEntry::Two(header.clone(), content)
+                        RenderedEntry::Two(
+                            ensure_trailing_newline(header.clone()),
+                            ensure_trailing_newline(content),
+                        )
                     }
-                    None => RenderedEntry::One(header.clone()),
+                    None => RenderedEntry::One(ensure_trailing_newline(header.clone())),
                 }
             }
             SessionStepProjection::Read {
@@ -318,15 +344,15 @@ fn render_projection_content_with_state(
                 let cmd = session_read_command_line(archive_ref, grep.as_deref());
                 let read_key = read_view_key(archive_ref, grep.as_deref(), *offset, *limit);
                 if inlined_read_pages.contains(&read_key) {
-                    return RenderedEntry::One(cmd);
+                    return RenderedEntry::One(ensure_trailing_newline(cmd));
                 }
                 match archive_reader.and_then(|r| r(archive_ref, grep.as_deref(), *offset, *limit))
                 {
                     Some(output) => {
                         inlined_read_pages.insert(read_key);
-                        RenderedEntry::One(output)
+                        RenderedEntry::One(ensure_trailing_newline(output))
                     }
-                    None => RenderedEntry::One(cmd),
+                    None => RenderedEntry::One(ensure_trailing_newline(cmd)),
                 }
             }
         },
@@ -353,8 +379,8 @@ mod tests {
         assert_eq!(arr.len(), 1);
         assert_eq!(
             arr[0]["content"].as_str(),
-            Some("#1 what can you do"),
-            "first history line allocates #1 for citation/drift alignment"
+            Some("#1 what can you do\n\n"),
+            "first history line allocates #1 for citation/drift alignment with explicit entry boundary"
         );
     }
 

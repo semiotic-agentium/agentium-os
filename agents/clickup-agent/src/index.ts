@@ -188,6 +188,59 @@ function filterPlanCitations(plan: StandardStructuredPlan): string[] {
   return raw.filter((c): c is string => typeof c === "string" && c.trim().length > 0);
 }
 
+function extractStepOutputString(step: unknown): string | null {
+  if (!isJsonObject(step)) return null;
+  const output = step.output;
+  if (typeof output === "string" && output.trim().length > 0) return output;
+  return null;
+}
+
+function executorRunEndedFinished(run: { steps?: unknown[]; last?: unknown }): boolean {
+  if (isJsonObject(run.last) && typeof run.last.status === "string") {
+    return run.last.status.toLowerCase() === "finished";
+  }
+  if (!Array.isArray(run.steps)) return false;
+  for (const step of [...run.steps].reverse()) {
+    if (!isJsonObject(step) || typeof step.status !== "string") continue;
+    return step.status.toLowerCase() === "finished";
+  }
+  return false;
+}
+
+function maxArchiveLinesHintFromSteps(steps: unknown[]): number {
+  let maxLines = 0;
+  for (const step of steps) {
+    const output = extractStepOutputString(step);
+    if (!output) continue;
+    const m = output.match(/\[(\d+)\s+lines?,/i);
+    if (!m) continue;
+    const lines = Number(m[1]);
+    if (Number.isFinite(lines) && lines > maxLines) maxLines = lines;
+  }
+  return maxLines;
+}
+
+function hasReadLikeOutputInSteps(steps: unknown[]): boolean {
+  for (const step of steps) {
+    const output = extractStepOutputString(step);
+    if (!output) continue;
+    const lower = output.toLowerCase();
+    if (lower.includes("cat -n @") || lower.includes("grep -n '") || lower.includes("grep -n \"")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function shouldForceOneMoreReadHop(run: { steps?: unknown[]; last?: unknown }): boolean {
+  const steps = Array.isArray(run.steps) ? run.steps : [];
+  if (steps.length === 0) return false;
+  if (!executorRunEndedFinished(run)) return false;
+  if (hasReadLikeOutputInSteps(steps)) return false;
+  const maxLines = maxArchiveLinesHintFromSteps(steps);
+  return maxLines > 200;
+}
+
 /**
  * Validate plan_steps against clickup_prompt.baml (execute → … → single format at end).
  */
@@ -287,7 +340,26 @@ async function runClickUpStructuredPlan(
           prior_results: priorResultsText,
         }, { max_steps: MAX_REACT_STEPS });
         allStepOutputsNested.push(run.steps);
-        priorResultsText = collectStepResultsForPriorContext(run.steps);
+
+        // Post-parse safety net: when a large archive SendDone is observed but the executor
+        // immediately ends with Finish and no Read-like hop, request one constrained
+        // follow-up hop to perform bounded drilldown before terminal completion.
+        if (shouldForceOneMoreReadHop(run)) {
+          const guardPrior = collectStepResultsForPriorContext(run.steps);
+          const mergedPrior = [priorResultsText, guardPrior].filter((v): v is string => typeof v === "string" && v.length > 0).join("\n\n---\n\n");
+          const drilldownRun = await runGeneratedStepExecutor("ChooseClickUpAction", {
+            goal,
+            step_description:
+              `${step.sub_message}\n\nGuardrail: the latest archive indicates a large result. Before Finish, emit one bounded Read on the latest relevant @N (use offset pagination and optional grep) unless evidence is already explicitly complete for this step.`,
+            operation_kind: operationKind,
+            prior_results: mergedPrior.slice(0, PRIOR_RESULTS_MAX_CHARS),
+          }, { max_steps: 3 });
+          allStepOutputsNested.push(drilldownRun.steps);
+          priorResultsText = collectStepResultsForPriorContext(drilldownRun.steps);
+        } else {
+          priorResultsText = collectStepResultsForPriorContext(run.steps);
+        }
+
         if (executable) await executable.completeStep?.(stepId);
       } else if (pkg === PKG_CLICKUP_FORMAT) {
         const finalMessage = extractFinalMessage(allStepOutputsNested.flat());
