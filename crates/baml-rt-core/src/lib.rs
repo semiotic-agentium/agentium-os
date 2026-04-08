@@ -41,7 +41,7 @@ pub use bus::{
 };
 pub use callback_store::{
     CallbackDeliveryGate, CallbackStore, CancelCallbackSelector, ScheduleCallbackRequest,
-    ScheduleCallbackResult, StoredCallback, callback_now_unix_ms, callback_store_not_installed,
+    ScheduleCallbackResult, StoredCallback, callback_store_not_installed,
 };
 pub use context::{
     InvocationContext, InvocationScope, OutcomeInvocationContext, RequestScope, RuntimeScope,

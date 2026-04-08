@@ -4,9 +4,10 @@ use std::sync::{
 };
 
 use baml_rt_core::{
-    BamlRtError, Result, callback_now_unix_ms, callback_scheduling_scopes_differ_from_dispatch,
+    BamlRtError, Result, callback_scheduling_scopes_differ_from_dispatch,
     event_subscription::EventSourceKey,
     ids::{ContextId, ExternalId, TaskId},
+    now_unix_ms,
 };
 use baml_rt_tools::{
     ToolBundle, ToolBundleMetadata, ToolHandler,
@@ -90,7 +91,7 @@ async fn schedule_callback(
     session_ctx: &ToolSessionContext,
     input: CallbackScheduleInput,
 ) -> Result<CallbackToolOutput> {
-    let requested_at_unix_ms = callback_now_unix_ms("system_callback_schedule");
+    let requested_at_unix_ms = now_unix_ms("system_callback_schedule");
     let scheduled_for_unix_ms = requested_at_unix_ms.saturating_add(input.after_ms);
     let dedupe_key = normalize_optional_text(input.dedupe_key, "dedupeKey")?;
     let scheduling_task_id = session_ctx.task_id.clone().ok_or_else(|| {

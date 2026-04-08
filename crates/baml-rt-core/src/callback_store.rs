@@ -8,7 +8,7 @@
 //! | --- | --- |
 //! | [`CallbackStore`], [`StoredCallback`], [`ScheduleCallbackRequest`], [`CallbackDeliveryGate`] | **`baml-rt-core`** (this module) |
 //! | Dispatch metadata keys (`schedulingContextId`, …) | [`crate::dispatch`] |
-//! | Wall-clock millis for rows / producer payloads | [`callback_now_unix_ms`] |
+//! | Wall-clock millis for rows / producer payloads | [`crate::now_unix_ms`] |
 //! | `install_callback_store` / `install_callback_delivery_gate` globals | **`baml-tools-system`** (`callback_store.rs`, `callback_delivery_gate.rs`) — service locator |
 //! | `system/callback` tool + event producer | **`baml-tools-system`** (`callback_bundle`, `callback_producer`) |
 //! | Surreal persistence implementing [`CallbackStore`] | **`baml-agent-runner`** (`deployment_state::DeploymentStateStore`) |
@@ -144,12 +144,4 @@ pub trait CallbackDeliveryGate: Send + Sync {
 /// Used by `baml-tools-system` when the global callback store is missing.
 pub fn callback_store_not_installed() -> BamlRtError {
     BamlRtError::InvalidArgument("system/callback store is not installed in this host".to_string())
-}
-
-/// Milliseconds since UNIX epoch for callback rows and producer message fields.
-///
-/// Shared by the runner persistence layer and `system/callback` tooling so hosts do not reach into
-/// a tool crate for clock skew handling.
-pub fn callback_now_unix_ms(clock_event: &'static str) -> u64 {
-    crate::time::now_unix_ms(clock_event)
 }
