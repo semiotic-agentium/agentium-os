@@ -1,5 +1,6 @@
 //! CLI command implementations.
 
+pub(crate) mod agent_discovery;
 pub mod build;
 pub mod chat;
 pub mod deploy;
@@ -14,5 +15,4 @@ pub mod publish;
 pub mod push;
 pub mod regen;
 pub mod undeploy;
-pub(crate) mod agent_discovery;
 pub(crate) mod utils;
