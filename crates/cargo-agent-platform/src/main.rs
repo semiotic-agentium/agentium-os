@@ -12,6 +12,7 @@
 //! - `new-agent <name>` — Create a new agent package (manifest subscriptions available; coordinator subscriptions rejected)
 //! - `build [name]` — Package an agent into a distributable tar.gz
 //! - `publish --agent-dir <path>` — Publish source bundle to repository
+//! - `push --agents <path1,path2,...>` — Publish and deploy one or more source directories
 //! - `deploy --hash <hash>` — Activate a deployed hash in a running runner
 //! - `undeploy --hash <hash>` — Remove an active deployed hash from a running runner
 //! - `list-deployed-instances` — List loaded agent instances from a running runner
@@ -154,6 +155,33 @@ enum Commands {
         /// Publish origin kind: original | iteration
         #[arg(long, value_enum, default_value_t = PublishOriginArg::Iteration)]
         origin: PublishOriginArg,
+    },
+
+    /// Publish and deploy one or more agent source directories sequentially
+    Push {
+        /// Agent source directories. Supports comma-separated values and/or spaces.
+        ///
+        /// Examples:
+        ///   --agents agents/clickup-agent,agents/notion-agent
+        ///   --agents agents/clickup-agent agents/notion-agent
+        #[arg(long, value_delimiter = ',', num_args = 1..)]
+        agents: Vec<String>,
+
+        /// Repository base URL where repository routes are mounted
+        #[arg(long, default_value = "http://127.0.0.1:8080/repository")]
+        repository_url: String,
+
+        /// Why this publish happened
+        #[arg(long, default_value = "published from source directory")]
+        rationale: String,
+
+        /// Publish origin kind: original | iteration
+        #[arg(long, value_enum, default_value_t = PublishOriginArg::Iteration)]
+        origin: PublishOriginArg,
+
+        /// Runner base URL (without /repository)
+        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        url: String,
     },
 
     /// Deploy an agent artifact by content hash into a running runner
@@ -386,6 +414,14 @@ fn main() -> anyhow::Result<()> {
             rationale,
             origin,
         } => commands::publish::run(&agent_dir, &repository_url, &rationale, origin),
+
+        Commands::Push {
+            agents,
+            repository_url,
+            rationale,
+            origin,
+            url,
+        } => commands::push::run(&agents, &repository_url, &rationale, origin, &url),
 
         Commands::Deploy { hash, url } => commands::deploy::run(&hash, &url),
 
