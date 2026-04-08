@@ -8,7 +8,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use baml_rt_core::{
-    BamlRtError, Result,
+    BamlRtError, ExponentialBackoff, Result,
     event_subscription::EventSourceKey,
     ingress_store::{IngressId, IngressItem, IngressStore},
     time::{now_unix_ms, now_unix_secs},
@@ -78,37 +78,6 @@ struct EnvelopeAck {
 struct SocketModeChannel {
     source_key: EventSourceKey,
     source_label: String,
-}
-
-// ---------------------------------------------------------------------------
-// Backoff
-// ---------------------------------------------------------------------------
-
-struct ExponentialBackoff {
-    base: Duration,
-    max: Duration,
-    attempts: u32,
-}
-
-impl ExponentialBackoff {
-    fn new(base: Duration, max: Duration) -> Self {
-        Self {
-            base,
-            max,
-            attempts: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.attempts = 0;
-    }
-
-    fn next_delay(&mut self) -> Duration {
-        let shift = self.attempts.min(16);
-        let delay = self.base.saturating_mul(2u32.pow(shift));
-        self.attempts = self.attempts.saturating_add(1);
-        delay.min(self.max)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -979,46 +948,5 @@ mod tests {
             acks.lock().unwrap().is_empty(),
             "malformed envelope should not ack"
         );
-    }
-
-    // ---------------------------------------------------------------------------
-    // ExponentialBackoff
-    // ---------------------------------------------------------------------------
-
-    #[test]
-    fn exponential_backoff_first_delay_is_base() {
-        let mut backoff =
-            ExponentialBackoff::new(Duration::from_millis(500), Duration::from_secs(30));
-        assert_eq!(backoff.next_delay(), Duration::from_millis(500));
-    }
-
-    #[test]
-    fn exponential_backoff_doubles_each_attempt() {
-        let mut backoff =
-            ExponentialBackoff::new(Duration::from_millis(100), Duration::from_secs(60));
-        assert_eq!(backoff.next_delay(), Duration::from_millis(100)); // 100 * 2^0
-        assert_eq!(backoff.next_delay(), Duration::from_millis(200)); // 100 * 2^1
-        assert_eq!(backoff.next_delay(), Duration::from_millis(400)); // 100 * 2^2
-    }
-
-    #[test]
-    fn exponential_backoff_caps_at_max() {
-        let mut backoff =
-            ExponentialBackoff::new(Duration::from_millis(500), Duration::from_secs(30));
-        for _ in 0..20 {
-            backoff.next_delay();
-        }
-        assert_eq!(backoff.next_delay(), Duration::from_secs(30));
-    }
-
-    #[test]
-    fn exponential_backoff_reset_restarts_from_base() {
-        let mut backoff =
-            ExponentialBackoff::new(Duration::from_millis(500), Duration::from_secs(30));
-        backoff.next_delay();
-        backoff.next_delay();
-        backoff.next_delay();
-        backoff.reset();
-        assert_eq!(backoff.next_delay(), Duration::from_millis(500));
     }
 }

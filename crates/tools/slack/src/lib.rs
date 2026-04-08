@@ -35,19 +35,6 @@ use serde::{Deserialize, Serialize};
 pub const BASE_URL: &str = "https://slack.com/api";
 
 #[cfg(test)]
-const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
-#[cfg(test)]
-const RATE_LIMIT_MAX_DELAY_MS: u64 = 5_000;
-
-#[cfg(test)]
-fn backoff_delay(retries: usize) -> std::time::Duration {
-    let shift = u32::try_from(retries).unwrap_or(u32::MAX);
-    let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
-    let backoff = RATE_LIMIT_BASE_DELAY_MS.saturating_mul(multiplier);
-    std::time::Duration::from_millis(backoff.min(RATE_LIMIT_MAX_DELAY_MS))
-}
-
-#[cfg(test)]
 pub(crate) fn slack_test_env_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -1600,17 +1587,19 @@ mod tests {
     use super::{
         BASE_URL, GetConversationHistoryInput, ListConversationsInput, RetryAfter,
         SlackApiErrorClass, SlackClient, SlackConversationKind, SlackInput, SlackTool,
-        SlackUserResolutionMode, backoff_delay, map_slack_api_error,
-        should_warn_on_insecure_base_url,
+        SlackUserResolutionMode, map_slack_api_error, should_warn_on_insecure_base_url,
     };
 
     #[test]
     fn backoff_delay_is_capped() {
-        assert_eq!(backoff_delay(0), Duration::from_millis(500));
-        assert_eq!(backoff_delay(1), Duration::from_millis(1000));
-        assert_eq!(backoff_delay(2), Duration::from_millis(2000));
-        assert_eq!(backoff_delay(3), Duration::from_millis(4000));
-        assert_eq!(backoff_delay(4), Duration::from_millis(5000));
+        use baml_rt_core::backoff::backoff_delay;
+        let base = Duration::from_millis(500);
+        let max = Duration::from_millis(5_000);
+        assert_eq!(backoff_delay(base, max, 0), Duration::from_millis(500));
+        assert_eq!(backoff_delay(base, max, 1), Duration::from_millis(1000));
+        assert_eq!(backoff_delay(base, max, 2), Duration::from_millis(2000));
+        assert_eq!(backoff_delay(base, max, 3), Duration::from_millis(4000));
+        assert_eq!(backoff_delay(base, max, 4), Duration::from_millis(5000));
     }
 
     #[test]

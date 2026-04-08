@@ -3,6 +3,7 @@
 pub mod a2a_handler;
 pub mod a2a_wire;
 pub mod agent_routing;
+pub mod backoff;
 pub mod bus;
 pub mod callback_store;
 pub mod context;
@@ -32,6 +33,7 @@ pub use agent_routing::{
     AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey,
     route_key_from_request,
 };
+pub use backoff::ExponentialBackoff;
 pub use baml_rt_citation::Citation;
 pub use bus::{
     A2aEffectMetadata, A2aKind, Bus, BusApi, BusStream, BusWithEffects, Command, DomainEvent,
