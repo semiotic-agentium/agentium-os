@@ -145,9 +145,5 @@ pub(crate) fn map_a2a_error(id: Option<JSONRPCId>, err: BamlRtError) -> Value {
 }
 
 pub(crate) fn unix_timestamp_secs() -> String {
-    let now = std::time::SystemTime::now();
-    let duration = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    duration.as_secs().to_string()
+    baml_rt_core::now_unix_secs("runner_timestamp").to_string()
 }

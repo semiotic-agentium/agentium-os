@@ -2,13 +2,13 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 
 use baml_rt_core::{
     BamlRtError, DeploymentContentHash, DeploymentRecord, DeploymentStatus, Result,
-    callback_now_unix_ms,
     callback_store::{
         CallbackStore, CancelCallbackSelector, ScheduleCallbackRequest, ScheduleCallbackResult,
         StoredCallback,
     },
     event_subscription::EventSourceKey,
     ingress_store::{IngressId, IngressItem, IngressStore},
+    now_unix_ms,
 };
 use serde::Deserialize;
 #[cfg(test)]
@@ -541,7 +541,7 @@ impl DeploymentStateStore {
             "cancelled",
             None,
             None,
-            Some(callback_now_unix_ms("system_callback_cancel")),
+            Some(now_unix_ms("system_callback_cancel")),
         )
         .await?;
         debug!(
@@ -958,7 +958,7 @@ fn unix_ms_to_db_int(value: u64, field_name: &str) -> Result<i64> {
 /// Surreal-backed [`CallbackStore`](baml_rt_core::CallbackStore) for runner state (`state.db`).
 ///
 /// Registered at process start via [`install_callback_store`](baml_tools_system::callback_store::install_callback_store).
-/// Timestamps use [`callback_now_unix_ms`](baml_rt_core::callback_now_unix_ms) from core so this
+/// Timestamps use [`now_unix_ms`](baml_rt_core::now_unix_ms) from core so this
 /// module does not depend on `baml-tools-system` for persistence-only clocking.
 #[async_trait::async_trait]
 impl CallbackStore for DeploymentStateStore {

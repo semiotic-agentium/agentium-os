@@ -12,7 +12,6 @@ mod callback_bundle;
 pub mod callback_delivery_gate;
 pub mod callback_producer;
 pub mod callback_store;
-pub mod callback_time;
 mod discover_bundle;
 mod discover_session_tools;
 pub mod metadata;

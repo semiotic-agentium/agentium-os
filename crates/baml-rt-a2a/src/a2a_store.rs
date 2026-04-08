@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Instant, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -441,16 +437,7 @@ impl ProvenanceTaskStore {
 }
 
 fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or_else(|e| {
-            tracing::warn!(
-                error = %e,
-                "system time before UNIX_EPOCH, using 0 for provenance timestamp"
-            );
-            0
-        })
+    baml_rt_core::now_unix_ms("a2a_store")
 }
 
 fn require_context_id(context_id: Option<ContextId>, operation: &str) -> Result<ContextId> {

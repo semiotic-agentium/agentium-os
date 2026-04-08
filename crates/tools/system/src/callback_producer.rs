@@ -3,7 +3,7 @@ use std::{collections::HashSet, sync::Arc};
 use async_trait::async_trait;
 use baml_rt_core::{
     AgentDispatchRoutingKey, BamlRtError, EventSchemaVersion, EventSourceKind, ProducedEvent,
-    Result, callback_now_unix_ms, event_subscription::EventSourceKey,
+    Result, event_subscription::EventSourceKey, now_unix_ms,
 };
 use baml_rt_tools::{
     EventProducer, EventProducerBuildContext, EventProducerBuildFuture, EventProducerProvider,
@@ -125,7 +125,7 @@ impl EventProducer for CallbackEventProducer {
             store
                 .mark_callbacks_delivered(
                     &checkpoint_state.delivered_callback_ids,
-                    callback_now_unix_ms("system_callback_checkpoint_reconcile"),
+                    now_unix_ms("system_callback_checkpoint_reconcile"),
                 )
                 .await?;
             debug!(
@@ -136,7 +136,7 @@ impl EventProducer for CallbackEventProducer {
 
         let due_callbacks = store
             .list_due_callbacks(
-                callback_now_unix_ms("system_callback_due_poll"),
+                now_unix_ms("system_callback_due_poll"),
                 MAX_CALLBACKS_PER_POLL,
             )
             .await?;
@@ -185,7 +185,7 @@ impl EventProducer for CallbackEventProducer {
         let emitted_callback_ids = store
             .mark_callbacks_emitted(
                 &due_callback_ids,
-                callback_now_unix_ms("system_callback_mark_emitted"),
+                now_unix_ms("system_callback_mark_emitted"),
             )
             .await?;
         let emitted_callback_id_set: HashSet<&str> =
@@ -277,7 +277,7 @@ impl CallbackEventProducer {
                 },
                 "scheduled_for_unix_ms": callback.scheduled_for_unix_ms,
                 "requested_at_unix_ms": callback.requested_at_unix_ms,
-                "emitted_at_unix_ms": callback_now_unix_ms("system_callback_emit"),
+                "emitted_at_unix_ms": now_unix_ms("system_callback_emit"),
                 "dedupe_key": callback.dedupe_key,
                 "payload": callback.payload,
                 "request": {

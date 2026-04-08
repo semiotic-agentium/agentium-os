@@ -3,10 +3,7 @@
 //! This module provides task-local correlation IDs so async boundaries
 //! can retain request context without requiring JS changes.
 
-use std::{
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ids::CorrelationId;
 
@@ -17,10 +14,7 @@ tokio::task_local! {
 static CORRELATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub fn generate_correlation_id() -> CorrelationId {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let millis = crate::now_unix_ms("correlation_id_mint");
     let counter = CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed);
     CorrelationId::new(millis, counter)
 }

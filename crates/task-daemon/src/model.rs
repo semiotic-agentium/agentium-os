@@ -1,9 +1,6 @@
 //! Core data model shared across polling, interpretation, and delivery.
 
-use std::{
-    fmt,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::fmt;
 
 use baml_rt_core::{AgentDispatchRoutingKey, EventSourceKind};
 use serde::{Deserialize, Serialize};
@@ -298,10 +295,7 @@ pub struct TaskBatch {
 }
 
 pub fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    baml_rt_core::now_unix_secs("task_daemon")
 }
 
 #[cfg(test)]

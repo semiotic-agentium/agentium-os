@@ -141,10 +141,7 @@ impl EpisodeReader {
             }
             None => {
                 // For snapshots: use "in_progress" status and current time as terminal bound
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
+                let now_ms = baml_rt_core::now_unix_ms("episode_snapshot");
                 ("in_progress".to_string(), now_ms)
             }
         };

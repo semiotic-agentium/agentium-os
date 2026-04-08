@@ -26,10 +26,7 @@ use serde_json::{Value, Value as JsonValue};
 static EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    baml_rt_core::now_unix_ms("provenance_event")
 }
 
 fn seed_event_counter() -> u64 {

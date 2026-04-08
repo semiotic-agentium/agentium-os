@@ -1,15 +1,13 @@
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{SystemTime, UNIX_EPOCH},
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use baml_rt_core::{
-    BamlRtError, Result, callback_now_unix_ms, callback_scheduling_scopes_differ_from_dispatch,
+    BamlRtError, Result, callback_scheduling_scopes_differ_from_dispatch,
     event_subscription::EventSourceKey,
     ids::{ContextId, ExternalId, TaskId},
+    now_unix_ms,
 };
 use baml_rt_tools::{
     ToolBundle, ToolBundleMetadata, ToolHandler,
@@ -35,10 +33,7 @@ use crate::{
 static CALLBACK_DISPATCH_CONTEXT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn mint_dispatch_context_id() -> ContextId {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let millis = baml_rt_core::now_unix_ms("callback_dispatch_context");
     let counter = CALLBACK_DISPATCH_CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
     ContextId::new(millis, counter)
 }
@@ -96,7 +91,7 @@ async fn schedule_callback(
     session_ctx: &ToolSessionContext,
     input: CallbackScheduleInput,
 ) -> Result<CallbackToolOutput> {
-    let requested_at_unix_ms = callback_now_unix_ms("system_callback_schedule");
+    let requested_at_unix_ms = now_unix_ms("system_callback_schedule");
     let scheduled_for_unix_ms = requested_at_unix_ms.saturating_add(input.after_ms);
     let dedupe_key = normalize_optional_text(input.dedupe_key, "dedupeKey")?;
     let scheduling_task_id = session_ctx.task_id.clone().ok_or_else(|| {

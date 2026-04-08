@@ -323,12 +323,7 @@ impl RepositoryService {
 
 /// UTC timestamp in RFC 3339 format.
 pub(crate) fn chrono_now() -> Timestamp {
-    let now = std::time::SystemTime::now();
-    let duration = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-    Timestamp::new(format!("{secs}"))
+    Timestamp::new(baml_rt_core::now_unix_secs("repository_timestamp").to_string())
 }
 
 fn manifest_tags(source: &crate::entry::SourceBundle) -> Vec<Tag> {

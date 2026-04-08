@@ -49,12 +49,7 @@ fn map_err(e: surrealdb::Error) -> ConfigStoreError {
 }
 
 fn now_ms() -> UnixMs {
-    UnixMs(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),
-    )
+    UnixMs(baml_rt_core::now_unix_ms("config_store"))
 }
 
 pub struct SurrealConfigStore {

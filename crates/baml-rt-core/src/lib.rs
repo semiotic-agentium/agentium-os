@@ -21,6 +21,7 @@ pub mod package;
 pub mod semantics;
 pub mod serde_one_or_many;
 pub mod stream_completion;
+pub mod time;
 pub mod types;
 
 pub use a2a_handler::{
@@ -40,7 +41,7 @@ pub use bus::{
 };
 pub use callback_store::{
     CallbackDeliveryGate, CallbackStore, CancelCallbackSelector, ScheduleCallbackRequest,
-    ScheduleCallbackResult, StoredCallback, callback_now_unix_ms, callback_store_not_installed,
+    ScheduleCallbackResult, StoredCallback, callback_store_not_installed,
 };
 pub use context::{
     InvocationContext, InvocationScope, OutcomeInvocationContext, RequestScope, RuntimeScope,
@@ -76,3 +77,4 @@ pub use json::to_json_value;
 pub use package::AgentManifest;
 pub use semantics::{ActivityOutcome, ErrorDisposition, InvocationKind, Outcome, Retryability};
 pub use stream_completion::{StreamCompletion, StreamResult};
+pub use time::{now_unix_ms, now_unix_secs};
