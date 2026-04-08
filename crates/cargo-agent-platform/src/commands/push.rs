@@ -50,9 +50,17 @@ pub fn run(
             style(published.result.hash.as_str()).cyan()
         );
 
-        let deployment = http
-            .deploy_hash(published.result.hash.as_str(), url)
-            .with_context(|| format!("Failed to deploy hash {}", published.result.hash.as_str()))?;
+        let deployment = match http.deploy_hash(published.result.hash.as_str(), url) {
+            Ok(result) => result,
+            Err(err) => {
+                bail!(
+                    "Deploy failed after successful publish for {version} (hash: {}).\nCause: {err}\nPublished artifact was NOT rolled back.\nRetry deploy with:\n  cargo agent-platform deploy --hash {} --url {}",
+                    published.result.hash.as_str(),
+                    published.result.hash.as_str(),
+                    url
+                );
+            }
+        };
 
         if deployment.already_deployed {
             println!(
