@@ -1,52 +1,57 @@
 //! `list-deployed-instances` subcommand — list currently loaded runner instances.
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use console::style;
 use serde::Deserialize;
 
+use super::utils::{AgentPlatform, join_url};
+
 #[derive(Debug, Deserialize)]
-struct AgentDiscoveryEntry {
+pub struct AgentDiscoveryEntry {
     agent_card: AgentCard,
 }
 
 #[derive(Debug, Deserialize)]
-struct AgentCard {
+pub struct AgentCard {
     name: String,
     agent_package: String,
     agent_instance_id: String,
 }
 
+pub struct ListDeployedInstancesOutput {
+    pub entries: Vec<AgentDiscoveryEntry>,
+    pub agents_url: String,
+}
+
+impl AgentPlatform {
+    pub fn list_deployed_instances(&self, base_url: &str) -> Result<ListDeployedInstancesOutput> {
+        let agents_url = join_url(base_url, "/agents");
+        let entries: Vec<AgentDiscoveryEntry> =
+            self.get_json(&agents_url, "List deployed instances")?;
+
+        Ok(ListDeployedInstancesOutput {
+            entries,
+            agents_url,
+        })
+    }
+}
+
+pub fn list_deployed_instances(base_url: &str) -> Result<ListDeployedInstancesOutput> {
+    let http = AgentPlatform::new()?;
+    http.list_deployed_instances(base_url)
+}
+
 pub fn run(base_url: &str) -> Result<()> {
-    let base = base_url.trim_end_matches('/');
-    let agents_url = format!("{base}/agents");
+    let output = list_deployed_instances(base_url)?;
 
-    let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
-    let entries = rt.block_on(async {
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(&agents_url)
-            .send()
-            .await
-            .with_context(|| format!("Failed to GET deployed instances from {agents_url}"))?;
-
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            bail!("List deployed instances failed ({status}) at {agents_url}: {body}");
-        }
-
-        serde_json::from_str::<Vec<AgentDiscoveryEntry>>(&body)
-            .with_context(|| format!("Invalid /agents response JSON: {body}"))
-    })?;
-
-    if entries.is_empty() {
+    if output.entries.is_empty() {
         println!("{}", style("No deployed instances found.").yellow().bold());
-        println!("  url: {}", style(agents_url).dim());
+        println!("  url: {}", style(output.agents_url).dim());
         return Ok(());
     }
 
     println!("{}", style("Deployed instances").bold());
-    for entry in entries {
+    for entry in output.entries {
         println!(
             "- {}  package={} instance={}",
             style(entry.agent_card.name).cyan(),
@@ -54,7 +59,7 @@ pub fn run(base_url: &str) -> Result<()> {
             entry.agent_card.agent_instance_id
         );
     }
-    println!("  url: {}", style(agents_url).dim());
+    println!("  url: {}", style(output.agents_url).dim());
 
     Ok(())
 }

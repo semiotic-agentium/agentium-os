@@ -44,4 +44,27 @@ impl AgentPlatform {
                 .with_context(|| format!("Failed to parse {op_name} response: {body}"))
         })
     }
+
+    pub fn get_json<Resp>(&self, url: &str, op_name: &str) -> Result<Resp>
+    where
+        Resp: DeserializeOwned,
+    {
+        self.runtime.block_on(async {
+            let resp = self
+                .client
+                .get(url)
+                .send()
+                .await
+                .with_context(|| format!("Failed to GET {op_name} from {url}"))?;
+
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            if !status.is_success() {
+                bail!("{op_name} failed ({status}) at {url}: {body}");
+            }
+
+            serde_json::from_str::<Resp>(&body)
+                .with_context(|| format!("Failed to parse {op_name} response: {body}"))
+        })
+    }
 }
