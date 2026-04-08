@@ -90,6 +90,7 @@ pub enum SlackTransportConfig {
 
 /// Config for host-managed Slack source ingestion.
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType, Default)]
+#[serde(deny_unknown_fields)]
 pub struct SlackEventProducerConfig {
     #[baml(
         description = "Slack channels to ingest for raw host event delivery. Entries may be channel names like `agentium-eng` or channel IDs like `C123ABC456`."
@@ -749,6 +750,11 @@ pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProdu
                     )
                 })?;
 
+                // TODO: the cancel token is currently inert — EventProducerBuildFuture
+                // returns only `Vec<Arc<dyn EventProducer>>` so there is no way to
+                // hand the token back to the runner, and the runner uses
+                // JoinHandle::abort() for shutdown. The receiver exits correctly via
+                // task abort. Wire this up when EventProducer gains shutdown support.
                 let cancel = tokio_util::sync::CancellationToken::new();
                 let receiver_handle = crate::socket_mode::start_socket_mode_receiver(
                     client, app_token, channels, store, cancel,

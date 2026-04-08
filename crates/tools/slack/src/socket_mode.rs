@@ -26,6 +26,11 @@ use crate::{
     producer::{RAW_SOURCE_SCHEMA_VERSION, SlackChannelSelector, resolve_selector_channel_id},
 };
 
+/// Read timeout for the Socket Mode WebSocket stream. Slack sends pings
+/// approximately every 30 seconds; 90s allows three missed pings before
+/// treating the connection as dead.
+const WS_READ_TIMEOUT: Duration = Duration::from_secs(90);
+
 // ---------------------------------------------------------------------------
 // Envelope types
 // ---------------------------------------------------------------------------
@@ -157,13 +162,18 @@ impl SocketModeReceiver {
         let (mut write, mut read) = ws_stream.split();
 
         loop {
-            match read.next().await {
-                Some(Ok(Message::Text(text))) => {
+            match tokio::time::timeout(WS_READ_TIMEOUT, read.next()).await {
+                Err(_elapsed) => {
+                    return Err(BamlRtError::ToolExecution(
+                        "Socket Mode WebSocket read timed out (no data for 90s)".to_string(),
+                    ));
+                }
+                Ok(Some(Ok(Message::Text(text)))) => {
                     if let Some(reason) = self.handle_text_message(&text, &mut write).await? {
                         return Ok(reason);
                     }
                 }
-                Some(Ok(Message::Ping(payload))) => {
+                Ok(Some(Ok(Message::Ping(payload)))) => {
                     if let Err(err) = write.send(Message::Pong(payload)).await {
                         warn!(error = %err, "Socket Mode pong send failed");
                         return Err(BamlRtError::ToolExecution(format!(
@@ -171,21 +181,21 @@ impl SocketModeReceiver {
                         )));
                     }
                 }
-                Some(Ok(Message::Close(_))) => {
+                Ok(Some(Ok(Message::Close(_)))) => {
                     info!("Socket Mode WebSocket closed by server");
                     return Ok(DisconnectReason::ServerRequested);
                 }
-                None => {
+                Ok(None) => {
                     return Err(BamlRtError::ToolExecution(
                         "Socket Mode WebSocket stream ended unexpectedly".to_string(),
                     ));
                 }
-                Some(Err(err)) => {
+                Ok(Some(Err(err))) => {
                     return Err(BamlRtError::ToolExecution(format!(
                         "WebSocket read error: {err}"
                     )));
                 }
-                _ => {}
+                Ok(Some(Ok(_))) => {}
             }
         }
     }
