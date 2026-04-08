@@ -352,7 +352,7 @@ impl QuickJSBridge {
             .baml_manager
             .read()
             .await
-            .build_conversation_context_tags(scope.as_scope())
+            .build_conversation_context_tags(scope.as_scope(), Some(function_name))
             .await
             .ok()
             .flatten();

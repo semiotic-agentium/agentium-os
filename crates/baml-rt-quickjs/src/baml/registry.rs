@@ -12,9 +12,13 @@ impl BamlRuntimeManager {
     pub async fn build_conversation_context_tags(
         &self,
         scope: &context::RuntimeScope,
+        function_name: Option<&str>,
     ) -> Result<Option<HashMap<String, BamlValue>>> {
         match &self.state.executor {
-            Some(exec) => exec.build_conversation_context_tags(scope).await,
+            Some(exec) => {
+                exec.build_conversation_context_tags(scope, function_name)
+                    .await
+            }
             None => Ok(None),
         }
     }

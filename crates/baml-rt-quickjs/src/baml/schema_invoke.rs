@@ -145,7 +145,9 @@ impl BamlRuntimeManager {
         let interceptor_registry = Some(self.state.interceptor_registry.clone());
         let planning_step = resolve_planning_step(&self.state.execution_sessions, scope);
         let invocation_args = args.clone();
-        let merged_tags = self.build_conversation_context_tags(scope).await?;
+        let merged_tags = self
+            .build_conversation_context_tags(scope, Some(function_name))
+            .await?;
         let (result, completion) = executor
             .execute_function(
                 scope,

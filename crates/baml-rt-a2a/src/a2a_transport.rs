@@ -1,6 +1,6 @@
 //! A2A request handler interface for non-standard transports.
 
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::{HashMap, HashSet}, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -26,7 +26,10 @@ use baml_rt_quickjs::{
 };
 use baml_rt_tools::{
     ToolFailure, ToolHandler, ToolName, ToolRegistry, ToolSession, ToolSessionError, ToolTypeSpec,
-    prompt_projection::{PromptProjectionItem, project_prompt_context},
+    prompt_projection::{
+        PromptProjectionContent, PromptProjectionItem, SessionStepProjection,
+        project_prompt_context,
+    },
     tools::{ToolFunctionMetadata, ToolSessionContext},
 };
 use baml_tools_system::A2aSessionBundle;
@@ -333,13 +336,113 @@ impl ProjectingConversationContextProvider {
             archive_ref_tables,
         }
     }
-}
 
-#[async_trait]
-impl ConversationContextProvider for ProjectingConversationContextProvider {
-    async fn conversation_history_json(
+    fn should_use_compact_history_profile(function_name: &str) -> bool {
+        ["__select", "__act__", "__continue__"]
+            .iter()
+            .any(|marker| function_name.contains(marker))
+    }
+
+    fn compact_projection_items(items: Vec<PromptProjectionItem>) -> Vec<PromptProjectionItem> {
+        const KEEP_TAIL: usize = 18;
+        const MAX_ITEMS: usize = 28;
+        const MAX_SESSION_STEPS: usize = 14;
+        const MAX_USER_MESSAGES: usize = 4;
+        const MAX_TOOL_CALLS: usize = 4;
+        const MAX_TOOL_RESULTS: usize = 6;
+
+        if items.len() <= MAX_ITEMS {
+            return items;
+        }
+
+        let mut keep = vec![false; items.len()];
+        let start_tail = items.len().saturating_sub(KEEP_TAIL);
+        for k in keep.iter_mut().skip(start_tail) {
+            *k = true;
+        }
+
+        let mut kept_session_steps = 0usize;
+        let mut kept_user_messages = 0usize;
+        let mut kept_tool_calls = 0usize;
+        let mut kept_tool_results = 0usize;
+        let mut seen_send_archives: HashSet<String> = HashSet::new();
+        let mut seen_read_views: HashSet<String> = HashSet::new();
+
+        for i in (0..items.len()).rev() {
+            if keep[i] {
+                continue;
+            }
+            let item = &items[i];
+            match &item.content {
+                PromptProjectionContent::Message(_) if item.role == "user" => {
+                    if kept_user_messages < MAX_USER_MESSAGES {
+                        keep[i] = true;
+                        kept_user_messages += 1;
+                    }
+                }
+                PromptProjectionContent::SessionStep { op, .. } => {
+                    if kept_session_steps >= MAX_SESSION_STEPS {
+                        continue;
+                    }
+                    let should_keep = match op {
+                        SessionStepProjection::Open => true,
+                        SessionStepProjection::SendDone { archive_ref, .. } => {
+                            seen_send_archives.insert(archive_ref.clone())
+                        }
+                        SessionStepProjection::Read {
+                            archive_ref,
+                            grep,
+                            offset,
+                            limit,
+                        } => {
+                            let grep_norm = grep
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|g| !g.is_empty())
+                                .unwrap_or("");
+                            let key = format!("{archive_ref}|{grep_norm}|{offset}|{limit}");
+                            seen_read_views.insert(key)
+                        }
+                    };
+                    if should_keep {
+                        keep[i] = true;
+                        kept_session_steps += 1;
+                    }
+                }
+                PromptProjectionContent::ToolCall { .. } => {
+                    if kept_tool_calls < MAX_TOOL_CALLS {
+                        keep[i] = true;
+                        kept_tool_calls += 1;
+                    }
+                }
+                PromptProjectionContent::ToolResult { .. }
+                | PromptProjectionContent::ToolError { .. } => {
+                    if kept_tool_results < MAX_TOOL_RESULTS {
+                        keep[i] = true;
+                        kept_tool_results += 1;
+                    }
+                }
+                PromptProjectionContent::Message(_) => {}
+            }
+        }
+
+        let mut compacted = items
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, item)| keep[idx].then_some(item))
+            .collect::<Vec<_>>();
+
+        if compacted.len() > MAX_ITEMS {
+            compacted = compacted.split_off(compacted.len() - MAX_ITEMS);
+        }
+
+        compacted
+    }
+
+    async fn conversation_history_json_internal(
         &self,
         scope: &context::RuntimeScope,
+        function_name: Option<&str>,
     ) -> Result<Option<Value>> {
         let context_id = scope.context_id();
         let items = self
@@ -348,6 +451,7 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
             .await?;
         tracing::debug!(
             context_id = %context_id,
+            function_name = function_name.unwrap_or("-"),
             item_count = items.len(),
             "conversation_history_json: context source returned items"
         );
@@ -355,12 +459,20 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
             return Ok(None);
         }
 
-        let projection_items = items
+        let mut projection_items = items
             .into_iter()
             .filter_map(to_projection_item)
             .collect::<Vec<_>>();
         if projection_items.is_empty() {
             return Ok(None);
+        }
+
+        let compact_profile = function_name
+            .map(Self::should_use_compact_history_profile)
+            .unwrap_or(false);
+        let before_count = projection_items.len();
+        if compact_profile {
+            projection_items = Self::compact_projection_items(projection_items);
         }
 
         // Build an archive reader closure if tables are available.
@@ -421,12 +533,45 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
             .map(|t| baml_rt_tools::archive_refs::get_or_create_ref_table(t, &context_id_str))
             .unwrap_or_else(|| std::sync::Arc::new(baml_rt_tools::archive_refs::RefTable::new()));
 
-        Ok(Some(project_prompt_context(
+        let history = project_prompt_context(
             projection_items,
             self.tool_registry.as_ref(),
             &ref_table_arc,
             reader.as_deref(),
-        )))
+        );
+
+        let rendered_rows = history.as_array().map_or(0, Vec::len);
+        let rendered_bytes = serde_json::to_vec(&history).map_or(0, |v| v.len());
+        tracing::debug!(
+            context_id = %context_id,
+            function_name = function_name.unwrap_or("-"),
+            compact_profile,
+            projection_items_before = before_count,
+            projection_items_after = rendered_rows,
+            rendered_bytes,
+            "conversation_history_json: projection built"
+        );
+
+        Ok(Some(history))
+    }
+}
+
+#[async_trait]
+impl ConversationContextProvider for ProjectingConversationContextProvider {
+    async fn conversation_history_json(
+        &self,
+        scope: &context::RuntimeScope,
+    ) -> Result<Option<Value>> {
+        self.conversation_history_json_internal(scope, None).await
+    }
+
+    async fn conversation_history_json_for_function(
+        &self,
+        scope: &context::RuntimeScope,
+        function_name: &str,
+    ) -> Result<Option<Value>> {
+        self.conversation_history_json_internal(scope, Some(function_name))
+            .await
     }
 }
 

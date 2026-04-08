@@ -176,6 +176,18 @@ pub trait ConversationContextProvider: Send + Sync {
         &self,
         scope: &context::RuntimeScope,
     ) -> Result<Option<Value>>;
+
+    /// Function-aware variant for providers that apply projection profiles.
+    ///
+    /// Default behavior delegates to [`ConversationContextProvider::conversation_history_json`]
+    /// so existing providers remain source-compatible.
+    async fn conversation_history_json_for_function(
+        &self,
+        scope: &context::RuntimeScope,
+        _function_name: &str,
+    ) -> Result<Option<Value>> {
+        self.conversation_history_json(scope).await
+    }
 }
 
 pub struct BamlExecutor {
@@ -318,7 +330,10 @@ impl BamlExecutor {
         // Pre-execution interception: intercept LLM calls before they're sent
         let context_tags = match override_context_tags {
             Some(tags) => Some(tags),
-            None => self.build_conversation_context_tags(scope).await?,
+            None => {
+                self.build_conversation_context_tags(scope, Some(function_name))
+                    .await?
+            }
         };
         let ctx_manager = self.create_ctx_manager_for_scope(scope, context_tags)?;
         let planning_step_refs = planning_step
@@ -631,12 +646,16 @@ impl BamlExecutor {
     pub async fn build_conversation_context_tags(
         &self,
         scope: &context::RuntimeScope,
+        function_name: Option<&str>,
     ) -> Result<Option<HashMap<String, BamlValue>>> {
         let Some(provider) = self.conversation_context_provider.as_ref() else {
             return Ok(None);
         };
 
-        let Some(payload) = provider.conversation_history_json(scope).await? else {
+        let Some(payload) = (match function_name {
+            Some(name) => provider.conversation_history_json_for_function(scope, name).await?,
+            None => provider.conversation_history_json(scope).await?,
+        }) else {
             return Ok(None);
         };
 
