@@ -23,7 +23,9 @@ tracing = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
 inventory = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]

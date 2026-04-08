@@ -107,6 +107,7 @@ pub enum SlackReadError {
 pub struct SlackAuthConfig {
     pub bot_token: Option<String>,
     pub user_token: Option<String>,
+    pub app_token: Option<String>,
 }
 
 impl SlackAuthConfig {
@@ -117,6 +118,10 @@ impl SlackAuthConfig {
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty()),
             user_token: std::env::var("SLACK_USER_TOKEN")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            app_token: std::env::var("SLACK_APP_TOKEN")
                 .ok()
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty()),
@@ -244,6 +249,32 @@ impl SlackReadClient {
             .client
             .get(endpoint)
             .header(reqwest::header::AUTHORIZATION, authorization))
+    }
+
+    pub fn authorized_post(
+        &self,
+        token: &str,
+        method: &'static str,
+    ) -> std::result::Result<reqwest::RequestBuilder, SlackReadError> {
+        let endpoint = format!("{}/{}", self.base_url(), method);
+        let authorization = format!("Bearer {token}")
+            .parse::<reqwest::header::HeaderValue>()
+            .map_err(|e| SlackReadError::InvalidHeader {
+                message: e.to_string(),
+            })?;
+        Ok(self
+            .client
+            .post(endpoint)
+            .header(reqwest::header::AUTHORIZATION, authorization))
+    }
+
+    pub async fn post_json(
+        &self,
+        method_name: &'static str,
+        token: &str,
+    ) -> std::result::Result<serde_json::Value, SlackReadError> {
+        let request = self.authorized_post(token, method_name)?;
+        self.send_request(method_name, request).await
     }
 
     pub async fn send_request(

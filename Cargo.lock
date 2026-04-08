@@ -2161,6 +2161,7 @@ dependencies = [
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
+ "futures-util",
  "integrations-slack-read",
  "inventory",
  "reqwest 0.12.26",
@@ -2170,6 +2171,7 @@ dependencies = [
  "test-support",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
 ]
 

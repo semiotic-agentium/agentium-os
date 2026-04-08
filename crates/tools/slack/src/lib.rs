@@ -10,6 +10,7 @@
 
 mod normalize;
 mod producer;
+pub(crate) mod socket_mode;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
@@ -24,7 +25,10 @@ pub use normalize::{
     SlackNormalizedBatch, SlackNormalizedMessageRecord, SlackNormalizedRecord,
     SlackNormalizedSource, SlackTransportAuthorization, SlackTransportKind, SlackTransportMetadata,
 };
-pub use producer::{RAW_SOURCE_ROUTING_KEY, RAW_SOURCE_SCHEMA_VERSION, SlackEventProducerConfig};
+pub use producer::{
+    RAW_SOURCE_ROUTING_KEY, RAW_SOURCE_SCHEMA_VERSION, SlackEventProducerConfig,
+    SlackTransportConfig,
+};
 use serde::{Deserialize, Serialize};
 
 /// Slack API base URL.
