@@ -1,7 +1,5 @@
 //! Slack polling implementation for [`crate::daemon::TaskSource`].
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use integrations_slack_read::{SlackAuthPreference, SlackReadClient, SlackReadError};
@@ -279,10 +277,7 @@ impl TaskSource for SlackTaskSource {
             .resolve_channel(token, &source_key, state, true)
             .await?;
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = baml_rt_core::now_unix_secs("slack_source_bootstrap");
         let bootstrap_oldest = format!(
             "{}.000000",
             now.saturating_sub(self.config.initial_lookback_seconds)

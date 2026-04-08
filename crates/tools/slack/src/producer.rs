@@ -329,10 +329,7 @@ impl SlackEventProducer {
         let oldest_param = match oldest {
             Some(ts) => ts.to_string(),
             None => {
-                let lookback = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
+                let lookback = baml_rt_core::now_unix_secs("slack_lookback")
                     .saturating_sub(INITIAL_LOOKBACK_SECS);
                 format!("{lookback}.000000")
             }
@@ -1112,17 +1109,11 @@ fn canonical_polling_message_identity(index: usize, message: &serde_json::Value)
 }
 
 fn emitted_at_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    baml_rt_core::now_unix_secs("slack_poll_normalize")
 }
 
 fn emitted_at_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    baml_rt_core::now_unix_ms("slack_ingress")
 }
 
 inventory::submit! {

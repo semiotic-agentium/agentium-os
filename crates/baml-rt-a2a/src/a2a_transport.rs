@@ -1,10 +1,6 @@
 //! A2A request handler interface for non-standard transports.
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Instant, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -82,10 +78,7 @@ struct SurrealRuntimeStore {
 
 impl SurrealRuntimeStore {
     fn now_millis() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
+        baml_rt_core::now_unix_ms("a2a_transport")
     }
 
     /// Single construction point: one TaskSubgraphStore over the same provenance Arc,

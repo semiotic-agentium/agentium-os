@@ -18,13 +18,7 @@
 //!    `LlmCompleted.result_payload` carries the LLM completion payload.
 //!    Both are `Option<Value>` — `None` only for error/abort paths.
 
-use std::{
-    collections::HashMap,
-    marker::PhantomData,
-    pin::Pin,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, marker::PhantomData, pin::Pin, sync::Arc};
 
 use async_channel::{Receiver, Sender};
 use async_trait::async_trait;
@@ -617,14 +611,10 @@ pub struct Envelope {
 
 impl Envelope {
     pub fn now(scope: Option<RuntimeScope>, payload: Payload) -> Self {
-        let timestamp_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
         Self {
             scope,
             correlation_id: correlation::current_correlation_id(),
-            timestamp_ms,
+            timestamp_ms: crate::now_unix_ms("bus_envelope"),
             payload,
         }
     }

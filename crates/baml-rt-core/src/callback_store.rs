@@ -151,15 +151,5 @@ pub fn callback_store_not_installed() -> BamlRtError {
 /// Shared by the runner persistence layer and `system/callback` tooling so hosts do not reach into
 /// a tool crate for clock skew handling.
 pub fn callback_now_unix_ms(clock_event: &'static str) -> u64 {
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(duration) => duration.as_millis() as u64,
-        Err(error) => {
-            tracing::warn!(
-                clock_event = clock_event,
-                error = %error,
-                "callback clock skew detected; using zero unix timestamp"
-            );
-            0
-        }
-    }
+    crate::time::now_unix_ms(clock_event)
 }

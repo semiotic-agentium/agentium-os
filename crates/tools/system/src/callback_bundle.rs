@@ -1,9 +1,6 @@
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{SystemTime, UNIX_EPOCH},
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use baml_rt_core::{
@@ -35,10 +32,7 @@ use crate::{
 static CALLBACK_DISPATCH_CONTEXT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn mint_dispatch_context_id() -> ContextId {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let millis = baml_rt_core::now_unix_ms("callback_dispatch_context");
     let counter = CALLBACK_DISPATCH_CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
     ContextId::new(millis, counter)
 }
