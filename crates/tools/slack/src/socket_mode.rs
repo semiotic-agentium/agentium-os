@@ -115,6 +115,7 @@ impl ExponentialBackoff {
 // Disconnect reason (controls backoff vs immediate reconnect)
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 enum DisconnectReason {
     /// Slack asked us to reconnect (e.g. `refresh_requested`, `warning`). No backoff.
     ServerRequested,
@@ -861,5 +862,158 @@ mod tests {
 
         let acked = acks.lock().unwrap();
         assert_eq!(&*acked, &["env-reaction"]);
+    }
+
+    // ---------------------------------------------------------------------------
+    // handle_text_message dispatch routing
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn handle_text_message_events_api_enqueues_and_acks() {
+        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
+        let (mut sink, acks) = AckCollector::new();
+
+        let text = r#"{
+            "type": "events_api",
+            "envelope_id": "env-txt-001",
+            "payload": {
+                "event": {
+                    "type": "message",
+                    "channel": "C123TEST",
+                    "user": "U01",
+                    "text": "hello from text",
+                    "ts": "1700000001.000001"
+                },
+                "event_id": "EvTXT001"
+            }
+        }"#;
+
+        let result = receiver.handle_text_message(text, &mut sink).await.unwrap();
+        assert!(result.is_none(), "events_api should not signal disconnect");
+
+        let acked = acks.lock().unwrap();
+        assert_eq!(&*acked, &["env-txt-001"]);
+
+        let pending = store.list_pending(10).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].ingress_id.as_str(),
+            "support/slack:socket:EvTXT001"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_text_message_hello_returns_none_no_ack() {
+        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
+        let (mut sink, acks) = AckCollector::new();
+
+        let text = r#"{"type":"hello","num_connections":1}"#;
+        let result = receiver.handle_text_message(text, &mut sink).await.unwrap();
+        assert!(result.is_none());
+        assert!(acks.lock().unwrap().is_empty(), "hello should not ack");
+        assert!(store.list_pending(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_text_message_disconnect_link_disabled_signals_reason() {
+        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
+        let (mut sink, _acks) = AckCollector::new();
+
+        let text = r#"{"type":"disconnect","reason":"link_disabled"}"#;
+        let result = receiver.handle_text_message(text, &mut sink).await.unwrap();
+        assert!(
+            matches!(result, Some(DisconnectReason::LinkDisabled)),
+            "expected LinkDisabled, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_text_message_disconnect_refresh_requested_signals_server_requested() {
+        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
+        let (mut sink, _acks) = AckCollector::new();
+
+        let text = r#"{"type":"disconnect","reason":"refresh_requested"}"#;
+        let result = receiver.handle_text_message(text, &mut sink).await.unwrap();
+        assert!(
+            matches!(result, Some(DisconnectReason::ServerRequested)),
+            "expected ServerRequested, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_text_message_unknown_type_with_envelope_id_acks() {
+        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
+        let (mut sink, acks) = AckCollector::new();
+
+        let text = r#"{"type":"interactive","envelope_id":"env-unknown-001"}"#;
+        let result = receiver.handle_text_message(text, &mut sink).await.unwrap();
+        assert!(result.is_none());
+        assert_eq!(&*acks.lock().unwrap(), &["env-unknown-001"]);
+    }
+
+    #[tokio::test]
+    async fn handle_text_message_malformed_json_returns_none_no_ack() {
+        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
+        let (mut sink, acks) = AckCollector::new();
+
+        let result = receiver
+            .handle_text_message("this is not json at all", &mut sink)
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "malformed envelope should not signal disconnect"
+        );
+        assert!(
+            acks.lock().unwrap().is_empty(),
+            "malformed envelope should not ack"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // ExponentialBackoff
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn exponential_backoff_first_delay_is_base() {
+        let mut backoff =
+            ExponentialBackoff::new(Duration::from_millis(500), Duration::from_secs(30));
+        assert_eq!(backoff.next_delay(), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn exponential_backoff_doubles_each_attempt() {
+        let mut backoff =
+            ExponentialBackoff::new(Duration::from_millis(100), Duration::from_secs(60));
+        assert_eq!(backoff.next_delay(), Duration::from_millis(100)); // 100 * 2^0
+        assert_eq!(backoff.next_delay(), Duration::from_millis(200)); // 100 * 2^1
+        assert_eq!(backoff.next_delay(), Duration::from_millis(400)); // 100 * 2^2
+    }
+
+    #[test]
+    fn exponential_backoff_caps_at_max() {
+        let mut backoff =
+            ExponentialBackoff::new(Duration::from_millis(500), Duration::from_secs(30));
+        for _ in 0..20 {
+            backoff.next_delay();
+        }
+        assert_eq!(backoff.next_delay(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn exponential_backoff_reset_restarts_from_base() {
+        let mut backoff =
+            ExponentialBackoff::new(Duration::from_millis(500), Duration::from_secs(30));
+        backoff.next_delay();
+        backoff.next_delay();
+        backoff.next_delay();
+        backoff.reset();
+        assert_eq!(backoff.next_delay(), Duration::from_millis(500));
     }
 }
