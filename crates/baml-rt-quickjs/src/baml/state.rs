@@ -40,6 +40,10 @@ pub(in crate::baml) struct BamlRuntimeState {
         Arc<DashMap<ToolSessionId, EffectStartToken<ToolKind>>>,
     /// Latest read-phase tool completion anchor per session (pairs `SendDone` with graph `WAS_INFORMED_BY`).
     pub(in crate::baml) read_completion_tool_anchors: Arc<DashMap<ToolSessionId, ActivityAnchorId>>,
+    /// Read views known to be terminal (`has_more=false`) in this runtime process.
+    ///
+    /// Key format: `context_id|archive_ref|grep|offset|limit`.
+    pub(in crate::baml) exhausted_read_views: Arc<DashMap<String, ()>>,
     pub(in crate::baml) archive_ref_tables: Arc<baml_rt_tools::archive_refs::ContextRefTables>,
     pub(in crate::baml) effect_emitter: Option<Arc<dyn EffectEmitter>>,
     pub(in crate::baml) conversation_context_provider: Option<Arc<dyn ConversationContextProvider>>,
@@ -65,6 +69,7 @@ impl Default for BamlRuntimeState {
             tool_session_states: Arc::new(DashMap::new()),
             tool_session_effect_tokens: Arc::new(DashMap::new()),
             read_completion_tool_anchors: Arc::new(DashMap::new()),
+            exhausted_read_views: Arc::new(DashMap::new()),
             archive_ref_tables: Arc::new(baml_rt_tools::archive_refs::ContextRefTables::new()),
             effect_emitter: None,
             conversation_context_provider: None,

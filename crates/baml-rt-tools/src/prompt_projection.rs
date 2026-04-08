@@ -207,8 +207,29 @@ pub fn render_projection_content(
     )
 }
 
+fn normalized_grep(grep: Option<&str>) -> String {
+    grep.map(str::trim)
+        .filter(|g| !g.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
 fn read_view_key(archive_ref: &str, grep: Option<&str>, offset: usize, limit: usize) -> String {
-    format!("{archive_ref}|{}|{offset}|{limit}", grep.unwrap_or(""))
+    let grep_norm = normalized_grep(grep);
+    format!("{archive_ref}|{grep_norm}|{offset}|{limit}")
+}
+
+fn compact_read_marker(archive_ref: &str, grep: Option<&str>, offset: usize, limit: usize) -> String {
+    let grep_norm = normalized_grep(grep);
+    if grep_norm.is_empty() {
+        format!(
+            "{archive_ref} read view already shown (offset={offset}, limit={limit})"
+        )
+    } else {
+        format!(
+            "{archive_ref} read view already shown (grep={grep_norm:?}, offset={offset}, limit={limit})"
+        )
+    }
 }
 
 fn ensure_trailing_newline(s: String) -> String {
@@ -312,7 +333,12 @@ fn render_projection_content_with_state(
                 if inlined_archive_refs.contains(archive_ref) {
                     return RenderedEntry::Two(
                         ensure_trailing_newline(header.clone()),
-                        ensure_trailing_newline(format!("cat -n {archive_ref}")),
+                        ensure_trailing_newline(compact_read_marker(
+                            archive_ref,
+                            None,
+                            0,
+                            opts.send_done.get(),
+                        )),
                     );
                 }
                 inlined_archive_refs.insert(archive_ref.clone());
@@ -344,7 +370,12 @@ fn render_projection_content_with_state(
                 let cmd = session_read_command_line(archive_ref, grep.as_deref());
                 let read_key = read_view_key(archive_ref, grep.as_deref(), *offset, *limit);
                 if inlined_read_pages.contains(&read_key) {
-                    return RenderedEntry::One(ensure_trailing_newline(cmd));
+                    return RenderedEntry::One(ensure_trailing_newline(compact_read_marker(
+                        archive_ref,
+                        grep.as_deref(),
+                        *offset,
+                        *limit,
+                    )));
                 }
                 match archive_reader.and_then(|r| r(archive_ref, grep.as_deref(), *offset, *limit))
                 {
@@ -506,6 +537,19 @@ mod tests {
         assert_eq!(
             payload_occurrences, 1,
             "read payload should be inlined once per identical read view"
+        );
+
+        let duplicate_marker_occurrences = history
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter_map(|item| item.get("content").and_then(Value::as_str))
+            .filter(|content| content.contains("read view already shown"))
+            .count();
+
+        assert!(
+            duplicate_marker_occurrences >= 1,
+            "duplicate read entries should render a compact marker instead of replaying cat output"
         );
     }
 

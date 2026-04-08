@@ -373,6 +373,46 @@ impl BamlRuntimeManager {
                             archive_ref
                         ))
                     })?;
+                    let grep_text = grep
+                        .as_ref()
+                        .map(|g| g.pattern_text().trim().to_string())
+                        .filter(|g| !g.is_empty());
+                    let exhausted_key = format!(
+                        "{context_id}|{archive_ref}|{}|{}|{}",
+                        grep_text.as_deref().unwrap_or(""),
+                        offset.0,
+                        limit.get()
+                    );
+
+                    if self.state.exhausted_read_views.contains_key(&exhausted_key) {
+                        let output = format!(
+                            "{}\n--- read view already exhausted (archive_ref={}, grep={:?}, offset={}, limit={}) ---",
+                            entry.display_header(archive_ref),
+                            archive_ref,
+                            grep_text,
+                            offset.0,
+                            limit.get()
+                        );
+                        let read_output = serde_json::json!({
+                            "status": "done",
+                            "output": output,
+                            "has_more": false,
+                            "next_offset": offset.0,
+                        });
+                        last_output = Some(read_output.clone());
+
+                        tracing::info!(
+                            tool = %tool_name_str,
+                            archive_ref = %archive_ref,
+                            grep = ?grep_text,
+                            offset = offset.0,
+                            limit = limit.get(),
+                            "Read guard: skipped duplicate exhausted read view"
+                        );
+
+                        continue;
+                    }
+
                     let page = baml_rt_tools::archive_read::grep_paginate(
                         &entry.content,
                         grep.as_ref(),
@@ -415,12 +455,15 @@ impl BamlRuntimeManager {
                         "has_more": page.has_more,
                         "next_offset": page.next_offset,
                     });
+                    if !page.has_more {
+                        self.state.exhausted_read_views.insert(exhausted_key, ());
+                    }
                     last_output = Some(read_output.clone());
 
                     // Emit ToolStarted/ToolCompleted for the Read FSM step so the FE
                     // can display archive_ref, grep, offset as tool call args.
                     if let Some(emitter) = self.state.effect_emitter.as_ref() {
-                        let grep_str = grep.as_ref().map(|g| g.pattern_text().to_string());
+                        let grep_str = grep_text.clone();
                         let read_args = serde_json::json!({
                             "archive_ref": archive_ref.to_string(),
                             "grep": grep_str,
