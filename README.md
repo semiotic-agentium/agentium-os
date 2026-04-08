@@ -292,6 +292,22 @@ For Slack auth/setup and demo notes, see `docs/slack-tool.md`.
 For the coordinator + Notion delegation walkthrough, see `docs/coordinator-demo.md`.
 For the next-stage Notion demo/UX strategy and invariants, see `docs/notion-experience-blueprint.md`.
 
+### Performance benches
+
+Criterion benches are available for targeted local perf checks (no network required unless your bench logic adds it):
+
+```bash
+# Provenance sequence-diagram rendering benchmarks
+cargo bench -p baml-rt-provenance --bench sequence_render
+
+# Provenance LlmCompleted drift-path benchmark (local mock provider)
+cargo bench -p baml-rt-provenance --bench drift_llm_completed
+```
+
+Notes:
+- First run can take longer due to build and warm-up.
+- If you see old comparison output, Criterion is comparing against a previous baseline in `target/criterion`.
+
 ### CI feature flags
 
 The `test`, `test-build`, and `test-crate` recipes enable the following features to match CI:

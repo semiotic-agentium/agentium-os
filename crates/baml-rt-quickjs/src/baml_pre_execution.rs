@@ -262,6 +262,15 @@ pub fn extract_context_from_http_request(
     );
     metadata_map.insert("client".to_string(), Value::String(client.clone()));
     metadata_map.insert("model".to_string(), Value::String(model.clone()));
+    if !is_unknown_placeholder(&raw_client) {
+        metadata_map.insert(
+            "client_alias".to_string(),
+            Value::String(raw_client.clone()),
+        );
+    }
+    if !is_unknown_placeholder(&raw_model) {
+        metadata_map.insert("model_alias".to_string(), Value::String(raw_model.clone()));
+    }
     metadata_map.insert(
         "prompt_payload_bytes".to_string(),
         Value::from(payload_bytes as u64),

@@ -19,6 +19,15 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_INCREMENTAL: "false"
   CARGO_PROFILE_TEST_INCREMENTAL: "false"
+  # Prefer workspace-local ONNX model cache in CI for deterministic loading.
+  BAML_MODELS_DIR: ${{ github.workspace }}/models
+  # Disable OTEL exporters in CI tests to avoid noisy collector connection errors
+  # and timing variance when no collector is available.
+  OTEL_SDK_DISABLED: "true"
+  OTEL_TRACES_EXPORTER: "none"
+  OTEL_METRICS_EXPORTER: "none"
+  OTEL_LOGS_EXPORTER: "none"
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
 
 jobs:
   nextest:
@@ -32,6 +41,16 @@ jobs:
           if ! command -v zstd &>/dev/null; then
             sudo apt-get update && sudo apt-get install -y zstd
           fi
+
+      - name: Ensure ONNX model artifacts are materialized (git-lfs)
+        run: |
+          if ! command -v git-lfs &>/dev/null; then
+            sudo apt-get update && sudo apt-get install -y git-lfs
+          fi
+          git lfs install --local
+          # Best-effort hydrate checked-in model blobs; validation/repair happens
+          # in the dedicated warm-up step via fastembed model initialization.
+          git lfs pull --include="models/fastembed/**"
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -51,6 +70,16 @@ jobs:
           cache-on-failure: true
           cache-targets: "true"
 
+      - name: Cache ONNX model artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            models/fastembed
+            ~/.cache/fastembed
+          key: ${{ runner.os }}-fastembed-v1-${{ hashFiles('crates/baml-rt-embedding/Cargo.toml', 'crates/baml-rt-embedding/src/bin/download_models.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-fastembed-v1-
+
       - name: Install build dependencies
         run: |
           sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev libclang-dev util-linux lld
@@ -69,6 +98,12 @@ jobs:
             echo "error: expected global tsc 6.x (got $(tsc --version))"
             exit 1
           }
+
+      - name: Warm ONNX caches and validate model load
+        run: |
+          cargo run -p baml-rt-embedding --bin download_models
+        env:
+          RUSTUP_TOOLCHAIN: stable
 
       - name: Workspace integrity check
         run: cargo run -p cargo-agent-platform -- doctor --ci
@@ -132,6 +167,13 @@ jobs:
           RUSTUP_TOOLCHAIN: stable
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OTEL_SDK_DISABLED: "true"
+          OTEL_TRACES_EXPORTER: "none"
+          OTEL_METRICS_EXPORTER: "none"
+          OTEL_LOGS_EXPORTER: "none"
+          OTEL_EXPORTER_OTLP_ENDPOINT: ""
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ""
+          OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ""
 
       - name: Run nextest (non-LLM suite)
         run: |
@@ -144,6 +186,13 @@ jobs:
           RUSTUP_TOOLCHAIN: stable
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OTEL_SDK_DISABLED: "true"
+          OTEL_TRACES_EXPORTER: "none"
+          OTEL_METRICS_EXPORTER: "none"
+          OTEL_LOGS_EXPORTER: "none"
+          OTEL_EXPORTER_OTLP_ENDPOINT: ""
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ""
+          OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ""
 
       - name: Publish JUnit report (LLM suite)
         if: always()

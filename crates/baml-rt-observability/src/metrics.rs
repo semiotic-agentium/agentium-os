@@ -36,6 +36,11 @@ static LLM_CALL_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 static LLM_PROMPT_BYTES_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 static LLM_TOKENS_IN_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static LLM_TOKENS_OUT_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static ONNX_INFERENCE_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static ONNX_WAIT_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static ONNX_RUN_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static ONNX_WAIT_RUN_RATIO_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static ONNX_WAIT_DOMINANT_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 
 fn a2a_request_counter() -> &'static Counter<u64> {
     A2A_REQUEST_COUNTER.get_or_init(|| {
@@ -346,6 +351,46 @@ fn llm_tokens_out_counter() -> &'static Counter<u64> {
     })
 }
 
+fn onnx_inference_counter() -> &'static Counter<u64> {
+    ONNX_INFERENCE_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.onnx.inference_total")
+            .init()
+    })
+}
+
+fn onnx_wait_histogram() -> &'static Histogram<f64> {
+    ONNX_WAIT_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.onnx.wait_ms")
+            .init()
+    })
+}
+
+fn onnx_run_histogram() -> &'static Histogram<f64> {
+    ONNX_RUN_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.onnx.run_ms")
+            .init()
+    })
+}
+
+fn onnx_wait_run_ratio_histogram() -> &'static Histogram<f64> {
+    ONNX_WAIT_RUN_RATIO_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.onnx.wait_to_run_ratio")
+            .init()
+    })
+}
+
+fn onnx_wait_dominant_counter() -> &'static Counter<u64> {
+    ONNX_WAIT_DOMINANT_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.onnx.wait_dominant_total")
+            .init()
+    })
+}
+
 /// Metrics collected for a single LLM call.
 pub struct LlmCallMetrics<'a> {
     pub function_name: &'a str,
@@ -399,4 +444,24 @@ pub fn record_a2a_sse_first_data_duration_ms(duration: Duration) {
 /// Time from HTTP handler entry until the first application SSE data event is ready (includes `handle_a2a_stream` await).
 pub fn record_a2a_sse_ttfb_from_handler_entry_ms(duration: Duration) {
     a2a_sse_ttfb_histogram().record(duration.as_secs_f64() * 1000.0, &[]);
+}
+
+/// Record ONNX inference queueing vs execution timings.
+///
+/// `operation` is low-cardinality (e.g. `embed_batch`, `rerank_pair`, `citation_drift`).
+/// A wait is considered dominant when `wait_ms >= run_ms` and `run_ms > 0`.
+pub fn record_onnx_inference(operation: &'static str, wait: Duration, run: Duration) {
+    let wait_ms = wait.as_secs_f64() * 1000.0;
+    let run_ms = run.as_secs_f64() * 1000.0;
+    let ratio = if run_ms > 0.0 { wait_ms / run_ms } else { 0.0 };
+    let wait_dominant = run_ms > 0.0 && wait_ms >= run_ms;
+
+    let attributes = &[KeyValue::new("operation", operation.to_string())];
+    onnx_inference_counter().add(1, attributes);
+    onnx_wait_histogram().record(wait_ms, attributes);
+    onnx_run_histogram().record(run_ms, attributes);
+    onnx_wait_run_ratio_histogram().record(ratio, attributes);
+    if wait_dominant {
+        onnx_wait_dominant_counter().add(1, attributes);
+    }
 }

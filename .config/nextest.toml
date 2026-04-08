@@ -18,6 +18,7 @@ provenance = { max-threads = 1 }
 runner-subprocess = { max-threads = 1 }
 workflow-intake-e2e = { max-threads = 1 }
 semantic-ingress-e2e = { max-threads = 1 }
+llm-heavy = { max-threads = 1 }
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-provenance) and binary(tool_index_test)'
@@ -147,6 +148,11 @@ filter = 'package(baml-agent-runner) and binary(runner_semantic_ingress_test)'
 test-group = "semantic-ingress-e2e"
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 2, delay = "3s" }
+
+# Security-eval + LLM drift integration is timing/network heavy; serialize this binary.
+[[profile.ci-llm.overrides]]
+filter = 'package(baml-agent-runner) and binary(drift_integration_test)'
+test-group = "llm-heavy"
 
 # Default timeouts and retries for LLM tests
 [[profile.ci-llm.overrides]]

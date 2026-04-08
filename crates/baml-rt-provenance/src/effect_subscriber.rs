@@ -5,13 +5,14 @@ use std::{sync::Arc, time::Instant};
 use async_trait::async_trait;
 use baml_rt_core::{
     bus::{EffectEvent, EffectSubscriber, SessionStepOp},
-    ids::{ContextId, ExternalId, MessageId, TaskId},
+    ids::{ActivityAnchorId, ContextId, ExternalId, MessageId, TaskId},
 };
 use baml_rt_embedding::{
     DriftConfig, DriftSeverity, EmbeddingProvider, FastEmbedProvider, PlanDriftConfig,
     PlanDriftInputs, PlanStepAnchor, RerankProvider, TaskDriftTracker, score_bipia_signal,
-    score_citation_drift, score_drift, score_plan_drift,
+    score_citation_drift, score_drift_from_embeddings, score_plan_drift, tactical_drift_texts,
 };
+use baml_rt_observability::metrics::{self, LlmCallMetrics};
 use baml_rt_tools::{
     ToolRegistry,
     archive_refs::RefTable,
@@ -20,18 +21,31 @@ use baml_rt_tools::{
 };
 use dashmap::DashMap;
 use serde_json::Value;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
 use crate::{
     conversation_projection::provenance_item_to_projection_item,
     events::{
-        CallScope, LlmCitationDriftInfo, LlmCitationSimilarity, LlmDriftInfo, LlmPlanDriftInfo,
-        LlmUsage, PlanStepSpec, ProvEvent, ResolvedCitationTarget,
+        BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR, CallScope, LlmCitationDriftInfo,
+        LlmCitationSimilarity, LlmDriftInfo, LlmPlanDriftInfo, LlmUsage, PlanStepSpec, ProvEvent,
+        ResolvedCitationTarget,
     },
     id_semantics::{SessionStepEntityId, SessionStepEntityInput},
     store::ProvenanceWriter,
     types::ProvEntityId,
 };
+
+const DEFAULT_INFERENCE_CONCURRENCY: usize = 4;
+
+#[derive(Debug, thiserror::Error)]
+enum InferenceError {
+    #[error("Inference semaphore closed")]
+    SemaphoreClosed,
+    #[error("Blocking inference task join failed")]
+    Join(#[source] tokio::task::JoinError),
+    #[error("Embedding inference failed")]
+    Embedding(#[source] baml_rt_embedding::provider::EmbeddingError),
+}
 
 /// Event type for provenance event construction
 #[derive(Debug, Clone, Copy)]
@@ -524,6 +538,32 @@ impl TrackerPhase {
         }
     }
 
+    /// Current step description used by plan-committed rerank scoring.
+    ///
+    /// Mirrors the step-selection logic of [`Self::scoring_split`] without taking
+    /// mutable borrows, so callers can resolve rerank inputs before awaiting.
+    fn current_step_description(&self) -> Option<String> {
+        match self {
+            Self::PlanCommitted(exec) => {
+                let step_idx = match &exec.phase {
+                    StepExecutionPhase::StepActive { active_index } => Some(*active_index),
+                    StepExecutionPhase::AwaitingFirstStep => Some(0),
+                    StepExecutionPhase::BetweenSteps {
+                        next_pending_index: Some(i),
+                        ..
+                    } => Some(*i),
+                    StepExecutionPhase::BetweenSteps {
+                        last_completed_index,
+                        ..
+                    } => Some(*last_completed_index),
+                    StepExecutionPhase::AllStepsResolved => None,
+                };
+                step_idx.map(|i| exec.steps.get(i).anchor.description.clone())
+            }
+            _ => None,
+        }
+    }
+
     /// Split-borrow for drift scoring: returns (step_embedding, metadata, &mut tracker)
     /// in a single destructure to satisfy the borrow checker.
     /// Returns `(step_emb_and_desc, step_index, total_steps, is_revised,
@@ -609,6 +649,8 @@ pub struct ProvenanceEffectSubscriber {
     /// drift scoring. Without this the ref table is empty for archive refs, causing
     /// `@N` citations to silently drop from the scored set.
     archive_ref_tables: Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>,
+    /// Bound concurrent ONNX inference jobs dispatched via `spawn_blocking`.
+    inference_slots: Semaphore,
 }
 
 impl ProvenanceEffectSubscriber {
@@ -627,6 +669,7 @@ impl ProvenanceEffectSubscriber {
             action_describer: None,
             tool_registry: None,
             archive_ref_tables: None,
+            inference_slots: Semaphore::new(DEFAULT_INFERENCE_CONCURRENCY),
         }
     }
 
@@ -784,6 +827,104 @@ impl ProvenanceEffectSubscriber {
             "provenance drift models warm-up complete"
         );
     }
+
+    async fn embed_batch_async(
+        &self,
+        provider: Arc<dyn EmbeddingProvider>,
+        texts: Vec<String>,
+    ) -> std::result::Result<Vec<Vec<f32>>, InferenceError> {
+        let wait_start = Instant::now();
+        let _permit = self
+            .inference_slots
+            .acquire()
+            .await
+            .map_err(|_| InferenceError::SemaphoreClosed)?;
+        let wait_ms = wait_start.elapsed().as_millis();
+
+        let run_start = Instant::now();
+        let join = tokio::task::spawn_blocking(move || {
+            let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+            provider.embed_batch(&refs)
+        })
+        .await
+        .map_err(InferenceError::Join)?;
+        let run_ms = run_start.elapsed().as_millis();
+
+        metrics::record_onnx_inference(
+            "embed_batch",
+            std::time::Duration::from_millis(wait_ms as u64),
+            std::time::Duration::from_millis(run_ms as u64),
+        );
+        tracing::debug!(wait_ms, run_ms, "ONNX embed_batch offloaded");
+        join.map_err(InferenceError::Embedding)
+    }
+
+    async fn rerank_score_async(
+        &self,
+        provider: Arc<dyn RerankProvider>,
+        query: String,
+        document: String,
+    ) -> std::result::Result<f32, InferenceError> {
+        let wait_start = Instant::now();
+        let _permit = self
+            .inference_slots
+            .acquire()
+            .await
+            .map_err(|_| InferenceError::SemaphoreClosed)?;
+        let wait_ms = wait_start.elapsed().as_millis();
+
+        let run_start = Instant::now();
+        let join = tokio::task::spawn_blocking(move || provider.score_pair(&query, &document))
+            .await
+            .map_err(InferenceError::Join)?;
+        let run_ms = run_start.elapsed().as_millis();
+
+        metrics::record_onnx_inference(
+            "rerank_pair",
+            std::time::Duration::from_millis(wait_ms as u64),
+            std::time::Duration::from_millis(run_ms as u64),
+        );
+        tracing::debug!(wait_ms, run_ms, "ONNX rerank offloaded");
+        join.map_err(InferenceError::Embedding)
+    }
+
+    async fn score_citation_drift_async(
+        &self,
+        provider: Arc<dyn EmbeddingProvider>,
+        decision_text: String,
+        scoring_input: Vec<(u32, bool, bool, String)>,
+    ) -> Option<baml_rt_embedding::CitationDriftAssessment> {
+        let wait_start = Instant::now();
+        let _permit = match self.inference_slots.acquire().await {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::warn!("Inference semaphore closed during citation drift scoring");
+                return None;
+            }
+        };
+        let wait_ms = wait_start.elapsed().as_millis();
+
+        let run_start = Instant::now();
+        let join = tokio::task::spawn_blocking(move || {
+            score_citation_drift(&decision_text, &scoring_input, 1, 1, provider.as_ref())
+        })
+        .await;
+        let run_ms = run_start.elapsed().as_millis();
+
+        metrics::record_onnx_inference(
+            "citation_drift",
+            std::time::Duration::from_millis(wait_ms as u64),
+            std::time::Duration::from_millis(run_ms as u64),
+        );
+        tracing::debug!(wait_ms, run_ms, "ONNX citation drift scoring offloaded");
+        match join {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "Citation drift blocking task join failed");
+                None
+            }
+        }
+    }
 }
 
 impl ProvenanceEffectSubscriber {
@@ -798,6 +939,7 @@ impl ProvenanceEffectSubscriber {
         task_id: Option<&TaskId>,
         context_id: &ContextId,
         citation_strings: &[String],
+        conversation_items_for_citations: &[crate::store::ProvenanceConversationContextItem],
     ) -> Option<LlmDriftInfo> {
         if !bool::from(outcome) || !self.drift_config.should_monitor(function_name) {
             return None;
@@ -815,13 +957,41 @@ impl ProvenanceEffectSubscriber {
             .map(|entry| entry.intent_description().to_owned())
             .filter(|s| !s.trim().is_empty());
 
-        let tactical = score_drift(
-            prompt,
-            result_payload,
-            &self.drift_config,
-            provider.as_ref(),
-            committed_intent.as_deref(),
-        );
+        let tactical = if let Some((intent_text, tactical_response_text)) =
+            tactical_drift_texts(prompt, result_payload, committed_intent.as_deref())
+        {
+            match self
+                .embed_batch_async(
+                    provider.clone(),
+                    vec![intent_text.clone(), tactical_response_text.clone()],
+                )
+                .await
+            {
+                Ok(embeddings) if embeddings.len() == 2 => Some(score_drift_from_embeddings(
+                    &intent_text,
+                    &tactical_response_text,
+                    &embeddings[0],
+                    &embeddings[1],
+                    &self.drift_config,
+                )),
+                Ok(embeddings) => {
+                    tracing::error!(
+                        count = embeddings.len(),
+                        "Embedding provider returned unexpected batch size during drift scoring"
+                    );
+                    None
+                }
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        "Embedding computation failed during drift scoring"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Plan drift: runs independently of tactical. Uses response text
         // extracted directly from the result payload so it works even when
@@ -838,7 +1008,7 @@ impl ProvenanceEffectSubscriber {
         let plan_drift_result = if response_text.trim().is_empty() {
             None
         } else {
-            self.compute_plan_drift(task_id, context_id, &response_text, provider.as_ref())
+            self.compute_plan_drift(task_id, context_id, &response_text, provider.clone())
                 .await
         };
         let (plan_drift, plan_intent_desc, plan_step_desc) = match plan_drift_result {
@@ -854,10 +1024,10 @@ impl ProvenanceEffectSubscriber {
         let citation_drift = self
             .compute_citation_drift_section(
                 context_id,
-                task_id,
                 decision_text.trim(),
                 citation_strings,
-                provider.as_ref(),
+                provider.clone(),
+                conversation_items_for_citations,
             )
             .await;
 
@@ -944,22 +1114,18 @@ impl ProvenanceEffectSubscriber {
     async fn compute_citation_drift_section(
         &self,
         context_id: &ContextId,
-        task_id: Option<&TaskId>,
         decision_text: &str,
         citation_strings: &[String],
-        embed_provider: &dyn EmbeddingProvider,
+        embed_provider: Arc<dyn EmbeddingProvider>,
+        conversation_items: &[crate::store::ProvenanceConversationContextItem],
     ) -> Option<LlmCitationDriftInfo> {
         if citation_strings.is_empty() || decision_text.is_empty() {
             return None;
         }
         let registry = self.tool_registry.as_ref()?;
-        let items = self
-            .writer
-            .conversation_context_with_task(context_id, Some(320), task_id)
-            .await
-            .ok()?;
-        let projection_items: Vec<_> = items
-            .into_iter()
+        let projection_items: Vec<_> = conversation_items
+            .iter()
+            .cloned()
             .filter_map(provenance_item_to_projection_item)
             .collect();
         // Use the live per-context archive ref table when available so `@N` citations
@@ -1019,7 +1185,9 @@ impl ProvenanceEffectSubscriber {
             .iter()
             .map(|r| (r.n, r.is_history, r.negated, r.content.clone()))
             .collect();
-        let assessment = score_citation_drift(decision_text, &scoring_input, 1, 1, embed_provider)?;
+        let assessment = self
+            .score_citation_drift_async(embed_provider, decision_text.to_string(), scoring_input)
+            .await?;
 
         // Zip assessment results with resolved metadata. `score_citation_drift` preserves
         // input order, so index alignment is guaranteed.
@@ -1064,7 +1232,7 @@ impl ProvenanceEffectSubscriber {
         task_id: Option<&TaskId>,
         context_id: &ContextId,
         response_text: &str,
-        provider: &dyn EmbeddingProvider,
+        provider: Arc<dyn EmbeddingProvider>,
     ) -> Option<(LlmPlanDriftInfo, String, String)> {
         let task_id = task_id?;
 
@@ -1090,7 +1258,10 @@ impl ProvenanceEffectSubscriber {
                     }
                 })?;
 
-            let intent_emb = match provider.embed_batch(&[user_msg.as_str()]) {
+            let intent_emb = match self
+                .embed_batch_async(provider.clone(), vec![user_msg.clone()])
+                .await
+            {
                 Ok(mut embs) if !embs.is_empty() => embs.remove(0),
                 _ => return None,
             };
@@ -1104,7 +1275,62 @@ impl ProvenanceEffectSubscriber {
             );
         }
 
-        let response_emb = match provider.embed_batch(&[response_text]) {
+        // Resolve rerank input without holding mutable tracker state across await.
+        let step_desc_for_rerank = self
+            .plan_trackers
+            .get(task_id)
+            .and_then(|entry| entry.current_step_description());
+
+        let parallel_start = Instant::now();
+        let response_text_owned = response_text.to_string();
+        let response_text_for_rerank = response_text_owned.clone();
+
+        let response_embed_future = async {
+            let start = Instant::now();
+            let result = self
+                .embed_batch_async(provider.clone(), vec![response_text_owned])
+                .await;
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            (result, elapsed_ms)
+        };
+
+        let rerank_future = async {
+            let start = Instant::now();
+            let score = if let Some(step_desc) = step_desc_for_rerank {
+                match self.rerank_provider().await {
+                    Some(rerank) => self
+                        .rerank_score_async(rerank, step_desc, response_text_for_rerank)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                error = %e,
+                                "Reranker scoring failed; XE score defaulting to 0.0"
+                            );
+                            0.0
+                        }),
+                    None => {
+                        tracing::warn!("Reranker unavailable; XE score defaulting to 0.0");
+                        0.0
+                    }
+                }
+            } else {
+                0.0
+            };
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            (score, elapsed_ms)
+        };
+
+        let ((response_emb_result, embedding_ms), (xe_score, rerank_ms)) =
+            tokio::join!(response_embed_future, rerank_future);
+        let parallel_total_ms = parallel_start.elapsed().as_millis() as u64;
+        tracing::debug!(
+            embedding_ms,
+            rerank_ms,
+            parallel_total_ms,
+            "Plan drift parallel scoring timings"
+        );
+
+        let response_emb = match response_emb_result {
             Ok(mut embs) if !embs.is_empty() => embs.remove(0),
             Ok(_) => return None,
             Err(e) => {
@@ -1126,33 +1352,19 @@ impl ProvenanceEffectSubscriber {
             phase.scoring_split();
 
         // Build the phase-discriminated input.
-        // For PlanCommitted: call the reranker (always present) to get the XE
-        // score alongside the cosine step embedding.
         let step_desc_text = step_data
             .as_ref()
             .map(|(_, desc)| desc.to_string())
             .unwrap_or_default();
         let inputs = match step_data {
-            Some((step_embedding, step_desc)) => {
-                // XE score: reranker(step_description, response_text).
-                // The reranker lazy-inits on first call.
-                let xe_score = self
-                    .rerank_provider()
-                    .await
-                    .and_then(|r| r.score_pair(step_desc, response_text).ok())
-                    .unwrap_or_else(|| {
-                        tracing::warn!("Reranker unavailable; XE score defaulting to 0.0");
-                        0.0
-                    });
-                PlanDriftInputs::WithStep {
-                    step_embedding,
-                    response_embedding: &response_emb,
-                    step_index,
-                    total_steps,
-                    is_revised,
-                    cross_encoder_step_score: xe_score,
-                }
-            }
+            Some((step_embedding, _step_desc)) => PlanDriftInputs::WithStep {
+                step_embedding,
+                response_embedding: &response_emb,
+                step_index,
+                total_steps,
+                is_revised,
+                cross_encoder_step_score: xe_score,
+            },
             None => PlanDriftInputs::PrePlan {
                 response_embedding: &response_emb,
                 is_revised,
@@ -1289,14 +1501,19 @@ impl ProvenanceEffectSubscriber {
         is_supersession: bool,
     ) -> Option<f32> {
         let new_emb = match self.drift_provider().await {
-            Some(provider) => match provider.embed_batch(&[description]) {
-                Ok(mut embs) if !embs.is_empty() => embs.remove(0),
-                Ok(_) => Vec::new(),
-                Err(e) => {
-                    tracing::warn!(error = %e, "Plan drift: failed to embed intent description");
-                    Vec::new()
+            Some(provider) => {
+                match self
+                    .embed_batch_async(provider.clone(), vec![description.to_string()])
+                    .await
+                {
+                    Ok(mut embs) if !embs.is_empty() => embs.remove(0),
+                    Ok(_) => Vec::new(),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Plan drift: failed to embed intent description");
+                        Vec::new()
+                    }
                 }
-            },
+            }
             None => Vec::new(),
         };
 
@@ -1337,14 +1554,17 @@ impl ProvenanceEffectSubscriber {
         steps: &[PlanStepSpec],
         is_supersession: bool,
     ) {
-        let step_texts: Vec<&str> = steps.iter().map(|s| s.description.as_str()).collect();
+        let step_texts: Vec<String> = steps.iter().map(|s| s.description.clone()).collect();
         if step_texts.is_empty() {
             tracing::warn!(%task_id, "PlanGenerated with zero steps — cannot commit plan");
             return;
         }
 
         let step_embeddings = match self.drift_provider().await {
-            Some(provider) => match provider.embed_batch(&step_texts) {
+            Some(provider) => match self
+                .embed_batch_async(provider.clone(), step_texts.clone())
+                .await
+            {
                 Ok(embs) => embs,
                 Err(e) => {
                     tracing::warn!(error = %e, "Plan drift: failed to embed plan step descriptions");
@@ -1482,52 +1702,99 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 outcome,
                 result,
             } => {
-                // Merge the result (if any) into the metadata map so the provenance store
-                // can write it to the tool_result payload. Without this the result is null.
-                let enriched_metadata = if let Some(result_value) = result {
-                    let mut map = match &metadata.metadata {
-                        serde_json::Value::Object(m) => m.clone(),
-                        _ => serde_json::Map::new(),
-                    };
-                    map.insert("result".to_string(), result_value.clone());
-                    serde_json::Value::Object(map)
-                } else {
-                    metadata.metadata.clone()
+                // Merge the result (if any) into metadata so the provenance store can write
+                // it to the tool_result payload. Reserved anchor (if present) is consumed for
+                // event-id assignment and removed from persisted metadata.
+                let mut map = match &metadata.metadata {
+                    serde_json::Value::Object(m) => m.clone(),
+                    _ => serde_json::Map::new(),
                 };
-                match build_prov_event_completion(
+                let reserved_anchor = map
+                    .get(BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ActivityAnchorId::from);
+                map.remove(BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR);
+                if let Some(result_value) = result {
+                    map.insert("result".to_string(), result_value.clone());
+                }
+                let enriched_metadata = serde_json::Value::Object(map);
+                let event = match build_prov_event_completion(
                     context_id,
                     &enriched_metadata,
                     ProvenanceEventType::ToolCall,
                     |ctx_id, task_id| {
-                        ProvEvent::tool_call_completed_task(
-                            ctx_id,
-                            task_id,
-                            metadata.tool_name.clone(),
-                            metadata.function_name.clone(),
-                            metadata.args.clone(),
-                            enriched_metadata.clone(),
-                            *duration_ms,
-                            *outcome,
-                            metadata.delegation_target.clone(),
-                        )
+                        if let Some(id) = reserved_anchor.clone() {
+                            ProvEvent::tool_call_completed_task_with_id(
+                                id,
+                                ctx_id,
+                                task_id,
+                                metadata.tool_name.clone(),
+                                metadata.function_name.clone(),
+                                metadata.args.clone(),
+                                enriched_metadata.clone(),
+                                *duration_ms,
+                                *outcome,
+                                metadata.delegation_target.clone(),
+                            )
+                        } else {
+                            ProvEvent::tool_call_completed_task(
+                                ctx_id,
+                                task_id,
+                                metadata.tool_name.clone(),
+                                metadata.function_name.clone(),
+                                metadata.args.clone(),
+                                enriched_metadata.clone(),
+                                *duration_ms,
+                                *outcome,
+                                metadata.delegation_target.clone(),
+                            )
+                        }
                     },
                     |ctx_id, msg_id| {
-                        ProvEvent::tool_call_completed_global(
-                            ctx_id,
-                            msg_id,
-                            metadata.tool_name.clone(),
-                            metadata.function_name.clone(),
-                            metadata.args.clone(),
-                            enriched_metadata.clone(),
-                            *duration_ms,
-                            *outcome,
-                            metadata.delegation_target.clone(),
-                        )
+                        if let Some(id) = reserved_anchor.clone() {
+                            ProvEvent::tool_call_completed_global_with_id(
+                                id,
+                                ctx_id,
+                                msg_id,
+                                metadata.tool_name.clone(),
+                                metadata.function_name.clone(),
+                                metadata.args.clone(),
+                                enriched_metadata.clone(),
+                                *duration_ms,
+                                *outcome,
+                                metadata.delegation_target.clone(),
+                            )
+                        } else {
+                            ProvEvent::tool_call_completed_global(
+                                ctx_id,
+                                msg_id,
+                                metadata.tool_name.clone(),
+                                metadata.function_name.clone(),
+                                metadata.args.clone(),
+                                enriched_metadata.clone(),
+                                *duration_ms,
+                                *outcome,
+                                metadata.delegation_target.clone(),
+                            )
+                        }
                     },
                 ) {
                     Some(event) => event,
                     None => return Ok(()), // Skip on missing message_id
-                }
+                };
+                tracing::info!(
+                    event = "provenance_emit",
+                    source = "effect_subscriber.tool_completion",
+                    prov_event_id = %event.id(),
+                    tool_name = %metadata.tool_name,
+                    function_name = ?metadata.function_name,
+                    context_id = %context_id,
+                    task_id = ?task_id_from_metadata(&metadata.metadata),
+                    "Emitting tool completion provenance event from effect-subscriber path"
+                );
+                event
             }
             EffectEvent::LlmStarted {
                 context_id,
@@ -1588,10 +1855,37 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 let prov_usage_clone = prov_usage.clone();
                 let prompt = normalized_prompt(&metadata.prompt);
                 let task_id = task_id_from_metadata(&metadata.metadata);
+                let result_label = if bool::from(*outcome) {
+                    "success"
+                } else {
+                    "error"
+                };
+                let prompt_size = prompt_bytes(&metadata.prompt);
+                let (tokens_in, tokens_out) = usage_tokens(&prov_usage);
+                metrics::record_llm_call(&LlmCallMetrics {
+                    function_name: &metadata.function_name,
+                    client: &metadata.client,
+                    model: &metadata.model,
+                    result: result_label,
+                    duration: std::time::Duration::from_millis(*duration_ms),
+                    prompt_bytes: prompt_size,
+                    tokens_in,
+                    tokens_out,
+                });
                 let citation_strings = result_payload
                     .as_ref()
                     .map(extract_citation_strings_from_llm_result)
                     .unwrap_or_default();
+                // Single store read for citation-grounded drift + resolved-citation extraction.
+                // This avoids duplicate conversation_context_with_task reads on the LlmCompleted hot path.
+                let conv_items_for_citations = if citation_strings.is_empty() {
+                    Vec::new()
+                } else {
+                    self.writer
+                        .conversation_context_with_task(context_id, Some(320), task_id.as_ref())
+                        .await
+                        .unwrap_or_default()
+                };
                 let drift = self
                     .compute_drift(
                         &metadata.function_name,
@@ -1602,14 +1896,10 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                         task_id.as_ref(),
                         context_id,
                         &citation_strings,
+                        &conv_items_for_citations,
                     )
                     .await
                     .map(Box::new);
-                let conv_items_for_citations = self
-                    .writer
-                    .conversation_context_with_task(context_id, Some(320), task_id.as_ref())
-                    .await
-                    .unwrap_or_default();
                 let resolved_citations =
                     Self::extract_resolved_citations(&drift, &conv_items_for_citations);
                 let completion_metadata = match &metadata.metadata {
@@ -1664,6 +1954,31 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     return Ok(()); // Skip on missing message_id
                 };
                 let completed_id = completed_event.id().clone();
+                let client_alias = metadata
+                    .metadata
+                    .get("client_alias")
+                    .and_then(Value::as_str)
+                    .unwrap_or("-");
+                let model_alias = metadata
+                    .metadata
+                    .get("model_alias")
+                    .and_then(Value::as_str)
+                    .unwrap_or("-");
+                tracing::info!(
+                    event = "provenance_emit",
+                    source = "effect_subscriber.llm_completion",
+                    prov_event_id = %completed_event.id(),
+                    function_name = %metadata.function_name,
+                    client = %metadata.client,
+                    model = %metadata.model,
+                    client_alias = client_alias,
+                    model_alias = model_alias,
+                    context_id = %context_id,
+                    task_id = ?task_id,
+                    citations_count = citation_strings.len(),
+                    has_drift = drift.is_some(),
+                    "Emitting LLM completion provenance event from effect-subscriber path"
+                );
                 self.writer
                     .add_event_with_logging(completed_event, "effect subscriber")
                     .await;
@@ -1878,6 +2193,21 @@ fn task_id_from_metadata(metadata: &Value) -> Option<TaskId> {
         .get("task_id")
         .and_then(|value| value.as_str())
         .map(|value| TaskId::from_external(ExternalId::new(value.to_string())))
+}
+
+fn prompt_bytes(prompt: &Value) -> usize {
+    prompt.to_string().len()
+}
+
+fn usage_tokens(usage: &LlmUsage) -> (Option<u64>, Option<u64>) {
+    match usage {
+        LlmUsage::Known {
+            prompt_tokens,
+            completion_tokens,
+            ..
+        } => (Some(*prompt_tokens), Some(*completion_tokens)),
+        LlmUsage::Unknown => (None, None),
+    }
 }
 
 fn normalized_prompt(prompt: &Value) -> Value {

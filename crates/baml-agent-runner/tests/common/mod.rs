@@ -776,7 +776,9 @@ pub async fn fetch_context_mermaid(
     mermaid_response.text().await.expect("mermaid body")
 }
 
-/// POST to /a2a/sse and collect all JSON-RPC responses from the SSE stream.
+/// POST to `/a2a/sse` and collect all JSON-RPC responses from the SSE stream.
+///
+/// Not every `tests/*.rs` binary links all helpers; integration targets are feature-split.
 #[cfg(any(
     feature = "clickup",
     feature = "notion",

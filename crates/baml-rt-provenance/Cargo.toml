@@ -46,3 +46,11 @@ cli = ["dep:clap", "dep:anyhow"]
 name = "graph_exporter"
 path = "src/bin/graph_exporter.rs"
 required-features = ["cli"]
+
+[[bench]]
+name = "sequence_render"
+harness = false
+
+[[bench]]
+name = "drift_llm_completed"
+harness = false

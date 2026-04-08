@@ -458,7 +458,7 @@ pub(crate) fn to_projection_item(
 /// | # | Subsystem | Target | Purpose |
 /// |---|-----------|--------|---------|
 /// | 1 | [`ProvenanceEffectSubscriber`] | effect bus | LLM/tool completion → provenance events with drift scoring |
-/// | 2 | [`ProvenanceInterceptor`] (tool pipeline) | interceptor registry | Reserved-anchor tool completions for WAS_INFORMED_BY edges |
+/// | 2 | [`ProvenanceInterceptor`] (tool pipeline) | interceptor registry | Behavior-only interception hook (no provenance writes) |
 /// | 3 | [`ProjectingConversationContextProvider`] | runtime | Prompt projection from provenance conversation graph |
 ///
 /// **Adding a new provenance-dependent subsystem? Add it to [`wire_provenance_subsystems`].**
@@ -481,10 +481,12 @@ struct ProvenanceWired {
 /// # LLM interceptor intentionally omitted
 ///
 /// `ProvenanceInterceptor` implements both `LLMInterceptor` and `ToolInterceptor`.
-/// Only the tool pipeline is registered here because LLM events flow exclusively
-/// through the effect bus path (`ProvenanceEffectSubscriber`), which performs drift
-/// scoring, plan tracking, and citation resolution — registering the LLM interceptor
-/// would produce duplicate events without the richer analysis.
+/// LLM provenance writes flow exclusively through the effect bus path
+/// (`ProvenanceEffectSubscriber`). Registering an LLM interceptor for provenance
+/// would duplicate `LlmCallStarted`/`LlmCallCompleted` events.
+///
+/// Tool provenance writes are also effect-bus sourced; the tool interceptor remains
+/// registered as a behavior-only hook point for future policy/gating interceptors.
 async fn wire_provenance_subsystems(
     writer: Arc<dyn ProvenanceWriter>,
     runtime: &RwLock<BamlRuntimeManager>,
@@ -526,13 +528,11 @@ async fn wire_provenance_subsystems(
     }
 
     // Subsystem 2: ProvenanceInterceptor → tool pipeline of the interceptor registry.
-    // The reserved-anchor mechanism on tool_session_read completions targets this
-    // interceptor — without it, WAS_INFORMED_BY edges between SessionStep(SendDone)
-    // and ToolCall nodes are never created.
+    // IMPORTANT: interception is for influencing runtime behavior, not provenance recording.
+    // Provenance writes (LLM + tool) are effect-bus only via `ProvenanceEffectSubscriber`.
     {
         let mut registry = interceptor_registry.lock().await;
         registry.register_tool_interceptor(ProvenanceInterceptor::new(writer.clone()));
-        registry.register_llm_interceptor(ProvenanceInterceptor::new(writer.clone()));
     }
 
     // Subsystem 3: ConversationContextProvider → runtime.
