@@ -2,21 +2,11 @@
 
 use anyhow::Result;
 use console::style;
-use serde::Deserialize;
 
-use super::utils::{AgentPlatform, join_url};
-
-#[derive(Debug, Deserialize)]
-pub struct AgentDiscoveryEntry {
-    agent_card: AgentCard,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AgentCard {
-    name: String,
-    agent_package: String,
-    agent_instance_id: String,
-}
+use super::{
+    agent_discovery::AgentDiscoveryEntry,
+    utils::{AgentPlatform, join_url},
+};
 
 pub struct ListDeployedInstancesOutput {
     pub entries: Vec<AgentDiscoveryEntry>,

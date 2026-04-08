@@ -211,10 +211,10 @@ cargo agent-platform push [options]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--agents <path...>` | *(required)* | Agent source directories; accepts comma-separated and/or space-separated values |
-| `--repository-url <url>` | `http://127.0.0.1:8080/repository` | Repository base URL |
+| `--repository-url <url>` | `http://127.0.0.1:18080/repository` | Repository base URL |
 | `--rationale <text>` | `published from source directory` | Change rationale in publish metadata |
 | `--origin <kind>` | `iteration` | `original` or `iteration` |
-| `--url <base-url>` | `http://127.0.0.1:8080` | Runner base URL for deploy |
+| `--url <base-url>` | `http://127.0.0.1:18080` | Runner base URL for deploy |
 
 ```bash
 # Comma-separated

@@ -9,26 +9,18 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use baml_rt_core::correlation::generate_correlation_id;
-use super::utils::{build_http_client, join_url};
 use console::style;
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest_eventsource::{Event, EventSource};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(Debug, Deserialize)]
-struct AgentDiscoveryEntry {
-    agent_card: AgentCard,
-}
-
-#[derive(Debug, Deserialize)]
-struct AgentCard {
-    name: String,
-    agent_package: String,
-    agent_instance_id: String,
-}
+use super::{
+    agent_discovery::AgentDiscoveryEntry,
+    utils::{build_http_client, join_url},
+};
 
 #[derive(Debug, Serialize)]
 struct JsonRpcRequest<'a> {

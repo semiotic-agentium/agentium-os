@@ -168,7 +168,7 @@ enum Commands {
         agents: Vec<String>,
 
         /// Repository base URL where repository routes are mounted
-        #[arg(long, default_value = "http://127.0.0.1:8080/repository")]
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
         repository_url: String,
 
         /// Why this publish happened
@@ -180,7 +180,7 @@ enum Commands {
         origin: PublishOriginArg,
 
         /// Runner base URL (without /repository)
-        #[arg(long, default_value = "http://127.0.0.1:8080")]
+        #[arg(long, default_value = "http://127.0.0.1:18080")]
         url: String,
     },
 

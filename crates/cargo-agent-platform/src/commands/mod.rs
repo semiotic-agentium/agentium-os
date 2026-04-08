@@ -14,4 +14,5 @@ pub mod publish;
 pub mod push;
 pub mod regen;
 pub mod undeploy;
+pub(crate) mod agent_discovery;
 pub(crate) mod utils;
