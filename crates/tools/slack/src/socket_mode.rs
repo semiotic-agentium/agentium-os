@@ -183,7 +183,12 @@ impl SocketModeReceiver {
                     }
                 }
                 Some(Ok(Message::Ping(payload))) => {
-                    write.send(Message::Pong(payload)).await.ok();
+                    if let Err(err) = write.send(Message::Pong(payload)).await {
+                        warn!(error = %err, "Socket Mode pong send failed");
+                        return Err(BamlRtError::ToolExecution(format!(
+                            "WebSocket pong write failed: {err}"
+                        )));
+                    }
                 }
                 Some(Ok(Message::Close(_))) => {
                     info!("Socket Mode WebSocket closed by server");
