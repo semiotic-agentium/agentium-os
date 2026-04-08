@@ -749,8 +749,9 @@ pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProdu
                     )
                 })?;
 
+                let cancel = tokio_util::sync::CancellationToken::new();
                 let receiver_handle = crate::socket_mode::start_socket_mode_receiver(
-                    client, app_token, channels, store,
+                    client, app_token, channels, store, cancel,
                 )
                 .await?;
                 tokio::spawn(async move {
@@ -873,6 +874,11 @@ pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProdu
                         Some(seed.resolved_channel_id),
                     )?) as Arc<dyn EventProducer>);
                 }
+                // Include the inbox producer whenever the ingress store is
+                // installed, even without polling channels — events deposited
+                // by other transports (e.g. socket mode in another process)
+                // still need draining. This may trigger the runner's 1s
+                // fallback poll loop, which is expected and harmless.
                 if store_installed {
                     producers
                         .push(Arc::new(SlackInboxEventProducer::new()?) as Arc<dyn EventProducer>);

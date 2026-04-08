@@ -18,6 +18,7 @@ use integrations_slack_read::{SlackAuthPreference, SlackReadClient};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -101,31 +102,42 @@ pub(crate) struct SocketModeReceiver {
     app_token: String,
     channels: HashMap<String, SocketModeChannel>,
     store: Arc<dyn IngressStore>,
+    cancel: CancellationToken,
 }
 
 impl SocketModeReceiver {
     /// Run the receive loop. Reconnects on disconnect/error with backoff.
+    /// Exits when the [`CancellationToken`] is cancelled or the Slack link is
+    /// permanently disabled.
     async fn run(self) {
         let mut backoff =
             ExponentialBackoff::new(Duration::from_millis(500), Duration::from_secs(30));
         loop {
-            match self.connect_and_receive().await {
-                Ok(DisconnectReason::ServerRequested) => {
-                    info!("Socket Mode server requested disconnect; reconnecting");
-                    backoff.reset();
-                }
-                Ok(DisconnectReason::LinkDisabled) => {
-                    warn!("Socket Mode app link disabled; stopping receiver");
+            tokio::select! {
+                _ = self.cancel.cancelled() => {
+                    info!("Socket Mode receiver cancelled; shutting down");
                     break;
                 }
-                Err(err) => {
-                    let delay = backoff.next_delay();
-                    warn!(
-                        error = %err,
-                        backoff_ms = delay.as_millis() as u64,
-                        "Socket Mode connection error; reconnecting after backoff"
-                    );
-                    tokio::time::sleep(delay).await;
+                result = self.connect_and_receive() => {
+                    match result {
+                        Ok(DisconnectReason::ServerRequested) => {
+                            info!("Socket Mode server requested disconnect; reconnecting");
+                            backoff.reset();
+                        }
+                        Ok(DisconnectReason::LinkDisabled) => {
+                            warn!("Socket Mode app link disabled; stopping receiver");
+                            break;
+                        }
+                        Err(err) => {
+                            let delay = backoff.next_delay();
+                            warn!(
+                                error = %err,
+                                backoff_ms = delay.as_millis() as u64,
+                                "Socket Mode connection error; reconnecting after backoff"
+                            );
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
                 }
             }
         }
@@ -244,6 +256,10 @@ impl SocketModeReceiver {
                 .await?;
             }
             SocketEnvelope::Unknown => {
+                // NOTE: `#[serde(other)]` discards all fields from
+                // unrecognised envelope types, so we re-parse as `Value` to
+                // extract `envelope_id` for acking. The simpler enum design
+                // is worth this rare-path double-parse.
                 debug!("ignoring unknown Socket Mode envelope type");
                 if let Ok(raw) = serde_json::from_str::<Value>(text)
                     && let Some(id) = raw.get("envelope_id").and_then(Value::as_str)
@@ -416,6 +432,7 @@ pub(crate) async fn start_socket_mode_receiver(
     app_token: String,
     channels: Vec<SlackChannelSelector>,
     store: Arc<dyn IngressStore>,
+    cancel: CancellationToken,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let (token, _kind) = client
         .select_token(Some(SlackAuthPreference::Auto), false)
@@ -459,6 +476,7 @@ pub(crate) async fn start_socket_mode_receiver(
         app_token,
         channels: channel_map,
         store,
+        cancel,
     };
 
     let handle = tokio::spawn(async move {
@@ -653,6 +671,7 @@ mod tests {
             app_token: String::new(),
             channels,
             store,
+            cancel: CancellationToken::new(),
         }
     }
 
@@ -866,8 +885,10 @@ mod tests {
         let result = receiver.handle_text_message(text, &mut sink).await.unwrap();
         assert!(result.is_none(), "events_api should not signal disconnect");
 
-        let acked = acks.lock().unwrap();
-        assert_eq!(&*acked, &["env-txt-001"]);
+        {
+            let acked = acks.lock().unwrap();
+            assert_eq!(&*acked, &["env-txt-001"]);
+        }
 
         let pending = store.list_pending(10).await.unwrap();
         assert_eq!(pending.len(), 1);

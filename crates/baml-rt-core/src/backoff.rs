@@ -36,6 +36,11 @@ impl ExponentialBackoff {
         self.attempts = 0;
     }
 
+    /// Return the next backoff delay and advance the attempt counter.
+    ///
+    /// The first call returns `base` (not zero), which is intentional for
+    /// reconnect scenarios where an immediate retry after failure is
+    /// undesirable. Subsequent calls double the delay up to `max`.
     pub fn next_delay(&mut self) -> Duration {
         let delay = backoff_delay(self.base, self.max, self.attempts);
         self.attempts = self.attempts.saturating_add(1);
