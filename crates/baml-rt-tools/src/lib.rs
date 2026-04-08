@@ -14,6 +14,7 @@ pub mod citations;
 pub mod config_resolver;
 pub mod event_producer;
 pub mod host_registration;
+pub mod ingress_store;
 mod metrics;
 pub mod opaque_json;
 pub mod prompt_projection;
@@ -39,6 +40,10 @@ pub use event_producer::{
     load_configured_event_producers_with_checkpoints,
 };
 pub use host_registration::register_manifest_tools;
+pub use ingress_store::{
+    IngressId, IngressItem, IngressStore, clear_ingress_store, ingress_store,
+    install_ingress_store, require_ingress_store,
+};
 pub use opaque_json::{
     OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY, OpaqueJson, opaque_json_map_from_object,
 };

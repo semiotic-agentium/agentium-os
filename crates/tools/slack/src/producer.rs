@@ -13,18 +13,23 @@ use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::{
     AgentDispatchRoutingKey, BamlRtError, EventSchemaVersion, EventSourceKind, ProducedEvent,
-    Result, event_subscription::EventSourceKey,
+    Result,
+    event_subscription::EventSourceKey,
+    ingress_store::{IngressId, IngressItem},
 };
 use baml_rt_tools::{
     EventProducer, EventProducerBuildContext, EventProducerBuildFuture, EventProducerProvider,
-    ProducerCheckpoint, ProducerPoll,
+    ProducerCheckpoint, ProducerPoll, ingress_store::ingress_store,
 };
 use integrations_slack_read::{SlackAuthPreference, SlackReadClient, SlackReadError};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
-use crate::SlackError;
+use crate::{
+    SlackError,
+    normalize::{SlackNormalizedBatch, normalize_polling_batch},
+};
 
 /// Generic raw ingress schema for host-managed source records.
 pub const RAW_SOURCE_SCHEMA_VERSION: &str = "host.source-records.v1";
@@ -143,12 +148,52 @@ impl SlackCheckpoint {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct SlackInboxProducerCheckpoint {
+    #[serde(default)]
+    delivered_ingress_ids: Vec<IngressId>,
+}
+
+impl SlackInboxProducerCheckpoint {
+    fn from_checkpoint(checkpoint: &ProducerCheckpoint) -> Self {
+        match checkpoint.value() {
+            Some(raw) => serde_json::from_str(raw).unwrap_or_else(|err| {
+                warn!(
+                    error = %err,
+                    "corrupt support/slack inbox checkpoint; resetting delivery reconciliation state"
+                );
+                Self::default()
+            }),
+            None => Self::default(),
+        }
+    }
+
+    fn to_checkpoint(&self) -> ProducerCheckpoint {
+        match serde_json::to_string(self) {
+            Ok(value) => ProducerCheckpoint::some(value),
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    "failed to serialize support/slack inbox checkpoint; cursor will not advance"
+                );
+                ProducerCheckpoint::none()
+            }
+        }
+    }
+}
+
 /// Default lookback window on first poll (24 hours).
 const INITIAL_LOOKBACK_SECS: u64 = 86_400;
 /// Maximum messages per API call.
 const HISTORY_LIMIT: u16 = 200;
 /// Maximum pages to fetch per poll cycle (bounds API calls per interval).
 const MAX_PAGES: usize = 3;
+/// Maximum persisted Slack ingress items emitted by the inbox producer per poll.
+const MAX_SLACK_INBOX_ITEMS_PER_POLL: usize = 100;
+/// Stable producer identity for the durable Slack inbox.
+const SLACK_INBOX_PRODUCER_KEY: &str = "support/slack:inbox";
+/// Wait one minute before retrying an emitted-but-unconfirmed durable inbox item.
+const SLACK_INGRESS_RETRY_AFTER_MS: u64 = 60_000;
 
 struct HistoryFetch {
     messages: Vec<serde_json::Value>,
@@ -195,6 +240,14 @@ pub struct SlackEventProducer {
     resolved_channel_id: tokio::sync::RwLock<Option<String>>,
 }
 
+pub struct SlackInboxEventProducer {
+    producer_key: &'static str,
+    routing_key: AgentDispatchRoutingKey,
+    schema_version: EventSchemaVersion,
+    source_kind: EventSourceKind,
+    source_kinds: Vec<EventSourceKind>,
+}
+
 impl SlackEventProducer {
     /// Create a new producer for the given channel (name or ID).
     ///
@@ -207,16 +260,14 @@ impl SlackEventProducer {
         channel: SlackChannelSelector,
         producer_key: String,
         initial_resolved_channel_id: Option<String>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        Ok(Self {
             client,
             producer_key,
             channel,
-            source_kinds: vec![
-                EventSourceKind::parse("slack").expect("slack is a valid source kind"),
-            ],
+            source_kinds: vec![slack_source_kind()?],
             resolved_channel_id: tokio::sync::RwLock::new(initial_resolved_channel_id),
-        }
+        })
     }
 
     async fn cached_channel_id(&self) -> Option<String> {
@@ -336,6 +387,63 @@ impl SlackEventProducer {
     }
 }
 
+impl SlackInboxEventProducer {
+    fn new() -> Result<Self> {
+        let (routing_key, schema_version, source_kind) = raw_source_dispatch_contract()?;
+        Ok(Self {
+            producer_key: SLACK_INBOX_PRODUCER_KEY,
+            routing_key,
+            schema_version,
+            source_kinds: vec![source_kind.clone()],
+            source_kind,
+        })
+    }
+
+    fn ingress_item_to_event(&self, item: &IngressItem) -> Result<ProducedEvent> {
+        let payload: serde_json::Value =
+            serde_json::from_str(&item.payload_json).map_err(|err| {
+                BamlRtError::InvalidArgument(format!(
+                    "failed to deserialize stored ingress payload: {err}"
+                ))
+            })?;
+        Ok(ProducedEvent {
+            routing_key: self.routing_key.clone(),
+            schema_version: self.schema_version.clone(),
+            source_kind: self.source_kind.clone(),
+            source_key: item.source_key.clone(),
+            messages: vec![payload],
+            context_id: None,
+            task_id: None,
+            message_id: Some(item.ingress_id.to_string()),
+            metadata: None,
+        })
+    }
+}
+
+fn raw_source_dispatch_contract()
+-> Result<(AgentDispatchRoutingKey, EventSchemaVersion, EventSourceKind)> {
+    let routing_key = AgentDispatchRoutingKey::parse(RAW_SOURCE_ROUTING_KEY).ok_or_else(|| {
+        BamlRtError::InvalidArgument(format!(
+            "invalid static Slack routing key '{routing_key}'",
+            routing_key = RAW_SOURCE_ROUTING_KEY
+        ))
+    })?;
+    let schema_version = EventSchemaVersion::parse(RAW_SOURCE_SCHEMA_VERSION).ok_or_else(|| {
+        BamlRtError::InvalidArgument(format!(
+            "invalid static Slack schema version '{schema_version}'",
+            schema_version = RAW_SOURCE_SCHEMA_VERSION
+        ))
+    })?;
+    let source_kind = slack_source_kind()?;
+    Ok((routing_key, schema_version, source_kind))
+}
+
+fn slack_source_kind() -> Result<EventSourceKind> {
+    EventSourceKind::parse("slack").ok_or_else(|| {
+        BamlRtError::InvalidArgument("invalid static Slack source kind 'slack'".to_string())
+    })
+}
+
 #[async_trait]
 impl EventProducer for SlackEventProducer {
     fn producer_key(&self) -> &str {
@@ -446,10 +554,8 @@ impl EventProducer for SlackEventProducer {
             });
         }
 
-        let source_key = format!("slack:{channel_id}");
-        let message_id = batch_latest_ts
-            .as_ref()
-            .map(|ts| format!("slack:{channel_id}:{ts}"));
+        let source_key = polling_source_key(&channel_id)?;
+        let ingress_id = polling_ingress_id(&source_key, &messages)?;
         info!(
             channel = %self.channel.display_label(),
             channel_id = %channel_id,
@@ -457,32 +563,43 @@ impl EventProducer for SlackEventProducer {
             "polled new Slack messages"
         );
 
-        let event = ProducedEvent {
-            routing_key: AgentDispatchRoutingKey::parse(RAW_SOURCE_ROUTING_KEY)
-                .expect("raw source routing key is valid"),
-            schema_version: EventSchemaVersion::parse(RAW_SOURCE_SCHEMA_VERSION)
-                .expect("raw source schema version is valid"),
-            source_kind: EventSourceKind::parse("slack").expect("valid source kind"),
-            source_key: EventSourceKey::parse(&source_key).ok_or_else(|| {
-                BamlRtError::ToolExecution(format!(
-                    "invalid event source key derived from channel ID: {source_key}"
+        let normalized_batch = normalize_polling_batch(
+            RAW_SOURCE_SCHEMA_VERSION,
+            &channel_id,
+            &source_key,
+            &self.channel.display_label(),
+            &messages,
+            emitted_at_unix(),
+        );
+        if let Some(store) = ingress_store() {
+            let enqueued_at_unix_ms = emitted_at_unix_ms();
+            let payload_json = serde_json::to_string(&normalized_batch).map_err(|err| {
+                BamlRtError::InvalidArgument(format!(
+                    "failed to serialize Slack ingress payload: {err}"
                 ))
-            })?,
-            messages: vec![json!({
-                "schema_version": RAW_SOURCE_SCHEMA_VERSION,
-                "emitted_at_unix": emitted_at_unix(),
-                "source": {
-                    "source_kind": "slack",
-                    "source_key": source_key,
-                    "source_label": self.channel.display_label(),
-                },
-                "records": messages,
-            })],
-            context_id: None,
-            task_id: None,
-            message_id,
-            metadata: None,
-        };
+            })?;
+            let enqueued = store
+                .enqueue(&IngressItem {
+                    ingress_id: ingress_id.clone(),
+                    source_key: source_key.clone(),
+                    payload_json,
+                    enqueued_at_unix_ms,
+                })
+                .await?;
+            if !enqueued {
+                warn!(
+                    producer_key = %self.producer_key(),
+                    ingress_id = %ingress_id,
+                    "Slack poll produced a duplicate durable ingress item; checkpoint will still advance"
+                );
+            }
+            return Ok(ProducerPoll {
+                events: vec![],
+                checkpoint: state.to_producer_checkpoint(),
+            });
+        }
+
+        let event = normalized_batch_to_event(normalized_batch, ingress_id)?;
 
         Ok(ProducerPoll {
             events: vec![event],
@@ -491,10 +608,103 @@ impl EventProducer for SlackEventProducer {
     }
 }
 
+#[async_trait]
+impl EventProducer for SlackInboxEventProducer {
+    fn producer_key(&self) -> &str {
+        self.producer_key
+    }
+
+    fn source_kinds(&self) -> &[EventSourceKind] {
+        &self.source_kinds
+    }
+
+    async fn poll(&self, checkpoint: &ProducerCheckpoint) -> Result<ProducerPoll> {
+        let store = ingress_store().ok_or_else(|| {
+            BamlRtError::InvalidArgument(
+                "support/slack inbox producer requires an installed ingress store".to_string(),
+            )
+        })?;
+        let now_unix_ms = emitted_at_unix_ms();
+        let checkpoint_state = SlackInboxProducerCheckpoint::from_checkpoint(checkpoint);
+        let reconciled_deliveries = !checkpoint_state.delivered_ingress_ids.is_empty();
+        if reconciled_deliveries {
+            store
+                .mark_delivered(&checkpoint_state.delivered_ingress_ids, now_unix_ms)
+                .await?;
+            debug!(
+                delivered_count = checkpoint_state.delivered_ingress_ids.len(),
+                "support/slack inbox reconciled delivered ingress items from persisted checkpoint"
+            );
+        }
+
+        let reclaimed = store
+            .requeue_stale(now_unix_ms.saturating_sub(SLACK_INGRESS_RETRY_AFTER_MS))
+            .await?;
+        if reclaimed > 0 {
+            warn!(
+                reclaimed_count = reclaimed,
+                retry_after_ms = SLACK_INGRESS_RETRY_AFTER_MS,
+                "support/slack inbox reclaimed stale emitted ingress items after delivery timeout"
+            );
+        }
+
+        let pending_items = store.list_pending(MAX_SLACK_INBOX_ITEMS_PER_POLL).await?;
+        let pending_ids = pending_items
+            .iter()
+            .map(|item| item.ingress_id.clone())
+            .collect::<Vec<_>>();
+        let emitted_ids = store.mark_emitted(&pending_ids, now_unix_ms).await?;
+        let emitted_id_set = emitted_ids
+            .iter()
+            .map(IngressId::as_str)
+            .collect::<HashSet<_>>();
+        let pending_items = pending_items
+            .into_iter()
+            .filter(|item| emitted_id_set.contains(item.ingress_id.as_str()))
+            .collect::<Vec<_>>();
+        if emitted_ids.len() < pending_ids.len() {
+            debug!(
+                requested_count = pending_ids.len(),
+                emitted_count = emitted_ids.len(),
+                "support/slack inbox skipped rows that were no longer eligible for emission claim"
+            );
+        }
+
+        let mut delivered_ingress_ids = Vec::with_capacity(pending_items.len());
+        let mut events = Vec::with_capacity(pending_items.len());
+        for item in &pending_items {
+            let ingress_id = item.ingress_id.clone();
+            let source_key = item.source_key.clone();
+            let event = self.ingress_item_to_event(item).map_err(|err| {
+                BamlRtError::InvalidArgument(format!(
+                    "support/slack inbox failed to convert ingress item '{ingress_id}' from '{source_key}': {err}"
+                ))
+            })?;
+            delivered_ingress_ids.push(ingress_id);
+            events.push(event);
+        }
+        let checkpoint = if events.is_empty() && delivered_ingress_ids.is_empty() {
+            if reconciled_deliveries {
+                SlackInboxProducerCheckpoint::default().to_checkpoint()
+            } else {
+                ProducerCheckpoint::none()
+            }
+        } else {
+            SlackInboxProducerCheckpoint {
+                delivered_ingress_ids,
+            }
+            .to_checkpoint()
+        };
+
+        Ok(ProducerPoll { events, checkpoint })
+    }
+}
+
 /// Build all configured Slack event producer instances from tool config.
 pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProducerBuildFuture {
     Box::pin(async move {
         let persisted_states = persisted_slack_producer_states(&ctx);
+        let store_installed = ingress_store().is_some();
         let config = match ctx.config {
             Some(value) => {
                 serde_json::from_value::<SlackEventProducerConfig>(value).map_err(|err| {
@@ -508,7 +718,7 @@ pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProdu
         };
 
         let channels = config.normalized_channels()?;
-        if channels.is_empty() {
+        if channels.is_empty() && !store_installed {
             return Ok(vec![]);
         }
 
@@ -607,7 +817,10 @@ pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProdu
                 seed.channel,
                 seed.producer_key,
                 Some(seed.resolved_channel_id),
-            )) as Arc<dyn EventProducer>);
+            )?) as Arc<dyn EventProducer>);
+        }
+        if store_installed {
+            producers.push(Arc::new(SlackInboxEventProducer::new()?) as Arc<dyn EventProducer>);
         }
         Ok(producers)
     })
@@ -618,7 +831,10 @@ fn persisted_slack_producer_states(
 ) -> Vec<PersistedSlackProducerState> {
     ctx.persisted_checkpoints
         .iter()
-        .filter(|(producer_key, _)| producer_key.starts_with("support/slack:"))
+        .filter(|(producer_key, _)| {
+            producer_key.starts_with("support/slack:")
+                && producer_key.as_str() != SLACK_INBOX_PRODUCER_KEY
+        })
         .map(|(producer_key, checkpoint)| PersistedSlackProducerState {
             producer_key: producer_key.clone(),
             state: SlackCheckpoint::from_producer_checkpoint(checkpoint),
@@ -651,6 +867,7 @@ fn persisted_state_for_resolved_channel_id<'a>(
 
 fn looks_like_channel_id(raw: &str) -> bool {
     raw.len() >= 9
+        && raw.chars().skip(1).any(|ch| ch.is_ascii_digit())
         && raw.chars().enumerate().all(|(idx, ch)| match idx {
             0 => matches!(ch, 'C' | 'D' | 'G'),
             _ => ch.is_ascii_uppercase() || ch.is_ascii_digit(),
@@ -814,11 +1031,98 @@ fn max_ts(left: Option<&str>, right: Option<&str>) -> Option<String> {
     }
 }
 
+fn normalized_batch_to_event(
+    batch: SlackNormalizedBatch,
+    message_id: IngressId,
+) -> Result<ProducedEvent> {
+    let (routing_key, schema_version, source_kind) = raw_source_dispatch_contract()?;
+    let source_key = batch.source.source_key.clone();
+    let payload = serde_json::to_value(&batch).map_err(|err| {
+        BamlRtError::InvalidArgument(format!(
+            "failed to serialize normalized Slack batch for dispatch: {err}"
+        ))
+    })?;
+    Ok(ProducedEvent {
+        routing_key,
+        schema_version,
+        source_kind,
+        source_key,
+        messages: vec![payload],
+        context_id: None,
+        task_id: None,
+        message_id: Some(message_id.to_string()),
+        metadata: None,
+    })
+}
+
+fn polling_source_key(channel_id: &str) -> Result<EventSourceKey> {
+    EventSourceKey::parse(format!("slack:{channel_id}")).ok_or_else(|| {
+        BamlRtError::InvalidArgument(format!(
+            "invalid Slack source key derived from channel ID: slack:{channel_id}"
+        ))
+    })
+}
+
+fn polling_ingress_id(
+    source_key: &EventSourceKey,
+    messages: &[serde_json::Value],
+) -> Result<IngressId> {
+    let earliest_ts = earliest_message_ts(messages);
+    let latest_ts = latest_message_ts(messages);
+    let batch_fingerprint = polling_batch_fingerprint(messages)?;
+    IngressId::parse(format!(
+        "support/slack:poll:{source_key}:{earliest}:{latest}:{message_count}:{batch_fingerprint}",
+        earliest = earliest_ts.as_deref().unwrap_or("none"),
+        latest = latest_ts.as_deref().unwrap_or("none"),
+        message_count = messages.len(),
+    ))
+    .ok_or_else(|| {
+        BamlRtError::InvalidArgument("generated polling ingress ID must not be empty".to_string())
+    })
+}
+
+fn polling_batch_fingerprint(messages: &[serde_json::Value]) -> Result<String> {
+    let mut identities = messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| canonical_polling_message_identity(index, message))
+        .collect::<Result<Vec<_>>>()?;
+    identities.sort();
+
+    let mut hasher = Sha256::new();
+    for identity in identities {
+        hasher.update(identity.as_bytes());
+        hasher.update([0]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn canonical_polling_message_identity(index: usize, message: &serde_json::Value) -> Result<String> {
+    if let Some(ts) = message.get("ts").and_then(serde_json::Value::as_str) {
+        return Ok(format!("ts:{ts}"));
+    }
+
+    serde_json::to_string(message)
+        .map(|json| format!("json:{index}:{json}"))
+        .map_err(|err| {
+            BamlRtError::InvalidArgument(format!(
+                "failed to serialize Slack polling message for ingress fingerprint: {err}"
+            ))
+        })
+}
+
 fn emitted_at_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn emitted_at_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 inventory::submit! {
@@ -833,10 +1137,13 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use axum::{Json, Router, extract::Query, http::HeaderMap, routing::get};
+    use baml_rt_core::IngressStore;
     use baml_rt_tools::ProducerCheckpoint;
+    use serde_json::json;
     use test_support::common::TempEnvVar;
 
     use super::*;
+    use crate::test_support::install_memory_ingress_store;
 
     #[derive(Clone, Default)]
     struct MockState {
@@ -882,6 +1189,42 @@ mod tests {
     }
 
     #[test]
+    fn config_treats_uppercase_channel_names_without_digits_as_names() {
+        let config = SlackEventProducerConfig {
+            channels: vec!["CLUBROOMS".into()],
+        };
+        assert_eq!(
+            config.normalized_channels().unwrap(),
+            vec![SlackChannelSelector::ChannelName("clubrooms".to_string())]
+        );
+    }
+
+    #[test]
+    fn polling_ingress_id_changes_when_batch_members_change() {
+        let source_key = polling_source_key("C123ABC456").expect("valid source key");
+        let first = polling_ingress_id(
+            &source_key,
+            &[
+                json!({ "ts": "1700000001.000001" }),
+                json!({ "ts": "1700000002.000001" }),
+                json!({ "ts": "1700000004.000001" }),
+            ],
+        )
+        .expect("first ingress id");
+        let second = polling_ingress_id(
+            &source_key,
+            &[
+                json!({ "ts": "1700000001.000001" }),
+                json!({ "ts": "1700000003.000001" }),
+                json!({ "ts": "1700000004.000001" }),
+            ],
+        )
+        .expect("second ingress id");
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
     fn config_dedupes_canonicalized_channels() {
         let config = SlackEventProducerConfig {
             channels: vec!["ops".into(), "#ops".into(), " Ops ".into()],
@@ -899,7 +1242,8 @@ mod tests {
             SlackChannelSelector::ChannelName("agentium-eng".into()),
             "support/slack:name:agentium-eng".into(),
             Some("C123ABC456".into()),
-        );
+        )
+        .expect("build test producer");
         assert_eq!(producer.producer_key(), "support/slack:name:agentium-eng");
         assert_eq!(producer.source_kinds()[0].as_str(), "slack");
     }
@@ -1000,7 +1344,8 @@ mod tests {
             SlackChannelSelector::ChannelId("C123ABC456".into()),
             "support/slack:id:C123ABC456".into(),
             Some("C123ABC456".into()),
-        );
+        )
+        .expect("build polling producer");
 
         let first = producer
             .poll(&ProducerCheckpoint::none())
@@ -1104,7 +1449,8 @@ mod tests {
             SlackChannelSelector::ChannelName("ops".into()),
             "support/slack:name:ops".into(),
             Some("COLD12345".into()),
-        );
+        )
+        .expect("build name-based producer");
         assert_eq!(producer.producer_key(), "support/slack:name:ops");
         producer.set_cached_channel_id("COLD12345".into()).await;
 
@@ -1177,7 +1523,8 @@ mod tests {
             SlackChannelSelector::ChannelId("C123ABC456".into()),
             "support/slack:id:C123ABC456".into(),
             Some("C123ABC456".into()),
-        );
+        )
+        .expect("build polling producer");
 
         let checkpoint = SlackCheckpoint {
             last_seen_ts: Some("1700000004.000000".into()),
@@ -1216,6 +1563,234 @@ mod tests {
                 "history latest=Some(\"1700000005.000000\")".to_string(),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn poll_enqueues_normalized_batch_when_ingress_store_is_installed() {
+        let _guard = crate::slack_test_env_lock().lock().await;
+        let (_store_guard, store) = install_memory_ingress_store();
+        let app = Router::new().route(
+            "/api/conversations.history",
+            get(|| async move {
+                Json(json!({
+                    "ok": true,
+                    "messages": [
+                        {
+                            "type": "message",
+                            "user": "U123",
+                            "text": "Track the OAuth docs follow-up.",
+                            "ts": "1700000001.000001",
+                            "thread_ts": "1700000001.000001",
+                            "reply_count": 1,
+                            "latest_reply": "1700000002.000001"
+                        }
+                    ],
+                    "has_more": false,
+                    "response_metadata": { "next_cursor": "" }
+                }))
+            }),
+        );
+        let base_url = start_mock_server(app).await.expect("start server");
+        let _env_token = TempEnvVar::set("SLACK_BOT_TOKEN", "xoxb-test");
+        let _env_base = TempEnvVar::set("SLACK_API_BASE_URL", &base_url);
+
+        let producer = SlackEventProducer::new(
+            SlackReadClient::new(),
+            SlackChannelSelector::ChannelId("C123ABC456".into()),
+            "support/slack:id:C123ABC456".into(),
+            Some("C123ABC456".into()),
+        )
+        .expect("build polling producer");
+
+        let poll = producer
+            .poll(&ProducerCheckpoint::none())
+            .await
+            .expect("poll should enqueue to the durable inbox");
+
+        assert!(
+            poll.events.is_empty(),
+            "polling receiver should enqueue instead of delivering directly when the inbox store is installed"
+        );
+        let checkpoint = SlackCheckpoint::from_producer_checkpoint(&poll.checkpoint);
+        assert_eq!(
+            checkpoint.last_seen_ts.as_deref(),
+            Some("1700000001.000001")
+        );
+
+        let pending_items = store.pending_items().await;
+        assert_eq!(pending_items.len(), 1, "expected one durable inbox item");
+        let item = &pending_items[0];
+        assert!(
+            item.ingress_id
+                .as_str()
+                .starts_with("support/slack:poll:slack:C123ABC456:"),
+            "expected deterministic polling ingress id, got {}",
+            item.ingress_id
+        );
+        assert_eq!(item.source_key.as_str(), "slack:C123ABC456");
+        let batch: SlackNormalizedBatch =
+            serde_json::from_str(&item.payload_json).expect("deserialize batch");
+        assert_eq!(batch.source.source_kind, "slack");
+        assert_eq!(batch.source.source_key.as_str(), "slack:C123ABC456");
+        assert_eq!(batch.source.source_label, "C123ABC456");
+        assert_eq!(
+            batch.transport.as_ref().map(|transport| &transport.kind),
+            Some(&crate::normalize::SlackTransportKind::Polling)
+        );
+        assert_eq!(batch.records.len(), 1);
+        assert_eq!(
+            batch.records[0].source_ref(),
+            Some("slack://channel/C123ABC456/p1700000001000001")
+        );
+        assert_eq!(
+            batch.records[0].text(),
+            Some("Track the OAuth docs follow-up.")
+        );
+        assert_eq!(batch.records[0].user(), None);
+        assert_eq!(
+            batch.records[0].raw(),
+            &json!({
+                "type": "message",
+                "user": "U123",
+                "text": "Track the OAuth docs follow-up.",
+                "ts": "1700000001.000001",
+                "thread_ts": "1700000001.000001",
+                "reply_count": 1,
+                "latest_reply": "1700000002.000001"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_producer_reconciles_delivery_on_the_next_poll() {
+        let _guard = crate::slack_test_env_lock().lock().await;
+        let (_store_guard, store) = install_memory_ingress_store();
+        let source_key = polling_source_key("C123ABC456").expect("valid source key");
+        let batch_messages = [json!({
+            "type": "message",
+            "user": "U123",
+            "text": "Track the OAuth docs follow-up.",
+            "ts": "1700000001.000001",
+            "thread_ts": "1700000001.000001"
+        })];
+        let normalized_batch = normalize_polling_batch(
+            RAW_SOURCE_SCHEMA_VERSION,
+            "C123ABC456",
+            &source_key,
+            "C123ABC456",
+            &batch_messages,
+            1_700_000_100,
+        );
+        let ingress_item = IngressItem {
+            ingress_id: polling_ingress_id(&source_key, &batch_messages).expect("valid ingress id"),
+            source_key: source_key.clone(),
+            payload_json: serde_json::to_string(&normalized_batch).expect("serialize batch"),
+            enqueued_at_unix_ms: 1_700_000_100_000,
+        };
+        store
+            .enqueue(&ingress_item)
+            .await
+            .expect("enqueue sample durable ingress item");
+
+        let producer = SlackInboxEventProducer::new().expect("build inbox producer");
+        let first_poll = producer
+            .poll(&ProducerCheckpoint::none())
+            .await
+            .expect("first inbox poll should emit the durable item");
+        assert_eq!(first_poll.events.len(), 1);
+        assert_eq!(
+            first_poll.events[0].message_id.as_deref(),
+            Some(ingress_item.ingress_id.as_str())
+        );
+        assert_eq!(
+            first_poll.events[0].source_key.as_str(),
+            ingress_item.source_key.as_str()
+        );
+        let first_checkpoint =
+            SlackInboxProducerCheckpoint::from_checkpoint(&first_poll.checkpoint);
+        assert_eq!(
+            first_checkpoint.delivered_ingress_ids,
+            vec![ingress_item.ingress_id.clone()]
+        );
+        assert_eq!(
+            store.pending_items().await.len(),
+            1,
+            "delivery should not be reconciled until the next poll checkpoint round"
+        );
+
+        let second_poll = producer
+            .poll(&first_poll.checkpoint)
+            .await
+            .expect("second inbox poll should reconcile the delivered item");
+        assert!(
+            second_poll.events.is_empty(),
+            "after reconciliation there should be nothing left to emit"
+        );
+        assert!(
+            store.pending_items().await.is_empty(),
+            "reconciled inbox item should no longer be pending"
+        );
+        assert_eq!(
+            SlackInboxProducerCheckpoint::from_checkpoint(&second_poll.checkpoint)
+                .delivered_ingress_ids,
+            Vec::<IngressId>::new()
+        );
+    }
+
+    #[tokio::test]
+    async fn inbox_producer_does_not_tight_loop_reemit_without_timeout() {
+        let _guard = crate::slack_test_env_lock().lock().await;
+        let (_store_guard, store) = install_memory_ingress_store();
+        let source_key = polling_source_key("C123ABC456").expect("valid source key");
+        let batch_messages = [json!({
+            "type": "message",
+            "user": "U123",
+            "text": "Track the OAuth docs follow-up.",
+            "ts": "1700000001.000001",
+            "thread_ts": "1700000001.000001"
+        })];
+        let normalized_batch = normalize_polling_batch(
+            RAW_SOURCE_SCHEMA_VERSION,
+            "C123ABC456",
+            &source_key,
+            "C123ABC456",
+            &batch_messages,
+            1_700_000_100,
+        );
+        let ingress_item = IngressItem {
+            ingress_id: polling_ingress_id(&source_key, &batch_messages).expect("valid ingress id"),
+            source_key: source_key.clone(),
+            payload_json: serde_json::to_string(&normalized_batch).expect("serialize batch"),
+            enqueued_at_unix_ms: 1_700_000_100_000,
+        };
+        store
+            .enqueue(&ingress_item)
+            .await
+            .expect("enqueue sample durable ingress item");
+
+        let producer = SlackInboxEventProducer::new().expect("build inbox producer");
+        let first_poll = producer
+            .poll(&ProducerCheckpoint::none())
+            .await
+            .expect("first inbox poll should emit the durable item");
+        assert_eq!(first_poll.events.len(), 1);
+
+        let immediate_retry = producer
+            .poll(&ProducerCheckpoint::none())
+            .await
+            .expect("second inbox poll should not immediately re-emit");
+        assert!(
+            immediate_retry.events.is_empty(),
+            "emitted inbox items should wait for retry timeout before re-emission"
+        );
+
+        store.set_emitted_at(&ingress_item.ingress_id, 0).await;
+
+        let reclaimed_retry = producer
+            .poll(&ProducerCheckpoint::none())
+            .await
+            .expect("stale emitted ingress should be retried");
+        assert_eq!(reclaimed_retry.events.len(), 1);
     }
 
     #[tokio::test]
@@ -1423,5 +1998,30 @@ mod tests {
 
         assert_eq!(producers.len(), 1);
         assert_eq!(producers[0].producer_key(), "support/slack:name:ops");
+    }
+
+    #[tokio::test]
+    async fn build_registers_inbox_producer_without_polling_channels() {
+        use baml_rt_tools::{InventoryCatalog, ToolCatalog, ToolName};
+
+        let _guard = crate::slack_test_env_lock().lock().await;
+        let (_store_guard, _store) = install_memory_ingress_store();
+        let metadata = InventoryCatalog::new()
+            .by_name(&ToolName::parse("support/slack").expect("valid tool name"))
+            .cloned()
+            .expect("support/slack metadata");
+
+        let producers = build_slack_event_producers(EventProducerBuildContext {
+            metadata,
+            config: Some(json!({
+                "channels": []
+            })),
+            persisted_checkpoints: Arc::new(HashMap::new()),
+        })
+        .await
+        .expect("producer build should still register the durable inbox producer");
+
+        assert_eq!(producers.len(), 1);
+        assert_eq!(producers[0].producer_key(), "support/slack:inbox");
     }
 }

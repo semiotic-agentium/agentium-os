@@ -7,6 +7,8 @@ use baml_rt_core::{
         CallbackStore, CancelCallbackSelector, ScheduleCallbackRequest, ScheduleCallbackResult,
         StoredCallback,
     },
+    event_subscription::EventSourceKey,
+    ingress_store::{IngressId, IngressItem, IngressStore},
 };
 use serde::Deserialize;
 #[cfg(test)]
@@ -23,6 +25,7 @@ const DB_NAME: &str = "runner_state";
 const TBL_DEPLOYMENTS: &str = "deployments";
 const TBL_EVENT_PRODUCER_CHECKPOINTS: &str = "event_producer_checkpoints";
 const TBL_SCHEDULED_CALLBACKS: &str = "scheduled_callbacks";
+const TBL_INGRESS_INBOX: &str = "ingress_inbox";
 
 const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE TABLE IF NOT EXISTS deployments SCHEMAFULL",
@@ -59,6 +62,17 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_due ON scheduled_callbacks FIELDS status, scheduled_for_unix_ms",
     "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_dedupe ON scheduled_callbacks FIELDS source_key, dedupe_key, status",
     "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_dedupe_unemitted ON scheduled_callbacks FIELDS source_key, dedupe_key, status, emitted_at_unix_ms",
+    "DEFINE TABLE IF NOT EXISTS ingress_inbox SCHEMAFULL",
+    "DEFINE FIELD IF NOT EXISTS ingress_id ON ingress_inbox TYPE string",
+    "DEFINE FIELD IF NOT EXISTS source_key ON ingress_inbox TYPE string",
+    "DEFINE FIELD IF NOT EXISTS payload_json ON ingress_inbox TYPE string",
+    "DEFINE FIELD IF NOT EXISTS status ON ingress_inbox TYPE string",
+    "DEFINE FIELD IF NOT EXISTS enqueued_at_unix_ms ON ingress_inbox TYPE int",
+    "DEFINE FIELD IF NOT EXISTS emitted_at_unix_ms ON ingress_inbox TYPE option<int>",
+    "DEFINE FIELD IF NOT EXISTS delivered_at_unix_ms ON ingress_inbox TYPE option<int>",
+    "DEFINE INDEX IF NOT EXISTS idx_ingress_id ON ingress_inbox FIELDS ingress_id UNIQUE",
+    "DEFINE INDEX IF NOT EXISTS idx_ingress_pending ON ingress_inbox FIELDS status, enqueued_at_unix_ms",
+    "DEFINE INDEX IF NOT EXISTS idx_ingress_emitted ON ingress_inbox FIELDS status, emitted_at_unix_ms",
 ];
 
 pub struct DeploymentStateStore {
@@ -66,6 +80,8 @@ pub struct DeploymentStateStore {
     /// Guards the read-then-write paths in `schedule_callback` and
     /// `cancel_callback` to prevent concurrent mutations on the same row.
     callback_lock: tokio::sync::Mutex<()>,
+    /// Guards ingress inbox read-then-write paths.
+    ingress_lock: tokio::sync::Mutex<()>,
 }
 
 impl DeploymentStateStore {
@@ -77,6 +93,7 @@ impl DeploymentStateStore {
         let store = Self {
             db: Arc::new(db),
             callback_lock: tokio::sync::Mutex::new(()),
+            ingress_lock: tokio::sync::Mutex::new(()),
         };
         store.init_schema().await?;
         Ok(store)
@@ -90,6 +107,7 @@ impl DeploymentStateStore {
         let store = Self {
             db: Arc::new(db),
             callback_lock: tokio::sync::Mutex::new(()),
+            ingress_lock: tokio::sync::Mutex::new(()),
         };
         store.init_schema().await?;
         Ok(store)
@@ -230,6 +248,181 @@ impl DeploymentStateStore {
                 Ok((parsed.producer_key, parsed.checkpoint))
             })
             .collect::<Result<HashMap<_, _>>>()
+    }
+
+    // ── Generic ingress inbox ──────────────────────────────────────────
+
+    pub async fn enqueue_ingress_item(&self, item: &IngressItem) -> Result<bool> {
+        let _guard = self.ingress_lock.lock().await;
+
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT ingress_id FROM {TBL_INGRESS_INBOX} \
+                 WHERE ingress_id = $ingress_id LIMIT 1"
+            ))
+            .bind(("ingress_id", item.ingress_id.to_string()))
+            .await
+            .map_err(to_read_err)?;
+        let existing_rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+        if !existing_rows.is_empty() {
+            return Ok(false);
+        }
+
+        self.db
+            .query(format!(
+                "CREATE {TBL_INGRESS_INBOX} SET \
+                    ingress_id = $ingress_id, \
+                    source_key = $source_key, \
+                    payload_json = $payload_json, \
+                    status = 'pending', \
+                    enqueued_at_unix_ms = $enqueued_at_unix_ms, \
+                    emitted_at_unix_ms = NONE, \
+                    delivered_at_unix_ms = NONE"
+            ))
+            .bind(("ingress_id", item.ingress_id.to_string()))
+            .bind(("source_key", item.source_key.to_string()))
+            .bind(("payload_json", item.payload_json.clone()))
+            .bind((
+                "enqueued_at_unix_ms",
+                unix_ms_to_db_int(item.enqueued_at_unix_ms, "ingress enqueued_at_unix_ms")?,
+            ))
+            .await
+            .map_err(to_write_err)?;
+        Ok(true)
+    }
+
+    /// Lock-free read: callers must tolerate stale results because
+    /// `mark_ingress_emitted` does the authoritative claim under `ingress_lock`.
+    pub async fn list_pending_ingress_items(&self, limit: usize) -> Result<Vec<IngressItem>> {
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT ingress_id,source_key,payload_json,enqueued_at_unix_ms \
+                 FROM {TBL_INGRESS_INBOX} \
+                 WHERE status = 'pending' AND emitted_at_unix_ms = NONE \
+                 ORDER BY enqueued_at_unix_ms ASC, ingress_id ASC LIMIT $limit"
+            ))
+            .bind(("limit", limit as i64))
+            .await
+            .map_err(to_read_err)?;
+        let rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+        rows.into_iter().map(parse_ingress_row).collect()
+    }
+
+    pub async fn requeue_stale_ingress(&self, emitted_before_unix_ms: u64) -> Result<usize> {
+        let _guard = self.ingress_lock.lock().await;
+        let mut resp = self
+            .db
+            .query(format!(
+                "UPDATE {TBL_INGRESS_INBOX} SET \
+                    status = 'pending', \
+                    emitted_at_unix_ms = NONE \
+                 WHERE status = 'emitted' \
+                   AND emitted_at_unix_ms != NONE \
+                   AND emitted_at_unix_ms <= $emitted_before_unix_ms"
+            ))
+            .bind((
+                "emitted_before_unix_ms",
+                unix_ms_to_db_int(emitted_before_unix_ms, "ingress emitted_before_unix_ms")?,
+            ))
+            .await
+            .map_err(to_write_err)?;
+        let updated_rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+        Ok(updated_rows.len())
+    }
+
+    pub async fn mark_ingress_emitted(
+        &self,
+        ingress_ids: &[IngressId],
+        emitted_at_unix_ms: u64,
+    ) -> Result<Vec<IngressId>> {
+        if ingress_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ingress_ids = ingress_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let _guard = self.ingress_lock.lock().await;
+
+        // Single UPDATE — returned rows are exactly the ones that were eligible
+        // and claimed. No separate SELECT needed.
+        let mut resp = self
+            .db
+            .query(format!(
+                "UPDATE {TBL_INGRESS_INBOX} SET \
+                    status = 'emitted', \
+                    emitted_at_unix_ms = $emitted_at_unix_ms \
+                 WHERE ingress_id INSIDE $ingress_ids \
+                   AND status = 'pending' \
+                   AND emitted_at_unix_ms = NONE"
+            ))
+            .bind(("ingress_ids", ingress_ids))
+            .bind((
+                "emitted_at_unix_ms",
+                unix_ms_to_db_int(emitted_at_unix_ms, "ingress emitted_at_unix_ms")?,
+            ))
+            .await
+            .map_err(to_write_err)?;
+        let updated_rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+
+        updated_rows
+            .into_iter()
+            .map(|row| {
+                #[derive(Deserialize)]
+                struct EmittedRow {
+                    ingress_id: IngressId,
+                }
+                let parsed: EmittedRow = serde_json::from_value(row).map_err(|err| {
+                    BamlRtError::InvalidArgument(format!(
+                        "invalid ingress emission row from state DB: {err}"
+                    ))
+                })?;
+                Ok(parsed.ingress_id)
+            })
+            .collect()
+    }
+
+    pub async fn mark_ingress_delivered(
+        &self,
+        ingress_ids: &[IngressId],
+        delivered_at_unix_ms: u64,
+    ) -> Result<()> {
+        if ingress_ids.is_empty() {
+            return Ok(());
+        }
+        let ingress_ids = ingress_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let _guard = self.ingress_lock.lock().await;
+
+        let mut resp = self
+            .db
+            .query(format!(
+                "UPDATE {TBL_INGRESS_INBOX} SET \
+                    status = 'delivered', \
+                    delivered_at_unix_ms = $delivered_at_unix_ms \
+                 WHERE ingress_id INSIDE $ingress_ids \
+                   AND status INSIDE ['pending', 'emitted']"
+            ))
+            .bind(("ingress_ids", ingress_ids.to_vec()))
+            .bind((
+                "delivered_at_unix_ms",
+                unix_ms_to_db_int(delivered_at_unix_ms, "ingress delivered_at_unix_ms")?,
+            ))
+            .await
+            .map_err(to_write_err)?;
+        let updated_rows: Vec<serde_json::Value> = resp.take(0).map_err(to_read_err)?;
+        if updated_rows.len() < ingress_ids.len() {
+            warn!(
+                requested_count = ingress_ids.len(),
+                updated_count = updated_rows.len(),
+                "some ingress items were not pending at delivery time"
+            );
+        }
+        Ok(())
     }
 
     pub async fn schedule_callback(
@@ -716,6 +909,32 @@ fn parse_callback_row(row: serde_json::Value) -> Result<StoredCallback> {
     })
 }
 
+fn parse_ingress_row(row: serde_json::Value) -> Result<IngressItem> {
+    #[derive(Deserialize)]
+    struct IngressRow {
+        ingress_id: IngressId,
+        source_key: EventSourceKey,
+        payload_json: String,
+        enqueued_at_unix_ms: i64,
+    }
+
+    let parsed: IngressRow = serde_json::from_value(row).map_err(|e| {
+        BamlRtError::InvalidArgument(format!("invalid ingress row from state DB: {e}"))
+    })?;
+
+    Ok(IngressItem {
+        ingress_id: parsed.ingress_id,
+        source_key: parsed.source_key,
+        payload_json: parsed.payload_json,
+        enqueued_at_unix_ms: u64::try_from(parsed.enqueued_at_unix_ms).map_err(|_| {
+            BamlRtError::InvalidArgument(format!(
+                "negative enqueued_at_unix_ms ({value}) in ingress row from state DB",
+                value = parsed.enqueued_at_unix_ms
+            ))
+        })?,
+    })
+}
+
 fn to_write_err(err: surrealdb::Error) -> BamlRtError {
     BamlRtError::Io(std::io::Error::other(format!(
         "runner state write failed: {err}"
@@ -726,6 +945,14 @@ fn to_read_err(err: surrealdb::Error) -> BamlRtError {
     BamlRtError::Io(std::io::Error::other(format!(
         "runner state read failed: {err}"
     )))
+}
+
+fn unix_ms_to_db_int(value: u64, field_name: &str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| {
+        BamlRtError::InvalidArgument(format!(
+            "{field_name} exceeds signed 64-bit range for state DB storage"
+        ))
+    })
 }
 
 /// Surreal-backed [`CallbackStore`](baml_rt_core::CallbackStore) for runner state (`state.db`).
@@ -775,11 +1002,59 @@ impl CallbackStore for DeploymentStateStore {
     }
 }
 
+/// Surreal-backed [`IngressStore`](baml_rt_core::IngressStore) for runner state (`state.db`).
+///
+/// Registered at process start via [`install_ingress_store`](baml_rt_tools::ingress_store::install_ingress_store).
+#[async_trait::async_trait]
+impl IngressStore for DeploymentStateStore {
+    async fn enqueue(&self, item: &IngressItem) -> Result<bool> {
+        DeploymentStateStore::enqueue_ingress_item(self, item).await
+    }
+
+    async fn list_pending(&self, limit: usize) -> Result<Vec<IngressItem>> {
+        DeploymentStateStore::list_pending_ingress_items(self, limit).await
+    }
+
+    async fn requeue_stale(&self, emitted_before_unix_ms: u64) -> Result<usize> {
+        DeploymentStateStore::requeue_stale_ingress(self, emitted_before_unix_ms).await
+    }
+
+    async fn mark_emitted(
+        &self,
+        ingress_ids: &[IngressId],
+        emitted_at_unix_ms: u64,
+    ) -> Result<Vec<IngressId>> {
+        DeploymentStateStore::mark_ingress_emitted(self, ingress_ids, emitted_at_unix_ms).await
+    }
+
+    async fn mark_delivered(
+        &self,
+        ingress_ids: &[IngressId],
+        delivered_at_unix_ms: u64,
+    ) -> Result<()> {
+        DeploymentStateStore::mark_ingress_delivered(self, ingress_ids, delivered_at_unix_ms).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use baml_rt_core::ids::{ContextId, ExternalId, MessageId, TaskId};
+    use baml_rt_core::{
+        event_subscription::EventSourceKey,
+        ids::{ContextId, ExternalId, MessageId, TaskId},
+        ingress_store::{IngressId, IngressItem},
+    };
 
     use super::*;
+
+    #[test]
+    fn unix_ms_to_db_int_rejects_overflow() {
+        let err = unix_ms_to_db_int((i64::MAX as u64) + 1, "test timestamp")
+            .expect_err("overflowing timestamps should be rejected");
+        assert!(
+            err.to_string()
+                .contains("test timestamp exceeds signed 64-bit range")
+        );
+    }
 
     #[tokio::test]
     async fn opens_and_lists_empty() {
@@ -1045,5 +1320,94 @@ mod tests {
             cancelled.is_none(),
             "already-emitted callbacks must not be cancellable before reconciliation"
         );
+    }
+
+    fn sample_ingress_item(ingress_id: &str) -> IngressItem {
+        IngressItem {
+            ingress_id: IngressId::parse(ingress_id).expect("valid ingress id"),
+            source_key: EventSourceKey::parse("slack:C123ABC456").expect("valid source key"),
+            payload_json: r#"{"message":"hello"}"#.to_string(),
+            enqueued_at_unix_ms: 1_775_512_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn ingress_items_persist_across_reopen() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+
+        let store = DeploymentStateStore::open(&path).await.unwrap();
+        let item = sample_ingress_item("ingress-generic-1");
+        assert!(store.enqueue_ingress_item(&item).await.unwrap());
+        assert!(!store.enqueue_ingress_item(&item).await.unwrap());
+        drop(store);
+
+        let reopened = retry_open(20, 100, &path).await;
+        let items = reopened.list_pending_ingress_items(10).await.unwrap();
+        assert_eq!(items, vec![item]);
+    }
+
+    #[tokio::test]
+    async fn ingress_emission_and_delivery_roundtrip() {
+        let store = DeploymentStateStore::open_in_memory().await.unwrap();
+        let item = sample_ingress_item("ingress-generic-2");
+        assert!(store.enqueue_ingress_item(&item).await.unwrap());
+
+        let emitted = store
+            .mark_ingress_emitted(std::slice::from_ref(&item.ingress_id), 15)
+            .await
+            .unwrap();
+        assert_eq!(emitted, vec![item.ingress_id.clone()]);
+
+        let pending = store.list_pending_ingress_items(10).await.unwrap();
+        assert!(
+            pending.is_empty(),
+            "emitted ingress should not remain claimable until it is requeued or delivered"
+        );
+
+        store
+            .mark_ingress_delivered(std::slice::from_ref(&item.ingress_id), 20)
+            .await
+            .unwrap();
+        let pending = store.list_pending_ingress_items(10).await.unwrap();
+        assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ingress_requeues_stale_emitted_items_after_timeout() {
+        let store = DeploymentStateStore::open_in_memory().await.unwrap();
+        let item = sample_ingress_item("ingress-generic-3");
+        assert!(store.enqueue_ingress_item(&item).await.unwrap());
+
+        let emitted = store
+            .mark_ingress_emitted(std::slice::from_ref(&item.ingress_id), 15)
+            .await
+            .unwrap();
+        assert_eq!(emitted, vec![item.ingress_id.clone()]);
+
+        assert!(
+            store
+                .list_pending_ingress_items(10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "freshly emitted ingress should not be visible to claimers"
+        );
+
+        let reclaimed = store.requeue_stale_ingress(14).await.unwrap();
+        assert_eq!(reclaimed, 0);
+        assert!(
+            store
+                .list_pending_ingress_items(10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "ingress should not be requeued before the retry threshold"
+        );
+
+        let reclaimed = store.requeue_stale_ingress(15).await.unwrap();
+        assert_eq!(reclaimed, 1);
+        let pending = store.list_pending_ingress_items(10).await.unwrap();
+        assert_eq!(pending, vec![item.clone()]);
     }
 }
