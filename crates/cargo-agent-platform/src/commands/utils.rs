@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result, bail};
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -12,10 +14,18 @@ pub struct AgentPlatform {
     client: reqwest::Client,
 }
 
+pub fn build_http_client(connect_timeout: Option<Duration>) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(timeout) = connect_timeout {
+        builder = builder.connect_timeout(timeout);
+    }
+    builder.build().context("Failed to build HTTP client")
+}
+
 impl AgentPlatform {
     pub fn new() -> Result<Self> {
         let runtime = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
-        let client = reqwest::Client::new();
+        let client = build_http_client(None)?;
         Ok(Self { runtime, client })
     }
 

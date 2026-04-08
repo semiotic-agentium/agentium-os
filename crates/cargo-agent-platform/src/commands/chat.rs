@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use baml_rt_core::correlation::generate_correlation_id;
+use super::utils::{build_http_client, join_url};
 use console::style;
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -316,10 +317,8 @@ fn validate_target(entries: &[AgentDiscoveryEntry], agent: &str, instance: &str)
     );
 }
 
-async fn list_agents(base_url: &str) -> Result<Vec<AgentDiscoveryEntry>> {
-    let base = base_url.trim_end_matches('/');
-    let agents_url = format!("{base}/agents");
-    let client = reqwest::Client::new();
+async fn list_agents(client: &reqwest::Client, base_url: &str) -> Result<Vec<AgentDiscoveryEntry>> {
+    let agents_url = join_url(base_url, "/agents");
     let resp = client
         .get(&agents_url)
         .send()
@@ -345,8 +344,10 @@ async fn send_message_sse(
     spinner: Option<&ProgressBar>,
 ) -> Result<ChatTurnResult> {
     let started = Instant::now();
-    let base = req.base_url.trim_end_matches('/');
-    let url = format!("{base}/agents/{}/{}/a2a/sse", req.agent, req.instance);
+    let url = join_url(
+        req.base_url,
+        &format!("/agents/{}/{}/a2a/sse", req.agent, req.instance),
+    );
 
     let rpc_req = JsonRpcRequest {
         jsonrpc: "2.0",
@@ -519,18 +520,15 @@ fn classify_error(e: &anyhow::Error) -> (&'static str, String) {
 
 pub fn run(agent: &str, base_url: &str, instance: &str, verbose: bool) -> Result<()> {
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
-    let agents = rt.block_on(list_agents(base_url))?;
+
+    // One client for discovery + SSE turns.
+    let client = build_http_client(Some(Duration::from_secs(10)))?;
+
+    let agents = rt.block_on(list_agents(&client, base_url))?;
     validate_target(&agents, agent, instance)?;
 
     // Session-scoped UUID: stable across all turns in this CLI session.
     let context_id = Uuid::new_v4().to_string();
-
-    // One client for the whole session — avoids TCP handshake overhead per turn
-    // and sets a connection timeout so a hung server fails fast.
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-        .context("Failed to build HTTP client")?;
 
     println!(
         "{}",
