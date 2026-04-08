@@ -204,6 +204,12 @@ Use the returned `hash` with `deploy`.
 
 Publishes and deploys one or more agent source directories sequentially.
 
+Behavior notes:
+- Duplicate agent paths in `--agents` are skipped (first occurrence wins).
+- A preflight validation runs before any network call (`path`, `manifest.json`, `baml_src/`).
+- Execution continues across per-agent publish/deploy failures and prints a final report.
+- Command exits non-zero if any agent failed.
+
 ```bash
 cargo agent-platform push [options]
 ```

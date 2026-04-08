@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use console::style;
 use serde::{Deserialize, Serialize};
 
-use super::utils::{AgentPlatform, join_url};
+use super::utils::{AgentPlatform, HTTP_OP_UNDEPLOY, join_url};
 
 #[derive(Debug, Serialize)]
 struct UndeployRequest<'a> {
@@ -29,7 +29,8 @@ impl AgentPlatform {
 
         let undeploy_url = join_url(base_url, "/undeploy");
         let payload = UndeployRequest { hash };
-        let response: UndeployResponse = self.post_json(&undeploy_url, &payload, "Undeploy")?;
+        let response: UndeployResponse =
+            self.post_json(&undeploy_url, &payload, HTTP_OP_UNDEPLOY)?;
 
         Ok(UndeployOutput {
             removed: response.removed,

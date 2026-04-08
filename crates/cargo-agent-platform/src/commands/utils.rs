@@ -3,6 +3,11 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde::{Serialize, de::DeserializeOwned};
 
+pub const HTTP_OP_PUBLISH: &str = "Publish";
+pub const HTTP_OP_DEPLOY: &str = "Deploy";
+pub const HTTP_OP_UNDEPLOY: &str = "Undeploy";
+pub const HTTP_OP_LIST_DEPLOYED_INSTANCES: &str = "List deployed instances";
+
 pub fn join_url(base: &str, path: &str) -> String {
     let base = base.trim_end_matches('/');
     let path = path.trim_start_matches('/');

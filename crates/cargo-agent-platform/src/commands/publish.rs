@@ -11,7 +11,7 @@ use baml_rt_repository::{
 use clap::ValueEnum;
 use console::style;
 
-use super::utils::{AgentPlatform, join_url};
+use super::utils::{AgentPlatform, HTTP_OP_PUBLISH, join_url};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum PublishOriginArg {
@@ -62,7 +62,7 @@ impl AgentPlatform {
 
         let publish_url = join_url(repository_url, "/publish");
         let publish_result: PublishResult =
-            self.post_json(&publish_url, &publish_cmd, "Publish")?;
+            self.post_json(&publish_url, &publish_cmd, HTTP_OP_PUBLISH)?;
 
         Ok(PublishOutput {
             publish_url,

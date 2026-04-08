@@ -5,7 +5,7 @@ use console::style;
 
 use super::{
     agent_discovery::AgentDiscoveryEntry,
-    utils::{AgentPlatform, join_url},
+    utils::{AgentPlatform, HTTP_OP_LIST_DEPLOYED_INSTANCES, join_url},
 };
 
 pub struct ListDeployedInstancesOutput {
@@ -17,7 +17,7 @@ impl AgentPlatform {
     pub fn list_deployed_instances(&self, base_url: &str) -> Result<ListDeployedInstancesOutput> {
         let agents_url = join_url(base_url, "/agents");
         let entries: Vec<AgentDiscoveryEntry> =
-            self.get_json(&agents_url, "List deployed instances")?;
+            self.get_json(&agents_url, HTTP_OP_LIST_DEPLOYED_INSTANCES)?;
 
         Ok(ListDeployedInstancesOutput {
             entries,

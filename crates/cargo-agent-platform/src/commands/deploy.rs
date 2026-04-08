@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use console::style;
 use serde::{Deserialize, Serialize};
 
-use super::utils::{AgentPlatform, join_url};
+use super::utils::{AgentPlatform, HTTP_OP_DEPLOY, join_url};
 
 #[derive(Debug, Serialize)]
 struct DeployRequest<'a> {
@@ -31,7 +31,7 @@ impl AgentPlatform {
 
         let deploy_url = join_url(base_url, "/deploy");
         let payload = DeployRequest { hash };
-        let response: DeployResponse = self.post_json(&deploy_url, &payload, "Deploy")?;
+        let response: DeployResponse = self.post_json(&deploy_url, &payload, HTTP_OP_DEPLOY)?;
 
         Ok(DeployOutput {
             hash: response.hash,

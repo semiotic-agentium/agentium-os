@@ -1,9 +1,51 @@
 //! `push` subcommand — publish and deploy one or more agents sequentially.
 
+use std::{collections::HashSet, path::Path};
+
 use anyhow::{Result, bail};
 use console::style;
 
 use super::{publish::PublishOriginArg, utils::AgentPlatform};
+
+fn dedupe_agents(agents: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    let mut duplicates = Vec::new();
+
+    for agent in agents {
+        if seen.insert(agent.clone()) {
+            deduped.push(agent.clone());
+        } else {
+            duplicates.push(agent.clone());
+        }
+    }
+
+    (deduped, duplicates)
+}
+
+fn preflight_validate_agents(agents: &[String]) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for agent_dir in agents {
+        let path = Path::new(agent_dir);
+        if !path.exists() {
+            errors.push(format!("{agent_dir}: path does not exist"));
+            continue;
+        }
+        if !path.is_dir() {
+            errors.push(format!("{agent_dir}: path is not a directory"));
+            continue;
+        }
+        if !path.join("manifest.json").is_file() {
+            errors.push(format!("{agent_dir}: missing manifest.json"));
+        }
+        if !path.join("baml_src").is_dir() {
+            errors.push(format!("{agent_dir}: missing baml_src/ directory"));
+        }
+    }
+
+    errors
+}
 
 pub fn run(
     agents: &[String],
@@ -14,6 +56,29 @@ pub fn run(
 ) -> Result<()> {
     if agents.is_empty() {
         bail!("At least one agent directory is required. Pass --agents <dir1,dir2,...>.");
+    }
+
+    let (agents, duplicates) = dedupe_agents(agents);
+    if !duplicates.is_empty() {
+        println!(
+            "{} duplicate agent directories were skipped: {}",
+            style("Warning:").yellow().bold(),
+            duplicates.join(", ")
+        );
+    }
+
+    let preflight_errors = preflight_validate_agents(&agents);
+    if !preflight_errors.is_empty() {
+        let details = preflight_errors
+            .iter()
+            .map(|e| format!("  - {e}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!(
+            "Push preflight failed with {} validation error(s):\n{}",
+            preflight_errors.len(),
+            details
+        );
     }
 
     let http = AgentPlatform::new()?;
