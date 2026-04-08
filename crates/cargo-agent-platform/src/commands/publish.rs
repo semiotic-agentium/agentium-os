@@ -11,6 +11,8 @@ use baml_rt_repository::{
 use clap::ValueEnum;
 use console::style;
 
+use super::utils::{AgentPlatform, HTTP_OP_PUBLISH, join_url};
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum PublishOriginArg {
     Original,
@@ -26,6 +28,59 @@ impl From<PublishOriginArg> for PublishOrigin {
     }
 }
 
+pub struct PublishOutput {
+    pub publish_url: String,
+    pub result: PublishResult,
+}
+
+impl AgentPlatform {
+    pub fn publish_agent(
+        &self,
+        agent_dir: &str,
+        repository_url: &str,
+        rationale: &str,
+        origin: PublishOriginArg,
+    ) -> Result<PublishOutput> {
+        let agent_dir = Path::new(agent_dir);
+        if !agent_dir.exists() {
+            bail!("Agent directory not found: {}", agent_dir.display());
+        }
+        if !agent_dir.is_dir() {
+            bail!("Agent path is not a directory: {}", agent_dir.display());
+        }
+
+        let (name, source) =
+            source_bundle_from_agent_dir(agent_dir).context("Invalid agent source directory")?;
+        let rationale = ChangeRationale::new(rationale.to_string()).context("Invalid rationale")?;
+        let origin: PublishOrigin = origin.into();
+        let publish_cmd = PublishCommand {
+            name,
+            source,
+            rationale,
+            origin,
+        };
+
+        let publish_url = join_url(repository_url, "/publish");
+        let publish_result: PublishResult =
+            self.post_json(&publish_url, &publish_cmd, HTTP_OP_PUBLISH)?;
+
+        Ok(PublishOutput {
+            publish_url,
+            result: publish_result,
+        })
+    }
+}
+
+pub fn publish_agent(
+    agent_dir: &str,
+    repository_url: &str,
+    rationale: &str,
+    origin: PublishOriginArg,
+) -> Result<PublishOutput> {
+    let http = AgentPlatform::new()?;
+    http.publish_agent(agent_dir, repository_url, rationale, origin)
+}
+
 /// Publish an agent source directory.
 ///
 /// Flow:
@@ -37,57 +92,17 @@ pub fn run(
     rationale: &str,
     origin: PublishOriginArg,
 ) -> Result<()> {
-    let agent_dir = Path::new(agent_dir);
-    if !agent_dir.exists() {
-        bail!("Agent directory not found: {}", agent_dir.display());
-    }
-    if !agent_dir.is_dir() {
-        bail!("Agent path is not a directory: {}", agent_dir.display());
-    }
+    let published = publish_agent(agent_dir, repository_url, rationale, origin)?;
+    let content_hash = published.result.hash.as_str();
 
-    let (name, source) =
-        source_bundle_from_agent_dir(agent_dir).context("Invalid agent source directory")?;
-    let rationale = ChangeRationale::new(rationale.to_string()).context("Invalid rationale")?;
-    let origin: PublishOrigin = origin.into();
-    let publish_cmd = PublishCommand {
-        name,
-        source,
-        rationale,
-        origin,
-    };
-
-    let base = repository_url.trim_end_matches('/');
-    let publish_url = format!("{base}/publish");
-
-    let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
-    let publish_result: PublishResult = rt.block_on(async {
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(&publish_url)
-            .header("content-type", "application/json")
-            .json(&publish_cmd)
-            .send()
-            .await
-            .with_context(|| format!("Failed to POST publish to {publish_url}"))?;
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            bail!("Publish failed ({status}) at {publish_url}: {body}");
-        }
-
-        serde_json::from_str(&body)
-            .with_context(|| format!("Failed to parse publish response: {body}"))
-    })?;
-
-    let content_hash = publish_result.hash.as_str();
     println!("{}", style("Source published successfully.").green().bold());
-    println!("  agent dir: {}", style(agent_dir.display()).cyan());
-    println!("  url:       {}", style(&publish_url).dim());
+    println!("  agent dir: {}", style(agent_dir).cyan());
+    println!("  url:       {}", style(&published.publish_url).dim());
     println!(
         "  version:   {}",
         style(format!(
             "{}@v{}",
-            publish_result.version_ref.name, publish_result.version_ref.version
+            published.result.version_ref.name, published.result.version_ref.version
         ))
         .cyan()
     );

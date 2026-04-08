@@ -200,6 +200,40 @@ Use the returned `hash` with `deploy`.
 
 ---
 
+### `push`
+
+Publishes and deploys one or more agent source directories sequentially.
+
+Behavior notes:
+- Duplicate agent paths in `--agents` are skipped (first occurrence wins).
+- A preflight validation runs before any network call (`path`, `manifest.json`, `baml_src/`).
+- Execution continues across per-agent publish/deploy failures and prints a final report.
+- Command exits non-zero if any agent failed.
+
+```bash
+cargo agent-platform push [options]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--agents <path...>` | *(required)* | Agent source directories; accepts comma-separated and/or space-separated values |
+| `--repository-url <url>` | `http://127.0.0.1:18080/repository` | Repository base URL |
+| `--rationale <text>` | `published from source directory` | Change rationale in publish metadata |
+| `--origin <kind>` | `iteration` | `original` or `iteration` |
+| `--url <base-url>` | `http://127.0.0.1:18080` | Runner base URL for deploy |
+
+```bash
+# Comma-separated
+cargo agent-platform push \
+  --agents agents/clickup-agent,agents/notion-agent,agents/coordinator-agent
+
+# Space-separated
+cargo agent-platform push \
+  --agents agents/clickup-agent agents/notion-agent agents/coordinator-agent
+```
+
+---
+
 ### `deploy`
 
 Deploys a previously published content hash into a running `baml-agent-runner`.

@@ -589,7 +589,6 @@ fn create_coordinator_agent(
     // Coordinator always uses these system tools
     let tool_ids = vec![
         "system/discover_agents".to_string(),
-        "system/discover_tools".to_string(),
         "system/internal_a2a".to_string(),
     ];
 
