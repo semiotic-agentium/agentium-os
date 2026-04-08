@@ -749,10 +749,16 @@ pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProdu
                     )
                 })?;
 
-                let _handle = crate::socket_mode::start_socket_mode_receiver(
+                let receiver_handle = crate::socket_mode::start_socket_mode_receiver(
                     client, app_token, channels, store,
                 )
                 .await?;
+                tokio::spawn(async move {
+                    match receiver_handle.await {
+                        Ok(()) => warn!("Socket Mode receiver task exited unexpectedly"),
+                        Err(err) => warn!(error = %err, "Socket Mode receiver task panicked"),
+                    }
+                });
 
                 let producers: Vec<Arc<dyn EventProducer>> =
                     vec![Arc::new(SlackInboxEventProducer::new()?) as Arc<dyn EventProducer>];

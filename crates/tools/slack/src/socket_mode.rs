@@ -11,6 +11,7 @@ use baml_rt_core::{
     BamlRtError, Result,
     event_subscription::EventSourceKey,
     ingress_store::{IngressId, IngressItem, IngressStore},
+    time::{now_unix_ms, now_unix_secs},
 };
 use futures_util::{SinkExt, StreamExt};
 use integrations_slack_read::{SlackAuthPreference, SlackReadClient};
@@ -23,20 +24,6 @@ use crate::{
     normalize::{SocketModeEventContext, normalize_socket_mode_batch},
     producer::{RAW_SOURCE_SCHEMA_VERSION, SlackChannelSelector, resolve_selector_channel_id},
 };
-
-fn now_unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
 
 // ---------------------------------------------------------------------------
 // Envelope types
@@ -129,7 +116,10 @@ impl ExponentialBackoff {
 // ---------------------------------------------------------------------------
 
 enum DisconnectReason {
+    /// Slack asked us to reconnect (e.g. `refresh_requested`, `warning`). No backoff.
     ServerRequested,
+    /// App link was permanently disabled; do not reconnect.
+    LinkDisabled,
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +143,10 @@ impl SocketModeReceiver {
                 Ok(DisconnectReason::ServerRequested) => {
                     info!("Socket Mode server requested disconnect; reconnecting");
                     backoff.reset();
+                }
+                Ok(DisconnectReason::LinkDisabled) => {
+                    warn!("Socket Mode app link disabled; stopping receiver");
+                    break;
                 }
                 Err(err) => {
                     let delay = backoff.next_delay();
@@ -183,14 +177,21 @@ impl SocketModeReceiver {
         loop {
             match read.next().await {
                 Some(Ok(Message::Text(text))) => {
-                    self.handle_text_message(&text, &mut write).await?;
+                    if let Some(reason) = self.handle_text_message(&text, &mut write).await? {
+                        return Ok(reason);
+                    }
                 }
                 Some(Ok(Message::Ping(payload))) => {
                     write.send(Message::Pong(payload)).await.ok();
                 }
-                Some(Ok(Message::Close(_))) | None => {
-                    info!("Socket Mode WebSocket closed");
+                Some(Ok(Message::Close(_))) => {
+                    info!("Socket Mode WebSocket closed by server");
                     return Ok(DisconnectReason::ServerRequested);
+                }
+                None => {
+                    return Err(BamlRtError::ToolExecution(
+                        "Socket Mode WebSocket stream ended unexpectedly".to_string(),
+                    ));
                 }
                 Some(Err(err)) => {
                     return Err(BamlRtError::ToolExecution(format!(
@@ -221,7 +222,14 @@ impl SocketModeReceiver {
             })
     }
 
-    async fn handle_text_message<S>(&self, text: &str, write: &mut S) -> Result<()>
+    /// Returns `Ok(Some(reason))` when a disconnect envelope is received, signalling
+    /// `connect_and_receive` to exit the message loop. Returns `Ok(None)` for all
+    /// other handled envelopes.
+    async fn handle_text_message<S>(
+        &self,
+        text: &str,
+        write: &mut S,
+    ) -> Result<Option<DisconnectReason>>
     where
         S: SinkExt<Message> + Unpin,
         S::Error: std::fmt::Display,
@@ -230,7 +238,7 @@ impl SocketModeReceiver {
             Ok(env) => env,
             Err(err) => {
                 warn!(error = %err, "failed to parse Socket Mode envelope; ignoring");
-                return Ok(());
+                return Ok(None);
             }
         };
 
@@ -240,9 +248,10 @@ impl SocketModeReceiver {
             }
             SocketEnvelope::Disconnect { reason } => {
                 info!(reason = %reason, "Socket Mode disconnect requested");
-                return Err(BamlRtError::ToolExecution(format!(
-                    "Socket Mode disconnect: {reason}"
-                )));
+                if reason == "link_disabled" {
+                    return Ok(Some(DisconnectReason::LinkDisabled));
+                }
+                return Ok(Some(DisconnectReason::ServerRequested));
             }
             SocketEnvelope::EventsApi {
                 envelope_id,
@@ -268,7 +277,7 @@ impl SocketModeReceiver {
                 }
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     async fn handle_events_api<S>(
@@ -324,7 +333,7 @@ impl SocketModeReceiver {
         };
 
         // 4. Normalize.
-        let emitted_at = now_unix_secs();
+        let emitted_at = now_unix_secs("socket_mode_normalize");
         let ctx = SocketModeEventContext {
             event: &payload.event,
             event_id,
@@ -360,8 +369,12 @@ impl SocketModeReceiver {
         };
 
         // 5. Enqueue.
-        let ingress_id = IngressId::parse(format!("support/slack:socket:{event_id}"))
-            .expect("socket mode ingress ID must not be empty");
+        let ingress_id =
+            IngressId::parse(format!("support/slack:socket:{event_id}")).ok_or_else(|| {
+                BamlRtError::InvalidArgument(format!(
+                    "Socket Mode ingress ID is empty for event_id {event_id}"
+                ))
+            })?;
         let payload_json = serde_json::to_string(&batch).map_err(|err| {
             BamlRtError::InvalidArgument(format!(
                 "failed to serialize Socket Mode ingress payload: {err}"
@@ -373,7 +386,7 @@ impl SocketModeReceiver {
                 ingress_id: ingress_id.clone(),
                 source_key: channel_meta.source_key.clone(),
                 payload_json,
-                enqueued_at_unix_ms: now_unix_ms(),
+                enqueued_at_unix_ms: now_unix_ms("socket_mode_enqueue"),
             })
             .await?;
 
@@ -404,7 +417,9 @@ impl SocketModeReceiver {
         let payload = serde_json::to_string(&EnvelopeAck {
             envelope_id: envelope_id.to_string(),
         })
-        .expect("ack serialization");
+        .map_err(|err| {
+            BamlRtError::InvalidArgument(format!("Socket Mode ack serialization failed: {err}"))
+        })?;
         write
             .send(Message::Text(payload.into()))
             .await
