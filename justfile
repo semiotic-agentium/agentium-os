@@ -134,7 +134,7 @@ otel-ps:
 otel-logs:
     ./scripts/otel-stack.sh logs
 
-# Print a text summary of top latency consumers from Prometheus metrics.
+# Print an OTEL summary focused on key runtime signals.
 # Example: just otel-summary 15m
 otel-summary window='30m':
     #!/usr/bin/env bash
@@ -145,6 +145,13 @@ otel-summary window='30m':
     q() {
       local expr="$1"
       curl -sG "$PROM_URL/api/v1/query" --data-urlencode "query=$expr"
+    }
+
+    print_or_none() {
+      local printed="$1"
+      if [[ "$printed" -eq 0 ]]; then
+        echo "(no data)"
+      fi
     }
 
     fmt_ms() {
@@ -164,6 +171,14 @@ otel-summary window='30m':
       }'
     }
 
+    fmt_ratio() {
+      local v="${1:-0}"
+      awk -v v="$v" 'BEGIN {
+        if (v == "" || v == "null" || v == "NaN") { print "n/a"; exit }
+        printf "%.2fx", v
+      }'
+    }
+
     echo "== OTEL summary (window: $W) =="
     echo
 
@@ -175,43 +190,147 @@ otel-summary window='30m':
     echo
 
     echo "-- LLM total time by function (desc) --"
+    printed=0
     while IFS=$'\t' read -r fn v; do
       [[ -z "${fn:-}" ]] && continue
+      printed=1
       printf "%-45s %10s\n" "$fn" "$(fmt_ms "$v")"
     done < <(
       q "sort_desc(sum by (function) (increase(baml_rt_llm_call_duration_ms_sum[$W])))" \
         | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.value[1])"'
     )
+    print_or_none "$printed"
     echo
 
     echo "-- LLM average latency by function --"
+    printed=0
     while IFS=$'\t' read -r fn v; do
       [[ -z "${fn:-}" ]] && continue
+      printed=1
       printf "%-45s %10s\n" "$fn" "$(fmt_ms "$v")"
     done < <(
       q "(sum by (function) (increase(baml_rt_llm_call_duration_ms_sum[$W])) / sum by (function) (increase(baml_rt_llm_call_duration_ms_count[$W]))) and on (function) (sum by (function) (increase(baml_rt_llm_call_duration_ms_count[$W])) > 0)" \
         | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.value[1])"'
     )
+    print_or_none "$printed"
+    echo
+
+    echo "-- LLM requests by function/result --"
+    printed=0
+    while IFS=$'\t' read -r fn result v; do
+      [[ -z "${fn:-}" ]] && continue
+      printed=1
+      printf "%-32s %-10s %10s\n" "$fn" "$result" "$(fmt_n "$v")"
+    done < <(
+      q "sum by (function, result) (increase(baml_rt_llm_call_total[$W]))" \
+        | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.metric.result // "unknown")\t\(.value[1])"'
+    )
+    print_or_none "$printed"
+    echo
+
+    echo "-- LLM token usage by function --"
+    printed=0
+    while IFS=$'\t' read -r fn tin tout; do
+      [[ -z "${fn:-}" ]] && continue
+      printed=1
+      printf "%-45s in=%-10s out=%-10s\n" "$fn" "$(fmt_n "$tin")" "$(fmt_n "$tout")"
+    done < <(
+      join -t $'\t' -a1 -a2 -e 0 -o '0,1.2,2.2' \
+        <(q "sum by (function) (increase(baml_rt_llm_tokens_in_total[$W]))" | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.value[1])"' | sort) \
+        <(q "sum by (function) (increase(baml_rt_llm_tokens_out_total[$W]))" | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.value[1])"' | sort)
+    )
+    print_or_none "$printed"
     echo
 
     echo "-- Tool total time by tool (desc) --"
+    printed=0
     while IFS=$'\t' read -r tool v; do
       [[ -z "${tool:-}" ]] && continue
+      printed=1
       printf "%-45s %10s\n" "$tool" "$(fmt_ms "$v")"
     done < <(
       q "sort_desc(sum by (tool) (increase(baml_rt_tool_invocation_duration_ms_sum[$W])))" \
         | jq -r '.data.result[]? | "\(.metric.tool // "unknown")\t\(.value[1])"'
     )
+    print_or_none "$printed"
     echo
 
     echo "-- Tool calls by tool --"
+    printed=0
     while IFS=$'\t' read -r tool v; do
       [[ -z "${tool:-}" ]] && continue
+      printed=1
       printf "%-45s %10s\n" "$tool" "$(fmt_n "$v")"
     done < <(
       q "sum by (tool) (increase(baml_rt_tool_invocation_total[$W]))" \
         | jq -r '.data.result[]? | "\(.metric.tool // "unknown")\t\(.value[1])"'
     )
+    print_or_none "$printed"
+    echo
+
+    echo "-- ONNX inferences by operation --"
+    printed=0
+    while IFS=$'\t' read -r op v; do
+      [[ -z "${op:-}" ]] && continue
+      printed=1
+      printf "%-45s %10s\n" "$op" "$(fmt_n "$v")"
+    done < <(
+      q "sum by (operation) (increase(baml_rt_onnx_inference_total[$W]))" \
+        | jq -r '.data.result[]? | "\(.metric.operation // "unknown")\t\(.value[1])"'
+    )
+    print_or_none "$printed"
+    echo
+
+    echo "-- ONNX avg wait by operation --"
+    printed=0
+    while IFS=$'\t' read -r op v; do
+      [[ -z "${op:-}" ]] && continue
+      printed=1
+      printf "%-45s %10s\n" "$op" "$(fmt_ms "$v")"
+    done < <(
+      q "(sum by (operation) (increase(baml_rt_onnx_wait_ms_sum[$W])) / sum by (operation) (increase(baml_rt_onnx_wait_ms_count[$W]))) and on (operation) (sum by (operation) (increase(baml_rt_onnx_wait_ms_count[$W])) > 0)" \
+        | jq -r '.data.result[]? | "\(.metric.operation // "unknown")\t\(.value[1])"'
+    )
+    print_or_none "$printed"
+    echo
+
+    echo "-- ONNX avg run by operation --"
+    printed=0
+    while IFS=$'\t' read -r op v; do
+      [[ -z "${op:-}" ]] && continue
+      printed=1
+      printf "%-45s %10s\n" "$op" "$(fmt_ms "$v")"
+    done < <(
+      q "(sum by (operation) (increase(baml_rt_onnx_run_ms_sum[$W])) / sum by (operation) (increase(baml_rt_onnx_run_ms_count[$W]))) and on (operation) (sum by (operation) (increase(baml_rt_onnx_run_ms_count[$W])) > 0)" \
+        | jq -r '.data.result[]? | "\(.metric.operation // "unknown")\t\(.value[1])"'
+    )
+    print_or_none "$printed"
+    echo
+
+    echo "-- ONNX avg wait/run ratio by operation --"
+    printed=0
+    while IFS=$'\t' read -r op v; do
+      [[ -z "${op:-}" ]] && continue
+      printed=1
+      printf "%-45s %10s\n" "$op" "$(fmt_ratio "$v")"
+    done < <(
+      q "(sum by (operation) (increase(baml_rt_onnx_wait_to_run_ratio_sum[$W])) / sum by (operation) (increase(baml_rt_onnx_wait_to_run_ratio_count[$W]))) and on (operation) (sum by (operation) (increase(baml_rt_onnx_wait_to_run_ratio_count[$W])) > 0)" \
+        | jq -r '.data.result[]? | "\(.metric.operation // "unknown")\t\(.value[1])"'
+    )
+    print_or_none "$printed"
+    echo
+
+    echo "-- ONNX wait-dominant count by operation --"
+    printed=0
+    while IFS=$'\t' read -r op v; do
+      [[ -z "${op:-}" ]] && continue
+      printed=1
+      printf "%-45s %10s\n" "$op" "$(fmt_n "$v")"
+    done < <(
+      q "sum by (operation) (increase(baml_rt_onnx_wait_dominant_total[$W]))" \
+        | jq -r '.data.result[]? | "\(.metric.operation // "unknown")\t\(.value[1])"'
+    )
+    print_or_none "$printed"
 
 # Rebuilds clickup-agent and runs it via a2a stdio. Deploys through the embedded repository (publish + POST /deploy).
 # Requires: just build-release, curl
