@@ -653,7 +653,11 @@ impl BamlExecutor {
         };
 
         let Some(payload) = (match function_name {
-            Some(name) => provider.conversation_history_json_for_function(scope, name).await?,
+            Some(name) => {
+                provider
+                    .conversation_history_json_for_function(scope, name)
+                    .await?
+            }
             None => provider.conversation_history_json(scope).await?,
         }) else {
             return Ok(None);

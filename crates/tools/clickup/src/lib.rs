@@ -768,7 +768,10 @@ mod tests {
             list_id: "list-456".to_string(),
         });
 
-        assert_eq!(lists.describe(), "listing ClickUp lists (space_id=space-123)");
+        assert_eq!(
+            lists.describe(),
+            "listing ClickUp lists (space_id=space-123)"
+        );
         assert_eq!(tasks.describe(), "listing ClickUp tasks (list_id=list-456)");
     }
 }

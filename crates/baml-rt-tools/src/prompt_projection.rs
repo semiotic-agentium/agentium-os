@@ -159,7 +159,8 @@ pub fn project_prompt_context(
             }
             RenderedEntry::Two(first, second) => {
                 history.push(json!({ "role": item.role, "content": ensure_entry_boundary(first) }));
-                history.push(json!({ "role": item.role, "content": ensure_entry_boundary(second) }));
+                history
+                    .push(json!({ "role": item.role, "content": ensure_entry_boundary(second) }));
             }
         }
     }
@@ -219,12 +220,15 @@ fn read_view_key(archive_ref: &str, grep: Option<&str>, offset: usize, limit: us
     format!("{archive_ref}|{grep_norm}|{offset}|{limit}")
 }
 
-fn compact_read_marker(archive_ref: &str, grep: Option<&str>, offset: usize, limit: usize) -> String {
+fn compact_read_marker(
+    archive_ref: &str,
+    grep: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> String {
     let grep_norm = normalized_grep(grep);
     if grep_norm.is_empty() {
-        format!(
-            "{archive_ref} read view already shown (offset={offset}, limit={limit})"
-        )
+        format!("{archive_ref} read view already shown (offset={offset}, limit={limit})")
     } else {
         format!(
             "{archive_ref} read view already shown (grep={grep_norm:?}, offset={offset}, limit={limit})"
@@ -325,7 +329,7 @@ fn render_projection_content_with_state(
                 // Keep an explicit trailing newline so adjacent same-role session-step rows
                 // (e.g. Open followed by SendDone header) never collapse into one token run.
                 RenderedEntry::One(format!("{open_text}\n"))
-            },
+            }
             SessionStepProjection::SendDone {
                 archive_ref,
                 header,

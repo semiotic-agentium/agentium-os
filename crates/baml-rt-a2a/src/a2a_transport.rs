@@ -1,6 +1,10 @@
 //! A2A request handler interface for non-standard transports.
 
-use std::{collections::{HashMap, HashSet}, sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Instant,
+};
 
 use async_trait::async_trait;
 use baml_rt_core::{
