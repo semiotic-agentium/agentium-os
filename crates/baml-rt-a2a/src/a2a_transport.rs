@@ -2794,8 +2794,8 @@ mod tests {
         );
         assert_eq!(
             items[0]["content"].as_str().unwrap(),
-            "#1 what can you do",
-            "user content should be history-ref prefixed for drift/citation resolution"
+            "#1 what can you do\n\n",
+            "user content should be history-ref prefixed for drift/citation resolution with entry boundary"
         );
 
         // [1] Open: describes the session being opened
@@ -2811,8 +2811,9 @@ mod tests {
         assert_eq!(items[2]["role"], "assistant");
         let send_content = items[2]["content"].as_str().unwrap();
         assert_eq!(
-            send_content, header,
-            "SendDone content should be exactly the header, got: {send_content}"
+            send_content,
+            format!("{header}\n\n"),
+            "SendDone content should preserve header text with entry boundary, got: {send_content}"
         );
         assert!(
             send_content.starts_with("@1"),
@@ -2823,8 +2824,8 @@ mod tests {
         assert_eq!(items[3]["role"], "assistant");
         let read_content = items[3]["content"].as_str().unwrap();
         assert_eq!(
-            read_content, "grep -n 'name description' @1",
-            "Read without archive_reader must show grep command line"
+            read_content, "grep -n 'name description' @1\n\n",
+            "Read without archive_reader must show grep command line with entry boundary"
         );
     }
 }
