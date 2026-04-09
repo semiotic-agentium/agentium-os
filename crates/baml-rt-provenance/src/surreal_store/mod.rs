@@ -48,8 +48,8 @@
 //! SELECT ... FROM prov_node WHERE node_id = $step_node_id
 //! ```
 //!
-//! **Payload reads:** Use deterministic `payload_id` (`format!("payload:{anchor}:{kind}")`),
-//! not `WHERE activity_anchor_id = $anchor AND payload_kind = $kind`.
+//! **Payload reads:** Use deterministic `payload_id` via [`crate::payload_id::payload_row_id`]
+//! (`payload:{anchor}:{kind}`), not `WHERE activity_anchor_id = $anchor AND payload_kind = $kind`.
 //!
 //! **Never** filter nodes by `props.a2a_context_id`, `props.a2a_task_id`, or other
 //! relational-crutch properties in query WHERE clauses. These properties exist as
@@ -58,6 +58,7 @@
 mod a2a_store;
 mod builder;
 mod context_reader;
+mod conversation_context_pipeline;
 mod helpers;
 mod ops_query;
 mod payload;

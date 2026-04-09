@@ -7,22 +7,23 @@ use baml_rt_core::{
     Citation,
     ids::{ActivityAnchorId, ContextId, MessageId, TaskId},
 };
-use baml_rt_tools::archive_read::{PageLimit, format_session_read_body_from_json_value};
 use serde_json::{Map, Value};
 
 use super::{
     SurrealProvenanceStore,
+    conversation_context_pipeline::ConversationContextBatch,
     helpers::{
         has_meaningful_result, is_empty_object, map_surreal_error, metadata_error,
         normalize_message_content, query_take_zero,
     },
-    payload::decode_payload_row,
+    payload::{decode_payload_row, payload_id_for},
 };
 use crate::{
     error::Result,
     id_semantics::{
         context_entity_id_string, task_entity_id_string_raw, task_execution_activity_id_string,
     },
+    payload_id::DEFAULT_SESSION_READ_LINE_LIMIT,
     payload_record::PayloadRecord,
     store::{
         ConversationItemContent, ProvenanceContextMessage, ProvenanceContextReader,
@@ -32,67 +33,6 @@ use crate::{
     surreal_tables::{PAYLOAD_ROW_SELECT, TBL_EDGE, TBL_NODE, TBL_PAYLOAD},
     vocabulary::{a2a_relations, context_scope, semantic_labels},
 };
-
-/// Derives [`SessionStepContent::read_replay_lines`] for `Read` ops from an earlier `SendDone`’s
-/// hydrated replay payload in the same conversation batch. Pure derivation (no I/O) — lives here
-/// beside [`SurrealProvenanceStore::conversation_context_filtered`] rather than on the store’s
-/// payload I/O `impl`.
-fn hydrate_session_step_read_replays(items: &mut [ProvenanceConversationContextItem]) {
-    for i in 0..items.len() {
-        let (archive_ref, grep_opt, offset, limit) = {
-            let ConversationItemContent::SessionStep(ss) = &items[i].content else {
-                continue;
-            };
-            let SessionStepOp::Read {
-                archive_ref,
-                grep,
-                offset,
-                limit,
-            } = &ss.op
-            else {
-                continue;
-            };
-            (archive_ref.clone(), grep.clone(), *offset, *limit)
-        };
-
-        let mut base: Option<Value> = None;
-        for j in (0..i).rev() {
-            let ConversationItemContent::SessionStep(ss) = &items[j].content else {
-                continue;
-            };
-            let SessionStepOp::SendDone {
-                archive_ref: ar, ..
-            } = &ss.op
-            else {
-                continue;
-            };
-            if ar == &archive_ref {
-                base = ss.send_done_replay_payload.clone();
-                break;
-            }
-        }
-        let Some(val) = base else {
-            continue;
-        };
-        let Some(body) = format_session_read_body_from_json_value(
-            &val,
-            archive_ref.as_str(),
-            grep_opt.as_deref(),
-            offset,
-            PageLimit::new(limit.max(1)),
-        ) else {
-            continue;
-        };
-        let lines: Vec<String> = body.lines().map(str::to_string).collect();
-        if lines.is_empty() {
-            continue;
-        }
-        let ConversationItemContent::SessionStep(ss) = &mut items[i].content else {
-            continue;
-        };
-        ss.read_replay_lines = Some(lines);
-    }
-}
 
 #[async_trait]
 impl ProvenanceContextReader for SurrealProvenanceStore {
@@ -270,8 +210,8 @@ impl SurrealProvenanceStore {
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty())
                 {
-                    payload_ids.push(format!("payload:{anchor}:tool_call"));
-                    payload_ids.push(format!("payload:{anchor}:tool_result"));
+                    payload_ids.push(payload_id_for(anchor, "tool_call"));
+                    payload_ids.push(payload_id_for(anchor, "tool_result"));
                 }
             } else if label == "Message"
                 && let Some(nid) = row
@@ -472,9 +412,9 @@ impl SurrealProvenanceStore {
                         .unwrap_or(Value::Object(Map::new()));
 
                     let tool_call_payload =
-                        payload_map.get(&format!("payload:{event_id_str}:tool_call"));
+                        payload_map.get(&payload_id_for(event_id_str, "tool_call"));
                     let tool_result_payload =
-                        payload_map.get(&format!("payload:{event_id_str}:tool_result"));
+                        payload_map.get(&payload_id_for(event_id_str, "tool_result"));
 
                     let (args, phase) = if let Some(payload) = tool_call_payload {
                         let parsed: Value =
@@ -608,7 +548,7 @@ impl SurrealProvenanceStore {
                                 archive_ref: r,
                                 grep,
                                 offset: 0,
-                                limit: 200,
+                                limit: DEFAULT_SESSION_READ_LINE_LIMIT,
                             },
                             None => continue,
                         },
@@ -634,9 +574,11 @@ impl SurrealProvenanceStore {
             }
         }
 
-        self.hydrate_session_step_send_done_payloads(&mut items)
-            .await?;
-        hydrate_session_step_read_replays(&mut items);
+        let mut items = ConversationContextBatch::from_graph_rows(items)
+            .hydrate(self)
+            .await?
+            .canonicalize_suppress_covered_tool_rows()
+            .into_items();
 
         items.sort_by_key(|i| i.timestamp_ms);
         if let Some(n) = limit {
