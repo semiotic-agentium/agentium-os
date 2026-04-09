@@ -13,9 +13,10 @@
 //! Hosts record the surfaced reply from the chat completion path, not a duplicate scraped
 //! from step envelopes.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use baml_rt_core::{BamlFunctionId, BamlPromptName, BamlRtError, Result, VariantPhase, context};
+use baml_rt_observability::metrics;
 use baml_rt_tools::{ToolName, ToolSlug};
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -242,6 +243,19 @@ pub async fn run_step_executor_loop(
     let mut steps: Vec<Value> = Vec::new();
     let mut last = Value::Null;
 
+    let step_exec_loop_started_at = Instant::now();
+    let mut step_exec_llm_hop_count_total: u64 = 0;
+    let mut step_exec_llm_hop_count_select: u64 = 0;
+    let mut step_exec_llm_hop_count_act: u64 = 0;
+    let mut step_exec_llm_hop_count_continue: u64 = 0;
+    let mut step_exec_llm_hop_latency_ms_total: u64 = 0;
+    let mut step_exec_llm_hop_latency_ms_select: u64 = 0;
+    let mut step_exec_llm_hop_latency_ms_act: u64 = 0;
+    let mut step_exec_llm_hop_latency_ms_continue: u64 = 0;
+    let mut step_exec_status_done_count: u64 = 0;
+    let mut step_exec_status_finished_count: u64 = 0;
+    let mut step_exec_status_aborted_count: u64 = 0;
+
     {
         let guard = manager.read().await;
         let p = guard.resolve_session_policy_for_function(function_name);
@@ -285,18 +299,57 @@ pub async fn run_step_executor_loop(
             obj.insert("session_context".to_string(), session_context);
         }
 
+        let hop_phase_label = match &phase {
+            Phase::AwaitingOpen => "select",
+            Phase::Bound {
+                status: OpenStatus::JustOpened,
+                ..
+            } => "act",
+            Phase::Bound {
+                status: OpenStatus::Done,
+                ..
+            } => "continue",
+            Phase::Terminal(_) => "terminal",
+        };
+
         tracing::info!(
             hop = hop_idx,
             prompt = %function_id.prompt_name(),
             function = %current_function,
             phase = ?phase,
+            hop_phase = hop_phase_label,
             "step_executor_loop: starting hop"
         );
 
+        let hop_started_at = Instant::now();
         let result = {
             let guard = manager.read().await;
             guard.invoke_function(scope, &current_function, args).await
         };
+        let hop_latency_ms = hop_started_at.elapsed().as_millis() as u64;
+
+        step_exec_llm_hop_count_total += 1;
+        step_exec_llm_hop_latency_ms_total += hop_latency_ms;
+        metrics::record_step_executor_hop(
+            function_name,
+            hop_phase_label,
+            std::time::Duration::from_millis(hop_latency_ms),
+        );
+        match hop_phase_label {
+            "select" => {
+                step_exec_llm_hop_count_select += 1;
+                step_exec_llm_hop_latency_ms_select += hop_latency_ms;
+            }
+            "act" => {
+                step_exec_llm_hop_count_act += 1;
+                step_exec_llm_hop_latency_ms_act += hop_latency_ms;
+            }
+            "continue" => {
+                step_exec_llm_hop_count_continue += 1;
+                step_exec_llm_hop_latency_ms_continue += hop_latency_ms;
+            }
+            _ => {}
+        }
 
         match &result {
             Ok(v) => tracing::info!(hop = hop_idx, result = %v, "step_executor_loop: hop ok"),
@@ -317,6 +370,15 @@ pub async fn run_step_executor_loop(
             phase = Phase::Terminal(TerminalReason::MissingStatus);
             break;
         };
+
+        match status {
+            StepStatus::Done | StepStatus::Sent | StepStatus::Streaming | StepStatus::Suspended => {
+                step_exec_status_done_count += 1;
+            }
+            StepStatus::Finished => step_exec_status_finished_count += 1,
+            StepStatus::Aborted => step_exec_status_aborted_count += 1,
+            StepStatus::Open => {}
+        }
 
         // Advance FSM based on current phase + status.
         phase = match phase {
@@ -369,6 +431,39 @@ pub async fn run_step_executor_loop(
 
     let session_context = build_session_context(&phase);
     let selected_tool = phase.selected_tool().cloned();
+
+    let step_exec_loop_elapsed = step_exec_loop_started_at.elapsed();
+    metrics::record_step_executor_loop_duration(function_name, step_exec_loop_elapsed);
+    metrics::record_step_executor_status(function_name, "done", step_exec_status_done_count);
+    metrics::record_step_executor_status(
+        function_name,
+        "finished",
+        step_exec_status_finished_count,
+    );
+    metrics::record_step_executor_status(
+        function_name,
+        "aborted",
+        step_exec_status_aborted_count,
+    );
+
+    tracing::info!(
+        function = function_name,
+        context_id = %scope.context_id().as_str(),
+        message_id = %scope.message_id().as_str(),
+        step_exec_loop_latency_ms_total = step_exec_loop_elapsed.as_millis() as u64,
+        step_exec_llm_hop_count_total,
+        step_exec_llm_hop_count_select,
+        step_exec_llm_hop_count_act,
+        step_exec_llm_hop_count_continue,
+        step_exec_llm_hop_latency_ms_total,
+        step_exec_llm_hop_latency_ms_select,
+        step_exec_llm_hop_latency_ms_act,
+        step_exec_llm_hop_latency_ms_continue,
+        step_exec_status_done_count,
+        step_exec_status_finished_count,
+        step_exec_status_aborted_count,
+        "step_executor_loop: summary"
+    );
 
     Ok(StepExecutorResult {
         last,

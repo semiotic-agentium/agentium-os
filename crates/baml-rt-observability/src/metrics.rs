@@ -41,6 +41,12 @@ static ONNX_WAIT_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 static ONNX_RUN_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 static ONNX_WAIT_RUN_RATIO_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 static ONNX_WAIT_DOMINANT_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static STEP_EXECUTOR_LOOP_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static STEP_EXECUTOR_HOP_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static STEP_EXECUTOR_HOP_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static STEP_EXECUTOR_STATUS_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static TOOL_SESSION_PLAN_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static TOOL_SESSION_PLAN_OP_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 
 fn a2a_request_counter() -> &'static Counter<u64> {
     A2A_REQUEST_COUNTER.get_or_init(|| {
@@ -464,4 +470,98 @@ pub fn record_onnx_inference(operation: &'static str, wait: Duration, run: Durat
     if wait_dominant {
         onnx_wait_dominant_counter().add(1, attributes);
     }
+}
+
+fn step_executor_loop_histogram() -> &'static Histogram<f64> {
+    STEP_EXECUTOR_LOOP_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.step_executor.loop_duration_ms")
+            .init()
+    })
+}
+
+fn step_executor_hop_counter() -> &'static Counter<u64> {
+    STEP_EXECUTOR_HOP_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.step_executor.hop_total")
+            .init()
+    })
+}
+
+fn step_executor_hop_histogram() -> &'static Histogram<f64> {
+    STEP_EXECUTOR_HOP_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.step_executor.hop_latency_ms")
+            .init()
+    })
+}
+
+fn step_executor_status_counter() -> &'static Counter<u64> {
+    STEP_EXECUTOR_STATUS_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.step_executor.status_total")
+            .init()
+    })
+}
+
+fn tool_session_plan_histogram() -> &'static Histogram<f64> {
+    TOOL_SESSION_PLAN_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.tool_session_plan.duration_ms")
+            .init()
+    })
+}
+
+fn tool_session_plan_op_counter() -> &'static Counter<u64> {
+    TOOL_SESSION_PLAN_OP_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.tool_session_plan.op_total")
+            .init()
+    })
+}
+
+/// Record one complete step-executor loop duration.
+pub fn record_step_executor_loop_duration(function: &str, duration: Duration) {
+    let attributes = &[KeyValue::new("function", function.to_string())];
+    step_executor_loop_histogram().record(duration.as_secs_f64() * 1000.0, attributes);
+}
+
+/// Record one step-executor LLM hop.
+pub fn record_step_executor_hop(function: &str, phase: &str, duration: Duration) {
+    let attributes = &[
+        KeyValue::new("function", function.to_string()),
+        KeyValue::new("phase", phase.to_string()),
+    ];
+    step_executor_hop_counter().add(1, attributes);
+    step_executor_hop_histogram().record(duration.as_secs_f64() * 1000.0, attributes);
+}
+
+/// Record step-executor status counters.
+pub fn record_step_executor_status(function: &str, status: &str, count: u64) {
+    if count == 0 {
+        return;
+    }
+    let attributes = &[
+        KeyValue::new("function", function.to_string()),
+        KeyValue::new("status", status.to_string()),
+    ];
+    step_executor_status_counter().add(count, attributes);
+}
+
+/// Record one tool session-plan execution duration.
+pub fn record_tool_session_plan_duration(tool: &str, duration: Duration) {
+    let attributes = &[KeyValue::new("tool", tool.to_string())];
+    tool_session_plan_histogram().record(duration.as_secs_f64() * 1000.0, attributes);
+}
+
+/// Record tool session-plan op counters.
+pub fn record_tool_session_plan_op(tool: &str, op: &str, count: u64) {
+    if count == 0 {
+        return;
+    }
+    let attributes = &[
+        KeyValue::new("tool", tool.to_string()),
+        KeyValue::new("op", op.to_string()),
+    ];
+    tool_session_plan_op_counter().add(count, attributes);
 }

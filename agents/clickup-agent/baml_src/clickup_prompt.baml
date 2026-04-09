@@ -97,8 +97,14 @@ function PlanClickUpWork(intent: string, operation_kind: string) -> StandardStru
     - Multiple clickup-execute steps when separate tool passes are needed (e.g. list teams then list tasks).
     - Respect operation_kind: read vs write vs delete in sub_messages (delete flow needs confirmation semantics in executor).
     - If the intent already names a task_id or list_id, fold that into the first execute sub_message.
-    - citations (optional): when conversation_history below is present, set citations to #N line refs; you may shorten later
-      execute sub_messages when IDs are already in history, but you MUST still include ≥1 clickup-execute before clickup-format.
+    - For read intents, if conversation_history already includes a recent support/clickup @N archive aligned with the same scope
+      (same list/task/workspace target, or same filter objective like status), prefer an archive-refinement execute step before any fresh fetch.
+    - Archive-refinement execute sub_message should explicitly instruct reuse of that archive (e.g. "Refine from @18 with Read/grep ...")
+      and should avoid broad rediscovery language.
+    - Only plan a fresh fetch execute step when aligned @N evidence is absent, stale for the target, or insufficient for the requested filter.
+    - citations (optional): when conversation_history below is present, set citations to #N line refs; when selecting archive refinement,
+      include the supporting @N/#N refs that justify reuse. You may shorten later execute sub_messages when IDs are already in history,
+      but you MUST still include ≥1 clickup-execute before clickup-format.
 
     {% if ctx.tags['conversation_history'] %}
     Prior turn results — reuse known IDs in execute sub_messages; still end with [execute..., format]:
@@ -148,13 +154,14 @@ function ChooseClickUpAction(
     Archive-ref retrieval protocol (critical):
     - Treat each @N as a retrievable evidence node (summary + pointer to full archived output).
     - If required evidence is not visible yet, emit Read on the relevant @N.
+    - If a recent @N from the same tool already represents the same upstream query/input scope (for example same IDs, names, filters, or parent resource), prefer Read on that @N before emitting a new Send.
     - For large @N, prefer bounded drilldown: grep + small limit + offset paging.
     - If history shows "more lines" / "offset=... for next page" and the step still depends on unseen rows, Finish is invalid for this hop.
     - Do not substitute Finish just to satisfy schema validity. Keep retrieving until evidence is sufficient, then Finish.
 
     Continue-phase decision table:
-    - Need more rows from latest @N -> Read
-    - Need a new upstream query -> Send
+    - Need more rows from latest/matching @N -> Read
+    - Need a new upstream query only when matching @N is absent or insufficient -> Send
     - Evidence sufficient for this step -> Finish
 
     Output discipline:

@@ -16,10 +16,10 @@ const PHASE_STEP_EXECUTOR_SUFFIX_SELECT: &str = r#"
 PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
 "#;
 
-/// Appended on **act** (Send-only) hops — the coordination prompt still mentions Report/AskUser.
+/// Appended on **act** hops — first bound hop may either issue a fresh Send or reuse a prior archive via Read.
 const PHASE_STEP_EXECUTOR_SUFFIX_ACT: &str = r#"
 
-PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
+PHASE CONSTRAINT (act): The JSON root must be exactly one Send or Read step. Do NOT return Report, AskUser, Open, or Finish. Do NOT use a step wrapper object. Prefer Read when a recent matching @N already covers this scope; use Send only when new upstream retrieval is required.
 "#;
 
 /// Appended on **continue** hops (Send | Read | Finish).
@@ -190,22 +190,22 @@ pub fn render_generated_session_baml_from_ir(
 
             let act_preamble = if tool_name_str == "system/discover_agents" {
                 format!(
-                    "[SEND] A {tool_name_str} session is open. Emit Send with your query.\\n\\n{}",
+                    "[ACT] A {tool_name_str} session is open. Emit one step: Read to refine a matching @N when available, otherwise Send for a new upstream query.\\n\\n{}",
                     DISCOVER_AGENTS_SEND_DISCIPLINE
                 )
             } else {
                 format!(
-                    "[SEND] A {tool_name_str} session is open. Emit Send with your query.\\n\\n"
+                    "[ACT] A {tool_name_str} session is open. Emit one step: Read to refine a matching @N when available, otherwise Send for a new upstream query.\\n\\n"
                 )
             };
             let act_name = SessionTypeNames::act(func_name, &slug);
             write_line(
                 &mut phase_out,
-                &format!("/// Phase: act — send query to {tool_name_str}."),
+                &format!("/// Phase: act — issue first bound hop for {tool_name_str} (Send or Read)."),
             )?;
             write_line(
                 &mut phase_out,
-                &format!("function {act_name}{args_block} -> {send_type} {{"),
+                &format!("function {act_name}{args_block} -> {send_type} | {read_type} {{"),
             )?;
             write_line(
                 &mut phase_out,
@@ -221,7 +221,9 @@ pub fn render_generated_session_baml_from_ir(
                      - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
                      - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit Read to paginate\\n\
                      - See \\\"@N {tool_name_str}\\\" with no content yet → emit Read archive_ref=\\\"@N\\\"\\n\
-                     - Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\\n\\n\
+                     - Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\\n\
+                     - If a recent @N from the same tool already represents the same upstream query/input scope (for example same IDs, names, filters, or parent resource), prefer Read on that @N before emitting a new Send\\n\
+                     - If the user mentions a concrete entity token (name/id), prefer targeted Read with grep on relevant @N before broad retrieval\\n\\n\
                      {}",
                     DISCOVER_AGENTS_SEND_DISCIPLINE
                 )
@@ -232,7 +234,9 @@ pub fn render_generated_session_baml_from_ir(
                      - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
                      - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit Read to paginate\\n\
                      - See \\\"@N {tool_name_str}\\\" with no content yet → emit Read archive_ref=\\\"@N\\\"\\n\
-                     - Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\\n\\n"
+                     - Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\\n\
+                     - If a recent @N from the same tool already represents the same upstream query/input scope (for example same IDs, names, filters, or parent resource), prefer Read on that @N before emitting a new Send\\n\
+                     - If the user mentions a concrete entity token (name/id), prefer targeted Read with grep on relevant @N before broad retrieval\\n\\n"
                 )
             };
             let continue_name = SessionTypeNames::r#continue(func_name, &slug);

@@ -372,16 +372,16 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — send query to system/internal_a2a.
+/// Phase: act — issue first bound hop for system/internal_a2a (Send or Read).
 function DecideDelegationAction__act__system_internal_a2a(
   goal: string,
   agent_package: string,
   agent_instance_id: string,
   session_context: SessionContext
-) -> SystemInternal_a2aSendStep {
+) -> SystemInternal_a2aSendStep | SystemInternal_a2aReadStep {
 
   client DefaultClient
-  prompt #"[SEND] A system/internal_a2a session is open. Emit Send with your query.\n\nCoordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
+  prompt #"[ACT] A system/internal_a2a session is open. Emit one step: Read to refine a matching @N when available, otherwise Send for a new upstream query.\n\nCoordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
 
 For Open: set initial_input.target to { agent_package: "{{ agent_package }}", agent_instance_id: "{{ agent_instance_id }}" }.
 For Send: write the message that will achieve the goal.
@@ -396,7 +396,7 @@ Session history:
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
+PHASE CONSTRAINT (act): The JSON root must be exactly one Send or Read step. Do NOT return Report, AskUser, Open, or Finish. Do NOT use a step wrapper object. Prefer Read when a recent matching @N already covers this scope; use Send only when new upstream retrieval is required.
 "#
 
 }
@@ -410,7 +410,7 @@ function DecideDelegationAction__continue__system_internal_a2a(
 ) -> SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/internal_a2a result is archived.\nCheck session history:\n- See \"@N system/internal_a2a\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/internal_a2a\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/internal_a2a\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nCoordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
+  prompt #"[CONTINUE] system/internal_a2a result is archived.\nCheck session history:\n- See \"@N system/internal_a2a\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/internal_a2a\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/internal_a2a\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n- If a recent @N from the same tool already represents the same upstream query/input scope (for example same IDs, names, filters, or parent resource), prefer Read on that @N before emitting a new Send\n- If the user mentions a concrete entity token (name/id), prefer targeted Read with grep on relevant @N before broad retrieval\n\nCoordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
 
 For Open: set initial_input.target to { agent_package: "{{ agent_package }}", agent_instance_id: "{{ agent_instance_id }}" }.
 For Send: write the message that will achieve the goal.
@@ -454,14 +454,14 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — send query to system/discover_agents.
+/// Phase: act — issue first bound hop for system/discover_agents (Send or Read).
 function GetDiscoverAgentsPlan__act__system_discover_agents(
   inferred_intent: string,
   session_context: SessionContext
-) -> SystemDiscover_agentsSendStep {
+) -> SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep {
 
   client DefaultClient
-  prompt #"[SEND] A system/discover_agents session is open. Emit Send with your query.\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+  prompt #"[ACT] A system/discover_agents session is open. Emit one step: Read to refine a matching @N when available, otherwise Send for a new upstream query.\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
 
 Discover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}
@@ -475,7 +475,7 @@ Session history:
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
+PHASE CONSTRAINT (act): The JSON root must be exactly one Send or Read step. Do NOT return Report, AskUser, Open, or Finish. Do NOT use a step wrapper object. Prefer Read when a recent matching @N already covers this scope; use Send only when new upstream retrieval is required.
 "#
 
 }
@@ -487,7 +487,7 @@ function GetDiscoverAgentsPlan__continue__system_discover_agents(
 ) -> SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/discover_agents result is archived.\nCheck session history:\n- See \"@N system/discover_agents\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_agents\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_agents\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+  prompt #"[CONTINUE] system/discover_agents result is archived.\nCheck session history:\n- See \"@N system/discover_agents\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_agents\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_agents\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n- If a recent @N from the same tool already represents the same upstream query/input scope (for example same IDs, names, filters, or parent resource), prefer Read on that @N before emitting a new Send\n- If the user mentions a concrete entity token (name/id), prefer targeted Read with grep on relevant @N before broad retrieval\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
 
 Discover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}

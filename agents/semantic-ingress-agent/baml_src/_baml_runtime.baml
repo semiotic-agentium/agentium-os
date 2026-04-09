@@ -322,29 +322,6 @@ class DiscoverAgentsSendInput {
   offset int | null?
 }
 
-class ToolDiscoveryRecordDto {
-  name string
-  bundle string
-  description string
-  tags string[]
-  event_sources string[]
-}
-
-class DiscoverToolsNextOutput {
-  tools ToolDiscoveryRecordDto[]
-  done bool
-  history_context HistoryContextV1 | null?
-}
-
-class DiscoverToolsOpenInput {
-  reason string | null?
-}
-
-class DiscoverToolsSendInput {
-  query string | null?
-  limit int | null?
-}
-
 class ConversationPart {
   text string | null?
   raw string | null?
@@ -462,47 +439,6 @@ type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDi
 
 class SystemDiscover_agentsSessionPlan {
   step SystemDiscover_agentsSessionStep @description("Emit one FSM step. From history: no session → Open; open, no Send → Send; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
-  citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
-}
-
-/// Tool card for system/discover_tools: metadata for polymorphic Open selection.
-class SystemDiscover_toolsToolCard {
-  tool_name "system/discover_tools"
-  description "Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times."
-  session_policy "Strict"
-  input_summary "{ limit?: anyOf(integer | null), query?: anyOf(string | null) }"
-  tags string[] @description("Tool tags: system, discovery")
-}
-
-class SystemDiscover_toolsOpenStep {
-  op "Open"
-  tool_name "system/discover_tools" @description("Tool to open")
-  initial_input DiscoverToolsOpenInput? @description("Optional open payload.")
-}
-
-class SystemDiscover_toolsSendStep {
-  op "Send"
-  input DiscoverToolsSendInput @description("Payload for this step.")
-  citations string[] @description("Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.")
-}
-
-class SystemDiscover_toolsReadStep {
-  op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
-}
-
-class SystemDiscover_toolsFinishStep {
-  op "Finish"
-}
-
-class SystemDiscover_toolsAbortStep {
-  op "Abort"
-}
-
-type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
-
-class SystemDiscover_toolsSessionPlan {
-  step SystemDiscover_toolsSessionStep @description("Emit one FSM step. From history: no session → Open; open, no Send → Send; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 

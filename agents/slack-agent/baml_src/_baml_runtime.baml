@@ -607,15 +607,15 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — send query to support/slack.
+/// Phase: act — issue first bound hop for support/slack (Send or Read).
 function ChooseSlackAction__act__support_slack(
   goal: string,
   step_description: string,
   session_context: SessionContext
-) -> SupportSlackSendStep {
+) -> SupportSlackSendStep | SupportSlackReadStep {
 
   client DefaultClient
-  prompt #"[SEND] A support/slack session is open. Emit Send with your query.\n\nYou execute ONE retrieve step of a read-only Slack plan.
+  prompt #"[ACT] A support/slack session is open. Emit one step: Read to refine a matching @N when available, otherwise Send for a new upstream query.\n\nYou execute ONE retrieve step of a read-only Slack plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
@@ -655,7 +655,7 @@ Session history:
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
+PHASE CONSTRAINT (act): The JSON root must be exactly one Send or Read step. Do NOT return Report, AskUser, Open, or Finish. Do NOT use a step wrapper object. Prefer Read when a recent matching @N already covers this scope; use Send only when new upstream retrieval is required.
 "#
 
 }
@@ -668,7 +668,7 @@ function ChooseSlackAction__continue__support_slack(
 ) -> SupportSlackSendStep | SupportSlackReadStep | SupportSlackFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/slack result is archived.\nCheck session history:\n- See \"@N support/slack\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/slack\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/slack\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nYou execute ONE retrieve step of a read-only Slack plan.
+  prompt #"[CONTINUE] support/slack result is archived.\nCheck session history:\n- See \"@N support/slack\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/slack\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/slack\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n- If a recent @N from the same tool already represents the same upstream query/input scope (for example same IDs, names, filters, or parent resource), prefer Read on that @N before emitting a new Send\n- If the user mentions a concrete entity token (name/id), prefer targeted Read with grep on relevant @N before broad retrieval\n\nYou execute ONE retrieve step of a read-only Slack plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 

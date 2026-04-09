@@ -1,6 +1,7 @@
 // FSM execution for typed ToolSessionPlan fragments (Open/Send/Read/Finish/Abort).
 
 use baml_rt_core::semantics::ErrorDisposition;
+use baml_rt_observability::metrics;
 use baml_rt_tools::{ToolFailure, should_host_retry, tool_failure_to_baml_tool_execution_error};
 
 use super::{BamlRuntimeManager, ToolSessionOp, ToolSessionPlan, manager_prelude::*, open_input};
@@ -87,6 +88,12 @@ impl BamlRuntimeManager {
 
         let plan_scope = scope.clone();
         let mut steps = vec![first_step];
+        let session_tool_exec_started_at = std::time::Instant::now();
+        let mut session_tool_exec_open_count: u64 = 0;
+        let mut session_tool_exec_send_count: u64 = 0;
+        let mut session_tool_exec_read_count: u64 = 0;
+        let mut session_tool_exec_finish_count: u64 = 0;
+        let mut session_tool_exec_abort_count: u64 = 0;
         // Strict linear mode: exactly one fragment per invocation.
         // If this fragment is not Open, try to reuse an existing session.
         let mut session_id: Option<ToolSessionId> = self
@@ -143,6 +150,7 @@ impl BamlRuntimeManager {
                     initial_input,
                     reason,
                 } => {
+                    session_tool_exec_open_count += 1;
                     tracing::debug!(
                         tool = %tool_name_str,
                         reason = ?reason,
@@ -214,6 +222,7 @@ impl BamlRuntimeManager {
                     session_id = Some(session.clone());
                 }
                 ToolSessionOp::Send { input, reason } => {
+                    session_tool_exec_send_count += 1;
                     tracing::debug!(
                         tool = %tool_name_str,
                         reason = ?reason,
@@ -355,6 +364,7 @@ impl BamlRuntimeManager {
                     grep,
                     reason,
                 } => {
+                    session_tool_exec_read_count += 1;
                     tracing::debug!(
                         tool = %tool_name_str,
                         archive_ref = %archive_ref,
@@ -515,6 +525,7 @@ impl BamlRuntimeManager {
                     }
                 }
                 ToolSessionOp::Finish { reason } => {
+                    session_tool_exec_finish_count += 1;
                     tracing::debug!(
                         tool = %tool_name_str,
                         reason = ?reason,
@@ -537,6 +548,7 @@ impl BamlRuntimeManager {
                     }
                 }
                 ToolSessionOp::Abort { reason, .. } => {
+                    session_tool_exec_abort_count += 1;
                     tracing::debug!(
                         tool = %tool_name_str,
                         reason = ?reason,
@@ -551,12 +563,39 @@ impl BamlRuntimeManager {
             }
         }
 
-        last_output.ok_or_else(|| {
+        let output = last_output.ok_or_else(|| {
             BamlRtError::InvalidArgument(
                 "Tool session plan produced no output; expected at least one step to yield a result. \
                  This is a runtime invariant violation — every plan execution must produce a non-null tool_result."
                     .to_string(),
             )
-        })
+        })?;
+
+        let session_tool_exec_elapsed = session_tool_exec_started_at.elapsed();
+        metrics::record_tool_session_plan_duration(&tool_name_str, session_tool_exec_elapsed);
+        metrics::record_tool_session_plan_op(&tool_name_str, "open", session_tool_exec_open_count);
+        metrics::record_tool_session_plan_op(&tool_name_str, "send", session_tool_exec_send_count);
+        metrics::record_tool_session_plan_op(&tool_name_str, "read", session_tool_exec_read_count);
+        metrics::record_tool_session_plan_op(
+            &tool_name_str,
+            "finish",
+            session_tool_exec_finish_count,
+        );
+        metrics::record_tool_session_plan_op(&tool_name_str, "abort", session_tool_exec_abort_count);
+
+        tracing::info!(
+            tool = %tool_name_str,
+            context_id = %plan_scope.context_id().as_str(),
+            message_id = %plan_scope.message_id().as_str(),
+            session_tool_exec_latency_ms_total = session_tool_exec_elapsed.as_millis() as u64,
+            session_tool_exec_open_count,
+            session_tool_exec_send_count,
+            session_tool_exec_read_count,
+            session_tool_exec_finish_count,
+            session_tool_exec_abort_count,
+            "tool_session_plan: execution summary"
+        );
+
+        Ok(output)
     }
 }

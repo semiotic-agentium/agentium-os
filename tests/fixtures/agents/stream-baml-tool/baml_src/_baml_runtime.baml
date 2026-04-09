@@ -200,14 +200,14 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — send query to support/calculate.
+/// Phase: act — issue first bound hop for support/calculate (Send or Read).
 function ChooseCalcTool__act__support_calculate(
   user_message: string,
   session_context: SessionContext?
-) -> SupportCalculateSendStep {
+) -> SupportCalculateSendStep | SupportCalculateReadStep {
 
   client DefaultClient
-  prompt #"[SEND] A support/calculate session is open. Emit Send with your query.\n\nEvaluate this calculation: {{ user_message }}
+  prompt #"[ACT] A support/calculate session is open. Emit one step: Read to refine a matching @N when available, otherwise Send for a new upstream query.\n\nEvaluate this calculation: {{ user_message }}
 For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
 {% if ctx.tags['conversation_history'] %}
@@ -219,7 +219,7 @@ Session history:
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
+PHASE CONSTRAINT (act): The JSON root must be exactly one Send or Read step. Do NOT return Report, AskUser, Open, or Finish. Do NOT use a step wrapper object. Prefer Read when a recent matching @N already covers this scope; use Send only when new upstream retrieval is required.
 "#
 
 }
@@ -231,7 +231,7 @@ function ChooseCalcTool__continue__support_calculate(
 ) -> SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/calculate result is archived.\nCheck session history:\n- See \"@N support/calculate\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/calculate\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/calculate\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nEvaluate this calculation: {{ user_message }}
+  prompt #"[CONTINUE] support/calculate result is archived.\nCheck session history:\n- See \"@N support/calculate\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/calculate\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/calculate\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n- If a recent @N from the same tool already represents the same upstream query/input scope (for example same IDs, names, filters, or parent resource), prefer Read on that @N before emitting a new Send\n- If the user mentions a concrete entity token (name/id), prefer targeted Read with grep on relevant @N before broad retrieval\n\nEvaluate this calculation: {{ user_message }}
 For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
 {% if ctx.tags['conversation_history'] %}

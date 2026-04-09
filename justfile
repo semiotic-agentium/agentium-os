@@ -268,6 +268,84 @@ otel-summary window='30m':
     print_or_none "$printed"
     echo
 
+    echo "-- Step executor loop total time by function (host loop wall-clock) --"
+    printed=0
+    while IFS=$'\t' read -r fn v; do
+      [[ -z "${fn:-}" ]] && continue
+      printed=1
+      printf "%-45s %10s\n" "$fn" "$(fmt_ms "$v")"
+    done < <(
+      q "sort_desc(sum by (function) (increase(baml_rt_step_executor_loop_duration_ms_sum[$W])))" \
+        | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.value[1])"'
+    )
+    print_or_none "$printed"
+    echo
+
+    echo "-- Step executor hop counts by function/phase (LLM hop cardinality) --"
+    printed=0
+    while IFS=$'\t' read -r fn phase v; do
+      [[ -z "${fn:-}" ]] && continue
+      printed=1
+      printf "%-32s %-12s %10s\n" "$fn" "$phase" "$(fmt_n "$v")"
+    done < <(
+      q "sum by (function, phase) (increase(baml_rt_step_executor_hop_total[$W]))" \
+        | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.metric.phase // "unknown")\t\(.value[1])"'
+    )
+    print_or_none "$printed"
+    echo
+
+    echo "-- Step executor avg hop latency by function/phase (LLM invoke duration) --"
+    printed=0
+    while IFS=$'\t' read -r fn phase v; do
+      [[ -z "${fn:-}" ]] && continue
+      printed=1
+      printf "%-32s %-12s %10s\n" "$fn" "$phase" "$(fmt_ms "$v")"
+    done < <(
+      q "(sum by (function, phase) (increase(baml_rt_step_executor_hop_latency_ms_sum[$W])) / sum by (function, phase) (increase(baml_rt_step_executor_hop_latency_ms_count[$W]))) and on (function, phase) (sum by (function, phase) (increase(baml_rt_step_executor_hop_latency_ms_count[$W])) > 0)" \
+        | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.metric.phase // "unknown")\t\(.value[1])"'
+    )
+    print_or_none "$printed"
+    echo
+
+    echo "-- Step executor status counts by function/status (host FSM outputs) --"
+    printed=0
+    while IFS=$'\t' read -r fn status v; do
+      [[ -z "${fn:-}" ]] && continue
+      printed=1
+      printf "%-32s %-12s %10s\n" "$fn" "$status" "$(fmt_n "$v")"
+    done < <(
+      q "sum by (function, status) (increase(baml_rt_step_executor_status_total[$W]))" \
+        | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.metric.status // "unknown")\t\(.value[1])"'
+    )
+    print_or_none "$printed"
+    echo
+
+    echo "-- Tool session plan total time by tool (host session-plan wall-clock) --"
+    printed=0
+    while IFS=$'\t' read -r tool v; do
+      [[ -z "${tool:-}" ]] && continue
+      printed=1
+      printf "%-45s %10s\n" "$tool" "$(fmt_ms "$v")"
+    done < <(
+      q "sort_desc(sum by (tool) (increase(baml_rt_tool_session_plan_duration_ms_sum[$W])))" \
+        | jq -r '.data.result[]? | "\(.metric.tool // "unknown")\t\(.value[1])"'
+    )
+    print_or_none "$printed"
+    echo
+
+    echo "-- Tool session plan op counts by tool/op (host FSM operation counts) --"
+    printed=0
+    while IFS=$'\t' read -r tool op v; do
+      [[ -z "${tool:-}" ]] && continue
+      printed=1
+      printf "%-32s %-12s %10s\n" "$tool" "$op" "$(fmt_n "$v")"
+    done < <(
+      q "sum by (tool, op) (increase(baml_rt_tool_session_plan_op_total[$W]))" \
+        | jq -r '.data.result[]? | "\(.metric.tool // "unknown")\t\(.metric.op // "unknown")\t\(.value[1])"'
+    )
+    print_or_none "$printed"
+    echo
+
     echo "-- ONNX inferences by operation --"
     printed=0
     while IFS=$'\t' read -r op v; do
