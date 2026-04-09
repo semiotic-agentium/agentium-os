@@ -326,9 +326,7 @@ fn render_projection_content_with_state(
                 let open_text = registry
                     .describe_open_for(tool_name)
                     .unwrap_or_else(|| format!("{tool_name} session opened"));
-                // Keep an explicit trailing newline so adjacent same-role session-step rows
-                // (e.g. Open followed by SendDone header) never collapse into one token run.
-                RenderedEntry::One(format!("{open_text}\n"))
+                RenderedEntry::One(open_text)
             }
             SessionStepProjection::SendDone {
                 archive_ref,
@@ -336,13 +334,8 @@ fn render_projection_content_with_state(
             } => {
                 if inlined_archive_refs.contains(archive_ref) {
                     return RenderedEntry::Two(
-                        ensure_trailing_newline(header.clone()),
-                        ensure_trailing_newline(compact_read_marker(
-                            archive_ref,
-                            None,
-                            0,
-                            opts.send_done.get(),
-                        )),
+                        header.clone(),
+                        compact_read_marker(archive_ref, None, 0, opts.send_done.get()),
                     );
                 }
                 inlined_archive_refs.insert(archive_ref.clone());
@@ -355,12 +348,9 @@ fn render_projection_content_with_state(
                             0,
                             opts.send_done.get(),
                         ));
-                        RenderedEntry::Two(
-                            ensure_trailing_newline(header.clone()),
-                            ensure_trailing_newline(content),
-                        )
+                        RenderedEntry::Two(header.clone(), content)
                     }
-                    None => RenderedEntry::One(ensure_trailing_newline(header.clone())),
+                    None => RenderedEntry::One(header.clone()),
                 }
             }
             SessionStepProjection::Read {
@@ -374,20 +364,20 @@ fn render_projection_content_with_state(
                 let cmd = session_read_command_line(archive_ref, grep.as_deref());
                 let read_key = read_view_key(archive_ref, grep.as_deref(), *offset, *limit);
                 if inlined_read_pages.contains(&read_key) {
-                    return RenderedEntry::One(ensure_trailing_newline(compact_read_marker(
+                    return RenderedEntry::One(compact_read_marker(
                         archive_ref,
                         grep.as_deref(),
                         *offset,
                         *limit,
-                    )));
+                    ));
                 }
                 match archive_reader.and_then(|r| r(archive_ref, grep.as_deref(), *offset, *limit))
                 {
                     Some(output) => {
                         inlined_read_pages.insert(read_key);
-                        RenderedEntry::One(ensure_trailing_newline(output))
+                        RenderedEntry::One(output)
                     }
-                    None => RenderedEntry::One(ensure_trailing_newline(cmd)),
+                    None => RenderedEntry::One(cmd),
                 }
             }
         },
