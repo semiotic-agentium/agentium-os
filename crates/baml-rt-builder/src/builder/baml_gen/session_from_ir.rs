@@ -16,10 +16,10 @@ const PHASE_STEP_EXECUTOR_SUFFIX_SELECT: &str = r#"
 PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
 "#;
 
-/// Appended on **act** (Send-only) hops — the coordination prompt still mentions Report/AskUser.
+/// Appended on **act** (first post-Open hop: Send or Read) — same archive discipline as continue.
 const PHASE_STEP_EXECUTOR_SUFFIX_ACT: &str = r#"
 
-PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
+PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
 "#;
 
 /// Appended on **continue** hops (Send | Read | Finish).
@@ -190,22 +190,22 @@ pub fn render_generated_session_baml_from_ir(
 
             let act_preamble = if tool_name_str == "system/discover_agents" {
                 format!(
-                    "[SEND] A {tool_name_str} session is open. Emit Send with your query.\\n\\n{}",
+                    "[ACT] A {tool_name_str} session is open. Emit Send with your query, or Read @N if a prior Send for this tool is already archived in history.\\n\\n{}",
                     DISCOVER_AGENTS_SEND_DISCIPLINE
                 )
             } else {
                 format!(
-                    "[SEND] A {tool_name_str} session is open. Emit Send with your query.\\n\\n"
+                    "[ACT] A {tool_name_str} session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\\n\\n"
                 )
             };
             let act_name = SessionTypeNames::act(func_name, &slug);
             write_line(
                 &mut phase_out,
-                &format!("/// Phase: act — send query to {tool_name_str}."),
+                &format!("/// Phase: act — first post-Open hop: Send or Read {tool_name_str}."),
             )?;
             write_line(
                 &mut phase_out,
-                &format!("function {act_name}{args_block} -> {send_type} {{"),
+                &format!("function {act_name}{args_block} -> {send_type} | {read_type} {{"),
             )?;
             write_line(
                 &mut phase_out,

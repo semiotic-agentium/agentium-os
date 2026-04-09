@@ -803,14 +803,14 @@ impl SessionPolicy {
         }
         match self {
             SessionPolicy::Strict => match last_status {
-                Some("open") => vec!["Send"],
+                Some("open") => vec!["Send", "Read"],
                 Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
                 Some("done") => vec!["Finish", "Read"],
                 Some("aborted") => vec!["Abort"],
                 _ => vec!["Read"],
             },
             SessionPolicy::MultiSend => match last_status {
-                Some("open") => vec!["Send"],
+                Some("open") => vec!["Send", "Read"],
                 Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
                 Some("done") => vec!["Read", "Send", "Finish"],
                 Some("aborted") => vec!["Abort"],

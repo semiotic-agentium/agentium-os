@@ -221,12 +221,12 @@ If the next plan step calls for email, a new `runGeneratedStepExecutor` invocati
 | FSM phase | Function called | Return type | What the model can emit |
 |-----------|----------------|-------------|------------------------|
 | No session open yet | `ExecuteStep__select` | `CrmStepResult \| SupportCrmOpenStep \| SupportEmailOpenStep` | Open CRM, Open email, or skip with a plain result. **No Send / Read / Finish.** |
-| CRM session open, need Send | `ExecuteStep__act__support_crm` | `SupportCrmSendStep` | **Only Send** with `CrmInput` (the CRM tool's typed input union: `QueryAccountsInput`, `QueryOpportunitiesInput`, etc.) and `citations`. |
+| CRM session open, first post-Open hop | `ExecuteStep__act__support_crm` | `SupportCrmSendStep \| SupportCrmReadStep` | **Send** with `CrmInput` for new work, or **Read** `@N` when an archive for this tool already exists in history (grep/limit/offset). **No Finish** on this hop. |
 | CRM Send completed, archive in history | `ExecuteStep__continue__support_crm` | `SupportCrmSendStep \| SupportCrmReadStep \| SupportCrmFinishStep` | Send again, Read an archive `@N`, or Finish. **No Open, no email types.** |
-| Email session open, need Send | `ExecuteStep__act__support_email` | `SupportEmailSendStep` | **Only Send** with `SendEmailInput` (`to`, `subject`, `body`). |
+| Email session open, first post-Open hop | `ExecuteStep__act__support_email` | `SupportEmailSendStep \| SupportEmailReadStep` | **Send** with `SendEmailInput` (`to`, `subject`, `body`), or **Read** `@N` when reusing an existing archive. **No Finish** on this hop. |
 | Email Send completed | `ExecuteStep__continue__support_email` | `SupportEmailSendStep \| SupportEmailReadStep \| SupportEmailFinishStep` | Send again, Read, or Finish. |
 
-Each prompt carries a **phase cue** — `[OPEN]`, `[SEND]`, `[CONTINUE]` — and **`{{ ctx.output_format }}`** describes **only** the narrowed return type for that hop. The model literally cannot express an illegal transition because the schema doesn't include it.
+Each prompt carries a **phase cue** — `[OPEN]`, `[ACT]` (first hop after Open: Send or Read), `[CONTINUE]` — and **`{{ ctx.output_format }}`** describes **only** the narrowed return type for that hop. The model literally cannot express an illegal transition because the schema doesn't include it.
 
 **Example JSON at each phase** (what the model actually emits):
 
@@ -236,7 +236,7 @@ Each prompt carries a **phase cue** — `[OPEN]`, `[SEND]`, `[CONTINUE]` — and
 { "op": "Open", "tool_name": "support/crm" }
 ```
 
-**Act phase** — model sends a CRM query, citing the user message (`#1`) and the plan objective (`#2`):
+**Act phase** — typically the model **Send**s a CRM query, citing the user message (`#1`) and the plan objective (`#2`):
 
 ```json
 {
@@ -245,6 +245,8 @@ Each prompt carries a **phase cue** — `[OPEN]`, `[SEND]`, `[CONTINUE]` — and
   "citations": ["#1", "#2"]
 }
 ```
+
+If an archive for this tool is already in conversation history, the model may **Read** on the act hop instead (same shape as the continue-phase Read below).
 
 **Continue phase** — archive `@1` is already in history; model finishes:
 

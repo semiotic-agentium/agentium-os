@@ -27,7 +27,7 @@ pub(crate) const CITATIONS_SEND_STEP: &str = "Cite evidence for this Send. Histo
 
 // --- Archive Read (grep-first, bounded windows) ---
 
-pub(crate) const ARCHIVE_READ_ARCHIVE_REF: &str = "Required: @N from the preceding Send (e.g. '@1'). Every Read must use a real @N; do not invent refs.";
+pub(crate) const ARCHIVE_READ_ARCHIVE_REF: &str = "Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every Read must use a real @N; do not invent refs.";
 
 pub(crate) const ARCHIVE_READ_OFFSET: &str = "0-based line offset after grep. Page with limit: first window offset=0; next offset += previous limit while lines or matches remain.";
 
@@ -37,12 +37,12 @@ pub(crate) const ARCHIVE_READ_GREP: &str = "Large @N: set this first — line fi
 
 // --- Session plan `step` field guidance ---
 
-pub(crate) const STEP_DESC_CLAUDE_OR_A2A: &str = "Emit one FSM step. From history: no session → Open; open, no Send → Send (input.text must be non-empty); after Send → Read @N (large archive: set grep, small limit, offset to page), Finish, or Send again.";
+pub(crate) const STEP_DESC_CLAUDE_OR_A2A: &str = "Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or Read @N when that tool archive already exists in history; after Send (@N archived) → Read @N (large archive: set grep, small limit, offset to page), Finish, or Send again.";
 
-pub(crate) const STEP_DESC_DEFAULT: &str = "Emit one FSM step. From history: no session → Open; open, no Send → Send; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.";
+pub(crate) const STEP_DESC_DEFAULT: &str = "Emit one FSM step. From history: no session → Open; session open → Send for new work or Read @N when the archive already exists in history; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.";
 
 /// `*ReadStep` wrapper around `ArchiveReadInput` (field-level hint; full policy on ArchiveReadInput members).
-pub(crate) const READ_STEP_INPUT_DESCRIPTION: &str = "Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.";
+pub(crate) const READ_STEP_INPUT_DESCRIPTION: &str = "archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.";
 
 /// Full shared prelude (FSM header, planning types, StructuredReply, ArchiveReadInput).
 pub fn render_generated_tools_prelude() -> String {
@@ -61,14 +61,14 @@ pub fn render_generated_tools_prelude() -> String {
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. Read: Prior Send via archive_ref @N. Large body: set grep; small limit; offset to page.
+// 3. Read: archive_ref @N from a Send for this tool (same session or conversation history). Large body: set grep; small limit; offset to page.
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - Read needs a prior Send ref. Large @N: grep first, then limit/offset — do not dump whole archives.
+// - Read needs a real @N from a Send for this tool (may be earlier in history). Large @N: grep first, then limit/offset — do not dump whole archives.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
