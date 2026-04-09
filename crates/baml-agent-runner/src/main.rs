@@ -305,12 +305,15 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- Event producer poll loop ---
-    let dispatcher_handle = if let Some(interval) = config.event_poll_interval {
+    //
+    // Always load producers so push-ingress transports (e.g. Socket Mode) can
+    // start their background tasks during build. If producers are returned but
+    // no explicit poll interval was set, fall back to a 1-second drain loop so
+    // inbox items enqueued by push transports still get delivered.
+    let dispatcher_handle = {
         let registry = ready.registry();
         let runner = ready.runner();
         let deployment_state_for_poll = runner.deployment_state().clone();
-        let mut dispatcher =
-            baml_rt_a2a::EventDispatcher::new(registry as Arc<dyn baml_rt_a2a::AgentRegistry>);
         let persisted_checkpoints: std::collections::HashMap<String, ProducerCheckpoint> =
             deployment_state_for_poll
                 .list_event_producer_checkpoints()
@@ -329,27 +332,45 @@ async fn main() -> anyhow::Result<()> {
         )
         .await
         .context("loading configured event producers")?;
-        for producer in configured_producers {
-            let producer_key = producer.producer_key().to_string();
-            let checkpoint = persisted_checkpoints
-                .get(&producer_key)
-                .cloned()
-                .unwrap_or_else(ProducerCheckpoint::none);
-            dispatcher
-                .register_producer_with_checkpoint(producer, checkpoint)
-                .with_context(|| format!("registering event producer {producer_key}"))?;
-            info!(producer_key = %producer_key, "registered event producer");
-        }
 
-        info!(
-            interval_secs = interval.as_secs(),
-            "event producer poll loop enabled"
-        );
-        Some(tokio::spawn(async move {
-            run_event_poll_loop(dispatcher, deployment_state_for_poll, interval).await;
-        }))
-    } else {
-        None
+        // Determine effective interval:
+        // - Explicit --event-poll-interval-secs > 0 → use that
+        // - Producers loaded but no explicit interval → 1s drain fallback
+        // - No producers and no interval → skip poll loop
+        let effective_interval = config.event_poll_interval.or_else(|| {
+            if configured_producers.is_empty() {
+                None
+            } else {
+                info!("push-ingress producers detected; enabling 1s inbox drain loop");
+                Some(std::time::Duration::from_secs(1))
+            }
+        });
+
+        if let Some(interval) = effective_interval {
+            let mut dispatcher =
+                baml_rt_a2a::EventDispatcher::new(registry as Arc<dyn baml_rt_a2a::AgentRegistry>);
+            for producer in configured_producers {
+                let producer_key = producer.producer_key().to_string();
+                let checkpoint = persisted_checkpoints
+                    .get(&producer_key)
+                    .cloned()
+                    .unwrap_or_else(ProducerCheckpoint::none);
+                dispatcher
+                    .register_producer_with_checkpoint(producer, checkpoint)
+                    .with_context(|| format!("registering event producer {producer_key}"))?;
+                info!(producer_key = %producer_key, "registered event producer");
+            }
+
+            info!(
+                interval_secs = interval.as_secs(),
+                "event producer poll loop enabled"
+            );
+            Some(tokio::spawn(async move {
+                run_event_poll_loop(dispatcher, deployment_state_for_poll, interval).await;
+            }))
+        } else {
+            None
+        }
     };
 
     let http_handle = if let Some(bind) = config.serve_http.clone() {

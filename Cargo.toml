@@ -80,7 +80,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 opentelemetry = "0.26"
 opentelemetry_sdk = "0.26"
 tracing-opentelemetry = "0.27"
-tokio-tungstenite = "0.28.0"
+tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3.31"
 testcontainers = "0.23"
 insta = { version = "1.46.3", features = ["json"] }

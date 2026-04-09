@@ -37,13 +37,13 @@ pub const RAW_SOURCE_SCHEMA_VERSION: &str = "host.source-records.v1";
 pub const RAW_SOURCE_ROUTING_KEY: &str = "event:intake";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum SlackChannelSelector {
+pub(crate) enum SlackChannelSelector {
     ChannelId(String),
     ChannelName(String),
 }
 
 impl SlackChannelSelector {
-    fn parse(raw: &str) -> Result<Self> {
+    pub(crate) fn parse(raw: &str) -> Result<Self> {
         let trimmed = raw.trim().trim_start_matches('#');
         if trimmed.is_empty() {
             return Err(BamlRtError::InvalidArgument(
@@ -58,34 +58,49 @@ impl SlackChannelSelector {
         }
     }
 
-    fn producer_key_fragment(&self) -> String {
+    pub(crate) fn producer_key_fragment(&self) -> String {
         match self {
             Self::ChannelId(id) => format!("id:{id}"),
             Self::ChannelName(name) => format!("name:{name}"),
         }
     }
 
-    fn display_label(&self) -> String {
+    pub(crate) fn display_label(&self) -> String {
         match self {
             Self::ChannelId(id) => id.clone(),
             Self::ChannelName(name) => format!("#{name}"),
         }
     }
 
-    fn needs_resolution(&self) -> bool {
+    pub(crate) fn needs_resolution(&self) -> bool {
         matches!(self, Self::ChannelName(_))
     }
 }
 
-/// Config for host-managed Slack source polling.
+/// Transport mode for Slack event ingestion.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SlackTransportConfig {
+    /// Poll conversations.history on a timer (existing behavior).
+    #[default]
+    Polling,
+    /// Connect via Slack Socket Mode WebSocket. Requires SLACK_APP_TOKEN.
+    SocketMode,
+}
+
+/// Config for host-managed Slack source ingestion.
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SlackEventProducerConfig {
     #[baml(
-        description = "Slack channels to poll for raw host event delivery. Entries may be channel names like `agentium-eng` or channel IDs like `C123ABC456`."
+        description = "Slack channels to ingest for raw host event delivery. Entries may be channel names like `agentium-eng` or channel IDs like `C123ABC456`."
     )]
     #[serde(default)]
     pub channels: Vec<String>,
+    /// Transport mode. Defaults to polling when absent.
+    #[serde(default)]
+    #[baml(skip)]
+    pub transport: SlackTransportConfig,
 }
 
 impl SlackEventProducerConfig {
@@ -715,111 +730,168 @@ pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProdu
         };
 
         let channels = config.normalized_channels()?;
-        if channels.is_empty() && !store_installed {
-            return Ok(vec![]);
-        }
 
-        let client = SlackReadClient::new();
-        let mut selected_token: Option<String> = None;
-        let mut candidates = Vec::<SlackProducerCandidate>::new();
-        for channel in channels {
-            let mut producer_key = selector_producer_key(&channel);
-            let mut producer_key_priority = ProducerKeyPriority::Fresh;
-            let mut resolved_channel_id = persisted_state_for_selector(&persisted_states, &channel)
-                .and_then(|persisted| {
-                    producer_key = persisted.producer_key.clone();
-                    producer_key_priority = ProducerKeyPriority::ExactPersistedMatch;
-                    persisted
-                        .state
-                        .resolved_channel_id
-                        .clone()
-                        .or_else(|| match &channel {
-                            SlackChannelSelector::ChannelId(channel_id) => Some(channel_id.clone()),
-                            SlackChannelSelector::ChannelName(_) => None,
-                        })
+        match config.transport {
+            SlackTransportConfig::SocketMode => {
+                if channels.is_empty() {
+                    return Err(BamlRtError::InvalidArgument(
+                        "Socket Mode transport requires at least one channel".to_string(),
+                    ));
+                }
+                let store = ingress_store().ok_or_else(|| {
+                    BamlRtError::InvalidArgument(
+                        "Socket Mode transport requires an installed ingress store".to_string(),
+                    )
+                })?;
+                let client = SlackReadClient::new();
+                let app_token = client.auth().app_token.clone().ok_or_else(|| {
+                    BamlRtError::InvalidArgument(
+                        "Socket Mode transport requires SLACK_APP_TOKEN (xapp-...)".to_string(),
+                    )
+                })?;
+
+                // TODO: the cancel token is currently inert — EventProducerBuildFuture
+                // returns only `Vec<Arc<dyn EventProducer>>` so there is no way to
+                // hand the token back to the runner, and the runner uses
+                // JoinHandle::abort() for shutdown. The receiver exits correctly via
+                // task abort. Wire this up when EventProducer gains shutdown support.
+                let cancel = tokio_util::sync::CancellationToken::new();
+                let receiver_handle = crate::socket_mode::start_socket_mode_receiver(
+                    client, app_token, channels, store, cancel,
+                )
+                .await?;
+                tokio::spawn(async move {
+                    match receiver_handle.await {
+                        Ok(()) => warn!("Socket Mode receiver task exited unexpectedly"),
+                        Err(err) => warn!(error = %err, "Socket Mode receiver task panicked"),
+                    }
                 });
 
-            if resolved_channel_id.is_none() {
-                let token = match selected_token.as_ref() {
-                    Some(token) => token.clone(),
-                    None => {
-                        let (token_ref, _kind) = client
-                            .select_token(Some(SlackAuthPreference::Auto), false)
-                            .map_err(|err| {
-                                BamlRtError::InvalidArgument(format!(
-                                    "Slack event producer requires SLACK_BOT_TOKEN or SLACK_USER_TOKEN: {err}"
-                                ))
-                            })?;
-                        let token_value = token_ref.to_string();
-                        selected_token = Some(token_value.clone());
-                        token_value
-                    }
-                };
-                let resolved = resolve_selector_channel_id(&client, &token, &channel).await?;
-                if producer_key_priority < ProducerKeyPriority::ExactPersistedMatch
-                    && let Some(persisted) =
-                        persisted_state_for_resolved_channel_id(&persisted_states, &resolved)
-                {
-                    producer_key = persisted.producer_key.clone();
-                    producer_key_priority = ProducerKeyPriority::ResolvedIdMatch;
-                }
-                resolved_channel_id = Some(resolved);
+                let producers: Vec<Arc<dyn EventProducer>> =
+                    vec![Arc::new(SlackInboxEventProducer::new()?) as Arc<dyn EventProducer>];
+                Ok(producers)
             }
-
-            let resolved_channel_id = resolved_channel_id.ok_or_else(|| {
-                BamlRtError::InvalidArgument(format!(
-                    "Slack producer for {} could not determine a channel ID",
-                    channel.display_label()
-                ))
-            })?;
-            candidates.push(SlackProducerCandidate {
-                channel,
-                producer_key,
-                producer_key_priority,
-                resolved_channel_id,
-            });
-        }
-
-        let mut deduped = Vec::<ResolvedSlackProducerSeed>::new();
-        let mut by_channel_id = HashMap::<String, usize>::new();
-        for candidate in candidates {
-            match by_channel_id.get(&candidate.resolved_channel_id).copied() {
-                Some(existing_idx) => {
-                    let existing = &mut deduped[existing_idx];
-                    if candidate.channel.needs_resolution() && !existing.channel.needs_resolution()
-                    {
-                        existing.channel = candidate.channel.clone();
-                    }
-                    if candidate.producer_key_priority > existing.producer_key_priority {
-                        existing.producer_key = candidate.producer_key.clone();
-                        existing.producer_key_priority = candidate.producer_key_priority;
-                    }
+            SlackTransportConfig::Polling => {
+                if channels.is_empty() && !store_installed {
+                    return Ok(vec![]);
                 }
-                None => {
-                    by_channel_id.insert(candidate.resolved_channel_id.clone(), deduped.len());
-                    deduped.push(ResolvedSlackProducerSeed {
-                        channel: candidate.channel,
-                        producer_key: candidate.producer_key,
-                        producer_key_priority: candidate.producer_key_priority,
-                        resolved_channel_id: candidate.resolved_channel_id,
+
+                let client = SlackReadClient::new();
+                let mut selected_token: Option<String> = None;
+                let mut candidates = Vec::<SlackProducerCandidate>::new();
+                for channel in channels {
+                    let mut producer_key = selector_producer_key(&channel);
+                    let mut producer_key_priority = ProducerKeyPriority::Fresh;
+                    let mut resolved_channel_id =
+                        persisted_state_for_selector(&persisted_states, &channel).and_then(
+                            |persisted| {
+                                producer_key = persisted.producer_key.clone();
+                                producer_key_priority = ProducerKeyPriority::ExactPersistedMatch;
+                                persisted.state.resolved_channel_id.clone().or_else(|| {
+                                    match &channel {
+                                        SlackChannelSelector::ChannelId(channel_id) => {
+                                            Some(channel_id.clone())
+                                        }
+                                        SlackChannelSelector::ChannelName(_) => None,
+                                    }
+                                })
+                            },
+                        );
+
+                    if resolved_channel_id.is_none() {
+                        let token = match selected_token.as_ref() {
+                            Some(token) => token.clone(),
+                            None => {
+                                let (token_ref, _kind) = client
+                                    .select_token(Some(SlackAuthPreference::Auto), false)
+                                    .map_err(|err| {
+                                        BamlRtError::InvalidArgument(format!(
+                                            "Slack event producer requires SLACK_BOT_TOKEN or SLACK_USER_TOKEN: {err}"
+                                        ))
+                                    })?;
+                                let token_value = token_ref.to_string();
+                                selected_token = Some(token_value.clone());
+                                token_value
+                            }
+                        };
+                        let resolved =
+                            resolve_selector_channel_id(&client, &token, &channel).await?;
+                        if producer_key_priority < ProducerKeyPriority::ExactPersistedMatch
+                            && let Some(persisted) = persisted_state_for_resolved_channel_id(
+                                &persisted_states,
+                                &resolved,
+                            )
+                        {
+                            producer_key = persisted.producer_key.clone();
+                            producer_key_priority = ProducerKeyPriority::ResolvedIdMatch;
+                        }
+                        resolved_channel_id = Some(resolved);
+                    }
+
+                    let resolved_channel_id = resolved_channel_id.ok_or_else(|| {
+                        BamlRtError::InvalidArgument(format!(
+                            "Slack producer for {} could not determine a channel ID",
+                            channel.display_label()
+                        ))
+                    })?;
+                    candidates.push(SlackProducerCandidate {
+                        channel,
+                        producer_key,
+                        producer_key_priority,
+                        resolved_channel_id,
                     });
                 }
+
+                let mut deduped = Vec::<ResolvedSlackProducerSeed>::new();
+                let mut by_channel_id = HashMap::<String, usize>::new();
+                for candidate in candidates {
+                    match by_channel_id.get(&candidate.resolved_channel_id).copied() {
+                        Some(existing_idx) => {
+                            let existing = &mut deduped[existing_idx];
+                            if candidate.channel.needs_resolution()
+                                && !existing.channel.needs_resolution()
+                            {
+                                existing.channel = candidate.channel.clone();
+                            }
+                            if candidate.producer_key_priority > existing.producer_key_priority {
+                                existing.producer_key = candidate.producer_key.clone();
+                                existing.producer_key_priority = candidate.producer_key_priority;
+                            }
+                        }
+                        None => {
+                            by_channel_id
+                                .insert(candidate.resolved_channel_id.clone(), deduped.len());
+                            deduped.push(ResolvedSlackProducerSeed {
+                                channel: candidate.channel,
+                                producer_key: candidate.producer_key,
+                                producer_key_priority: candidate.producer_key_priority,
+                                resolved_channel_id: candidate.resolved_channel_id,
+                            });
+                        }
+                    }
+                }
+
+                let mut producers: Vec<Arc<dyn EventProducer>> = Vec::new();
+                for seed in deduped {
+                    producers.push(Arc::new(SlackEventProducer::new(
+                        client.clone(),
+                        seed.channel,
+                        seed.producer_key,
+                        Some(seed.resolved_channel_id),
+                    )?) as Arc<dyn EventProducer>);
+                }
+                // Include the inbox producer whenever the ingress store is
+                // installed, even without polling channels — events deposited
+                // by other transports (e.g. socket mode in another process)
+                // still need draining. This may trigger the runner's 1s
+                // fallback poll loop, which is expected and harmless.
+                if store_installed {
+                    producers
+                        .push(Arc::new(SlackInboxEventProducer::new()?) as Arc<dyn EventProducer>);
+                }
+                Ok(producers)
             }
         }
-
-        let mut producers: Vec<Arc<dyn EventProducer>> = Vec::new();
-        for seed in deduped {
-            producers.push(Arc::new(SlackEventProducer::new(
-                client.clone(),
-                seed.channel,
-                seed.producer_key,
-                Some(seed.resolved_channel_id),
-            )?) as Arc<dyn EventProducer>);
-        }
-        if store_installed {
-            producers.push(Arc::new(SlackInboxEventProducer::new()?) as Arc<dyn EventProducer>);
-        }
-        Ok(producers)
     })
 }
 
@@ -862,7 +934,7 @@ fn persisted_state_for_resolved_channel_id<'a>(
     })
 }
 
-fn looks_like_channel_id(raw: &str) -> bool {
+pub(crate) fn looks_like_channel_id(raw: &str) -> bool {
     raw.len() >= 9
         && raw.chars().skip(1).any(|ch| ch.is_ascii_digit())
         && raw.chars().enumerate().all(|(idx, ch)| match idx {
@@ -875,7 +947,7 @@ fn map_slack_read_error(error: SlackReadError) -> BamlRtError {
     BamlRtError::from(SlackError::from(error))
 }
 
-async fn resolve_selector_channel_id(
+pub(crate) async fn resolve_selector_channel_id(
     client: &SlackReadClient,
     token: &str,
     selector: &SlackChannelSelector,
@@ -1174,6 +1246,7 @@ mod tests {
     fn config_rejects_blank_channels() {
         let config = SlackEventProducerConfig {
             channels: vec!["   ".into()],
+            ..Default::default()
         };
         let err = config.normalized_channels().unwrap_err().to_string();
         assert!(err.contains("empty channel entry"));
@@ -1183,6 +1256,7 @@ mod tests {
     fn config_treats_uppercase_channel_names_without_digits_as_names() {
         let config = SlackEventProducerConfig {
             channels: vec!["CLUBROOMS".into()],
+            ..Default::default()
         };
         assert_eq!(
             config.normalized_channels().unwrap(),
@@ -1219,6 +1293,7 @@ mod tests {
     fn config_dedupes_canonicalized_channels() {
         let config = SlackEventProducerConfig {
             channels: vec!["ops".into(), "#ops".into(), " Ops ".into()],
+            ..Default::default()
         };
         assert_eq!(
             config.normalized_channels().unwrap(),
