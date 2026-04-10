@@ -20,8 +20,13 @@ fn value_as_u64(value: Option<&Value>) -> u64 {
         Some(Value::Number(n)) => n
             .as_u64()
             .or_else(|| n.as_i64().map(|v| v.max(0) as u64))
+            .or_else(|| n.as_f64().map(|v| v.max(0.0).round() as u64))
             .unwrap_or(0),
-        Some(Value::String(s)) => s.parse::<u64>().unwrap_or(0),
+        Some(Value::String(s)) => s
+            .parse::<u64>()
+            .ok()
+            .or_else(|| s.parse::<f64>().ok().map(|v| v.max(0.0).round() as u64))
+            .unwrap_or(0),
         _ => 0,
     }
 }
