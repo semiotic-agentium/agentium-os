@@ -6,7 +6,6 @@ import type {
   JsonValue,
   NeedClarification,
   NotRelevant,
-  ReplyPart,
   RunContext,
   SessionResult,
   StandardAgentPlanStep,
@@ -16,11 +15,12 @@ import type {
 
 const MAX_REACT_STEPS = 8;
 const MAX_CLARIFY = 2;
-/** Max chars threaded into the next ChooseClickUpAction hop as `prior_results` (agentic / non-deterministic stream). */
 const PRIOR_RESULTS_MAX_CHARS = 6000;
 
 const PKG_CLICKUP_EXECUTE = "clickup-execute";
 const PKG_CLICKUP_FORMAT = "clickup-format";
+
+// ── Utility ──────────────────────────────────────────────────────────────────
 
 function isJsonObject(v: unknown): v is JsonObject {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -30,28 +30,24 @@ function slugGoal(goal: string): string {
   return goal.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "goal";
 }
 
+// ── Intent type guards ───────────────────────────────────────────────────────
+
 function isNeedClarification(v: unknown): v is NeedClarification {
-  return isJsonObject(v) && typeof v.question === "string" && v.question.trim().length > 0
-    && !("message" in v) && !("intent" in v) && !("reason" in v) && !("steps" in v);
+  return isJsonObject(v)
+    && typeof v.question === "string" && v.question.trim().length > 0
+    && !("intent" in v) && !("reason" in v);
 }
 
 function isNotRelevant(v: unknown): v is NotRelevant {
-  return isJsonObject(v) && typeof v.reason === "string" && !("question" in v) && !("intent" in v);
+  return isJsonObject(v)
+    && typeof v.reason === "string"
+    && !("question" in v) && !("intent" in v);
 }
 
 function isClickUpIntent(v: unknown): v is ClickUpIntent {
-  return isJsonObject(v) && typeof v.intent === "string" && v.intent.trim().length > 0
-    && typeof v.operation_kind === "string" && !("question" in v) && !("reason" in v);
-}
-
-/** Coordination-only: shape check after PlanClickUpWork — no TS plan synthesis. */
-function parseStandardStructuredPlanFromPlanning(v: unknown): StandardStructuredPlan | null {
-  if (!isJsonObject(v)) return null;
-  if (typeof v.intent_description !== "string" || typeof v.objective !== "string") return null;
-  if (!Array.isArray(v.plan_steps)) return null;
-  const c = v.citations;
-  if (c != null && !Array.isArray(c)) return null;
-  return v as unknown as StandardStructuredPlan;
+  return isJsonObject(v)
+    && typeof v.intent === "string" && v.intent.trim().length > 0
+    && typeof v.operation_kind === "string";
 }
 
 function isFinalResponse(v: unknown): v is FinalResponse {
@@ -60,81 +56,76 @@ function isFinalResponse(v: unknown): v is FinalResponse {
   return !("tasks" in v || "items" in v || "steps" in v || "action" in v || "intent" in v);
 }
 
-function stringifyUnknown(value: unknown, max: number): string {
-  try {
-    const s = JSON.stringify(value, null, 2);
-    return s.length > max ? `${s.slice(0, max)}\n…` : s;
-  } catch {
-    const s = String(value);
-    return s.length > max ? `${s.slice(0, max)}…` : s;
-  }
+// ── Executor step typing ─────────────────────────────────────────────────────
+//
+// runGeneratedStepExecutor returns steps with these shapes after host processing:
+//   Send   → { status:"done", output:"@N …", archive_ref, result:{ tasks?, items?, message } }
+//   Read   → { status:"done", output:"…", has_more, next_offset }   (no result field)
+//   Open   → { status:"open", session_id, tool_name }
+//   Finish → { status:"finished" }
+//
+// A FinalResponse from the LLM appears as a raw passthrough (no status wrapper).
+
+interface ExecutorStep {
+  status: string;
+  output?: string;
+  archive_ref?: string;
+  has_more?: boolean;
+  next_offset?: number;
+  result?: JsonObject;
 }
 
-/**
- * If this step wraps a list-shaped JSON body (common after a tool send), pull it for prettier lines.
- * Steps are still **best-effort**: the model may clarify, omit fields, or return unrelated shapes.
- */
-function extractToolLikePayload(v: unknown): JsonObject | null {
-  if (isJsonObject(v) && (Array.isArray(v.tasks) || Array.isArray(v.items))) return v;
-  if (
-    isJsonObject(v) &&
-    isJsonObject(v.output) &&
-    (Array.isArray(v.output.tasks) || Array.isArray(v.output.items))
-  ) {
-    return v.output;
-  }
+function asExecutorStep(v: unknown): ExecutorStep | null {
+  if (!isJsonObject(v) || typeof v.status !== "string") return null;
+  return v as unknown as ExecutorStep;
+}
+
+/** Extract the structured tool payload from a Send step's `result` field. */
+function getToolPayload(step: ExecutorStep): JsonObject | null {
+  const r = step.result;
+  if (!r || !isJsonObject(r)) return null;
+  if (Array.isArray(r.tasks) || Array.isArray(r.items) || typeof r.message === "string") return r;
   return null;
 }
 
-/**
- * Serialize one executor step for `prior_results` — same spirit as claude-session-demo's
- * `formatLastToolOutputFromExecutorRun`: **agentic** hops, not a fixed tool schema.
- */
-function executorStepToPriorContextText(step: unknown): string {
-  if (step == null) return "";
-  if (isFinalResponse(step)) {
-    return `[final_response]\n${step.message}`.trim();
+/** Collect all structured tool payloads from an executor run's steps. */
+function collectToolPayloads(steps: unknown[]): JsonObject[] {
+  const payloads: JsonObject[] = [];
+  for (const raw of steps) {
+    const step = asExecutorStep(raw);
+    if (!step) continue;
+    const payload = getToolPayload(step);
+    if (payload) payloads.push(payload);
   }
-  const toolLike = extractToolLikePayload(step);
-  if (toolLike) {
-    return `[tool_result]\n${formatListLikeToolPayload(toolLike)}`.trim();
-  }
-  if (isJsonObject(step) && typeof step.message === "string" && step.message.trim()) {
-    return `[message]\n${step.message.trim()}`;
-  }
-  return `[raw]\n${stringifyUnknown(step, 3500)}`;
+  return payloads;
 }
 
-function collectStepResultsForPriorContext(steps: unknown[]): string {
-  const parts: string[] = [];
-  for (const step of steps) {
-    const block = executorStepToPriorContextText(step);
-    if (block) parts.push(block);
-  }
-  const joined = parts.join("\n\n---\n\n");
-  if (joined.trim()) return joined.slice(0, PRIOR_RESULTS_MAX_CHARS);
-  return stringifyUnknown(steps.slice(-5), PRIOR_RESULTS_MAX_CHARS);
-}
+// ── Reply formatting ─────────────────────────────────────────────────────────
 
 function textReply(text: string): StructuredReply {
-  const parts: ReplyPart[] = [{ type: "text", text }];
-  return { parts, citations: [] };
+  return { parts: [{ type: "text", text }], citations: [] };
 }
 
 function finalResponseToStructured(fr: FinalResponse): StructuredReply {
   const msg = fr.message.trim() || "Done.";
   const parts: StructuredReply["parts"] = [{ type: "text", text: msg }];
   const sj = typeof fr.structured_json === "string" ? fr.structured_json.trim() : "";
-  if (sj) {
-    parts.push({ type: "data", data: sj, media_type: "application/json" });
-  }
+  if (sj) parts.push({ type: "data", data: sj, media_type: "application/json" });
   const citations = Array.isArray(fr.citations)
     ? fr.citations.filter((c): c is string => typeof c === "string")
     : [];
   return { parts, citations };
 }
 
-function formatLineFromClickUpItem(entry: JsonValue): string {
+function formatTaskLine(entry: JsonValue): string {
+  if (!isJsonObject(entry)) return "";
+  const name = typeof entry.name === "string" ? entry.name : "Unnamed task";
+  const status = typeof entry.status === "string" ? entry.status : "unknown";
+  const url = typeof entry.url === "string" ? entry.url : "";
+  return `• ${name} [${status}]${url ? ` — ${url}` : ""}`;
+}
+
+function formatItemLine(entry: JsonValue): string {
   if (!isJsonObject(entry)) return "";
   const kind = typeof entry.kind === "string" ? entry.kind : "";
   const name = typeof entry.name === "string" ? entry.name : "";
@@ -143,108 +134,78 @@ function formatLineFromClickUpItem(entry: JsonValue): string {
   return `• [${kind}] ${name} (id: ${id})`;
 }
 
-function formatLineFromClickUpTaskSummary(entry: JsonValue): string {
-  if (!isJsonObject(entry)) return "";
-  const name = typeof entry.name === "string" ? entry.name : "Unnamed task";
-  const status = typeof entry.status === "string" ? entry.status : "unknown";
-  const url = typeof entry.url === "string" ? entry.url : "";
-  return `• ${name} [${status}]${url ? ` — ${url}` : ""}`;
-}
+function formatPayload(payload: JsonObject): string {
+  const parts: string[] = [];
+  const msg = typeof payload.message === "string" ? payload.message : "Done.";
+  parts.push(msg);
 
-/** Optional readable view when payload has list-shaped `tasks` / `items` arrays. */
-function formatListLikeToolPayload(output: JsonObject): string {
-  const msg = output.message;
-  let response = typeof msg === "string" ? msg : "Done.";
-  const items = output.items;
-  if (Array.isArray(items) && items.length > 0) {
-    response += "\n\n" + items.map(formatLineFromClickUpItem).filter((s) => s.length > 0).join("\n");
-  }
-  const tasks = output.tasks;
+  const tasks = payload.tasks;
   if (Array.isArray(tasks) && tasks.length > 0) {
-    response += "\n\n" + tasks.map(formatLineFromClickUpTaskSummary).filter((s) => s.length > 0).join("\n");
+    parts.push(tasks.map(formatTaskLine).filter(Boolean).join("\n"));
   }
-  return response;
-}
-
-function extractFinalMessage(steps: unknown[]): StructuredReply {
-  for (const step of [...steps].reverse()) {
-    if (isFinalResponse(step)) return finalResponseToStructured(step);
-    const toolLike = extractToolLikePayload(step);
-    if (toolLike) return textReply(formatListLikeToolPayload(toolLike));
-    if (isJsonObject(step) && typeof step.message === "string" && step.message.trim()) {
-      return textReply(step.message.trim());
-    }
+  const items = payload.items;
+  if (Array.isArray(items) && items.length > 0) {
+    parts.push(items.map(formatItemLine).filter(Boolean).join("\n"));
   }
-  if (steps.length > 0) {
-    const raw = stringifyUnknown(steps[steps.length - 1], 4000);
-    if (raw.trim()) return textReply(`ClickUp session produced:\n${raw}`);
-  }
-  return textReply("ClickUp returned no usable response for this request.");
-}
-
-function filterPlanCitations(plan: StandardStructuredPlan): string[] {
-  const raw = plan.citations;
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((c): c is string => typeof c === "string" && c.trim().length > 0);
-}
-
-function extractStepOutputString(step: unknown): string | null {
-  if (!isJsonObject(step)) return null;
-  const output = step.output;
-  if (typeof output === "string" && output.trim().length > 0) return output;
-  return null;
-}
-
-function executorRunEndedFinished(run: { steps?: unknown[]; last?: unknown }): boolean {
-  if (isJsonObject(run.last) && typeof run.last.status === "string") {
-    return run.last.status.toLowerCase() === "finished";
-  }
-  if (!Array.isArray(run.steps)) return false;
-  for (const step of [...run.steps].reverse()) {
-    if (!isJsonObject(step) || typeof step.status !== "string") continue;
-    return step.status.toLowerCase() === "finished";
-  }
-  return false;
-}
-
-function maxArchiveLinesHintFromSteps(steps: unknown[]): number {
-  let maxLines = 0;
-  for (const step of steps) {
-    const output = extractStepOutputString(step);
-    if (!output) continue;
-    const m = output.match(/\[(\d+)\s+lines?,/i);
-    if (!m) continue;
-    const lines = Number(m[1]);
-    if (Number.isFinite(lines) && lines > maxLines) maxLines = lines;
-  }
-  return maxLines;
-}
-
-function hasReadLikeOutputInSteps(steps: unknown[]): boolean {
-  for (const step of steps) {
-    const output = extractStepOutputString(step);
-    if (!output) continue;
-    const lower = output.toLowerCase();
-    if (lower.includes("cat -n @") || lower.includes("grep -n '") || lower.includes("grep -n \"")) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function shouldForceOneMoreReadHop(run: { steps?: unknown[]; last?: unknown }): boolean {
-  const steps = Array.isArray(run.steps) ? run.steps : [];
-  if (steps.length === 0) return false;
-  if (!executorRunEndedFinished(run)) return false;
-  if (hasReadLikeOutputInSteps(steps)) return false;
-  const maxLines = maxArchiveLinesHintFromSteps(steps);
-  return maxLines > 200;
+  return parts.join("\n\n");
 }
 
 /**
- * Validate plan_steps against clickup_prompt.baml (execute → … → single format at end).
+ * Build the final user-facing message from collected payloads and raw steps.
+ *
+ * Priority: FinalResponse (LLM explicitly formatted an answer) → structured
+ * payloads with tasks → payloads with items → any payload message → fallback.
  */
-function validateClickUpPlanForExecution(plan: StandardStructuredPlan): StandardAgentPlanStep[] | string {
+function buildFinalMessage(payloads: JsonObject[], rawSteps: unknown[]): StructuredReply {
+  // 1. Explicit FinalResponse from any step (LLM passthrough or nested in result)
+  for (const raw of [...rawSteps].reverse()) {
+    if (isFinalResponse(raw)) return finalResponseToStructured(raw);
+    const step = asExecutorStep(raw);
+    if (step?.result && isFinalResponse(step.result)) {
+      return finalResponseToStructured(step.result);
+    }
+  }
+
+  // 2. Richest structured payload: tasks → items → message
+  for (const p of [...payloads].reverse()) {
+    if (Array.isArray(p.tasks) && p.tasks.length > 0) return textReply(formatPayload(p));
+  }
+  for (const p of [...payloads].reverse()) {
+    if (Array.isArray(p.items) && p.items.length > 0) return textReply(formatPayload(p));
+  }
+  for (const p of [...payloads].reverse()) {
+    if (typeof p.message === "string" && p.message.trim()) return textReply(p.message.trim());
+  }
+
+  return textReply("ClickUp returned no usable response for this request.");
+}
+
+// ── Prior results for multi-step threading ───────────────────────────────────
+
+function summarizeForPrior(payloads: JsonObject[]): string {
+  if (payloads.length === 0) return "";
+  const s = JSON.stringify(payloads.slice(-3), null, 2);
+  return s.length > PRIOR_RESULTS_MAX_CHARS
+    ? s.slice(0, PRIOR_RESULTS_MAX_CHARS) + "\n…(truncated)"
+    : s;
+}
+
+// ── Plan parsing and validation ──────────────────────────────────────────────
+
+function parseStructuredPlan(v: unknown): StandardStructuredPlan | null {
+  if (!isJsonObject(v)) return null;
+  if (typeof v.intent_description !== "string" || typeof v.objective !== "string") return null;
+  if (!Array.isArray(v.plan_steps)) return null;
+  if (v.citations != null && !Array.isArray(v.citations)) return null;
+  return v as unknown as StandardStructuredPlan;
+}
+
+function filterCitations(plan: StandardStructuredPlan): string[] {
+  if (!Array.isArray(plan.citations)) return [];
+  return plan.citations.filter((c): c is string => typeof c === "string" && c.trim().length > 0);
+}
+
+function validatePlan(plan: StandardStructuredPlan): StandardAgentPlanStep[] | string {
   const raw = plan.plan_steps;
   if (raw.length === 0) return "plan_steps is empty";
 
@@ -255,18 +216,16 @@ function validateClickUpPlanForExecution(plan: StandardStructuredPlan): Standard
     if (typeof s.sub_message !== "string" || !s.sub_message.trim()) {
       return `plan_steps[${i}].sub_message must be a non-empty string`;
     }
-    const pkgRaw = s.agent_package;
-    const instRaw = s.agent_instance_id;
-    if (typeof pkgRaw !== "string" || typeof instRaw !== "string") {
+    if (typeof s.agent_package !== "string" || typeof s.agent_instance_id !== "string") {
       return `plan_steps[${i}] missing agent_package or agent_instance_id`;
     }
-    const pkg = pkgRaw.trim().toLowerCase();
+    const pkg = s.agent_package.trim().toLowerCase();
     if (pkg !== PKG_CLICKUP_EXECUTE && pkg !== PKG_CLICKUP_FORMAT) {
-      return `plan_steps[${i}] has invalid agent_package "${pkgRaw}" (expected clickup-execute or clickup-format)`;
+      return `plan_steps[${i}] has invalid agent_package "${s.agent_package}"`;
     }
     steps.push({
-      agent_package: pkgRaw.trim(),
-      agent_instance_id: instRaw.trim() || "default",
+      agent_package: s.agent_package.trim(),
+      agent_instance_id: s.agent_instance_id.trim() || "default",
       sub_message: s.sub_message,
     });
   }
@@ -280,31 +239,35 @@ function validateClickUpPlanForExecution(plan: StandardStructuredPlan): Standard
   }
   if (executeCount < 1) return "plan must include at least one clickup-execute step";
   if (formatCount !== 1) return "plan must include exactly one clickup-format step";
-  const lastPkg = steps[steps.length - 1]!.agent_package.trim().toLowerCase();
-  if (lastPkg !== PKG_CLICKUP_FORMAT) return "last plan step must be clickup-format";
+  if (steps[steps.length - 1]!.agent_package.trim().toLowerCase() !== PKG_CLICKUP_FORMAT) {
+    return "last plan step must be clickup-format";
+  }
 
   return steps;
 }
 
-async function runClickUpStructuredPlan(
+// ── Plan execution ───────────────────────────────────────────────────────────
+
+async function executePlan(
   _ctx: RunContext,
-  structured: StandardStructuredPlan,
-  validatedIntent: string,
+  plan: StandardStructuredPlan,
+  intent: string,
   operationKind: string,
   steps: StandardAgentPlanStep[],
 ): Promise<SessionResult> {
-  const goal = structured.objective.trim() || validatedIntent;
-  const intentSlug = slugGoal(structured.intent_description || goal);
+  const goal = plan.objective.trim() || intent;
+  const intentSlug = slugGoal(plan.intent_description || goal);
 
-  const executionSession = typeof openA2aExecutionSession === "function"
+  const session = typeof openA2aExecutionSession === "function"
     ? await openA2aExecutionSession("clickup-" + Date.now().toString())
     : null;
+
   const intentId = "intent-clickup-" + intentSlug;
-  const citations = filterPlanCitations(structured);
-  const intentPhase = executionSession
-    ? await executionSession.submitIntent({
+  const citations = filterCitations(plan);
+  const intentPhase = session
+    ? await session.submitIntent({
         intentId,
-        description: structured.intent_description || goal,
+        description: plan.intent_description || goal,
         ...(citations.length > 0 ? { citations } : {}),
       })
     : null;
@@ -321,7 +284,8 @@ async function runClickUpStructuredPlan(
       })
     : null;
 
-  const allStepOutputsNested: unknown[][] = [];
+  const allPayloads: JsonObject[] = [];
+  const allRawSteps: unknown[] = [];
   let priorResultsText: string | null = null;
 
   try {
@@ -339,33 +303,18 @@ async function runClickUpStructuredPlan(
           operation_kind: operationKind,
           prior_results: priorResultsText,
         }, { max_steps: MAX_REACT_STEPS });
-        allStepOutputsNested.push(run.steps);
 
-        // Post-parse safety net: when a large archive SendDone is observed but the executor
-        // immediately ends with Finish and no Read-like hop, request one constrained
-        // follow-up hop to perform bounded drilldown before terminal completion.
-        if (shouldForceOneMoreReadHop(run)) {
-          const guardPrior = collectStepResultsForPriorContext(run.steps);
-          const mergedPrior = [priorResultsText, guardPrior].filter((v): v is string => typeof v === "string" && v.length > 0).join("\n\n---\n\n");
-          const drilldownRun = await runGeneratedStepExecutor("ChooseClickUpAction", {
-            goal,
-            step_description:
-              `${step.sub_message}\n\nGuardrail: the latest archive indicates a large result. Before Finish, emit one bounded Read on the latest relevant @N (use offset pagination and optional grep) unless evidence is already explicitly complete for this step.`,
-            operation_kind: operationKind,
-            prior_results: mergedPrior.slice(0, PRIOR_RESULTS_MAX_CHARS),
-          }, { max_steps: 3 });
-          allStepOutputsNested.push(drilldownRun.steps);
-          priorResultsText = collectStepResultsForPriorContext(drilldownRun.steps);
-        } else {
-          priorResultsText = collectStepResultsForPriorContext(run.steps);
-        }
+        const payloads = collectToolPayloads(run.steps);
+        allPayloads.push(...payloads);
+        allRawSteps.push(...run.steps);
+        priorResultsText = summarizeForPrior(payloads);
 
         if (executable) await executable.completeStep?.(stepId);
       } else if (pkg === PKG_CLICKUP_FORMAT) {
-        const finalMessage = extractFinalMessage(allStepOutputsNested.flat());
+        const reply = buildFinalMessage(allPayloads, allRawSteps);
         if (executable) await executable.completeStep?.(stepId);
         if (executable) await executable.finish?.();
-        return { message: finalMessage };
+        return { message: reply };
       } else {
         if (executable) await executable.completeStep?.(stepId);
       }
@@ -380,29 +329,29 @@ async function runClickUpStructuredPlan(
   }
 }
 
+// ── Entry point ──────────────────────────────────────────────────────────────
+
 __chat_register({
   run: async (ctx) => {
     const originalText = typeof ctx.text === "string" && ctx.text.length > 0 ? ctx.text : "unknown";
     let text = originalText;
 
-    // ── Phase 1: Intent inference (agentic — can clarify like claude-session-demo RequirementsPhase) ──
+    // Phase 1: Intent inference with clarification loop
     let resolvedIntent: ClickUpIntent | null = null;
     for (let i = 0; i <= MAX_CLARIFY; i++) {
-      const intentResult = await InferClickUpIntent({ user_message: text });
+      const result = await InferClickUpIntent({ user_message: text });
 
-      if (isClickUpIntent(intentResult)) {
-        resolvedIntent = intentResult;
+      if (isClickUpIntent(result)) {
+        resolvedIntent = result;
         break;
       }
-      if (isNotRelevant(intentResult)) {
-        return {
-          message: textReply(`This doesn't look like a ClickUp request — ${intentResult.reason}`),
-        };
+      if (isNotRelevant(result)) {
+        return { message: textReply(`This doesn't look like a ClickUp request — ${result.reason}`) };
       }
-      if (isNeedClarification(intentResult) && i < MAX_CLARIFY) {
-        const reply = await ctx.emit.awaitInput(intentResult.question);
-        const clarifiedText = messageText(reply).trim();
-        if (clarifiedText) text = clarifiedText;
+      if (isNeedClarification(result) && i < MAX_CLARIFY) {
+        const reply = await ctx.emit.awaitInput(result.question);
+        const clarified = messageText(reply).trim();
+        if (clarified) text = clarified;
       } else {
         resolvedIntent = { intent: text, operation_kind: "read" };
         break;
@@ -410,31 +359,21 @@ __chat_register({
     }
     if (!resolvedIntent) return { error: "Could not determine a valid ClickUp intent." };
 
-    // ── Phase 2: Planning (agentic — StandardStructuredPlan from BAML only) ──
+    // Phase 2: Planning
     const planResult = await PlanClickUpWork({
       intent: resolvedIntent.intent,
       operation_kind: resolvedIntent.operation_kind,
     });
-    const structured = parseStandardStructuredPlanFromPlanning(planResult);
-    if (!structured) {
-      return {
-        error:
-          "Planning failed: PlanClickUpWork did not return a valid StandardStructuredPlan shape. Try rephrasing your request.",
-      };
+    const plan = parseStructuredPlan(planResult);
+    if (!plan) {
+      return { error: "Planning failed: did not return a valid StandardStructuredPlan. Try rephrasing." };
     }
-    const stepsOrErr = validateClickUpPlanForExecution(structured);
+    const stepsOrErr = validatePlan(plan);
     if (typeof stepsOrErr === "string") {
-      return {
-        error: `Planning output did not satisfy the ClickUp execution contract: ${stepsOrErr}`,
-      };
+      return { error: `Plan validation failed: ${stepsOrErr}` };
     }
 
-    return runClickUpStructuredPlan(
-      ctx,
-      structured,
-      resolvedIntent.intent,
-      resolvedIntent.operation_kind,
-      stepsOrErr,
-    );
+    // Phase 3: Execute and format
+    return executePlan(ctx, plan, resolvedIntent.intent, resolvedIntent.operation_kind, stepsOrErr);
   },
 });
