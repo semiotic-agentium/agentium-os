@@ -86,7 +86,7 @@ pub use store::{
     ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest,
     ProvenanceOpsQueryResponse, ProvenanceOpsResource, ProvenanceOutcomeSegment,
     ProvenancePlanningQuery, ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceResponseProfile,
-    ProvenanceWriter, ToolSessionPhase,
+    ProvenanceWriter, ToolSessionPhase, conversation_history_role_for_message,
 };
 pub use surreal_config::SurrealStoreConfig;
 pub use surreal_store::{SurrealBackend, SurrealProvenanceStore, SurrealStoreBuilder};

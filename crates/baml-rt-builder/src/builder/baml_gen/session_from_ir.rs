@@ -1,53 +1,67 @@
 //! Session plans and per-phase step executors generated from compiled BAML IR.
+//!
+//! Per-phase functions (`__select`, `__act__*`, `__continue__*`) use the **same** `prompt_template`
+//! as the parent session-plan BAML function. The only intentional difference per hop is the
+//! **return type** (narrowed union), so `{{ ctx.output_format }}` reflects the legal JSON shape for
+//! that phase. No codegen preambles or phase-constraint suffixes are appended.
 
 use std::{collections::HashMap, ops::Deref};
 
-use baml_rt_tools::{SessionTypeNames, tools::ToolFunctionMetadata};
+use baml_rt_tools::{SessionPlanTypeName, SessionTypeNames, tools::ToolFunctionMetadata};
 use internal_baml_core::ir::ir_hasher::IRSignature;
 
+use super::ir_type_print::{collect_union_type_names, type_ir_to_baml};
 use crate::builder::error::{Result, write_line};
 
-/// Appended to the shared session-coordination prompt on **select** hops so the model does not
-/// emit a step wrapper when the IR return type is a bare Open step (parse failure).
-///
-/// No ASCII double quotes inside: text is concatenated into BAML `prompt #""#` literals.
-const PHASE_STEP_EXECUTOR_SUFFIX_SELECT: &str = r#"
+/// Bundle emitted from IR: polymorphic Open/plan classes and per-phase executor functions.
+#[derive(Debug, Default, Clone)]
+pub struct GeneratedSessionBaml {
+    pub polymorphic_types: String,
+    pub phase_functions: String,
+}
 
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
-"#;
+/// Enumerates session-plan root functions from compiled IR (tests / tooling seam).
+pub trait SessionPlanIrInspector {
+    fn for_each_session_plan_binding(&self, f: impl FnMut(&str, Vec<SessionPlanTypeName>));
+}
 
-/// Appended on **act** (first post-Open hop: Send or Read) — same archive discipline as continue.
-const PHASE_STEP_EXECUTOR_SUFFIX_ACT: &str = r#"
+impl SessionPlanIrInspector for IRSignature {
+    fn for_each_session_plan_binding(&self, mut f: impl FnMut(&str, Vec<SessionPlanTypeName>)) {
+        for (name, func_sig) in &self.functions {
+            let plans = crate::builder::baml_signature_gen::session_plan_type_names_from_ir(
+                &func_sig.output,
+            );
+            if !plans.is_empty() {
+                f(name.as_str(), plans);
+            }
+        }
+    }
+}
 
-PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
-"#;
-
-/// Appended on **continue** hops (Send | Read | Finish).
-const PHASE_STEP_EXECUTOR_SUFFIX_CONTINUE: &str = r#"
-
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
-"#;
-
-/// Injected into **act** and **continue** preambles for `system/discover_agents` only.
-/// Models often add `required_capabilities` / subscription filters from inferred intent; those
-/// filters are strict server-side and frequently yield zero rows, which bypasses query-only
-/// fallback and looks like no agents exist.
-const DISCOVER_AGENTS_SEND_DISCIPLINE: &str = r#"DISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
-
-"#;
+/// `client` + `prompt #""#` for a step executor. Uses concatenation so IR text is not passed
+/// through `format!` — JSON examples in prompts may contain `{` / `}`.
+fn phase_executor_prompt_body(client_name: &str, prompt_template: &str) -> String {
+    let mut s = String::new();
+    s.push_str(&format!("\n  client {client_name}\n  prompt #\""));
+    s.push_str(prompt_template);
+    s.push_str("\"#\n");
+    s
+}
 
 /// Generate polymorphic session BAML types AND per-phase step executor functions from the
 /// compiled IR. Single source of truth — no source text parsing.
 ///
-/// Returns `(polymorphic_types_baml, phase_functions_baml)`. The compiler merges both into
+/// Returns [`GeneratedSessionBaml`]. The compiler merges both sections into
 /// [`super::GENERATED_BAML_PRELUDE_FILE`]. Either string may be empty.
 ///
 /// Must be called after the first `BamlRuntime::from_directory` so the IR is available.
 /// A second compilation pass is then needed to include the generated types.
+///
+/// Phase executor prompts are verbatim copies of each parent function's IR `prompt_template`.
 pub fn render_generated_session_baml_from_ir(
     runtime: &baml_runtime::BamlRuntime,
     tool_metadata: &[ToolFunctionMetadata],
-) -> Result<(String, String)> {
+) -> Result<GeneratedSessionBaml> {
     let ir = runtime.ir.deref();
 
     let ir_sig = IRSignature::new_from_ir(ir).map_err(|e| {
@@ -68,7 +82,7 @@ pub fn render_generated_session_baml_from_ir(
     )?;
     write_line(
         &mut phase_out,
-        "// Each phase narrows the return type to only the legal FSM ops.",
+        "// Prompt text matches the parent session-plan function; return type narrows legal ops.",
     )?;
     write_line(&mut phase_out, "")?;
     // SessionContext lives in the shared prelude (`prompt_copy::render_generated_tools_prelude`) so tool
@@ -139,17 +153,7 @@ pub fn render_generated_session_baml_from_ir(
                 .collect()
         };
 
-        // Build prompt with concatenation so IR prompt text (and phase suffixes) are not
-        // reinterpreted by format! — JSON examples may contain `{`/`}`.
-        let make_body = |preamble: &str, phase_suffix: &str| -> String {
-            let mut s = String::new();
-            s.push_str(&format!("\n  client {client_name}\n  prompt #\""));
-            s.push_str(preamble);
-            s.push_str(prompt_template);
-            s.push_str(phase_suffix);
-            s.push_str("\"#\n");
-            s
-        };
+        let prompt_body = phase_executor_prompt_body(client_name.as_str(), prompt_template);
 
         let open_types: Vec<String> = candidates
             .iter()
@@ -159,13 +163,6 @@ pub fn render_generated_session_baml_from_ir(
         select_return.extend(open_types);
         let select_name = SessionTypeNames::select(func_name);
 
-        let tool_list = candidates
-            .iter()
-            .map(|t| t.name.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let select_preamble = format!("[OPEN] Open a session with: {tool_list}.\\n\\n");
-
         write_line(&mut phase_out, "/// Phase: select — open a tool session.")?;
         write_line(
             &mut phase_out,
@@ -174,10 +171,7 @@ pub fn render_generated_session_baml_from_ir(
                 select_return.join(" | ")
             ),
         )?;
-        write_line(
-            &mut phase_out,
-            &make_body(&select_preamble, PHASE_STEP_EXECUTOR_SUFFIX_SELECT),
-        )?;
+        write_line(&mut phase_out, &prompt_body)?;
         write_line(&mut phase_out, "}")?;
         write_line(&mut phase_out, "")?;
 
@@ -188,16 +182,6 @@ pub fn render_generated_session_baml_from_ir(
             let read_type = format!("{}ReadStep", tool.class_name);
             let finish_type = format!("{}FinishStep", tool.class_name);
 
-            let act_preamble = if tool_name_str == "system/discover_agents" {
-                format!(
-                    "[ACT] A {tool_name_str} session is open. Emit Send with your query, or Read @N if a prior Send for this tool is already archived in history.\\n\\n{}",
-                    DISCOVER_AGENTS_SEND_DISCIPLINE
-                )
-            } else {
-                format!(
-                    "[ACT] A {tool_name_str} session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\\n\\n"
-                )
-            };
             let act_name = SessionTypeNames::act(func_name, &slug);
             write_line(
                 &mut phase_out,
@@ -207,34 +191,10 @@ pub fn render_generated_session_baml_from_ir(
                 &mut phase_out,
                 &format!("function {act_name}{args_block} -> {send_type} | {read_type} {{"),
             )?;
-            write_line(
-                &mut phase_out,
-                &make_body(&act_preamble, PHASE_STEP_EXECUTOR_SUFFIX_ACT),
-            )?;
+            write_line(&mut phase_out, &prompt_body)?;
             write_line(&mut phase_out, "}")?;
             write_line(&mut phase_out, "")?;
 
-            let continue_preamble = if tool_name_str == "system/discover_agents" {
-                format!(
-                    "[CONTINUE] {tool_name_str} result is archived.\\n\
-                     Check session history:\\n\
-                     - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
-                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit Read to paginate\\n\
-                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit Read archive_ref=\\\"@N\\\"\\n\
-                     - Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\\n\\n\
-                     {}",
-                    DISCOVER_AGENTS_SEND_DISCIPLINE
-                )
-            } else {
-                format!(
-                    "[CONTINUE] {tool_name_str} result is archived.\\n\
-                     Check session history:\\n\
-                     - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
-                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit Read to paginate\\n\
-                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit Read archive_ref=\\\"@N\\\"\\n\
-                     - Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\\n\\n"
-                )
-            };
             let continue_name = SessionTypeNames::r#continue(func_name, &slug);
             write_line(
                 &mut phase_out,
@@ -246,10 +206,7 @@ pub fn render_generated_session_baml_from_ir(
                     "function {continue_name}{args_block} -> {send_type} | {read_type} | {finish_type} {{"
                 ),
             )?;
-            write_line(
-                &mut phase_out,
-                &make_body(&continue_preamble, PHASE_STEP_EXECUTOR_SUFFIX_CONTINUE),
-            )?;
+            write_line(&mut phase_out, &prompt_body)?;
             write_line(&mut phase_out, "}")?;
             write_line(&mut phase_out, "")?;
         }
@@ -262,39 +219,14 @@ pub fn render_generated_session_baml_from_ir(
         phase_out.clear();
     }
 
-    Ok((poly_out, phase_out))
+    Ok(GeneratedSessionBaml {
+        polymorphic_types: poly_out,
+        phase_functions: phase_out,
+    })
 }
 
 /// Render a BAML args block from IR input types: `(name: type, name: type?, ...)`.
 fn build_args_block_from_ir(inputs: &[(String, baml_types::TypeIR)]) -> String {
-    fn type_ir_to_baml(ty: &baml_types::TypeIR) -> String {
-        use baml_types::ir_type::{TypeGeneric, UnionTypeViewGeneric};
-        match ty {
-            TypeGeneric::Primitive(tv, _) => tv.basename().to_string(),
-            TypeGeneric::Class { name, .. } | TypeGeneric::Enum { name, .. } => name.clone(),
-            TypeGeneric::RecursiveTypeAlias { name, .. } => name.clone(),
-            TypeGeneric::Union(u, _) => match u.view() {
-                UnionTypeViewGeneric::Optional(inner) => format!("{}?", type_ir_to_baml(inner)),
-                UnionTypeViewGeneric::OneOf(variants)
-                | UnionTypeViewGeneric::OneOfOptional(variants) => {
-                    let parts: Vec<String> = variants.iter().map(|v| type_ir_to_baml(v)).collect();
-                    format!("({})", parts.join(" | "))
-                }
-                _ => "string".to_string(),
-            },
-            TypeGeneric::List(item, _) => format!("{}[]", type_ir_to_baml(item)),
-            TypeGeneric::Literal(lv, _) => {
-                use baml_types::LiteralValue;
-                match lv {
-                    LiteralValue::String(s) => format!("\"{s}\""),
-                    LiteralValue::Int(i) => i.to_string(),
-                    LiteralValue::Bool(b) => b.to_string(),
-                }
-            }
-            _ => "string".to_string(),
-        }
-    }
-
     if inputs.is_empty() {
         return "()".to_string();
     }
@@ -303,30 +235,6 @@ fn build_args_block_from_ir(inputs: &[(String, baml_types::TypeIR)]) -> String {
         .map(|(name, ty)| format!("{name}: {}", type_ir_to_baml(ty)))
         .collect();
     format!("(\n  {}\n)", params.join(",\n  "))
-}
-
-fn collect_union_type_names<T>(ty: &baml_types::ir_type::TypeGeneric<T>) -> Vec<String>
-where
-    T: Clone + std::fmt::Debug,
-{
-    use baml_types::ir_type::{TypeGeneric, UnionTypeViewGeneric};
-    match ty {
-        TypeGeneric::Class { name, .. }
-        | TypeGeneric::Enum { name, .. }
-        | TypeGeneric::RecursiveTypeAlias { name, .. } => {
-            vec![name.clone()]
-        }
-        TypeGeneric::Union(u, _) => match u.view() {
-            UnionTypeViewGeneric::Optional(inner) => collect_union_type_names(inner),
-            UnionTypeViewGeneric::OneOf(variants)
-            | UnionTypeViewGeneric::OneOfOptional(variants) => variants
-                .iter()
-                .flat_map(|v| collect_union_type_names(v))
-                .collect(),
-            _ => vec![],
-        },
-        _ => vec![],
-    }
 }
 
 fn generate_polymorphic_session_baml_for_function(

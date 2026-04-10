@@ -7,6 +7,7 @@
 //! |----------------------------------|---------------------------------------------------|
 //! | `{Base}__select`                 | `GetDiscoverAgentsPlan__select`                   |
 //! | `{Base}__act__{tool_slug}`       | `GetDiscoverAgentsPlan__act__system_discover_agents`   |
+//! | `{Base}__consume__{tool_slug}`   | Reserved for future consume-phase codegen (not emitted today) |
 //! | `{Base}__continue__{tool_slug}`  | `GetDiscoverAgentsPlan__continue__system_discover_agents` |
 //!
 //! These narrowed names are a runtime implementation detail. For display,
@@ -59,13 +60,15 @@ impl From<String> for BamlPromptName {
 
 /// The FSM phase of a narrowed step-executor variant.
 ///
-/// Mirrors `SessionTypeNames` in `baml-rt-tools` — the two must stay in sync.
+/// Mirrors `SessionTypeNames` in `baml-rt-tools` — keep naming in sync.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VariantPhase {
     /// Initial step selection (`__select`).
     Select,
     /// Tool action invocation (`__act__{slug}`).
     Act { tool_slug: String },
+    /// Output-consumption phase (`__consume__{slug}`) — reserved; builder does not emit these yet.
+    Consume { tool_slug: String },
     /// Tool session continuation (`__continue__{slug}`).
     Continue { tool_slug: String },
 }
@@ -76,6 +79,7 @@ impl VariantPhase {
         match self {
             Self::Select => "__select".to_string(),
             Self::Act { tool_slug } => format!("__act__{tool_slug}"),
+            Self::Consume { tool_slug } => format!("__consume__{tool_slug}"),
             Self::Continue { tool_slug } => format!("__continue__{tool_slug}"),
         }
     }
@@ -139,6 +143,20 @@ impl BamlFunctionId {
                 return Self::variant(
                     BamlPromptName::new(base),
                     VariantPhase::Act {
+                        tool_slug: slug.to_string(),
+                    },
+                );
+            }
+        }
+
+        // Try __consume__<slug> (before __continue__ — distinct markers)
+        if let Some(pos) = raw.find("__consume__") {
+            let (base, rest) = raw.split_at(pos);
+            let slug = &rest["__consume__".len()..];
+            if !base.is_empty() && !slug.is_empty() {
+                return Self::variant(
+                    BamlPromptName::new(base),
+                    VariantPhase::Consume {
                         tool_slug: slug.to_string(),
                     },
                 );
@@ -264,6 +282,19 @@ mod tests {
                 tool_slug: "system_extrospection".to_string()
             })
         );
+    }
+
+    #[test]
+    fn parse_consume() {
+        let id = BamlFunctionId::parse("FooPlan__consume__support_calculate");
+        assert_eq!(id.prompt_name().as_str(), "FooPlan");
+        assert_eq!(
+            id.phase(),
+            Some(&VariantPhase::Consume {
+                tool_slug: "support_calculate".to_string()
+            })
+        );
+        assert_eq!(id.full_name(), "FooPlan__consume__support_calculate");
     }
 
     #[test]

@@ -15,8 +15,12 @@
 
 use std::sync::Arc;
 
-use baml_rt_core::{BamlFunctionId, BamlPromptName, BamlRtError, Result, VariantPhase, context};
-use baml_rt_tools::{ToolName, ToolSlug};
+use async_trait::async_trait;
+use baml_rt_core::{
+    BamlFunctionId, BamlPromptName, BamlRtError, Result, VariantPhase, context,
+    types::FunctionSignature,
+};
+use baml_rt_tools::{SessionPolicy, ToolName, ToolSlug};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -138,16 +142,61 @@ impl Phase {
     }
 }
 
+/// JSON shape for `session_context` injected into step-executor BAML args (matches prelude `SessionContext`).
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+struct SessionContextWire {
+    contract_version: &'static str,
+    session_open: bool,
+}
+
+const SESSION_CONTEXT_CONTRACT_VERSION: &str = "session_context";
+
 /// Build the `session_context` JSON injected into BAML function args.
 ///
 /// FSM facts only — which operation is legal is expressed by the **per-phase**
 /// BAML function's narrowed return type (`ExecuteStep__select`, `__act__`, …),
 /// not by a redundant `allowed_ops` list in the prompt.
 fn build_session_context(phase: &Phase) -> Value {
-    serde_json::json!({
-        "contract_version": "session_context",
-        "session_open": phase.is_session_open(),
-    })
+    let wire = SessionContextWire {
+        contract_version: SESSION_CONTEXT_CONTRACT_VERSION,
+        session_open: phase.is_session_open(),
+    };
+    serde_json::to_value(wire).unwrap_or(Value::Null)
+}
+
+/// Narrow surface the step executor needs from a BAML host (test doubles implement this instead of mocking the full manager).
+#[async_trait]
+pub trait StepExecutorRuntime: Send + Sync {
+    async fn invoke_function(
+        &self,
+        scope: &context::RuntimeScope,
+        function_name: &str,
+        args: Value,
+    ) -> Result<Value>;
+
+    fn get_function_signature(&self, name: &str) -> Option<&FunctionSignature>;
+
+    fn resolve_session_policy_for_function(&self, func_name: &str) -> SessionPolicy;
+}
+
+#[async_trait]
+impl StepExecutorRuntime for BamlRuntimeManager {
+    async fn invoke_function(
+        &self,
+        scope: &context::RuntimeScope,
+        function_name: &str,
+        args: Value,
+    ) -> Result<Value> {
+        BamlRuntimeManager::invoke_function(self, scope, function_name, args).await
+    }
+
+    fn get_function_signature(&self, name: &str) -> Option<&FunctionSignature> {
+        BamlRuntimeManager::get_function_signature(self, name)
+    }
+
+    fn resolve_session_policy_for_function(&self, func_name: &str) -> SessionPolicy {
+        BamlRuntimeManager::resolve_session_policy_for_function(self, func_name)
+    }
 }
 
 /// Extract the status string from a tool execution result.
@@ -230,8 +279,8 @@ fn extract_tool_binding(result: &Value) -> Option<ToolBinding> {
 /// Locks the manager per-hop (not for the entire loop) so other host helpers
 /// (`__execution_session_invoke`, `__baml_invoke`) can interleave. Each hop:
 /// lock -> invoke_function -> unlock -> advance FSM.
-pub async fn run_step_executor_loop(
-    manager: &Arc<RwLock<BamlRuntimeManager>>,
+pub async fn run_step_executor_loop<R: StepExecutorRuntime>(
+    manager: &Arc<RwLock<R>>,
     scope: &context::RuntimeScope,
     function_name: &str,
     base_args: Value,
@@ -376,4 +425,20 @@ pub async fn run_step_executor_loop(
         session_context,
         selected_tool,
     })
+}
+
+#[cfg(test)]
+mod session_context_wire_tests {
+    use super::{SESSION_CONTEXT_CONTRACT_VERSION, SessionContextWire};
+
+    #[test]
+    fn session_context_wire_json_stable() {
+        let v = serde_json::to_value(SessionContextWire {
+            contract_version: SESSION_CONTEXT_CONTRACT_VERSION,
+            session_open: true,
+        })
+        .expect("serialize session_context");
+        assert_eq!(v["contract_version"], "session_context");
+        assert_eq!(v["session_open"], true);
+    }
 }

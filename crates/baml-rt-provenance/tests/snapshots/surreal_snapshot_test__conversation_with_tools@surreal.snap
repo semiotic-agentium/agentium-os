@@ -6,18 +6,7 @@ expression: result
   "item_count": 6,
   "items": [
     {
-      "role": "ROLE_USER",
-      "source": "message",
-      "content_keys": [
-        "text"
-      ],
-      "tool_name": null,
-      "tool_phase": null,
-      "has_result": false,
-      "has_error": false
-    },
-    {
-      "role": "ROLE_AGENT",
+      "role": "user",
       "source": "message",
       "content_keys": [
         "text"
@@ -29,6 +18,17 @@ expression: result
     },
     {
       "role": "assistant",
+      "source": "message",
+      "content_keys": [
+        "text"
+      ],
+      "tool_name": null,
+      "tool_phase": null,
+      "has_result": false,
+      "has_error": false
+    },
+    {
+      "role": "tool",
       "source": "tool_call",
       "content_keys": [
         "args",
@@ -54,7 +54,7 @@ expression: result
       "has_error": false
     },
     {
-      "role": "assistant",
+      "role": "tool",
       "source": "tool_call",
       "content_keys": [
         "args",

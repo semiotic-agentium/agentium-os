@@ -9,6 +9,7 @@
 //! [`genco`]: https://docs.rs/genco
 
 mod escape;
+mod ir_type_print;
 mod prelude;
 mod prompt_copy;
 mod session_from_ir;
@@ -60,5 +61,7 @@ pub fn purge_managed_generated_baml_files(dir: &std::path::Path) -> std::io::Res
     Ok(())
 }
 
-pub use session_from_ir::render_generated_session_baml_from_ir;
+pub use session_from_ir::{
+    GeneratedSessionBaml, SessionPlanIrInspector, render_generated_session_baml_from_ir,
+};
 pub use tool_interfaces::render_baml_tool_interfaces;

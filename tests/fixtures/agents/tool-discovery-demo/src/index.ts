@@ -2,8 +2,8 @@
 /**
  * Fixture: tool-discovery-demo
  * Uses system/discover_tools to find tools by query and respond.
- * Flow: ChooseDiscoverToolsQuery → Open → Send (blocking, archives result @1) → Finish.
- * The blocking Send result carries `result: { tools:[...], done:bool }`.
+ * Flow: ChooseDiscoverToolsQuery → Open → Act (Send | Read) → Continue (Send | Read | Finish).
+ * Blocking Send returns `result: { tools:[...], done:bool }`; a Continue hop must emit Finish once the list is in the archive.
  */
 
 function formatToolsList(tools: Array<{ name: string; bundle: string; description: string }>): string {

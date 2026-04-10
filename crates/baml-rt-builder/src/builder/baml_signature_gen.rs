@@ -100,8 +100,9 @@ pub fn session_plan_manifest(ir: &IRSignature) -> SessionPlanManifest {
 
 /// Infer the `FunctionRole` from naming convention.
 ///
-/// Uses the same suffix patterns as `SessionTypeNames` — the naming convention
-/// is the contract between builder codegen and runtime phase selection.
+/// Uses the same suffix patterns as `SessionTypeNames` / `BamlFunctionId::parse` in `baml-rt-core`.
+/// `Consume` is reserved: the IR phase generator does not emit `__consume__` functions yet, but
+/// hand-authored BAML or future codegen may; the manifest annotates them when present.
 fn infer_function_role(name: &str) -> FunctionRole {
     if name.contains("__select") {
         FunctionRole::Select

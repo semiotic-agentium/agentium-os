@@ -205,11 +205,34 @@ impl ConversationItemContent {
     }
 }
 
+/// Maps a graph Message `a2a_role` into the `role` field exposed on BAML `ctx.tags['conversation_history']`.
+///
+/// Canonical chat labels: **`user`**, **`assistant`**. (Graph may store `ROLE_USER` / `ROLE_AGENT`.)
+/// Tool/session rows use **`tool`**; duplicate SendDone bodies may use **`read`** (see `prompt_projection`).
+#[must_use]
+pub fn conversation_history_role_for_message(a2a_role: &str) -> String {
+    let r = a2a_role.trim();
+    if r.is_empty() {
+        return String::new();
+    }
+    if r.eq_ignore_ascii_case("ROLE_USER") || r.eq_ignore_ascii_case("user") {
+        return "user".to_string();
+    }
+    if r.eq_ignore_ascii_case("ROLE_AGENT")
+        || r.eq_ignore_ascii_case("assistant")
+        || r.eq_ignore_ascii_case("agent")
+    {
+        return "assistant".to_string();
+    }
+    a2a_role.to_string()
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProvenanceConversationContextItem {
     pub timestamp_ms: u64,
     /// Correlates this history line with graph `a2a_activity_anchor` / provenance emission ([`ActivityAnchorId`]).
     pub activity_anchor: ActivityAnchorId,
+    /// `user` / `assistant` for chat turns; `tool` for host tool calls and session FSM steps; `read` for inlined read bodies.
     pub role: String,
     pub content: ConversationItemContent,
 }

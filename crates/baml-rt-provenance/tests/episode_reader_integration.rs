@@ -367,7 +367,7 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
 
     // --- Hard alignment: transcript ToolRead bodies ↔ session_history (projection roles) ---
     // `projection_history_pairs` emits SendDone archive as role "read", but a standalone Read step
-    // reuses the session step role (assistant) — same formatted string must still appear verbatim.
+    // reuses the session step role (tool) — same formatted string must still appear verbatim.
     let tool_read_bodies = transcript_tool_read_bodies(&ep);
     assert_eq!(
         tool_read_bodies.len(),
@@ -393,8 +393,8 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
     assert!(
         ep.session_history
             .iter()
-            .any(|l| l.role == "assistant" && l.content == *body),
-        "explicit Read must surface the same body on an assistant session_history line"
+            .any(|l| l.role == "tool" && l.content == *body),
+        "explicit Read must surface the same body on a tool session_history line"
     );
 
     // --- Rendered text format assertions ---

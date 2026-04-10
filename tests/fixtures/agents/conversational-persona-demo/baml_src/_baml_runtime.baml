@@ -5,14 +5,14 @@
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. Read: Prior Send via archive_ref @N. Large body: set grep; small limit; offset to page.
+// 3. Read: archive_ref @N from a Send for this tool (same session or conversation history). Large body: set grep; small limit; offset to page.
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - Read needs a prior Send ref. Large @N: grep first, then limit/offset — do not dump whole archives.
+// - Read needs a real @N from a Send for this tool (may be earlier in history). Large @N: grep first, then limit/offset — do not dump whole archives.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -236,7 +236,7 @@ class SystemDiscover_agentsSendStep {
 
 class SystemDiscover_agentsReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SystemDiscover_agentsFinishStep {
@@ -277,7 +277,7 @@ class SystemDiscover_toolsSendStep {
 
 class SystemDiscover_toolsReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SystemDiscover_toolsFinishStep {
@@ -318,7 +318,7 @@ class SystemInternal_a2aSendStep {
 
 class SystemInternal_a2aReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SystemInternal_a2aFinishStep {
@@ -341,7 +341,7 @@ class SystemInternal_a2aSessionPlan {
 // ── builder: per-phase step executors (from IR) ──
 
 // Auto-generated per-phase step executor functions.
-// Each phase narrows the return type to only the legal FSM ops.
+// Prompt text matches the parent session-plan function; return type narrows legal ops.
 
 /// Phase: select — open a tool session.
 function DecideDelegationAction__select(
@@ -352,23 +352,18 @@ function DecideDelegationAction__select(
 ) -> SystemInternal_a2aOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/internal_a2a.\n\nCoordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
+  prompt #"Coordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
 
 For Open: set initial_input.target to { agent_package: "{{ agent_package }}", agent_instance_id: "{{ agent_instance_id }}" }.
 For Send: write the message that will achieve the goal.
 Return null (string?) when the goal is satisfied or after 2+ exchanges.
 
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{% for msg in ctx.tags['conversation_history'] %}
-{{ msg.role }}: {{ msg.content }}
+{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
 {% endfor %}
-{% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
-"#
+{{ ctx.output_format }}"#
 
 }
 
@@ -381,23 +376,18 @@ function DecideDelegationAction__act__system_internal_a2a(
 ) -> SystemInternal_a2aSendStep | SystemInternal_a2aReadStep {
 
   client DefaultClient
-  prompt #"[ACT] A system/internal_a2a session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nCoordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
+  prompt #"Coordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
 
 For Open: set initial_input.target to { agent_package: "{{ agent_package }}", agent_instance_id: "{{ agent_instance_id }}" }.
 For Send: write the message that will achieve the goal.
 Return null (string?) when the goal is satisfied or after 2+ exchanges.
 
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{% for msg in ctx.tags['conversation_history'] %}
-{{ msg.role }}: {{ msg.content }}
+{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
 {% endfor %}
-{% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
-"#
+{{ ctx.output_format }}"#
 
 }
 
@@ -410,23 +400,18 @@ function DecideDelegationAction__continue__system_internal_a2a(
 ) -> SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/internal_a2a result is archived.\nCheck session history:\n- See \"@N system/internal_a2a\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/internal_a2a\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/internal_a2a\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nCoordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
+  prompt #"Coordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
 
 For Open: set initial_input.target to { agent_package: "{{ agent_package }}", agent_instance_id: "{{ agent_instance_id }}" }.
 For Send: write the message that will achieve the goal.
 Return null (string?) when the goal is satisfied or after 2+ exchanges.
 
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{% for msg in ctx.tags['conversation_history'] %}
-{{ msg.role }}: {{ msg.content }}
+{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
 {% endfor %}
-{% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
-"#
+{{ ctx.output_format }}"#
 
 }
 
@@ -437,20 +422,15 @@ function GetDiscoverAgentsPlan__select(
 ) -> SystemDiscover_agentsOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/discover_agents.\n\nDiscover available agents to match the user's intent.
+  prompt #"Discover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}
 
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{% for msg in ctx.tags['conversation_history'] %}
-{{ msg.role }}: {{ msg.content }}
+{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
 {% endfor %}
-{% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
-"#
+{{ ctx.output_format }}"#
 
 }
 
@@ -461,22 +441,15 @@ function GetDiscoverAgentsPlan__act__system_discover_agents(
 ) -> SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep {
 
   client DefaultClient
-  prompt #"[ACT] A system/discover_agents session is open. Emit Send with your query, or Read @N if a prior Send for this tool is already archived in history.\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
-
-Discover available agents to match the user's intent.
+  prompt #"Discover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}
 
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{% for msg in ctx.tags['conversation_history'] %}
-{{ msg.role }}: {{ msg.content }}
+{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
 {% endfor %}
-{% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
-"#
+{{ ctx.output_format }}"#
 
 }
 
@@ -487,21 +460,14 @@ function GetDiscoverAgentsPlan__continue__system_discover_agents(
 ) -> SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/discover_agents result is archived.\nCheck session history:\n- See \"@N system/discover_agents\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_agents\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_agents\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
-
-Discover available agents to match the user's intent.
+  prompt #"Discover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}
 
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{% for msg in ctx.tags['conversation_history'] %}
-{{ msg.role }}: {{ msg.content }}
+{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
 {% endfor %}
-{% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
-"#
+{{ ctx.output_format }}"#
 
 }

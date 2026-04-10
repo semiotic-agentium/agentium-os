@@ -17,6 +17,7 @@ pub mod host_registration;
 pub mod ingress_store;
 mod metrics;
 pub mod opaque_json;
+pub mod open_input_schema;
 pub mod prompt_projection;
 pub mod session_coordination;
 mod spans;
@@ -47,6 +48,7 @@ pub use ingress_store::{
 pub use opaque_json::{
     OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY, OpaqueJson, opaque_json_map_from_object,
 };
+pub use open_input_schema::schema_allows_empty_or_optional_open_input;
 pub use session_coordination::get_session_coordination_baml_for_tools;
 pub use tool_catalog::{InventoryCatalog, ManifestToolNames, ToolCatalog};
 pub use tool_discovery::search_tools;

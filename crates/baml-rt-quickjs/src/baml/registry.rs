@@ -130,7 +130,7 @@ impl BamlRuntimeManager {
         if candidates.len() == 1 {
             let tool_name = match tool_extraction::resolve_tool_name_from_plan_type_with_registry(
                 &self.state.tool_registry,
-                candidates[0].as_str(),
+                &candidates[0],
             ) {
                 Ok(name) => name,
                 Err(e) => {

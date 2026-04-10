@@ -29,6 +29,7 @@ use crate::{
         ConversationItemContent, ProvenanceContextMessage, ProvenanceContextReader,
         ProvenanceConversationContextItem, ProvenanceQueryApi, SessionStepContent, SessionStepOp,
         ToolCallContent, ToolOutcome, ToolResultContent, ToolSessionPhase,
+        conversation_history_role_for_message,
     },
     surreal_tables::{PAYLOAD_ROW_SELECT, TBL_EDGE, TBL_NODE, TBL_PAYLOAD},
     vocabulary::{a2a_relations, context_scope, semantic_labels},
@@ -368,7 +369,7 @@ impl SurrealProvenanceStore {
                             .and_then(Value::as_u64)
                             .unwrap_or(0),
                         activity_anchor: ActivityAnchorId::from(event_id),
-                        role: role.to_string(),
+                        role: conversation_history_role_for_message(role),
                         content: ConversationItemContent::Message { text, citations },
                     });
                 }
@@ -469,7 +470,7 @@ impl SurrealProvenanceStore {
                         items.push(ProvenanceConversationContextItem {
                             timestamp_ms: tool_event_order,
                             activity_anchor: ActivityAnchorId::from(event_id_str),
-                            role: "assistant".to_string(),
+                            role: "tool".to_string(),
                             content: ConversationItemContent::ToolCall(ToolCallContent {
                                 tool_name: tool_name.clone(),
                                 args,
@@ -561,7 +562,7 @@ impl SurrealProvenanceStore {
                             .and_then(Value::as_u64)
                             .unwrap_or(0),
                         activity_anchor: ActivityAnchorId::from(event_id.as_str()),
-                        role: "assistant".to_string(),
+                        role: "tool".to_string(),
                         content: ConversationItemContent::SessionStep(SessionStepContent {
                             tool_name,
                             op,

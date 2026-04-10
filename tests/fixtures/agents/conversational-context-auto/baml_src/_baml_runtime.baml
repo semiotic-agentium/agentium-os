@@ -5,14 +5,14 @@
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. Read: Prior Send via archive_ref @N. Large body: set grep; small limit; offset to page.
+// 3. Read: archive_ref @N from a Send for this tool (same session or conversation history). Large body: set grep; small limit; offset to page.
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - Read needs a prior Send ref. Large @N: grep first, then limit/offset — do not dump whole archives.
+// - Read needs a real @N from a Send for this tool (may be earlier in history). Large @N: grep first, then limit/offset — do not dump whole archives.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -151,7 +151,7 @@ class SupportCalculateSendStep {
 
 class SupportCalculateReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SupportCalculateFinishStep {
@@ -174,7 +174,7 @@ class SupportCalculateSessionPlan {
 // ── builder: per-phase step executors (from IR) ──
 
 // Auto-generated per-phase step executor functions.
-// Each phase narrows the return type to only the legal FSM ops.
+// Prompt text matches the parent session-plan function; return type narrows legal ops.
 
 /// Phase: select — open a tool session.
 function ChooseCalcTool__select(
@@ -183,16 +183,13 @@ function ChooseCalcTool__select(
 ) -> SupportCalculateOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: support/calculate.\n\nThe user says: {{ user_message }}
+  prompt #"The user says: {{ user_message }}
 Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
 IMPORTANT: Return a top-level JSON object with a `step` field (and optional `reason`), never a bare JSON array.
 Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.
 {{ ctx.output_format }}
 {{ _.role('user') }}
-{{ user_message }}
-
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
-"#
+{{ user_message }}"#
 
 }
 
@@ -203,16 +200,13 @@ function ChooseCalcTool__act__support_calculate(
 ) -> SupportCalculateSendStep | SupportCalculateReadStep {
 
   client DefaultClient
-  prompt #"[ACT] A support/calculate session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nThe user says: {{ user_message }}
+  prompt #"The user says: {{ user_message }}
 Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
 IMPORTANT: Return a top-level JSON object with a `step` field (and optional `reason`), never a bare JSON array.
 Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.
 {{ ctx.output_format }}
 {{ _.role('user') }}
-{{ user_message }}
-
-PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
-"#
+{{ user_message }}"#
 
 }
 
@@ -223,15 +217,12 @@ function ChooseCalcTool__continue__support_calculate(
 ) -> SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/calculate result is archived.\nCheck session history:\n- See \"@N support/calculate\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/calculate\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/calculate\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nThe user says: {{ user_message }}
+  prompt #"The user says: {{ user_message }}
 Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
 IMPORTANT: Return a top-level JSON object with a `step` field (and optional `reason`), never a bare JSON array.
 Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.
 {{ ctx.output_format }}
 {{ _.role('user') }}
-{{ user_message }}
-
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
-"#
+{{ user_message }}"#
 
 }

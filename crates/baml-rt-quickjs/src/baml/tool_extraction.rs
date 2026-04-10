@@ -5,13 +5,8 @@
 //! Single tool calls still resolve by input schema when exactly one tool matches.
 
 use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::{ToolName, ToolRegistry as ConcreteToolRegistry};
+use baml_rt_tools::{SessionPlanTypeName, ToolName, ToolRegistry as ConcreteToolRegistry};
 use serde_json::Value;
-
-/// Derive the tool class name from a session plan type string (e.g. `SupportCalculateSessionPlan` → `SupportCalculate`).
-fn class_name_from_plan_type(plan_type: &str) -> Option<&str> {
-    plan_type.strip_suffix("SessionPlan")
-}
 
 /// Resolve tool name from a known session plan type name (e.g. from the builder-generated manifest).
 ///
@@ -19,9 +14,9 @@ fn class_name_from_plan_type(plan_type: &str) -> Option<&str> {
 /// so we do not rely on __type in the prompt output.
 pub(crate) fn resolve_tool_name_from_plan_type_with_registry(
     registry: &ConcreteToolRegistry,
-    plan_type: &str,
+    plan_type: &SessionPlanTypeName,
 ) -> Result<ToolName> {
-    let class_name = class_name_from_plan_type(plan_type).unwrap_or(plan_type);
+    let class_name = plan_type.class_name();
 
     let matches: Vec<ToolName> = registry
         .all_metadata()
@@ -34,7 +29,8 @@ pub(crate) fn resolve_tool_name_from_plan_type_with_registry(
         // SAFETY: len == 1 verified by match guard above.
         1 => Ok(matches.into_iter().next().unwrap()),
         0 => Err(BamlRtError::InvalidArgument(format!(
-            "No registered tool has class_name {class_name:?} (from plan type {plan_type:?}). Ensure the tool is registered."
+            "No registered tool has class_name {class_name:?} (from plan type {}). Ensure the tool is registered.",
+            plan_type.as_str()
         ))),
         _ => {
             let names: Vec<String> = matches.iter().map(|n| n.to_string()).collect();

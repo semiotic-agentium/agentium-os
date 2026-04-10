@@ -3,7 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use baml_rt_tools::{
-    OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY, tool_catalog::resolve_manifest_tools,
+    OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY,
+    schema_allows_empty_or_optional_open_input, tool_catalog::resolve_manifest_tools,
     tools::ToolFunctionMetadata,
 };
 use baml_tools_calculator as _;
@@ -319,60 +320,6 @@ fn summarize_enum_values(values: &[Value]) -> String {
     }
 }
 
-fn schema_allows_empty_or_null_open_input(schema: &Value) -> bool {
-    match schema {
-        Value::Null => true,
-        Value::Object(map) => {
-            if let Some(any_of) = map.get("anyOf").and_then(Value::as_array)
-                && any_of.iter().any(schema_allows_empty_or_null_open_input)
-            {
-                return true;
-            }
-            if let Some(one_of) = map.get("oneOf").and_then(Value::as_array)
-                && one_of.iter().any(schema_allows_empty_or_null_open_input)
-            {
-                return true;
-            }
-            if map
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|t| t == "null")
-            {
-                return true;
-            }
-
-            let type_allows_object = match map.get("type") {
-                Some(Value::String(t)) => t == "object",
-                Some(Value::Array(types)) => types
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .any(|t| t == "object" || t == "null"),
-                Some(_) => false,
-                None => map.contains_key("properties") || map.contains_key("required"),
-            };
-            if !type_allows_object {
-                return false;
-            }
-
-            let has_required = map
-                .get("required")
-                .and_then(Value::as_array)
-                .map(|arr| !arr.is_empty())
-                .unwrap_or(false);
-            if has_required {
-                return false;
-            }
-
-            let min_properties = map
-                .get("minProperties")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            min_properties == 0
-        }
-        _ => false,
-    }
-}
-
 fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata) -> Result<()> {
     use crate::builder::error::write_line;
 
@@ -425,7 +372,7 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
         && open_input_type_name != "void"
         && open_schema_has_properties
     {
-        let open_is_optional = schema_allows_empty_or_null_open_input(&tool.open_input_schema);
+        let open_is_optional = schema_allows_empty_or_optional_open_input(&tool.open_input_schema);
         let optional_suffix = if open_is_optional { "?" } else { "" };
         let initial_input_desc = if open_is_optional {
             "Optional open payload."

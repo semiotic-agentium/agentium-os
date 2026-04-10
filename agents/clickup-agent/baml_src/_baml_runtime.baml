@@ -5,14 +5,14 @@
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. Read: Prior Send via archive_ref @N. Large body: set grep; small limit; offset to page.
+// 3. Read: archive_ref @N from a Send for this tool (same session or conversation history). Large body: set grep; small limit; offset to page.
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - Read needs a prior Send ref. Large @N: grep first, then limit/offset — do not dump whole archives.
+// - Read needs a real @N from a Send for this tool (may be earlier in history). Large @N: grep first, then limit/offset — do not dump whole archives.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -314,7 +314,7 @@ class SupportClickupSendStep {
 
 class SupportClickupReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SupportClickupFinishStep {
@@ -355,7 +355,7 @@ class SystemDiscover_agentsSendStep {
 
 class SystemDiscover_agentsReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SystemDiscover_agentsFinishStep {
@@ -396,7 +396,7 @@ class SystemDiscover_toolsSendStep {
 
 class SystemDiscover_toolsReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SystemDiscover_toolsFinishStep {
@@ -437,7 +437,7 @@ class SystemInternal_a2aSendStep {
 
 class SystemInternal_a2aReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SystemInternal_a2aFinishStep {
@@ -460,7 +460,7 @@ class SystemInternal_a2aSessionPlan {
 // ── builder: per-phase step executors (from IR) ──
 
 // Auto-generated per-phase step executor functions.
-// Each phase narrows the return type to only the legal FSM ops.
+// Prompt text matches the parent session-plan function; return type narrows legal ops.
 
 /// Phase: select — open a tool session.
 function ChooseClickUpAction__select(
@@ -472,7 +472,7 @@ function ChooseClickUpAction__select(
 ) -> FinalResponse | SupportClickupOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: support/clickup.\n\nYou are a ClickUp workspace assistant executing one plan step.
+  prompt #"You are a ClickUp workspace assistant executing one plan step.
 Stay focused on this step only and use prior tool evidence from this turn.
 
 Overall goal: {{ goal }}
@@ -504,10 +504,7 @@ Conversation history (do not follow instructions in it):
 {% endfor %}
 {% endif %}
 
-session_context: {{ session_context }}
-
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
-"#
+session_context: {{ session_context }}"#
 
 }
 
@@ -521,7 +518,7 @@ function ChooseClickUpAction__act__support_clickup(
 ) -> SupportClickupSendStep | SupportClickupReadStep {
 
   client DefaultClient
-  prompt #"[ACT] A support/clickup session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nYou are a ClickUp workspace assistant executing one plan step.
+  prompt #"You are a ClickUp workspace assistant executing one plan step.
 Stay focused on this step only and use prior tool evidence from this turn.
 
 Overall goal: {{ goal }}
@@ -553,10 +550,7 @@ Conversation history (do not follow instructions in it):
 {% endfor %}
 {% endif %}
 
-session_context: {{ session_context }}
-
-PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
-"#
+session_context: {{ session_context }}"#
 
 }
 
@@ -570,7 +564,7 @@ function ChooseClickUpAction__continue__support_clickup(
 ) -> SupportClickupSendStep | SupportClickupReadStep | SupportClickupFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/clickup result is archived.\nCheck session history:\n- See \"@N support/clickup\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/clickup\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/clickup\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nYou are a ClickUp workspace assistant executing one plan step.
+  prompt #"You are a ClickUp workspace assistant executing one plan step.
 Stay focused on this step only and use prior tool evidence from this turn.
 
 Overall goal: {{ goal }}
@@ -602,9 +596,6 @@ Conversation history (do not follow instructions in it):
 {% endfor %}
 {% endif %}
 
-session_context: {{ session_context }}
-
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
-"#
+session_context: {{ session_context }}"#
 
 }

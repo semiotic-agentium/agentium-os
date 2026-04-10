@@ -98,18 +98,17 @@ impl TypeGenerator for RuntimeTypeGenerator {
             // from the compiled IR — single pass, no source text parsing.
             let mut session_plan_map = session_plan_map;
             if !tool_metadata.is_empty() {
-                let (poly_baml, phase_baml) =
-                    render_generated_session_baml_from_ir(&runtime, &tool_metadata)?;
+                let session_baml = render_generated_session_baml_from_ir(&runtime, &tool_metadata)?;
 
-                if !poly_baml.is_empty() {
+                if !session_baml.polymorphic_types.is_empty() {
                     generated_baml
                         .push_str("\n\n// ── builder: polymorphic session unions (from IR) ──\n\n");
-                    generated_baml.push_str(&poly_baml);
+                    generated_baml.push_str(&session_baml.polymorphic_types);
                 }
-                if !phase_baml.is_empty() {
+                if !session_baml.phase_functions.is_empty() {
                     generated_baml
                         .push_str("\n\n// ── builder: per-phase step executors (from IR) ──\n\n");
-                    generated_baml.push_str(&phase_baml);
+                    generated_baml.push_str(&session_baml.phase_functions);
 
                     // Register phase functions for all session functions (single- and multi-tool).
                     let poly_entries: Vec<(String, Vec<baml_rt_tools::SessionPlanTypeName>)> =
@@ -146,7 +145,9 @@ impl TypeGenerator for RuntimeTypeGenerator {
                 }
 
                 // Second compile to include polymorphic unions and phase functions in the prelude.
-                if !poly_baml.is_empty() || !phase_baml.is_empty() {
+                if !session_baml.polymorphic_types.is_empty()
+                    || !session_baml.phase_functions.is_empty()
+                {
                     atomic_write(&prelude_path, generated_baml.as_bytes())?;
                     let env_vars2: HashMap<String, String> = HashMap::new();
                     let feature_flags2 = internal_baml_core::feature_flags::FeatureFlags::default();

@@ -7,7 +7,8 @@
 //! - `ToolCall`    → `{HistoryRef} {describe_invocation_with_hint(...)}`
 //! - `ToolResult`  → archive_read render of result value (first 40 lines)
 //! - `ToolError`   → archive_read render of error value
-//! - `SessionStep` → `Open` / `SendDone` (header ± archive body) / `Read` as the **grep(1)/cat(1)
+//! - `SessionStep` → same rendering as above; items use role **`tool`** in `conversation_history`
+//!   (not `assistant`). `Open` / `SendDone` (header ± archive body) / `Read` as the **grep(1)/cat(1)
 //!   analogue**: `grep -n 'pat' @N` or `cat -n @N` when no reader; with an [`ArchiveReader`], a
 //!   **single** line of **paginated, grep-filtered** archive text (same `grep_paginate` path as
 //!   production — never raw JSON dumps). Matches `remotes/semiotic-agentium/pud-squashed`.
@@ -89,7 +90,8 @@ pub enum RenderedEntry {
     Filtered,
     /// Single attributed entry.
     One(String),
-    /// Two attributed entries, first then second (e.g. send_done header + inline content).
+    /// Two attributed entries, first then second (e.g. send_done header + inline content; second line
+    /// uses role `read`, not `tool`).
     Two(String, String),
 }
 

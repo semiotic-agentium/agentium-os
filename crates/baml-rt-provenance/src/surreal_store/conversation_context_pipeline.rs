@@ -200,7 +200,7 @@ mod tests {
             ProvenanceConversationContextItem {
                 timestamp_ms: 1,
                 activity_anchor: anchor.clone(),
-                role: "assistant".into(),
+                role: "tool".into(),
                 content: ConversationItemContent::ToolCall(ToolCallContent {
                     tool_name: "t".into(),
                     args: json!({}),
@@ -220,7 +220,7 @@ mod tests {
             ProvenanceConversationContextItem {
                 timestamp_ms: 3,
                 activity_anchor: ActivityAnchorId::from("step-node"),
-                role: "assistant".into(),
+                role: "tool".into(),
                 content: ConversationItemContent::SessionStep(SessionStepContent {
                     tool_name: "t".into(),
                     op: SessionStepOp::SendDone {
@@ -248,7 +248,7 @@ mod tests {
             ProvenanceConversationContextItem {
                 timestamp_ms: 1,
                 activity_anchor: anchor.clone(),
-                role: "assistant".into(),
+                role: "tool".into(),
                 content: ConversationItemContent::ToolCall(ToolCallContent {
                     tool_name: "t".into(),
                     args: json!({}),

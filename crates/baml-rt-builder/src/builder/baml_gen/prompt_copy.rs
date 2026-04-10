@@ -35,6 +35,23 @@ pub(crate) const ARCHIVE_READ_LIMIT: &str = "Max lines in this Read window. Use 
 
 pub(crate) const ARCHIVE_READ_GREP: &str = "Large @N: set this first — line filter (substring or regex per host), e.g. deploy or -i deploy. Then page with offset/limit. Do not issue repeated wide Reads without a pattern.";
 
+// --- Conversation history (ctx.tags) — must match runtime projection ---
+
+/// Canonical Jinja for `ctx.tags['conversation_history']`: rows are `{ role, content }` from
+/// [`baml_rt_tools::prompt_projection`]; `content` lines already carry `#N` / tool-call refs.
+/// Same shape as `PersonaChat` in `tests/fixtures/agents/conversational-persona-demo`: `_.role` +
+/// `content` on separate lines, loop variable `message`, no section header — do **not** use
+/// `{{ msg.role }}: {{ msg.content }}` on one line.
+///
+/// Per-phase step executors copy the parent function's prompt verbatim from IR; this block is **not**
+/// injected by codegen — use it (or equivalent) in hand-written session-plan `*_prompt.baml` files.
+#[allow(dead_code)] // Authoring reference; kept for consistency with persona fixture prompts.
+pub(crate) const BAML_CONVERSATION_HISTORY_JINJA_BLOCK: &str = r#"{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
+{% endfor %}
+"#;
+
 // --- Session plan `step` field guidance ---
 
 pub(crate) const STEP_DESC_CLAUDE_OR_A2A: &str = "Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or Read @N when that tool archive already exists in history; after Send (@N archived) → Read @N (large archive: set grep, small limit, offset to page), Finish, or Send again.";
