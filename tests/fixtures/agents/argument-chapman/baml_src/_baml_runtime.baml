@@ -190,3 +190,4 @@ class SystemInternal_a2aSessionPlan {
   step SystemInternal_a2aSessionStep @description("Emit one FSM step. From history: no session → Open; open, no Send → Send (input.text must be non-empty); after Send → Read @N (large archive: set grep, small limit, offset to page), Finish, or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
+

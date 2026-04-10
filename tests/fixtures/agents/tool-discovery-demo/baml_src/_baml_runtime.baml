@@ -274,14 +274,14 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — issue first bound hop for system/discover_tools (Send or Read).
+/// Phase: act — send query to system/discover_tools.
 function ChooseDiscoverToolsQuery__act__system_discover_tools(
   user_message: string,
   session_context: SessionContext
-) -> SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep {
+) -> SystemDiscover_toolsSendStep {
 
   client DefaultClient
-  prompt #"[ACT] A system/discover_tools session is open. Emit one step: Read to refine a matching @N when available, otherwise Send for a new upstream query.\n\nFind tools that can help with: {{ user_message }}
+  prompt #"[SEND] A system/discover_tools session is open. Emit Send with your query.\n\nFind tools that can help with: {{ user_message }}
 For Send: set input.query to a concise search term derived from the user message.
 
 {% if ctx.tags['conversation_history'] %}
@@ -293,7 +293,7 @@ Session history:
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (act): The JSON root must be exactly one Send or Read step. Do NOT return Report, AskUser, Open, or Finish. Do NOT use a step wrapper object. Prefer Read when a recent matching @N already covers this scope; use Send only when new upstream retrieval is required.
+PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
 "#
 
 }
@@ -305,7 +305,7 @@ function ChooseDiscoverToolsQuery__continue__system_discover_tools(
 ) -> SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/discover_tools result is archived.\nCheck session history:\n- See \"@N system/discover_tools\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_tools\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_tools\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n- If a recent @N from the same tool already represents the same upstream query/input scope (for example same IDs, names, filters, or parent resource), prefer Read on that @N before emitting a new Send\n- If the user mentions a concrete entity token (name/id), prefer targeted Read with grep on relevant @N before broad retrieval\n\nFind tools that can help with: {{ user_message }}
+  prompt #"[CONTINUE] system/discover_tools result is archived.\nCheck session history:\n- See \"@N system/discover_tools\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_tools\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_tools\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nFind tools that can help with: {{ user_message }}
 For Send: set input.query to a concise search term derived from the user message.
 
 {% if ctx.tags['conversation_history'] %}
@@ -321,3 +321,4 @@ PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Fi
 "#
 
 }
+
