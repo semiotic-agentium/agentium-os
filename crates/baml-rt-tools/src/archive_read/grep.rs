@@ -237,4 +237,3 @@ mod tests {
         assert!(got.contains(&"    priority: high"));
     }
 }
-

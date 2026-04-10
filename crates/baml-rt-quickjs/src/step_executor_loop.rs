@@ -440,11 +440,7 @@ pub async fn run_step_executor_loop(
         "finished",
         step_exec_status_finished_count,
     );
-    metrics::record_step_executor_status(
-        function_name,
-        "aborted",
-        step_exec_status_aborted_count,
-    );
+    metrics::record_step_executor_status(function_name, "aborted", step_exec_status_aborted_count);
 
     tracing::info!(
         function = function_name,

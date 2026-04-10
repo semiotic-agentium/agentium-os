@@ -74,6 +74,9 @@ type LiveStreamSpawnPayload = (
     async_channel::Receiver<TurnInput>,
 );
 
+/// Archive read renderer closure used by prompt projection.
+type ProjectionArchiveReader = dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>;
+
 /// Single concrete backing store for SurrealDB mode.
 /// One instance is built from the builder's store Arc and reused as TaskStoreBackend and
 /// ProvenanceWriter; create-stream and tasks.subscribe use this same instance (cardinality one).
@@ -483,51 +486,58 @@ impl ProjectingConversationContextProvider {
         // Closure re-derives cat-n output from the archive deterministically.
         let context_id_str = context_id.as_str().to_string();
         let tables = self.archive_ref_tables.clone();
-        let reader: Option<Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>>> =
-            tables.map(|t| {
-                let ctx = context_id_str.clone();
-                let boxed: Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>> =
-                    Box::new(move |archive_ref_str, grep_str, offset, limit| {
-                        let short_ref = baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
-                        let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
-                        let entry = ref_table.get(short_ref)?;
-                        let grep = grep_str
-                            .filter(|s| !s.is_empty())
-                            .and_then(|s| baml_rt_tools::archive_read::GrepPattern::parse(s).ok());
-                        let page = baml_rt_tools::archive_read::grep_paginate(
-                            &entry.content,
-                            grep.as_ref(),
-                            baml_rt_tools::archive_read::LineOffset(offset),
-                            baml_rt_tools::archive_read::PageLimit::new(limit),
-                        );
-                        let formatted = baml_rt_tools::archive_read::format_cat_n(&page.lines);
-                        // CLI invocation without $ — role attribution is handled by the
-                        // separate history entry that carries this as content.
-                        let cmd = match grep_str.filter(|s| !s.is_empty()) {
-                            Some(pat) => format!("grep -n '{pat}' {archive_ref_str}"),
-                            None      => format!("cat -n {archive_ref_str}"),
-                        };
-                        if page.lines.is_empty() {
-                            return Some(format!("{cmd}\n# no matches"));
-                        }
-                        let first = page.lines.first().map(|l| l.original_line_number).unwrap_or(1);
-                        let last  = page.lines.last().map(|l| l.original_line_number).unwrap_or(1);
-                        let range_comment = if page.has_more {
-                            format!(
-                                "  # lines {first}-{last} of {} ({} more — offset={} for next page)",
-                                page.total_matched,
-                                page.total_matched - page.next_offset,
-                                page.next_offset,
-                            )
-                        } else if first == 1 && last == page.total_matched {
-                            String::new()
-                        } else {
-                            format!("  # lines {first}-{last} of {}", page.total_matched)
-                        };
-                        Some(format!("{cmd}{range_comment}\n{formatted}"))
-                    });
-                boxed
-            });
+        let reader: Option<Box<ProjectionArchiveReader>> = tables.map(|t| {
+            let ctx = context_id_str.clone();
+            let boxed: Box<ProjectionArchiveReader> =
+                Box::new(move |archive_ref_str, grep_str, offset, limit| {
+                    let short_ref = baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
+                    let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
+                    let entry = ref_table.get(short_ref)?;
+                    let grep = grep_str
+                        .filter(|s| !s.is_empty())
+                        .and_then(|s| baml_rt_tools::archive_read::GrepPattern::parse(s).ok());
+                    let page = baml_rt_tools::archive_read::grep_paginate(
+                        &entry.content,
+                        grep.as_ref(),
+                        baml_rt_tools::archive_read::LineOffset(offset),
+                        baml_rt_tools::archive_read::PageLimit::new(limit),
+                    );
+                    let formatted = baml_rt_tools::archive_read::format_cat_n(&page.lines);
+                    // CLI invocation without $ — role attribution is handled by the
+                    // separate history entry that carries this as content.
+                    let cmd = match grep_str.filter(|s| !s.is_empty()) {
+                        Some(pat) => format!("grep -n '{pat}' {archive_ref_str}"),
+                        None => format!("cat -n {archive_ref_str}"),
+                    };
+                    if page.lines.is_empty() {
+                        return Some(format!("{cmd}\n# no matches"));
+                    }
+                    let first = page
+                        .lines
+                        .first()
+                        .map(|l| l.original_line_number)
+                        .unwrap_or(1);
+                    let last = page
+                        .lines
+                        .last()
+                        .map(|l| l.original_line_number)
+                        .unwrap_or(1);
+                    let range_comment = if page.has_more {
+                        format!(
+                            "  # lines {first}-{last} of {} ({} more — offset={} for next page)",
+                            page.total_matched,
+                            page.total_matched - page.next_offset,
+                            page.next_offset,
+                        )
+                    } else if first == 1 && last == page.total_matched {
+                        String::new()
+                    } else {
+                        format!("  # lines {first}-{last} of {}", page.total_matched)
+                    };
+                    Some(format!("{cmd}{range_comment}\n{formatted}"))
+                });
+            boxed
+        });
 
         // Get or create the ref table for this context so #N refs can be allocated
         // for messages and tool-call descriptions during projection.

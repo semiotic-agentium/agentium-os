@@ -581,7 +581,11 @@ impl BamlRuntimeManager {
             "finish",
             session_tool_exec_finish_count,
         );
-        metrics::record_tool_session_plan_op(&tool_name_str, "abort", session_tool_exec_abort_count);
+        metrics::record_tool_session_plan_op(
+            &tool_name_str,
+            "abort",
+            session_tool_exec_abort_count,
+        );
 
         tracing::info!(
             tool = %tool_name_str,

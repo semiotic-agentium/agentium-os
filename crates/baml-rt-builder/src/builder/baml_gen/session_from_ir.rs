@@ -201,7 +201,9 @@ pub fn render_generated_session_baml_from_ir(
             let act_name = SessionTypeNames::act(func_name, &slug);
             write_line(
                 &mut phase_out,
-                &format!("/// Phase: act — issue first bound hop for {tool_name_str} (Send or Read)."),
+                &format!(
+                    "/// Phase: act — issue first bound hop for {tool_name_str} (Send or Read)."
+                ),
             )?;
             write_line(
                 &mut phase_out,
