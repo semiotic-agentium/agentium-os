@@ -50,11 +50,7 @@ export function parseCoordinatorAnswer(text: string): ParsedCoordinatorAnswer | 
   const goalsKey = Object.keys(sections).find((k) => k.startsWith("actionable goals"));
   const goalsRaw = parseBulletList(sections[goalsKey ?? ""] ?? "");
   const actionableGoals = goalsRaw
-    .filter(
-      (g) =>
-        !g.startsWith("None identified") &&
-        !g.startsWith("Owner/date details"),
-    )
+    .filter((g) => !g.startsWith("None identified") && !g.startsWith("Owner/date details"))
     .map(parseGoalLine);
 
   const gaps = parseBulletList(sections["gaps"] ?? "").filter(
@@ -80,7 +76,17 @@ export function parseCoordinatorAnswer(text: string): ParsedCoordinatorAnswer | 
   const clarLines = parseBulletList(sections["clarification"] ?? "");
   const clarificationQuestion = clarLines.length > 0 ? clarLines.join(" ") : null;
 
-  return { answer, confidence, sources, actionableGoals, gaps, decisions, risks, followUps, clarificationQuestion };
+  return {
+    answer,
+    confidence,
+    sources,
+    actionableGoals,
+    gaps,
+    decisions,
+    risks,
+    followUps,
+    clarificationQuestion,
+  };
 }
 
 function splitSections(text: string): Record<string, string> {

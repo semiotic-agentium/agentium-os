@@ -93,7 +93,7 @@ function tryClose() {
   <div class="config-tool-editor">
     <div class="config-tool-editor-header">
       <h3 class="config-section-title">{{ bundleName }}</h3>
-      <div style="display:flex;align-items:center;gap:12px;">
+      <div style="display: flex; align-items: center; gap: 12px">
         <span v-if="saveStatus === 'saving'" class="config-autosave-saving">Saving…</span>
         <span v-else-if="saveStatus === 'saved'" class="config-autosave-saved">Saved (v{{ version }})</span>
         <span v-else-if="saveStatus === 'error'" class="config-autosave-error">Save failed</span>
@@ -110,7 +110,9 @@ function tryClose() {
         <li v-for="sr in secretRequests" :key="sr.name" class="config-secret-item">
           <strong>{{ sr.name }}</strong>
           <span v-if="sr.descriptor" class="config-secret-descriptor">{{ sr.descriptor }}</span>
-          <span v-if="sr.justification" class="config-secret-justification">{{ sr.justification }}</span>
+          <span v-if="sr.justification" class="config-secret-justification">{{
+            sr.justification
+          }}</span>
         </li>
       </ul>
     </div>
@@ -123,15 +125,13 @@ function tryClose() {
         rows="16"
         spellcheck="false"
         @input="onInput"
-      />
+      ></textarea>
     </div>
 
     <div v-if="defaultConfig !== undefined" class="config-form-actions">
-      <button
-        type="button"
-        class="btn btn--ghost btn--sm"
-        @click="resetToDefault"
-      >Reset to default</button>
+      <button type="button" class="btn btn--ghost btn--sm" @click="resetToDefault">
+        Reset to default
+      </button>
     </div>
   </div>
 </template>

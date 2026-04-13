@@ -20,8 +20,8 @@ function onChange(event: Event) {
 
 <template>
   <div class="agent-selector">
-    <span v-if="agents.length > 0" class="status-dot" />
-    <select @change="onChange" :disabled="agents.length === 0">
+    <span v-if="agents.length > 0" class="status-dot"></span>
+    <select :disabled="agents.length === 0" @change="onChange">
       <option v-if="agents.length === 0" disabled>No agents</option>
       <option
         v-for="(agent, idx) in agents"

@@ -13,11 +13,9 @@ const configError = ref<string | null>(null);
 const activeTab = ref<"llm" | "tools" | "secrets">("llm");
 const selectedToolBundle = ref<string | null>(null);
 
-const llmBundle = computed(() =>
-  configList.value?.find((b) => b.tool_name === LLM_BUNDLE_NAME),
-);
-const toolBundles = computed(() =>
-  configList.value?.filter((b) => b.tool_name !== LLM_BUNDLE_NAME) ?? [],
+const llmBundle = computed(() => configList.value?.find((b) => b.tool_name === LLM_BUNDLE_NAME));
+const toolBundles = computed(
+  () => configList.value?.filter((b) => b.tool_name !== LLM_BUNDLE_NAME) ?? [],
 );
 
 onMounted(async () => {
@@ -53,7 +51,9 @@ function closeToolEditor() {
       <template v-if="configError">
         <div class="settings-unavailable" role="alert" aria-live="assertive">
           <p>{{ configError }}</p>
-          <p class="settings-unavailable-hint">Ensure the runner is started with config service and tool catalog.</p>
+          <p class="settings-unavailable-hint">
+            Ensure the runner is started with config service and tool catalog.
+          </p>
         </div>
       </template>
 
@@ -73,7 +73,10 @@ function closeToolEditor() {
             role="tab"
             :aria-selected="activeTab === 'tools'"
             :class="['settings-tab', { active: activeTab === 'tools' }]"
-            @click="activeTab = 'tools'; selectedToolBundle = null"
+            @click="
+              activeTab = 'tools';
+              selectedToolBundle = null;
+            "
           >
             Tools
           </button>
@@ -104,7 +107,9 @@ function closeToolEditor() {
             </template>
             <template v-else>
               <div class="tool-bundle-list">
-                <p v-if="toolBundles.length === 0" class="settings-empty">No tool bundles with config.</p>
+                <p v-if="toolBundles.length === 0" class="settings-empty">
+                  No tool bundles with config.
+                </p>
                 <button
                   v-for="b in toolBundles"
                   :key="b.tool_name"
@@ -127,9 +132,9 @@ function closeToolEditor() {
 
       <template v-else>
         <div class="settings-loading" role="status" aria-live="polite">
-          <div class="skeleton skeleton--text" style="width: 40%;"></div>
-          <div class="skeleton skeleton--text" style="width: 70%;"></div>
-          <div class="skeleton skeleton--text" style="width: 55%;"></div>
+          <div class="skeleton skeleton--text" style="width: 40%"></div>
+          <div class="skeleton skeleton--text" style="width: 70%"></div>
+          <div class="skeleton skeleton--text" style="width: 55%"></div>
         </div>
       </template>
     </div>

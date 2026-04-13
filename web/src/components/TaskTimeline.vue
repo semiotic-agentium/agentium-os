@@ -5,39 +5,56 @@ defineProps<{ transitions: StateTransition[] }>();
 
 function stateLabel(state: string): string {
   switch (state) {
-    case "TASK_STATE_SUBMITTED": return "Submitted";
-    case "TASK_STATE_WORKING": return "Working";
-    case "TASK_STATE_INPUT_REQUIRED": return "Input";
-    case "TASK_STATE_COMPLETED": return "Done";
-    case "TASK_STATE_FAILED": return "Failed";
-    case "TASK_STATE_CANCELED": return "Canceled";
-    default: return state.replace("TASK_STATE_", "");
+    case "TASK_STATE_SUBMITTED":
+      return "Submitted";
+    case "TASK_STATE_WORKING":
+      return "Working";
+    case "TASK_STATE_INPUT_REQUIRED":
+      return "Input";
+    case "TASK_STATE_COMPLETED":
+      return "Done";
+    case "TASK_STATE_FAILED":
+      return "Failed";
+    case "TASK_STATE_CANCELED":
+      return "Canceled";
+    default:
+      return state.replace("TASK_STATE_", "");
   }
 }
 
 function stateColor(state: string): string {
   switch (state) {
-    case "TASK_STATE_SUBMITTED": return "state-submitted";
-    case "TASK_STATE_WORKING": return "state-working";
-    case "TASK_STATE_INPUT_REQUIRED": return "state-input";
-    case "TASK_STATE_COMPLETED": return "state-completed";
+    case "TASK_STATE_SUBMITTED":
+      return "state-submitted";
+    case "TASK_STATE_WORKING":
+      return "state-working";
+    case "TASK_STATE_INPUT_REQUIRED":
+      return "state-input";
+    case "TASK_STATE_COMPLETED":
+      return "state-completed";
     case "TASK_STATE_FAILED":
-    case "TASK_STATE_CANCELED": return "state-failed";
-    default: return "state-submitted";
+    case "TASK_STATE_CANCELED":
+      return "state-failed";
+    default:
+      return "state-submitted";
   }
 }
 
 function formatTime(date: Date): string {
-  return new Date(date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return new Date(date).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 </script>
 
 <template>
   <div v-if="transitions.length > 0" class="task-timeline">
     <template v-for="(t, idx) in transitions" :key="idx">
-      <div v-if="idx > 0" class="timeline-connector" />
+      <div v-if="idx > 0" class="timeline-connector"></div>
       <div class="timeline-step">
-        <div :class="['timeline-dot', stateColor(t.state)]" />
+        <div :class="['timeline-dot', stateColor(t.state)]"></div>
         <span class="timeline-label">{{ stateLabel(t.state) }}</span>
         <span class="timeline-time">{{ formatTime(t.timestamp) }}</span>
       </div>

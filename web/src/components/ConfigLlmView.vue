@@ -34,7 +34,9 @@ onMounted(async () => {
   }
   // Mark loaded after the next tick so the initial prop assignment
   // does not trigger the watcher.
-  setTimeout(() => { loaded = true; }, 0);
+  setTimeout(() => {
+    loaded = true;
+  }, 0);
 });
 
 onUnmounted(() => {
@@ -65,11 +67,7 @@ async function doSave(payload: LlmClientConfig) {
     clean.clients[name] = { ...def, options };
   }
 
-  const result = await putConfig(
-    "llm",
-    clean as unknown as Record<string, unknown>,
-    version.value,
-  );
+  const result = await putConfig("llm", clean as unknown as Record<string, unknown>, version.value);
   if ("error" in result) {
     saveStatus.value = "error";
     error.value = result.error.detail ?? result.error.title;
@@ -91,11 +89,7 @@ async function doSave(payload: LlmClientConfig) {
       <span v-else-if="saveStatus === 'error'" class="config-autosave-error">Save failed</span>
     </div>
     <p v-if="error" class="config-error">{{ error }}</p>
-    <ConfigLlmForm
-      v-if="config"
-      v-model="config"
-      :default-client-name="config.default"
-    />
+    <ConfigLlmForm v-if="config" v-model="config" :default-client-name="config.default" />
     <p v-else-if="!error" class="settings-empty">Loading…</p>
   </div>
 </template>

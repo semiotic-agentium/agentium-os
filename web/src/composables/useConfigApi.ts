@@ -56,7 +56,8 @@ export function useConfigApi() {
           error: {
             status: res.status,
             title: "Invalid Response",
-            detail: "Config service is not available. Is the runner serving this app with config enabled?",
+            detail:
+              "Config service is not available. Is the runner serving this app with config enabled?",
           },
         };
       }
@@ -68,7 +69,8 @@ export function useConfigApi() {
           error: {
             status: 0,
             title: "Invalid Response",
-            detail: "Config service is not available. Is the runner serving this app with config enabled?",
+            detail:
+              "Config service is not available. Is the runner serving this app with config enabled?",
           },
         };
       }
@@ -154,9 +156,7 @@ export function useConfigApi() {
     toolName: string,
   ): Promise<{ data: SecretRequestDto[] } | { error: ConfigApiError }> {
     try {
-      const res = await fetch(
-        `/config/${encodeURIComponent(toolName)}/secret-requests`,
-      );
+      const res = await fetch(`/config/${encodeURIComponent(toolName)}/secret-requests`);
       if (!res.ok) {
         return { error: await parseProblem(res) };
       }
@@ -220,9 +220,7 @@ export function useConfigApi() {
     }
   }
 
-  async function fetchStoreKeys(): Promise<
-    { data: string[] } | { error: ConfigApiError }
-  > {
+  async function fetchStoreKeys(): Promise<{ data: string[] } | { error: ConfigApiError }> {
     try {
       const res = await fetch("/config/secrets/store-keys");
       if (!res.ok) {

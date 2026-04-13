@@ -32,11 +32,7 @@ export function useEpisodeStream(): EpisodeStreamController {
 
     // No-op if already streaming the same task without an error — avoids expensive
     // SurrealDB re-reads that contend with agent provenance writes.
-    if (
-      taskId === currentTaskId.value &&
-      state.value.isStreaming &&
-      !state.value.error
-    ) {
+    if (taskId === currentTaskId.value && state.value.isStreaming && !state.value.error) {
       return;
     }
 

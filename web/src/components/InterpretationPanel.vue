@@ -40,7 +40,15 @@ function truncate(text: string, max: number): string {
 <template>
   <div class="dashboard-card">
     <div class="dashboard-card-header">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
         <polyline points="14 2 14 8 20 8" />
         <line x1="16" y1="13" x2="8" y2="13" />
@@ -62,7 +70,10 @@ function truncate(text: string, max: number): string {
         <div v-if="latestInterpretation.actionableGoals.length > 0" class="interpretation-section">
           <div class="interpretation-section-label">Goals</div>
           <ol class="interpretation-list">
-            <li v-for="(g, i) in visibleItems(latestInterpretation.actionableGoals, showAllGoals)" :key="i">
+            <li
+              v-for="(g, i) in visibleItems(latestInterpretation.actionableGoals, showAllGoals)"
+              :key="i"
+            >
               {{ g.goal }}
               <span v-if="g.owner" class="goal-meta">Owner: {{ g.owner }}</span>
               <span v-if="g.dueDate" class="goal-meta">Due: {{ g.dueDate }}</span>
@@ -73,7 +84,11 @@ function truncate(text: string, max: number): string {
             class="interpretation-toggle"
             @click="showAllGoals = !showAllGoals"
           >
-            {{ showAllGoals ? 'Show less' : `Show ${latestInterpretation.actionableGoals.length - COLLAPSE_THRESHOLD} more` }}
+            {{
+              showAllGoals
+                ? "Show less"
+                : `Show ${latestInterpretation.actionableGoals.length - COLLAPSE_THRESHOLD} more`
+            }}
           </button>
         </div>
 
@@ -81,14 +96,20 @@ function truncate(text: string, max: number): string {
         <div v-if="latestInterpretation.gaps.length > 0" class="interpretation-section">
           <div class="interpretation-section-label interpretation-label-warning">Gaps</div>
           <ul class="interpretation-list">
-            <li v-for="(g, i) in visibleItems(latestInterpretation.gaps, showAllGaps)" :key="i">{{ g }}</li>
+            <li v-for="(g, i) in visibleItems(latestInterpretation.gaps, showAllGaps)" :key="i">
+              {{ g }}
+            </li>
           </ul>
           <button
             v-if="latestInterpretation.gaps.length > COLLAPSE_THRESHOLD"
             class="interpretation-toggle"
             @click="showAllGaps = !showAllGaps"
           >
-            {{ showAllGaps ? 'Show less' : `Show ${latestInterpretation.gaps.length - COLLAPSE_THRESHOLD} more` }}
+            {{
+              showAllGaps
+                ? "Show less"
+                : `Show ${latestInterpretation.gaps.length - COLLAPSE_THRESHOLD} more`
+            }}
           </button>
         </div>
 
@@ -96,14 +117,23 @@ function truncate(text: string, max: number): string {
         <div v-if="latestInterpretation.decisions.length > 0" class="interpretation-section">
           <div class="interpretation-section-label">Decisions</div>
           <ul class="interpretation-list">
-            <li v-for="(d, i) in visibleItems(latestInterpretation.decisions, showAllDecisions)" :key="i">{{ d }}</li>
+            <li
+              v-for="(d, i) in visibleItems(latestInterpretation.decisions, showAllDecisions)"
+              :key="i"
+            >
+              {{ d }}
+            </li>
           </ul>
           <button
             v-if="latestInterpretation.decisions.length > COLLAPSE_THRESHOLD"
             class="interpretation-toggle"
             @click="showAllDecisions = !showAllDecisions"
           >
-            {{ showAllDecisions ? 'Show less' : `Show ${latestInterpretation.decisions.length - COLLAPSE_THRESHOLD} more` }}
+            {{
+              showAllDecisions
+                ? "Show less"
+                : `Show ${latestInterpretation.decisions.length - COLLAPSE_THRESHOLD} more`
+            }}
           </button>
         </div>
 
@@ -111,14 +141,20 @@ function truncate(text: string, max: number): string {
         <div v-if="latestInterpretation.risks.length > 0" class="interpretation-section">
           <div class="interpretation-section-label interpretation-label-danger">Risks</div>
           <ul class="interpretation-list interpretation-list-danger">
-            <li v-for="(r, i) in visibleItems(latestInterpretation.risks, showAllRisks)" :key="i">{{ r }}</li>
+            <li v-for="(r, i) in visibleItems(latestInterpretation.risks, showAllRisks)" :key="i">
+              {{ r }}
+            </li>
           </ul>
           <button
             v-if="latestInterpretation.risks.length > COLLAPSE_THRESHOLD"
             class="interpretation-toggle"
             @click="showAllRisks = !showAllRisks"
           >
-            {{ showAllRisks ? 'Show less' : `Show ${latestInterpretation.risks.length - COLLAPSE_THRESHOLD} more` }}
+            {{
+              showAllRisks
+                ? "Show less"
+                : `Show ${latestInterpretation.risks.length - COLLAPSE_THRESHOLD} more`
+            }}
           </button>
         </div>
 
@@ -126,14 +162,23 @@ function truncate(text: string, max: number): string {
         <div v-if="latestInterpretation.followUps.length > 0" class="interpretation-section">
           <div class="interpretation-section-label">Follow-ups</div>
           <ul class="interpretation-list">
-            <li v-for="(f, i) in visibleItems(latestInterpretation.followUps, showAllFollowUps)" :key="i">{{ f }}</li>
+            <li
+              v-for="(f, i) in visibleItems(latestInterpretation.followUps, showAllFollowUps)"
+              :key="i"
+            >
+              {{ f }}
+            </li>
           </ul>
           <button
             v-if="latestInterpretation.followUps.length > COLLAPSE_THRESHOLD"
             class="interpretation-toggle"
             @click="showAllFollowUps = !showAllFollowUps"
           >
-            {{ showAllFollowUps ? 'Show less' : `Show ${latestInterpretation.followUps.length - COLLAPSE_THRESHOLD} more` }}
+            {{
+              showAllFollowUps
+                ? "Show less"
+                : `Show ${latestInterpretation.followUps.length - COLLAPSE_THRESHOLD} more`
+            }}
           </button>
         </div>
 
@@ -159,8 +204,16 @@ function truncate(text: string, max: number): string {
 
       <!-- Empty state -->
       <div v-else class="empty-state">
-        <svg class="empty-state-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-             stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <svg
+          class="empty-state-icon"
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
           <polyline points="14 2 14 8 20 8" />
         </svg>

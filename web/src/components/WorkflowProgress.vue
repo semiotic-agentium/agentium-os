@@ -36,16 +36,32 @@ const showNodes = computed(
   <div class="workflow-progress">
     <div class="workflow-phases">
       <template v-for="(phase, idx) in PHASES" :key="phase.key">
-        <div v-if="idx > 0" class="workflow-phase-connector" :class="{ done: phaseStatus(phase.key) !== 'pending' }" />
+        <div
+          v-if="idx > 0"
+          class="workflow-phase-connector"
+          :class="{ done: phaseStatus(phase.key) !== 'pending' }"
+        ></div>
         <div class="workflow-phase">
           <div :class="['workflow-phase-dot', phaseStatus(phase.key)]">
-            <svg v-if="phaseStatus(phase.key) === 'done'" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <svg
+              v-if="phaseStatus(phase.key) === 'done'"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="3"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
               <polyline points="20 6 9 17 4 12" />
             </svg>
           </div>
           <span class="workflow-phase-label">
             {{ phase.label }}
-            <span v-if="phase.key === 'planning' && progress.iteration && progress.iteration > 1" class="workflow-iteration-badge">
+            <span
+              v-if="phase.key === 'planning' && progress.iteration && progress.iteration > 1"
+              class="workflow-iteration-badge"
+            >
               iter {{ progress.iteration }}
             </span>
           </span>
@@ -53,12 +69,8 @@ const showNodes = computed(
       </template>
     </div>
     <div v-if="showNodes" class="workflow-nodes">
-      <div
-        v-for="node in progress.nodes"
-        :key="node.name"
-        class="workflow-node-card"
-      >
-        <span :class="['workflow-node-dot', `node-${node.status}`]" />
+      <div v-for="node in progress.nodes" :key="node.name" class="workflow-node-card">
+        <span :class="['workflow-node-dot', `node-${node.status}`]"></span>
         <span class="workflow-node-name">{{ node.name }}</span>
       </div>
     </div>
@@ -132,8 +144,15 @@ const showNodes = computed(
 }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.7; transform: scale(1.15); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.15);
+  }
 }
 
 .workflow-phase-label {

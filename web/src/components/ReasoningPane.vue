@@ -93,20 +93,30 @@ function downloadSvg(svg: string, index: number) {
             :key="i"
             class="diagram-card"
             :class="{ clickable: !item.error }"
-            @click="!item.error && openModal(i)"
             :title="item.error ? undefined : 'Click to expand'"
+            @click="!item.error && openModal(i)"
           >
             <div v-if="item.error" class="diagram-error">
               <span class="diagram-error-label">Render error</span>
               <pre>{{ item.error }}</pre>
             </div>
             <template v-else>
-              <div class="diagram-svg" v-html="item.svg" />
+              <div class="diagram-svg" v-html="item.svg"></div>
               <!-- Expand hint -->
               <div class="diagram-expand-hint">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" />
-                  <line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="15 3 21 3 21 9" />
+                  <polyline points="9 21 3 21 3 15" />
+                  <line x1="21" y1="3" x2="14" y2="10" />
+                  <line x1="3" y1="21" x2="10" y2="14" />
                 </svg>
               </div>
             </template>
@@ -118,9 +128,9 @@ function downloadSvg(svg: string, index: number) {
     <!-- Toggle strip (always visible) -->
     <button
       class="reasoning-toggle"
-      @click="isOpen = !isOpen"
       :title="isOpen ? 'Collapse reasoning pane' : 'Expand reasoning pane'"
       :aria-label="isOpen ? 'Collapse reasoning pane' : 'Expand reasoning pane'"
+      @click="isOpen = !isOpen"
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -141,11 +151,16 @@ function downloadSvg(svg: string, index: number) {
     <div
       v-if="expandedIdx !== null && rendered[expandedIdx] && !rendered[expandedIdx]!.error"
       class="diagram-modal-overlay"
+      tabindex="-1"
       @click="onOverlayClick"
       @keydown="onKeydown"
-      tabindex="-1"
     >
-      <div class="diagram-modal" role="dialog" aria-modal="true" aria-label="Diagram fullscreen view">
+      <div
+        class="diagram-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Diagram fullscreen view"
+      >
         <header class="diagram-modal-header">
           <span class="diagram-modal-title">Reasoning Diagram</span>
           <div class="diagram-modal-actions">
@@ -155,29 +170,39 @@ function downloadSvg(svg: string, index: number) {
               @click="downloadSvg(rendered[expandedIdx!]!.svg, expandedIdx!)"
             >
               <!-- Download icon -->
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                 <polyline points="7 10 12 15 17 10" />
                 <line x1="12" y1="15" x2="12" y2="3" />
               </svg>
               Download
             </button>
-            <button
-              class="diagram-modal-btn diagram-modal-close"
-              title="Close"
-              @click="closeModal"
-            >
+            <button class="diagram-modal-btn diagram-modal-close" title="Close" @click="closeModal">
               <!-- X icon -->
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
               </svg>
             </button>
           </div>
         </header>
-        <div
-          class="diagram-modal-body"
-          v-html="rendered[expandedIdx!]!.svg"
-        />
+        <div class="diagram-modal-body" v-html="rendered[expandedIdx!]!.svg"></div>
       </div>
     </div>
   </Teleport>

@@ -1,15 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, watch, ref } from "vue";
+import { computed, onMounted, onUnmounted, watch, ref } from "vue";
 import AgentSelector from "./components/AgentSelector.vue";
+import ChatTabs from "./components/ChatTabs.vue";
 import ChatWindow from "./components/ChatWindow.vue";
 import Dashboard from "./components/Dashboard.vue";
+import ConfirmDialog from "./components/ConfirmDialog.vue";
+import ErrorBoundary from "./components/ErrorBoundary.vue";
 import Navbar from "./components/Navbar.vue";
 import ProvenancePane from "./components/ProvenancePane.vue";
 import SettingsView from "./components/SettingsView.vue";
 import ToastContainer from "./components/ToastContainer.vue";
 import { useProvenanceOps } from "./composables/useProvenanceOps";
-import { useA2aClient } from "./composables/useA2aClient";
+import { useChatTabs } from "./composables/useChatTabs";
 import { useTheme } from "./composables/useTheme";
+import { useConfirm } from "./composables/useConfirm";
 import { parseMermaidBlocks } from "./utils/parseMermaid";
 import type { AgentDiscoveryEntry, ChatMessage } from "./types/a2a";
 
@@ -24,30 +28,48 @@ function firstInlineMermaidDiagram(messages: ChatMessage[]): string | null {
 }
 
 const {
-  agents,
-  selectedAgent,
-  messages,
-  isLoading,
-  provenanceDiagram,
-  traceRefreshGeneration,
-  contextMetrics,
-  contextId,
-  taskId,
-  workflowProgress,
-  awaitingInput,
-  inputRequiredPrompt,
-  fetchAgents,
-  selectAgent,
-  sendMessage,
-  cancelStream,
-} = useA2aClient();
+  tabs,
+  activeTabId,
+  activeClient,
+  createTab,
+  closeTab,
+  switchTab,
+  renameTab,
+} = useChatTabs();
 
-function handleSelectAgent(agent: AgentDiscoveryEntry): void {
-  if (
-    messages.value.length > 0 &&
-    agent.agent_package !== selectedAgent.value?.agent_package
-  ) {
-    if (!window.confirm("Switching agents will clear the current conversation. Continue?")) return;
+// Derived refs from the active tab's client
+const agents = computed(() => activeClient.value?.agents.value ?? []);
+const selectedAgent = computed(() => activeClient.value?.selectedAgent.value ?? null);
+const messages = computed(() => activeClient.value?.messages.value ?? []);
+const isLoading = computed(() => activeClient.value?.isLoading.value ?? false);
+const provenanceDiagram = computed(() => activeClient.value?.provenanceDiagram.value ?? "");
+const traceRefreshGeneration = computed(() => activeClient.value?.traceRefreshGeneration.value ?? 0);
+const contextMetrics = computed(() => activeClient.value?.contextMetrics.value ?? null);
+const contextId = computed(() => activeClient.value?.contextId.value ?? undefined);
+const taskId = computed(() => activeClient.value?.taskId.value ?? null);
+const workflowProgress = computed(() => activeClient.value?.workflowProgress.value ?? { phase: "idle" as const, nodes: [], completedNodes: [] });
+const awaitingInput = computed(() => activeClient.value?.awaitingInput.value ?? false);
+const inputRequiredPrompt = computed(() => activeClient.value?.inputRequiredPrompt.value ?? "");
+
+function fetchAgents() { activeClient.value?.fetchAgents(); }
+function selectAgent(agent: AgentDiscoveryEntry) {
+  activeClient.value?.selectAgent(agent);
+  if (activeTabId.value) {
+    renameTab(activeTabId.value, agent.agent_card?.name ?? agent.name);
+  }
+}
+function sendMessage(text: string) { activeClient.value?.sendMessage(text); }
+function cancelStream() { activeClient.value?.cancelStream(); }
+
+const { confirm } = useConfirm();
+
+async function handleSelectAgent(agent: AgentDiscoveryEntry): Promise<void> {
+  if (messages.value.length > 0 && agent.agent_package !== selectedAgent.value?.agent_package) {
+    const ok = await confirm(
+      "Switch agent?",
+      "Switching agents will clear the current conversation.",
+    );
+    if (!ok) return;
   }
   selectAgent(agent);
 }
@@ -111,7 +133,28 @@ const provenanceDashboardSummary = computed(() => {
   };
 });
 
-onMounted(() => fetchAgents());
+// System health check
+const systemOnline = ref(true);
+let healthTimer: ReturnType<typeof setInterval> | null = null;
+
+async function checkHealth() {
+  try {
+    const res = await fetch("/agents", { method: "GET" });
+    systemOnline.value = res.ok;
+  } catch {
+    systemOnline.value = false;
+  }
+}
+
+onMounted(() => {
+  fetchAgents();
+  checkHealth();
+  healthTimer = setInterval(checkHealth, 30_000);
+});
+
+onUnmounted(() => {
+  if (healthTimer) clearInterval(healthTimer);
+});
 </script>
 
 <template>
@@ -120,23 +163,33 @@ onMounted(() => fetchAgents());
       :view="view"
       :agent-count="agents.length"
       :theme="theme"
+      :system-online="systemOnline"
       @change-view="view = $event"
       @toggle-theme="toggleTheme"
     />
 
     <div class="app-content-area">
-      <Dashboard
-        v-if="view === 'dashboard'"
-        :agents="agents"
-        :context-metrics="contextMetrics"
-        :provenance-diagram="provenanceDiagram"
-        :messages="messages"
-        :provenance-summary="provenanceDashboardSummary"
-        @open-settings="view = 'settings'"
-      />
+      <ErrorBoundary v-if="view === 'dashboard'">
+        <Dashboard
+          :agents="agents"
+          :context-metrics="contextMetrics"
+          :provenance-diagram="provenanceDiagram"
+          :messages="messages"
+          :provenance-summary="provenanceDashboardSummary"
+          @open-settings="view = 'settings'"
+        />
+      </ErrorBoundary>
 
-      <div v-else-if="view === 'chat'" class="chat-layout">
+      <ErrorBoundary v-else-if="view === 'chat'">
+        <div class="chat-layout">
         <div class="chat-toolbar">
+          <ChatTabs
+            :tabs="tabs"
+            :active-tab-id="activeTabId"
+            @switch="switchTab"
+            @close="closeTab"
+            @create="createTab()"
+          />
           <AgentSelector :agents="agents" :selected="selectedAgent" @select="handleSelectAgent" />
         </div>
 
@@ -161,9 +214,13 @@ onMounted(() => fetchAgents());
           />
         </div>
       </div>
+      </ErrorBoundary>
 
-      <SettingsView v-else-if="view === 'settings'" />
+      <ErrorBoundary v-else-if="view === 'settings'">
+        <SettingsView />
+      </ErrorBoundary>
     </div>
     <ToastContainer />
+    <ConfirmDialog />
   </div>
 </template>
