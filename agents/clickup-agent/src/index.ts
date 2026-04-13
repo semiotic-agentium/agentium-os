@@ -151,10 +151,37 @@ function formatPayload(payload: JsonObject): string {
 }
 
 /**
+ * Find the most content-rich Read output from executor steps.
+ * Read steps (grep results) have output text but no structured result.
+ * Prefer the last Read with substantial content (grep-filtered data).
+ */
+function findBestReadOutput(rawSteps: unknown[]): string | null {
+  let best: string | null = null;
+  for (const raw of rawSteps) {
+    const step = asExecutorStep(raw);
+    if (!step) continue;
+    // Read steps: have output string, no result field, status "done"
+    if (step.status === "done" && typeof step.output === "string" && !step.result) {
+      // Strip the archive header line ("@18 support/clickup ... [209 lines]\n")
+      // and the "lines X-Y of Z:" prefix — keep only the YAML content
+      const text = step.output;
+      const yamlStart = text.indexOf("\n");
+      if (yamlStart >= 0) {
+        const content = text.slice(yamlStart + 1).trim();
+        if (content.length > 50 && (!best || content.length > best.length)) {
+          best = content;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/**
  * Build the final user-facing message from collected payloads and raw steps.
  *
- * Priority: FinalResponse (LLM explicitly formatted an answer) → structured
- * payloads with tasks → payloads with items → any payload message → fallback.
+ * Priority: FinalResponse → structured payloads (tasks/items) →
+ * Read output text (grep results) → payload messages → fallback.
  */
 function buildFinalMessage(payloads: JsonObject[], rawSteps: unknown[]): StructuredReply {
   // 1. Explicit FinalResponse from any step (LLM passthrough or nested in result)
@@ -173,6 +200,12 @@ function buildFinalMessage(payloads: JsonObject[], rawSteps: unknown[]): Structu
   for (const p of [...payloads].reverse()) {
     if (Array.isArray(p.items) && p.items.length > 0) return textReply(formatPayload(p));
   }
+
+  // 3. Read output text (grep-filtered results from archive)
+  const readOutput = findBestReadOutput(rawSteps);
+  if (readOutput) return textReply(readOutput);
+
+  // 4. Any payload message
   for (const p of [...payloads].reverse()) {
     if (typeof p.message === "string" && p.message.trim()) return textReply(p.message.trim());
   }

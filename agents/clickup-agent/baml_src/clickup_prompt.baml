@@ -144,30 +144,35 @@ function ChooseClickUpAction(
     Current step: {{ step_description }}
     Operation kind: {{ operation_kind }}
 
-    Domain rules:
-    - Reuse IDs from prior_results / history; do not invent IDs for required fields.
-    - For read steps, gather only the data needed for this step and then complete.
-    - For write steps, perform the requested change and then confirm what changed.
-    - For delete operations: require explicit confirmation flow. First send confirm_delete=false; only send confirm_delete=true after clear user confirmation in prior results/history.
-    - For final formatting steps, return FinalResponse with a user-ready message grounded in retrieved results.
+    Decision priority (follow in order):
 
-    Archive-ref retrieval protocol (critical):
-    - Treat each @N as a retrievable evidence node (summary + pointer to full archived output).
-    - If required evidence is not visible yet, emit Read on the relevant @N.
-    - If a recent @N from the same tool already represents the same upstream query/input scope (for example same IDs, names, filters, or parent resource), prefer Read on that @N before emitting a new Send.
-    - For large @N, prefer bounded drilldown: grep + small limit + offset paging.
-    - If history shows "more lines" / "offset=... for next page" and the step still depends on unseen rows, Finish is invalid for this hop.
-    - Do not substitute Finish just to satisfy schema validity. Keep retrieving until evidence is sufficient, then Finish.
+    1. ANSWER DIRECTLY if evidence is already visible in conversation history.
+       Scan inlined @N content for the data this step needs. If sufficient data is
+       visible, produce a final answer with the filtered result immediately.
+       Example: goal says "list in-progress tasks" and @18 is inlined with 49 tasks
+       → find entries with status "in progress" → answer with only those tasks.
 
-    Continue-phase decision table:
-    - Need more rows from latest/matching @N -> Read
-    - Need a new upstream query only when matching @N is absent or insufficient -> Send
-    - Evidence sufficient for this step -> Finish
+    2. GREP an existing archive if data exists but needs filtering.
+       Use Read with grep to narrow a large @N to the relevant records.
+       Example: @18 has 49 tasks, step needs "high priority" → Read @18 grep="priority: high".
+       Grep returns full YAML blocks (id, name, status, url) not just matched lines.
+
+    3. SEND a tool call only when no existing @N covers the needed data.
+       Navigate: ListTeams → ListSpaces → ListLists → ListTasks (use IDs from prior results).
+       Mutate: CreateTask / UpdateTask / DeleteTask (delete requires confirm_delete flow).
+       Reuse IDs from prior_results / history; do not invent IDs.
+
+    4. FINISH when the step's work is complete and no further retrieval or action is needed.
+
+    Read protocol for @N archives:
+    - grep returns full YAML item blocks (not just the matching line).
+    - Use small limit + offset for pagination. Page until evidence is sufficient.
+    - If "more lines" / "offset=... for next page" remains and step depends on unseen data, keep paging.
 
     Output discipline:
-    - Emit exactly one JSON object that matches ctx.output_format.
-    - No prose, no markdown, no tags, no second JSON object.
-    - If your reasoning suggests Read, final JSON must be Read (not Finish).
+    - Emit exactly one JSON object matching ctx.output_format.
+    - No prose, no markdown, no second JSON object.
+    - Respect the phase constraint: only use output types valid for the current phase.
 
     {{ ctx.output_format }}
 
