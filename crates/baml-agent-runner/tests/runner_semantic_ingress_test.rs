@@ -1,3 +1,5 @@
+#![cfg(all(feature = "llm-tests", feature = "slack"))]
+
 mod common;
 
 use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};

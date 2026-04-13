@@ -9,7 +9,7 @@ use std::{
 use axum::{
     Json,
     extract::{Query, State},
-    http::StatusCode as AxumStatus,
+    http::{HeaderMap, StatusCode as AxumStatus},
     response::{
         IntoResponse,
         sse::{Event, KeepAlive, Sse},
@@ -29,20 +29,97 @@ use http_api_problem::HttpApiProblem;
 use serde_json::Value;
 
 use crate::{
-    ApiState,
+    ApiState, ClusterMode,
     context_metrics::{ContextMetricsError, ContextMetricsResponseDto},
     episode::EpisodeSnapshotDto,
     mermaid::MermaidError,
     metrics,
     openapi::{
         AgentDiscoveryEntryDto, DeployRequestDto, DeployResponseDto, DeploymentRecordDto,
-        UndeployRequestDto, UndeployResponseDto,
+        MigrateRequestDto, MigrateResponseDto, UndeployRequestDto, UndeployResponseDto,
     },
     planning::{ContextPlanningResponse, PlanningError},
     provenance_ops::ProvenanceOpsError,
     service_error::service_result_to_http,
     spans,
 };
+
+/// Constant-time byte comparison to prevent timing attacks on bearer tokens.
+/// Hashes both inputs to a fixed length before comparing so that the token
+/// length is never observable via timing.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    use sha2::{Digest, Sha256};
+    let ha = Sha256::digest(a);
+    let hb = Sha256::digest(b);
+    ha.as_slice()
+        .iter()
+        .zip(hb.as_slice().iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
+/// Validate `X-Runner-Token` header against configured runner token.
+/// Returns Ok(()) if no token is configured or if the token matches.
+#[allow(clippy::result_large_err)]
+fn require_runner_token(state: &ApiState, headers: &HeaderMap) -> Result<(), HttpApiProblem> {
+    if let Some(expected) = &state.runner_token {
+        let provided = headers
+            .get("X-Runner-Token")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+            return Err(problem(
+                401,
+                "Unauthorized",
+                "missing or invalid X-Runner-Token",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Authorization decision for control endpoints (deploy, undeploy, migrate).
+///
+/// - **Cluster mode**: rejects when no token is configured (fail-closed).
+/// - **Standalone mode**: allows unauthenticated access when no token is
+///   configured (backwards-compatible single-runner behaviour).
+/// - When a token *is* configured, both modes validate it.
+#[allow(clippy::result_large_err)]
+fn check_control_auth(
+    runner_token: Option<&str>,
+    cluster_mode: ClusterMode,
+    provided: &str,
+) -> Result<(), HttpApiProblem> {
+    match runner_token {
+        Some(expected) => {
+            if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+                return Err(problem(
+                    401,
+                    "Unauthorized",
+                    "missing or invalid X-Runner-Token",
+                ));
+            }
+            Ok(())
+        }
+        None if cluster_mode == ClusterMode::Cluster => Err(problem(
+            401,
+            "Unauthorized",
+            "runner_token is not configured; control endpoints require authentication in cluster mode",
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Strict token check for write/control endpoints (deploy, undeploy, migrate).
+/// Behaviour depends on cluster mode — see [`check_control_auth`].
+#[allow(clippy::result_large_err)]
+fn require_control_token(state: &ApiState, headers: &HeaderMap) -> Result<(), HttpApiProblem> {
+    let provided = headers
+        .get("X-Runner-Token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    check_control_auth(state.runner_token.as_deref(), state.cluster_mode, provided)
+}
 
 /// HTTP result type for handlers that return RFC 7807 problem details on error.
 type HttpResult<T> = Result<T, HttpApiProblem>;
@@ -57,11 +134,11 @@ struct RepositoryEntryHeaderItem {
     hash: String,
 }
 
-/// Build HttpApiProblem for known-valid status codes (400, 404, 409, 500 per RFC 7231).
-/// Caller must only pass these codes; unwrap is justified here with this invariant.
+/// Build HttpApiProblem for standard HTTP status codes (4xx/5xx per RFC 7231).
+/// All standard status codes are valid; the expect here cannot fail.
 fn problem(status: u16, title: &str, detail: impl Into<String>) -> HttpApiProblem {
     HttpApiProblem::try_new(status)
-        .expect("400, 404, 500 are valid HTTP status codes")
+        .expect("standard HTTP status codes are always valid")
         .title(title)
         .detail(detail)
 }
@@ -107,7 +184,17 @@ async fn resolve_deploy_hash(state: &Arc<ApiState>, body: DeployRequestDto) -> H
     };
 
     let url = format!("{}/entries", repository_url.trim_end_matches('/'));
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| {
+            problem(
+                500,
+                "Internal Server Error",
+                format!("HTTP client build: {e}"),
+            )
+        })?
         .get(&url)
         .query(&[("name", name.as_str()), ("version", version.as_str())])
         .send()
@@ -129,7 +216,10 @@ async fn resolve_deploy_hash(state: &Arc<ApiState>, body: DeployRequestDto) -> H
     }
     if !response.status().is_success() {
         let status = response.status();
-        let body_text = response.text().await.unwrap_or_default();
+        let body_text = crate::endpoint_validation::truncate_body(
+            &response.text().await.unwrap_or_default(),
+            512,
+        );
         return Err(problem(
             500,
             "Internal Server Error",
@@ -209,6 +299,7 @@ pub async fn list_agents(
     responses(
         (status = 200, description = "Deployment accepted", body = DeployResponseDto),
         (status = 400, description = "Invalid deploy payload"),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 404, description = "Hash or version target not found"),
         (status = 409, description = "Deployment conflict"),
         (status = 501, description = "Deployment manager not configured"),
@@ -217,8 +308,10 @@ pub async fn list_agents(
 )]
 pub async fn post_deploy(
     State(state): State<Arc<ApiState>>,
+    headers: HeaderMap,
     Json(body): Json<DeployRequestDto>,
 ) -> HttpResult<Json<DeployResponseDto>> {
+    require_control_token(&state, &headers)?;
     let Some(manager) = &state.deployment_manager else {
         return Err(problem(
             501,
@@ -255,6 +348,7 @@ pub async fn post_deploy(
     responses(
         (status = 200, description = "Undeploy accepted", body = UndeployResponseDto),
         (status = 400, description = "Invalid undeploy payload"),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 404, description = "Deployment not found"),
         (status = 501, description = "Deployment manager not configured"),
         (status = 500, description = "Internal error")
@@ -262,8 +356,10 @@ pub async fn post_deploy(
 )]
 pub async fn post_undeploy(
     State(state): State<Arc<ApiState>>,
+    headers: HeaderMap,
     Json(body): Json<UndeployRequestDto>,
 ) -> HttpResult<Json<UndeployResponseDto>> {
+    require_control_token(&state, &headers)?;
     let Some(manager) = &state.deployment_manager else {
         return Err(problem(
             501,
@@ -284,7 +380,7 @@ pub async fn post_undeploy(
         Ok(_) => Err(problem(
             404,
             "Not Found",
-            format!("Deployment not found for hash {}", body.hash),
+            format!("deployment not found for hash {hash}", hash = body.hash),
         )),
         Err(BamlRtError::InvalidArgument(msg)) => Err(problem(400, "Bad Request", msg)),
         Err(e) => Err(problem(500, "Internal Server Error", e.to_string())),
@@ -298,13 +394,16 @@ pub async fn post_undeploy(
     tag = "deployments",
     responses(
         (status = 200, description = "Deployment records", body = [DeploymentRecordDto]),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 501, description = "Deployment manager not configured"),
         (status = 500, description = "Internal error")
     )
 )]
 pub async fn get_deployments(
     State(state): State<Arc<ApiState>>,
+    headers: HeaderMap,
 ) -> HttpResult<Json<Vec<DeploymentRecordDto>>> {
+    require_runner_token(&state, &headers)?;
     let Some(manager) = &state.deployment_manager else {
         return Err(problem(
             501,
@@ -334,7 +433,139 @@ pub async fn get_deployments(
     }
 }
 
+/// Migrate an agent from this runner to a target runner.
+///
+/// Drains the agent locally (waits for in-flight turns), then tells the target
+/// runner to deploy the same content hash.
+#[utoipa::path(
+    post,
+    path = "/control/migrate",
+    request_body = MigrateRequestDto,
+    responses(
+        (status = 200, description = "Agent migrated successfully", body = MigrateResponseDto),
+        (status = 400, description = "Invalid request"),
+        (status = 401, description = "Missing or invalid runner token"),
+        (status = 404, description = "Agent not found locally"),
+        (status = 501, description = "Deployment manager not configured"),
+        (status = 502, description = "Target runner unreachable"),
+    ),
+    tag = "control"
+)]
+pub async fn post_migrate(
+    State(state): State<Arc<ApiState>>,
+    headers: HeaderMap,
+    Json(body): Json<MigrateRequestDto>,
+) -> HttpResult<Json<MigrateResponseDto>> {
+    require_control_token(&state, &headers)?;
+
+    let Some(manager) = &state.deployment_manager else {
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Deployment manager not configured",
+        ));
+    };
+
+    let hash = &body.hash;
+    let target = &body.target_runner_endpoint;
+
+    // SSRF protection: validate target endpoint and resolve DNS to block
+    // private/metadata IPs behind attacker-controlled hostnames.
+    let target_url = crate::endpoint_validation::resolve_and_validate_cluster_endpoint(target)
+        .await
+        .map_err(|e| problem(400, "Bad Request", e))?;
+
+    let content_hash = hash
+        .parse::<DeploymentContentHash>()
+        .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
+
+    // 1. Forward deploy to target runner FIRST (before local undeploy).
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| {
+            problem(
+                500,
+                "Internal Server Error",
+                format!("HTTP client build: {e}"),
+            )
+        })?;
+
+    let base = crate::endpoint_validation::origin_url(&target_url);
+    let deploy_url = format!("{base}/deploy");
+    let deploy_body = serde_json::json!({ "hash": hash });
+    let mut req = client.post(&deploy_url).json(&deploy_body);
+    if let Some(token) = &state.runner_token {
+        req = req.header("X-Runner-Token", token.as_str());
+    }
+    let resp = req.send().await.map_err(|e| {
+        problem(
+            502,
+            "Bad Gateway",
+            format!("failed to reach target runner: {e}"),
+        )
+    })?;
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let text = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "<unreadable>".to_string());
+        let text = crate::endpoint_validation::truncate_body(&text, 512);
+        return Err(problem(
+            502,
+            "Bad Gateway",
+            format!("target runner returned {status}: {text}"),
+        ));
+    }
+
+    // 2. Target confirmed deploy success — now drain and undeploy locally.
+    let undeploy_result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(manager.undeploy_by_hash(&content_hash))
+    });
+    let source_undeploy_failed = match &undeploy_result {
+        Ok(r) if !r.removed => {
+            tracing::warn!(
+                %hash,
+                "agent deployed to target but not found locally for undeploy"
+            );
+            false
+        }
+        Err(e) => {
+            tracing::error!(
+                %hash,
+                error = %e,
+                "agent deployed to target but local undeploy failed"
+            );
+            true
+        }
+        _ => false,
+    };
+
+    tracing::info!(%hash, target = %target_url, source_undeploy_failed, "agent migrated");
+    if source_undeploy_failed {
+        // Agent is running on both source and target — callers must not
+        // treat this as a clean migration.
+        return Err(problem(
+            500,
+            "Internal Server Error",
+            "agent deployed to target but local undeploy failed; agent may be running on both runners",
+        ));
+    }
+    Ok(Json(MigrateResponseDto {
+        migrated: true,
+        source_undeploy_failed,
+    }))
+}
+
 /// Forward A2A JSON-RPC request (POST /agents/{agent_package}/{agent_instance_id}/a2a).
+///
+/// Unauthenticated at the application layer. Cluster isolation relies on
+/// network policy (K8s NetworkPolicy / service mesh); external client auth
+/// belongs at the ingress. Control-plane endpoints use `require_control_token`.
 #[utoipa::path(
     post,
     path = "/agents/{agent_package}/{agent_instance_id}/a2a",
@@ -407,6 +638,8 @@ pub async fn post_a2a(
 /// A2A over Server-Sent Events: POST /agents/{agent_package}/{agent_instance_id}/a2a/sse
 /// Request body: JSON-RPC request. Response: Content-Type: text/event-stream; each event's
 /// `data` is one JSON-RPC response. Keep-alive comments sent on interval while stream is open.
+///
+/// Unauthenticated at the application layer (same policy as `post_a2a`).
 #[utoipa::path(
     post,
     path = "/agents/{agent_package}/{agent_instance_id}/a2a/sse",
@@ -855,7 +1088,14 @@ async fn run_ops_query(
     match svc.query(req).await {
         Ok(report) => {
             metrics::record_request(route, "success", start.elapsed());
-            Ok(Json(serde_json::to_value(report).unwrap_or(Value::Null)))
+            let value = serde_json::to_value(report).map_err(|e| {
+                problem(
+                    500,
+                    "Internal Server Error",
+                    format!("serialization failed: {e}"),
+                )
+            })?;
+            Ok(Json(value))
         }
         Err(ProvenanceOpsError::NotFound) => {
             metrics::record_request(route, "not_found", start.elapsed());
@@ -962,6 +1202,30 @@ pub async fn get_provenance_aggregates(
         &state,
         "get_provenance_aggregates",
         ProvenanceOpsResource::Aggregates,
+        query,
+        start,
+    )
+    .await
+}
+
+/// Query lifecycle events (agent boot/stop) from provenance.
+#[utoipa::path(
+    get,
+    path = "/provenance/lifecycle-events",
+    tag = "provenance",
+    responses((status = 200, description = "Provenance lifecycle events query response", body = Value))
+)]
+pub async fn get_provenance_lifecycle_events(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<ProvenanceQueryParams>,
+) -> HttpResult<Json<Value>> {
+    let start = Instant::now();
+    let span = spans::get_provenance_lifecycle_events();
+    let _guard = span.enter();
+    run_ops_query(
+        &state,
+        "get_provenance_lifecycle_events",
+        ProvenanceOpsResource::LifecycleEvents,
         query,
         start,
     )
@@ -1226,4 +1490,67 @@ pub async fn get_episode_stream(
     };
     metrics::record_request("get_episode_stream", "success", start.elapsed());
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standalone_no_token_allows_access() {
+        let result = check_control_auth(None, ClusterMode::Standalone, "");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn standalone_no_token_allows_any_header() {
+        let result = check_control_auth(None, ClusterMode::Standalone, "anything");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn standalone_with_token_accepts_match() {
+        let result = check_control_auth(Some("secret"), ClusterMode::Standalone, "secret");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn standalone_with_token_rejects_mismatch() {
+        let result = check_control_auth(Some("secret"), ClusterMode::Standalone, "wrong");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().status.unwrap().as_u16(), 401);
+    }
+
+    #[test]
+    fn standalone_with_token_rejects_empty() {
+        let result = check_control_auth(Some("secret"), ClusterMode::Standalone, "");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().status.unwrap().as_u16(), 401);
+    }
+
+    #[test]
+    fn cluster_no_token_rejects() {
+        let result = check_control_auth(None, ClusterMode::Cluster, "");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status.unwrap().as_u16(), 401);
+        let detail = err.detail.as_deref().unwrap_or("");
+        assert!(
+            detail.contains("cluster mode"),
+            "detail should mention cluster mode: {detail}"
+        );
+    }
+
+    #[test]
+    fn cluster_with_token_accepts_match() {
+        let result = check_control_auth(Some("secret"), ClusterMode::Cluster, "secret");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cluster_with_token_rejects_mismatch() {
+        let result = check_control_auth(Some("secret"), ClusterMode::Cluster, "wrong");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().status.unwrap().as_u16(), 401);
+    }
 }

@@ -4,7 +4,13 @@
 //! Use `api_router()` for a minimal router with in-memory config and empty catalog/resolver;
 //! use `api_router_with_services()` to inject real implementations.
 
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use axum::{Router, extract::MatchedPath, http::Request};
 use baml_rt_a2a::AgentRegistry;
@@ -24,6 +30,17 @@ use crate::{
     config_handlers, handlers, repository_publish,
 };
 
+/// Deployment topology governing control-endpoint authentication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterMode {
+    /// Single runner — control endpoints allow unauthenticated access when no
+    /// runner token is configured (backwards-compatible).
+    Standalone,
+    /// Cluster (shared SurrealDB) — control endpoints reject requests when no
+    /// runner token is configured (fail-closed).
+    Cluster,
+}
+
 /// Shared state for API handlers: registry, OpenAPI spec, and **injected** config/catalog/resolver.
 #[derive(Clone)]
 pub struct ApiState {
@@ -40,12 +57,33 @@ pub struct ApiState {
     pub config_service: Arc<dyn ConfigService>,
     pub secret_resolver: Arc<dyn SecretResolver>,
     pub runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
+    /// Readiness flag: set to `true` after deployment restore completes.
+    pub ready: Arc<AtomicBool>,
+    /// Shared secret for authenticating control-plane requests (e.g. `/control/migrate`).
+    pub runner_token: Option<String>,
+    /// Deployment topology: standalone (single runner) or cluster (shared SurrealDB).
+    /// Controls whether control endpoints require a configured runner token.
+    pub cluster_mode: ClusterMode,
 }
 
 async fn serve_openapi_json(
     axum::extract::State(state): axum::extract::State<Arc<ApiState>>,
 ) -> axum::Json<OpenApiSpec> {
     axum::Json(state.openapi.as_ref().clone())
+}
+
+async fn healthz() -> axum::http::StatusCode {
+    axum::http::StatusCode::OK
+}
+
+async fn readyz(
+    axum::extract::State(state): axum::extract::State<Arc<ApiState>>,
+) -> axum::http::StatusCode {
+    if state.ready.load(Ordering::Acquire) {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 /// Build a minimal API router with default config/catalog/resolver (in-memory config, empty catalog, no-op resolver).
@@ -107,6 +145,9 @@ pub fn api_router_with_services(
         config_service,
         secret_resolver,
         runtime_secret_store,
+        Arc::new(AtomicBool::new(true)),
+        None,
+        ClusterMode::Standalone,
         web_dir,
     )
 }
@@ -127,6 +168,9 @@ pub fn api_router_with_services_and_deploy(
     config_service: Arc<dyn ConfigService>,
     secret_resolver: Arc<dyn SecretResolver>,
     runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
+    ready: Arc<AtomicBool>,
+    runner_token: Option<String>,
+    cluster_mode: ClusterMode,
     web_dir: Option<&Path>,
 ) -> Router {
     let http_trace_layer = TraceLayer::new_for_http().make_span_with(|req: &Request<_>| {
@@ -157,6 +201,9 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(handlers::get_provenance_tool_calls))
         .routes(utoipa_axum::routes!(handlers::get_provenance_messages))
         .routes(utoipa_axum::routes!(handlers::get_provenance_aggregates))
+        .routes(utoipa_axum::routes!(
+            handlers::get_provenance_lifecycle_events
+        ))
         .routes(utoipa_axum::routes!(handlers::get_episode))
         .routes(utoipa_axum::routes!(handlers::get_episode_text))
         .routes(utoipa_axum::routes!(handlers::get_episode_stream))
@@ -174,6 +221,7 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(config_handlers::list_config_versions))
         .routes(utoipa_axum::routes!(config_handlers::get_config_version))
         .routes(utoipa_axum::routes!(config_handlers::list_secret_requests))
+        .routes(utoipa_axum::routes!(handlers::post_migrate))
         .split_for_parts();
 
     let mut openapi = openapi;
@@ -195,12 +243,16 @@ pub fn api_router_with_services_and_deploy(
     tag_config.description = Some(
         "Tool configuration and secret requests (schema includes config type schemas)".to_string(),
     );
+    let mut tag_control = utoipa::openapi::Tag::new("control");
+    tag_control.description =
+        Some("Operational control plane: agent migration between runners.".to_string());
     openapi.tags = Some(vec![
         tag_agents,
         tag_mermaid,
         tag_provenance,
         tag_deployments,
         tag_config,
+        tag_control,
     ]);
 
     let state = Arc::new(ApiState {
@@ -217,10 +269,15 @@ pub fn api_router_with_services_and_deploy(
         config_service,
         secret_resolver,
         runtime_secret_store,
+        ready,
+        runner_token,
+        cluster_mode,
     });
 
     let mut router = api_router
         .route("/openapi.json", axum::routing::get(serve_openapi_json))
+        .route("/healthz", axum::routing::get(healthz))
+        .route("/readyz", axum::routing::get(readyz))
         .route_layer(http_trace_layer)
         .with_state(state);
 
@@ -307,6 +364,9 @@ pub async fn serve_with_services(
         config_service,
         secret_resolver,
         runtime_secret_store,
+        Arc::new(AtomicBool::new(true)),
+        None,
+        ClusterMode::Standalone,
         web_dir,
     )
     .await
@@ -329,6 +389,9 @@ pub async fn serve_with_services_and_deploy(
     config_service: Arc<dyn ConfigService>,
     secret_resolver: Arc<dyn SecretResolver>,
     runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
+    ready: Arc<AtomicBool>,
+    runner_token: Option<String>,
+    cluster_mode: ClusterMode,
     web_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = api_router_with_services_and_deploy(
@@ -345,6 +408,9 @@ pub async fn serve_with_services_and_deploy(
         config_service,
         secret_resolver,
         runtime_secret_store,
+        ready,
+        runner_token,
+        cluster_mode,
         web_dir,
     );
     let listener = tokio::net::TcpListener::bind(bind).await?;

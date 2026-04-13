@@ -33,9 +33,8 @@ impl AgentLister for RunnerRegistry {
 /// Dynamic discovery list for [`crate::agent_package::AgentPackage::boot`]: each `list_agents`
 /// reflects the **current** deployed registry (same data as HTTP `GET /agents`).
 ///
-/// Frozen snapshots at boot were wrong for the first deployed agent (empty map) and never picked up
-/// agents deployed later. This uses [`Weak`] so the tool registry does not retain a strong
-/// `Arc<AgentRunner>` cycle with the booted agent.
+/// Uses [`Weak`] so the tool registry does not retain a strong `Arc<AgentRunner>` cycle
+/// with the booted agent.
 #[derive(Clone)]
 pub(crate) struct LiveAgentLister {
     runner: Weak<AgentRunner>,
@@ -92,17 +91,56 @@ impl A2aRequestHandler for RunnerRegistry {
     }
 }
 
-/// Routes in-process A2A requests to loaded agents.
-/// Holds an `OnceLock` back-pointer to the runner set after construction.
-#[derive(Clone)]
+/// Resolves an agent route key to the HTTP endpoint of the runner hosting it.
+/// Returns `Ok(None)` if the agent is unknown to the cluster, or `Err` on transient failures.
+#[async_trait]
+pub(crate) trait ClusterEndpointResolver: Send + Sync {
+    async fn resolve(&self, key: &AgentRouteKey) -> Result<Option<String>>;
+}
+
+/// Routes A2A requests: local agents first, then cluster fallback via HTTP.
+///
+/// Cross-runner A2A forwarding is intentionally unauthenticated at the application
+/// layer. Cluster security relies on network-level isolation (K8s NetworkPolicy,
+/// service mesh mTLS). Control-plane endpoints (deploy, undeploy, migrate) are
+/// separately gated by `require_control_token` in the API layer.
 pub(crate) struct InternalA2aRouter {
     runner: std::sync::OnceLock<Arc<AgentRunner>>,
+    cluster: std::sync::OnceLock<Arc<dyn ClusterEndpointResolver>>,
+    http_client: reqwest::Client,
 }
 
 impl InternalA2aRouter {
-    pub(crate) fn new() -> Self {
-        Self {
+    pub(crate) fn new() -> Result<Self> {
+        let http_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| {
+                BamlRtError::Io(std::io::Error::other(format!(
+                    "HTTP client build failed: {e}"
+                )))
+            })?;
+        Ok(Self {
             runner: std::sync::OnceLock::new(),
+            cluster: std::sync::OnceLock::new(),
+            http_client,
+        })
+    }
+
+    /// Return the cluster endpoint resolver, if one has been configured.
+    pub(crate) fn cluster_resolver(&self) -> Option<&Arc<dyn ClusterEndpointResolver>> {
+        self.cluster.get()
+    }
+
+    /// Set the cluster endpoint resolver for cross-runtime routing.
+    /// Called after runner construction when a shared SurrealDB is configured.
+    pub(crate) fn set_cluster(&self, resolver: Arc<dyn ClusterEndpointResolver>) {
+        if self.cluster.set(resolver).is_err() {
+            tracing::warn!(
+                "InternalA2aRouter::set_cluster called after cluster already set; ignored"
+            );
         }
     }
 
@@ -123,10 +161,11 @@ impl InternalA2aRouter {
         caller: &AgentRouteKey,
         request: A2aWireRequest,
     ) -> Result<BusStream<A2aStreamChunk>> {
-        let runner = self
-            .runner
-            .get()
-            .expect("InternalA2aRouter: runner not set");
+        let runner = self.runner.get().ok_or_else(|| {
+            BamlRtError::InvalidArgument(
+                "InternalA2aRouter: runner not set (route_from called before set_runner)".into(),
+            )
+        })?;
 
         let key = extract_internal_a2a_target(request.as_ref())
             .or_else(|| {
@@ -142,9 +181,9 @@ impl InternalA2aRouter {
             })?;
 
         if key.agent_instance_id.as_str() != AgentInstanceId::DEFAULT {
+            let instance_id = key.agent_instance_id.as_str();
             return Err(BamlRtError::InvalidArgument(format!(
-                "system/internal_a2a only supports agent_instance_id=default, got '{}'",
-                key.agent_instance_id.as_str()
+                "system/internal_a2a only supports agent_instance_id=default, got '{instance_id}'"
             )));
         }
         if key == *caller {
@@ -153,23 +192,111 @@ impl InternalA2aRouter {
             ));
         }
 
-        let routed_agent = {
-            let agents = runner.routed_agents.read().expect("RwLock poison");
-            agents.get(&key).cloned().ok_or_else(|| {
-                BamlRtError::AgentNotFound(format!(
-                    "Agent {}/{} not found",
-                    key.agent_package.as_str(),
-                    key.agent_instance_id.as_str()
-                ))
-            })?
+        // Local fast path: agent is on this runtime.
+        let local_agent = {
+            let agents = runner
+                .routed_agents
+                .read()
+                .map_err(|_| BamlRtError::InvalidArgument("routed_agents lock poisoned".into()))?;
+            agents.get(&key).cloned()
         };
 
-        let scope = scope_from_request(request.as_ref(), routed_agent.agent_id().clone());
-        context::with_scope(scope.as_scope().clone(), async move {
-            routed_agent.handle_a2a_stream(request).await
-        })
-        .await
+        if let Some(routed_agent) = local_agent {
+            let scope = scope_from_request(request.as_ref(), routed_agent.agent_id().clone());
+            return context::with_scope(scope.as_scope().clone(), async move {
+                routed_agent.handle_a2a_stream(request).await
+            })
+            .await;
+        }
+
+        // Cluster fallback: forward to the remote runner hosting this agent.
+        if let Some(resolver) = self.cluster.get() {
+            match resolver.resolve(&key).await {
+                Ok(Some(endpoint)) => {
+                    tracing::info!(
+                        agent = %key.agent_package.as_str(),
+                        endpoint = %endpoint,
+                        "routing A2A request to remote runner"
+                    );
+                    return self.forward_to_runner(&endpoint, &key, request).await;
+                }
+                Err(e) => {
+                    let pkg = key.agent_package.as_str();
+                    let inst = key.agent_instance_id.as_str();
+                    return Err(BamlRtError::Io(std::io::Error::other(format!(
+                        "cluster placement lookup failed for {pkg}/{inst}: {e}"
+                    ))));
+                }
+                Ok(None) => {}
+            }
+        }
+
+        let pkg = key.agent_package.as_str();
+        let inst = key.agent_instance_id.as_str();
+        Err(BamlRtError::AgentNotFound(format!(
+            "Agent {pkg}/{inst} not found locally or in cluster"
+        )))
     }
+
+    /// Forward an A2A request to a remote runner via HTTP POST and bridge the
+    /// JSON response back as a stream of individual JSON-RPC chunks.
+    pub(crate) async fn forward_to_runner(
+        &self,
+        endpoint: &str,
+        key: &AgentRouteKey,
+        request: A2aWireRequest,
+    ) -> Result<BusStream<A2aStreamChunk>> {
+        // SSRF protection: validate the endpoint and resolve DNS names to
+        // block private/metadata IPs hidden behind attacker-controlled hostnames.
+        let validated =
+            baml_rt_api::endpoint_validation::resolve_and_validate_cluster_endpoint(endpoint)
+                .await
+                .map_err(|e| {
+                    BamlRtError::InvalidArgument(format!("cluster endpoint rejected: {e}"))
+                })?;
+
+        let base = baml_rt_api::endpoint_validation::origin_url(&validated);
+        let pkg = key.agent_package.as_str();
+        let inst = key.agent_instance_id.as_str();
+        let url = format!("{base}/agents/{pkg}/{inst}/a2a");
+        let body = request.into_inner();
+        let resp = self
+            .http_client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                BamlRtError::Io(std::io::Error::other(format!(
+                    "cluster A2A forward failed: {e}"
+                )))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            let text = baml_rt_api::endpoint_validation::truncate_body(&text, 512);
+            return Err(BamlRtError::Io(std::io::Error::other(format!(
+                "cluster A2A forward returned {status}: {text}"
+            ))));
+        }
+
+        let items: Vec<Value> = resp.json().await.map_err(|e| {
+            BamlRtError::Io(std::io::Error::other(format!(
+                "cluster A2A response parse: {e}"
+            )))
+        })?;
+        let chunks = response_body_to_chunks(items);
+        Ok(Box::pin(futures_util::stream::iter(chunks)))
+    }
+}
+
+/// Convert a list of JSON values from a forwarded HTTP response into individual stream chunks.
+fn response_body_to_chunks(items: Vec<Value>) -> Vec<A2aStreamChunk> {
+    items.into_iter().map(A2aStreamChunk::from).collect()
 }
 
 /// Caller-scoped wrapper for `InternalA2aRouter`.
@@ -192,7 +319,10 @@ pub(crate) fn scope_from_request(request: &Value, agent_id: AgentId) -> Invocati
             &parsed.resolved_scope,
             agent_id,
         )),
-        Err(_) => InvocationScope::synthetic_message(agent_id),
+        Err(e) => {
+            tracing::warn!(error = %e, "scope_from_request: failed to parse A2A request, using synthetic scope");
+            InvocationScope::synthetic_message(agent_id)
+        }
     }
 }
 
@@ -217,5 +347,31 @@ impl A2aRequestHandler for ScopedInternalA2aRouter {
         request: A2aWireRequest,
     ) -> Result<BusStream<A2aStreamChunk>> {
         self.router.route_from(&self.caller, request).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn array_response_produces_individual_chunks() {
+        let items: Vec<Value> = vec![
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"status": "working"}}),
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"status": "completed"}}),
+        ];
+        let chunks = response_body_to_chunks(items);
+        assert_eq!(
+            chunks.len(),
+            2,
+            "each JSON-RPC object should be a separate chunk"
+        );
+    }
+
+    #[test]
+    fn single_object_wrapped_produces_one_chunk() {
+        let items: Vec<Value> = vec![serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {}})];
+        let chunks = response_body_to_chunks(items);
+        assert_eq!(chunks.len(), 1);
     }
 }
