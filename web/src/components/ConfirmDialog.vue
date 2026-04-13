@@ -1,7 +1,12 @@
 <script setup lang="ts">
+import { computed, ref } from "vue";
 import { useConfirm } from "../composables/useConfirm";
+import { useFocusTrap } from "../composables/useFocusTrap";
 
 const { state, handleResponse } = useConfirm();
+const dialogRef = ref<HTMLElement | null>(null);
+const isVisible = computed(() => state.value.visible);
+useFocusTrap(dialogRef, isVisible);
 
 function onOverlayClick(e: MouseEvent) {
   if (e.target === e.currentTarget) handleResponse(false);
@@ -23,7 +28,7 @@ function onKeydown(e: KeyboardEvent) {
       @click="onOverlayClick"
       @keydown="onKeydown"
     >
-      <div class="confirm-dialog">
+      <div ref="dialogRef" class="confirm-dialog">
         <h3 class="confirm-title">{{ state.title }}</h3>
         <p class="confirm-message">{{ state.message }}</p>
         <div class="confirm-actions">

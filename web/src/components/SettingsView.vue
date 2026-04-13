@@ -6,11 +6,12 @@ import type { ToolConfigSchemaDto } from "../types/config";
 import ConfigLlmView from "./ConfigLlmView.vue";
 import ConfigSecretsView from "./ConfigSecretsView.vue";
 import ConfigToolBundleEditor from "./ConfigToolBundleEditor.vue";
+import DeploymentPanel from "./DeploymentPanel.vue";
 
 const { fetchConfigList } = useConfigApi();
 const configList = ref<ToolConfigSchemaDto[] | null>(null);
 const configError = ref<string | null>(null);
-const activeTab = ref<"llm" | "tools" | "secrets">("llm");
+const activeTab = ref<"llm" | "tools" | "secrets" | "deployments">("llm");
 const selectedToolBundle = ref<string | null>(null);
 
 const llmBundle = computed(() => configList.value?.find((b) => b.tool_name === LLM_BUNDLE_NAME));
@@ -89,6 +90,15 @@ function closeToolEditor() {
           >
             Secrets
           </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === 'deployments'"
+            :class="['settings-tab', { active: activeTab === 'deployments' }]"
+            @click="activeTab = 'deployments'"
+          >
+            Deployments
+          </button>
         </div>
 
         <div class="settings-panels">
@@ -126,6 +136,10 @@ function closeToolEditor() {
 
           <div v-else-if="activeTab === 'secrets'" class="settings-panel">
             <ConfigSecretsView />
+          </div>
+
+          <div v-else-if="activeTab === 'deployments'" class="settings-panel">
+            <DeploymentPanel />
           </div>
         </div>
       </template>

@@ -159,6 +159,7 @@ onUnmounted(() => {
 
 <template>
   <div class="app">
+    <a href="#main-content" class="sr-only-focusable">Skip to main content</a>
     <Navbar
       :view="view"
       :agent-count="agents.length"
@@ -168,10 +169,11 @@ onUnmounted(() => {
       @toggle-theme="toggleTheme"
     />
 
-    <div class="app-content-area">
+    <div id="main-content" class="app-content-area">
       <ErrorBoundary v-if="view === 'dashboard'">
         <Dashboard
           :agents="agents"
+          :context-id="contextId"
           :context-metrics="contextMetrics"
           :provenance-diagram="provenanceDiagram"
           :messages="messages"

@@ -285,10 +285,33 @@ export function useConfigApi() {
     }
   }
 
+  async function fetchConfigVersions(
+    bundleName: string,
+  ): Promise<{ data: ConfigVersionDto[] } | { error: ConfigApiError }> {
+    loading.value = true;
+    try {
+      const res = await fetch(`/config/${encodeURIComponent(bundleName)}/versions`);
+      if (!res.ok) return { error: await parseProblem(res) };
+      const data = (await res.json()) as ConfigVersionDto[];
+      return { data };
+    } catch (e) {
+      return {
+        error: {
+          status: 0,
+          title: "Network Error",
+          detail: e instanceof Error ? e.message : String(e),
+        },
+      };
+    } finally {
+      loading.value = false;
+    }
+  }
+
   return {
     loading,
     fetchConfigList,
     fetchConfig,
+    fetchConfigVersions,
     putConfig,
     fetchSecretRequests,
     fetchSecretsOverview,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import type { AgentDiscoveryEntry, ChatMessage, ContextMetricsResponse } from "../types/a2a";
-import type { ProvenanceGroupHotspot } from "../types/provenance";
+import type { ContextPlanningResponse, ProvenanceGroupHotspot } from "../types/provenance";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useTheme } from "../composables/useTheme";
 import {
@@ -17,6 +17,7 @@ const props = defineProps<{
   contextMetrics: ContextMetricsResponse | null;
   provenanceDiagram: string;
   messages: ChatMessage[];
+  contextId?: string;
   provenanceSummary?: {
     count: number;
     failedCount: number;
@@ -30,6 +31,38 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ "open-settings": [] }>();
+
+// ── Planning state ──
+const planningData = ref<ContextPlanningResponse | null>(null);
+
+watch(
+  () => props.contextId,
+  async (ctxId) => {
+    if (!ctxId) {
+      planningData.value = null;
+      return;
+    }
+    try {
+      const res = await fetch(`/contexts/${ctxId}/planning`);
+      if (res.ok) planningData.value = await res.json();
+    } catch {
+      // planning endpoint may not be available
+    }
+  },
+  { immediate: true },
+);
+
+const planningStatus = computed(() => {
+  const tasks = planningData.value?.tasks ?? [];
+  if (tasks.length === 0) return null;
+  const task = tasks[0]!;
+  const intent = task.currentIntent?.description ?? null;
+  const summary = task.stepSummary;
+  const total = summary?.total ?? 0;
+  const completed = summary?.completed ?? 0;
+  const driftSeverity = task.drift?.compositeSeverity ?? null;
+  return { intent, total, completed, driftSeverity };
+});
 
 const agentRows = computed(() =>
   props.agents.map((a) => ({
@@ -313,6 +346,26 @@ function shortToolName(tool: string): string {
         <div class="stat-card-value stat-card-value--label">LLM &amp; Tools</div>
         <div class="stat-card-sub">Configure clients and tool bundles</div>
       </button>
+
+      <!-- Planning Status -->
+      <div v-if="planningStatus" class="stat-card">
+        <div class="stat-card-label">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="16" y1="13" x2="8" y2="13" />
+            <line x1="16" y1="17" x2="8" y2="17" />
+          </svg>
+          Agent Plan
+        </div>
+        <div class="stat-card-value stat-card-value--sm">{{ planningStatus.completed }}/{{ planningStatus.total }} steps</div>
+        <div class="stat-card-sub">
+          <span v-if="planningStatus.driftSeverity" :class="['planning-drift-label', `drift-${planningStatus.driftSeverity}`]">
+            Drift: {{ planningStatus.driftSeverity }}
+          </span>
+          <span v-else>On track</span>
+        </div>
+      </div>
     </div>
 
     <!-- ── Bottom row: agent table + session metrics + interpretation ── -->
