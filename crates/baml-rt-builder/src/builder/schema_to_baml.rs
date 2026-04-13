@@ -95,21 +95,26 @@ pub fn generate_baml_types_from_schemas(
     Ok(output)
 }
 
+fn merge_schema_def_maps(
+    source: &serde_json::Map<String, Value>,
+    into: &mut HashMap<String, Value>,
+) {
+    for (def_name, def_schema) in source {
+        into.insert(def_name.clone(), def_schema.clone());
+    }
+}
+
 /// Extract nested schemas from $defs or definitions
 fn extract_defs(schema: &Value, defs: &mut HashMap<String, Value>) {
     if let Some(schema_obj) = schema.as_object() {
         // Check $defs (JSON Schema 2020-12)
         if let Some(defs_obj) = schema_obj.get("$defs").and_then(|v| v.as_object()) {
-            for (def_name, def_schema) in defs_obj {
-                defs.insert(def_name.clone(), def_schema.clone());
-            }
+            merge_schema_def_maps(defs_obj, defs);
         }
 
         // Check definitions (JSON Schema draft-07)
         if let Some(defs_obj) = schema_obj.get("definitions").and_then(|v| v.as_object()) {
-            for (def_name, def_schema) in defs_obj {
-                defs.insert(def_name.clone(), def_schema.clone());
-            }
+            merge_schema_def_maps(defs_obj, defs);
         }
 
         // Recursively check nested objects
@@ -479,6 +484,40 @@ fn is_map_schema(schema_obj: &serde_json::Map<String, Value>) -> bool {
 }
 
 /// Stable BAML class name for an inline `type: object` schema (nested struct fields).
+/// Stable BAML enum name for an inline `type: string` + `enum` schema (e.g. `HistoryContextV1.op`).
+fn nested_enum_name_for_inline_string_enum(
+    schema_obj: &serde_json::Map<String, Value>,
+    inline_name_hint: Option<(&str, &str)>,
+) -> Result<String> {
+    if let Some(Value::String(title)) = schema_obj.get("title")
+        && !title.is_empty()
+    {
+        return Ok(title.clone());
+    }
+    let Some((parent, field)) = inline_name_hint else {
+        return Err(BamlBuilderError::InvalidArgument(
+            "inline string-enum schema has no title and no parent/field hint for BAML enum name"
+                .to_string(),
+        ));
+    };
+    Ok(format!("{}{}", parent, to_pascal_case(field)))
+}
+
+fn emit_inline_string_enum_if_needed(
+    output: &mut String,
+    schema_obj: &serde_json::Map<String, Value>,
+    enum_values: &[Value],
+    inline_name_hint: Option<(&str, &str)>,
+    generated: &mut HashSet<String>,
+) -> Result<String> {
+    let enum_name = nested_enum_name_for_inline_string_enum(schema_obj, inline_name_hint)?;
+    if !generated.contains(&enum_name) {
+        generate_baml_enum(output, &enum_name, enum_values, schema_obj)?;
+        generated.insert(enum_name.clone());
+    }
+    Ok(enum_name)
+}
+
 fn nested_class_name_for_inline_object(
     schema_obj: &serde_json::Map<String, Value>,
     inline_name_hint: Option<(&str, &str)>,
@@ -542,6 +581,20 @@ fn preemit_nested_inline_classes(
                 type_names,
             )?;
         }
+        return Ok(());
+    }
+
+    if schema_obj.get("type").and_then(|v| v.as_str()) == Some("string")
+        && let Some(enum_array) = schema_obj.get("enum").and_then(|v| v.as_array())
+        && !enum_array.is_empty()
+    {
+        let _ = emit_inline_string_enum_if_needed(
+            output,
+            schema_obj,
+            enum_array,
+            inline_name_hint,
+            generated,
+        )?;
         return Ok(());
     }
 
@@ -932,8 +985,22 @@ fn json_schema_to_baml_type(
             ));
         }
 
+        if type_str == "string" {
+            if let Some(enum_array) = schema_obj.get("enum").and_then(|v| v.as_array())
+                && !enum_array.is_empty()
+            {
+                return emit_inline_string_enum_if_needed(
+                    output,
+                    schema_obj,
+                    enum_array,
+                    inline_name_hint,
+                    generated,
+                );
+            }
+            return Ok("string".to_string());
+        }
+
         return Ok(match type_str {
-            "string" => "string".to_string(),
             // JSON Schema "integer" is always integral; "number" is always floating-point.
             // Previous code only mapped format=="int64" to int, causing u8/i32/etc. to
             // become float. The JSON Schema spec guarantees "integer" excludes fractions.

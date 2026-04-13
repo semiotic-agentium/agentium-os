@@ -59,7 +59,7 @@ For example, a Slack semantic-ingress agent can receive `host.source-records.v1`
 
 ## 3. BAML host tools: allowlist, session plans, and calling from TypeScript
 
-Host tools run in **Rust** as an FSM: **`Open` → `Send` / `Read` → `Finish` or `Abort`** (`Read` dereferences a prior **`Send`** archive, e.g. `@1`). JavaScript never drives the FSM directly unless you use the imperative **`openToolSession`** API (§3.8).
+Host tools run in **Rust** as an FSM: **`Open` → `Send` / `SearchRead` / `PageRead` → `Finish` or `Abort`** (`SearchRead` line-filters a prior **`Send`** archive with required `grep`; **`PageRead`** pages contiguous rendered lines without `grep`). JavaScript never drives the FSM directly unless you use the imperative **`openToolSession`** API (§3.8).
 
 The runtime parses a **single fragment** per BAML result: either a wrapper **`{ "step": { "op": "Open" | "Send" | …, … } }`** (generated `*SessionPlan` classes) or a **flat** step object **`{ "op": "Send", … }`** (per-phase executor functions). See `extract_tool_session_plan` in `crates/baml-rt-quickjs/src/baml/tool_extraction.rs`.
 
@@ -214,19 +214,19 @@ If the next plan step calls for email, a new `runGeneratedStepExecutor` invocati
 
 ### 3.4 Step executor: per-phase BAML narrows the LLM JSON
 
-**Problem without narrowing:** If every hop used the umbrella `ExecuteStep` → `CrmStepResult | SupportCrmSessionPlan | SupportEmailSessionPlan`, the model's **`{{ ctx.output_format }}`** would describe **every possible shape** on every hop: Open for either tool, Send with CRM input, Send with email input, Read, Finish, Abort, or plain result. That wastes tokens and invites invalid transitions (e.g. emitting `Finish` before `Send`).
+**Problem without narrowing:** If every hop used the umbrella `ExecuteStep` → `CrmStepResult | SupportCrmSessionPlan | SupportEmailSessionPlan`, the model's **`{{ ctx.output_format }}`** would describe **every possible shape** on every hop: Open for either tool, Send with CRM input, Send with email input, SearchRead, PageRead, Finish, Abort, or plain result. That wastes tokens and invites invalid transitions (e.g. emitting `Finish` before `Send`).
 
 **What the host does instead:** `runGeneratedStepExecutor("ExecuteStep", …)` keeps FSM state in Rust and, per hop, calls a **different generated BAML function** whose **return type contains only the ops that are legal right now**. These functions appear in `_baml_runtime.baml` under `// ── builder: per-phase step executors`:
 
 | FSM phase | Function called | Return type | What the model can emit |
 |-----------|----------------|-------------|------------------------|
-| No session open yet | `ExecuteStep__select` | `CrmStepResult \| SupportCrmOpenStep \| SupportEmailOpenStep` | Open CRM, Open email, or skip with a plain result. **No Send / Read / Finish.** |
-| CRM session open, first post-Open hop | `ExecuteStep__act__support_crm` | `SupportCrmSendStep \| SupportCrmReadStep` | **Send** with `CrmInput` for new work, or **Read** `@N` when an archive for this tool already exists in history (grep/limit/offset). **No Finish** on this hop. |
-| CRM Send completed, archive in history | `ExecuteStep__continue__support_crm` | `SupportCrmSendStep \| SupportCrmReadStep \| SupportCrmFinishStep` | Send again, Read an archive `@N`, or Finish. **No Open, no email types.** |
-| Email session open, first post-Open hop | `ExecuteStep__act__support_email` | `SupportEmailSendStep \| SupportEmailReadStep` | **Send** with `SendEmailInput` (`to`, `subject`, `body`), or **Read** `@N` when reusing an existing archive. **No Finish** on this hop. |
-| Email Send completed | `ExecuteStep__continue__support_email` | `SupportEmailSendStep \| SupportEmailReadStep \| SupportEmailFinishStep` | Send again, Read, or Finish. |
+| No session open yet | `ExecuteStep__select` | `CrmStepResult \| SupportCrmOpenStep \| SupportEmailOpenStep` | Open CRM, Open email, or skip with a plain result. **No Send / SearchRead / PageRead / Finish.** |
+| CRM session open, first post-Open hop | `ExecuteStep__act__support_crm` | `SupportCrmSendStep \| SupportCrmSearchReadStep \| SupportCrmPageReadStep` | **Send** with `CrmInput` for new work, or **SearchRead** / **PageRead** `@N` when an archive for this tool already exists in history. **No Finish** on this hop. |
+| CRM Send completed, archive in history | `ExecuteStep__continue__support_crm` | `SupportCrmSendStep \| SupportCrmSearchReadStep \| SupportCrmPageReadStep \| SupportCrmFinishStep` | Send again, SearchRead/PageRead an archive `@N`, or Finish. **No Open, no email types.** |
+| Email session open, first post-Open hop | `ExecuteStep__act__support_email` | `SupportEmailSendStep \| SupportEmailSearchReadStep \| SupportEmailPageReadStep` | **Send** with `SendEmailInput` (`to`, `subject`, `body`), or **SearchRead** / **PageRead** `@N` when reusing an existing archive. **No Finish** on this hop. |
+| Email Send completed | `ExecuteStep__continue__support_email` | `SupportEmailSendStep \| SupportEmailSearchReadStep \| SupportEmailPageReadStep \| SupportEmailFinishStep` | Send again, SearchRead/PageRead, or Finish. |
 
-Each prompt carries a **phase cue** — `[OPEN]`, `[ACT]` (first hop after Open: Send or Read), `[CONTINUE]` — and **`{{ ctx.output_format }}`** describes **only** the narrowed return type for that hop. The model literally cannot express an illegal transition because the schema doesn't include it.
+Each prompt carries a **phase cue** — `[OPEN]`, `[ACT]` (first hop after Open: Send or SearchRead/PageRead), `[CONTINUE]` — and **`{{ ctx.output_format }}`** describes **only** the narrowed return type for that hop. The model literally cannot express an illegal transition because the schema doesn't include it.
 
 **Example JSON at each phase** (what the model actually emits):
 
@@ -246,7 +246,7 @@ Each prompt carries a **phase cue** — `[OPEN]`, `[ACT]` (first hop after Open:
 }
 ```
 
-If an archive for this tool is already in conversation history, the model may **Read** on the act hop instead (same shape as the continue-phase Read below).
+If an archive for this tool is already in conversation history, the model may **SearchRead** or **PageRead** on the act hop instead (same step shapes as the continue phase below).
 
 **Continue phase** — archive `@1` is already in history; model finishes:
 
@@ -254,10 +254,14 @@ If an archive for this tool is already in conversation history, the model may **
 { "op": "Finish" }
 ```
 
-Or, if the archive was large, model pages through it first:
+Or, if the archive was large, model filters then inspects detail:
 
 ```json
-{ "op": "Read", "input": { "archive_ref": "@1", "grep": "revenue" } }
+{ "op": "SearchRead", "input": { "archive_ref": "@1", "grep": "revenue", "offset": 0, "limit": 50 } }
+```
+
+```json
+{ "op": "PageRead", "input": { "archive_ref": "@1", "offset": 0, "limit": 80 } }
 ```
 
 The runtime accepts **flat** `{ "op": … }` (from per-phase functions) and **wrapped** `{ "step": { "op": … } }` (from umbrella `*SessionPlan` types).
@@ -337,11 +341,11 @@ __chat_register({
 
 ### 3.7 Direct `await MyBamlFunction(...)` (single hop)
 
-When QuickJS calls a BAML function via the bridge, a return value that parses as a **tool session fragment** triggers **one** execute pass: the runtime runs that single `Open` / `Send` / `Read` / `Finish` / `Abort` and returns the **tool outcome** to JS (not the raw plan JSON). Continuing the session requires another call (or use `runGeneratedStepExecutor`).
+When QuickJS calls a BAML function via the bridge, a return value that parses as a **tool session fragment** triggers **one** execute pass: the runtime runs that single `Open` / `Send` / `SearchRead` / `PageRead` / `Finish` / `Abort` and returns the **tool outcome** to JS (not the raw plan JSON). Continuing the session requires another call (or use `runGeneratedStepExecutor`).
 
 ### 3.8 Imperative option — `openToolSession`
 
-Generated **`baml-runtime.d.ts`** declares **`openToolSession(toolName, openInput?)`** returning a handle with **`send`**, **`continue`** (Read), **`finish`**, **`abort`**. Use this when you own the loop (e.g. parsing **`plan_steps`** from a coordinator). Reference: [session-tool-eval](../tests/fixtures/agents/session-tool-eval/src/index.ts), [coordinator-smoke](../tests/fixtures/agents/coordinator-smoke/src/index.ts).
+Generated **`baml-runtime.d.ts`** declares **`openToolSession(toolName, openInput?)`** returning a handle with **`send`**, **`continue`** (passes input to the host read hop — model emits **SearchRead** or **PageRead** steps), **`finish`**, **`abort`**. Use this when you own the loop (e.g. parsing **`plan_steps`** from a coordinator). Reference: [session-tool-eval](../tests/fixtures/agents/session-tool-eval/src/index.ts), [coordinator-smoke](../tests/fixtures/agents/coordinator-smoke/src/index.ts).
 
 ### 3.9 Coordinator "product" plans vs executable session JSON
 
@@ -394,7 +398,7 @@ The stack uses a **unified citation contract** tied to a **ref table** built whe
 
 Intents, step transitions, and effects carry **`citations: string[]`** using **these exact strings** so downstream systems **parse, resolve, and check** claims against the same ref table the model saw — not parallel "evidence prose."
 
-The builder centralizes long `@description` text for **`StructuredReply.citations`**, session-plan and Send **citations**, and **`ArchiveReadInput`** (grep-first, bounded **limit**, **offset** paging) in [`crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs`](../crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs); `regen_fixtures` refreshes `_baml_runtime.baml` from that source.
+The builder centralizes long `@description` text for **`StructuredReply.citations`**, session-plan and Send **citations**, and **`ArchiveSearchReadInput` / `ArchivePageReadInput`** (SearchRead: required **grep** + paging; PageRead: contiguous lines, no grep) in [`crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs`](../crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs); `regen_fixtures` refreshes `_baml_runtime.baml` from that source.
 
 Full rationale vs PUD-style evidence strings: [citable-history-and-checked-citations.md](citable-history-and-checked-citations.md).
 

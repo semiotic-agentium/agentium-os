@@ -171,11 +171,19 @@ pub enum ToolSessionOp {
         input: Value,
         reason: Option<String>,
     },
-    Read {
+    /// Line-filtered archive read; `grep` pattern is required and must parse.
+    SearchRead {
         archive_ref: baml_rt_tools::archive_read::ShortRef,
         offset: baml_rt_tools::archive_read::LineOffset,
         limit: baml_rt_tools::archive_read::PageLimit,
-        grep: Option<baml_rt_tools::archive_read::GrepPattern>,
+        grep: baml_rt_tools::archive_read::GrepPattern,
+        reason: Option<String>,
+    },
+    /// Contiguous archive paging without a line filter.
+    PageRead {
+        archive_ref: baml_rt_tools::archive_read::ShortRef,
+        offset: baml_rt_tools::archive_read::LineOffset,
+        limit: baml_rt_tools::archive_read::PageLimit,
         reason: Option<String>,
     },
     Finish {
@@ -193,7 +201,8 @@ impl ToolSessionOp {
         match self {
             ToolSessionOp::Open { .. } => "Open",
             ToolSessionOp::Send { .. } => "Send",
-            ToolSessionOp::Read { .. } => "Read",
+            ToolSessionOp::SearchRead { .. } => "SearchRead",
+            ToolSessionOp::PageRead { .. } => "PageRead",
             ToolSessionOp::Finish { .. } => "Finish",
             ToolSessionOp::Abort { .. } => "Abort",
         }
@@ -282,6 +291,12 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
             ToolSessionOp::Send { input, reason }
         }
         "read" => {
+            return Err(BamlRtError::InvalidArgument(
+                "Legacy op \"Read\" was removed; emit \"SearchRead\" (requires grep) or \"PageRead\" (no grep) for archive access"
+                    .to_string(),
+            ));
+        }
+        "searchread" => {
             let input = step_obj
                 .get("input")
                 .cloned()
@@ -293,7 +308,7 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
                 .and_then(baml_rt_tools::archive_read::ShortRef::parse)
                 .ok_or_else(|| {
                     BamlRtError::InvalidArgument(
-                        "Read step: missing required archive_ref field (expected e.g. \"@1\")"
+                        "SearchRead step: missing required archive_ref (expected e.g. \"@1\")"
                             .to_string(),
                     )
                 })?;
@@ -307,16 +322,67 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
                 .and_then(|v| v.as_u64())
                 .map(|n| baml_rt_tools::archive_read::PageLimit::new(n as usize))
                 .unwrap_or_default();
-            let grep = input
+            let grep_raw = input
                 .get("grep")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
-                .and_then(|s| baml_rt_tools::archive_read::GrepPattern::parse(s).ok());
-            ToolSessionOp::Read {
+                .ok_or_else(|| {
+                    BamlRtError::InvalidArgument(
+                        "SearchRead step: grep is required (non-empty line filter pattern)"
+                            .to_string(),
+                    )
+                })?;
+            let grep = baml_rt_tools::archive_read::GrepPattern::parse(grep_raw).map_err(|e| {
+                BamlRtError::InvalidArgument(format!(
+                    "SearchRead step: invalid grep pattern {grep_raw:?}: {e}"
+                ))
+            })?;
+            ToolSessionOp::SearchRead {
                 archive_ref,
                 offset,
                 limit,
                 grep,
+                reason,
+            }
+        }
+        "pageread" => {
+            let input = step_obj
+                .get("input")
+                .cloned()
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            if let Some(g) = input.get("grep").and_then(|v| v.as_str())
+                && !g.is_empty()
+            {
+                return Err(BamlRtError::InvalidArgument(
+                    "PageRead step: grep must be omitted or empty; use SearchRead for line filtering"
+                        .to_string(),
+                ));
+            }
+            let archive_ref = input
+                .get("archive_ref")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .and_then(baml_rt_tools::archive_read::ShortRef::parse)
+                .ok_or_else(|| {
+                    BamlRtError::InvalidArgument(
+                        "PageRead step: missing required archive_ref (expected e.g. \"@1\")"
+                            .to_string(),
+                    )
+                })?;
+            let offset = input
+                .get("offset")
+                .and_then(|v| v.as_u64())
+                .map(|n| baml_rt_tools::archive_read::LineOffset(n as usize))
+                .unwrap_or_default();
+            let limit = input
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|n| baml_rt_tools::archive_read::PageLimit::new(n as usize))
+                .unwrap_or_default();
+            ToolSessionOp::PageRead {
+                archive_ref,
+                offset,
+                limit,
                 reason,
             }
         }
@@ -444,7 +510,8 @@ mod tests {
             match plan.step {
                 ToolSessionOp::Open { .. }
                 | ToolSessionOp::Send { .. }
-                | ToolSessionOp::Read { .. }
+                | ToolSessionOp::SearchRead { .. }
+                | ToolSessionOp::PageRead { .. }
                 | ToolSessionOp::Finish { .. }
                 | ToolSessionOp::Abort { .. } => {}
             }

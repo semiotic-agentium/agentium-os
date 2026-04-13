@@ -62,7 +62,8 @@ pub use episode::{
 pub use error::ProvenanceError;
 pub use events::{
     AgentBootedEvent, AgentType, CallScope, GlobalEvent, LlmUsage, PlanStepSpec, ProvEvent,
-    ProvEventData, ReservedAnchor, TaskScopedEvent, allocate_activity_anchor,
+    ProvEventData, ReservedAnchor, TaskScopedEvent, ToolSessionStepOpKind,
+    allocate_activity_anchor,
 };
 pub use graph_export::{ExportScope, ExportedGraph, GraphExporter};
 pub use graph_model::{
@@ -86,7 +87,7 @@ pub use store::{
     ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest,
     ProvenanceOpsQueryResponse, ProvenanceOpsResource, ProvenanceOutcomeSegment,
     ProvenancePlanningQuery, ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceResponseProfile,
-    ProvenanceWriter, ToolSessionPhase, conversation_history_role_for_message,
+    ProvenanceWriter, SessionStepOp, ToolSessionPhase, conversation_history_role_for_message,
 };
 pub use surreal_config::SurrealStoreConfig;
 pub use surreal_store::{SurrealBackend, SurrealProvenanceStore, SurrealStoreBuilder};

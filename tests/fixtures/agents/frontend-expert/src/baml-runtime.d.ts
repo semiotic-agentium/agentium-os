@@ -6,10 +6,15 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ArchiveReadInput { archive_ref: string;
+export interface ArchivePageReadInput { archive_ref: string;
 offset: number | null;
 limit: number | null;
-grep: string | null;
+ }
+
+export interface ArchiveSearchReadInput { archive_ref: string;
+grep: string;
+offset: number | null;
+limit: number | null;
  }
 
 export interface ClaudeDevAbortStep { op: "Abort";
@@ -27,12 +32,16 @@ tool_name: "claude/dev";
 initial_input: ClaudeToolOpenInput | null;
  }
 
-export interface ClaudeDevReadStep { op: "Read";
-input: ArchiveReadInput;
+export interface ClaudeDevPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
  }
 
 export interface ClaudeDevReport { action: string;
 message: string;
+ }
+
+export interface ClaudeDevSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
  }
 
 export interface ClaudeDevSendStep { op: "Send";
@@ -40,7 +49,7 @@ input: ClaudeToolSendInput;
 citations: string[];
  }
 
-export interface ClaudeDevSessionPlan { step: ClaudeDevOpenStep | ClaudeDevSendStep | ClaudeDevReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep;
+export interface ClaudeDevSessionPlan { step: ClaudeDevOpenStep | ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep;
 citations: string[];
  }
 
@@ -70,9 +79,6 @@ accessibility_notes: string | null;
 
 export interface SessionContext { contract_version: string;
 session_open: boolean;
-allowed_ops: string[] | null;
-selected_tool: string | null;
-status_token: string | null;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
@@ -414,15 +420,18 @@ export type StepExecutorFunctionName = "ChooseClaudeDevAction" | "ChooseClaudeDe
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    scope_ref: string | null;
-    output_ref: string | null;
-    evidence_ref: string | null;
 }
+
+/** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
+
+export type HistoryContextSessionOp = "SearchRead" | "PageRead";
+
+export type HistoryContextStatus = "done" | "streaming" | "suspended" | "error";
 
 export interface HistoryContext {
     hop: number;
-    op: string;
-    status: string;
+    op: HistoryContextSessionOp;
+    status: HistoryContextStatus;
     truncated: boolean;
     cursor: string | null;
     payload: Record<string, unknown> | null;
@@ -446,7 +455,6 @@ export interface StepExecutorRunResult<R = unknown> {
     last: R;
     steps: R[];
     session_context: SessionContext;
-    history_context: HistoryContext | null;
     selected_tool: string | null;
 }
 

@@ -1,9 +1,16 @@
 //! Typed step executor loop.
 //!
 //! Drives the multi-hop BAML function invocation loop entirely in Rust.
-//! Replaces the JS `runGeneratedStepExecutor` shim — all FSM state, policy
-//! resolution, polymorphic narrowing, and transition validation live here
+//! Replaces the JS `runGeneratedStepExecutor` shim — all FSM state, polymorphic
+//! narrowing, and transition validation live here
 //! with no invalid state representation.
+//!
+//! ## Deployment invariant
+//!
+//! Each hop **requires** the generated per-phase BAML functions (e.g. `ExecuteStep__select`,
+//! `__act__`, …) to exist in the agent IR. An older tarball or snapshot built without the
+//! current builder fails **deterministically** on the first hop with a clear error — there is
+//! no fallback to the base polymorphic function.
 //!
 //! ## Provenance
 //!
@@ -20,7 +27,7 @@ use baml_rt_core::{
     BamlFunctionId, BamlPromptName, BamlRtError, Result, VariantPhase, context,
     types::FunctionSignature,
 };
-use baml_rt_tools::{SessionPolicy, ToolName, ToolSlug};
+use baml_rt_tools::{ToolName, ToolSlug};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -149,13 +156,14 @@ struct SessionContextWire {
     session_open: bool,
 }
 
+/// Stable id for the `session_context` object shape injected into step-executor BAML args;
+/// must match generated prelude `SessionContext.contract_version` in agent packages.
 const SESSION_CONTEXT_CONTRACT_VERSION: &str = "session_context";
 
 /// Build the `session_context` JSON injected into BAML function args.
 ///
 /// FSM facts only — which operation is legal is expressed by the **per-phase**
-/// BAML function's narrowed return type (`ExecuteStep__select`, `__act__`, …),
-/// not by a redundant `allowed_ops` list in the prompt.
+/// BAML function's narrowed return type (`ExecuteStep__select`, `__act__`, …).
 fn build_session_context(phase: &Phase) -> Value {
     let wire = SessionContextWire {
         contract_version: SESSION_CONTEXT_CONTRACT_VERSION,
@@ -175,8 +183,6 @@ pub trait StepExecutorRuntime: Send + Sync {
     ) -> Result<Value>;
 
     fn get_function_signature(&self, name: &str) -> Option<&FunctionSignature>;
-
-    fn resolve_session_policy_for_function(&self, func_name: &str) -> SessionPolicy;
 }
 
 #[async_trait]
@@ -192,10 +198,6 @@ impl StepExecutorRuntime for BamlRuntimeManager {
 
     fn get_function_signature(&self, name: &str) -> Option<&FunctionSignature> {
         BamlRuntimeManager::get_function_signature(self, name)
-    }
-
-    fn resolve_session_policy_for_function(&self, func_name: &str) -> SessionPolicy {
-        BamlRuntimeManager::resolve_session_policy_for_function(self, func_name)
     }
 }
 
@@ -290,16 +292,6 @@ pub async fn run_step_executor_loop<R: StepExecutorRuntime>(
     let mut phase = Phase::AwaitingOpen;
     let mut steps: Vec<Value> = Vec::new();
     let mut last = Value::Null;
-
-    {
-        let guard = manager.read().await;
-        let p = guard.resolve_session_policy_for_function(function_name);
-        tracing::info!(
-            function = function_name,
-            policy = ?p,
-            "step_executor_loop: resolved session policy"
-        );
-    }
 
     for hop_idx in 0..max_steps {
         if matches!(phase, Phase::Terminal(_)) {

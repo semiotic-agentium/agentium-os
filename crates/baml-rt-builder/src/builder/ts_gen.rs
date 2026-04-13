@@ -124,18 +124,28 @@ pub fn render_ts_declarations(
             export interface SessionContext {
                 contract_version: "session_context";
                 session_open: boolean;
-                scope_ref: string | null;
-                output_ref: string | null;
-                evidence_ref: string | null;
             }
+        );
+        tokens.line();
+        let history_ctx_op_comment = "/** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */";
+        quote_in!(tokens => $(history_ctx_op_comment));
+        tokens.line();
+        quote_in!(
+            tokens =>
+            export type HistoryContextSessionOp = "SearchRead" | "PageRead";
+        );
+        tokens.line();
+        quote_in!(
+            tokens =>
+            export type HistoryContextStatus = "done" | "streaming" | "suspended" | "error";
         );
         tokens.line();
         quote_in!(
             tokens =>
             export interface HistoryContext {
                 hop: number;
-                op: string;
-                status: string;
+                op: HistoryContextSessionOp;
+                status: HistoryContextStatus;
                 truncated: boolean;
                 cursor: string | null;
                 payload: Record<string, unknown> | null;
@@ -166,7 +176,6 @@ pub fn render_ts_declarations(
                 last: R;
                 steps: R[];
                 session_context: SessionContext;
-                history_context: HistoryContext | null;
                 selected_tool: string | null;
             }
         );

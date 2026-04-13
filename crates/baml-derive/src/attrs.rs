@@ -183,3 +183,66 @@ fn parse_string_value(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Stri
     let lit: syn::LitStr = value.parse()?;
     Ok(lit.value())
 }
+
+fn parse_serde_nested_string(attrs: &[Attribute], key: &str) -> Option<String> {
+    for attr in attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        let mut found: Option<String> = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident(key) {
+                found = Some(parse_string_value(&meta)?);
+            }
+            Ok(())
+        });
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+/// `#[serde(rename_all = "...")]` on an enum (container).
+pub(crate) fn parse_serde_rename_all(attrs: &[Attribute]) -> Option<String> {
+    parse_serde_nested_string(attrs, "rename_all")
+}
+
+/// `#[serde(rename = "...")]` on a unit enum variant.
+pub(crate) fn parse_serde_variant_rename(attrs: &[Attribute]) -> Option<String> {
+    parse_serde_nested_string(attrs, "rename")
+}
+
+/// Apply Serde's `rename_all` rules to a Rust enum variant identifier (Serde 1.x container attr).
+pub(crate) fn serde_rename_all_variant(ident: &str, rule: &str) -> String {
+    match rule {
+        "lowercase" => ident.to_lowercase(),
+        "UPPERCASE" => ident.to_uppercase(),
+        "PascalCase" => ident.to_string(),
+        "camelCase" => to_camel_case(ident),
+        "snake_case" => to_snake_case(ident),
+        "SCREAMING_SNAKE_CASE" => to_snake_case(ident).to_uppercase(),
+        "kebab-case" => to_snake_case(ident).replace('_', "-"),
+        "SCREAMING-KEBAB-CASE" => to_snake_case(ident).to_uppercase().replace('_', "-"),
+        _ => ident.to_string(),
+    }
+}
+
+fn to_camel_case(ident: &str) -> String {
+    let mut c = ident.chars();
+    let Some(first) = c.next() else {
+        return String::new();
+    };
+    first.to_lowercase().collect::<String>() + c.as_str()
+}
+
+fn to_snake_case(ident: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in ident.chars().enumerate() {
+        if ch.is_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.extend(ch.to_lowercase());
+    }
+    out
+}

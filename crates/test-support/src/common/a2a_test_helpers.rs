@@ -99,6 +99,29 @@ fn message_parts(message: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// Serialises a wire `Part.data` field for test assertions.
+///
+/// A2A `Part.data` is typed as arbitrary JSON (`serde_json::Value`). The chat shim may emit
+/// parsed objects (see `structuredReplyToWireMessage`), not only JSON strings — callers that
+/// only matched `Value::as_str` would miss substantive model output carried in `data`.
+fn part_data_as_searchable_string(data: &Value) -> Option<String> {
+    match data {
+        Value::Null => None,
+        Value::String(s) if s.is_empty() => None,
+        Value::String(s) => Some(s.clone()),
+        other => Some(other.to_string()),
+    }
+}
+
+fn part_visible_string(part: &Value) -> Option<String> {
+    if let Some(t) = part.get("text").and_then(Value::as_str)
+        && !t.trim().is_empty()
+    {
+        return Some(t.to_string());
+    }
+    part.get("data").and_then(part_data_as_searchable_string)
+}
+
 /// Extracts message text from the first part of each chunk.
 pub fn message_texts_from_chunks(chunks: &[&Value]) -> Vec<String> {
     chunks
@@ -114,14 +137,16 @@ pub fn message_texts_from_chunks(chunks: &[&Value]) -> Vec<String> {
             part.get("text")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned)
+                .filter(|s| !s.is_empty())
+                .or_else(|| part.get("data").and_then(part_data_as_searchable_string))
         })
         .collect()
 }
 
 /// Extracts user-visible content from every part of every chunk — both `TextPart.text`
-/// and `DataPart.data` (the JSON string a model emits when it puts the substantive answer
-/// in a structured payload). Use this when an assertion needs to see the agent's full
-/// response, since some prompts legitimately route detail into `DataPart` rather than text.
+/// and `DataPart.data` (JSON string **or** structured JSON per A2A `Part.data: Value`).
+/// Use this when an assertion needs to see the agent's full response, since some prompts
+/// legitimately route detail into `DataPart` rather than text.
 pub fn message_visible_content_from_chunks(chunks: &[&Value]) -> Vec<String> {
     chunks
         .iter()
@@ -132,15 +157,7 @@ pub fn message_visible_content_from_chunks(chunks: &[&Value]) -> Vec<String> {
                 .unwrap_or_default()
                 .into_iter()
         })
-        .filter_map(|part| {
-            let text = part.get("text").and_then(Value::as_str);
-            let data = part.get("data").and_then(Value::as_str);
-            match (text, data) {
-                (Some(t), _) => Some(t.to_string()),
-                (None, Some(d)) => Some(d.to_string()),
-                _ => None,
-            }
-        })
+        .filter_map(|part| part_visible_string(&part))
         .collect()
 }
 
@@ -153,9 +170,8 @@ pub fn first_message_text_from_stream(responses: &[Value]) -> String {
             continue;
         };
         for part in message_parts(message) {
-            let text = part.get("text").and_then(Value::as_str).unwrap_or("");
-            if !text.is_empty() {
-                return text.to_string();
+            if let Some(s) = part_visible_string(&part) {
+                return s;
             }
         }
     }

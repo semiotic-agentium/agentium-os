@@ -46,7 +46,7 @@ Why this works:
 
 - State the business goal in plain terms (for example: identify agents that satisfy intent).
 - Provide stable output contract via `{{ ctx.output_format }}`.
-- Provide compact dynamic inputs (`inferred_intent`, `allowed_ops`, latest event log).
+- Provide compact dynamic inputs (`inferred_intent`, `session_context`, latest event log).
 - Avoid instructing internal runtime mechanics that are already enforced by schema/FSM.
 
 ### What prompts should not do
@@ -62,7 +62,7 @@ For Step Executor prompts, prefer this ordering:
 
 1. **Static goal block** (least volatile).
 2. **`{{ ctx.output_format }}`** (stable contract text; high prefix reuse).
-3. **Small dynamic control fields** (for example `inferred_intent`, `allowed_ops`).
+3. **Small dynamic control fields** (for example `inferred_intent`, `session_context.session_open`).
 4. **Event log tail** (most volatile, appended near the end).
 
 Canonical skeleton:
@@ -72,7 +72,7 @@ prompt #"
   Goal: <business outcome, no FSM lecture>
   {{ ctx.output_format }}
   Inferred intent: {{ inferred_intent }}
-  Allowed ops: {{ session_context.allowed_ops }}
+  Session open: {{ session_context.session_open }}
   {% if ctx.tags['event_log'] %}
   Event log (most recent context):
   {% for event in ctx.tags['event_log'] %}
@@ -84,7 +84,7 @@ prompt #"
 
 Notes:
 
-- `allowed_ops` must be present for step choice.
+- Legal ops are enforced by the **per-phase** step-executor function return type; `session_context` carries FSM facts only (`contract_version`, `session_open`).
 - Event log should be bounded/compacted upstream; only include most relevant recent context.
 - Do not inject persona chat history into internal Step Executor prompts.
 
@@ -124,7 +124,7 @@ prompt #"
   Goal: {{ goal_text }}
   {{ ctx.output_format }}
   Inferred intent: {{ inferred_intent }}
-  Allowed ops: {{ session_context.allowed_ops }}
+  Session open: {{ session_context.session_open }}
   {% if ctx.tags['event_log'] %}
   Event log (most recent context):
   {% for event in ctx.tags['event_log'] %}
@@ -141,8 +141,8 @@ Design note: if `goal_text` varies too much and hurts cache prefix reuse, keep a
 Generated step schema descriptions should communicate:
 
 - Emit exactly one FSM step.
-- Choose operation from `allowed_ops`.
-- After `Send`, prefer `Read` before more `Send`/`Finish` so tool output is consumed.
+- Choose exactly one FSM step; the invoked phase function’s return type lists only legal ops.
+- After `Send`, prefer **`SearchRead`** (line-filtered; `grep` required) or **`PageRead`** (contiguous lines; no `grep`) before more `Send`/`Finish` so tool output is consumed. Typical pattern: `Send → SearchRead → PageRead → Finish`.
 
 This belongs in generated output descriptions, not duplicated in every user-authored goal paragraph.
 
@@ -211,7 +211,7 @@ Stop/failure criteria:
 Why this is "iterative" but stable:
 
 - Iteration is over committed plan steps, not ad hoc replanning on every hop.
-- Execution hops remain local tactical decisions (`Open`/`Send`/`Read`/`Finish`), guided by `allowed_ops` and event log.
+- Execution hops remain local tactical decisions (`Open`/`Send`/`SearchRead`/`PageRead`/`Finish`), guided by the phase schema and event log.
 - Strategic intent and step ordering remain fixed for cache stability and auditability.
 
 ### TS do/don't
@@ -289,7 +289,7 @@ struct MyNextOutput {
 
 - Goal text describes user/business outcome, not FSM machinery.
 - `ctx.output_format` appears before highly volatile fields.
-- Session prompt includes `allowed_ops` and event log tail.
+- Session prompt includes `session_context` (FSM facts) and event log tail.
 - No `status_token`/legacy aliases in prompt inputs.
 - No duplicated top-level and step-level reason fields.
 - TS orchestration commits intent + Plan Artifact before execution.

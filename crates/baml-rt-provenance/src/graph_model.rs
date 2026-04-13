@@ -385,7 +385,7 @@ impl ConversationReadModel {
     /// Session-step query: individual Open/SendDone/Read events within sessions.
     pub fn session_step_query_params(context: &str) -> (String, serde_json::Value) {
         let query = "MATCH (s:SessionStep) WHERE s.a2a_context_id = $context \
-             RETURN s.a2a_activity_anchor, s.a2a_tool_name, s.op_kind, s.header, s.archive_ref, s.grep \
+             RETURN s.a2a_activity_anchor, s.a2a_tool_name, s.op_kind, s.header, s.archive_ref, s.grep, s.offset, s.limit \
              ORDER BY s.a2a_activity_anchor";
         (query.to_string(), serde_json::json!({ "context": context }))
     }

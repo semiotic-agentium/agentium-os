@@ -80,34 +80,6 @@ impl BamlRuntimeManager {
             .and_then(|map| map.get(tool_name).cloned())
     }
 
-    /// Resolve the `SessionPolicy` for a BAML step-executor function name.
-    ///
-    /// For single-tool functions (one candidate), resolves that tool's policy.
-    /// For polymorphic functions (multiple candidates), returns `Strict` as safe
-    /// default — the shim should use `resolve_session_policy_for_tool` with the
-    /// selected tool name after Open.
-    /// Resolve policy for a step-executor hop: prefer the bound tool after Open,
-    /// otherwise fall back to function-level resolution (single-tool vs polymorphic).
-    pub fn resolve_session_policy_for_step_executor(
-        &self,
-        function_name: &str,
-        selected_tool: Option<&str>,
-    ) -> baml_rt_tools::SessionPolicy {
-        if let Some(raw) = selected_tool {
-            match baml_rt_tools::ToolName::parse(raw) {
-                Ok(tool_name) => return self.resolve_session_policy_for_tool(&tool_name),
-                Err(e) => {
-                    tracing::warn!(
-                        selected_tool = raw,
-                        error = %e,
-                        "resolve_session_policy_for_step_executor: invalid tool name, falling back"
-                    );
-                }
-            }
-        }
-        self.resolve_session_policy_for_function(function_name)
-    }
-
     pub fn resolve_session_policy_for_function(
         &self,
         func_name: &str,

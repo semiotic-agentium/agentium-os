@@ -10,7 +10,10 @@ use quote::quote;
 use syn::{DataEnum, DataStruct, DeriveInput, Fields, Type};
 
 use crate::{
-    attrs::{extract_doc_comment, parse_container_attrs, parse_field_attrs, parse_variant_attrs},
+    attrs::{
+        extract_doc_comment, parse_container_attrs, parse_field_attrs, parse_serde_rename_all,
+        parse_serde_variant_rename, parse_variant_attrs, serde_rename_all_variant,
+    },
     resolve::{resolve_type_tokens, resolve_type_tokens_for_vec_or_one_field},
     schema_resolve::{
         is_option_type, resolve_schema_tokens, resolve_schema_tokens_for_vec_or_one_field,
@@ -276,9 +279,11 @@ fn expand_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream, syn:
     let doc = extract_doc_comment(&input.attrs);
     let doc_tokens = option_str_tokens(&doc);
 
+    let serde_rename_all = parse_serde_rename_all(&input.attrs);
+
     let mut variant_tokens = Vec::new();
-    // Collect non-skipped variant name strings for the TypeScript union.
-    let mut ts_variant_names: Vec<String> = Vec::new();
+    // Wire JSON strings for non-skipped variants (respects serde rename / rename_all).
+    let mut ts_wire_strings: Vec<String> = Vec::new();
 
     for variant in &data.variants {
         // Ensure all variants are unit variants for a regular BAML enum.
@@ -291,12 +296,29 @@ fn expand_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream, syn:
 
         let variant_attrs = parse_variant_attrs(&variant.attrs)?;
         let variant_name_str = variant.ident.to_string();
-        let alias_tokens = option_str_tokens(&variant_attrs.alias);
+        let serde_wire = parse_serde_variant_rename(&variant.attrs).unwrap_or_else(|| {
+            serde_rename_all
+                .as_deref()
+                .map(|rule| serde_rename_all_variant(&variant_name_str, rule))
+                .unwrap_or_else(|| variant_name_str.clone())
+        });
+        // Single wire string for TS union literals, JSON schema enum, and BAML @alias:
+        // explicit `#[baml(alias = ...)]` wins, else Serde rename / rename_all / Rust ident.
+        let wire_repr = variant_attrs
+            .alias
+            .clone()
+            .unwrap_or_else(|| serde_wire.clone());
+        let effective_alias = if wire_repr != variant_name_str {
+            Some(wire_repr.clone())
+        } else {
+            None
+        };
+        let alias_tokens = option_str_tokens(&effective_alias);
         let desc_tokens = option_str_tokens(&variant_attrs.description);
         let skip = variant_attrs.skip;
 
         if !skip {
-            ts_variant_names.push(variant_name_str.clone());
+            ts_wire_strings.push(wire_repr);
         }
 
         variant_tokens.push(quote! {
@@ -310,12 +332,12 @@ fn expand_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream, syn:
     }
 
     // Build the TypeScript `export type Foo = "A" | "B" | ...;` expression.
-    let ts_decl_expr = if ts_variant_names.is_empty() {
+    let ts_decl_expr = if ts_wire_strings.is_empty() {
         // All variants skipped — emit `export type Foo = never;`
         let never_decl = format!("export type {name_str} = never;");
         quote! { ::std::option::Option::Some(::std::string::String::from(#never_decl)) }
     } else {
-        let joined = ts_variant_names
+        let joined = ts_wire_strings
             .iter()
             .map(|v| format!("\"{v}\""))
             .collect::<Vec<_>>()
@@ -323,6 +345,11 @@ fn expand_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream, syn:
         let full_decl = format!("export type {name_str} = {joined};");
         quote! { ::std::option::Option::Some(::std::string::String::from(#full_decl)) }
     };
+
+    let json_schema_enum_entries: Vec<_> = ts_wire_strings
+        .iter()
+        .map(|s| quote!(::serde_json::Value::String(::std::string::String::from(#s))))
+        .collect();
 
     Ok(quote! {
         impl ::baml_derive_core::BamlType for #name {
@@ -352,7 +379,7 @@ fn expand_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream, syn:
         impl ::baml_derive_core::JsonSchemaType for #name {
             fn json_schema_inline() -> ::serde_json::Value {
                 let __variants: ::std::vec::Vec<::serde_json::Value> = ::std::vec![
-                    #(::serde_json::Value::String(#ts_variant_names.to_string())),*
+                    #(#json_schema_enum_entries),*
                 ];
                 ::serde_json::json!({"type": "string", "enum": __variants})
             }

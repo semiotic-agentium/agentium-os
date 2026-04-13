@@ -1,6 +1,6 @@
 /// One-hop planner for the session-tool-eval loop: returns a **standard** structured plan
 /// with exactly one step. The step’s `sub_message` holds a JSON line describing the next
-/// tool-session op (Open / Send / Read / Finish) for `test/synthetic_session_eval`.
+/// tool-session op (Open / Send / SearchRead / PageRead / Finish) for `test/synthetic_session_eval`.
 function PlanSessionToolEvalStep(
   objective: string,
 ) -> StandardStructuredPlan {
@@ -19,14 +19,14 @@ function PlanSessionToolEvalStep(
       agent_package: "test/synthetic_session_eval"
       agent_instance_id: "default"
       sub_message: a single-line JSON string (valid JSON object) with:
-        - "op": one of "Open", "Send", "Read", "Finish"
+        - "op": one of "Open", "Send", "SearchRead", "PageRead", "Finish"
         - optional "initial_input": object (use on Open when needed)
-        - optional "input": object (Send / Read payloads)
+        - optional "input": object (Send / SearchRead / PageRead payloads)
 
     Example sub_message values:
       {"op":"Open","initial_input":{}}
       {"op":"Send","input":{"retrieve_ref":null}}
-      {"op":"Read","input":{"retrieve_ref":"ref:1"}}
+      {"op":"PageRead","input":{"retrieve_ref":"ref:1"}}
       {"op":"Finish"}
 
     Strategy (reflect in your fields and JSON):

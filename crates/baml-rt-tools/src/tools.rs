@@ -776,10 +776,10 @@ impl SessionTypeNames {
     }
 }
 
-/// How the step executor schedules Send/Read ops for a tool session.
+/// How the step executor schedules Send vs archive read ops for a tool session.
 ///
 /// `Strict` (the default) enforces a single Send per hop: after a Send the
-/// executor may only Read, preventing "Tool session already has input" errors
+/// executor may only SearchRead or PageRead, preventing "Tool session already has input" errors
 /// that occur when the LLM picks Send again on a session with pending output.
 ///
 /// `MultiSend` is an opt-in for tools that genuinely support sending multiple
@@ -792,51 +792,18 @@ impl SessionTypeNames {
 ///    via the `session_plan_functions` manifest, never from function name matching.
 ///
 /// 2. **Strict mode safety**:
-///    After Send, Strict policy offers only `["Read"]`.
-///    This prevents "Tool session already has input" errors.
+///    After Send, the host FSM only advances with SearchRead, PageRead, Finish, or
+///    (in `MultiSend`) another Send — preventing "Tool session already has input" errors.
 ///
 /// 3. **Default safety**:
 ///    Unknown tools default to `Strict` (prevents double-send bugs).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SessionPolicy {
-    /// Open → Send → Read → Finish, one Send per hop (default).
+    /// Open → Send → SearchRead | PageRead → Finish, one Send per hop (default).
     #[default]
     Strict,
-    /// Open → Send* → Read → Finish, multiple Sends allowed per session.
+    /// Open → Send* → SearchRead | PageRead → Finish, multiple Sends allowed per session.
     MultiSend,
-}
-
-impl SessionPolicy {
-    /// Legal FSM op labels for the step-executor LLM at this session position.
-    ///
-    /// `last_status` is the **raw** `status` string from the previous hop's tool
-    /// result (e.g. `"open"`, `"sent"`, `"done"`). When `session_open` is false,
-    /// only `Open` is offered regardless of `last_status`.
-    pub fn step_executor_allowed_ops(
-        self,
-        session_open: bool,
-        last_status: Option<&str>,
-    ) -> Vec<&'static str> {
-        if !session_open {
-            return vec!["Open"];
-        }
-        match self {
-            SessionPolicy::Strict => match last_status {
-                Some("open") => vec!["Send", "Read"],
-                Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
-                Some("done") => vec!["Finish", "Read"],
-                Some("aborted") => vec!["Abort"],
-                _ => vec!["Read"],
-            },
-            SessionPolicy::MultiSend => match last_status {
-                Some("open") => vec!["Send", "Read"],
-                Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
-                Some("done") => vec!["Read", "Send", "Finish"],
-                Some("aborted") => vec!["Abort"],
-                _ => vec!["Read"],
-            },
-        }
-    }
 }
 
 /// Metadata describing a tool function
@@ -881,7 +848,7 @@ pub struct ToolFunctionMetadata {
     pub config_bundle: Option<BundleName>,
     /// Origin of this tool (host vs guest)
     pub origin: ToolOrigin,
-    /// Optional tool-specific semantics for projection modes used during Read steps.
+    /// Optional tool-specific semantics for projection modes used during SearchRead/PageRead steps.
     pub projection_semantics: Option<ToolProjectionSemantics>,
     /// FSM scheduling policy for the step executor. Controls which ops are
     /// offered after a Send. Defaults to `Strict` (one Send per hop).
@@ -1266,6 +1233,24 @@ pub enum SessionReadMode {
     RetrieveRef,
 }
 
+/// Host-reported archive read hop in [`HistoryContextV1`] (matches session FSM read ops).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BamlType)]
+#[serde(rename_all = "PascalCase")]
+pub enum HistoryContextSessionOp {
+    SearchRead,
+    PageRead,
+}
+
+/// Status of a host-reported session read hop in [`HistoryContextV1`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BamlType)]
+#[serde(rename_all = "lowercase")]
+pub enum HistoryContextStatus {
+    Done,
+    Streaming,
+    Suspended,
+    Error,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionReadEnvelope {
@@ -1282,8 +1267,8 @@ pub struct SessionReadEnvelope {
 #[serde(rename_all = "camelCase")]
 pub struct HistoryContextV1 {
     pub hop: u32,
-    pub op: String,
-    pub status: String,
+    pub op: HistoryContextSessionOp,
+    pub status: HistoryContextStatus,
     #[serde(default)]
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1697,9 +1682,9 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
                 .and_then(|v| serde_json::from_value::<T::Input>(v.clone()).ok())
                 .map(|typed| self.tool.describe_invocation(&typed))
                 .unwrap_or_else(|| format!("{}: send", self.metadata().name)),
-            // Read shows up as a SessionStep with archive content; Finish/Abort are terminal.
+            // SearchRead/PageRead show up as SessionSteps with archive content; Finish/Abort are terminal.
             // Neither adds semantic value as a ToolCall entry in the LLM's conversation history.
-            "Read" | "Finish" | "Abort" => String::new(),
+            "SearchRead" | "PageRead" | "Finish" | "Abort" => String::new(),
             other => format!("{}: {other}", self.metadata().name),
         }
     }
@@ -2645,7 +2630,7 @@ where
                 .and_then(|v| serde_json::from_value::<I>(v.clone()).ok())
                 .map(|typed| typed.describe())
                 .unwrap_or_else(|| format!("{tool_name}: send")),
-            "Read" | "Finish" | "Abort" => String::new(),
+            "SearchRead" | "PageRead" | "Finish" | "Abort" => String::new(),
             other => format!("{tool_name}: {other}"),
         }
     }
@@ -2719,7 +2704,7 @@ where
                 .and_then(|v| serde_json::from_value::<I>(v.clone()).ok())
                 .map(|typed| typed.describe())
                 .unwrap_or_else(|| format!("{tool_name}: send")),
-            "Read" | "Finish" | "Abort" => String::new(),
+            "SearchRead" | "PageRead" | "Finish" | "Abort" => String::new(),
             other => format!("{tool_name}: {other}"),
         }
     }
@@ -2823,7 +2808,7 @@ where
                 .and_then(|v| serde_json::from_value::<I>(v.clone()).ok())
                 .map(|typed| typed.describe())
                 .unwrap_or_else(|| format!("{tool_name}: send")),
-            "Read" | "Finish" | "Abort" => String::new(),
+            "SearchRead" | "PageRead" | "Finish" | "Abort" => String::new(),
             other => format!("{tool_name}: {other}"),
         }
     }

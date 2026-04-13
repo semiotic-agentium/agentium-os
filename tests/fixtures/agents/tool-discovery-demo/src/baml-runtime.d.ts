@@ -6,10 +6,15 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ArchiveReadInput { archive_ref: string;
+export interface ArchivePageReadInput { archive_ref: string;
 offset: number | null;
 limit: number | null;
-grep: string | null;
+ }
+
+export interface ArchiveSearchReadInput { archive_ref: string;
+grep: string;
+offset: number | null;
+limit: number | null;
  }
 
 export interface DiscoverToolsOpenInput { reason: string | null;
@@ -30,8 +35,12 @@ tool_name: "system/discover_tools";
 initial_input: DiscoverToolsOpenInput | null;
  }
 
-export interface SystemDiscover_toolsReadStep { op: "Read";
-input: ArchiveReadInput;
+export interface SystemDiscover_toolsPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface SystemDiscover_toolsSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
  }
 
 export interface SystemDiscover_toolsSendStep { op: "Send";
@@ -39,7 +48,7 @@ input: DiscoverToolsSendInput;
 citations: string[];
  }
 
-export interface SystemDiscover_toolsSessionPlan { step: SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep;
+export interface SystemDiscover_toolsSessionPlan { step: SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsSearchReadStep | SystemDiscover_toolsPageReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep;
 citations: string[];
  }
 
@@ -378,15 +387,18 @@ export type StepExecutorFunctionName = "ChooseDiscoverToolsQuery" | "ChooseDisco
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    scope_ref: string | null;
-    output_ref: string | null;
-    evidence_ref: string | null;
 }
+
+/** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
+
+export type HistoryContextSessionOp = "SearchRead" | "PageRead";
+
+export type HistoryContextStatus = "done" | "streaming" | "suspended" | "error";
 
 export interface HistoryContext {
     hop: number;
-    op: string;
-    status: string;
+    op: HistoryContextSessionOp;
+    status: HistoryContextStatus;
     truncated: boolean;
     cursor: string | null;
     payload: Record<string, unknown> | null;
@@ -410,7 +422,6 @@ export interface StepExecutorRunResult<R = unknown> {
     last: R;
     steps: R[];
     session_context: SessionContext;
-    history_context: HistoryContext | null;
     selected_tool: string | null;
 }
 

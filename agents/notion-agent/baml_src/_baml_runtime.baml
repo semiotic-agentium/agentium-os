@@ -5,14 +5,15 @@
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. Read: archive_ref @N from a Send for this tool (same session or conversation history). Large body: set grep; small limit; offset to page.
-// 4. Finish: Closes the session gracefully
-// 5. Abort: Closes the session with an error
+// 3. SearchRead: line-filtered archive read (grep required). Page with offset/limit over matches.
+// 4. PageRead: contiguous archive paging (no grep). Page with offset/limit over full rendered lines.
+// 5. Finish: Closes the session gracefully
+// 6. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - Read needs a real @N from a Send for this tool (may be earlier in history). Large @N: grep first, then limit/offset — do not dump whole archives.
+// - SearchRead/PageRead need a real @N from a Send for this tool (may be earlier in history). Large @N: SearchRead with grep first, then PageRead for detail — do not dump whole archives with PageRead alone.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -40,23 +41,11 @@ class ProvenancePlanStep {
   depends_on string[]? @description("Prerequisite step_ids (same alias namespace as step_id); omit or [] if none.")
 }
 
-class HistoryContext {
-  hop int
-  op string
-  status string
-  truncated bool
-  cursor string?
-  payload string?
-}
-
 /// Runtime session state injected by the step-executor loop.
 /// Do not construct manually — values come from the FSM.
 class SessionContext {
   contract_version string
   session_open bool
-  allowed_ops string[]? @description("Deprecated: per-phase step-executor functions narrow the output schema. Host may omit.")
-  selected_tool string?
-  status_token string?
 }
 
 /// Opaque JSON transport wrapper for host-managed tools and event payloads.
@@ -93,13 +82,19 @@ class StructuredReply {
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
-/// Archive deref input for Read steps.
-/// archive_ref is required: use the @N ref from the Send result.
-class ArchiveReadInput {
-  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every Read must use a real @N; do not invent refs.")
-  offset int? @description("0-based line offset after grep. Page with limit: first window offset=0; next offset += previous limit while lines or matches remain.")
-  limit int? @description("Max lines in this Read window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded). Set grep before large windows.")
-  grep string? @description("Large @N: set this first — line filter (substring or regex per host), e.g. deploy or -i deploy. Then page with offset/limit. Do not issue repeated wide Reads without a pattern.")
+/// Line-filtered archive read (emit op SearchRead).
+class ArchiveSearchReadInput {
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.")
+  grep string @description("Required non-empty line filter (substring or regex per host), e.g. deploy or -i deploy. Use SearchRead to locate lines; follow with PageRead when you need contiguous context.")
+  offset int? @description("0-based offset counting lines that matched grep (after filter). Page with limit: first window offset=0; next offset = previous next_offset while matches remain.")
+  limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
+}
+
+/// Contiguous archive paging without a line filter (emit op PageRead).
+class ArchivePageReadInput {
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.")
+  offset int? @description("0-based offset over full rendered archive lines (no grep). Page with limit: first window offset=0; next offset = previous next_offset while lines remain.")
+  limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
 }
 // Domain types generated from #[derive(BamlType)]
 /// Search Notion pages by keyword. Returns a list of page titles and IDs.
@@ -133,8 +128,8 @@ class NotionGetPageBlocksInput {
 /// Enriched (default): adds Notable Lines summaries and Missing Info hints for tables.
 /// Raw: returns blocks verbatim without post-processing or hints.
 enum BlockRenderMode {
-  Raw
-  Enriched
+  Raw @alias("raw")
+  Enriched @alias("enriched")
 }
 
 /// Notion tool input — three mutually exclusive operations:
@@ -192,10 +187,26 @@ class AgentCardDto {
   subscriptions AgentEventSubscriptionDto[]
 }
 
+enum HistoryContextV1Op {
+  SearchRead
+  PageRead
+}
+
+enum HistoryContextV1Status {
+  Done
+    @alias("done")
+  Streaming
+    @alias("streaming")
+  Suspended
+    @alias("suspended")
+  Error
+    @alias("error")
+}
+
 class HistoryContextV1 {
   hop int
-  op string
-  status string
+  op HistoryContextV1Op
+  status HistoryContextV1Status
   truncated bool
   cursor string | null?
   payload map<string, OpaqueJson> | null?
@@ -263,9 +274,16 @@ class ConversationChunk {
   artifact_update string | null?
 }
 
+enum InternalA2aNextOutputCompletion {
+  DONE
+  INPUTREQUIRED
+    @alias("INPUT_REQUIRED")
+  FAILED
+}
+
 class InternalA2aNextOutput {
   chunks ConversationChunk[]
-  completion string | null?
+  completion InternalA2aNextOutputCompletion | null?
   history_context HistoryContextV1 | null?
 }
 
@@ -287,7 +305,7 @@ class SupportNotionToolCard {
   tool_name "support/notion"
   description "Read-only Notion access (search pages, get page, get page blocks)."
   session_policy "Strict"
-  input_summary "anyOf({ page_size?: anyOf(integer | null), query?: anyOf(string | null), start_cursor?: anyOf(string | null) } | { page_id: string } | { block_id: string, max_depth?: anyOf(integer | null), page_size?: anyOf(integer | null), raw_blocks?: anyOf(enum(\"Enriched\" | \"Raw\") | null), start_cursor?: anyOf(string | null) })"
+  input_summary "anyOf({ page_size?: anyOf(integer | null), query?: anyOf(string | null), start_cursor?: anyOf(string | null) } | { page_id: string } | { block_id: string, max_depth?: anyOf(integer | null), page_size?: anyOf(integer | null), raw_blocks?: anyOf(enum(\"enriched\" | \"raw\") | null), start_cursor?: anyOf(string | null) })"
   tags string[] @description("Tool tags: support, notion, read")
 }
 
@@ -302,9 +320,14 @@ class SupportNotionSendStep {
   citations string[] @description("Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.")
 }
 
-class SupportNotionReadStep {
-  op "Read"
-  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+class SupportNotionSearchReadStep {
+  op "SearchRead"
+  input ArchiveSearchReadInput @description("archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.")
+}
+
+class SupportNotionPageReadStep {
+  op "PageRead"
+  input ArchivePageReadInput @description("archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.")
 }
 
 class SupportNotionFinishStep {
@@ -315,10 +338,10 @@ class SupportNotionAbortStep {
   op "Abort"
 }
 
-type SupportNotionSessionStep = SupportNotionOpenStep | SupportNotionSendStep | SupportNotionReadStep | SupportNotionFinishStep | SupportNotionAbortStep
+type SupportNotionSessionStep = SupportNotionOpenStep | SupportNotionSendStep | SupportNotionSearchReadStep | SupportNotionPageReadStep | SupportNotionFinishStep | SupportNotionAbortStep
 
 class SupportNotionSessionPlan {
-  step SupportNotionSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or Read @N when the archive already exists in history; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again. Access: read.")
+  step SupportNotionSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or SearchRead/PageRead @N when the archive exists; after Send (@N archived) → Finish, SearchRead, PageRead, or Send again. Access: read.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -343,9 +366,14 @@ class SystemDiscover_agentsSendStep {
   citations string[] @description("Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.")
 }
 
-class SystemDiscover_agentsReadStep {
-  op "Read"
-  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+class SystemDiscover_agentsSearchReadStep {
+  op "SearchRead"
+  input ArchiveSearchReadInput @description("archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.")
+}
+
+class SystemDiscover_agentsPageReadStep {
+  op "PageRead"
+  input ArchivePageReadInput @description("archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.")
 }
 
 class SystemDiscover_agentsFinishStep {
@@ -356,10 +384,10 @@ class SystemDiscover_agentsAbortStep {
   op "Abort"
 }
 
-type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep
+type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsSearchReadStep | SystemDiscover_agentsPageReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep
 
 class SystemDiscover_agentsSessionPlan {
-  step SystemDiscover_agentsSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or Read @N when the archive already exists in history; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
+  step SystemDiscover_agentsSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or SearchRead/PageRead @N when the archive exists; after Send (@N archived) → Finish, SearchRead, PageRead, or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -384,9 +412,14 @@ class SystemDiscover_toolsSendStep {
   citations string[] @description("Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.")
 }
 
-class SystemDiscover_toolsReadStep {
-  op "Read"
-  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+class SystemDiscover_toolsSearchReadStep {
+  op "SearchRead"
+  input ArchiveSearchReadInput @description("archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.")
+}
+
+class SystemDiscover_toolsPageReadStep {
+  op "PageRead"
+  input ArchivePageReadInput @description("archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.")
 }
 
 class SystemDiscover_toolsFinishStep {
@@ -397,10 +430,10 @@ class SystemDiscover_toolsAbortStep {
   op "Abort"
 }
 
-type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
+type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsSearchReadStep | SystemDiscover_toolsPageReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
 
 class SystemDiscover_toolsSessionPlan {
-  step SystemDiscover_toolsSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or Read @N when the archive already exists in history; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
+  step SystemDiscover_toolsSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or SearchRead/PageRead @N when the archive exists; after Send (@N archived) → Finish, SearchRead, PageRead, or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -425,9 +458,14 @@ class SystemInternal_a2aSendStep {
   citations string[] @description("Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.")
 }
 
-class SystemInternal_a2aReadStep {
-  op "Read"
-  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+class SystemInternal_a2aSearchReadStep {
+  op "SearchRead"
+  input ArchiveSearchReadInput @description("archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.")
+}
+
+class SystemInternal_a2aPageReadStep {
+  op "PageRead"
+  input ArchivePageReadInput @description("archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.")
 }
 
 class SystemInternal_a2aFinishStep {
@@ -438,10 +476,10 @@ class SystemInternal_a2aAbortStep {
   op "Abort"
 }
 
-type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep
+type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aSearchReadStep | SystemInternal_a2aPageReadStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep
 
 class SystemInternal_a2aSessionPlan {
-  step SystemInternal_a2aSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or Read @N when that tool archive already exists in history; after Send (@N archived) → Read @N (large archive: set grep, small limit, offset to page), Finish, or Send again.")
+  step SystemInternal_a2aSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or SearchRead/PageRead @N when that tool archive already exists; after Send (@N archived) → SearchRead (grep required) to find lines, PageRead (no grep) for contiguous slices, Finish, or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -484,12 +522,12 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — first post-Open hop: Send or Read support/notion.
+/// Phase: act — first post-Open hop: Send or SearchRead/PageRead support/notion.
 function ChooseNotionAction__act__support_notion(
   goal: string,
   step_description: string,
   session_context: SessionContext
-) -> SupportNotionSendStep | SupportNotionReadStep {
+) -> SupportNotionSendStep | SupportNotionSearchReadStep | SupportNotionPageReadStep {
 
   client OpenRouterGPT
   prompt #"[ACT] A support/notion session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nYou are executing one step of a read-only Notion retrieval plan.
@@ -516,12 +554,12 @@ PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send 
 
 }
 
-/// Phase: continue — read, send again, or finish support/notion.
+/// Phase: continue — SearchRead/PageRead, send again, or finish support/notion.
 function ChooseNotionAction__continue__support_notion(
   goal: string,
   step_description: string,
   session_context: SessionContext
-) -> SupportNotionSendStep | SupportNotionReadStep | SupportNotionFinishStep {
+) -> SupportNotionSendStep | SupportNotionSearchReadStep | SupportNotionPageReadStep | SupportNotionFinishStep {
 
   client OpenRouterGPT
   prompt #"[CONTINUE] support/notion result is archived.\nCheck session history:\n- See \"@N support/notion\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/notion\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/notion\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nYou are executing one step of a read-only Notion retrieval plan.

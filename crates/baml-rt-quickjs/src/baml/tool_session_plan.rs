@@ -71,7 +71,7 @@ impl BamlRuntimeManager {
 
     /// The plan is a sequence of typed `ToolSessionOp` operations that must follow FSM rules:
     /// - First operation must be Open
-    /// - Subsequent operations must be Send/Read/Finish/Abort (after Open)
+    /// - Subsequent operations must be Send/SearchRead/PageRead/Finish/Abort (after Open)
     /// - After Finish/Abort, session is closed
     pub(in crate::baml) async fn execute_tool_session_plan(
         &self,
@@ -103,7 +103,9 @@ impl BamlRuntimeManager {
         if let Some(first) = steps.first()
             && matches!(
                 first,
-                ToolSessionOp::Send { .. } | ToolSessionOp::Read { .. }
+                ToolSessionOp::Send { .. }
+                    | ToolSessionOp::SearchRead { .. }
+                    | ToolSessionOp::PageRead { .. }
             )
             && session_id.is_none()
         {
@@ -348,7 +350,7 @@ impl BamlRuntimeManager {
                         }
                     }
                 }
-                ToolSessionOp::Read {
+                ToolSessionOp::SearchRead {
                     archive_ref,
                     offset,
                     limit,
@@ -359,9 +361,8 @@ impl BamlRuntimeManager {
                         tool = %tool_name_str,
                         archive_ref = %archive_ref,
                         reason = ?reason,
-                        "FSM step: Read (archive deref)"
+                        "FSM step: SearchRead (archive line filter)"
                     );
-                    // Pure archive deref — no tool I/O. Look up the archived entry and paginate.
                     let context_id = plan_scope.context_id().as_str().to_string();
                     let ref_table = baml_rt_tools::archive_refs::get_or_create_ref_table(
                         &self.state.archive_ref_tables,
@@ -369,13 +370,12 @@ impl BamlRuntimeManager {
                     );
                     let entry = ref_table.get(archive_ref).ok_or_else(|| {
                         BamlRtError::InvalidArgument(format!(
-                            "Read step: archive ref {} not found in session context",
-                            archive_ref
+                            "SearchRead step: archive ref {archive_ref} not found in session context"
                         ))
                     })?;
                     let page = baml_rt_tools::archive_read::grep_paginate(
                         &entry.content,
-                        grep.as_ref(),
+                        Some(&grep),
                         offset,
                         limit,
                     );
@@ -396,7 +396,7 @@ impl BamlRuntimeManager {
                             .unwrap_or(1);
                         let more = if page.has_more {
                             format!(
-                                "\n--- {} more lines (Read @{} offset={} for next page) ---",
+                                "\n--- {} more lines (SearchRead @{} offset={} for next page) ---",
                                 page.total_matched - page.next_offset,
                                 archive_ref,
                                 page.next_offset,
@@ -417,11 +417,10 @@ impl BamlRuntimeManager {
                     });
                     last_output = Some(read_output.clone());
 
-                    // Emit ToolStarted/ToolCompleted for the Read FSM step so the FE
-                    // can display archive_ref, grep, offset as tool call args.
                     if let Some(emitter) = self.state.effect_emitter.as_ref() {
-                        let grep_str = grep.as_ref().map(|g| g.pattern_text().to_string());
+                        let grep_str = grep.pattern_text().to_string();
                         let read_args = serde_json::json!({
+                            "op": "SearchRead",
                             "archive_ref": archive_ref.to_string(),
                             "grep": grep_str,
                             "offset": offset.0,
@@ -433,7 +432,7 @@ impl BamlRuntimeManager {
                             args: read_args,
                             metadata: crate::tool_execution::build_metadata_map_with_phase(
                                 &plan_scope,
-                                Some("read"),
+                                Some("search_read"),
                             ),
                             delegation_target: None,
                         };
@@ -451,17 +450,129 @@ impl BamlRuntimeManager {
                                 .await;
                         }
 
-                        // Emit ToolSessionStep::Read only when a session is active, to
-                        // avoid creating SessionStep entities with empty session_id strings.
                         if let Some(sid) = session_id.as_ref() {
                             let _ = emitter
                                 .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
                                     context_id: plan_scope.context_id().clone(),
                                     tool_name: tool_name_str.clone(),
                                     session_id: sid.to_string(),
-                                    op: baml_rt_core::bus::SessionStepOp::Read {
+                                    op: baml_rt_core::bus::SessionStepOp::SearchRead {
                                         archive_ref: archive_ref.to_string(),
                                         grep: grep_str,
+                                        offset: offset.0,
+                                        limit: limit.get(),
+                                    },
+                                    task_id: plan_scope.task_id_opt().cloned(),
+                                })
+                                .await;
+                        }
+                    }
+                }
+                ToolSessionOp::PageRead {
+                    archive_ref,
+                    offset,
+                    limit,
+                    reason,
+                } => {
+                    tracing::debug!(
+                        tool = %tool_name_str,
+                        archive_ref = %archive_ref,
+                        reason = ?reason,
+                        "FSM step: PageRead (archive paging)"
+                    );
+                    let context_id = plan_scope.context_id().as_str().to_string();
+                    let ref_table = baml_rt_tools::archive_refs::get_or_create_ref_table(
+                        &self.state.archive_ref_tables,
+                        &context_id,
+                    );
+                    let entry = ref_table.get(archive_ref).ok_or_else(|| {
+                        BamlRtError::InvalidArgument(format!(
+                            "PageRead step: archive ref {archive_ref} not found in session context"
+                        ))
+                    })?;
+                    let page = baml_rt_tools::archive_read::grep_paginate(
+                        &entry.content,
+                        None,
+                        offset,
+                        limit,
+                    );
+                    let formatted = baml_rt_tools::archive_read::format_cat_n(&page.lines);
+                    let header = entry.display_header(archive_ref);
+                    let line_range = if page.lines.is_empty() {
+                        String::new()
+                    } else {
+                        let first = page
+                            .lines
+                            .first()
+                            .map(|l| l.original_line_number)
+                            .unwrap_or(1);
+                        let last = page
+                            .lines
+                            .last()
+                            .map(|l| l.original_line_number)
+                            .unwrap_or(1);
+                        let more = if page.has_more {
+                            format!(
+                                "\n--- {} more lines (PageRead @{} offset={} for next page) ---",
+                                page.total_matched - page.next_offset,
+                                archive_ref,
+                                page.next_offset,
+                            )
+                        } else {
+                            String::new()
+                        };
+                        format!(
+                            "\nlines {first}-{last} of {}:\n{formatted}{more}",
+                            page.total_matched
+                        )
+                    };
+                    let read_output = serde_json::json!({
+                        "status": "done",
+                        "output": format!("{header}{line_range}"),
+                        "has_more": page.has_more,
+                        "next_offset": page.next_offset,
+                    });
+                    last_output = Some(read_output.clone());
+
+                    if let Some(emitter) = self.state.effect_emitter.as_ref() {
+                        let read_args = serde_json::json!({
+                            "op": "PageRead",
+                            "archive_ref": archive_ref.to_string(),
+                            "offset": offset.0,
+                            "limit": limit.get(),
+                        });
+                        let read_meta = baml_rt_core::bus::ToolEffectMetadata {
+                            tool_name: tool_name_str.clone(),
+                            function_name: None,
+                            args: read_args,
+                            metadata: crate::tool_execution::build_metadata_map_with_phase(
+                                &plan_scope,
+                                Some("page_read"),
+                            ),
+                            delegation_target: None,
+                        };
+                        if let Ok(token) = emitter
+                            .start_tool(plan_scope.context_id().clone(), read_meta)
+                            .await
+                        {
+                            let _ = token
+                                .complete(
+                                    emitter.as_ref(),
+                                    0,
+                                    baml_rt_core::semantics::Outcome::Success,
+                                    Some(read_output),
+                                )
+                                .await;
+                        }
+
+                        if let Some(sid) = session_id.as_ref() {
+                            let _ = emitter
+                                .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
+                                    context_id: plan_scope.context_id().clone(),
+                                    tool_name: tool_name_str.clone(),
+                                    session_id: sid.to_string(),
+                                    op: baml_rt_core::bus::SessionStepOp::PageRead {
+                                        archive_ref: archive_ref.to_string(),
                                         offset: offset.0,
                                         limit: limit.get(),
                                     },

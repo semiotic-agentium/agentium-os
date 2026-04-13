@@ -994,7 +994,7 @@ impl QuickJSBridge {
                 continue: async function(readInput) {
                     assertNotTerminal("continue");
                     const out = await __tool_session_read(sessionId, JSON.stringify(readInput ?? {}));
-                    phase = "Read";
+                    phase = "Continue";
                     return out;
                 },
                 finish: async function() {

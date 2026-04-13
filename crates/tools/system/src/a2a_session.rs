@@ -10,7 +10,10 @@ use baml_rt_core::{
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
     ToolSession, ToolSessionError, ToolStep, opaque_json_map_from_object,
-    tools::{HistoryContextV1, ToolFunctionMetadata, ToolSessionContext, validate_open_input},
+    tools::{
+        HistoryContextSessionOp, HistoryContextStatus, HistoryContextV1, ToolFunctionMetadata,
+        ToolSessionContext, validate_open_input,
+    },
 };
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -103,7 +106,7 @@ impl ToolHandler for A2aSessionToolHandler {
                     "sending message to delegated agent".to_string()
                 }
             }
-            "Read" => "reading delegated agent output".to_string(),
+            "SearchRead" | "PageRead" => "reading delegated agent output".to_string(),
             "Finish" => "finished delegated agent session".to_string(),
             "Abort" => "aborted delegated agent session".to_string(),
             other => format!("delegated agent: {other}"),
@@ -485,11 +488,11 @@ impl ToolSession for A2aSession {
             let mut merged = merged;
             merged.history_context = Some(HistoryContextV1 {
                 hop: self.read_hop,
-                op: "Read".to_string(),
+                op: HistoryContextSessionOp::PageRead,
                 status: match merged.completion {
-                    Some(InternalA2aCompletion::InputRequired) => "suspended".to_string(),
-                    Some(InternalA2aCompletion::Failed) => "error".to_string(),
-                    _ => "streaming".to_string(),
+                    Some(InternalA2aCompletion::InputRequired) => HistoryContextStatus::Suspended,
+                    Some(InternalA2aCompletion::Failed) => HistoryContextStatus::Error,
+                    _ => HistoryContextStatus::Streaming,
                 },
                 truncated: false,
                 cursor: None,
@@ -534,11 +537,13 @@ impl ToolSession for A2aSession {
                     let mut merged = merged;
                     merged.history_context = Some(HistoryContextV1 {
                         hop: self.read_hop,
-                        op: "Read".to_string(),
+                        op: HistoryContextSessionOp::PageRead,
                         status: match merged.completion {
-                            Some(InternalA2aCompletion::InputRequired) => "suspended".to_string(),
-                            Some(InternalA2aCompletion::Failed) => "error".to_string(),
-                            _ => "streaming".to_string(),
+                            Some(InternalA2aCompletion::InputRequired) => {
+                                HistoryContextStatus::Suspended
+                            }
+                            Some(InternalA2aCompletion::Failed) => HistoryContextStatus::Error,
+                            _ => HistoryContextStatus::Streaming,
                         },
                         truncated: false,
                         cursor: None,
@@ -597,8 +602,8 @@ impl ToolSession for A2aSession {
                             completion: None,
                             history_context: Some(HistoryContextV1 {
                                 hop: self.read_hop,
-                                op: "Read".to_string(),
-                                status: "streaming".to_string(),
+                                op: HistoryContextSessionOp::PageRead,
+                                status: HistoryContextStatus::Streaming,
                                 truncated: false,
                                 cursor: None,
                                 payload: Some(opaque_json_map_from_object(serde_json::json!({

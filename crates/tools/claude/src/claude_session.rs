@@ -18,8 +18,8 @@ use baml_rt_tools::{
     bundles::BundleType,
     opaque_json_map_from_object,
     tools::{
-        HistoryContextV1, ToolFunctionMetadata, ToolProjectionSemantics, ToolSessionContext,
-        validate_open_input,
+        HistoryContextSessionOp, HistoryContextStatus, HistoryContextV1, ToolFunctionMetadata,
+        ToolProjectionSemantics, ToolSessionContext, validate_open_input,
     },
 };
 use claude_agent_sdk_rs::{
@@ -559,7 +559,7 @@ impl ToolHandler for ClaudeSessionToolHandler {
                     None => "sending input to Claude dev session".to_string(),
                 }
             }
-            "Read" => "reading Claude dev session output".to_string(),
+            "SearchRead" | "PageRead" => "reading Claude dev session output".to_string(),
             "Finish" => "completed Claude dev session".to_string(),
             "Abort" => "aborted Claude dev session".to_string(),
             other => format!("claude dev session: {other}"),
@@ -877,8 +877,8 @@ impl ToolSession for ClaudeSession {
                     completion: Some(ClaudeCompletion::InputRequired),
                     history_context: Some(HistoryContextV1 {
                         hop: self.read_hop,
-                        op: "Read".to_string(),
-                        status: "suspended".to_string(),
+                        op: HistoryContextSessionOp::PageRead,
+                        status: HistoryContextStatus::Suspended,
                         truncated: false,
                         cursor: None,
                         payload: Some(opaque_json_map_from_object(serde_json::json!({
@@ -934,13 +934,13 @@ impl ToolSession for ClaudeSession {
             completion: completion.clone(),
             history_context: Some(HistoryContextV1 {
                 hop: self.read_hop,
-                op: "Read".to_string(),
+                op: HistoryContextSessionOp::PageRead,
                 status: match &completion {
-                    Some(ClaudeCompletion::InputRequired) => "suspended".to_string(),
+                    Some(ClaudeCompletion::InputRequired) => HistoryContextStatus::Suspended,
                     Some(ClaudeCompletion::Done) | Some(ClaudeCompletion::Interrupted) => {
-                        "done".to_string()
+                        HistoryContextStatus::Done
                     }
-                    None => "streaming".to_string(),
+                    None => HistoryContextStatus::Streaming,
                 },
                 truncated: false,
                 cursor: None,

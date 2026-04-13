@@ -92,7 +92,7 @@ impl ConversationContextBatch<Canonical> {
     }
 }
 
-/// Derives [`crate::store::SessionStepContent::read_replay_lines`] for `Read` ops from an earlier
+/// Derives [`crate::store::SessionStepContent::read_replay_lines`] for archive read ops from an earlier
 /// `SendDone`’s hydrated replay payload in the same conversation batch. Pure derivation (no I/O).
 fn hydrate_session_step_read_replays(items: &mut [ProvenanceConversationContextItem]) {
     for i in 0..items.len() {
@@ -100,16 +100,20 @@ fn hydrate_session_step_read_replays(items: &mut [ProvenanceConversationContextI
             let ConversationItemContent::SessionStep(ss) = &items[i].content else {
                 continue;
             };
-            let SessionStepOp::Read {
-                archive_ref,
-                grep,
-                offset,
-                limit,
-            } = &ss.op
-            else {
-                continue;
-            };
-            (archive_ref.clone(), grep.clone(), *offset, *limit)
+            match &ss.op {
+                SessionStepOp::SearchRead {
+                    archive_ref,
+                    grep,
+                    offset,
+                    limit,
+                } => (archive_ref.clone(), Some(grep.clone()), *offset, *limit),
+                SessionStepOp::PageRead {
+                    archive_ref,
+                    offset,
+                    limit,
+                } => (archive_ref.clone(), None, *offset, *limit),
+                _ => continue,
+            }
         };
 
         let mut base: Option<serde_json::Value> = None;

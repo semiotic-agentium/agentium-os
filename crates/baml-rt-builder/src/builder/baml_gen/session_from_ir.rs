@@ -233,7 +233,8 @@ pub fn render_generated_session_baml_from_ir(
             let slug = tool.name.slug();
             let tool_name_str = tool.name.to_string();
             let send_type = format!("{}SendStep", tool.class_name);
-            let read_type = format!("{}ReadStep", tool.class_name);
+            let search_read_type = format!("{}SearchReadStep", tool.class_name);
+            let page_read_type = format!("{}PageReadStep", tool.class_name);
             let finish_type = format!("{}FinishStep", tool.class_name);
 
             let act_preamble = if tool_name_str == "system/discover_agents" {
@@ -248,11 +249,15 @@ pub fn render_generated_session_baml_from_ir(
             let act_name = SessionTypeNames::act(func_name, &slug);
             write_line(
                 &mut phase_out,
-                &format!("/// Phase: act — first post-Open hop: Send or Read {tool_name_str}."),
+                &format!(
+                    "/// Phase: act — first post-Open hop: Send or SearchRead/PageRead {tool_name_str}."
+                ),
             )?;
             write_line(
                 &mut phase_out,
-                &format!("function {act_name}{args_block} -> {send_type} | {read_type} {{"),
+                &format!(
+                    "function {act_name}{args_block} -> {send_type} | {search_read_type} | {page_read_type} {{"
+                ),
             )?;
             write_line(
                 &mut phase_out,
@@ -289,12 +294,14 @@ pub fn render_generated_session_baml_from_ir(
             let continue_name = SessionTypeNames::r#continue(func_name, &slug);
             write_line(
                 &mut phase_out,
-                &format!("/// Phase: continue — read, send again, or finish {tool_name_str}."),
+                &format!(
+                    "/// Phase: continue — SearchRead/PageRead, send again, or finish {tool_name_str}."
+                ),
             )?;
             write_line(
                 &mut phase_out,
                 &format!(
-                    "function {continue_name}{args_block} -> {send_type} | {read_type} | {finish_type} {{"
+                    "function {continue_name}{args_block} -> {send_type} | {search_read_type} | {page_read_type} | {finish_type} {{"
                 ),
             )?;
             write_line(

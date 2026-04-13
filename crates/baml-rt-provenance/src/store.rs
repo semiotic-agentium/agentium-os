@@ -56,6 +56,8 @@
 //! corruption that manifests as missing data on the read path, far from the source.
 
 use async_trait::async_trait;
+/// Canonical session-step discriminant for conversation history and effects (from `baml-rt-core`).
+pub type SessionStepOp = baml_rt_core::bus::SessionStepOp;
 use baml_rt_core::{
     Citation,
     bus::PlanningSupersessionKind,
@@ -141,27 +143,6 @@ pub struct ToolResultContent {
     pub outcome: ToolOutcome,
 }
 
-/// A session-step operation recorded for conversation history.
-/// Mirrors `baml_rt_core::bus::SessionStepOp` — re-exported here so provenance
-/// doesn't depend on `baml-rt-core`. Keep in sync.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum SessionStepOp {
-    Open,
-    /// `archive_ref` is the canonical identifier, e.g. `"@1"`.
-    SendDone {
-        archive_ref: String,
-        header: String,
-        informed_by: String,
-    },
-    /// Parameters that deterministically reproduce the cat-n output from the archive.
-    Read {
-        archive_ref: String,
-        grep: Option<String>,
-        offset: usize,
-        limit: usize,
-    },
-}
-
 /// Step content for a ToolSessionStep provenance event.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionStepContent {
@@ -170,7 +151,7 @@ pub struct SessionStepContent {
     /// `SendDone` only: `tool_result` JSON from the linked `ToolCall` (via `WAS_INFORMED_BY` graph edge).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_done_replay_payload: Option<serde_json::Value>,
-    /// `Read` only: replayed `cat -n` lines after resolving `archive_ref` against a prior hydrated SendDone in the same context batch.
+    /// SearchRead/PageRead only: replayed lines after resolving `archive_ref` against a prior hydrated SendDone in the same context batch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_replay_lines: Option<Vec<String>>,
 }
@@ -188,7 +169,7 @@ pub enum ConversationItemContent {
     },
     ToolCall(ToolCallContent),
     ToolResult(ToolResultContent),
-    /// An individual session step — Open/SendDone/Read within an in-progress session.
+    /// An individual session step — Open/SendDone/SearchRead/PageRead within an in-progress session.
     SessionStep(SessionStepContent),
 }
 
@@ -272,7 +253,7 @@ pub enum ToolSessionPhase {
     Send,
     /// FSM phase: archived result fetched by archive ref.
     Read,
-    /// FSM phase: session continued (deprecated name for Send).
+    /// FSM phase: session continued (legacy analytics label; treat like Send for session semantics).
     Next,
     /// FSM phase: session closed gracefully.
     Finish,
@@ -282,7 +263,8 @@ pub enum ToolSessionPhase {
 }
 
 impl ToolSessionPhase {
-    /// True for any FSM session phase (Open/Send/Read/Next/Finish/Abort).
+    /// True for any FSM session phase (Open/Send/Read/Next/Finish/Abort), where `Read` is the
+    /// analytics bucket for archive inspection metadata (`search_read` / `page_read`).
     /// These tool calls are represented in history by `SessionStep` events — the
     /// raw ToolCall/ToolResult entries are suppressed to enforce the universal Read interface.
     pub fn is_session_phase(&self) -> bool {
@@ -298,7 +280,8 @@ impl ToolSessionPhase {
             "execute" => Self::Execute,
             "open" => Self::Open,
             "send" => Self::Send,
-            "read" => Self::Read,
+            // Archive paging / search share the same session phase bucket for analytics.
+            "read" | "search_read" | "page_read" => Self::Read,
             "next" => Self::Next,
             "finish" => Self::Finish,
             "abort" => Self::Abort,

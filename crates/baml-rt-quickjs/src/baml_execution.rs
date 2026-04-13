@@ -55,22 +55,13 @@ fn planner_state_telemetry(args: &Value) -> Option<(usize, bool, usize, Option<S
         .get("status_token")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let allowed_ops_len = context
-        .get("allowed_ops")
-        .and_then(Value::as_array)
-        .map_or(0usize, std::vec::Vec::len);
     let payload_bytes = serde_json::to_vec(context).map_or(0, |v| v.len());
     let token = if status_token.is_empty() {
         None
     } else {
         Some(status_token.to_string())
     };
-    Some((
-        args_bytes,
-        session_open,
-        payload_bytes.saturating_add(allowed_ops_len),
-        token,
-    ))
+    Some((args_bytes, session_open, payload_bytes, token))
 }
 
 #[allow(dead_code)] // Reserved for URL normalization when wiring multi-endpoint clients.
@@ -98,8 +89,8 @@ fn derive_base_url(url: &str) -> Option<String> {
 ///
 /// Returns `Ok(None)` when no resolver is configured or when it cannot resolve
 /// any API key — in that case the caller falls back to the normal BAML client
-/// resolution path (which may use env vars if they are present in the process,
-/// though that path is deprecated: API keys should always come from the store).
+/// resolution path (which may use env vars if they are present in the process).
+/// Prefer resolving secrets from the configured store when available.
 #[allow(clippy::too_many_arguments)]
 async fn build_session_fsm_client_registry(
     runtime: &BamlRuntime,
@@ -338,7 +329,7 @@ impl BamlExecutor {
         if let Some(ref registry) = interceptor_registry {
             // `session_context` is a runtime-injected arg for step-executor functions.
             // Phase prompts may reference FSM facts (e.g. `session_context.session_open`);
-            // legal ops come from narrowed per-phase return types, not `allowed_ops`.
+            // legal ops come from narrowed per-phase return types.
             // Pass the full params (including session_context) into the interceptor probe
             // so templates match the real `call_function` invocation.
             let interceptor_params = params.clone();

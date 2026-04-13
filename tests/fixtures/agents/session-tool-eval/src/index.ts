@@ -55,7 +55,7 @@ __chat_register({
           continue;
         }
 
-        if (op === "Read") {
+        if (op === "SearchRead" || op === "PageRead") {
           const readInput =
             decision.input && typeof decision.input === "object"
               ? (decision.input as Record<string, unknown>)

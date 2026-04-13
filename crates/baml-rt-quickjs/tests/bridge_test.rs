@@ -884,8 +884,9 @@ async fn test_tool_session_plan_requires_manifest_mapping() {
     tracing::info!("✅ ToolSessionPlan enforces manifest mapping with no metadata fallback");
 }
 
-/// Strict-mode sequence via per-fragment execution: Open -> Send -> Read -> Finish.
-/// Tests execute_tool_from_baml_result_or_value directly (not through step executor loop).
+/// Strict-mode sequence via per-fragment execution: Open -> Send -> (SearchRead | PageRead) -> Finish.
+/// This case uses **PageRead** (contiguous lines; no grep). SearchRead would require a non-empty `grep`.
+/// Tests `execute_tool_from_baml_result_or_value` directly (not through the step executor loop).
 #[tokio::test]
 async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
     use baml_rt::baml::BamlRuntimeManager;
@@ -951,17 +952,17 @@ async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
         manager
             .execute_tool_from_baml_result_or_value(
                 scope.as_scope(),
-                json!({ "step": { "op": "Read", "input": { "archive_ref": archive_ref } } }),
+                json!({ "step": { "op": "PageRead", "input": { "archive_ref": archive_ref } } }),
                 Some("EchoPlanFn"),
                 None,
             )
             .await
     })
     .await
-    .expect("Read with archive_ref should succeed");
+    .expect("PageRead with archive_ref should succeed");
     assert!(
         read.get("output").is_some(),
-        "Read should include output payload; got: {:?}",
+        "PageRead should include output payload; got: {:?}",
         read
     );
 

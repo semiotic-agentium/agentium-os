@@ -165,11 +165,16 @@ pub enum SessionStepOp {
         header: String,
         informed_by: String,
     },
-    /// LLM read the archive at `archive_ref`. Parameters stored so the cat-n
-    /// output can be re-derived deterministically for conversation history.
-    Read {
+    /// LLM searched the archive at `archive_ref` with a line filter (`grep` pattern).
+    SearchRead {
         archive_ref: String,
-        grep: Option<String>,
+        grep: String,
+        offset: usize,
+        limit: usize,
+    },
+    /// LLM paged the archive at `archive_ref` without a line filter (contiguous window).
+    PageRead {
+        archive_ref: String,
         offset: usize,
         limit: usize,
     },

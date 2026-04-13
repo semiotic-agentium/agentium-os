@@ -754,7 +754,7 @@ pub async fn execute_calc_session_strict(
     let next = manager
         .execute_tool_from_baml_result_or_value(
             scope.as_scope(),
-            serde_json::json!({ "step": { "op": "Read", "input": {} } }),
+            serde_json::json!({ "step": { "op": "PageRead", "input": {} } }),
             Some(STREAM_BAML_TOOL_FUNCTION),
             None,
         )

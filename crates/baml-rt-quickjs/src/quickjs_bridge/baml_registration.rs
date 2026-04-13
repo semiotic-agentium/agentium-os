@@ -469,6 +469,10 @@ fn ensure_execution_session_scope_matches(
     Ok(())
 }
 
+fn is_archive_read_step_op(op: Option<&str>) -> bool {
+    matches!(op, Some("SearchRead") | Some("PageRead"))
+}
+
 fn validate_step_executor_transition(
     session_open_before_hop: bool,
     last_status_before_hop: Option<&str>,
@@ -486,10 +490,10 @@ fn validate_step_executor_transition(
     }
 
     if last_status_before_hop == Some("open") {
-        if op == Some("Read") {
+        if is_archive_read_step_op(op) {
             if !(status == "streaming" || status == "suspended" || status == "done") {
                 return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
-                    "runtime step executor contract violation ({step_executor}): expected Read-hop status in [streaming,suspended,done], got '{status}'"
+                    "runtime step executor contract violation ({step_executor}): expected SearchRead/PageRead hop status in [streaming,suspended,done], got '{status}'"
                 )));
             }
             return Ok(());
@@ -502,7 +506,7 @@ fn validate_step_executor_transition(
         return Ok(());
     }
 
-    if op == Some("Read")
+    if is_archive_read_step_op(op)
         && matches!(
             last_status_before_hop,
             Some("sent") | Some("streaming") | Some("suspended") | Some("done")
@@ -510,7 +514,7 @@ fn validate_step_executor_transition(
     {
         if !(status == "streaming" || status == "suspended" || status == "done") {
             return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
-                "runtime step executor contract violation ({step_executor}): expected Read-hop status in [streaming,suspended,done], got '{status}'"
+                "runtime step executor contract violation ({step_executor}): expected SearchRead/PageRead hop status in [streaming,suspended,done], got '{status}'"
             )));
         }
         return Ok(());
@@ -696,70 +700,8 @@ pub(super) async fn register_await_helper(bridge: &QuickJSBridge) -> Result<()> 
     Ok(())
 }
 
-/// Resolve the `SessionPolicy` for the current step executor context.
-///
-/// When `selected_tool` is provided (after Open), resolves directly from the tool's
-/// metadata — unified path for both single-tool and polymorphic functions.
-/// Falls back to function-level resolution when `selected_tool` is not yet known.
-/// Returns `Strict` (the safe default) when resolution fails.
-fn resolve_session_policy(
-    manager: &crate::baml::BamlRuntimeManager,
-    step_executor: Option<&str>,
-    selected_tool: Option<&str>,
-) -> baml_rt_tools::SessionPolicy {
-    match step_executor {
-        Some(f) => manager.resolve_session_policy_for_step_executor(f, selected_tool),
-        None => baml_rt_tools::SessionPolicy::default(),
-    }
-}
-
 /// Register Step Executor runtime helpers so shim JS stays coordination-only.
 pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridge) -> Result<()> {
-    let manager_clone = bridge.baml_manager().clone();
-    bridge
-        .runtime()
-        .set_function(
-            &[],
-            "__step_executor_allowed_ops",
-            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<
-                JsValueFacade,
-                quickjs_runtime::jsutils::JsError,
-            > {
-                if args.is_empty() || !args[0].is_string() {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str(
-                        "Expected step-executor context JSON string",
-                    ));
-                }
-                let payload: Value = serde_json::from_str(args[0].get_str()).map_err(|e| {
-                    quickjs_runtime::jsutils::JsError::new_str(&format!(
-                        "Failed to parse step-executor context JSON: {e}"
-                    ))
-                })?;
-                let session_open = payload
-                    .get("session_open")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let last_status = payload.get("last_status").and_then(Value::as_str);
-                let step_executor = payload.get("step_executor").and_then(Value::as_str);
-                let selected_tool = payload.get("selected_tool").and_then(Value::as_str);
-                let policy = manager_clone
-                    .try_read()
-                    .map(|guard| resolve_session_policy(&guard, step_executor, selected_tool))
-                    .unwrap_or_default();
-                let allowed = policy.step_executor_allowed_ops(session_open, last_status);
-                let json = serde_json::to_string(&allowed).map_err(|e| {
-                    quickjs_runtime::jsutils::JsError::new_str(&format!(
-                        "Failed to encode allowed ops JSON: {e}"
-                    ))
-                })?;
-                Ok(JsValueFacade::new_string(json))
-            },
-        )
-        .map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to register __step_executor_allowed_ops helper".to_string(),
-            source: Box::new(e),
-        })?;
-
     bridge
         .runtime()
         .set_function(

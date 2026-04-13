@@ -245,7 +245,7 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
         .expect("send_done");
     wall_clock_tick().await;
 
-    // Explicit Read step
+    // Explicit PageRead step (contiguous archive inspection; no grep)
     store
         .add_event(ProvEvent::tool_session_step(
             ctx.clone(),
@@ -254,15 +254,14 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
             },
             "system/discover_agents".into(),
             "sess-1".into(),
-            &SessionStepOp::Read {
+            &SessionStepOp::PageRead {
                 archive_ref: "@1".into(),
-                grep: None,
                 offset: 0,
                 limit: 200,
             },
         ))
         .await
-        .expect("read_step");
+        .expect("page_read_step");
     complete_task(&store, &ctx, &tid).await;
 
     let ep = EpisodeReader::new(store)
@@ -284,7 +283,7 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
         .collect();
     assert!(
         tool_read_entries.len() >= 2,
-        "expected >= 2 ToolRead entries (SendDone body + explicit Read); got {}",
+        "expected >= 2 ToolRead entries (SendDone body + explicit PageRead); got {}",
         tool_read_entries.len()
     );
 
