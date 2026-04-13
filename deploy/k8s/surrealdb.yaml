@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: surrealdb
+  namespace: agentium
+spec:
+  selector:
+    app: surrealdb
+  ports:
+    - port: 8000
+      targetPort: 8000
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: surrealdb
+  namespace: agentium
+spec:
+  serviceName: surrealdb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: surrealdb
+  template:
+    metadata:
+      labels:
+        app: surrealdb
+    spec:
+      containers:
+        - name: surrealdb
+          image: surrealdb/surrealdb:v3.0.4
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: SURREAL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: surrealdb-credentials
+                  key: username
+            - name: SURREAL_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: surrealdb-credentials
+                  key: password
+          args:
+            - start
+            - --bind
+            - "0.0.0.0:8000"
+            - surrealkv:///data/provenance.db
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
