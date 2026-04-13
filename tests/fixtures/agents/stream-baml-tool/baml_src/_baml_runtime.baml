@@ -174,7 +174,7 @@ class SupportCalculateSessionPlan {
 // ── builder: per-phase step executors (from IR) ──
 
 // Auto-generated per-phase step executor functions.
-// Prompt text matches the parent session-plan function; return type narrows legal ops.
+// Each phase narrows the return type to only the legal FSM ops.
 
 /// Phase: select — open a tool session.
 function ChooseCalcTool__select(
@@ -183,7 +183,7 @@ function ChooseCalcTool__select(
 ) -> SupportCalculateOpenStep {
 
   client DefaultClient
-  prompt #"Evaluate this calculation: {{ user_message }}
+  prompt #"[OPEN] Open a session with: support/calculate.\n\nEvaluate this calculation: {{ user_message }}
 For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
 {% if ctx.tags['conversation_history'] %}
@@ -193,7 +193,10 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+"#
 
 }
 
@@ -204,7 +207,7 @@ function ChooseCalcTool__act__support_calculate(
 ) -> SupportCalculateSendStep | SupportCalculateReadStep {
 
   client DefaultClient
-  prompt #"Evaluate this calculation: {{ user_message }}
+  prompt #"[ACT] A support/calculate session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nEvaluate this calculation: {{ user_message }}
 For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
 {% if ctx.tags['conversation_history'] %}
@@ -214,7 +217,10 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
+"#
 
 }
 
@@ -225,7 +231,7 @@ function ChooseCalcTool__continue__support_calculate(
 ) -> SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep {
 
   client DefaultClient
-  prompt #"Evaluate this calculation: {{ user_message }}
+  prompt #"[CONTINUE] support/calculate result is archived.\nCheck session history:\n- See \"@N support/calculate\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/calculate\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/calculate\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nEvaluate this calculation: {{ user_message }}
 For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
 {% if ctx.tags['conversation_history'] %}
@@ -235,6 +241,9 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
+"#
 
 }
