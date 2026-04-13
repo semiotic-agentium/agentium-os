@@ -26,6 +26,7 @@ pub mod id_semantics;
 pub mod interceptors;
 pub mod mermaid_cache;
 pub mod normalizer;
+pub(crate) mod payload_id;
 pub(crate) mod payload_record;
 pub(crate) mod payload_storage;
 pub(crate) mod prov_write_semantics;
@@ -85,7 +86,7 @@ pub use store::{
     ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest,
     ProvenanceOpsQueryResponse, ProvenanceOpsResource, ProvenanceOutcomeSegment,
     ProvenancePlanningQuery, ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceResponseProfile,
-    ProvenanceWriter, ToolSessionPhase,
+    ProvenanceWriter, ToolSessionPhase, conversation_history_role_for_message,
 };
 pub use surreal_config::SurrealStoreConfig;
 pub use surreal_store::{SurrealBackend, SurrealProvenanceStore, SurrealStoreBuilder};

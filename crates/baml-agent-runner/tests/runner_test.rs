@@ -366,6 +366,11 @@ async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        // Continue hop (Finish) can follow Send+Read; default 60s idle is tight when the LLM is slow.
+        .with_quickjs_config(
+            baml_rt::QuickJSConfig::new()
+                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(180, 120))),
+        )
         .with_surreal_store(test_surreal_store().await)
         .build()
         .await

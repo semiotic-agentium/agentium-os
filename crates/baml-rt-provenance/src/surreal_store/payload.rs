@@ -13,6 +13,7 @@ use super::{
 use crate::{
     error::{ProvenanceError, Result},
     events::ProvEventData,
+    payload_id::payload_row_id,
     payload_record::{PayloadRecord, StorageKind},
     payload_storage,
     store::{
@@ -25,7 +26,7 @@ use crate::{
 };
 
 pub(super) fn payload_id_for(anchor: &str, payload_kind: &str) -> String {
-    format!("payload:{anchor}:{payload_kind}")
+    payload_row_id(anchor, payload_kind)
 }
 
 /// Deterministic payload ID from activity anchor + kind. Same format as `payload_id_for`.

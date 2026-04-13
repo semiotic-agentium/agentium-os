@@ -64,13 +64,10 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
 
     {{ ctx.output_format }}
 
-    {% if ctx.tags['conversation_history'] %}
-    Conversation history:
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ _.role(msg.role) }}
-    {{ msg.content }}
+    {% for message in ctx.tags['conversation_history'] %}
+    {{ _.role(message.role) }}
+    {{ message.content }}
     {% endfor %}
-    {% endif %}
 
     spec_text:
     {{ spec_text }}

@@ -27,10 +27,7 @@ impl FunctionToolManifest {
         let mut bindings = HashMap::with_capacity(raw.len());
         for (func_name, candidates) in raw {
             if candidates.len() == 1 {
-                match resolve_tool_name_from_plan_type_with_registry(
-                    registry,
-                    candidates[0].as_str(),
-                ) {
+                match resolve_tool_name_from_plan_type_with_registry(registry, &candidates[0]) {
                     Ok(tool_name) => {
                         bindings.insert(func_name.clone(), tool_name);
                     }

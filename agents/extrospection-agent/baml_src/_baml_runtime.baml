@@ -5,14 +5,14 @@
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. Read: Prior Send via archive_ref @N. Large body: set grep; small limit; offset to page.
+// 3. Read: archive_ref @N from a Send for this tool (same session or conversation history). Large body: set grep; small limit; offset to page.
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - Read needs a prior Send ref. Large @N: grep first, then limit/offset — do not dump whole archives.
+// - Read needs a real @N from a Send for this tool (may be earlier in history). Large @N: grep first, then limit/offset — do not dump whole archives.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -96,7 +96,7 @@ class StructuredReply {
 /// Archive deref input for Read steps.
 /// archive_ref is required: use the @N ref from the Send result.
 class ArchiveReadInput {
-  archive_ref string @description("Required: @N from the preceding Send (e.g. '@1'). Every Read must use a real @N; do not invent refs.")
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every Read must use a real @N; do not invent refs.")
   offset int? @description("0-based line offset after grep. Page with limit: first window offset=0; next offset += previous limit while lines or matches remain.")
   limit int? @description("Max lines in this Read window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded). Set grep before large windows.")
   grep string? @description("Large @N: set this first — line filter (substring or regex per host), e.g. deploy or -i deploy. Then page with offset/limit. Do not issue repeated wide Reads without a pattern.")
@@ -273,7 +273,7 @@ class SystemExtrospectionSendStep {
 
 class SystemExtrospectionReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SystemExtrospectionFinishStep {
@@ -287,7 +287,7 @@ class SystemExtrospectionAbortStep {
 type SystemExtrospectionSessionStep = SystemExtrospectionOpenStep | SystemExtrospectionSendStep | SystemExtrospectionReadStep | SystemExtrospectionFinishStep | SystemExtrospectionAbortStep
 
 class SystemExtrospectionSessionPlan {
-  step SystemExtrospectionSessionStep @description("Emit one FSM step. From history: no session → Open; open, no Send → Send; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
+  step SystemExtrospectionSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or Read @N when the archive already exists in history; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -314,7 +314,7 @@ class SystemDiscover_agentsSendStep {
 
 class SystemDiscover_agentsReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SystemDiscover_agentsFinishStep {
@@ -328,7 +328,7 @@ class SystemDiscover_agentsAbortStep {
 type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep
 
 class SystemDiscover_agentsSessionPlan {
-  step SystemDiscover_agentsSessionStep @description("Emit one FSM step. From history: no session → Open; open, no Send → Send; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
+  step SystemDiscover_agentsSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or Read @N when the archive already exists in history; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -337,7 +337,7 @@ class SystemDiscover_agentsSessionPlan {
 // ── builder: per-phase step executors (from IR) ──
 
 // Auto-generated per-phase step executor functions.
-// Each phase narrows the return type to only the legal FSM ops.
+// Prompt text matches the parent session-plan function; return type narrows legal ops.
 
 /// Phase: select — open a tool session.
 function BuildExtrospectionPlan__select(
@@ -347,7 +347,7 @@ function BuildExtrospectionPlan__select(
 ) -> SystemExtrospectionOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/extrospection.\n\nQuery provenance data matching the intent. For Send, populate input fields:
+  prompt #"Query provenance data matching the intent. For Send, populate input fields:
 - resource: llm_calls | tool_calls | messages
   (if Auto: use llm_calls for token queries, messages for message-focused)
 - outcome: both | failed_only | successful_only
@@ -366,22 +366,19 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
-"#
+{{ ctx.output_format }}"#
 
 }
 
-/// Phase: act — send query to system/extrospection.
+/// Phase: act — first post-Open hop: Send or Read system/extrospection.
 function BuildExtrospectionPlan__act__system_extrospection(
   intent: QueryIntent,
   selected_agent: SelectedAgent?,
   session_context: SessionContext
-) -> SystemExtrospectionSendStep {
+) -> SystemExtrospectionSendStep | SystemExtrospectionReadStep {
 
   client DefaultClient
-  prompt #"[SEND] A system/extrospection session is open. Emit Send with your query.\n\nQuery provenance data matching the intent. For Send, populate input fields:
+  prompt #"Query provenance data matching the intent. For Send, populate input fields:
 - resource: llm_calls | tool_calls | messages
   (if Auto: use llm_calls for token queries, messages for message-focused)
 - outcome: both | failed_only | successful_only
@@ -400,10 +397,7 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
-"#
+{{ ctx.output_format }}"#
 
 }
 
@@ -415,7 +409,7 @@ function BuildExtrospectionPlan__continue__system_extrospection(
 ) -> SystemExtrospectionSendStep | SystemExtrospectionReadStep | SystemExtrospectionFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/extrospection result is archived.\nCheck session history:\n- See \"@N system/extrospection\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/extrospection\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/extrospection\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nQuery provenance data matching the intent. For Send, populate input fields:
+  prompt #"Query provenance data matching the intent. For Send, populate input fields:
 - resource: llm_calls | tool_calls | messages
   (if Auto: use llm_calls for token queries, messages for message-focused)
 - outcome: both | failed_only | successful_only
@@ -434,10 +428,7 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
-"#
+{{ ctx.output_format }}"#
 
 }
 
@@ -448,7 +439,7 @@ function GetDiscoverAgentsPlan__select(
 ) -> SystemDiscover_agentsOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/discover_agents.\n\nDiscover available agents relevant to the user's request.
+  prompt #"Discover available agents relevant to the user's request.
 For Send: use empty input {} to list all agents.
 
 Context: {{ user_message }}
@@ -460,23 +451,18 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
-"#
+{{ ctx.output_format }}"#
 
 }
 
-/// Phase: act — send query to system/discover_agents.
+/// Phase: act — first post-Open hop: Send or Read system/discover_agents.
 function GetDiscoverAgentsPlan__act__system_discover_agents(
   user_message: string,
   session_context: SessionContext
-) -> SystemDiscover_agentsSendStep {
+) -> SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep {
 
   client DefaultClient
-  prompt #"[SEND] A system/discover_agents session is open. Emit Send with your query.\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
-
-Discover available agents relevant to the user's request.
+  prompt #"Discover available agents relevant to the user's request.
 For Send: use empty input {} to list all agents.
 
 Context: {{ user_message }}
@@ -488,10 +474,7 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
-"#
+{{ ctx.output_format }}"#
 
 }
 
@@ -502,9 +485,7 @@ function GetDiscoverAgentsPlan__continue__system_discover_agents(
 ) -> SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/discover_agents result is archived.\nCheck session history:\n- See \"@N system/discover_agents\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_agents\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_agents\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
-
-Discover available agents relevant to the user's request.
+  prompt #"Discover available agents relevant to the user's request.
 For Send: use empty input {} to list all agents.
 
 Context: {{ user_message }}
@@ -516,9 +497,6 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
-"#
+{{ ctx.output_format }}"#
 
 }

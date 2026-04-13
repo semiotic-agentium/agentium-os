@@ -486,6 +486,14 @@ fn validate_step_executor_transition(
     }
 
     if last_status_before_hop == Some("open") {
+        if op == Some("Read") {
+            if !(status == "streaming" || status == "suspended" || status == "done") {
+                return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+                    "runtime step executor contract violation ({step_executor}): expected Read-hop status in [streaming,suspended,done], got '{status}'"
+                )));
+            }
+            return Ok(());
+        }
         if status != "sent" {
             return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
                 "runtime step executor contract violation ({step_executor}): expected Send-hop status 'sent', got '{status}'"

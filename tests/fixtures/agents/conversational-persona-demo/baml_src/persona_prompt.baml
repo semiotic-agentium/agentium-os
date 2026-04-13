@@ -8,12 +8,10 @@ function GetDiscoverAgentsPlan(
     Discover available agents to match the user's intent.
     Inferred intent: {{ inferred_intent }}
 
-    {% if ctx.tags['conversation_history'] %}
-    Session history:
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ msg.role }}: {{ msg.content }}
+    {% for message in ctx.tags['conversation_history'] %}
+    {{ _.role(message.role) }}
+    {{ message.content }}
     {% endfor %}
-    {% endif %}
 
     {{ ctx.output_format }}
   "#
@@ -52,11 +50,10 @@ function FormatCapabilities(user_message: string) -> StructuredReply {
     Describe what agents are available to help the user, in brutal ork persona voice.
     Match the output schema exactly (StructuredReply: parts + citations). 2-5 sentences in the text part; no tool jargon.
 
-    {% if ctx.tags['conversation_history'] %}
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ msg.role }}: {{ msg.content }}
+    {% for message in ctx.tags['conversation_history'] %}
+    {{ _.role(message.role) }}
+    {{ message.content }}
     {% endfor %}
-    {% endif %}
 
     {{ _.role('user') }}
     {{ user_message }}
@@ -78,11 +75,10 @@ function SelectAgentForMessage(user_message: string) -> SelectedAgent | null {
 
     {{ ctx.output_format }}
 
-    {% if ctx.tags['conversation_history'] %}
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ msg.role }}: {{ msg.content }}
+    {% for message in ctx.tags['conversation_history'] %}
+    {{ _.role(message.role) }}
+    {{ message.content }}
     {% endfor %}
-    {% endif %}
 
     {{ _.role('user') }}
     {{ user_message }}
@@ -116,11 +112,10 @@ function MakeStructuredPlan(user_message: string) -> StandardStructuredPlan {
 
     {{ ctx.output_format }}
 
-    {% if ctx.tags['conversation_history'] %}
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ msg.role }}: {{ msg.content }}
+    {% for message in ctx.tags['conversation_history'] %}
+    {{ _.role(message.role) }}
+    {{ message.content }}
     {% endfor %}
-    {% endif %}
 
     {{ _.role('user') }}
     {{ user_message }}
@@ -142,12 +137,10 @@ function DecideDelegationAction(
     For Send: write the message that will achieve the goal.
     Return null (string?) when the goal is satisfied or after 2+ exchanges.
 
-    {% if ctx.tags['conversation_history'] %}
-    Session history:
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ msg.role }}: {{ msg.content }}
+    {% for message in ctx.tags['conversation_history'] %}
+    {{ _.role(message.role) }}
+    {{ message.content }}
     {% endfor %}
-    {% endif %}
 
     {{ ctx.output_format }}
   "#
@@ -170,11 +163,10 @@ function PersonaReact(
     Match the output schema exactly (StructuredReply: parts + citations).
     Synthesize across steps when needed; use ork-flavoured diction (krump, waaagh) sparingly.
 
-    {% if ctx.tags['conversation_history'] %}
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ msg.role }}: {{ msg.content }}
+    {% for message in ctx.tags['conversation_history'] %}
+    {{ _.role(message.role) }}
+    {{ message.content }}
     {% endfor %}
-    {% endif %}
 
     {{ ctx.output_format }}
   "#

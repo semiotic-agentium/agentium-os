@@ -8,7 +8,7 @@
 //!
 //! | Prefix | Namespace | Points to |
 //! |--------|-----------|-----------|
-//! | `#N`   | Session history | A numbered line from `conversation_history`: user message, assistant turn, or tool-call description |
+//! | `#N`   | Session history | A numbered line from `conversation_history`: `user`, `assistant`, or `tool`-role rows (messages, tool calls, session FSM steps) |
 //! | `@N`   | Archive | A complete archived tool result (the blob returned by a `Send Done` step) |
 //! | `@N:L` | Archive, line-scoped | Single line `L` (1-based) inside archive entry `N` |
 //! | `@N:L1-L2` | Archive, range-scoped | Lines `L1..=L2` (1-based, inclusive) inside archive entry `N` |

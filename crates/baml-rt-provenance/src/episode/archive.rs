@@ -333,7 +333,7 @@ mod tests {
                 ProvenanceConversationContextItem {
                     timestamp_ms: 1,
                     activity_anchor: ActivityAnchorId::from("sd1"),
-                    role: "assistant".into(),
+                    role: "tool".into(),
                     content: ConversationItemContent::SessionStep(SessionStepContent {
                         tool_name: "system/discover_agents".into(),
                         op: SessionStepOp::SendDone {

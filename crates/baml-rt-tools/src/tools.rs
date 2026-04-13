@@ -14,7 +14,8 @@ use std::{
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::{
-    BamlRtError, ContextId, EventSourceKind, Result, SessionLifecycleError,
+    BamlFunctionId, BamlPromptName, BamlRtError, ContextId, EventSourceKind, Result,
+    SessionLifecycleError, VariantPhase,
     ids::{AgentId, TaskId},
 };
 use dashmap::DashMap;
@@ -712,7 +713,7 @@ pub enum FunctionRole {
     Select,
     /// Generated post-Open action phase function (`__act__<slug>`).
     Act,
-    /// Generated output-consumption phase function (`__consume__<slug>`).
+    /// Reserved: `__consume__<slug>` phase (manifest only if such functions exist in IR; builder does not emit them yet).
     Consume,
     /// Generated done/continue phase function (`__continue__<slug>`).
     Continue,
@@ -727,25 +728,43 @@ pub struct FunctionPlanBinding {
 
 /// Canonical naming conventions for generated session types and phase functions.
 ///
-/// Single source of truth for the suffix patterns used by the builder (codegen)
-/// and the step executor loop (runtime phase function selection).
+/// Phase function names are built via `BamlFunctionId::variant` + `full_name` in `baml-rt-core`
+/// so `BamlFunctionId::parse` and codegen stay mutually consistent.
 pub struct SessionTypeNames;
 
 impl SessionTypeNames {
     pub fn select(base: &str) -> String {
-        format!("{base}__select")
+        BamlFunctionId::variant(BamlPromptName::new(base), VariantPhase::Select).full_name()
     }
 
     pub fn act(base: &str, slug: &ToolSlug) -> String {
-        format!("{base}__act__{slug}")
+        BamlFunctionId::variant(
+            BamlPromptName::new(base),
+            VariantPhase::Act {
+                tool_slug: slug.as_str().to_string(),
+            },
+        )
+        .full_name()
     }
 
     pub fn consume(base: &str, slug: &ToolSlug) -> String {
-        format!("{base}__consume__{slug}")
+        BamlFunctionId::variant(
+            BamlPromptName::new(base),
+            VariantPhase::Consume {
+                tool_slug: slug.as_str().to_string(),
+            },
+        )
+        .full_name()
     }
 
     pub fn r#continue(base: &str, slug: &ToolSlug) -> String {
-        format!("{base}__continue__{slug}")
+        BamlFunctionId::variant(
+            BamlPromptName::new(base),
+            VariantPhase::Continue {
+                tool_slug: slug.as_str().to_string(),
+            },
+        )
+        .full_name()
     }
 
     pub fn open_step(class_name: &str) -> String {
@@ -803,14 +822,14 @@ impl SessionPolicy {
         }
         match self {
             SessionPolicy::Strict => match last_status {
-                Some("open") => vec!["Send"],
+                Some("open") => vec!["Send", "Read"],
                 Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
                 Some("done") => vec!["Finish", "Read"],
                 Some("aborted") => vec!["Abort"],
                 _ => vec!["Read"],
             },
             SessionPolicy::MultiSend => match last_status {
-                Some("open") => vec!["Send"],
+                Some("open") => vec!["Send", "Read"],
                 Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
                 Some("done") => vec!["Read", "Send", "Finish"],
                 Some("aborted") => vec!["Abort"],
@@ -3029,5 +3048,29 @@ mod session_plan_type_name_tests {
         let back: SessionPlanFunctionsMap = serde_json::from_str(&json).unwrap();
         assert_eq!(back.len(), 1);
         assert_eq!(back["ChooseAction"].len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod session_type_names_alignment_tests {
+    use baml_rt_core::BamlFunctionId;
+
+    use super::{SessionTypeNames, ToolName};
+
+    #[test]
+    fn select_act_continue_round_trip_parse() {
+        let base = "ExecuteStep";
+        let tn = ToolName::parse("support/calculate").unwrap();
+        let slug = tn.slug();
+
+        for name in [
+            SessionTypeNames::select(base),
+            SessionTypeNames::act(base, &slug),
+            SessionTypeNames::r#continue(base, &slug),
+            SessionTypeNames::consume(base, &slug),
+        ] {
+            let id = BamlFunctionId::parse(&name);
+            assert_eq!(id.full_name(), name, "parse round-trip for {name}");
+        }
     }
 }

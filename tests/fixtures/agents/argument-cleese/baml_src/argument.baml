@@ -12,13 +12,20 @@ function ArgumentReply(other_message: string) -> string {
   "#
 }
 
-// Send Cleese's line to Chapman via an A2A session. FSM phase instructions injected by codegen.
+// Send Cleese's line to Chapman via internal_a2a. Phase executors reuse this prompt verbatim; op shape comes from {{ ctx.output_format }} per hop.
 function CleeseSendToChapman(first_line: string) -> SystemInternal_a2aSessionPlan {
   client DefaultClient
   prompt #"
-    Coordinate the argument sketch with agent argument-chapman.
+    Argue in the style of a Monty Python sketch.
+
     For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
-    For Send: set input.parts to [{ "text": "{{ first_line }}" }].
+
+    Cleese line — this is the only text you may send to Chapman on Send (copy it exactly; do not invent substitute sketch lines or alternate wording):
+    {{ first_line }}
+
+    On Send, the message body must be exactly the Cleese line above, character for character. Do not improvise dialogue.
+
+    One round trip only: send Cleese’s line once; when Chapman’s reply appears in the session below (or after at most one Read if history is not yet visible), end this tool session. Do not Send again to Chapman in the same planner turn.
 
     {% if ctx.tags['conversation_history'] %}
     Session history:

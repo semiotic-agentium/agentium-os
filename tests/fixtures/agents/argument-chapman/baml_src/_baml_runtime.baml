@@ -5,14 +5,14 @@
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. Read: Prior Send via archive_ref @N. Large body: set grep; small limit; offset to page.
+// 3. Read: archive_ref @N from a Send for this tool (same session or conversation history). Large body: set grep; small limit; offset to page.
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - Read needs a prior Send ref. Large @N: grep first, then limit/offset — do not dump whole archives.
+// - Read needs a real @N from a Send for this tool (may be earlier in history). Large @N: grep first, then limit/offset — do not dump whole archives.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -96,7 +96,7 @@ class StructuredReply {
 /// Archive deref input for Read steps.
 /// archive_ref is required: use the @N ref from the Send result.
 class ArchiveReadInput {
-  archive_ref string @description("Required: @N from the preceding Send (e.g. '@1'). Every Read must use a real @N; do not invent refs.")
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every Read must use a real @N; do not invent refs.")
   offset int? @description("0-based line offset after grep. Page with limit: first window offset=0; next offset += previous limit while lines or matches remain.")
   limit int? @description("Max lines in this Read window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded). Set grep before large windows.")
   grep string? @description("Large @N: set this first — line filter (substring or regex per host), e.g. deploy or -i deploy. Then page with offset/limit. Do not issue repeated wide Reads without a pattern.")
@@ -173,7 +173,7 @@ class SystemInternal_a2aSendStep {
 
 class SystemInternal_a2aReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SystemInternal_a2aFinishStep {
@@ -187,6 +187,6 @@ class SystemInternal_a2aAbortStep {
 type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep
 
 class SystemInternal_a2aSessionPlan {
-  step SystemInternal_a2aSessionStep @description("Emit one FSM step. From history: no session → Open; open, no Send → Send (input.text must be non-empty); after Send → Read @N (large archive: set grep, small limit, offset to page), Finish, or Send again.")
+  step SystemInternal_a2aSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or Read @N when that tool archive already exists in history; after Send (@N archived) → Read @N (large archive: set grep, small limit, offset to page), Finish, or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }

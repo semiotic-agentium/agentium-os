@@ -5,14 +5,14 @@
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. Read: Prior Send via archive_ref @N. Large body: set grep; small limit; offset to page.
+// 3. Read: archive_ref @N from a Send for this tool (same session or conversation history). Large body: set grep; small limit; offset to page.
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - Read needs a prior Send ref. Large @N: grep first, then limit/offset — do not dump whole archives.
+// - Read needs a real @N from a Send for this tool (may be earlier in history). Large @N: grep first, then limit/offset — do not dump whole archives.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -96,7 +96,7 @@ class StructuredReply {
 /// Archive deref input for Read steps.
 /// archive_ref is required: use the @N ref from the Send result.
 class ArchiveReadInput {
-  archive_ref string @description("Required: @N from the preceding Send (e.g. '@1'). Every Read must use a real @N; do not invent refs.")
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every Read must use a real @N; do not invent refs.")
   offset int? @description("0-based line offset after grep. Page with limit: first window offset=0; next offset += previous limit while lines or matches remain.")
   limit int? @description("Max lines in this Read window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded). Set grep before large windows.")
   grep string? @description("Large @N: set this first — line filter (substring or regex per host), e.g. deploy or -i deploy. Then page with offset/limit. Do not issue repeated wide Reads without a pattern.")
@@ -185,7 +185,7 @@ class SystemDiscover_toolsSendStep {
 
 class SystemDiscover_toolsReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SystemDiscover_toolsFinishStep {
@@ -199,7 +199,7 @@ class SystemDiscover_toolsAbortStep {
 type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
 
 class SystemDiscover_toolsSessionPlan {
-  step SystemDiscover_toolsSessionStep @description("Emit one FSM step. From history: no session → Open; open, no Send → Send; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
+  step SystemDiscover_toolsSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or Read @N when the archive already exists in history; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -225,7 +225,7 @@ class SupportCalculateSendStep {
 
 class SupportCalculateReadStep {
   op "Read"
-  input ArchiveReadInput @description("Prior Send archive: archive_ref required. Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
 }
 
 class SupportCalculateFinishStep {
@@ -239,7 +239,7 @@ class SupportCalculateAbortStep {
 type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep
 
 class SupportCalculateSessionPlan {
-  step SupportCalculateSessionStep @description("Emit one FSM step. From history: no session → Open; open, no Send → Send; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
+  step SupportCalculateSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or Read @N when the archive already exists in history; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -248,7 +248,7 @@ class SupportCalculateSessionPlan {
 // ── builder: per-phase step executors (from IR) ──
 
 // Auto-generated per-phase step executor functions.
-// Each phase narrows the return type to only the legal FSM ops.
+// Prompt text matches the parent session-plan function; return type narrows legal ops.
 
 /// Phase: select — open a tool session.
 function ChooseDiscoverToolsQuery__select(
@@ -257,44 +257,42 @@ function ChooseDiscoverToolsQuery__select(
 ) -> SystemDiscover_toolsOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/discover_tools.\n\nFind tools that can help with: {{ user_message }}
+  prompt #"Find tools that can help with: {{ user_message }}
 For Send: set input.query to a concise search term derived from the user message.
 
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{% for msg in ctx.tags['conversation_history'] %}
-{{ msg.role }}: {{ msg.content }}
+Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
+Once the tool list for the user's query is present in history, use the Continue hop to emit Finish and close the session.
+Do not issue extra Reads or Sends unless the archive explicitly indicates more pages or incomplete results.
+
+{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
 {% endfor %}
-{% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
-"#
+{{ ctx.output_format }}"#
 
 }
 
-/// Phase: act — send query to system/discover_tools.
+/// Phase: act — first post-Open hop: Send or Read system/discover_tools.
 function ChooseDiscoverToolsQuery__act__system_discover_tools(
   user_message: string,
   session_context: SessionContext
-) -> SystemDiscover_toolsSendStep {
+) -> SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep {
 
   client DefaultClient
-  prompt #"[SEND] A system/discover_tools session is open. Emit Send with your query.\n\nFind tools that can help with: {{ user_message }}
+  prompt #"Find tools that can help with: {{ user_message }}
 For Send: set input.query to a concise search term derived from the user message.
 
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{% for msg in ctx.tags['conversation_history'] %}
-{{ msg.role }}: {{ msg.content }}
+Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
+Once the tool list for the user's query is present in history, use the Continue hop to emit Finish and close the session.
+Do not issue extra Reads or Sends unless the archive explicitly indicates more pages or incomplete results.
+
+{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
 {% endfor %}
-{% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (Send only): The JSON root must be exactly one Send step: op must be the string Send, plus input and citations fields. Do NOT return Report, AskUser, Open, Read, or Finish. Do NOT wrap the Send object under a step property.
-"#
+{{ ctx.output_format }}"#
 
 }
 
@@ -305,19 +303,18 @@ function ChooseDiscoverToolsQuery__continue__system_discover_tools(
 ) -> SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/discover_tools result is archived.\nCheck session history:\n- See \"@N system/discover_tools\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_tools\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_tools\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nFind tools that can help with: {{ user_message }}
+  prompt #"Find tools that can help with: {{ user_message }}
 For Send: set input.query to a concise search term derived from the user message.
 
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{% for msg in ctx.tags['conversation_history'] %}
-{{ msg.role }}: {{ msg.content }}
+Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
+Once the tool list for the user's query is present in history, use the Continue hop to emit Finish and close the session.
+Do not issue extra Reads or Sends unless the archive explicitly indicates more pages or incomplete results.
+
+{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
 {% endfor %}
-{% endif %}
 
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
-"#
+{{ ctx.output_format }}"#
 
 }

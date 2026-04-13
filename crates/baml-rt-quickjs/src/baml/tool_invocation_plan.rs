@@ -58,11 +58,9 @@ pub(crate) fn resolve_baml_tool_invocation_plan(
         {
             if let Some(candidates) = map.get(func_name) {
                 match candidates.as_slice() {
-                    [single] => resolve_tool_name_from_plan_type_with_registry(
-                        tool_registry,
-                        single.as_str(),
-                    )
-                    .ok(),
+                    [single] => {
+                        resolve_tool_name_from_plan_type_with_registry(tool_registry, single).ok()
+                    }
                     _ => plan
                         .selected_tool
                         .clone()
