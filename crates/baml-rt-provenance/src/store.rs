@@ -458,6 +458,7 @@ pub enum ProvenanceOpsResource {
     ToolCalls,
     Messages,
     Aggregates,
+    LifecycleEvents,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

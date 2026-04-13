@@ -6,10 +6,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use surrealdb::{
-    Surreal,
-    engine::local::{Db, Mem, SurrealKv},
-};
+use surrealdb::{Surreal, engine::any::Any};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -29,8 +26,6 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 /// Backend strategy for SurrealDB provenance store.
-///
-/// Storage backend strategy: file-backed (SurrealKV), in-memory shared, or in-memory isolated.
 #[derive(Clone, Debug)]
 pub enum SurrealBackend {
     /// File-backed: SurrealKV embedded storage in a directory.
@@ -43,6 +38,37 @@ pub enum SurrealBackend {
     /// Each build selects a unique Surreal namespace/database so parallel test processes do not
     /// collide on the default `provenance`/`store` in-memory KV scope.
     InMemoryIsolated,
+    /// Remote SurrealDB server via WebSocket.
+    Remote(RemoteConfig),
+}
+
+/// Connection config for a remote SurrealDB server.
+#[derive(Clone, Debug)]
+pub struct RemoteConfig {
+    /// WebSocket endpoint, e.g. `ws://surrealdb.agentium.svc:8000`.
+    pub endpoint: String,
+    /// SurrealDB namespace (defaults to `"provenance"`).
+    pub namespace: String,
+    /// SurrealDB database (defaults to `"store"`).
+    pub database: String,
+    /// Optional root credentials.
+    pub credentials: Option<RemoteCredentials>,
+}
+
+/// Root credentials for signing into a remote SurrealDB server.
+#[derive(Clone)]
+pub struct RemoteCredentials {
+    pub username: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for RemoteCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteCredentials")
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl SurrealBackend {
@@ -58,6 +84,16 @@ impl SurrealBackend {
         Self::InMemoryShared
     }
 
+    /// Remote SurrealDB via WebSocket with default namespace/database.
+    pub fn remote(endpoint: impl Into<String>) -> Self {
+        Self::Remote(RemoteConfig {
+            endpoint: endpoint.into(),
+            namespace: schema::NS.to_string(),
+            database: schema::DB.to_string(),
+            credentials: None,
+        })
+    }
+
     /// Build a store from this backend config.
     pub async fn build_store(
         &self,
@@ -71,6 +107,7 @@ impl SurrealBackend {
                 get_or_init_shared_in_memory_store(mermaid_cache).await
             }
             SurrealBackend::InMemoryIsolated => build_in_memory_isolated_store(mermaid_cache).await,
+            SurrealBackend::Remote(config) => build_remote_store(config, mermaid_cache).await,
         }
     }
 }
@@ -164,7 +201,8 @@ async fn get_or_init_file_store(
     if let Some(store) = guard.get(path) {
         return Ok(store.clone());
     }
-    let db = Surreal::new::<SurrealKv>(path.to_string_lossy().as_ref())
+    let endpoint = format!("surrealkv://{}", path.to_string_lossy());
+    let db = surrealdb::engine::any::connect(&endpoint)
         .await
         .map_err(map_surreal_error)?;
     let store = init_store(db, mermaid_cache).await?;
@@ -180,7 +218,10 @@ async fn get_or_init_shared_in_memory_store(
     if let Some(store) = guard.as_ref() {
         return Ok(store.clone());
     }
-    let store = build_in_memory_isolated_store(mermaid_cache).await?;
+    let db = surrealdb::engine::any::connect("mem://")
+        .await
+        .map_err(map_surreal_error)?;
+    let store = init_store_in_namespace(db, mermaid_cache, schema::NS, schema::DB).await?;
     *guard = Some(store.clone());
     Ok(store)
 }
@@ -188,20 +229,67 @@ async fn get_or_init_shared_in_memory_store(
 async fn build_in_memory_isolated_store(
     mermaid_cache: Option<Arc<MermaidCache>>,
 ) -> Result<Arc<SurrealProvenanceStore>> {
-    let db = Surreal::new::<Mem>(()).await.map_err(map_surreal_error)?;
+    let db = surrealdb::engine::any::connect("mem://")
+        .await
+        .map_err(map_surreal_error)?;
     let scope = format!("isol_{}", Uuid::new_v4().simple());
     init_store_in_namespace(db, mermaid_cache, &scope, &scope).await
 }
 
+/// Remote stores cached by (endpoint, namespace, database) composite key.
+static REMOTE_STORES: OnceLock<Mutex<HashMap<String, Arc<SurrealProvenanceStore>>>> =
+    OnceLock::new();
+
+async fn build_remote_store(
+    config: &RemoteConfig,
+    mermaid_cache: Option<Arc<MermaidCache>>,
+) -> Result<Arc<SurrealProvenanceStore>> {
+    let cred_discriminator = match &config.credentials {
+        Some(c) => {
+            use sha2::{Digest, Sha256};
+            let hash = Sha256::digest(c.password.as_bytes());
+            format!("@{}#{:x}", c.username, hash)
+        }
+        None => "@anon".to_string(),
+    };
+    let cache_key = format!(
+        "{endpoint}|{namespace}|{database}|{cred_discriminator}",
+        endpoint = config.endpoint,
+        namespace = config.namespace,
+        database = config.database,
+    );
+    let mutex = REMOTE_STORES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = mutex.lock().await;
+    if let Some(store) = guard.get(&cache_key) {
+        return Ok(store.clone());
+    }
+
+    let db = surrealdb::engine::any::connect(&config.endpoint)
+        .await
+        .map_err(map_surreal_error)?;
+    if let Some(creds) = &config.credentials {
+        db.signin(surrealdb::opt::auth::Root {
+            username: creds.username.clone(),
+            password: creds.password.clone(),
+        })
+        .await
+        .map_err(map_surreal_error)?;
+    }
+    let store =
+        init_store_in_namespace(db, mermaid_cache, &config.namespace, &config.database).await?;
+    guard.insert(cache_key, store.clone());
+    Ok(store)
+}
+
 async fn init_store(
-    db: Surreal<Db>,
+    db: Surreal<Any>,
     mermaid_cache: Option<Arc<MermaidCache>>,
 ) -> Result<Arc<SurrealProvenanceStore>> {
     init_store_in_namespace(db, mermaid_cache, schema::NS, schema::DB).await
 }
 
 async fn init_store_in_namespace(
-    db: Surreal<Db>,
+    db: Surreal<Any>,
     mermaid_cache: Option<Arc<MermaidCache>>,
     ns: &str,
     db_name: &str,

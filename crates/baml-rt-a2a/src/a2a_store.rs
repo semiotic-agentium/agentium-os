@@ -7,7 +7,8 @@ use baml_rt_core::{
 };
 use baml_rt_observability::metrics;
 use baml_rt_provenance::{
-    ProvEvent, ProvenanceConversationContextItem, ProvenanceWriter, events::ReservedAnchor,
+    ProvEvent, ProvenanceConversationContextItem, ProvenanceError, ProvenanceWriter,
+    events::ReservedAnchor,
 };
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -335,12 +336,22 @@ impl ProvenanceTaskStore {
     }
 
     async fn record_event_required(&self, event: ProvEvent, context: &str) -> Result<()> {
-        self.writer.add_event(event).await.map_err(|source| {
-            BamlRtError::InvalidArgumentWithSource {
-                message: format!("failed to record provenance event for {context}"),
-                source: Box::new(source),
-            }
-        })?;
+        self.writer
+            .add_event(event)
+            .await
+            .map_err(|source| match source {
+                // Bounded write contention is host-retriable, not LLM-correctable —
+                // it means concurrent writers raced on a shared graph record (agent
+                // runtime instance, context entity), not that the caller's input
+                // was malformed. The HostRetriable disposition lets clients re-queue.
+                ProvenanceError::Contention { ref details } => BamlRtError::Conflict(format!(
+                    "provenance write contention for {context}: {details}"
+                )),
+                other => BamlRtError::InvalidArgumentWithSource {
+                    message: format!("failed to record provenance event for {context}"),
+                    source: Box::new(other),
+                },
+            })?;
         Ok(())
     }
 

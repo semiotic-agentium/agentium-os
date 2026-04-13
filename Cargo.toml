@@ -100,9 +100,11 @@ reqwest = { version = "=0.12.26", default-features = false, features = [
   "json",
   "rustls-tls",
 ] }
+url = "2"
 regex = "1"
 async-channel = "2"
 async-stream = "0.3"
+futures-core = "0.3"
 sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 flate2 = "1"
@@ -112,8 +114,8 @@ tar = "0.4"
 quickjs_runtime = { version = "0.15", default-features = false, features = ["bellard"] }
 # Agent memory
 agentic-memory = "0.2.6"
-# SurrealDB embedded (no client-server) — Phase 1 provenance backend.
-surrealdb = { version = "3", default-features = false, features = ["kv-mem", "kv-surrealkv"] }
+# SurrealDB — embedded (kv-mem, kv-surrealkv) and remote (protocol-ws) backends.
+surrealdb = { version = "3", default-features = false, features = ["kv-mem", "kv-surrealkv", "protocol-ws"] }
 # Embedding / drift detection
 fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-native-tls"] }
 dashmap = "6"

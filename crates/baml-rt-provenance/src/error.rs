@@ -4,6 +4,12 @@ use thiserror::Error;
 pub enum ProvenanceError {
     #[error("provenance storage error: {0}")]
     Storage(#[from] Box<dyn std::error::Error + Send + Sync>),
+    /// Concurrent writers contended on a shared record (agent runtime instance,
+    /// context entity, etc.) and the bounded retry budget was exhausted. Distinct
+    /// from [`ProvenanceError::Storage`] so the host can re-queue rather than
+    /// classifying the failure as `LlmCorrectable`.
+    #[error("provenance write contention exhausted retries: {details}")]
+    Contention { details: String },
     #[error("invalid provenance activity anchor {activity_anchor}: {reason}")]
     InvalidEvent {
         activity_anchor: String,
