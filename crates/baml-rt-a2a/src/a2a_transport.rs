@@ -2635,7 +2635,9 @@ mod tests {
         // (no ToolCall/ToolResult — only the user line plus three session steps)
         assert_eq!(items.len(), 4, "expected 4 history items, got: {history}");
 
-        // Roles come from the graph in canonical form (ROLE_USER / assistant).
+        // Roles in `conversation_history` are canonical chat labels: messages map to
+        // `user` / `assistant` (see `conversation_history_role_for_message`), and
+        // tool/session rows use `tool` (see prompt_projection module docs).
         // [0] user message — citation-aware projection allocates `#1` for the first history line
         // (see `prompt_projection::render_content` Message branch).
         let user_role = items[0]["role"].as_str().unwrap();
@@ -2649,8 +2651,8 @@ mod tests {
             "user content should be history-ref prefixed for drift/citation resolution"
         );
 
-        // [1] Open: describes the session being opened
-        assert_eq!(items[1]["role"], "assistant");
+        // [1] Open: describes the session being opened. Session rows use role `tool`.
+        assert_eq!(items[1]["role"], "tool");
         let open_content = items[1]["content"].as_str().unwrap();
         assert!(
             open_content.contains("discover_agents"),
@@ -2659,7 +2661,7 @@ mod tests {
 
         // [2] SendDone: the header IS the display ("@1 tool 'summary' [...]")
         // No double @1 prefix — header already starts with the archive ref.
-        assert_eq!(items[2]["role"], "assistant");
+        assert_eq!(items[2]["role"], "tool");
         let send_content = items[2]["content"].as_str().unwrap();
         assert_eq!(
             send_content, header,
@@ -2671,7 +2673,7 @@ mod tests {
         );
 
         // [3] Read: grep/cat analogue (pud-squashed); with reader would be paginated output only.
-        assert_eq!(items[3]["role"], "assistant");
+        assert_eq!(items[3]["role"], "tool");
         let read_content = items[3]["content"].as_str().unwrap();
         assert_eq!(
             read_content, "grep -n 'name description' @1",
