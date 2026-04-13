@@ -337,7 +337,7 @@ class SystemDiscover_agentsSessionPlan {
 // ── builder: per-phase step executors (from IR) ──
 
 // Auto-generated per-phase step executor functions.
-// Prompt text matches the parent session-plan function; return type narrows legal ops.
+// Each phase narrows the return type to only the legal FSM ops.
 
 /// Phase: select — open a tool session.
 function BuildExtrospectionPlan__select(
@@ -347,7 +347,7 @@ function BuildExtrospectionPlan__select(
 ) -> SystemExtrospectionOpenStep {
 
   client DefaultClient
-  prompt #"Query provenance data matching the intent. For Send, populate input fields:
+  prompt #"[OPEN] Open a session with: system/extrospection.\n\nQuery provenance data matching the intent. For Send, populate input fields:
 - resource: llm_calls | tool_calls | messages
   (if Auto: use llm_calls for token queries, messages for message-focused)
 - outcome: both | failed_only | successful_only
@@ -366,7 +366,10 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+"#
 
 }
 
@@ -378,7 +381,7 @@ function BuildExtrospectionPlan__act__system_extrospection(
 ) -> SystemExtrospectionSendStep | SystemExtrospectionReadStep {
 
   client DefaultClient
-  prompt #"Query provenance data matching the intent. For Send, populate input fields:
+  prompt #"[ACT] A system/extrospection session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nQuery provenance data matching the intent. For Send, populate input fields:
 - resource: llm_calls | tool_calls | messages
   (if Auto: use llm_calls for token queries, messages for message-focused)
 - outcome: both | failed_only | successful_only
@@ -397,7 +400,10 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
+"#
 
 }
 
@@ -409,7 +415,7 @@ function BuildExtrospectionPlan__continue__system_extrospection(
 ) -> SystemExtrospectionSendStep | SystemExtrospectionReadStep | SystemExtrospectionFinishStep {
 
   client DefaultClient
-  prompt #"Query provenance data matching the intent. For Send, populate input fields:
+  prompt #"[CONTINUE] system/extrospection result is archived.\nCheck session history:\n- See \"@N system/extrospection\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/extrospection\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/extrospection\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nQuery provenance data matching the intent. For Send, populate input fields:
 - resource: llm_calls | tool_calls | messages
   (if Auto: use llm_calls for token queries, messages for message-focused)
 - outcome: both | failed_only | successful_only
@@ -428,7 +434,10 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
+"#
 
 }
 
@@ -439,7 +448,7 @@ function GetDiscoverAgentsPlan__select(
 ) -> SystemDiscover_agentsOpenStep {
 
   client DefaultClient
-  prompt #"Discover available agents relevant to the user's request.
+  prompt #"[OPEN] Open a session with: system/discover_agents.\n\nDiscover available agents relevant to the user's request.
 For Send: use empty input {} to list all agents.
 
 Context: {{ user_message }}
@@ -451,7 +460,10 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+"#
 
 }
 
@@ -462,7 +474,9 @@ function GetDiscoverAgentsPlan__act__system_discover_agents(
 ) -> SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep {
 
   client DefaultClient
-  prompt #"Discover available agents relevant to the user's request.
+  prompt #"[ACT] A system/discover_agents session is open. Emit Send with your query, or Read @N if a prior Send for this tool is already archived in history.\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+
+Discover available agents relevant to the user's request.
 For Send: use empty input {} to list all agents.
 
 Context: {{ user_message }}
@@ -474,7 +488,10 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
+"#
 
 }
 
@@ -485,7 +502,9 @@ function GetDiscoverAgentsPlan__continue__system_discover_agents(
 ) -> SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep {
 
   client DefaultClient
-  prompt #"Discover available agents relevant to the user's request.
+  prompt #"[CONTINUE] system/discover_agents result is archived.\nCheck session history:\n- See \"@N system/discover_agents\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_agents\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_agents\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+
+Discover available agents relevant to the user's request.
 For Send: use empty input {} to list all agents.
 
 Context: {{ user_message }}
@@ -497,6 +516,9 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
+"#
 
 }

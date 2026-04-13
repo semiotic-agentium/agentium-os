@@ -450,7 +450,7 @@ class SystemInternal_a2aSessionPlan {
 // ── builder: per-phase step executors (from IR) ──
 
 // Auto-generated per-phase step executor functions.
-// Prompt text matches the parent session-plan function; return type narrows legal ops.
+// Each phase narrows the return type to only the legal FSM ops.
 
 /// Phase: select — open a tool session.
 function ChooseNotionAction__select(
@@ -460,7 +460,7 @@ function ChooseNotionAction__select(
 ) -> SupportNotionOpenStep {
 
   client OpenRouterGPT
-  prompt #"You are executing one step of a read-only Notion retrieval plan.
+  prompt #"[OPEN] Open a session with: support/notion.\n\nYou are executing one step of a read-only Notion retrieval plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
@@ -477,7 +477,10 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+"#
 
 }
 
@@ -489,7 +492,7 @@ function ChooseNotionAction__act__support_notion(
 ) -> SupportNotionSendStep | SupportNotionReadStep {
 
   client OpenRouterGPT
-  prompt #"You are executing one step of a read-only Notion retrieval plan.
+  prompt #"[ACT] A support/notion session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nYou are executing one step of a read-only Notion retrieval plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
@@ -506,7 +509,10 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
+"#
 
 }
 
@@ -518,7 +524,7 @@ function ChooseNotionAction__continue__support_notion(
 ) -> SupportNotionSendStep | SupportNotionReadStep | SupportNotionFinishStep {
 
   client OpenRouterGPT
-  prompt #"You are executing one step of a read-only Notion retrieval plan.
+  prompt #"[CONTINUE] support/notion result is archived.\nCheck session history:\n- See \"@N support/notion\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/notion\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/notion\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nYou are executing one step of a read-only Notion retrieval plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
@@ -535,6 +541,9 @@ Session history:
 {% endfor %}
 {% endif %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
+"#
 
 }

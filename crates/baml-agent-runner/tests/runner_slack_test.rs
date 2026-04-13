@@ -27,8 +27,8 @@ use common::{
 use http_tool_test_helpers::contains_kv;
 use serde_json::{Value, json};
 use test_support::common::{
-    chunks_from_responses, message_texts_from_chunks, send_stream_request, test_surreal_store,
-    workspace_fnox_path,
+    chunks_from_responses, message_texts_from_chunks, message_visible_content_from_chunks,
+    send_stream_request, test_surreal_store, workspace_fnox_path,
 };
 use tokio::time::{Duration, sleep, timeout};
 
@@ -288,6 +288,12 @@ async fn test_e2e_slack_todo_extraction_with_mock_server_and_mermaid_http() {
     let texts = message_texts_from_chunks(&chunks);
     let merged_text = texts.join("\n");
     let merged_lower = merged_text.to_lowercase();
+    // The model legitimately routes the substantive answer into a `DataPart` (JSON payload) when
+    // the schema offers one — `merged_visible` includes both `TextPart` text and `DataPart` data so
+    // the retrieval-grounded check below sees the whole reply rather than just the text summary.
+    let visible = message_visible_content_from_chunks(&chunks);
+    let merged_visible = visible.join("\n");
+    let merged_visible_lower = merged_visible.to_lowercase();
     // LLM phrasing is non-deterministic — do not assert fixed headings or citation URL shapes.
     // Deterministic checks: fixture HTTP hits + provenance (below) + no planning/coordination failure text.
     assert!(
@@ -296,18 +302,20 @@ async fn test_e2e_slack_todo_extraction_with_mock_server_and_mermaid_http() {
         "Expected no planning/coordination failure in streamed assistant text. merged={merged_text:?}"
     );
     assert!(
-        merged_text.trim().len() >= 20 || texts.iter().any(|t| !t.trim().is_empty()),
-        "Expected some assistant-visible streamed text; merged={merged_text:?} texts={texts:?}"
+        !merged_visible.trim().is_empty(),
+        "Expected some assistant-visible streamed content (text or data parts); \
+         merged_text={merged_text:?} merged_visible={merged_visible:?}"
     );
     // Fixture thread lines (synthetic Slack API) — if the model echoes them, retrieval likely grounded the answer.
-    let echoes_thread_fixture = merged_lower.contains("ship the slack integration")
-        || merged_lower.contains("oauth runbook")
-        || merged_lower.contains("todo:");
+    let echoes_thread_fixture = merged_visible_lower.contains("ship the slack integration")
+        || merged_visible_lower.contains("oauth runbook")
+        || merged_visible_lower.contains("todo:");
     assert!(
-        echoes_thread_fixture || merged_text.trim().len() >= 80,
-        "Expected either retrieved thread content reflected in assistant text or a substantive reply; \
-         len={} merged={merged_text:?}",
-        merged_text.trim().len()
+        echoes_thread_fixture || merged_visible.trim().len() >= 80,
+        "Expected either retrieved thread content reflected in assistant output or a substantive reply; \
+         text_len={} visible_len={} merged_visible={merged_visible:?}",
+        merged_text.trim().len(),
+        merged_visible.trim().len()
     );
 
     let mut conversation_items: Vec<ProvenanceConversationContextItem> = Vec::new();

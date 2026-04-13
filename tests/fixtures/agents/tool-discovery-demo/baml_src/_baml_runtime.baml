@@ -248,7 +248,7 @@ class SupportCalculateSessionPlan {
 // ── builder: per-phase step executors (from IR) ──
 
 // Auto-generated per-phase step executor functions.
-// Prompt text matches the parent session-plan function; return type narrows legal ops.
+// Each phase narrows the return type to only the legal FSM ops.
 
 /// Phase: select — open a tool session.
 function ChooseDiscoverToolsQuery__select(
@@ -257,7 +257,7 @@ function ChooseDiscoverToolsQuery__select(
 ) -> SystemDiscover_toolsOpenStep {
 
   client DefaultClient
-  prompt #"Find tools that can help with: {{ user_message }}
+  prompt #"[OPEN] Open a session with: system/discover_tools.\n\nFind tools that can help with: {{ user_message }}
 For Send: set input.query to a concise search term derived from the user message.
 
 Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
@@ -269,7 +269,10 @@ Do not issue extra Reads or Sends unless the archive explicitly indicates more p
 {{ message.content }}
 {% endfor %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+"#
 
 }
 
@@ -280,7 +283,7 @@ function ChooseDiscoverToolsQuery__act__system_discover_tools(
 ) -> SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep {
 
   client DefaultClient
-  prompt #"Find tools that can help with: {{ user_message }}
+  prompt #"[ACT] A system/discover_tools session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nFind tools that can help with: {{ user_message }}
 For Send: set input.query to a concise search term derived from the user message.
 
 Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
@@ -292,7 +295,10 @@ Do not issue extra Reads or Sends unless the archive explicitly indicates more p
 {{ message.content }}
 {% endfor %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
+"#
 
 }
 
@@ -303,7 +309,7 @@ function ChooseDiscoverToolsQuery__continue__system_discover_tools(
 ) -> SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep {
 
   client DefaultClient
-  prompt #"Find tools that can help with: {{ user_message }}
+  prompt #"[CONTINUE] system/discover_tools result is archived.\nCheck session history:\n- See \"@N system/discover_tools\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_tools\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_tools\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nFind tools that can help with: {{ user_message }}
 For Send: set input.query to a concise search term derived from the user message.
 
 Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
@@ -315,6 +321,9 @@ Do not issue extra Reads or Sends unless the archive explicitly indicates more p
 {{ message.content }}
 {% endfor %}
 
-{{ ctx.output_format }}"#
+{{ ctx.output_format }}
+
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
+"#
 
 }

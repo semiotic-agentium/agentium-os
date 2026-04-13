@@ -118,6 +118,32 @@ pub fn message_texts_from_chunks(chunks: &[&Value]) -> Vec<String> {
         .collect()
 }
 
+/// Extracts user-visible content from every part of every chunk — both `TextPart.text`
+/// and `DataPart.data` (the JSON string a model emits when it puts the substantive answer
+/// in a structured payload). Use this when an assertion needs to see the agent's full
+/// response, since some prompts legitimately route detail into `DataPart` rather than text.
+pub fn message_visible_content_from_chunks(chunks: &[&Value]) -> Vec<String> {
+    chunks
+        .iter()
+        .flat_map(|chunk| {
+            chunk
+                .get("message")
+                .map(message_parts)
+                .unwrap_or_default()
+                .into_iter()
+        })
+        .filter_map(|part| {
+            let text = part.get("text").and_then(Value::as_str);
+            let data = part.get("data").and_then(Value::as_str);
+            match (text, data) {
+                (Some(t), _) => Some(t.to_string()),
+                (None, Some(d)) => Some(d.to_string()),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 pub fn first_message_text_from_stream(responses: &[Value]) -> String {
     for response in responses {
         let Some(content) = chunk_content(response) else {

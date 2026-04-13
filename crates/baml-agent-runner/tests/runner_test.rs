@@ -88,8 +88,8 @@ use common::{e2e_secs_ci_or_local, e2e_serial_gate};
 use test_support::common::workspace_fnox_path;
 use test_support::common::{
     CalculatorTool, chunks_from_responses, ensure_baml_src_exists, ensure_fixture_runtime_types,
-    first_task_id_from_stream, message_texts_from_chunks, test_surreal_store, user_message,
-    user_message_with_task, workspace_root,
+    first_task_id_from_stream, message_texts_from_chunks, message_visible_content_from_chunks,
+    test_surreal_store, user_message, user_message_with_task, workspace_root,
 };
 
 async fn build_fixture_to_temp_async(fixture_name: &str) -> std::path::PathBuf {
@@ -1174,8 +1174,12 @@ async fn test_tool_discovery_demo_responds_with_tool_list() {
         Ok(responses) => {
             let chunks = chunks_from_responses(&responses);
             let texts = message_texts_from_chunks(&chunks);
-            if texts.is_empty() {
-                // Diagnostic: log response/chunk shape so we can see why no message text was extracted.
+            // The discover_tools synthesis routes its tool list into a `DataPart` (JSON) when the
+            // model follows the StructuredReply schema with a short text summary — include both
+            // TextPart and DataPart content in the assertion so the tool-name check is resilient.
+            let visible = message_visible_content_from_chunks(&chunks);
+            if visible.is_empty() {
+                // Diagnostic: log response/chunk shape so we can see why no visible content was extracted.
                 eprintln!("tool_discovery_demo: responses.len()={}", responses.len());
                 if let Some(r) = responses.first() {
                     let keys: Vec<_> = r
@@ -1217,13 +1221,13 @@ async fn test_tool_discovery_demo_responds_with_tool_list() {
                 }
                 eprintln!("tool_discovery_demo: chunks.len()={}", chunks.len());
             }
-            let combined = texts.join(" ");
+            let combined = visible.join(" ");
             assert!(
                 combined.contains("support/calculate")
                     || combined.to_lowercase().contains("calculate")
                     || combined.contains("No tools found"),
-                "Expected tool-discovery response to mention calculate or support/calculate or 'No tools found'. Got: {:?}",
-                texts
+                "Expected tool-discovery response to mention calculate or support/calculate or 'No tools found'. \
+                 texts={texts:?} visible={visible:?}"
             );
         }
         Err(e) => {
