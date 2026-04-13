@@ -19,8 +19,8 @@ use crate::{
     events::{CallScope, ProvEvent, ProvEventData, ToolSessionStepOpKind},
     id_semantics::{
         AgentBootActivityId, AgentBootActivityInput, AgentRuntimeInstanceId,
-        AgentRuntimeInstanceInput, ArchiveEntityId, ArchiveEntityInput,
-        ArtifactByActivityAnchorEntityId, ArtifactByActivityAnchorEntityInput,
+        AgentRuntimeInstanceInput, AgentStopActivityId, AgentStopActivityInput, ArchiveEntityId,
+        ArchiveEntityInput, ArtifactByActivityAnchorEntityId, ArtifactByActivityAnchorEntityInput,
         ArtifactByIdEntityId, ArtifactByIdEntityInput, ArtifactByTypeEntityId,
         ArtifactByTypeEntityInput, ArtifactIdentity, DelegationTargetEntityId,
         DelegationTargetEntityInput, FailureClassificationActivityId,
@@ -178,11 +178,16 @@ impl ProvNormalizer for DefaultProvNormalizer {
         event: &ProvEvent,
         context: Option<&NormalizeContext>,
     ) -> Result<NormalizedProv> {
-        let mut registry = self.agent_registry.lock().expect("agent registry lock");
-        let mut call_state = self
-            .call_ordinal_state
-            .lock()
-            .expect("call ordinal state lock");
+        let mut registry = self.agent_registry.lock().map_err(|_| {
+            crate::error::ProvenanceError::Storage(Box::new(std::io::Error::other(
+                "agent registry mutex poisoned",
+            )))
+        })?;
+        let mut call_state = self.call_ordinal_state.lock().map_err(|_| {
+            crate::error::ProvenanceError::Storage(Box::new(std::io::Error::other(
+                "call ordinal state mutex poisoned",
+            )))
+        })?;
         normalize_event_with_registry(event, &mut registry, &mut call_state, context)
     }
 }
@@ -217,6 +222,9 @@ pub enum A2aRelationType {
     HasPlan,
     /// Detached callback: dispatch task → scheduling task ([`semantic_labels::WAS_SCHEDULED_FROM`]).
     CallbackDispatchScheduledFrom,
+    /// Agent lifecycle: stop activity informed by boot activity (direct link
+    /// survives restarts where the agent runtime instance is a bare placeholder).
+    LifecycleStopInformedByBoot,
 }
 
 impl A2aRelationType {
@@ -249,6 +257,7 @@ impl A2aRelationType {
             A2aRelationType::HasIntent => semantic_labels::HAS_INTENT,
             A2aRelationType::HasPlan => semantic_labels::HAS_PLAN,
             A2aRelationType::CallbackDispatchScheduledFrom => semantic_labels::WAS_SCHEDULED_FROM,
+            A2aRelationType::LifecycleStopInformedByBoot => semantic_labels::WAS_INFORMED_BY,
         }
     }
 }
@@ -1427,6 +1436,32 @@ fn normalize_event_with_registry(
                 Some(prov_roles::EXECUTING_AGENT.to_string()),
             );
         }
+        ProvEventData::AgentStopped { agent_id, reason } => {
+            let stop_activity_id = stop_activity_id(agent_id, event.id());
+            let mut stop_attrs = base_attrs(event);
+            stop_attrs.insert("a2a_stop_reason".to_string(), Value::String(reason.clone()));
+            doc.insert_activity(
+                stop_activity_id.clone(),
+                Activity {
+                    start_time_ms: Some(event.timestamp_ms()),
+                    end_time_ms: Some(event.timestamp_ms()),
+                    prov_type: Some(prov_type::<AgentStopActivityId>()),
+                    attributes: stop_attrs,
+                },
+            );
+            let instance_agent_id = get_agent_runtime_instance(&doc, agent_id, &mut agent_labels)?;
+            insert_was_associated_with(&mut doc, stop_activity_id.clone(), instance_agent_id, None);
+
+            // Direct stop → boot edge so the lifecycle read path survives
+            // restarts where the agent runtime instance is a bare placeholder.
+            let boot_id = boot_activity_id(agent_id);
+            derived_relations.push(A2aDerivedRelation {
+                relation: A2aRelationType::LifecycleStopInformedByBoot,
+                from: ProvNodeRef::Activity(stop_activity_id),
+                to: ProvNodeRef::Activity(boot_id),
+                attributes: HashMap::new(),
+            });
+        }
         ProvEventData::TaskExists {
             task_id,
             context_id: _,
@@ -2300,10 +2335,12 @@ fn validate_task_scoped_event(event: &ProvEvent, task_id: &TaskId, event_kind: &
             activity_anchor: event_id,
             reason: format!("{event_kind} must be task-scoped (event is global)"),
         }),
-        ProvEvent::AgentBooted(_) => Err(ProvenanceError::InvalidEvent {
-            activity_anchor: event_id,
-            reason: format!("{event_kind} cannot be AgentBooted (has no context)"),
-        }),
+        ProvEvent::AgentBooted(_) | ProvEvent::AgentStopped(_) => {
+            Err(ProvenanceError::InvalidEvent {
+                activity_anchor: event_id,
+                reason: format!("{event_kind} cannot be AgentBooted/AgentStopped (has no context)"),
+            })
+        }
         ProvEvent::Task(e) if &e.task_id == task_id => Ok(()),
         ProvEvent::Task(_) => Err(ProvenanceError::InvalidEvent {
             activity_anchor: event_id,
@@ -2352,10 +2389,14 @@ fn validate_call_scope(event: &ProvEvent, scope: &CallScope, call_kind: &str) ->
                 })
             }
         }
-        (ProvEvent::AgentBooted(_), _) => Err(ProvenanceError::InvalidEvent {
-            activity_anchor: event_id,
-            reason: format!("{call_kind} cannot be AgentBooted (has no call scope)"),
-        }),
+        (ProvEvent::AgentBooted(_) | ProvEvent::AgentStopped(_), _) => {
+            Err(ProvenanceError::InvalidEvent {
+                activity_anchor: event_id,
+                reason: format!(
+                    "{call_kind} cannot be AgentBooted/AgentStopped (has no call scope)"
+                ),
+            })
+        }
     }
 }
 
@@ -2793,6 +2834,10 @@ fn archive_entity_id(archive_path: &str) -> ProvEntityId {
 /// Agent boot activity id: derived from `AgentId` (one boot per runtime instance).
 fn boot_activity_id(agent_id: &AgentId) -> ProvActivityId {
     ProvActivityId::derived::<AgentBootActivityId>(AgentBootActivityInput { agent_id })
+}
+
+fn stop_activity_id(agent_id: &AgentId, anchor: &ActivityAnchorId) -> ProvActivityId {
+    ProvActivityId::derived::<AgentStopActivityId>(AgentStopActivityInput { agent_id, anchor })
 }
 
 /// Runner runtime instance entity id: constant control plane identity.

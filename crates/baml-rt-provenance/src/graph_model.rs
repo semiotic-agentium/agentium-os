@@ -1,6 +1,6 @@
 use crate::{
     events::ProvEventData,
-    vocabulary::{a2a, a2a_roles, a2a_types, prov, semantic_labels},
+    vocabulary::{a2a, a2a_roles, a2a_types, prov, prov_relations, semantic_labels},
 };
 
 /// Canonical node labels in the persisted provenance graph.
@@ -20,6 +20,7 @@ pub enum GraphNodeLabel {
     TaskState,
     Artifact,
     AgentBoot,
+    AgentStop,
     AgentArchive,
     AgentRuntimeInstance,
     PromptRejected,
@@ -46,6 +47,7 @@ impl GraphNodeLabel {
             Self::TaskState => "A2ATaskState",
             Self::Artifact => "Artifact",
             Self::AgentBoot => "AgentBoot",
+            Self::AgentStop => "AgentStop",
             Self::AgentArchive => "AgentArchive",
             Self::AgentRuntimeInstance => "AgentRuntimeInstance",
             Self::PromptRejected => "PromptRejected",
@@ -71,6 +73,7 @@ impl GraphNodeLabel {
             "A2ATaskState" => Some(Self::TaskState),
             "Artifact" => Some(Self::Artifact),
             "AgentBoot" => Some(Self::AgentBoot),
+            "AgentStop" => Some(Self::AgentStop),
             "AgentArchive" => Some(Self::AgentArchive),
             "AgentRuntimeInstance" => Some(Self::AgentRuntimeInstance),
             "PromptRejected" => Some(Self::PromptRejected),
@@ -96,6 +99,7 @@ pub const EDGE_WAS_SPAWNED_BY: &str = semantic_labels::WAS_SPAWNED_BY;
 pub const EDGE_TASK_TRIGGERED_BY_MESSAGE: &str = semantic_labels::TASK_TRIGGERED_BY_MESSAGE;
 pub const EDGE_TASK_EMITTED_MESSAGE: &str = semantic_labels::TASK_EMITTED_MESSAGE;
 pub const EDGE_WAS_SCHEDULED_FROM: &str = semantic_labels::WAS_SCHEDULED_FROM;
+pub const EDGE_WAS_ASSOCIATED_WITH: &str = prov_relations::WAS_ASSOCIATED_WITH;
 
 /// Event kinds mapped to graph relations/properties.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -109,6 +113,7 @@ pub enum EventGraphKind {
     ToolCallStarted,
     ToolCallCompleted,
     AgentBooted,
+    AgentStopped,
     TaskExists,
     TaskExecutionStarted,
     TaskExecutionEnded,
@@ -120,7 +125,7 @@ pub enum EventGraphKind {
     CallbackDispatchContextsLinked,
 }
 
-pub const ALL_EVENT_KINDS: [EventGraphKind; 18] = [
+pub const ALL_EVENT_KINDS: [EventGraphKind; 19] = [
     EventGraphKind::IntentResolved,
     EventGraphKind::PlanGenerated,
     EventGraphKind::PlanStepStatusChanged,
@@ -130,6 +135,7 @@ pub const ALL_EVENT_KINDS: [EventGraphKind; 18] = [
     EventGraphKind::ToolCallStarted,
     EventGraphKind::ToolCallCompleted,
     EventGraphKind::AgentBooted,
+    EventGraphKind::AgentStopped,
     EventGraphKind::TaskExists,
     EventGraphKind::TaskExecutionStarted,
     EventGraphKind::TaskExecutionEnded,
@@ -248,6 +254,13 @@ const MAPPING_AGENT_BOOTED: EventGraphMapping = EventGraphMapping {
     required_properties: &[a2a::AGENT_ID, a2a::AGENT_TYPE, a2a::AGENT_VERSION],
 };
 
+const MAPPING_AGENT_STOPPED: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::AgentStopped,
+    primary_node: GraphNodeLabel::AgentStop,
+    expected_edges: &[EDGE_WAS_ASSOCIATED_WITH],
+    required_properties: &[a2a::AGENT_ID],
+};
+
 const MAPPING_TASK_EXISTS: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::TaskExists,
     primary_node: GraphNodeLabel::Task,
@@ -315,6 +328,7 @@ pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
         ProvEventData::ToolCallStarted { .. } => EventGraphKind::ToolCallStarted,
         ProvEventData::ToolCallCompleted { .. } => EventGraphKind::ToolCallCompleted,
         ProvEventData::AgentBooted { .. } => EventGraphKind::AgentBooted,
+        ProvEventData::AgentStopped { .. } => EventGraphKind::AgentStopped,
         ProvEventData::TaskExists { .. } => EventGraphKind::TaskExists,
         ProvEventData::TaskExecutionStarted { .. } => EventGraphKind::TaskExecutionStarted,
         ProvEventData::TaskExecutionEnded { .. } => EventGraphKind::TaskExecutionEnded,
@@ -340,6 +354,7 @@ pub fn mapping_for_event_kind(kind: EventGraphKind) -> &'static EventGraphMappin
         EventGraphKind::ToolCallStarted => &MAPPING_TOOL_CALL_STARTED,
         EventGraphKind::ToolCallCompleted => &MAPPING_TOOL_CALL_COMPLETED,
         EventGraphKind::AgentBooted => &MAPPING_AGENT_BOOTED,
+        EventGraphKind::AgentStopped => &MAPPING_AGENT_STOPPED,
         EventGraphKind::TaskExists => &MAPPING_TASK_EXISTS,
         EventGraphKind::TaskExecutionStarted => &MAPPING_TASK_EXECUTION_STARTED,
         EventGraphKind::TaskExecutionEnded => &MAPPING_TASK_EXECUTION_ENDED,

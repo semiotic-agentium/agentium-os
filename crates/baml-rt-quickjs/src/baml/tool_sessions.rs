@@ -82,6 +82,12 @@ impl BamlRuntimeManager {
             .await
     }
 
+    /// True when any tool session is open across all contexts.
+    /// Used by the drain mechanism to avoid tearing down agents mid-tool-execution.
+    pub fn has_any_open_tool_sessions(&self) -> bool {
+        !self.tool_session_handle().tool_session_scopes.is_empty()
+    }
+
     /// Number of open tool sessions for this context. Used by tests to assert no leak after teardown.
     pub async fn open_session_count_for_context(
         &self,

@@ -5,7 +5,7 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     A2aRelationType, DefaultProvNormalizer, LlmUsage, ProvEvent, ProvNormalizer, normalize_event,
-    vocabulary::{a2a_roles, semantic_labels},
+    vocabulary::{a2a_roles, a2a_types, semantic_labels},
 };
 
 #[test]
@@ -458,4 +458,45 @@ fn normalize_llm_call_backfills_model_from_prompt() {
 
     assert_eq!(client, "openrouter");
     assert_eq!(model, "x-ai/grok-4.1-fast");
+}
+
+#[test]
+fn normalize_agent_stopped_produces_stop_node() {
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
+    let event = ProvEvent::agent_stopped(agent_id, "shutdown".to_string());
+    let normalized = normalize_event(&event).expect("normalize agent_stopped");
+
+    let activities: Vec<_> = normalized.document.activities().collect();
+    assert_eq!(
+        activities.len(),
+        1,
+        "AgentStopped should produce exactly one activity"
+    );
+
+    let (id, activity) = &activities[0];
+    assert!(
+        id.as_str().starts_with("agent_stop:"),
+        "activity id should have agent_stop prefix, got: {}",
+        id.as_str()
+    );
+    assert_eq!(
+        activity.prov_type.as_deref(),
+        Some(a2a_types::AGENT_STOP),
+        "activity prov_type should be a2a:AgentStop"
+    );
+    assert_eq!(
+        activity
+            .attributes
+            .get("a2a_stop_reason")
+            .and_then(serde_json::Value::as_str),
+        Some("shutdown"),
+        "activity should carry the stop reason"
+    );
+
+    assert_eq!(
+        normalized.document.was_associated_with().count(),
+        1,
+        "AgentStop must have a WAS_ASSOCIATED_WITH edge to AgentRuntimeInstance"
+    );
 }

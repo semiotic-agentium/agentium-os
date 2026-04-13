@@ -547,6 +547,10 @@ pub enum ProvEventData {
         agent_version: String,
         archive_path: String,
     },
+    AgentStopped {
+        agent_id: AgentId,
+        reason: String,
+    },
     /// Existential only: task entity exists. Idempotent. No agent, no execution.
     TaskExists {
         task_id: TaskId,
@@ -679,12 +683,22 @@ pub struct AgentBootedEvent {
     pub data: ProvEventData,
 }
 
+/// AgentStopped has no context by design—it is a lifecycle event outside any conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentStoppedEvent {
+    pub id: ActivityAnchorId,
+    pub timestamp_ms: u64,
+    pub data: ProvEventData,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ProvEvent {
     Task(TaskScopedEvent),
     Global(GlobalEvent),
     /// Context-free: agent boot precedes any conversation.
     AgentBooted(AgentBootedEvent),
+    /// Context-free: agent drained and stopped (e.g. undeploy, migration).
+    AgentStopped(AgentStoppedEvent),
 }
 
 impl ProvEvent {
@@ -693,28 +707,29 @@ impl ProvEvent {
             ProvEvent::Task(event) => &event.id,
             ProvEvent::Global(event) => &event.id,
             ProvEvent::AgentBooted(event) => &event.id,
+            ProvEvent::AgentStopped(event) => &event.id,
         }
     }
 
-    /// Context for scoped events. AgentBooted has no context by design.
+    /// Context for scoped events. AgentBooted/AgentStopped have no context by design.
     pub fn context_id_opt(&self) -> Option<&ContextId> {
         match self {
             ProvEvent::Task(event) => Some(&event.context_id),
             ProvEvent::Global(event) => Some(&event.context_id),
-            ProvEvent::AgentBooted(_) => None,
+            ProvEvent::AgentBooted(_) | ProvEvent::AgentStopped(_) => None,
         }
     }
 
-    /// Panics if called on AgentBooted (which has no context).
+    /// Panics if called on AgentBooted/AgentStopped (which have no context).
     pub fn context_id(&self) -> &ContextId {
         self.context_id_opt()
-            .expect("AgentBooted has no context; use context_id_opt()")
+            .expect("AgentBooted/AgentStopped have no context; use context_id_opt()")
     }
 
     pub fn task_id(&self) -> Option<&TaskId> {
         match self {
             ProvEvent::Task(event) => Some(&event.task_id),
-            ProvEvent::Global(_) | ProvEvent::AgentBooted(_) => None,
+            ProvEvent::Global(_) | ProvEvent::AgentBooted(_) | ProvEvent::AgentStopped(_) => None,
         }
     }
 
@@ -723,6 +738,7 @@ impl ProvEvent {
             ProvEvent::Task(event) => event.timestamp_ms,
             ProvEvent::Global(event) => event.timestamp_ms,
             ProvEvent::AgentBooted(event) => event.timestamp_ms,
+            ProvEvent::AgentStopped(event) => event.timestamp_ms,
         }
     }
 
@@ -731,6 +747,7 @@ impl ProvEvent {
             ProvEvent::Task(event) => &event.data,
             ProvEvent::Global(event) => &event.data,
             ProvEvent::AgentBooted(event) => &event.data,
+            ProvEvent::AgentStopped(event) => &event.data,
         }
     }
 
@@ -1245,6 +1262,14 @@ impl ProvEvent {
                 agent_version,
                 archive_path,
             },
+        })
+    }
+
+    pub fn agent_stopped(agent_id: AgentId, reason: String) -> Self {
+        ProvEvent::AgentStopped(AgentStoppedEvent {
+            id: next_activity_anchor_id(),
+            timestamp_ms: now_millis(),
+            data: ProvEventData::AgentStopped { agent_id, reason },
         })
     }
 
