@@ -32,13 +32,11 @@ const props = defineProps<{
   planningTasks: ContextPlanningTaskSnapshot[];
   planningLoading: boolean;
   planningError: string | null;
-  rendered: Array<{ svg: string; error?: string }>;
+  rendered: Array<{ svg: string; error: string | null }>;
   taskId?: string;
   isStreaming: boolean;
-  episodeTaskIds: string[];
-  traceAgentPackages: string[];
-  traceModels: string[];
-  traceTools: string[];
+  /** allTaskIds from the planning response, used to build episodeTaskIds. */
+  allTaskIds: string[];
 }>();
 
 const emit = defineEmits<{
@@ -109,10 +107,58 @@ const traceSnapshot = computed(() => {
   };
 });
 
-// ── Hotspot groups ─────────────────────────────────────────────────────────
+// ── Trace dimension summaries ───────────────────────────────────────────────
+
+function uniqueNonEmpty(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))];
+}
 
 // Hotspot group-key positions: 0 = agentId, 1 = package, 2 = version, 3 = model (LLM) or tool name (Tool)
+const HOTSPOT_PKG_IDX = 1;
 const HOTSPOT_DIM_IDX = 3;
+
+const traceAgentPackages = computed(() =>
+  uniqueNonEmpty([
+    ...(props.liveLlmResponse?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, HOTSPOT_PKG_IDX)),
+    ...(props.liveToolResponse?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, HOTSPOT_PKG_IDX)),
+  ]),
+);
+
+const traceModels = computed(() =>
+  uniqueNonEmpty(
+    (props.liveLlmResponse?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, HOTSPOT_DIM_IDX)),
+  ),
+);
+
+const traceTools = computed(() =>
+  uniqueNonEmpty(
+    (props.liveToolResponse?.hotspotGroups ?? []).map((group) => groupValueAt(group.groupValues, group.groupKey, HOTSPOT_DIM_IDX)),
+  ),
+);
+
+const episodeTaskIds = computed<string[]>(() => {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  if (props.taskId) {
+    ids.push(props.taskId);
+    seen.add(props.taskId);
+  }
+  for (const tid of props.allTaskIds) {
+    if (!seen.has(tid)) {
+      ids.push(tid);
+      seen.add(tid);
+    }
+  }
+  for (const t of props.planningTasks) {
+    if (!seen.has(t.taskId)) {
+      ids.push(t.taskId);
+      seen.add(t.taskId);
+    }
+  }
+  return ids;
+});
+
+// ── Hotspot groups ─────────────────────────────────────────────────────────
 
 type LiveHotspotItem = {
   kind: "llm" | "tool";

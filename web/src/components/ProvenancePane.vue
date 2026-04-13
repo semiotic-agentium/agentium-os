@@ -3,21 +3,20 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useTheme } from "../composables/useTheme";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useProvenanceOps } from "../composables/useProvenanceOps";
-import { groupValueAt } from "../utils/format";
 import type {
   ContextPlanningResponse,
   ContextPlanningTaskSnapshot,
   ProvenanceQueryParams,
 } from "../types/provenance";
-
-import ExploreTab from "./provenance/ExploreTab.vue";
 import ProvenanceLiveTab from "./provenance/ProvenanceLiveTab.vue";
 import type { HotspotDrilldownParams } from "./provenance/ProvenanceLiveTab.vue";
-import ProvenanceDriftTab from "./provenance/ProvenanceDriftTab.vue";
 import ProvenanceFailuresTab from "./provenance/ProvenanceFailuresTab.vue";
 import type { DrilldownFromFailure } from "./provenance/ProvenanceFailuresTab.vue";
 import ProvenanceAnomaliesTab from "./provenance/ProvenanceAnomaliesTab.vue";
 import type { DrilldownFromAnomaly } from "./provenance/ProvenanceAnomaliesTab.vue";
+import ProvenanceDriftTab from "./provenance/ProvenanceDriftTab.vue";
+import ExploreTab from "./provenance/ExploreTab.vue";
+import type { DrilldownParams } from "./provenance/ExploreTab.vue";
 
 const props = defineProps<{
   contextId?: string;
@@ -29,18 +28,17 @@ const props = defineProps<{
   traceRefreshTick?: number;
 }>();
 
-const isOpen = ref(typeof window !== "undefined" ? window.innerWidth > 1400 : true);
+const isOpen = ref(typeof window !== "undefined" ? window.innerWidth >= 1280 : true);
 const activeTab = ref<"live" | "failures" | "anomalies" | "drift" | "explore">("live");
 
 const { theme } = useTheme();
 const sources = computed(() => props.diagrams ?? []);
 const { rendered } = useMermaidRenderer(sources, theme);
 const expandedIdx = ref<number | null>(null);
-const exploreTabRef = ref<InstanceType<typeof ExploreTab> | null>(null);
 
 const { createQuery } = useProvenanceOps();
 
-// ── Query controllers ───────────────────────────────────────────────────────
+// ── Query instances ────────────────────────────────────────────────────────
 
 const liveLlm = createQuery("llm_calls", {
   pageSize: 20,
@@ -71,7 +69,9 @@ const failedToolQuery = createQuery("tool_calls", {
   sortDir: "desc",
 });
 
-// ── Polling & data refresh ──────────────────────────────────────────────────
+const exploreTabRef = ref<InstanceType<typeof ExploreTab> | null>(null);
+
+// ── Polling & planning ─────────────────────────────────────────────────────
 
 const isExploreTab = computed(() => activeTab.value === "explore");
 const pollTimer = ref<number | null>(null);
@@ -110,7 +110,10 @@ async function refreshForActiveTab() {
       return;
     }
     if (activeTab.value === "anomalies") {
-      await anomalyQuery.run({ ...scope, outcome: "both" });
+      await anomalyQuery.run({
+        ...scope,
+        outcome: "both",
+      });
       return;
     }
     if (activeTab.value === "drift") {
@@ -152,6 +155,7 @@ function stopPolling() {
 function schedulePolling(immediate = false) {
   stopPolling();
   if (!props.contextId || activeTab.value === "explore") return;
+  // While streaming, rely on traceRefreshTick edge triggers; long interval is a safety net only
   const delay = immediate ? 0 : props.isStreaming ? 45000 : 12000;
   pollTimer.value = window.setTimeout(async () => {
     await refreshForActiveTab();
@@ -159,119 +163,72 @@ function schedulePolling(immediate = false) {
   }, delay);
 }
 
-// ── Derived state for sub-components ────────────────────────────────────────
+// ── Derived data for child components ──────────────────────────────────────
 
 const planningTasks = computed<ContextPlanningTaskSnapshot[]>(() => {
   return planningState.value.response?.tasks ?? [];
 });
 
-function uniqueNonEmpty(values: Array<string | undefined>): string[] {
-  return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))];
-}
 
-const HOTSPOT_PKG_IDX = 1;
-const HOTSPOT_DIM_IDX = 3;
+// ── Drilldown handlers ─────────────────────────────────────────────────────
 
-const traceAgentPackages = computed(() =>
-  uniqueNonEmpty([
-    ...(liveLlm.state.value.response?.hotspotGroups ?? []).map((g) => groupValueAt(g.groupValues, g.groupKey, HOTSPOT_PKG_IDX)),
-    ...(liveTool.state.value.response?.hotspotGroups ?? []).map((g) => groupValueAt(g.groupValues, g.groupKey, HOTSPOT_PKG_IDX)),
-  ]),
-);
-
-const traceModels = computed(() =>
-  uniqueNonEmpty(
-    (liveLlm.state.value.response?.hotspotGroups ?? []).map((g) => groupValueAt(g.groupValues, g.groupKey, HOTSPOT_DIM_IDX)),
-  ),
-);
-
-const traceTools = computed(() =>
-  uniqueNonEmpty(
-    (liveTool.state.value.response?.hotspotGroups ?? []).map((g) => groupValueAt(g.groupValues, g.groupKey, HOTSPOT_DIM_IDX)),
-  ),
-);
-
-const episodeTaskIds = computed<string[]>(() => {
-  const ids: string[] = [];
-  const seen = new Set<string>();
-  if (props.taskId) {
-    ids.push(props.taskId);
-    seen.add(props.taskId);
-  }
-  for (const tid of planningState.value.response?.allTaskIds ?? []) {
-    if (!seen.has(tid)) { ids.push(tid); seen.add(tid); }
-  }
-  for (const t of planningTasks.value) {
-    if (!seen.has(t.taskId)) { ids.push(t.taskId); seen.add(t.taskId); }
-  }
-  return ids;
-});
-
-// ── Drill-down routing (tabs → Explore) ─────────────────────────────────────
-
-function drillToExplore(params: Record<string, unknown>) {
+function switchToExploreWithDrilldown(params: DrilldownParams) {
   activeTab.value = "explore";
-  requestAnimationFrame(() => {
+  setTimeout(() => {
     exploreTabRef.value?.applyDrilldown(params);
-  });
+  }, 0);
 }
 
 function onHotspotDrilldown(params: HotspotDrilldownParams) {
-  drillToExplore({
+  switchToExploreWithDrilldown({
     resource: params.kind === "llm" ? "llm_calls" : "tool_calls",
-    model: params.model,
-    toolName: params.toolName,
+    model: params.model || undefined,
+    toolName: params.toolName || undefined,
+    agentId: params.agentId || undefined,
     outcome: params.outcome,
     sortBy: params.sortBy,
     sortDir: params.sortDir,
-    agentId: params.agentId,
   });
 }
 
 function onFailureDrilldown(params: DrilldownFromFailure) {
-  drillToExplore(params);
+  switchToExploreWithDrilldown({
+    resource: params.resource,
+    outcome: params.outcome,
+    provider: params.provider || undefined,
+    model: params.model || undefined,
+    toolName: params.toolName || undefined,
+    bamlPrompt: params.bamlPrompt || undefined,
+    agentId: params.agentId || undefined,
+    sortBy: params.sortBy,
+    sortDir: params.sortDir,
+  });
 }
 
 function onAnomalyDrilldown(params: DrilldownFromAnomaly) {
-  drillToExplore(params);
+  switchToExploreWithDrilldown({
+    resource: params.resource,
+    provider: params.provider || undefined,
+    model: params.model || undefined,
+    bamlPrompt: params.bamlPrompt || undefined,
+    agentId: params.agentId || undefined,
+    outcome: params.outcome,
+    sortBy: params.sortBy,
+    sortDir: params.sortDir,
+  });
 }
 
-function onDriftDrilldown(taskId: string) {
-  drillToExplore({
+function onDrillToDriftCalls(taskId: string) {
+  switchToExploreWithDrilldown({
     resource: "llm_calls",
     outcome: "both",
     taskId,
-    model: "",
-    toolName: "",
-    bamlPrompt: "",
-    provider: "",
     sortBy: "timestamp_ms",
     sortDir: "desc",
   });
 }
 
-// ── Diagram modal ───────────────────────────────────────────────────────────
-
-function openModal(i: number) { expandedIdx.value = i; }
-function closeModal() { expandedIdx.value = null; }
-
-function onOverlayClick(e: MouseEvent) {
-  if ((e.target as HTMLElement).classList.contains("diagram-modal-overlay")) closeModal();
-}
-
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === "Escape") closeModal();
-}
-
-function downloadSvg(svg: string, index: number) {
-  const blob = new Blob([svg], { type: "image/svg+xml" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `trace-diagram-${index + 1}.svg`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
+// ── Episode download ───────────────────────────────────────────────────────
 
 async function downloadEpisodeText(taskId: string) {
   const response = await fetch(`/tasks/${taskId}/episode/text`);
@@ -291,7 +248,37 @@ async function downloadEpisodeText(taskId: string) {
   URL.revokeObjectURL(url);
 }
 
-// ── Watchers ────────────────────────────────────────────────────────────────
+// ── Diagram modal ──────────────────────────────────────────────────────────
+
+function openModal(i: number) {
+  expandedIdx.value = i;
+}
+
+function closeModal() {
+  expandedIdx.value = null;
+}
+
+function onOverlayClick(e: MouseEvent) {
+  if ((e.target as HTMLElement).classList.contains("diagram-modal-overlay")) {
+    closeModal();
+  }
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === "Escape") closeModal();
+}
+
+function downloadSvg(svg: string, index: number) {
+  const blob = new Blob([svg], { type: "image/svg+xml" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `trace-diagram-${index + 1}.svg`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Watchers & lifecycle ───────────────────────────────────────────────────
 
 watch(
   () => [props.contextId, props.selectedAgentId],
@@ -366,7 +353,13 @@ onUnmounted(() => {
         <button class="provenance-tab" :class="{ active: activeTab === 'live' }" @click="activeTab = 'live'">Live</button>
         <button class="provenance-tab" :class="{ active: activeTab === 'failures' }" @click="activeTab = 'failures'">Failures</button>
         <button class="provenance-tab" :class="{ active: activeTab === 'anomalies' }" @click="activeTab = 'anomalies'">Anomalies</button>
-        <button class="provenance-tab" :class="{ active: activeTab === 'drift' }" @click="activeTab = 'drift'">Drift</button>
+        <button
+          class="provenance-tab"
+          :class="{ active: activeTab === 'drift' }"
+          @click="activeTab = 'drift'"
+        >
+          Drift
+        </button>
         <button class="provenance-tab" :class="{ active: activeTab === 'explore' }" @click="activeTab = 'explore'">Explore</button>
       </div>
 
@@ -375,50 +368,52 @@ onUnmounted(() => {
           Start a chat turn to attach context-scoped provenance.
         </div>
 
-        <ProvenanceLiveTab
-          v-else-if="activeTab === 'live'"
-          :live-llm-response="liveLlm.state.value.response"
-          :live-tool-response="liveTool.state.value.response"
-          :planning-tasks="planningTasks"
-          :planning-loading="planningState.loading"
-          :planning-error="planningState.error"
-          :rendered="rendered"
-          :task-id="props.taskId"
-          :is-streaming="props.isStreaming"
-          :episode-task-ids="episodeTaskIds"
-          :trace-agent-packages="traceAgentPackages"
-          :trace-models="traceModels"
-          :trace-tools="traceTools"
-          @hotspot-drilldown="onHotspotDrilldown"
-          @open-modal="openModal"
-          @download-episode-text="downloadEpisodeText"
-        />
+        <template v-else-if="activeTab === 'live'">
+          <ProvenanceLiveTab
+            :live-llm-response="liveLlm.state.value.response"
+            :live-tool-response="liveTool.state.value.response"
+            :planning-tasks="planningTasks"
+            :planning-loading="planningState.loading"
+            :planning-error="planningState.error"
+            :rendered="rendered"
+            :task-id="props.taskId"
+            :is-streaming="props.isStreaming"
+            :all-task-ids="planningState.response?.allTaskIds ?? []"
+            @hotspot-drilldown="onHotspotDrilldown"
+            @open-modal="openModal"
+            @download-episode-text="downloadEpisodeText"
+          />
+        </template>
 
-        <ProvenanceFailuresTab
-          v-else-if="activeTab === 'failures'"
-          :failed-llm-response="failedLlmQuery.state.value.response"
-          :failed-tool-response="failedToolQuery.state.value.response"
-          @drilldown="onFailureDrilldown"
-        />
+        <template v-else-if="activeTab === 'failures'">
+          <ProvenanceFailuresTab
+            :failed-llm-response="failedLlmQuery.state.value.response"
+            :failed-tool-response="failedToolQuery.state.value.response"
+            @drilldown="onFailureDrilldown"
+          />
+        </template>
 
-        <ProvenanceAnomaliesTab
-          v-else-if="activeTab === 'anomalies'"
-          :anomaly-response="anomalyQuery.state.value.response"
-          @drilldown="onAnomalyDrilldown"
-        />
+        <template v-else-if="activeTab === 'anomalies'">
+          <ProvenanceAnomaliesTab
+            :anomaly-response="anomalyQuery.state.value.response"
+            @drilldown="onAnomalyDrilldown"
+          />
+        </template>
 
-        <ProvenanceDriftTab
-          v-else-if="activeTab === 'drift'"
-          :planning-tasks="planningTasks"
-          @drill-to-drift-calls="onDriftDrilldown"
-        />
+        <template v-else-if="activeTab === 'drift'">
+          <ProvenanceDriftTab
+            :planning-tasks="planningTasks"
+            @drill-to-drift-calls="onDrillToDriftCalls"
+          />
+        </template>
 
-        <ExploreTab
-          v-else
-          ref="exploreTabRef"
-          :context-id="props.contextId"
-          :selected-agent-id="props.selectedAgentId"
-        />
+        <template v-else>
+          <ExploreTab
+            ref="exploreTabRef"
+            :context-id="props.contextId"
+            :selected-agent-id="props.selectedAgentId"
+          />
+        </template>
       </div>
     </div>
   </aside>
