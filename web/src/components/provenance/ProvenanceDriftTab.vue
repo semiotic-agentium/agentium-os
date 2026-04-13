@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ContextPlanningTaskSnapshot } from "../../types/provenance";
+import { computed } from "vue";
 import {
   driftHelp,
   driftSeverityClass,
@@ -13,9 +14,11 @@ import {
   citationSimClass,
 } from "../../utils/provenanceHelpers";
 
-defineProps<{
+const props = defineProps<{
   planningTasks: ContextPlanningTaskSnapshot[];
 }>();
+
+const driftTasks = computed(() => props.planningTasks.filter(taskHasDrift));
 
 const emit = defineEmits<{
   (e: "drillToDriftCalls", taskId: string): void;
@@ -33,12 +36,12 @@ const emit = defineEmits<{
   <div v-if="planningTasks.length === 0" class="provenance-empty">
     No planning data available. Drift analysis requires committed intents and plans.
   </div>
-  <div v-else-if="planningTasks.filter(taskHasDrift).length === 0" class="provenance-empty">
+  <div v-else-if="driftTasks.length === 0" class="provenance-empty">
     No drift data collected yet. Drift scores appear after LLM calls within a committed plan.
   </div>
   <div v-else class="drift-task-list">
     <article
-      v-for="task in planningTasks.filter(taskHasDrift)"
+      v-for="task in driftTasks"
       :key="`drift:${task.taskId}`"
       class="drift-task-card"
     >
@@ -80,7 +83,7 @@ const emit = defineEmits<{
           <div
             class="drift-bar-fill"
             :class="driftSeverityClass(task.drift?.compositeSeverity)"
-            :style="{ width: `${Math.round((task.drift?.planAdherenceScore ?? 0) * 100)}%` }"
+            :style="{ transform: `scaleX(${task.drift?.planAdherenceScore ?? 0})` }"
           />
         </div>
         <span class="drift-bar-value">{{ formatDriftScore(task.drift?.planAdherenceScore) }}</span>
@@ -93,7 +96,7 @@ const emit = defineEmits<{
       >
         <div
           v-for="(call, ci) in task.drift.driftedCalls"
-          :key="`evidence:${task.taskId}:${ci}`"
+          :key="`evidence:${task.taskId}:${call.functionName}:${call.severity}:${ci}`"
           class="drift-evidence"
         >
           <div class="drift-evidence-header">
@@ -204,19 +207,19 @@ const emit = defineEmits<{
         <div class="drift-dimension-bars">
           <div class="drift-bar-row">
             <span class="drift-bar-label">Intent</span>
-            <div class="drift-bar-track"><div class="drift-bar-fill drift-severity-ok" :style="{ width: `${Math.round((task.drift?.intentAlignment ?? 0) * 100)}%` }" /></div>
+            <div class="drift-bar-track"><div class="drift-bar-fill drift-severity-ok" :style="{ transform: `scaleX(${task.drift?.intentAlignment ?? 0})` }" /></div>
           </div>
           <div class="drift-bar-row">
             <span class="drift-bar-label">Step</span>
-            <div class="drift-bar-track"><div class="drift-bar-fill drift-severity-ok" :style="{ width: `${Math.round((task.drift?.stepAlignment ?? 0) * 100)}%` }" /></div>
+            <div class="drift-bar-track"><div class="drift-bar-fill drift-severity-ok" :style="{ transform: `scaleX(${task.drift?.stepAlignment ?? 0})` }" /></div>
           </div>
           <div class="drift-bar-row">
             <span class="drift-bar-label">Trajectory</span>
-            <div class="drift-bar-track"><div class="drift-bar-fill drift-severity-ok" :style="{ width: `${Math.round((task.drift?.trajectoryDrift ?? 0) * 100)}%` }" /></div>
+            <div class="drift-bar-track"><div class="drift-bar-fill drift-severity-ok" :style="{ transform: `scaleX(${task.drift?.trajectoryDrift ?? 0})` }" /></div>
           </div>
           <div class="drift-bar-row">
             <span class="drift-bar-label">Adherence</span>
-            <div class="drift-bar-track"><div class="drift-bar-fill" :class="driftSeverityClass(task.drift?.compositeSeverity)" :style="{ width: `${Math.round((task.drift?.planAdherenceScore ?? 0) * 100)}%` }" /></div>
+            <div class="drift-bar-track"><div class="drift-bar-fill" :class="driftSeverityClass(task.drift?.compositeSeverity)" :style="{ transform: `scaleX(${task.drift?.planAdherenceScore ?? 0})` }" /></div>
           </div>
         </div>
       </details>

@@ -286,7 +286,7 @@ function applyLiveHotspotDrilldown(item: LiveHotspotItem) {
         <div class="planning-progress-track">
           <div
             class="planning-progress-fill"
-            :style="{ width: `${planProgressPercent(task)}%` }"
+            :style="{ transform: `scaleX(${planProgressPercent(task) / 100})` }"
           />
         </div>
 
@@ -303,7 +303,7 @@ function applyLiveHotspotDrilldown(item: LiveHotspotItem) {
             <div
               class="planning-progress-fill"
               :class="driftSeverityClass(task.drift?.compositeSeverity)"
-              :style="{ width: `${Math.round((task.drift?.planAdherenceScore ?? 0) * 100)}%` }"
+              :style="{ transform: `scaleX(${task.drift?.planAdherenceScore ?? 0})` }"
             />
           </div>
         </template>
