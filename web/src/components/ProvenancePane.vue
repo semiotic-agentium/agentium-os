@@ -3,6 +3,13 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useTheme } from "../composables/useTheme";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useProvenanceOps } from "../composables/useProvenanceOps";
+import {
+  formatCompact,
+  formatDuration,
+  shortId,
+  asDisplayIdentity,
+  groupValueAt,
+} from "../utils/format";
 import type {
   CitationDetail,
   CitationSimilarityOnRow,
@@ -914,47 +921,6 @@ const activeFilterChips = computed(() => {
   }
   return chips;
 });
-
-function formatCompact(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
-
-function formatDuration(ms: number): string {
-  if (ms > 1000) return `${(ms / 1000).toFixed(2)}s`;
-  return `${ms}ms`;
-}
-
-function shortId(id: string): string {
-  if (id.length <= 12) return id;
-  return `${id.slice(0, 8)}...${id.slice(-4)}`;
-}
-
-function asDisplayIdentity(agentId: string | undefined, pkg: string | undefined, ver: string | undefined): string {
-  const packageName = pkg && pkg !== "unknown" ? pkg : "";
-  const version = ver && ver !== "unknown" ? ver : "";
-  if (packageName && version) return `${packageName}/${version}`;
-  if (packageName) return packageName;
-  if (agentId && agentId !== "unknown") return shortId(agentId);
-  return "unknown-agent";
-}
-
-function normalizedGroupValue(raw: string | null | undefined): string | undefined {
-  if (typeof raw !== "string") return undefined;
-  const trimmed = raw.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function groupValueAt(
-  values: Array<string | null> | undefined,
-  groupKey: string,
-  index: number,
-): string | undefined {
-  const fromValues = normalizedGroupValue(values?.[index]);
-  if (fromValues) return fromValues;
-  return normalizedGroupValue(groupKey.split("|")[index]);
-}
 
 function liveHotspotLabel(item: LiveHotspotItem): string {
   const agentIdRaw = groupValueAt(item.groupValues, item.groupKey, 0);
