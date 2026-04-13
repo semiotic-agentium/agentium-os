@@ -9,8 +9,8 @@
 //! - `ToolError`   → archive_read render of error value
 //! - `SessionStep` → same rendering as above; items use role **`tool`** in `conversation_history`
 //!   (not `assistant`). `Open` / `SendDone` (header ± archive body) / `Read` as the **grep(1)/cat(1)
-//!   analogue**: `grep -n 'pat' @N` or `cat -n @N` when no reader; with an [`ArchiveReader`], a
-//!   **single** line of **paginated, grep-filtered** archive text (same `grep_paginate` path as
+//!   analogue**: `SearchRead` → `grep -n 'pat' @N`; `PageRead` → `cat -n @N`; with an [`ArchiveReader`], a
+//!   **single** line of **paginated** archive text (same `grep_paginate` path as
 //!   production — never raw JSON dumps). Matches `remotes/semiotic-agentium/pud-squashed`.
 //! - `StatusOnly` items are discarded at the conversion boundary before reaching here.
 
@@ -33,9 +33,14 @@ pub enum SessionStepProjection {
         archive_ref: String,
         header: String,
     },
-    Read {
+    SearchRead {
         archive_ref: String,
-        grep: Option<String>,
+        grep: String,
+        offset: usize,
+        limit: usize,
+    },
+    PageRead {
+        archive_ref: String,
         offset: usize,
         limit: usize,
     },
@@ -209,8 +214,17 @@ pub fn render_projection_content(
     )
 }
 
-fn read_view_key(archive_ref: &str, grep: Option<&str>, offset: usize, limit: usize) -> String {
-    format!("{archive_ref}|{}|{offset}|{limit}", grep.unwrap_or(""))
+fn read_view_key(
+    kind: &str,
+    archive_ref: &str,
+    grep: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> String {
+    format!(
+        "{kind}|{archive_ref}|{}|{offset}|{limit}",
+        grep.unwrap_or("")
+    )
 }
 
 fn render_projection_content_with_state(
@@ -299,6 +313,7 @@ fn render_projection_content_with_state(
                 match archive_reader.and_then(|r| r(archive_ref, None, 0, opts.send_done.get())) {
                     Some(content) => {
                         inlined_read_pages.insert(read_view_key(
+                            "page",
                             archive_ref,
                             None,
                             0,
@@ -309,21 +324,39 @@ fn render_projection_content_with_state(
                     None => RenderedEntry::One(header.clone()),
                 }
             }
-            SessionStepProjection::Read {
+            SessionStepProjection::SearchRead {
                 archive_ref,
                 grep,
                 offset,
                 limit,
             } => {
-                // pud-squashed: command line when we cannot resolve the archive; otherwise the
-                // reader returns grep_paginate/format_cat_n output only (controlled, not raw).
-                let cmd = session_read_command_line(archive_ref, grep.as_deref());
-                let read_key = read_view_key(archive_ref, grep.as_deref(), *offset, *limit);
+                let cmd = session_read_command_line(archive_ref, Some(grep.as_str()));
+                let read_key =
+                    read_view_key("search", archive_ref, Some(grep.as_str()), *offset, *limit);
                 if inlined_read_pages.contains(&read_key) {
                     return RenderedEntry::One(cmd);
                 }
-                match archive_reader.and_then(|r| r(archive_ref, grep.as_deref(), *offset, *limit))
+                match archive_reader
+                    .and_then(|r| r(archive_ref, Some(grep.as_str()), *offset, *limit))
                 {
+                    Some(output) => {
+                        inlined_read_pages.insert(read_key);
+                        RenderedEntry::One(output)
+                    }
+                    None => RenderedEntry::One(cmd),
+                }
+            }
+            SessionStepProjection::PageRead {
+                archive_ref,
+                offset,
+                limit,
+            } => {
+                let cmd = session_read_command_line(archive_ref, None);
+                let read_key = read_view_key("page", archive_ref, None, *offset, *limit);
+                if inlined_read_pages.contains(&read_key) {
+                    return RenderedEntry::One(cmd);
+                }
+                match archive_reader.and_then(|r| r(archive_ref, None, *offset, *limit)) {
                     Some(output) => {
                         inlined_read_pages.insert(read_key);
                         RenderedEntry::One(output)
@@ -437,9 +470,8 @@ mod tests {
                 role: "assistant".to_string(),
                 content: PromptProjectionContent::SessionStep {
                     tool_name: "clickup/get_tasks".to_string(),
-                    op: SessionStepProjection::Read {
+                    op: SessionStepProjection::PageRead {
                         archive_ref: "@15".to_string(),
-                        grep: None,
                         offset: 0,
                         limit: 200,
                     },
@@ -451,9 +483,8 @@ mod tests {
                 role: "assistant".to_string(),
                 content: PromptProjectionContent::SessionStep {
                     tool_name: "clickup/get_tasks".to_string(),
-                    op: SessionStepProjection::Read {
+                    op: SessionStepProjection::PageRead {
                         archive_ref: "@15".to_string(),
-                        grep: None,
                         offset: 0,
                         limit: 200,
                     },
@@ -509,9 +540,8 @@ mod tests {
                 role: "assistant".to_string(),
                 content: PromptProjectionContent::SessionStep {
                     tool_name: "clickup/get_tasks".to_string(),
-                    op: SessionStepProjection::Read {
+                    op: SessionStepProjection::PageRead {
                         archive_ref: "@15".to_string(),
-                        grep: None,
                         offset: 0,
                         limit: 200,
                     },

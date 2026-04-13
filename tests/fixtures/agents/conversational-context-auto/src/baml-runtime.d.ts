@@ -6,10 +6,15 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ArchiveReadInput { archive_ref: string;
+export interface ArchivePageReadInput { archive_ref: string;
 offset: number | null;
 limit: number | null;
-grep: string | null;
+ }
+
+export interface ArchiveSearchReadInput { archive_ref: string;
+grep: string;
+offset: number | null;
+limit: number | null;
  }
 
 export interface CalculatorInput { expression: Expression;
@@ -32,8 +37,12 @@ export interface SupportCalculateOpenStep { op: "Open";
 tool_name: "support/calculate";
  }
 
-export interface SupportCalculateReadStep { op: "Read";
-input: ArchiveReadInput;
+export interface SupportCalculatePageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface SupportCalculateSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
  }
 
 export interface SupportCalculateSendStep { op: "Send";
@@ -41,7 +50,7 @@ input: CalculatorInput;
 citations: string[];
  }
 
-export interface SupportCalculateSessionPlan { step: SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep;
+export interface SupportCalculateSessionPlan { step: SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep;
 citations: string[];
  }
 
@@ -382,15 +391,18 @@ export type StepExecutorFunctionName = "ChooseCalcTool" | "ChooseCalcTool__act__
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    scope_ref: string | null;
-    output_ref: string | null;
-    evidence_ref: string | null;
 }
+
+/** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
+
+export type HistoryContextSessionOp = "SearchRead" | "PageRead";
+
+export type HistoryContextStatus = "done" | "streaming" | "suspended" | "error";
 
 export interface HistoryContext {
     hop: number;
-    op: string;
-    status: string;
+    op: HistoryContextSessionOp;
+    status: HistoryContextStatus;
     truncated: boolean;
     cursor: string | null;
     payload: Record<string, unknown> | null;
@@ -414,7 +426,6 @@ export interface StepExecutorRunResult<R = unknown> {
     last: R;
     steps: R[];
     session_context: SessionContext;
-    history_context: HistoryContext | null;
     selected_tool: string | null;
 }
 

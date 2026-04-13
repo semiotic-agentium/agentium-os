@@ -14,7 +14,7 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
     let mut out = String::new();
 
     out.push_str("// Auto-generated session coordination — do not edit manually\n");
-    out.push_str("// Coordinates the claude/dev session tool (Open/Send/Next/Finish/Abort).\n");
+    out.push_str("// Coordinates the claude/dev session tool (Open/Send/SearchRead/PageRead/Finish/Abort).\n");
     out.push_str("// ClaudeDevSessionPlan is defined in _baml_runtime.baml (builder prelude).\n\n");
 
     // SessionContext is defined in _baml_runtime.baml (shared FSM host type).
@@ -40,7 +40,7 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
     You control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
     RULES:
-    0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, Read, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
+    0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
     1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
     2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
     3. Initialization is two-hop under host FSM:
@@ -53,7 +53,7 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
     5. When completion is DONE or INTERRUPTED:
        - if validation has not been requested yet, Send validation prompt
        - otherwise emit Report with concise requirements/build/validation summary
-    6. Non-terminal sessions: Read tool output before more Send or Finish when needed. Large @N: set grep, small limit, offset to page; do not read whole archives unless necessary.
+    6. Non-terminal sessions: poll tool output (SearchRead to filter, PageRead for contiguous lines) before more Send or Finish when needed. Large @N: SearchRead requires grep + limit + offset; PageRead pages rendered lines without grep.
     7. AskUser is only for genuine missing operator input. Keep prompt neutral and short.
     8. Never emit Open except on the Open/select phase (session not yet open).
     9. Never emit tool_call objects.

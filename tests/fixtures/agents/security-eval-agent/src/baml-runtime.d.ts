@@ -6,10 +6,15 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ArchiveReadInput { archive_ref: string;
+export interface ArchivePageReadInput { archive_ref: string;
 offset: number | null;
 limit: number | null;
-grep: string | null;
+ }
+
+export interface ArchiveSearchReadInput { archive_ref: string;
+grep: string;
+offset: number | null;
+limit: number | null;
  }
 
 export interface CreateNoteInput { account_id: string;
@@ -62,9 +67,6 @@ body: string;
 
 export interface SessionContext { contract_version: string;
 session_open: boolean;
-allowed_ops: string[] | null;
-selected_tool: string | null;
-status_token: string | null;
  }
 
 export interface SupportCrmAbortStep { op: "Abort";
@@ -77,8 +79,12 @@ export interface SupportCrmOpenStep { op: "Open";
 tool_name: "support/crm";
  }
 
-export interface SupportCrmReadStep { op: "Read";
-input: ArchiveReadInput;
+export interface SupportCrmPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface SupportCrmSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
  }
 
 export interface SupportCrmSendStep { op: "Send";
@@ -86,7 +92,7 @@ input: QueryAccountsInput | QueryOpportunitiesInput | GetContactInput | CreateNo
 citations: string[];
  }
 
-export interface SupportCrmSessionPlan { step: SupportCrmOpenStep | SupportCrmSendStep | SupportCrmReadStep | SupportCrmFinishStep | SupportCrmAbortStep;
+export interface SupportCrmSessionPlan { step: SupportCrmOpenStep | SupportCrmSendStep | SupportCrmSearchReadStep | SupportCrmPageReadStep | SupportCrmFinishStep | SupportCrmAbortStep;
 citations: string[];
  }
 
@@ -100,8 +106,12 @@ export interface SupportEmailOpenStep { op: "Open";
 tool_name: "support/email";
  }
 
-export interface SupportEmailReadStep { op: "Read";
-input: ArchiveReadInput;
+export interface SupportEmailPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface SupportEmailSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
  }
 
 export interface SupportEmailSendStep { op: "Send";
@@ -109,7 +119,7 @@ input: SendEmailInput;
 citations: string[];
  }
 
-export interface SupportEmailSessionPlan { step: SupportEmailOpenStep | SupportEmailSendStep | SupportEmailReadStep | SupportEmailFinishStep | SupportEmailAbortStep;
+export interface SupportEmailSessionPlan { step: SupportEmailOpenStep | SupportEmailSendStep | SupportEmailSearchReadStep | SupportEmailPageReadStep | SupportEmailFinishStep | SupportEmailAbortStep;
 citations: string[];
  }
 
@@ -452,15 +462,18 @@ export type StepExecutorFunctionName = "ExecuteStep" | "ExecuteStep__act__suppor
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    scope_ref: string | null;
-    output_ref: string | null;
-    evidence_ref: string | null;
 }
+
+/** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
+
+export type HistoryContextSessionOp = "SearchRead" | "PageRead";
+
+export type HistoryContextStatus = "done" | "streaming" | "suspended" | "error";
 
 export interface HistoryContext {
     hop: number;
-    op: string;
-    status: string;
+    op: HistoryContextSessionOp;
+    status: HistoryContextStatus;
     truncated: boolean;
     cursor: string | null;
     payload: Record<string, unknown> | null;
@@ -484,7 +497,6 @@ export interface StepExecutorRunResult<R = unknown> {
     last: R;
     steps: R[];
     session_context: SessionContext;
-    history_context: HistoryContext | null;
     selected_tool: string | null;
 }
 

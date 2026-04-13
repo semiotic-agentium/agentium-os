@@ -1,4 +1,4 @@
-//! Single source for repeated BAML `@description` text (citations, Read/archive policy).
+//! Single source for repeated BAML `@description` text (citations, SearchRead/PageRead archive policy).
 //! [`render_generated_tools_prelude`] emits the shared prelude; [`tool_interfaces`] uses the same
 //! citation/send/read strings for per-tool session classes.
 //!
@@ -6,7 +6,7 @@
 //!
 //! - **Voice:** Imperative, second person implied. No hedging for host-enforced behaviour.
 //! - **Strength:** **Must** / **Do not** — schema and namespace rules. **Use** / **Set** — operational
-//!   defaults (e.g. large-archive Read: set `grep`, small `limit`, `offset`). **Optional** — fields
+//!   defaults (e.g. large archive: SearchRead with `grep` + small `limit`, then PageRead for detail). **Optional** — fields
 //!   the host allows empty (`[]`, omit).
 //! - **Verbs:** **Emit** — one FSM step or session-plan fragment. **Return** — reserved for human
 //!   doc / coordination intro (“return a report”) where it matches BAML wording; step rules use *emit*.
@@ -25,15 +25,17 @@ pub(crate) const CITATIONS_PLAN_OPTIONAL: &str = "Optional refs (#N, @N) for obs
 /// `*SendStep.citations`
 pub(crate) const CITATIONS_SEND_STEP: &str = "Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.";
 
-// --- Archive Read (grep-first, bounded windows) ---
+// --- Archive access (SearchRead = filter, PageRead = contiguous paging) ---
 
-pub(crate) const ARCHIVE_READ_ARCHIVE_REF: &str = "Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every Read must use a real @N; do not invent refs.";
+pub(crate) const ARCHIVE_READ_ARCHIVE_REF: &str = "Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.";
 
-pub(crate) const ARCHIVE_READ_OFFSET: &str = "0-based line offset after grep. Page with limit: first window offset=0; next offset += previous limit while lines or matches remain.";
+pub(crate) const ARCHIVE_SEARCH_READ_GREP: &str = "Required non-empty line filter (substring or regex per host), e.g. deploy or -i deploy. Use SearchRead to locate lines; follow with PageRead when you need contiguous context.";
 
-pub(crate) const ARCHIVE_READ_LIMIT: &str = "Max lines in this Read window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded). Set grep before large windows.";
+pub(crate) const ARCHIVE_SEARCH_READ_OFFSET: &str = "0-based offset counting lines that matched grep (after filter). Page with limit: first window offset=0; next offset = previous next_offset while matches remain.";
 
-pub(crate) const ARCHIVE_READ_GREP: &str = "Large @N: set this first — line filter (substring or regex per host), e.g. deploy or -i deploy. Then page with offset/limit. Do not issue repeated wide Reads without a pattern.";
+pub(crate) const ARCHIVE_PAGE_READ_OFFSET: &str = "0-based offset over full rendered archive lines (no grep). Page with limit: first window offset=0; next offset = previous next_offset while lines remain.";
+
+pub(crate) const ARCHIVE_READ_LIMIT: &str = "Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).";
 
 // --- Conversation history (ctx.tags) — must match runtime projection ---
 
@@ -54,22 +56,26 @@ pub(crate) const BAML_CONVERSATION_HISTORY_JINJA_BLOCK: &str = r#"{% for message
 
 // --- Session plan `step` field guidance ---
 
-pub(crate) const STEP_DESC_CLAUDE_OR_A2A: &str = "Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or Read @N when that tool archive already exists in history; after Send (@N archived) → Read @N (large archive: set grep, small limit, offset to page), Finish, or Send again.";
+pub(crate) const STEP_DESC_CLAUDE_OR_A2A: &str = "Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or SearchRead/PageRead @N when that tool archive already exists; after Send (@N archived) → SearchRead (grep required) to find lines, PageRead (no grep) for contiguous slices, Finish, or Send again.";
 
-pub(crate) const STEP_DESC_DEFAULT: &str = "Emit one FSM step. From history: no session → Open; session open → Send for new work or Read @N when the archive already exists in history; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.";
+pub(crate) const STEP_DESC_DEFAULT: &str = "Emit one FSM step. From history: no session → Open; session open → Send for new work or SearchRead/PageRead @N when the archive exists; after Send (@N archived) → Finish, SearchRead, PageRead, or Send again.";
 
-/// `*ReadStep` wrapper around `ArchiveReadInput` (field-level hint; full policy on ArchiveReadInput members).
-pub(crate) const READ_STEP_INPUT_DESCRIPTION: &str = "archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.";
+/// Field-level hint for `*SearchReadStep` (`ArchiveSearchReadInput`).
+pub(crate) const SEARCH_READ_STEP_INPUT_DESCRIPTION: &str = "archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.";
 
-/// Full shared prelude (FSM header, planning types, StructuredReply, ArchiveReadInput).
+/// Field-level hint for `*PageReadStep` (`ArchivePageReadInput`).
+pub(crate) const PAGE_READ_STEP_INPUT_DESCRIPTION: &str = "archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.";
+
+/// Full shared prelude (FSM header, planning types, StructuredReply, archive read inputs).
 pub fn render_generated_tools_prelude() -> String {
     let esc = escape_baml_description;
     let c_plan = esc(CITATIONS_PLAN_OPTIONAL);
     let c_reply = esc(CITATIONS_DECISION_OR_SYNTHESIS);
     let c_ar = esc(ARCHIVE_READ_ARCHIVE_REF);
-    let c_off = esc(ARCHIVE_READ_OFFSET);
     let c_lim = esc(ARCHIVE_READ_LIMIT);
-    let c_grep = esc(ARCHIVE_READ_GREP);
+    let c_sg = esc(ARCHIVE_SEARCH_READ_GREP);
+    let c_soff = esc(ARCHIVE_SEARCH_READ_OFFSET);
+    let c_poff = esc(ARCHIVE_PAGE_READ_OFFSET);
     format!(
         r#"// Auto-generated tool interfaces
 // This file is auto-generated - do not edit manually
@@ -78,14 +84,15 @@ pub fn render_generated_tools_prelude() -> String {
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. Read: archive_ref @N from a Send for this tool (same session or conversation history). Large body: set grep; small limit; offset to page.
-// 4. Finish: Closes the session gracefully
-// 5. Abort: Closes the session with an error
+// 3. SearchRead: line-filtered archive read (grep required). Page with offset/limit over matches.
+// 4. PageRead: contiguous archive paging (no grep). Page with offset/limit over full rendered lines.
+// 5. Finish: Closes the session gracefully
+// 6. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - Read needs a real @N from a Send for this tool (may be earlier in history). Large @N: grep first, then limit/offset — do not dump whole archives.
+// - SearchRead/PageRead need a real @N from a Send for this tool (may be earlier in history). Large @N: SearchRead with grep first, then PageRead for detail — do not dump whole archives with PageRead alone.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -113,23 +120,11 @@ class ProvenancePlanStep {{
   depends_on string[]? @description("Prerequisite step_ids (same alias namespace as step_id); omit or [] if none.")
 }}
 
-class HistoryContext {{
-  hop int
-  op string
-  status string
-  truncated bool
-  cursor string?
-  payload string?
-}}
-
 /// Runtime session state injected by the step-executor loop.
 /// Do not construct manually — values come from the FSM.
 class SessionContext {{
   contract_version string
   session_open bool
-  allowed_ops string[]? @description("Deprecated: per-phase step-executor functions narrow the output schema. Host may omit.")
-  selected_tool string?
-  status_token string?
 }}
 
 /// Opaque JSON transport wrapper for host-managed tools and event payloads.
@@ -166,20 +161,27 @@ class StructuredReply {{
   citations string[] @description("{c_reply}")
 }}
 
-/// Archive deref input for Read steps.
-/// archive_ref is required: use the @N ref from the Send result.
-class ArchiveReadInput {{
+/// Line-filtered archive read (emit op SearchRead).
+class ArchiveSearchReadInput {{
   archive_ref string @description("{c_ar}")
-  offset int? @description("{c_off}")
+  grep string @description("{c_sg}")
+  offset int? @description("{c_soff}")
   limit int? @description("{c_lim}")
-  grep string? @description("{c_grep}")
+}}
+
+/// Contiguous archive paging without a line filter (emit op PageRead).
+class ArchivePageReadInput {{
+  archive_ref string @description("{c_ar}")
+  offset int? @description("{c_poff}")
+  limit int? @description("{c_lim}")
 }}
 "#,
         c_plan = c_plan,
         c_reply = c_reply,
         c_ar = c_ar,
-        c_off = c_off,
         c_lim = c_lim,
-        c_grep = c_grep,
+        c_sg = c_sg,
+        c_soff = c_soff,
+        c_poff = c_poff,
     )
 }

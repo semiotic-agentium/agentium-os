@@ -6,10 +6,15 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ArchiveReadInput { archive_ref: string;
+export interface ArchivePageReadInput { archive_ref: string;
 offset: number | null;
 limit: number | null;
-grep: string | null;
+ }
+
+export interface ArchiveSearchReadInput { archive_ref: string;
+grep: string;
+offset: number | null;
+limit: number | null;
  }
 
 export interface ClickUpIntent { intent: string;
@@ -53,9 +58,6 @@ export interface NotRelevant { reason: string;
 
 export interface SessionContext { contract_version: string;
 session_open: boolean;
-allowed_ops: string[] | null;
-selected_tool: string | null;
-status_token: string | null;
  }
 
 export interface StandardAgentPlanStep { agent_package: string;
@@ -79,8 +81,12 @@ export interface SupportClickupOpenStep { op: "Open";
 tool_name: "support/clickup";
  }
 
-export interface SupportClickupReadStep { op: "Read";
-input: ArchiveReadInput;
+export interface SupportClickupPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface SupportClickupSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
  }
 
 export interface SupportClickupSendStep { op: "Send";
@@ -88,7 +94,7 @@ input: ListTeamsInput | ListSpacesInput | ListListsInput | ListTasksInput | GetT
 citations: string[];
  }
 
-export interface SupportClickupSessionPlan { step: SupportClickupOpenStep | SupportClickupSendStep | SupportClickupReadStep | SupportClickupFinishStep | SupportClickupAbortStep;
+export interface SupportClickupSessionPlan { step: SupportClickupOpenStep | SupportClickupSendStep | SupportClickupSearchReadStep | SupportClickupPageReadStep | SupportClickupFinishStep | SupportClickupAbortStep;
 citations: string[];
  }
 
@@ -437,15 +443,18 @@ export type StepExecutorFunctionName = "ChooseClickUpAction" | "ChooseClickUpAct
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    scope_ref: string | null;
-    output_ref: string | null;
-    evidence_ref: string | null;
 }
+
+/** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
+
+export type HistoryContextSessionOp = "SearchRead" | "PageRead";
+
+export type HistoryContextStatus = "done" | "streaming" | "suspended" | "error";
 
 export interface HistoryContext {
     hop: number;
-    op: string;
-    status: string;
+    op: HistoryContextSessionOp;
+    status: HistoryContextStatus;
     truncated: boolean;
     cursor: string | null;
     payload: Record<string, unknown> | null;
@@ -469,7 +478,6 @@ export interface StepExecutorRunResult<R = unknown> {
     last: R;
     steps: R[];
     session_context: SessionContext;
-    history_context: HistoryContext | null;
     selected_tool: string | null;
 }
 

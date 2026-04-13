@@ -6,10 +6,15 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ArchiveReadInput { archive_ref: string;
+export interface ArchivePageReadInput { archive_ref: string;
 offset: number | null;
 limit: number | null;
-grep: string | null;
+ }
+
+export interface ArchiveSearchReadInput { archive_ref: string;
+grep: string;
+offset: number | null;
+limit: number | null;
  }
 
 export type BlockRenderMode = "Raw" | "Enriched";
@@ -63,8 +68,12 @@ export interface SupportNotionOpenStep { op: "Open";
 tool_name: "support/notion";
  }
 
-export interface SupportNotionReadStep { op: "Read";
-input: ArchiveReadInput;
+export interface SupportNotionPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface SupportNotionSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
  }
 
 export interface SupportNotionSendStep { op: "Send";
@@ -72,7 +81,7 @@ input: NotionSearchPagesInput | NotionGetPageInput | NotionGetPageBlocksInput;
 citations: string[];
  }
 
-export interface SupportNotionSessionPlan { step: SupportNotionOpenStep | SupportNotionSendStep | SupportNotionReadStep | SupportNotionFinishStep | SupportNotionAbortStep;
+export interface SupportNotionSessionPlan { step: SupportNotionOpenStep | SupportNotionSendStep | SupportNotionSearchReadStep | SupportNotionPageReadStep | SupportNotionFinishStep | SupportNotionAbortStep;
 citations: string[];
  }
 
@@ -419,15 +428,18 @@ export type StepExecutorFunctionName = "ChooseNotionAction" | "ChooseNotionActio
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    scope_ref: string | null;
-    output_ref: string | null;
-    evidence_ref: string | null;
 }
+
+/** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
+
+export type HistoryContextSessionOp = "SearchRead" | "PageRead";
+
+export type HistoryContextStatus = "done" | "streaming" | "suspended" | "error";
 
 export interface HistoryContext {
     hop: number;
-    op: string;
-    status: string;
+    op: HistoryContextSessionOp;
+    status: HistoryContextStatus;
     truncated: boolean;
     cursor: string | null;
     payload: Record<string, unknown> | null;
@@ -451,7 +463,6 @@ export interface StepExecutorRunResult<R = unknown> {
     last: R;
     steps: R[];
     session_context: SessionContext;
-    history_context: HistoryContext | null;
     selected_tool: string | null;
 }
 

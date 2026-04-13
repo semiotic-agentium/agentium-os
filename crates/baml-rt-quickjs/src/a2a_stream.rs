@@ -630,14 +630,6 @@ impl HandoverSender {
     }
 }
 
-/// Returns a permanently-closed, no-op handover sender.
-///
-/// Deprecated alias for [`HandoverSender::noop()`]; prefer the associated constructor.
-#[deprecated(since = "0.1.0", note = "use HandoverSender::noop() instead")]
-pub fn closed_handover_sender() -> HandoverSender {
-    HandoverSender::noop()
-}
-
 /// Dispatches `deliver_resume_input` to the handover lane so the !Send `runtime.eval()` call
 /// runs on the LocalSet thread rather than in the `tokio::spawn` collect loop.
 ///

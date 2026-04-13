@@ -228,6 +228,10 @@ function Choose{pascal_name}Action(
 
     Return exactly one valid tool-session step object for the current phase.
 
+    Host session tools distinguish archive inspection modes:
+    - SearchRead: grep-filtered search (pattern required in step input).
+    - PageRead: contiguous paging over rendered archive lines (no grep).
+
     {{{{ ctx.output_format }}}}
   "#
 }}

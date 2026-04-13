@@ -923,7 +923,7 @@ fn conv_item_to_entries(
                     },
                 )
             }
-            SessionStepOp::Read {
+            SessionStepOp::SearchRead {
                 archive_ref,
                 grep,
                 offset,
@@ -936,12 +936,9 @@ fn conv_item_to_entries(
                     let line_count = lines.len();
                     let byte_count: usize = lines.iter().map(|s| s.len().saturating_add(1)).sum();
                     let summary = lines.first().cloned().unwrap_or_else(|| {
-                        match grep.as_deref().filter(|g| !g.is_empty()) {
-                            Some(g) => format!(
-                                "grep {archive_ref} pattern={g:?} offset={offset} limit={limit}"
-                            ),
-                            None => format!("cat -n {archive_ref} offset={offset} limit={limit}"),
-                        }
+                        format!(
+                            "SearchRead {archive_ref} pattern={grep:?} offset={offset} limit={limit}"
+                        )
                     });
                     *seq += 1;
                     return Ok(vec![EpisodeEntry {
@@ -966,8 +963,50 @@ fn conv_item_to_entries(
                         tool_name: ss.tool_name.clone(),
                         description: prefix_wire_citations_in_text(
                             &format!(
-                                "read {archive_ref} grep={grep:?} offset={offset} limit={limit}"
+                                "SearchRead {archive_ref} grep={grep:?} offset={offset} limit={limit}"
                             ),
+                            ref_prefix,
+                        ),
+                    },
+                )
+            }
+            SessionStepOp::PageRead {
+                archive_ref,
+                offset,
+                limit,
+            } => {
+                if let Some(raw_lines) = ss.read_replay_lines.as_ref().filter(|l| !l.is_empty()) {
+                    let joined = raw_lines.join("\n");
+                    let body = prefix_wire_citations_in_text(&joined, ref_prefix);
+                    let lines: Vec<String> = body.lines().map(str::to_string).collect();
+                    let line_count = lines.len();
+                    let byte_count: usize = lines.iter().map(|s| s.len().saturating_add(1)).sum();
+                    let summary = lines.first().cloned().unwrap_or_else(|| {
+                        format!("PageRead {archive_ref} offset={offset} limit={limit}")
+                    });
+                    *seq += 1;
+                    return Ok(vec![EpisodeEntry {
+                        seq: *seq,
+                        step_type: StepType::ToolRead,
+                        role: "read".into(),
+                        elapsed_ms,
+                        content: EpisodeContent::ToolOutput {
+                            tool_name: ss.tool_name.clone(),
+                            summary,
+                            line_count,
+                            byte_count,
+                            lines,
+                        },
+                        activity_anchor: anchor,
+                        citation_strings: Vec::new(),
+                    }]);
+                }
+                (
+                    StepType::ToolRead,
+                    EpisodeContent::ToolInvocation {
+                        tool_name: ss.tool_name.clone(),
+                        description: prefix_wire_citations_in_text(
+                            &format!("PageRead {archive_ref} offset={offset} limit={limit}"),
                             ref_prefix,
                         ),
                     },

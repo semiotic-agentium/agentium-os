@@ -2,6 +2,25 @@ use serde_json::Value;
 
 use crate::error::ProvenanceError;
 
+/// Parse `Value::String(s)` as JSON when possible; otherwise clone the value unchanged.
+pub(super) fn json_value_from_embedded_string(value: &Value) -> Value {
+    match value {
+        Value::String(s) => {
+            serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone()))
+        }
+        other => other.clone(),
+    }
+}
+
+/// Row field that may be a JSON string, object, or array; returns `None` for other shapes.
+pub(super) fn parse_json_object_field(value: &Value) -> Option<Value> {
+    match value {
+        Value::String(s) => serde_json::from_str(s).ok(),
+        Value::Object(_) | Value::Array(_) => Some(value.clone()),
+        _ => None,
+    }
+}
+
 pub(super) fn map_surreal_error(e: surrealdb::Error) -> ProvenanceError {
     ProvenanceError::Storage(Box::new(e))
 }

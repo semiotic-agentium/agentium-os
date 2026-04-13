@@ -8,7 +8,10 @@ use serde_json::{Map, Value};
 
 use super::{
     SurrealProvenanceStore,
-    helpers::{map_surreal_error, normalize_payload_text_query, query_take_zero},
+    helpers::{
+        json_value_from_embedded_string, map_surreal_error, normalize_payload_text_query,
+        parse_json_object_field, query_take_zero,
+    },
     payload::{
         ParsedArchiveRef, archive_payload_from_record, archive_ref_for_activity,
         archive_ref_for_payload, parse_archive_ref,
@@ -350,12 +353,7 @@ fn normalize_agent_field(raw: Option<&str>, fallback: &str) -> String {
 
 /// Parse a JSON-like string field from row props.
 fn parse_json_field(row: &Map<String, Value>, field: &str) -> Option<Value> {
-    let raw = row.get(field)?;
-    match raw {
-        Value::String(s) => serde_json::from_str(s).ok(),
-        Value::Object(_) | Value::Array(_) => Some(raw.clone()),
-        _ => None,
-    }
+    row.get(field).and_then(parse_json_object_field)
 }
 
 /// Parse a JSON-like string into a Value (string fallback).
@@ -472,10 +470,7 @@ fn nest_llm_drift_fields(row: &mut Map<String, Value>) {
     {
         // Citation drift is stored as a JSON string by storage_safe_props (which stringifies
         // Value::Object). Parse it back so downstream consumers get a proper object, not a string.
-        let parsed = match &value {
-            Value::String(s) => serde_json::from_str(s).unwrap_or(value),
-            _ => value,
-        };
+        let parsed = json_value_from_embedded_string(&value);
         drift.insert("citation".to_string(), parsed);
     }
 

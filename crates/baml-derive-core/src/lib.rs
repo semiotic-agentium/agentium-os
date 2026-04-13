@@ -63,8 +63,10 @@ pub trait BamlType: Send + Sync + 'static {
 /// # Attribute interaction
 ///
 /// - `#[baml(skip)]` suppresses the field/variant from both BAML and TypeScript output.
-/// - `#[baml(alias)]` and `#[baml(description)]` are BAML-only; TypeScript uses the
-///   original Rust identifier as the field/property name.
+/// - `#[baml(alias)]` and `#[baml(description)]` are BAML-only; for **struct** fields TypeScript
+///   keeps the Rust field name. For **unit enums**, TypeScript string literals and JSON Schema
+///   enum values follow one wire rule: `#[baml(alias)]` if set, else `#[serde(rename)]` /
+///   container `rename_all`, else the Rust variant identifier.
 pub trait TsType: Send + Sync + 'static {
     /// The TypeScript type name (mirrors the Rust type name).
     fn ts_type_name() -> &'static str;

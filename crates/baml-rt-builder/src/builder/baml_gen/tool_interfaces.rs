@@ -329,7 +329,8 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
 
     let open_step_name = format!("{}OpenStep", class_name);
     let send_step_name = format!("{}SendStep", class_name);
-    let read_step_name = format!("{}ReadStep", class_name);
+    let search_read_step_name = format!("{}SearchReadStep", class_name);
+    let page_read_step_name = format!("{}PageReadStep", class_name);
     let finish_step_name = format!("{}FinishStep", class_name);
     let abort_step_name = format!("{}AbortStep", class_name);
     let step_union_name = format!("{}SessionStep", class_name);
@@ -409,13 +410,25 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     write_line(output, "}")?;
     write_line(output, "")?;
 
-    write_line(output, &format!("class {} {{", read_step_name))?;
-    write_line(output, "  op \"Read\"")?;
+    write_line(output, &format!("class {} {{", search_read_step_name))?;
+    write_line(output, "  op \"SearchRead\"")?;
     write_line(
         output,
         &format!(
-            "  input ArchiveReadInput @description(\"{}\")",
-            escape_baml_description(prompt_copy::READ_STEP_INPUT_DESCRIPTION)
+            "  input ArchiveSearchReadInput @description(\"{}\")",
+            escape_baml_description(prompt_copy::SEARCH_READ_STEP_INPUT_DESCRIPTION)
+        ),
+    )?;
+    write_line(output, "}")?;
+    write_line(output, "")?;
+
+    write_line(output, &format!("class {} {{", page_read_step_name))?;
+    write_line(output, "  op \"PageRead\"")?;
+    write_line(
+        output,
+        &format!(
+            "  input ArchivePageReadInput @description(\"{}\")",
+            escape_baml_description(prompt_copy::PAGE_READ_STEP_INPUT_DESCRIPTION)
         ),
     )?;
     write_line(output, "}")?;
@@ -434,11 +447,12 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     write_line(
         output,
         &format!(
-            "type {} = {} | {} | {} | {} | {}",
+            "type {} = {} | {} | {} | {} | {} | {}",
             step_union_name,
             open_step_name,
             send_step_name,
-            read_step_name,
+            search_read_step_name,
+            page_read_step_name,
             finish_step_name,
             abort_step_name
         ),

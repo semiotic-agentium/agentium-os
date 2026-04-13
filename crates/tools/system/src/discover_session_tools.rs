@@ -8,7 +8,9 @@ use baml_rt_core::{
 };
 use baml_rt_tools::{
     ToolRegistry, create_multi_send_session_tool_from_async, opaque_json_map_from_object,
-    tools::{HistoryContextV1, ToolFunctionMetadata},
+    tools::{
+        HistoryContextSessionOp, HistoryContextStatus, HistoryContextV1, ToolFunctionMetadata,
+    },
 };
 use tracing::info;
 
@@ -182,8 +184,8 @@ pub fn discover_agents_handler(
                 done: true,
                 history_context: Some(HistoryContextV1 {
                     hop: 1,
-                    op: "Read".to_string(),
-                    status: "done".to_string(),
+                    op: HistoryContextSessionOp::PageRead,
+                    status: HistoryContextStatus::Done,
                     truncated: false,
                     cursor: None,
                     payload: Some(opaque_json_map_from_object(serde_json::json!({
@@ -230,8 +232,8 @@ pub fn discover_tools_handler(
                 done: true,
                 history_context: Some(HistoryContextV1 {
                     hop: 1,
-                    op: "Read".to_string(),
-                    status: "done".to_string(),
+                    op: HistoryContextSessionOp::PageRead,
+                    status: HistoryContextStatus::Done,
                     truncated: false,
                     cursor: None,
                     payload: Some(opaque_json_map_from_object(serde_json::json!({

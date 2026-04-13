@@ -25,10 +25,15 @@ source_keys: string[];
 source_key_prefixes: string[];
  }
 
-export interface ArchiveReadInput { archive_ref: string;
+export interface ArchivePageReadInput { archive_ref: string;
 offset: number | null;
 limit: number | null;
-grep: string | null;
+ }
+
+export interface ArchiveSearchReadInput { archive_ref: string;
+grep: string;
+offset: number | null;
+limit: number | null;
  }
 
 export interface DiscoverAgentsOpenInput { reason: string | null;
@@ -86,11 +91,13 @@ description: string | null;
 capabilities: string[];
  }
 
-export interface SessionReadEnvelope { mode: string | null;
+export interface SessionReadEnvelope { mode: SessionReadEnvelopeMode | null;
 ref_id: string;
 projection: string | null;
 budget_hint: number | null;
  }
+
+export type SessionReadEnvelopeMode = "RetrieveRef";
 
 export interface SystemDiscover_agentsAbortStep { op: "Abort";
  }
@@ -103,8 +110,12 @@ tool_name: "system/discover_agents";
 initial_input: DiscoverAgentsOpenInput | null;
  }
 
-export interface SystemDiscover_agentsReadStep { op: "Read";
-input: ArchiveReadInput;
+export interface SystemDiscover_agentsPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface SystemDiscover_agentsSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
  }
 
 export interface SystemDiscover_agentsSendStep { op: "Send";
@@ -112,7 +123,7 @@ input: DiscoverAgentsSendInput;
 citations: string[];
  }
 
-export interface SystemDiscover_agentsSessionPlan { step: SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep;
+export interface SystemDiscover_agentsSessionPlan { step: SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsSearchReadStep | SystemDiscover_agentsPageReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep;
 citations: string[];
  }
 
@@ -127,8 +138,12 @@ tool_name: "system/extrospection";
 initial_input: ProvenanceQueryOpenInput | null;
  }
 
-export interface SystemExtrospectionReadStep { op: "Read";
-input: ArchiveReadInput;
+export interface SystemExtrospectionPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface SystemExtrospectionSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
  }
 
 export interface SystemExtrospectionSendStep { op: "Send";
@@ -136,7 +151,7 @@ input: ProvenanceQuerySendInput;
 citations: string[];
  }
 
-export interface SystemExtrospectionSessionPlan { step: SystemExtrospectionOpenStep | SystemExtrospectionSendStep | SystemExtrospectionReadStep | SystemExtrospectionFinishStep | SystemExtrospectionAbortStep;
+export interface SystemExtrospectionSessionPlan { step: SystemExtrospectionOpenStep | SystemExtrospectionSendStep | SystemExtrospectionSearchReadStep | SystemExtrospectionPageReadStep | SystemExtrospectionFinishStep | SystemExtrospectionAbortStep;
 citations: string[];
  }
 
@@ -483,15 +498,18 @@ export type StepExecutorFunctionName = "BuildExtrospectionPlan" | "BuildExtrospe
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    scope_ref: string | null;
-    output_ref: string | null;
-    evidence_ref: string | null;
 }
+
+/** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
+
+export type HistoryContextSessionOp = "SearchRead" | "PageRead";
+
+export type HistoryContextStatus = "done" | "streaming" | "suspended" | "error";
 
 export interface HistoryContext {
     hop: number;
-    op: string;
-    status: string;
+    op: HistoryContextSessionOp;
+    status: HistoryContextStatus;
     truncated: boolean;
     cursor: string | null;
     payload: Record<string, unknown> | null;
@@ -515,7 +533,6 @@ export interface StepExecutorRunResult<R = unknown> {
     last: R;
     steps: R[];
     session_context: SessionContext;
-    history_context: HistoryContext | null;
     selected_tool: string | null;
 }
 

@@ -13,13 +13,14 @@ use super::{
     SurrealProvenanceStore,
     conversation_context_pipeline::ConversationContextBatch,
     helpers::{
-        has_meaningful_result, is_empty_object, map_surreal_error, metadata_error,
-        normalize_message_content, query_take_zero,
+        has_meaningful_result, is_empty_object, json_value_from_embedded_string, map_surreal_error,
+        metadata_error, normalize_message_content, parse_json_object_field, query_take_zero,
     },
     payload::{decode_payload_row, payload_id_for},
 };
 use crate::{
     error::Result,
+    events::ToolSessionStepOpKind,
     id_semantics::{
         context_entity_id_string, task_entity_id_string_raw, task_execution_activity_id_string,
     },
@@ -74,12 +75,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let content_raw = props.get("a2a_content").cloned().unwrap_or(Value::Null);
-            let content_value = match &content_raw {
-                Value::String(s) => {
-                    serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone()))
-                }
-                other => other.clone(),
-            };
+            let content_value = json_value_from_embedded_string(&content_raw);
             let content = normalize_message_content(&content_value);
             if content.trim().is_empty() {
                 continue;
@@ -349,11 +345,7 @@ impl SurrealProvenanceStore {
                         .and_then(Value::as_str)
                         .unwrap_or_default();
                     let content_raw = props.get("a2a_content").cloned().unwrap_or(Value::Null);
-                    let content_value = match &content_raw {
-                        Value::String(s) => serde_json::from_str::<Value>(s)
-                            .unwrap_or_else(|_| Value::String(s.clone())),
-                        other => other.clone(),
-                    };
+                    let content_value = json_value_from_embedded_string(&content_raw);
                     let text = normalize_message_content(&content_value);
                     if text.trim().is_empty() {
                         continue;
@@ -401,11 +393,7 @@ impl SurrealProvenanceStore {
 
                     let metadata: Value = props
                         .get("a2a_metadata")
-                        .and_then(|v| match v {
-                            Value::String(s) => serde_json::from_str(s).ok(),
-                            Value::Object(_) => Some(v.clone()),
-                            _ => None,
-                        })
+                        .and_then(parse_json_object_field)
                         .unwrap_or(Value::Object(Map::new()));
                     let metadata_args = metadata
                         .get("args")
@@ -507,10 +495,13 @@ impl SurrealProvenanceStore {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    let op_kind = props
+                    let op_kind_raw = props
                         .get("op_kind")
                         .and_then(Value::as_str)
                         .unwrap_or_default();
+                    let Some(op_kind) = ToolSessionStepOpKind::parse_graph(op_kind_raw) else {
+                        continue;
+                    };
                     let header = props
                         .get("header")
                         .and_then(Value::as_str)
@@ -528,8 +519,8 @@ impl SurrealProvenanceStore {
                         .map(str::to_string);
 
                     let op = match op_kind {
-                        "open" => SessionStepOp::Open,
-                        "send_done" => match (archive_ref, header) {
+                        ToolSessionStepOpKind::Open => SessionStepOp::Open,
+                        ToolSessionStepOpKind::SendDone => match (archive_ref, header) {
                             (Some(r), Some(hdr)) => {
                                 let informed_by = props
                                     .get("informed_by_tool_activity_anchor")
@@ -544,16 +535,66 @@ impl SurrealProvenanceStore {
                             }
                             _ => continue,
                         },
-                        "read" => match archive_ref {
-                            Some(r) => SessionStepOp::Read {
-                                archive_ref: r,
-                                grep,
-                                offset: 0,
-                                limit: DEFAULT_SESSION_READ_LINE_LIMIT,
-                            },
+                        ToolSessionStepOpKind::SearchRead => match archive_ref {
+                            Some(r) => {
+                                let offset =
+                                    props.get("offset").and_then(Value::as_u64).unwrap_or(0)
+                                        as usize;
+                                let limit = props
+                                    .get("limit")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(DEFAULT_SESSION_READ_LINE_LIMIT as u64)
+                                    as usize;
+                                let Some(grep_pat) = grep else {
+                                    continue;
+                                };
+                                SessionStepOp::SearchRead {
+                                    archive_ref: r,
+                                    grep: grep_pat,
+                                    offset,
+                                    limit,
+                                }
+                            }
                             None => continue,
                         },
-                        _ => continue,
+                        ToolSessionStepOpKind::PageRead => match archive_ref {
+                            Some(r) => {
+                                let offset =
+                                    props.get("offset").and_then(Value::as_u64).unwrap_or(0)
+                                        as usize;
+                                let limit = props
+                                    .get("limit")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(DEFAULT_SESSION_READ_LINE_LIMIT as u64)
+                                    as usize;
+                                SessionStepOp::PageRead {
+                                    archive_ref: r,
+                                    offset,
+                                    limit,
+                                }
+                            }
+                            None => continue,
+                        },
+                        // Legacy graphs from before SearchRead/PageRead split.
+                        ToolSessionStepOpKind::Read => match archive_ref {
+                            Some(r) => {
+                                if let Some(g) = grep.filter(|s| !s.is_empty()) {
+                                    SessionStepOp::SearchRead {
+                                        archive_ref: r,
+                                        grep: g,
+                                        offset: 0,
+                                        limit: DEFAULT_SESSION_READ_LINE_LIMIT,
+                                    }
+                                } else {
+                                    SessionStepOp::PageRead {
+                                        archive_ref: r,
+                                        offset: 0,
+                                        limit: DEFAULT_SESSION_READ_LINE_LIMIT,
+                                    }
+                                }
+                            }
+                            None => continue,
+                        },
                     };
 
                     items.push(ProvenanceConversationContextItem {

@@ -9,14 +9,15 @@ expression: baml_output
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. Read: archive_ref @N from a Send for this tool (same session or conversation history). Large body: set grep; small limit; offset to page.
-// 4. Finish: Closes the session gracefully
-// 5. Abort: Closes the session with an error
+// 3. SearchRead: line-filtered archive read (grep required). Page with offset/limit over matches.
+// 4. PageRead: contiguous archive paging (no grep). Page with offset/limit over full rendered lines.
+// 5. Finish: Closes the session gracefully
+// 6. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - Read needs a real @N from a Send for this tool (may be earlier in history). Large @N: grep first, then limit/offset — do not dump whole archives.
+// - SearchRead/PageRead need a real @N from a Send for this tool (may be earlier in history). Large @N: SearchRead with grep first, then PageRead for detail — do not dump whole archives with PageRead alone.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -97,13 +98,19 @@ class StructuredReply {
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
-/// Archive deref input for Read steps.
-/// archive_ref is required: use the @N ref from the Send result.
-class ArchiveReadInput {
-  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every Read must use a real @N; do not invent refs.")
-  offset int? @description("0-based line offset after grep. Page with limit: first window offset=0; next offset += previous limit while lines or matches remain.")
-  limit int? @description("Max lines in this Read window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded). Set grep before large windows.")
-  grep string? @description("Large @N: set this first — line filter (substring or regex per host), e.g. deploy or -i deploy. Then page with offset/limit. Do not issue repeated wide Reads without a pattern.")
+/// Line-filtered archive read (emit op SearchRead).
+class ArchiveSearchReadInput {
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead must use a real @N; do not invent refs.")
+  grep string @description("Non-empty line filter (substring or regex per host), e.g. deploy or -i deploy. Required for SearchRead.")
+  offset int? @description("0-based offset into grep-matched lines. Page with limit: first window offset=0; next offset += previous limit while matches remain.")
+  limit int? @description("Max matched lines in this SearchRead window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
+}
+
+/// Contiguous archive paging without a line filter (emit op PageRead).
+class ArchivePageReadInput {
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every PageRead must use a real @N; do not invent refs.")
+  offset int? @description("0-based offset into rendered archive lines (no grep). Page with limit.")
+  limit int? @description("Max lines in this PageRead window. Omitting limit uses the host default page size (bounded).")
 }
 // Domain types generated from #[derive(BamlType)]
 /// List all teams/workspaces — no parameters needed.
@@ -204,9 +211,14 @@ class SupportClickupSendStep {
   citations string[] @description("Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.")
 }
 
-class SupportClickupReadStep {
-  op "Read"
-  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+class SupportClickupSearchReadStep {
+  op "SearchRead"
+  input ArchiveSearchReadInput @description("archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.")
+}
+
+class SupportClickupPageReadStep {
+  op "PageRead"
+  input ArchivePageReadInput @description("archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.")
 }
 
 class SupportClickupFinishStep {
@@ -217,9 +229,9 @@ class SupportClickupAbortStep {
   op "Abort"
 }
 
-type SupportClickupSessionStep = SupportClickupOpenStep | SupportClickupSendStep | SupportClickupReadStep | SupportClickupFinishStep | SupportClickupAbortStep
+type SupportClickupSessionStep = SupportClickupOpenStep | SupportClickupSendStep | SupportClickupSearchReadStep | SupportClickupPageReadStep | SupportClickupFinishStep | SupportClickupAbortStep
 
 class SupportClickupSessionPlan {
-  step SupportClickupSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or Read @N when the archive already exists in history; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again.")
+  step SupportClickupSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or SearchRead/PageRead @N when the archive already exists in history; after Send (@N archived) → Finish, SearchRead (grep/limit/offset), PageRead, or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }

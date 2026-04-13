@@ -6,7 +6,7 @@ use std::{
 
 use baml_rt_core::{
     Citation, Outcome,
-    bus::PlanningSupersessionKind,
+    bus::{PlanningSupersessionKind, SessionStepOp},
     ids::{
         ActivityAnchorId, AgentId, ArtifactId, ContextId, IntentId, MessageId, PlanId, PlanStepId,
         TaskId,
@@ -421,6 +421,44 @@ pub enum CallScope {
     Task { task_id: TaskId },
 }
 
+/// Persisted discriminant for [`ProvEventData::ToolSessionStep`] (graph `op_kind` property).
+/// Serialized as snake_case strings so existing Surreal rows remain compatible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSessionStepOpKind {
+    Open,
+    SendDone,
+    SearchRead,
+    PageRead,
+    /// Pre-cutover graphs only; `context_reader` maps this to `SessionStepOp`.
+    Read,
+}
+
+impl ToolSessionStepOpKind {
+    #[must_use]
+    pub fn as_snake_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::SendDone => "send_done",
+            Self::SearchRead => "search_read",
+            Self::PageRead => "page_read",
+            Self::Read => "read",
+        }
+    }
+
+    #[must_use]
+    pub fn parse_graph(s: &str) -> Option<Self> {
+        match s {
+            "open" => Some(Self::Open),
+            "send_done" => Some(Self::SendDone),
+            "search_read" => Some(Self::SearchRead),
+            "page_read" => Some(Self::PageRead),
+            "read" => Some(Self::Read),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanStepSpec {
     pub step_id: PlanStepId,
@@ -481,23 +519,23 @@ pub enum ProvEventData {
         /// For system/internal_a2a: the delegated-to agent package (write-time provenance).
         delegation_target: Option<String>,
     },
-    /// A single step within a tool session (Open / SendDone / Read).
+    /// A single step within a tool session (Open / SendDone / SearchRead / PageRead).
     /// Written synchronously so conversation_context sees session state mid-execution.
     ToolSessionStep {
         scope: CallScope,
         tool_name: String,
         session_id: String,
-        /// Discriminant: "open" | "send_done" | "read".
-        op_kind: String,
+        /// Graph `op_kind` discriminant (snake_case; includes legacy `read` for old rows).
+        op_kind: ToolSessionStepOpKind,
         /// For SendDone: full display string `"@1 tool 'summary' [N lines, KB]"`.
         header: Option<String>,
-        /// For SendDone/Read: canonical archive ref string e.g. `"@1"`.
+        /// For SendDone / SearchRead / PageRead: canonical archive ref string e.g. `"@1"`.
         archive_ref: Option<String>,
-        /// For Read: grep pattern used.
+        /// For SearchRead: grep pattern used.
         grep: Option<String>,
-        /// For Read: line offset (0-based count of matched lines to skip).
+        /// For SearchRead/PageRead: line offset (0-based; SearchRead counts matched lines after grep).
         offset: Option<usize>,
-        /// For Read: page limit used.
+        /// For SearchRead/PageRead: page limit used.
         limit: Option<usize>,
         /// For SendDone: [`ActivityAnchorId`] of the `ToolCallCompleted` whose `tool_result` backs this `@N` row.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1127,38 +1165,50 @@ impl ProvEvent {
         scope: CallScope,
         tool_name: String,
         session_id: String,
-        op: &crate::store::SessionStepOp,
+        op: &SessionStepOp,
     ) -> Self {
         let (op_kind, header, archive_ref, grep, offset, limit) = match op {
-            crate::store::SessionStepOp::Open => ("open".to_string(), None, None, None, None, None),
-            crate::store::SessionStepOp::SendDone {
+            SessionStepOp::Open => (ToolSessionStepOpKind::Open, None, None, None, None, None),
+            SessionStepOp::SendDone {
                 archive_ref,
                 header,
                 ..
             } => (
-                "send_done".to_string(),
+                ToolSessionStepOpKind::SendDone,
                 Some(header.clone()),
                 Some(archive_ref.clone()),
                 None,
                 None,
                 None,
             ),
-            crate::store::SessionStepOp::Read {
+            SessionStepOp::SearchRead {
                 archive_ref,
                 grep,
                 offset,
                 limit,
             } => (
-                "read".to_string(),
+                ToolSessionStepOpKind::SearchRead,
                 None,
                 Some(archive_ref.clone()),
-                grep.clone(),
+                Some(grep.clone()),
+                Some(*offset),
+                Some(*limit),
+            ),
+            SessionStepOp::PageRead {
+                archive_ref,
+                offset,
+                limit,
+            } => (
+                ToolSessionStepOpKind::PageRead,
+                None,
+                Some(archive_ref.clone()),
+                None,
                 Some(*offset),
                 Some(*limit),
             ),
         };
         let informed_by = match op {
-            crate::store::SessionStepOp::SendDone { informed_by, .. } => Some(informed_by.clone()),
+            SessionStepOp::SendDone { informed_by, .. } => Some(informed_by.clone()),
             _ => None,
         };
         ProvEvent::Global(GlobalEvent {

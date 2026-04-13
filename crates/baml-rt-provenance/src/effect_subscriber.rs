@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    bus::{EffectEvent, EffectSubscriber, SessionStepOp},
+    bus::{EffectEvent, EffectSubscriber},
     ids::{ActivityAnchorId, ContextId, ExternalId, MessageId, TaskId},
 };
 use baml_rt_embedding::{
@@ -2105,32 +2105,8 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 op,
                 task_id,
             } => {
-                // Map the core SessionStepOp into the provenance variant.
-                let prov_op = match op {
-                    SessionStepOp::Open => crate::store::SessionStepOp::Open,
-                    SessionStepOp::SendDone {
-                        archive_ref,
-                        header,
-                        informed_by,
-                    } => crate::store::SessionStepOp::SendDone {
-                        archive_ref: archive_ref.clone(),
-                        header: header.clone(),
-                        informed_by: informed_by.clone(),
-                    },
-                    SessionStepOp::Read {
-                        archive_ref,
-                        grep,
-                        offset,
-                        limit,
-                    } => crate::store::SessionStepOp::Read {
-                        archive_ref: archive_ref.clone(),
-                        grep: grep.clone(),
-                        offset: *offset,
-                        limit: *limit,
-                    },
-                };
                 // Task-scoped runs: tie session steps to the task so task-filtered episode
-                // transcripts include Open / SendDone / Read rows. Otherwise fall back to
+                // transcripts include Open / SendDone / SearchRead / PageRead rows. Otherwise fall back to
                 // message scope (synthetic id when the context has no messages yet).
                 let scope = if let Some(tid) = task_id {
                     CallScope::Task {
@@ -2159,7 +2135,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     scope,
                     tool_name.clone(),
                     session_id.clone(),
-                    &prov_op,
+                    op,
                 )
             }
         };

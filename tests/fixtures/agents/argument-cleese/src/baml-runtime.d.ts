@@ -6,10 +6,15 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ArchiveReadInput { archive_ref: string;
+export interface ArchivePageReadInput { archive_ref: string;
 offset: number | null;
 limit: number | null;
-grep: string | null;
+ }
+
+export interface ArchiveSearchReadInput { archive_ref: string;
+grep: string;
+offset: number | null;
+limit: number | null;
  }
 
 export interface ConversationPart { text: string | null;
@@ -40,8 +45,12 @@ tool_name: "system/internal_a2a";
 initial_input: InternalA2aOpenInput;
  }
 
-export interface SystemInternal_a2aReadStep { op: "Read";
-input: ArchiveReadInput;
+export interface SystemInternal_a2aPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface SystemInternal_a2aSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
  }
 
 export interface SystemInternal_a2aSendStep { op: "Send";
@@ -49,7 +58,7 @@ input: InternalA2aSendInput;
 citations: string[];
  }
 
-export interface SystemInternal_a2aSessionPlan { step: SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep;
+export interface SystemInternal_a2aSessionPlan { step: SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aSearchReadStep | SystemInternal_a2aPageReadStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep;
 citations: string[];
  }
 
@@ -390,15 +399,18 @@ export type StepExecutorFunctionName = "CleeseSendToChapman" | "CleeseSendToChap
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    scope_ref: string | null;
-    output_ref: string | null;
-    evidence_ref: string | null;
 }
+
+/** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
+
+export type HistoryContextSessionOp = "SearchRead" | "PageRead";
+
+export type HistoryContextStatus = "done" | "streaming" | "suspended" | "error";
 
 export interface HistoryContext {
     hop: number;
-    op: string;
-    status: string;
+    op: HistoryContextSessionOp;
+    status: HistoryContextStatus;
     truncated: boolean;
     cursor: string | null;
     payload: Record<string, unknown> | null;
@@ -422,7 +434,6 @@ export interface StepExecutorRunResult<R = unknown> {
     last: R;
     steps: R[];
     session_context: SessionContext;
-    history_context: HistoryContext | null;
     selected_tool: string | null;
 }
 

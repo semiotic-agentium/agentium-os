@@ -73,31 +73,32 @@ function PlanNotionWork(intent: string) -> NotionPlan {
   client OpenRouterGPT
   prompt #"
     You are the planner for a read-only Notion assistant.
-    The user's validated intent: {{ intent }}
-    Produce an explicit step plan to satisfy it. Do NOT retrieve content — just plan.
+    Validated intent: {{ intent }}
+    Produce a step plan only — the runtime performs Notion calls; you do not fetch data here.
 
-    You MUST return a valid NotionPlan: non-empty "steps", every step has id, description, and kind,
-    and the last step is always kind "synthesize".
+    How your steps are executed:
+    Each discover and read step becomes natural-language instructions for ChooseNotionAction, which drives
+    support/notion (Open, then Send with one of the Notion input shapes from the schema). Cursor follow-ups
+    after Send use pagination fields from tool output — plan intent-level work only; do not invent cursors.
 
-    Available step kinds:
-    - discover: search Notion for pages matching a query (NotionSearchPagesInput)
-    - read: retrieve block content — list child blocks for a block id, or page blocks for a page id
-      (NotionGetPageBlocksInput; paginate when the API indicates has_more)
-    - synthesize: no tool call; the agent summarizes collected content for the user
+    Step kinds (semantic):
+    - discover: Workspace search over pages. Results are references (title, id) to candidate pages — not the
+      bodies of those pages. The description should say what to look for.
+    - read: Load what the user needs. Prefer the operation that returns the page’s block tree (rendered content);
+      use the page-root id from discovery or from the intent as the block id. When only surface fields
+      (title, last edited, parent) are enough and block text is not needed, use the lighter page-record read
+      instead. If the intent names a specific block id, read means walking that block’s children (and following
+      pagination when the API says more chunks remain); do not rely on discover alone for that path.
+    - synthesize: Final answer from gathered context — no further Notion Sends in that step.
 
-    PLAN RULES:
-    - Always end with a "synthesize" step.
-    - Default to [discover, read, synthesize] — reading the most relevant page's content is almost
-      always necessary to give a useful answer. Only skip the read step when the goal is explicitly
-      just a list of page titles or a count (e.g. "how many pages are there about X?").
-    - If the intent references a specific page URL or page UUID, skip discover and use [read, synthesize].
-      The read step description must say to load that page's content (properties and/or blocks as fits the request).
-    - BLOCK IDs (critical): If the intent mentions a Notion *block* and contains a UUID (with or without
-      hyphens, or 32 contiguous hex characters), you MUST NOT rely on search alone. Use [read, synthesize] only.
-      The read step description MUST explicitly say to list **child blocks** for that block id via the
-      Notion blocks children API (follow pagination cursors until has_more is false). Copy the id from the intent verbatim.
-    - For broad topics with no specific id, discover first to find the most relevant page, then read it.
-    - Keep step ids concise, lowercase, kebab-case, and unique.
+    Branching:
+    - Broad topic and no page/block id → discover, then read the best-matching page (blocks), then synthesize.
+    - A specific page is already identified in the intent → skip discover; read that page (blocks unless
+      metadata-only suffices), then synthesize.
+    - List titles or counts only → discover may suffice, or a light read; avoid deep block reads when unnecessary.
+    - Default when unsure: discover → read → synthesize so search results are grounded in real content.
+
+    Keep step ids short, lowercase, kebab-case, unique.
 
     {{ ctx.output_format }}
   "#
@@ -219,5 +220,6 @@ client OpenRouterGPT {
     model "x-ai/grok-4.1-fast"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
+    max_tokens 2048
   }
 }

@@ -2604,9 +2604,9 @@ mod tests {
                 scope.clone(),
                 tool_name.clone(),
                 session_id.clone(),
-                &SessionStepOp::Read {
+                &SessionStepOp::SearchRead {
                     archive_ref: archive_ref.clone(),
-                    grep: Some("name description".into()),
+                    grep: "name description".into(),
                     offset: 0,
                     limit: 200,
                 },
@@ -2627,11 +2627,11 @@ mod tests {
 
         let registry = ToolRegistry::new();
         let ref_table = baml_rt_tools::archive_refs::RefTable::new();
-        // No archive reader — Read step shows the grep/cat analogue (`grep -n '…' @1`), pud-squashed.
+        // No archive reader — SearchRead shows the grep analogue (`grep -n '…' @1`), pud-squashed.
         let history = project_prompt_context(projection_items, &registry, &ref_table, None);
         let items = history.as_array().expect("array");
 
-        // 4 items: user message + Open + SendDone + Read
+        // 4 items: user message + Open + SendDone + SearchRead
         // (no ToolCall/ToolResult — only the user line plus three session steps)
         assert_eq!(items.len(), 4, "expected 4 history items, got: {history}");
 
@@ -2672,7 +2672,7 @@ mod tests {
             "SendDone must start with archive ref, got: {send_content}"
         );
 
-        // [3] Read: grep/cat analogue (pud-squashed); with reader would be paginated output only.
+        // [3] SearchRead: grep analogue (pud-squashed); with reader would be paginated output only.
         assert_eq!(items[3]["role"], "tool");
         let read_content = items[3]["content"].as_str().unwrap();
         assert_eq!(

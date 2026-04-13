@@ -5,14 +5,15 @@
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. Read: archive_ref @N from a Send for this tool (same session or conversation history). Large body: set grep; small limit; offset to page.
-// 4. Finish: Closes the session gracefully
-// 5. Abort: Closes the session with an error
+// 3. SearchRead: line-filtered archive read (grep required). Page with offset/limit over matches.
+// 4. PageRead: contiguous archive paging (no grep). Page with offset/limit over full rendered lines.
+// 5. Finish: Closes the session gracefully
+// 6. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - Read needs a real @N from a Send for this tool (may be earlier in history). Large @N: grep first, then limit/offset — do not dump whole archives.
+// - SearchRead/PageRead need a real @N from a Send for this tool (may be earlier in history). Large @N: SearchRead with grep first, then PageRead for detail — do not dump whole archives with PageRead alone.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -40,23 +41,11 @@ class ProvenancePlanStep {
   depends_on string[]? @description("Prerequisite step_ids (same alias namespace as step_id); omit or [] if none.")
 }
 
-class HistoryContext {
-  hop int
-  op string
-  status string
-  truncated bool
-  cursor string?
-  payload string?
-}
-
 /// Runtime session state injected by the step-executor loop.
 /// Do not construct manually — values come from the FSM.
 class SessionContext {
   contract_version string
   session_open bool
-  allowed_ops string[]? @description("Deprecated: per-phase step-executor functions narrow the output schema. Host may omit.")
-  selected_tool string?
-  status_token string?
 }
 
 /// Opaque JSON transport wrapper for host-managed tools and event payloads.
@@ -93,13 +82,19 @@ class StructuredReply {
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
-/// Archive deref input for Read steps.
-/// archive_ref is required: use the @N ref from the Send result.
-class ArchiveReadInput {
-  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every Read must use a real @N; do not invent refs.")
-  offset int? @description("0-based line offset after grep. Page with limit: first window offset=0; next offset += previous limit while lines or matches remain.")
-  limit int? @description("Max lines in this Read window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded). Set grep before large windows.")
-  grep string? @description("Large @N: set this first — line filter (substring or regex per host), e.g. deploy or -i deploy. Then page with offset/limit. Do not issue repeated wide Reads without a pattern.")
+/// Line-filtered archive read (emit op SearchRead).
+class ArchiveSearchReadInput {
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.")
+  grep string @description("Required non-empty line filter (substring or regex per host), e.g. deploy or -i deploy. Use SearchRead to locate lines; follow with PageRead when you need contiguous context.")
+  offset int? @description("0-based offset counting lines that matched grep (after filter). Page with limit: first window offset=0; next offset = previous next_offset while matches remain.")
+  limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
+}
+
+/// Contiguous archive paging without a line filter (emit op PageRead).
+class ArchivePageReadInput {
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.")
+  offset int? @description("0-based offset over full rendered archive lines (no grep). Page with limit: first window offset=0; next offset = previous next_offset while lines remain.")
+  limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
 }
 // Domain types generated from #[derive(BamlType)]
 /// Which Slack API token to use.
@@ -216,11 +211,11 @@ class SearchMessagesInput {
 type SlackInput = GetThreadRepliesInput | GetConversationHistoryInput | SearchMessagesInput | ResolveUsersInput | ListConversationsInput
 
 enum SlackSourceKind {
-  Conversation
-  Message
-  ThreadReply
-  SearchMatch
-  User
+  Conversation @alias("conversation")
+  Message @alias("message")
+  ThreadReply @alias("thread_reply")
+  SearchMatch @alias("search_match")
+  User @alias("user")
 }
 
 class SlackSource {
@@ -277,7 +272,7 @@ class SupportSlackToolCard {
   tool_name "support/slack"
   description "Read-only Slack integration for conversation retrieval and source-backed analysis."
   session_policy "Strict"
-  input_summary "anyOf({ auth?: anyOf(enum(\"Auto\" | \"Bot\" | \"User\") | null), channel_id: string, cursor?: anyOf(string | null), inclusive?: anyOf(boolean | null), latest?: anyOf(string | null), limit?: anyOf(integer | null), oldest?: anyOf(string | null), order?: anyOf(enum(\"LatestFirst\" | \"OldestFirst\") | null), resolve_users?: anyOf(enum(\"None\" | \"ResolveUsers\") | null), thread_ts: string } | { auth?: anyOf(enum(\"Auto\" | \"Bot\" | \"User\") | null), channel_id: string, cursor?: anyOf(string | null), inclusive?: anyOf(boolean | null), latest?: anyOf(string | null), limit?: anyOf(integer | null), oldest?: anyOf(string | null), order?: anyOf(enum(\"LatestFirst\" | \"OldestFirst\") | null), resolve_users?: anyOf(enum(\"None\" | \"ResolveUsers\") | null) } | { auth?: anyOf(enum(\"Auto\" | \"Bot\" | \"User\") | null), count?: anyOf(integer | null), direction?: anyOf(enum(\"Asc\" | \"Desc\") | null), page?: anyOf(integer | null), query: string, resolve_users?: anyOf(enum(\"None\" | \"ResolveUsers\") | null), sort?: anyOf(enum(\"Score\" | \"Timestamp\") | null) } | { auth?: anyOf(enum(\"Auto\" | \"Bot\" | \"User\") | null), user_ids: string[] } | { auth?: anyOf(enum(\"Auto\" | \"Bot\" | \"User\") | null), cursor?: anyOf(string | null), exclude_archived?: anyOf(boolean | null), include_num_members?: anyOf(boolean | null), kinds: enum(\"Im\" | \"Mpim\" | \"PrivateChannel\" | \"PublicChannel\")[], limit?: anyOf(integer | null) })"
+  input_summary "anyOf({ auth?: anyOf(enum(\"auto\" | \"bot\" | \"user\") | null), channel_id: string, cursor?: anyOf(string | null), inclusive?: anyOf(boolean | null), latest?: anyOf(string | null), limit?: anyOf(integer | null), oldest?: anyOf(string | null), order?: anyOf(enum(\"latest_first\" | \"oldest_first\") | null), resolve_users?: anyOf(enum(\"none\" | \"resolve_users\") | null), thread_ts: string } | { auth?: anyOf(enum(\"auto\" | \"bot\" | \"user\") | null), channel_id: string, cursor?: anyOf(string | null), inclusive?: anyOf(boolean | null), latest?: anyOf(string | null), limit?: anyOf(integer | null), oldest?: anyOf(string | null), order?: anyOf(enum(\"latest_first\" | \"oldest_first\") | null), resolve_users?: anyOf(enum(\"none\" | \"resolve_users\") | null) } | { auth?: anyOf(enum(\"auto\" | \"bot\" | \"user\") | null), count?: anyOf(integer | null), direction?: anyOf(enum(\"asc\" | \"desc\") | null), page?: anyOf(integer | null), query: string, resolve_users?: anyOf(enum(\"none\" | \"resolve_users\") | null), sort?: anyOf(enum(\"score\" | \"timestamp\") | null) } | { auth?: anyOf(enum(\"auto\" | \"bot\" | \"user\") | null), user_ids: string[] } | { auth?: anyOf(enum(\"auto\" | \"bot\" | \"user\") | null), cursor?: anyOf(string | null), exclude_archived?: anyOf(boolean | null), include_num_members?: anyOf(boolean | null), kinds: enum(\"im\" | \"mpim\" | \"private_channel\" | \"public_channel\")[], limit?: anyOf(integer | null) })"
   tags string[] @description("Tool tags: support, slack, read")
 }
 
@@ -292,9 +287,14 @@ class SupportSlackSendStep {
   citations string[] @description("Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.")
 }
 
-class SupportSlackReadStep {
-  op "Read"
-  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+class SupportSlackSearchReadStep {
+  op "SearchRead"
+  input ArchiveSearchReadInput @description("archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.")
+}
+
+class SupportSlackPageReadStep {
+  op "PageRead"
+  input ArchivePageReadInput @description("archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.")
 }
 
 class SupportSlackFinishStep {
@@ -305,9 +305,9 @@ class SupportSlackAbortStep {
   op "Abort"
 }
 
-type SupportSlackSessionStep = SupportSlackOpenStep | SupportSlackSendStep | SupportSlackReadStep | SupportSlackFinishStep | SupportSlackAbortStep
+type SupportSlackSessionStep = SupportSlackOpenStep | SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep | SupportSlackFinishStep | SupportSlackAbortStep
 
 class SupportSlackSessionPlan {
-  step SupportSlackSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or Read @N when the archive already exists in history; after Send (@N archived) → Finish, Read @N (large body: set grep, small limit, offset), or Send again. Access: read.")
+  step SupportSlackSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or SearchRead/PageRead @N when the archive exists; after Send (@N archived) → Finish, SearchRead, PageRead, or Send again. Access: read.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }

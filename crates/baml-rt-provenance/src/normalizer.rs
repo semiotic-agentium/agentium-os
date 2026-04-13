@@ -16,7 +16,7 @@ use serde_json::Value;
 use crate::{
     document::ProvDocument,
     error::{ProvenanceError, Result},
-    events::{CallScope, ProvEvent, ProvEventData},
+    events::{CallScope, ProvEvent, ProvEventData, ToolSessionStepOpKind},
     id_semantics::{
         AgentBootActivityId, AgentBootActivityInput, AgentRuntimeInstanceId,
         AgentRuntimeInstanceInput, ArchiveEntityId, ArchiveEntityInput,
@@ -2086,8 +2086,8 @@ fn normalize_event_with_registry(
             header,
             archive_ref,
             grep,
-            offset: _,
-            limit: _,
+            offset,
+            limit,
             scope,
             informed_by_tool_activity_anchor,
         } => {
@@ -2107,7 +2107,10 @@ fn normalize_event_with_registry(
             }
             attrs.insert(a2a::TOOL_NAME.to_string(), Value::String(tool_name.clone()));
             attrs.insert("session_id".to_string(), Value::String(session_id.clone()));
-            attrs.insert("op_kind".to_string(), Value::String(op_kind.clone()));
+            attrs.insert(
+                "op_kind".to_string(),
+                Value::String(op_kind.as_snake_str().to_string()),
+            );
             if let Some(h) = header {
                 attrs.insert("header".to_string(), Value::String(h.clone()));
             }
@@ -2116,6 +2119,18 @@ fn normalize_event_with_registry(
             }
             if let Some(g) = grep {
                 attrs.insert("grep".to_string(), Value::String(g.clone()));
+            }
+            if let Some(off) = offset {
+                attrs.insert(
+                    "offset".to_string(),
+                    Value::Number(serde_json::Number::from(*off as u64)),
+                );
+            }
+            if let Some(lim) = limit {
+                attrs.insert(
+                    "limit".to_string(),
+                    Value::Number(serde_json::Number::from(*lim as u64)),
+                );
             }
             if let Some(a) = informed_by_tool_activity_anchor {
                 attrs.insert(
@@ -2145,7 +2160,7 @@ fn normalize_event_with_registry(
                     attributes: edge_attrs,
                 });
             }
-            if op_kind == "send_done" {
+            if *op_kind == ToolSessionStepOpKind::SendDone {
                 let and = informed_by_tool_activity_anchor
                     .as_ref()
                     .expect("SendDone must always carry informed_by anchor");
@@ -2230,39 +2245,20 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
             task_id,
             context_id,
         } => {
-            validate_task_scoped_event(event, task_id, "TaskExists")?;
-            if event.context_id() != context_id {
-                return Err(ProvenanceError::InvalidEvent {
-                    activity_anchor: event.id().as_str().to_string(),
-                    reason: "TaskExists context_id must match event context_id".to_string(),
-                });
-            }
+            validate_task_scoped_context_id(event, task_id, context_id, "TaskExists")?;
         }
         ProvEventData::TaskExecutionStarted {
             task_id,
             context_id,
             ..
         } => {
-            validate_task_scoped_event(event, task_id, "TaskExecutionStarted")?;
-            if event.context_id() != context_id {
-                return Err(ProvenanceError::InvalidEvent {
-                    activity_anchor: event.id().as_str().to_string(),
-                    reason: "TaskExecutionStarted context_id must match event context_id"
-                        .to_string(),
-                });
-            }
+            validate_task_scoped_context_id(event, task_id, context_id, "TaskExecutionStarted")?;
         }
         ProvEventData::TaskExecutionEnded {
             task_id,
             context_id,
         } => {
-            validate_task_scoped_event(event, task_id, "TaskExecutionEnded")?;
-            if event.context_id() != context_id {
-                return Err(ProvenanceError::InvalidEvent {
-                    activity_anchor: event.id().as_str().to_string(),
-                    reason: "TaskExecutionEnded context_id must match event context_id".to_string(),
-                });
-            }
+            validate_task_scoped_context_id(event, task_id, context_id, "TaskExecutionEnded")?;
         }
         ProvEventData::IntentResolved { task_id, .. }
         | ProvEventData::PlanGenerated { task_id, .. }
@@ -2314,6 +2310,22 @@ fn validate_task_scoped_event(event: &ProvEvent, task_id: &TaskId, event_kind: &
             reason: format!("{event_kind} task_id must match event task_id"),
         }),
     }
+}
+
+fn validate_task_scoped_context_id(
+    event: &ProvEvent,
+    task_id: &TaskId,
+    context_id: &ContextId,
+    event_kind: &str,
+) -> Result<()> {
+    validate_task_scoped_event(event, task_id, event_kind)?;
+    if event.context_id() != context_id {
+        return Err(ProvenanceError::InvalidEvent {
+            activity_anchor: event.id().as_str().to_string(),
+            reason: format!("{event_kind} context_id must match event context_id"),
+        });
+    }
+    Ok(())
 }
 
 fn validate_call_scope(event: &ProvEvent, scope: &CallScope, call_kind: &str) -> Result<()> {

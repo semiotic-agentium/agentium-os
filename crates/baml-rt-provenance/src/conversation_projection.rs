@@ -46,14 +46,23 @@ pub fn provenance_item_to_projection_item(
                     archive_ref,
                     header,
                 },
-                SessionStepOp::Read {
+                SessionStepOp::SearchRead {
                     archive_ref,
                     grep,
                     offset,
                     limit,
-                } => SessionStepProjection::Read {
+                } => SessionStepProjection::SearchRead {
                     archive_ref,
                     grep,
+                    offset,
+                    limit,
+                },
+                SessionStepOp::PageRead {
+                    archive_ref,
+                    offset,
+                    limit,
+                } => SessionStepProjection::PageRead {
+                    archive_ref,
                     offset,
                     limit,
                 },

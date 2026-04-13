@@ -12,7 +12,10 @@ use baml_rt_provenance::{
 use baml_rt_tools::{
     OpaqueJson, ToolCapability, ToolFailure, ToolHandler, ToolSession, ToolSessionError, ToolStep,
     opaque_json_map_from_object,
-    tools::{HistoryContextV1, SessionReadMode, ToolFunctionMetadata, ToolSessionContext},
+    tools::{
+        HistoryContextSessionOp, HistoryContextStatus, HistoryContextV1, SessionReadMode,
+        ToolFunctionMetadata, ToolSessionContext,
+    },
 };
 use serde_json::Value;
 
@@ -284,8 +287,8 @@ fn attach_history_context(value: &mut Value, hop: u32) {
         .unwrap_or(0usize);
     let history = HistoryContextV1 {
         hop,
-        op: "Read".to_string(),
-        status: "done".to_string(),
+        op: HistoryContextSessionOp::PageRead,
+        status: HistoryContextStatus::Done,
         truncated: payload_json_len > 2048,
         cursor,
         payload,
@@ -509,7 +512,7 @@ impl ToolHandler for ProvenanceQueryTool {
                     "querying provenance".to_string()
                 }
             }
-            "Read" => "reading provenance query output".to_string(),
+            "SearchRead" | "PageRead" => "reading provenance query output".to_string(),
             "Finish" => "finished provenance query".to_string(),
             "Abort" => "aborted provenance query".to_string(),
             other => format!("provenance query: {other}"),

@@ -214,7 +214,7 @@ fn extract_from_content(value: &Value) -> String {
         return parts.join(". ");
     }
 
-    // Shape 1b: session plan with steps array (Send/Read/Finish ops)
+    // Shape 1b: session plan with steps array (Send/SearchRead/PageRead/Finish ops)
     if let Some(steps) = value.get("steps").and_then(Value::as_array) {
         let mut parts: Vec<&str> = Vec::new();
 
@@ -252,16 +252,16 @@ fn extract_from_content(value: &Value) -> String {
 
     // Shape 4: session plan step.
     // Two forms:
-    //   wrapped:   { step: { op: "Send"|"Read"|..., input: {...} } }   (session plan class)
-    //   unwrapped: { op: "Send"|"Read"|..., input: {...} }              (phase function result)
-    // Only Send/Open carry semantic intent worth scoring; Finish/Abort/Read → skip.
+    //   wrapped:   { step: { op: "Send"|"SearchRead"|"PageRead"|..., input: {...} } }   (session plan class)
+    //   unwrapped: { op: "Send"|"SearchRead"|"PageRead"|..., input: {...} }              (phase function result)
+    // Only Send/Open carry semantic intent worth scoring; Finish/Abort/SearchRead/PageRead → skip.
     let step_obj = value.get("step").and_then(Value::as_object).or_else(|| {
         // Unwrapped form: top-level object with "op" key
         value.as_object().filter(|m| m.contains_key("op"))
     });
     if let Some(step_obj) = step_obj {
         let op = step_obj.get("op").and_then(Value::as_str).unwrap_or("step");
-        if matches!(op, "Finish" | "Abort" | "Read") {
+        if matches!(op, "Finish" | "Abort" | "SearchRead" | "PageRead") {
             return String::new();
         }
         let input_desc: String = step_obj
@@ -296,7 +296,7 @@ fn extract_from_content(value: &Value) -> String {
         if string_fields.len() == 1
             && !matches!(
                 string_fields[0],
-                "Finish" | "Abort" | "Read" | "Open" | "Send"
+                "Finish" | "Abort" | "SearchRead" | "PageRead" | "Open" | "Send"
             )
         {
             return string_fields[0].to_owned();

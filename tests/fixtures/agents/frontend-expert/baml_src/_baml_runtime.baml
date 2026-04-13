@@ -5,14 +5,15 @@
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. Read: archive_ref @N from a Send for this tool (same session or conversation history). Large body: set grep; small limit; offset to page.
-// 4. Finish: Closes the session gracefully
-// 5. Abort: Closes the session with an error
+// 3. SearchRead: line-filtered archive read (grep required). Page with offset/limit over matches.
+// 4. PageRead: contiguous archive paging (no grep). Page with offset/limit over full rendered lines.
+// 5. Finish: Closes the session gracefully
+// 6. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - Read needs a real @N from a Send for this tool (may be earlier in history). Large @N: grep first, then limit/offset — do not dump whole archives.
+// - SearchRead/PageRead need a real @N from a Send for this tool (may be earlier in history). Large @N: SearchRead with grep first, then PageRead for detail — do not dump whole archives with PageRead alone.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -40,23 +41,11 @@ class ProvenancePlanStep {
   depends_on string[]? @description("Prerequisite step_ids (same alias namespace as step_id); omit or [] if none.")
 }
 
-class HistoryContext {
-  hop int
-  op string
-  status string
-  truncated bool
-  cursor string?
-  payload string?
-}
-
 /// Runtime session state injected by the step-executor loop.
 /// Do not construct manually — values come from the FSM.
 class SessionContext {
   contract_version string
   session_open bool
-  allowed_ops string[]? @description("Deprecated: per-phase step-executor functions narrow the output schema. Host may omit.")
-  selected_tool string?
-  status_token string?
 }
 
 /// Opaque JSON transport wrapper for host-managed tools and event payloads.
@@ -93,13 +82,19 @@ class StructuredReply {
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
-/// Archive deref input for Read steps.
-/// archive_ref is required: use the @N ref from the Send result.
-class ArchiveReadInput {
-  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every Read must use a real @N; do not invent refs.")
-  offset int? @description("0-based line offset after grep. Page with limit: first window offset=0; next offset += previous limit while lines or matches remain.")
-  limit int? @description("Max lines in this Read window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded). Set grep before large windows.")
-  grep string? @description("Large @N: set this first — line filter (substring or regex per host), e.g. deploy or -i deploy. Then page with offset/limit. Do not issue repeated wide Reads without a pattern.")
+/// Line-filtered archive read (emit op SearchRead).
+class ArchiveSearchReadInput {
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.")
+  grep string @description("Required non-empty line filter (substring or regex per host), e.g. deploy or -i deploy. Use SearchRead to locate lines; follow with PageRead when you need contiguous context.")
+  offset int? @description("0-based offset counting lines that matched grep (after filter). Page with limit: first window offset=0; next offset = previous next_offset while matches remain.")
+  limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
+}
+
+/// Contiguous archive paging without a line filter (emit op PageRead).
+class ArchivePageReadInput {
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.")
+  offset int? @description("0-based offset over full rendered archive lines (no grep). Page with limit: first window offset=0; next offset = previous next_offset while lines remain.")
+  limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
 }
 // Domain types generated from JSON schemas
 class ClaudeToolNextOutputEvents {
@@ -107,10 +102,33 @@ class ClaudeToolNextOutputEvents {
   text string
 }
 
+enum ClaudeToolNextOutputCompletion {
+  DONE
+  INPUTREQUIRED
+    @alias("INPUT_REQUIRED")
+  INTERRUPTED
+}
+
+enum HistoryContextV1Op {
+  SearchRead
+  PageRead
+}
+
+enum HistoryContextV1Status {
+  Done
+    @alias("done")
+  Streaming
+    @alias("streaming")
+  Suspended
+    @alias("suspended")
+  Error
+    @alias("error")
+}
+
 class HistoryContextV1 {
   hop int
-  op string
-  status string
+  op HistoryContextV1Op
+  status HistoryContextV1Status
   truncated bool
   cursor string | null?
   payload map<string, OpaqueJson> | null?
@@ -118,7 +136,7 @@ class HistoryContextV1 {
 
 class ClaudeToolNextOutput {
   events ClaudeToolNextOutputEvents[]
-  completion string | null?
+  completion ClaudeToolNextOutputCompletion | null?
   history_context HistoryContextV1 | null?
 }
 
@@ -157,9 +175,14 @@ class ClaudeDevSendStep {
   citations string[] @description("Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.")
 }
 
-class ClaudeDevReadStep {
-  op "Read"
-  input ArchiveReadInput @description("archive_ref required (@N from a Send for this tool, including earlier history). Large body: set grep; use small limit; page with offset. Avoid full-archive reads unless needed.")
+class ClaudeDevSearchReadStep {
+  op "SearchRead"
+  input ArchiveSearchReadInput @description("archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.")
+}
+
+class ClaudeDevPageReadStep {
+  op "PageRead"
+  input ArchivePageReadInput @description("archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.")
 }
 
 class ClaudeDevFinishStep {
@@ -170,10 +193,10 @@ class ClaudeDevAbortStep {
   op "Abort"
 }
 
-type ClaudeDevSessionStep = ClaudeDevOpenStep | ClaudeDevSendStep | ClaudeDevReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep
+type ClaudeDevSessionStep = ClaudeDevOpenStep | ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep
 
 class ClaudeDevSessionPlan {
-  step ClaudeDevSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or Read @N when that tool archive already exists in history; after Send (@N archived) → Read @N (large archive: set grep, small limit, offset to page), Finish, or Send again. Access: write.")
+  step ClaudeDevSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or SearchRead/PageRead @N when that tool archive already exists; after Send (@N archived) → SearchRead (grep required) to find lines, PageRead (no grep) for contiguous slices, Finish, or Send again. Access: write.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -182,7 +205,7 @@ class ClaudeDevSessionPlan {
 // ── builder: session coordination (tool crates) ──
 
 // Auto-generated session coordination — do not edit manually
-// Coordinates the claude/dev session tool (Open/Send/Next/Finish/Abort).
+// Coordinates the claude/dev session tool (Open/Send/SearchRead/PageRead/Finish/Abort).
 // ClaudeDevSessionPlan is defined in _baml_runtime.baml (builder prelude).
 
 class ClaudeDevAskUser {
@@ -207,7 +230,7 @@ function ChooseClaudeDevAction(
     You control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
     RULES:
-    0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, Read, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
+    0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
     1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
     2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
     3. Initialization is two-hop under host FSM:
@@ -220,7 +243,7 @@ function ChooseClaudeDevAction(
     5. When completion is DONE or INTERRUPTED:
        - if validation has not been requested yet, Send validation prompt
        - otherwise emit Report with concise requirements/build/validation summary
-    6. Non-terminal sessions: Read tool output before more Send or Finish when needed. Large @N: set grep, small limit, offset to page; do not read whole archives unless necessary.
+    6. Non-terminal sessions: poll tool output (SearchRead to filter, PageRead for contiguous lines) before more Send or Finish when needed. Large @N: SearchRead requires grep + limit + offset; PageRead pages rendered lines without grep.
     7. AskUser is only for genuine missing operator input. Keep prompt neutral and short.
     8. Never emit Open except on the Open/select phase (session not yet open).
     9. Never emit tool_call objects.
@@ -271,7 +294,7 @@ function ChooseClaudeDevAction__select(
   prompt #"[OPEN] Open a session with: claude/dev.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
-0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, Read, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
+0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
 1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
 2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
 3. Initialization is two-hop under host FSM:
@@ -284,7 +307,7 @@ RULES:
 5. When completion is DONE or INTERRUPTED:
    - if validation has not been requested yet, Send validation prompt
    - otherwise emit Report with concise requirements/build/validation summary
-6. Non-terminal sessions: Read tool output before more Send or Finish when needed. Large @N: set grep, small limit, offset to page; do not read whole archives unless necessary.
+6. Non-terminal sessions: poll tool output (SearchRead to filter, PageRead for contiguous lines) before more Send or Finish when needed. Large @N: SearchRead requires grep + limit + offset; PageRead pages rendered lines without grep.
 7. AskUser is only for genuine missing operator input. Keep prompt neutral and short.
 8. Never emit Open except on the Open/select phase (session not yet open).
 9. Never emit tool_call objects.
@@ -319,20 +342,20 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — first post-Open hop: Send or Read claude/dev.
+/// Phase: act — first post-Open hop: Send or SearchRead/PageRead claude/dev.
 function ChooseClaudeDevAction__act__claude_dev(
   spec_text: string,
   validation_criteria_json: string,
   last_tool_output: string,
   user_approval_intent: string,
   session_context: SessionContext?
-) -> ClaudeDevSendStep | ClaudeDevReadStep {
+) -> ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep {
 
   client DefaultClient
   prompt #"[ACT] A claude/dev session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
-0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, Read, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
+0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
 1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
 2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
 3. Initialization is two-hop under host FSM:
@@ -345,7 +368,7 @@ RULES:
 5. When completion is DONE or INTERRUPTED:
    - if validation has not been requested yet, Send validation prompt
    - otherwise emit Report with concise requirements/build/validation summary
-6. Non-terminal sessions: Read tool output before more Send or Finish when needed. Large @N: set grep, small limit, offset to page; do not read whole archives unless necessary.
+6. Non-terminal sessions: poll tool output (SearchRead to filter, PageRead for contiguous lines) before more Send or Finish when needed. Large @N: SearchRead requires grep + limit + offset; PageRead pages rendered lines without grep.
 7. AskUser is only for genuine missing operator input. Keep prompt neutral and short.
 8. Never emit Open except on the Open/select phase (session not yet open).
 9. Never emit tool_call objects.
@@ -380,20 +403,20 @@ PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send 
 
 }
 
-/// Phase: continue — read, send again, or finish claude/dev.
+/// Phase: continue — SearchRead/PageRead, send again, or finish claude/dev.
 function ChooseClaudeDevAction__continue__claude_dev(
   spec_text: string,
   validation_criteria_json: string,
   last_tool_output: string,
   user_approval_intent: string,
   session_context: SessionContext?
-) -> ClaudeDevSendStep | ClaudeDevReadStep | ClaudeDevFinishStep {
+) -> ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep | ClaudeDevFinishStep {
 
   client DefaultClient
   prompt #"[CONTINUE] claude/dev result is archived.\nCheck session history:\n- See \"@N claude/dev\" followed by numbered lines → content is inline; emit Finish\n- See \"@N claude/dev\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N claude/dev\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
-0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, Read, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
+0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
 1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
 2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
 3. Initialization is two-hop under host FSM:
@@ -406,7 +429,7 @@ RULES:
 5. When completion is DONE or INTERRUPTED:
    - if validation has not been requested yet, Send validation prompt
    - otherwise emit Report with concise requirements/build/validation summary
-6. Non-terminal sessions: Read tool output before more Send or Finish when needed. Large @N: set grep, small limit, offset to page; do not read whole archives unless necessary.
+6. Non-terminal sessions: poll tool output (SearchRead to filter, PageRead for contiguous lines) before more Send or Finish when needed. Large @N: SearchRead requires grep + limit + offset; PageRead pages rendered lines without grep.
 7. AskUser is only for genuine missing operator input. Keep prompt neutral and short.
 8. Never emit Open except on the Open/select phase (session not yet open).
 9. Never emit tool_call objects.
