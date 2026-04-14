@@ -138,6 +138,19 @@ setup_cluster() {
     --from-literal=PLACEHOLDER="unused" \
     --dry-run=client -o yaml | kubectl apply -f -
 
+  # Mount local fnox.toml as ConfigMap so BAML functions can resolve API keys
+  if [[ -f "${REPO_ROOT}/fnox.toml" ]]; then
+    kubectl -n "$NAMESPACE" create configmap fnox-config \
+      --from-file=fnox.toml="${REPO_ROOT}/fnox.toml" \
+      --dry-run=client -o yaml | kubectl apply -f -
+    log_info "fnox.toml mounted as ConfigMap (LLM fixtures enabled)"
+  else
+    kubectl -n "$NAMESPACE" create configmap fnox-config \
+      --from-literal=placeholder=true \
+      --dry-run=client -o yaml | kubectl apply -f -
+    log_warn "No local fnox.toml found — LLM-dependent fixtures will fail gracefully"
+  fi
+
   kubectl apply -f "${REPO_ROOT}/deploy/k8s/surrealdb.yaml"
   kubectl apply -f "${REPO_ROOT}/deploy/k8s/runner.yaml"
 
@@ -146,6 +159,13 @@ setup_cluster() {
 
   log_info "Injecting RUNNER_TOKEN into runner StatefulSet"
   kubectl -n "$NAMESPACE" set env statefulset/runner "RUNNER_TOKEN=${E2E_TOKEN}"
+
+  log_info "Mounting fnox.toml ConfigMap into runner StatefulSet"
+  kubectl -n "$NAMESPACE" patch statefulset runner --type=json -p='[
+    {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"fnox-config","configMap":{"name":"fnox-config","optional":true}}},
+    {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"fnox-config","mountPath":"/config/fnox.toml","subPath":"fnox.toml","readOnly":true}},
+    {"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"BAML_FNOX_CONFIG","value":"/config/fnox.toml"}}
+  ]'
 
   log_step "Waiting for SurrealDB"
   kubectl -n "$NAMESPACE" wait --for=condition=ready pod -l app=surrealdb --timeout=180s

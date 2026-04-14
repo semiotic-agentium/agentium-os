@@ -311,6 +311,19 @@ dump_logs() {
 }
 
 # ---------------------------------------------------------------------------
+# LLM key detection
+# ---------------------------------------------------------------------------
+
+# has_llm_keys — returns 0 if the local fnox.toml has a usable OPENROUTER_API_KEY.
+has_llm_keys() {
+  local repo_root
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  [[ -f "${repo_root}/fnox.toml" ]] \
+    && grep -q 'OPENROUTER_API_KEY' "${repo_root}/fnox.toml" \
+    && grep -A2 'OPENROUTER_API_KEY' "${repo_root}/fnox.toml" | grep -q 'default.*=.*"[^"]'
+}
+
+# ---------------------------------------------------------------------------
 # Scenario runner
 # ---------------------------------------------------------------------------
 
