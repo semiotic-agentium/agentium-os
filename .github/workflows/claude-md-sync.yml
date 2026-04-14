@@ -232,16 +232,17 @@ jobs:
               --body-file /tmp/pr_body.txt \
               --label "claude-md-sync" \
               --base main \
-              --head "$BRANCH_NAME" 2>/dev/null; then
+              --head "$BRANCH_NAME" 2>/tmp/gh_pr_err; then
               echo "::notice::PR created successfully"
             elif gh pr create \
               --title "docs: sync CLAUDE.md with ${MERGE_SUBJECT}" \
               --body-file /tmp/pr_body.txt \
               --base main \
-              --head "$BRANCH_NAME" 2>/dev/null; then
+              --head "$BRANCH_NAME" 2>/tmp/gh_pr_err; then
               echo "::notice::PR created successfully (without label)"
             else
               REPO_URL=$(gh repo view --json url -q '.url')
-              echo "::warning::Could not create PR (GITHUB_TOKEN may lack permission). Branch pushed — open manually: ${REPO_URL}/compare/main...${BRANCH_NAME}?expand=1"
+              GH_ERR=$(cat /tmp/gh_pr_err)
+              echo "::warning::Could not create PR: ${GH_ERR}. Branch pushed — open manually: ${REPO_URL}/compare/main...${BRANCH_NAME}?expand=1"
             fi
           fi
