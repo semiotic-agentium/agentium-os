@@ -1154,24 +1154,31 @@ mod tests {
         assert_eq!(records[0].failure_count, 1);
     }
 
-    /// Retry an async operation with bounded attempts and backoff.
+    /// Retry opening a `DeploymentStateStore` with exponential backoff.
     ///
     /// SurrealDB's embedded engine may hold file locks briefly after a
-    /// connection is dropped, so reopen attempts need a short retry window.
-    async fn retry_open(
-        max_attempts: usize,
-        delay_ms: u64,
-        path: &std::path::Path,
-    ) -> DeploymentStateStore {
-        for _ in 0..max_attempts {
+    /// connection is dropped. On slow CI runners the delay can exceed a
+    /// constant-interval budget, so we start at 50 ms and double each
+    /// attempt (capped at 2 s) for a total budget of ~20 s.
+    async fn retry_open(path: &std::path::Path) -> DeploymentStateStore {
+        let mut delay = std::time::Duration::from_millis(50);
+        let max_delay = std::time::Duration::from_secs(2);
+        let max_attempts = 10;
+        for attempt in 1..=max_attempts {
             match DeploymentStateStore::open(path).await {
                 Ok(store) => return store,
-                Err(_) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                Err(e) => {
+                    if attempt == max_attempts {
+                        panic!(
+                            "failed to reopen deployment state store after {max_attempts} attempts: {e}"
+                        );
+                    }
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(max_delay);
                 }
             }
         }
-        panic!("failed to reopen deployment state store after {max_attempts} attempts");
+        unreachable!()
     }
 
     #[tokio::test]
@@ -1186,7 +1193,7 @@ mod tests {
             .unwrap();
         drop(store);
 
-        let reopened = retry_open(20, 100, &path).await;
+        let reopened = retry_open(&path).await;
 
         let checkpoints = reopened
             .list_event_producer_checkpoints()
@@ -1243,7 +1250,7 @@ mod tests {
         assert_eq!(deduped.callback.callback_id, scheduled.callback.callback_id);
         drop(store);
 
-        let reopened = retry_open(20, 100, &path).await;
+        let reopened = retry_open(&path).await;
         let due = reopened.list_due_callbacks(10, 10).await.unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].callback_id, scheduled.callback.callback_id);
@@ -1256,7 +1263,7 @@ mod tests {
             .unwrap();
         drop(reopened);
 
-        let reopened = retry_open(20, 100, &path).await;
+        let reopened = retry_open(&path).await;
         let due = reopened.list_due_callbacks(1_000, 10).await.unwrap();
         assert!(due.is_empty());
     }
@@ -1342,7 +1349,7 @@ mod tests {
         assert!(!store.enqueue_ingress_item(&item).await.unwrap());
         drop(store);
 
-        let reopened = retry_open(20, 100, &path).await;
+        let reopened = retry_open(&path).await;
         let items = reopened.list_pending_ingress_items(10).await.unwrap();
         assert_eq!(items, vec![item]);
     }
