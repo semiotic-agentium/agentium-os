@@ -101,10 +101,20 @@ kill_all_port_forwards() {
 # Fixture publishing & deployment
 # ---------------------------------------------------------------------------
 
+# Per-runner hash cache: HASH_CACHE_<port>_<fixture>=<hash>
+# Avoids re-publishing the same fixture (version increments change the hash).
+declare -A PUBLISH_CACHE
+
 # publish_fixture <fixture_name> <local_port>
 # Publishes a fixture agent to the runner's repository. Echoes the content hash.
+# Caches the result per (fixture, port) pair so repeated calls return the same hash.
 publish_fixture() {
   local fixture="$1" port="$2"
+  local cache_key="${port}:${fixture}"
+  if [[ -n "${PUBLISH_CACHE[$cache_key]:-}" ]]; then
+    echo "${PUBLISH_CACHE[$cache_key]}"
+    return 0
+  fi
   local output
   output=$("$BUILDER_BIN" publish \
     --agent-dir "${REPO_ROOT}/tests/fixtures/agents/${fixture}" \
@@ -116,7 +126,21 @@ publish_fixture() {
     echo "$output" >&2
     return 1
   fi
+  PUBLISH_CACHE[$cache_key]="$hash"
   echo "$hash"
+}
+
+# undeploy_package <package_name> <local_port> <token>
+# Undeploys any active deployment of the named agent package.
+undeploy_package() {
+  local pkg="$1" port="$2" token="$3"
+  local agents
+  agents=$(curl -sf "http://localhost:${port}/agents" 2>/dev/null || echo "[]")
+  local hash
+  hash=$(echo "$agents" | jq -r ".[] | select(.agent_package == \"${pkg}\") | .content_hash // empty" 2>/dev/null | head -1)
+  if [[ -n "$hash" ]]; then
+    undeploy_hash "$hash" "$port" "$token"
+  fi
 }
 
 # deploy_hash <hash> <local_port> <token>
@@ -140,9 +164,11 @@ undeploy_hash() {
 }
 
 # publish_and_deploy <fixture_name> <local_port> <token>
+# Undeploys any existing deployment of the same package first, then publishes and deploys.
 # Echoes the content hash.
 publish_and_deploy() {
   local fixture="$1" port="$2" token="$3"
+  undeploy_package "$fixture" "$port" "$token"
   local hash
   hash=$(publish_fixture "$fixture" "$port") || return 1
   deploy_hash "$hash" "$port" "$token" >/dev/null || {
@@ -163,14 +189,18 @@ surreal_query() {
   local sql="$1"
   local ns="${2:-cluster}"
   local db="${3:-registry}"
-  echo "$sql" | kubectl exec -n "$NAMESPACE" surrealdb-0 -c surrealdb -i -- \
+  local raw
+  raw=$(echo "$sql" | kubectl exec -n "$NAMESPACE" surrealdb-0 -c surrealdb -i -- \
     /surreal sql \
     --endpoint http://localhost:8000 \
     --username "$SURREAL_USER" \
     --password "$SURREAL_PASS" \
     --namespace "$ns" \
     --database "$db" \
-    --json 2>/dev/null
+    --json 2>/dev/null)
+  # SurrealDB v3 outputs [[...rows...]], normalize to v2-like [{"result": [...rows...]}]
+  # so existing jq expressions using `.[] | .result | .[]` continue to work.
+  echo "$raw" | jq '[{result: .[0] // []}]' 2>/dev/null || echo '[{"result":[]}]'
 }
 
 # ---------------------------------------------------------------------------

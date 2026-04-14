@@ -141,12 +141,21 @@ setup_cluster() {
   kubectl apply -f "${REPO_ROOT}/deploy/k8s/surrealdb.yaml"
   kubectl apply -f "${REPO_ROOT}/deploy/k8s/runner.yaml"
 
+  log_info "Patching runner image to ${IMAGE_NAME}:${IMAGE_TAG}"
+  kubectl -n "$NAMESPACE" set image statefulset/runner "runner=${IMAGE_NAME}:${IMAGE_TAG}"
+
   log_info "Injecting RUNNER_TOKEN into runner StatefulSet"
   kubectl -n "$NAMESPACE" set env statefulset/runner "RUNNER_TOKEN=${E2E_TOKEN}"
 
-  log_step "Waiting for pods"
+  log_step "Waiting for SurrealDB"
   kubectl -n "$NAMESPACE" wait --for=condition=ready pod -l app=surrealdb --timeout=180s
-  kubectl -n "$NAMESPACE" wait --for=condition=ready pod -l app=runner --timeout=180s
+
+  log_info "Deleting stale runner pods so they recreate with patched spec"
+  kubectl -n "$NAMESPACE" delete pods -l app=runner --force --grace-period=0 2>/dev/null || true
+
+  log_step "Waiting for runner pods"
+  kubectl -n "$NAMESPACE" wait --for=condition=ready pod/runner-0 --timeout=180s
+  kubectl -n "$NAMESPACE" wait --for=condition=ready pod/runner-1 --timeout=180s
   kubectl -n "$NAMESPACE" get pods -o wide
 
   log_step "Starting port-forwards"
@@ -387,7 +396,8 @@ scenario_06_token_enforcement() {
   assert_eq "$code_wrong" "401" "deploy with wrong token" || return 1
   log_info "Wrong token → 401"
 
-  # Correct token → 200
+  # Correct token → 200 (undeploy first to avoid 409 from prior scenarios)
+  undeploy_package "dispatch-echo" "$RUNNER0_PORT" "$E2E_TOKEN"
   local code_ok
   code_ok=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     -H "Content-Type: application/json" \
@@ -486,8 +496,8 @@ scenario_08_heartbeat() {
   local before
   before=$(surreal_query "SELECT runner_id, endpoint, last_heartbeat_ms FROM cluster_runners ORDER BY endpoint")
   local r0_before r1_before
-  r0_before=$(echo "$before" | jq '[.[] | .result | .[] | select(.endpoint | contains("runner-0"))] | .[0].last_heartbeat_ms // 0' 2>/dev/null || echo "0")
-  r1_before=$(echo "$before" | jq '[.[] | .result | .[] | select(.endpoint | contains("runner-1"))] | .[0].last_heartbeat_ms // 0' 2>/dev/null || echo "0")
+  r0_before=$(echo "$before" | jq '[.[] | .result | .[] | select(.endpoint | contains("runner-0"))] | max_by(.last_heartbeat_ms) | .last_heartbeat_ms // 0' 2>/dev/null || echo "0")
+  r1_before=$(echo "$before" | jq '[.[] | .result | .[] | select(.endpoint | contains("runner-1"))] | max_by(.last_heartbeat_ms) | .last_heartbeat_ms // 0' 2>/dev/null || echo "0")
   log_info "Heartbeats before: runner-0=${r0_before}, runner-1=${r1_before}"
 
   if [[ "$r0_before" == "0" || "$r1_before" == "0" ]]; then
@@ -502,8 +512,8 @@ scenario_08_heartbeat() {
   local after
   after=$(surreal_query "SELECT runner_id, endpoint, last_heartbeat_ms FROM cluster_runners ORDER BY endpoint")
   local r0_after r1_after
-  r0_after=$(echo "$after" | jq '[.[] | .result | .[] | select(.endpoint | contains("runner-0"))] | .[0].last_heartbeat_ms // 0' 2>/dev/null || echo "0")
-  r1_after=$(echo "$after" | jq '[.[] | .result | .[] | select(.endpoint | contains("runner-1"))] | .[0].last_heartbeat_ms // 0' 2>/dev/null || echo "0")
+  r0_after=$(echo "$after" | jq '[.[] | .result | .[] | select(.endpoint | contains("runner-0"))] | max_by(.last_heartbeat_ms) | .last_heartbeat_ms // 0' 2>/dev/null || echo "0")
+  r1_after=$(echo "$after" | jq '[.[] | .result | .[] | select(.endpoint | contains("runner-1"))] | max_by(.last_heartbeat_ms) | .last_heartbeat_ms // 0' 2>/dev/null || echo "0")
   log_info "Heartbeats after:  runner-0=${r0_after}, runner-1=${r1_after}"
 
   if [[ "$r0_after" == "0" || "$r1_after" == "0" ]]; then
