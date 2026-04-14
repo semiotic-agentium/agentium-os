@@ -2,7 +2,7 @@
 # E2E k8s test harness for the Agentium OS k8s deployment feature.
 #
 # Builds a Docker image, boots a k3d cluster, applies manifests, and runs
-# 9 scenario assertions through real pod surfaces.
+# 15 scenario assertions through real pod surfaces.
 #
 # Usage: ./scripts/e2e-k8s/run.sh [--no-build] [--keep-cluster]
 #
@@ -624,6 +624,448 @@ scenario_09_readyz_503() {
   wait_port_ready "$RUNNER0_PORT" 15 || true
 }
 
+# ---------- 10. Distributed multi-agent routing ----------
+scenario_10_distributed_multi_agent() {
+  # Deploy two LLM-free agents on separate runners, verify cross-pod routing for both.
+  local hash_echo hash_stream
+
+  # dispatch-echo on runner-0 only
+  hash_echo=$(publish_and_deploy dispatch-echo "$RUNNER0_PORT" "$E2E_TOKEN") || return 1
+  # stream-js-tool on runner-1 only
+  hash_stream=$(publish_and_deploy stream-js-tool "$RUNNER1_PORT" "$E2E_TOKEN") || return 1
+
+  # Publish metadata to the opposite runner so placement resolution can discover them
+  publish_fixture dispatch-echo "$RUNNER1_PORT" >/dev/null || return 1
+  publish_fixture stream-js-tool "$RUNNER0_PORT" >/dev/null || return 1
+  log_info "dispatch-echo on runner-0, stream-js-tool on runner-1"
+
+  # Verify each runner lists only its local agent
+  local agents_r0
+  agents_r0=$(curl -sf "http://localhost:${RUNNER0_PORT}/agents")
+  assert_contains "$agents_r0" "dispatch-echo" "runner-0 lists dispatch-echo" || return 1
+
+  local agents_r1
+  agents_r1=$(curl -sf "http://localhost:${RUNNER1_PORT}/agents")
+  assert_contains "$agents_r1" "stream-js-tool" "runner-1 lists stream-js-tool" || return 1
+
+  # Cross-pod: access dispatch-echo through runner-1 (forward to runner-0)
+  local resp_echo
+  resp_echo=$(a2a_sse_request "$RUNNER1_PORT" "dispatch-echo" "hello from runner-1")
+  assert_contains "$resp_echo" "dispatch-echo" "dispatch-echo response via runner-1 cross-pod" || return 1
+  log_info "dispatch-echo responded via runner-1 (cross-pod forward to runner-0)"
+
+  # Cross-pod: access stream-js-tool through runner-0 (forward to runner-1)
+  local resp_stream
+  resp_stream=$(a2a_sse_request "$RUNNER0_PORT" "stream-js-tool" "stream-task")
+  assert_contains "$resp_stream" "Complete" "stream-js-tool response via runner-0 cross-pod" || return 1
+  log_info "stream-js-tool responded via runner-0 (cross-pod forward to runner-1)"
+
+  # Verify placement table shows both agents on correct runners
+  local placements
+  placements=$(surreal_query "SELECT agent_package, runner_endpoint FROM cluster_agent_placements WHERE agent_package IN ['dispatch-echo', 'stream-js-tool']")
+  local placement_count
+  placement_count=$(echo "$placements" | jq '[.[] | .result | .[]] | length')
+  assert_eq "$placement_count" "2" "two placement rows for two agents" || return 1
+
+  local echo_endpoint
+  echo_endpoint=$(echo "$placements" | jq -r '[.[] | .result | .[] | select(.agent_package == "dispatch-echo")] | .[0].runner_endpoint')
+  assert_contains "$echo_endpoint" "runner-0" "dispatch-echo placed on runner-0" || return 1
+
+  local stream_endpoint
+  stream_endpoint=$(echo "$placements" | jq -r '[.[] | .result | .[] | select(.agent_package == "stream-js-tool")] | .[0].runner_endpoint')
+  assert_contains "$stream_endpoint" "runner-1" "stream-js-tool placed on runner-1" || return 1
+  log_info "Placement table: dispatch-echo→runner-0, stream-js-tool→runner-1"
+
+  # Clean up
+  undeploy_hash "$hash_echo" "$RUNNER0_PORT" "$E2E_TOKEN"
+  undeploy_hash "$hash_stream" "$RUNNER1_PORT" "$E2E_TOKEN"
+}
+
+# ---------- 11. Full agent lifecycle across the cluster ----------
+scenario_11_full_lifecycle() {
+  # One agent, one hash, every lifecycle phase: publish → deploy → use → migrate →
+  # use (transparent forward) → undeploy → redeploy from same hash.
+  local hash
+  hash=$(publish_fixture dispatch-echo "$RUNNER0_PORT") || return 1
+  publish_fixture dispatch-echo "$RUNNER1_PORT" >/dev/null || return 1
+  log_info "Published dispatch-echo (hash=${hash})"
+
+  # Clean slate
+  undeploy_package "dispatch-echo" "$RUNNER0_PORT" "$E2E_TOKEN"
+  undeploy_package "dispatch-echo" "$RUNNER1_PORT" "$E2E_TOKEN"
+
+  # Phase 1: Deploy on runner-0
+  deploy_hash "$hash" "$RUNNER0_PORT" "$E2E_TOKEN" >/dev/null || return 1
+
+  local agents_r0
+  agents_r0=$(curl -sf "http://localhost:${RUNNER0_PORT}/agents")
+  assert_contains "$agents_r0" "dispatch-echo" "Phase 1: runner-0 has dispatch-echo" || return 1
+
+  local agents_r1
+  agents_r1=$(curl -sf "http://localhost:${RUNNER1_PORT}/agents")
+  if echo "$agents_r1" | jq -e '.[] | select(.agent_package == "dispatch-echo")' >/dev/null 2>&1; then
+    log_fail "Phase 1: runner-1 should not have dispatch-echo"
+    return 1
+  fi
+  log_info "Phase 1 (deploy on runner-0): verified"
+
+  # Phase 2: A2A request on runner-0 (local fast path)
+  local resp
+  resp=$(a2a_sse_request "$RUNNER0_PORT" "dispatch-echo" "lifecycle test")
+  assert_contains "$resp" "dispatch-echo" "Phase 2: A2A on runner-0" || return 1
+  log_info "Phase 2 (A2A on runner-0): verified"
+
+  # Phase 3: Migrate to runner-1
+  local migrate_resp
+  migrate_resp=$(curl -sf -X POST \
+    -H "Content-Type: application/json" \
+    -H "X-Runner-Token: ${E2E_TOKEN}" \
+    -d "{\"hash\":\"${hash}\",\"target_runner_endpoint\":\"http://runner-1.runner.agentium.svc:18080\"}" \
+    "http://localhost:${RUNNER0_PORT}/control/migrate") || {
+    log_fail "Phase 3: migration failed"
+    return 1
+  }
+
+  agents_r0=$(curl -sf "http://localhost:${RUNNER0_PORT}/agents")
+  if echo "$agents_r0" | jq -e '.[] | select(.agent_package == "dispatch-echo")' >/dev/null 2>&1; then
+    log_fail "Phase 3: runner-0 still has dispatch-echo after migration"
+    return 1
+  fi
+
+  agents_r1=$(curl -sf "http://localhost:${RUNNER1_PORT}/agents")
+  assert_contains "$agents_r1" "dispatch-echo" "Phase 3: runner-1 has dispatch-echo" || return 1
+  log_info "Phase 3 (migrate to runner-1): verified"
+
+  # Phase 4: A2A to runner-0 transparently forwards to runner-1
+  resp=$(a2a_sse_request "$RUNNER0_PORT" "dispatch-echo" "forwarded test")
+  assert_contains "$resp" "dispatch-echo" "Phase 4: A2A forwarded runner-0→runner-1" || return 1
+  log_info "Phase 4 (transparent forward after migration): verified"
+
+  # Phase 5: Undeploy from runner-1 — neither runner has it
+  undeploy_hash "$hash" "$RUNNER1_PORT" "$E2E_TOKEN"
+
+  agents_r0=$(curl -sf "http://localhost:${RUNNER0_PORT}/agents")
+  agents_r1=$(curl -sf "http://localhost:${RUNNER1_PORT}/agents")
+  if echo "$agents_r0" | jq -e '.[] | select(.agent_package == "dispatch-echo")' >/dev/null 2>&1; then
+    log_fail "Phase 5: runner-0 still lists dispatch-echo after undeploy"
+    return 1
+  fi
+  if echo "$agents_r1" | jq -e '.[] | select(.agent_package == "dispatch-echo")' >/dev/null 2>&1; then
+    log_fail "Phase 5: runner-1 still lists dispatch-echo after undeploy"
+    return 1
+  fi
+  log_info "Phase 5 (undeploy): verified — neither runner has the agent"
+
+  # Phase 6: Redeploy on runner-0 from the same hash (repository is durable)
+  deploy_hash "$hash" "$RUNNER0_PORT" "$E2E_TOKEN" >/dev/null || {
+    log_fail "Phase 6: redeploy from same hash failed — repository data lost?"
+    return 1
+  }
+
+  agents_r0=$(curl -sf "http://localhost:${RUNNER0_PORT}/agents")
+  assert_contains "$agents_r0" "dispatch-echo" "Phase 6: runner-0 has dispatch-echo after redeploy" || return 1
+
+  local placement
+  placement=$(surreal_query "SELECT * FROM cluster_agent_placements WHERE agent_package = 'dispatch-echo'")
+  local placement_endpoint
+  placement_endpoint=$(echo "$placement" | jq -r '[.[] | .result | .[].runner_endpoint] | .[0]')
+  assert_contains "$placement_endpoint" "runner-0" "Phase 6: placement points to runner-0" || return 1
+  log_info "Phase 6 (redeploy from same hash): verified — agents are portable and durable"
+
+  # Clean up
+  undeploy_hash "$hash" "$RUNNER0_PORT" "$E2E_TOKEN"
+}
+
+# ---------- 12. Provenance survives migration ----------
+scenario_12_provenance_survives_migration() {
+  # Deploy on runner-0, interact, migrate to runner-1 — the full audit trail is
+  # visible from either runner because provenance lives in shared SurrealDB.
+  local hash
+  hash=$(publish_and_deploy dispatch-echo "$RUNNER0_PORT" "$E2E_TOKEN") || return 1
+  publish_fixture dispatch-echo "$RUNNER1_PORT" >/dev/null || return 1
+  log_info "dispatch-echo deployed on runner-0 (hash=${hash})"
+
+  # Create some A2A activity so provenance has something to record
+  a2a_sse_request "$RUNNER0_PORT" "dispatch-echo" "provenance test message" >/dev/null
+  sleep 2
+
+  # Query lifecycle events from runner-0
+  local lifecycle_before
+  lifecycle_before=$(curl -sf "http://localhost:${RUNNER0_PORT}/provenance/lifecycle-events" 2>/dev/null || echo '{"rows":[]}')
+  local count_before
+  count_before=$(echo "$lifecycle_before" | jq '.rows | length')
+  assert_ge "$count_before" 1 "lifecycle events exist after deploy on runner-0" || return 1
+  log_info "Lifecycle events before migration: ${count_before} rows"
+
+  # Migrate to runner-1 (undeploys from runner-0, deploys on runner-1)
+  curl -sf -X POST \
+    -H "Content-Type: application/json" \
+    -H "X-Runner-Token: ${E2E_TOKEN}" \
+    -d "{\"hash\":\"${hash}\",\"target_runner_endpoint\":\"http://runner-1.runner.agentium.svc:18080\"}" \
+    "http://localhost:${RUNNER0_PORT}/control/migrate" >/dev/null || {
+    log_fail "Migration failed"
+    return 1
+  }
+  sleep 2
+
+  # Query lifecycle events from runner-1 — should include events from BOTH phases
+  local lifecycle_after
+  lifecycle_after=$(curl -sf "http://localhost:${RUNNER1_PORT}/provenance/lifecycle-events" 2>/dev/null || echo '{"rows":[]}')
+  local count_after
+  count_after=$(echo "$lifecycle_after" | jq '.rows | length')
+  assert_ge "$count_after" "$count_before" "lifecycle events grew after migration" || return 1
+  log_info "Lifecycle events after migration (queried from runner-1): ${count_after} rows"
+
+  # Verify AgentStopped event from the undeploy on runner-0
+  if echo "$lifecycle_after" | jq -e '.rows[] | select(.a2a_stop_reason == "undeploy")' >/dev/null 2>&1; then
+    log_info "AgentStopped event (reason=undeploy) found in provenance"
+  else
+    log_warn "AgentStopped not found yet (async write may be delayed — non-fatal)"
+  fi
+
+  # Query from runner-0 as well — both runners see identical provenance (shared SurrealDB)
+  local lifecycle_r0
+  lifecycle_r0=$(curl -sf "http://localhost:${RUNNER0_PORT}/provenance/lifecycle-events" 2>/dev/null || echo '{"rows":[]}')
+  local count_r0
+  count_r0=$(echo "$lifecycle_r0" | jq '.rows | length')
+  assert_eq "$count_r0" "$count_after" "both runners return identical lifecycle event count" || return 1
+  log_info "Both runners see the same ${count_r0} lifecycle events (shared provenance store)"
+
+  # Send another request on runner-1 to show provenance continues on the new host
+  a2a_sse_request "$RUNNER1_PORT" "dispatch-echo" "post-migration message" >/dev/null
+  sleep 1
+
+  local lifecycle_final
+  lifecycle_final=$(curl -sf "http://localhost:${RUNNER1_PORT}/provenance/lifecycle-events" 2>/dev/null || echo '{"rows":[]}')
+  local count_final
+  count_final=$(echo "$lifecycle_final" | jq '.rows | length')
+  assert_ge "$count_final" "$count_after" "provenance continues growing on new runner" || return 1
+  log_info "Full audit trail: ${count_final} lifecycle events spanning both runners"
+
+  # Clean up
+  undeploy_hash "$hash" "$RUNNER1_PORT" "$E2E_TOKEN"
+}
+
+# ---------- 13. Stale runner exclusion under partition ----------
+scenario_13_stale_runner_exclusion() {
+  # Deploy on runner-0, force-kill it, backdate its heartbeat to simulate TTL
+  # expiry, verify routing excludes the stale runner, then verify recovery.
+  local hash
+  hash=$(publish_and_deploy dispatch-echo "$RUNNER0_PORT" "$E2E_TOKEN") || return 1
+  publish_fixture dispatch-echo "$RUNNER1_PORT" >/dev/null || return 1
+  log_info "dispatch-echo deployed on runner-0 (hash=${hash})"
+
+  # Verify cross-pod routing works before partition
+  local resp
+  resp=$(a2a_sse_request "$RUNNER1_PORT" "dispatch-echo" "pre-partition test")
+  assert_contains "$resp" "dispatch-echo" "pre-partition: runner-1 forwards to runner-0" || return 1
+  log_info "Cross-pod routing verified before partition"
+
+  # Force-kill runner-0 (simulates crash — no graceful drain)
+  stop_port_forward runner-0
+  kubectl delete pod runner-0 -n "$NAMESPACE" --grace-period=0 --force 2>/dev/null
+  log_info "Force-killed runner-0 (simulating crash)"
+
+  # Backdate runner-0's heartbeat to make it immediately stale.
+  # This simulates what happens after the placement TTL (default 90s) expires
+  # without waiting the full duration.
+  surreal_query "UPDATE cluster_runners SET last_heartbeat_ms = 0 WHERE endpoint = 'http://runner-0.runner.agentium.svc:18080'" >/dev/null
+  log_info "Backdated runner-0 heartbeat to epoch 0 (simulating TTL expiry)"
+
+  # Verify the TTL-filtered placement query excludes stale runner-0.
+  # This is the exact query pattern the PlacementResolver uses.
+  local stale_placements
+  stale_placements=$(surreal_query "SELECT * FROM cluster_agent_placements WHERE agent_package = 'dispatch-echo' AND runner_id IN (SELECT VALUE runner_id FROM cluster_runners WHERE last_heartbeat_ms > (time::millis(time::now()) - 90000))")
+  local stale_count
+  stale_count=$(echo "$stale_placements" | jq '[.[] | .result | .[]] | length')
+  assert_eq "$stale_count" "0" "stale runner excluded from TTL-filtered placement query" || return 1
+  log_info "Placement query correctly excludes stale runner-0"
+
+  # A2A request to runner-1 for dispatch-echo — should fail because the only
+  # placement is on the stale runner-0, which is filtered out.
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    -X POST \
+    -H "Accept: text/event-stream" \
+    -H "Content-Type: application/json" \
+    -d "$(jsonrpc_send_stream "post-partition test")" \
+    "http://localhost:${RUNNER1_PORT}/agents/dispatch-echo/default/a2a/sse" 2>/dev/null)
+  if [[ "$code" -ge 400 ]]; then
+    log_info "runner-1 rejects request for agent on stale runner (HTTP ${code})"
+  else
+    log_fail "runner-1 should not route to stale runner-0 (got HTTP ${code})"
+    return 1
+  fi
+
+  # Wait for runner-0 to be recreated by the StatefulSet and become ready.
+  # The new pod restores deployments from PVC and re-registers with a fresh heartbeat.
+  restart_port_forward runner-0 "$RUNNER0_PORT" "$REMOTE_PORT"
+  log_info "runner-0 recreated and ready"
+
+  # Verify runner-0 re-registered with a fresh heartbeat
+  local hb_after
+  hb_after=$(surreal_query "SELECT last_heartbeat_ms FROM cluster_runners WHERE endpoint = 'http://runner-0.runner.agentium.svc:18080'")
+  local hb_ms_after
+  hb_ms_after=$(echo "$hb_after" | jq '[.[] | .result | .[].last_heartbeat_ms] | max')
+  assert_ge "$hb_ms_after" 1 "runner-0 re-registered with fresh heartbeat" || return 1
+  log_info "runner-0 re-registered (heartbeat=${hb_ms_after})"
+
+  # Verify dispatch-echo is reachable again (restored from PVC, re-placed)
+  resp=$(a2a_sse_request "$RUNNER0_PORT" "dispatch-echo" "post-recovery test")
+  assert_contains "$resp" "dispatch-echo" "dispatch-echo reachable after runner-0 recovery" || return 1
+  log_info "dispatch-echo restored and reachable after recovery"
+
+  # Clean up
+  undeploy_hash "$hash" "$RUNNER0_PORT" "$E2E_TOKEN"
+}
+
+# ---------- 14. Concurrent deployment convergence ----------
+scenario_14_concurrent_deployment() {
+  # Deploy the same agent on both runners simultaneously. Each runner serves
+  # requests locally via the fast path, independent of the placement table.
+  local hash
+  hash=$(publish_fixture dispatch-echo "$RUNNER0_PORT") || return 1
+  publish_fixture dispatch-echo "$RUNNER1_PORT" >/dev/null || return 1
+
+  undeploy_package "dispatch-echo" "$RUNNER0_PORT" "$E2E_TOKEN"
+  undeploy_package "dispatch-echo" "$RUNNER1_PORT" "$E2E_TOKEN"
+
+  # Deploy on both runners concurrently
+  deploy_hash "$hash" "$RUNNER0_PORT" "$E2E_TOKEN" >/dev/null &
+  local pid0=$!
+  deploy_hash "$hash" "$RUNNER1_PORT" "$E2E_TOKEN" >/dev/null &
+  local pid1=$!
+  wait "$pid0" || { log_fail "concurrent deploy to runner-0 failed"; return 1; }
+  wait "$pid1" || { log_fail "concurrent deploy to runner-1 failed"; return 1; }
+  log_info "Concurrent deploy succeeded on both runners"
+
+  # Both runners list the agent in /agents
+  local agents_r0 agents_r1
+  agents_r0=$(curl -sf "http://localhost:${RUNNER0_PORT}/agents")
+  agents_r1=$(curl -sf "http://localhost:${RUNNER1_PORT}/agents")
+  assert_contains "$agents_r0" "dispatch-echo" "runner-0 lists dispatch-echo" || return 1
+  assert_contains "$agents_r1" "dispatch-echo" "runner-1 lists dispatch-echo" || return 1
+
+  # Both serve A2A requests locally (local fast path — no cluster lookup needed)
+  local resp_r0 resp_r1
+  resp_r0=$(a2a_sse_request "$RUNNER0_PORT" "dispatch-echo" "concurrent from r0")
+  resp_r1=$(a2a_sse_request "$RUNNER1_PORT" "dispatch-echo" "concurrent from r1")
+  assert_contains "$resp_r0" "dispatch-echo" "runner-0 serves locally" || return 1
+  assert_contains "$resp_r1" "dispatch-echo" "runner-1 serves locally" || return 1
+  log_info "Both runners serve the same agent independently"
+
+  # Placement table has exactly 1 row (UNIQUE constraint; last-write-wins)
+  local placements
+  placements=$(surreal_query "SELECT * FROM cluster_agent_placements WHERE agent_package = 'dispatch-echo'")
+  local count
+  count=$(echo "$placements" | jq '[.[] | .result | .[]] | length')
+  assert_eq "$count" "1" "placement table converged to 1 row (UNIQUE constraint)" || return 1
+  log_info "Placement converged: 1 row (last-write-wins)"
+
+  # Undeploy from runner-0 — runner-1 continues serving via its local instance
+  undeploy_hash "$hash" "$RUNNER0_PORT" "$E2E_TOKEN"
+
+  agents_r0=$(curl -sf "http://localhost:${RUNNER0_PORT}/agents")
+  if echo "$agents_r0" | jq -e '.[] | select(.agent_package == "dispatch-echo")' >/dev/null 2>&1; then
+    log_fail "runner-0 still lists dispatch-echo after undeploy"
+    return 1
+  fi
+
+  resp_r1=$(a2a_sse_request "$RUNNER1_PORT" "dispatch-echo" "surviving instance")
+  assert_contains "$resp_r1" "dispatch-echo" "runner-1 continues serving after runner-0 undeploy" || return 1
+  log_info "runner-1 survives runner-0 undeploy (independent local instance)"
+
+  # Clean up
+  undeploy_hash "$hash" "$RUNNER1_PORT" "$E2E_TOKEN"
+}
+
+# ---------- 15. Task lifecycle across pod boundaries ----------
+scenario_15_task_lifecycle_across_pods() {
+  # Multi-turn conversation with INPUT_REQUIRED on a single runner, then migrate
+  # and document whether conversation state survives the move.
+  local hash
+  hash=$(publish_and_deploy task-lifecycle-demo "$RUNNER0_PORT" "$E2E_TOKEN") || return 1
+  publish_fixture task-lifecycle-demo "$RUNNER1_PORT" >/dev/null || return 1
+  log_info "task-lifecycle-demo deployed on runner-0 (hash=${hash})"
+
+  # Turn 1: Start conversation with trigger phrase
+  local turn1
+  turn1=$(a2a_sse_request "$RUNNER0_PORT" "task-lifecycle-demo" "lifecycle-demo")
+  if [[ -z "$turn1" ]]; then
+    log_fail "Turn 1: empty response"
+    return 1
+  fi
+  assert_contains "$turn1" "Choose path" "Turn 1: got path selection prompt" || return 1
+
+  local context_id
+  context_id=$(extract_context_id "$turn1")
+  log_info "Turn 1: INPUT_REQUIRED with path choice (contextId=${context_id:-unknown})"
+
+  # Turn 2: Reply with fast-path to verify multi-turn works on a single runner
+  if [[ -n "$context_id" ]]; then
+    local turn2
+    turn2=$(a2a_sse_request_with_context "$RUNNER0_PORT" "task-lifecycle-demo" "fast-path" "$context_id")
+    if [[ -n "$turn2" ]]; then
+      if echo "$turn2" | grep -qi "fast.path\|completed"; then
+        log_info "Turn 2: conversation completed via fast-path on runner-0"
+      else
+        log_info "Turn 2: response received (multi-turn exchange confirmed)"
+      fi
+    else
+      log_warn "Turn 2: empty response (multi-turn may have failed)"
+    fi
+  else
+    log_warn "Skipping Turn 2: no contextId extracted from Turn 1"
+  fi
+
+  # Start a new conversation for the migration test
+  local turn3
+  turn3=$(a2a_sse_request "$RUNNER0_PORT" "task-lifecycle-demo" "lifecycle-demo")
+  assert_contains "$turn3" "Choose path" "New conversation: got path selection prompt" || return 1
+
+  local new_context_id
+  new_context_id=$(extract_context_id "$turn3")
+  log_info "New conversation started (contextId=${new_context_id:-unknown}), now migrating"
+
+  # Migrate while the task is in INPUT_REQUIRED state
+  curl -sf -X POST \
+    -H "Content-Type: application/json" \
+    -H "X-Runner-Token: ${E2E_TOKEN}" \
+    -d "{\"hash\":\"${hash}\",\"target_runner_endpoint\":\"http://runner-1.runner.agentium.svc:18080\"}" \
+    "http://localhost:${RUNNER0_PORT}/control/migrate" >/dev/null || {
+    log_fail "Migration during INPUT_REQUIRED failed"
+    return 1
+  }
+  log_info "Migrated to runner-1 while task in INPUT_REQUIRED state"
+
+  # Try to continue the suspended conversation on runner-1
+  if [[ -n "$new_context_id" ]]; then
+    local turn4
+    turn4=$(a2a_sse_request_with_context "$RUNNER1_PORT" "task-lifecycle-demo" "fast-path" "$new_context_id")
+    if [[ -n "$turn4" ]] && echo "$turn4" | grep -qi "fast.path\|completed"; then
+      log_info "Conversation RESUMED on runner-1 after migration (full state portability)"
+    elif [[ -n "$turn4" ]]; then
+      # Agent received the message but started a new context (expected behavior:
+      # in-memory task state does not survive migration — see mid-turn checkpoint
+      # architecture doc for the planned solution)
+      log_info "Conversation started fresh on runner-1 (expected: task state is per-runner, not yet portable)"
+    else
+      log_info "No response from runner-1 with old contextId (expected: task state is per-runner)"
+    fi
+  else
+    log_info "Cannot test continuation (no contextId) — task state is per-runner"
+  fi
+
+  # Verify a fresh conversation works on runner-1 after migration
+  local fresh
+  fresh=$(a2a_sse_request "$RUNNER1_PORT" "task-lifecycle-demo" "lifecycle-demo")
+  assert_contains "$fresh" "Choose path" "fresh conversation works on runner-1 after migration" || return 1
+  log_info "Fresh conversation succeeds on runner-1 — agent is operational post-migration"
+
+  # Clean up
+  undeploy_hash "$hash" "$RUNNER1_PORT" "$E2E_TOKEN"
+}
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -644,6 +1086,12 @@ main() {
   run_scenario "07-graceful-drain"           scenario_07_graceful_drain
   run_scenario "08-heartbeat-advances"       scenario_08_heartbeat
   run_scenario "09-readyz-503-window"        scenario_09_readyz_503
+  run_scenario "10-distributed-multi-agent"  scenario_10_distributed_multi_agent
+  run_scenario "11-full-agent-lifecycle"     scenario_11_full_lifecycle
+  run_scenario "12-provenance-survives-migration" scenario_12_provenance_survives_migration
+  run_scenario "13-stale-runner-exclusion"   scenario_13_stale_runner_exclusion
+  run_scenario "14-concurrent-deployment"    scenario_14_concurrent_deployment
+  run_scenario "15-task-lifecycle-across-pods" scenario_15_task_lifecycle_across_pods
 
   # cleanup runs via trap
 }

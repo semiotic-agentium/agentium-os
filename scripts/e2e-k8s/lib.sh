@@ -232,6 +232,38 @@ a2a_sse_request() {
     "http://localhost:${port}/agents/${pkg}/default/a2a/sse" 2>/dev/null
 }
 
+# jsonrpc_send_stream_with_context <text> <context_id>
+# Echoes a JSON-RPC 2.0 message.sendStream request body with a contextId for multi-turn.
+jsonrpc_send_stream_with_context() {
+  local text="$1" context_id="$2"
+  local msg_id
+  msg_id="e2e-$(date +%s)-${RANDOM}"
+  cat <<JSONEOF
+{"jsonrpc":"2.0","id":1,"method":"message.sendStream","params":{"message":{"messageId":"${msg_id}","role":"user","parts":[{"kind":"text","text":"${text}"}],"contextId":"${context_id}"}}}
+JSONEOF
+}
+
+# a2a_sse_request_with_context <local_port> <agent_package> <text> <context_id>
+# Sends an A2A SSE request with a contextId for multi-turn continuation. Echoes the response body.
+a2a_sse_request_with_context() {
+  local port="$1" pkg="$2" text="$3" context_id="$4"
+  local body
+  body=$(jsonrpc_send_stream_with_context "$text" "$context_id")
+  curl -sf --max-time 30 -N \
+    -X POST \
+    -H "Accept: text/event-stream" \
+    -H "Content-Type: application/json" \
+    -d "$body" \
+    "http://localhost:${port}/agents/${pkg}/default/a2a/sse" 2>/dev/null
+}
+
+# extract_context_id <sse_response>
+# Extracts the first contextId value found in SSE data events.
+extract_context_id() {
+  local sse_response="$1"
+  echo "$sse_response" | grep -o '"contextId":"[^"]*"' | head -1 | sed 's/"contextId":"//' | sed 's/"$//'
+}
+
 # ---------------------------------------------------------------------------
 # Assertion helpers
 # ---------------------------------------------------------------------------
