@@ -8,6 +8,10 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: claude-md-sync
+  cancel-in-progress: true
+
 jobs:
   sync-claude-md:
     name: Sync CLAUDE.md
@@ -16,6 +20,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
+
+      - name: Ensure required tools
+        run: |
+          command -v jq >/dev/null || (sudo apt-get update && sudo apt-get install -y jq)
+          command -v gh >/dev/null || (sudo apt-get update && sudo apt-get install -y gh)
 
       - name: Check skip conditions
         id: skip-check
@@ -120,13 +129,10 @@ jobs:
           } > /tmp/user_message.txt
 
           # --- Build API payload with jq (safe JSON construction) ---
-          SYSTEM_PROMPT=$(cat /tmp/system_prompt.txt)
-          USER_MESSAGE=$(cat /tmp/user_message.txt)
-
           jq -n \
             --arg model "anthropic/claude-sonnet-4" \
-            --arg system "$SYSTEM_PROMPT" \
-            --arg user "$USER_MESSAGE" \
+            --rawfile system /tmp/system_prompt.txt \
+            --rawfile user /tmp/user_message.txt \
             '{
               model: $model,
               temperature: 0,
