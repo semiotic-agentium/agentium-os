@@ -225,17 +225,24 @@ jobs:
               printf '</details>\n'
             } > /tmp/pr_body.txt
 
-            # Create PR (fall back to without label if labeling fails)
-            if ! gh pr create \
+            # Create PR — if GITHUB_TOKEN lacks PR-creation permission, log the
+            # branch URL so a human can open the PR manually.
+            if gh pr create \
               --title "docs: sync CLAUDE.md with ${MERGE_SUBJECT}" \
               --body-file /tmp/pr_body.txt \
               --label "claude-md-sync" \
               --base main \
-              --head "$BRANCH_NAME"; then
-              gh pr create \
-                --title "docs: sync CLAUDE.md with ${MERGE_SUBJECT}" \
-                --body-file /tmp/pr_body.txt \
-                --base main \
-                --head "$BRANCH_NAME"
+              --head "$BRANCH_NAME" 2>/tmp/gh_pr_err; then
+              echo "::notice::PR created successfully"
+            elif gh pr create \
+              --title "docs: sync CLAUDE.md with ${MERGE_SUBJECT}" \
+              --body-file /tmp/pr_body.txt \
+              --base main \
+              --head "$BRANCH_NAME" 2>/tmp/gh_pr_err; then
+              echo "::notice::PR created successfully (without label)"
+            else
+              REPO_URL=$(gh repo view --json url -q '.url')
+              GH_ERR=$(cat /tmp/gh_pr_err)
+              echo "::warning::Could not create PR: ${GH_ERR}. Branch pushed — open manually: ${REPO_URL}/compare/main...${BRANCH_NAME}?expand=1"
             fi
           fi
