@@ -77,7 +77,8 @@ const clientsByProvider = computed(() => {
   const keys = Object.keys(map);
   if (defaultName && keys.length > 1) {
     const defaultProvider = getClient(defaultName).provider;
-    const providerKey = typeof defaultProvider === "string" ? defaultProvider : String(defaultProvider);
+    const providerKey =
+      typeof defaultProvider === "string" ? defaultProvider : String(defaultProvider);
     const idx = keys.indexOf(providerKey);
     if (idx > 0) {
       keys.splice(idx, 1);
@@ -238,14 +239,17 @@ function validate(): string[] {
 }
 
 // Validate on every model update so errors are shown live.
-watch(local, () => {
-  validationErrors.value = validate();
-}, { deep: true });
+watch(
+  local,
+  () => {
+    validationErrors.value = validate();
+  },
+  { deep: true },
+);
 </script>
 
 <template>
   <div class="config-llm-form">
-
     <!-- ══ Clients section ══ -->
     <div class="config-routing-block">
       <div class="config-routing-block-header">
@@ -257,7 +261,11 @@ watch(local, () => {
       </div>
 
       <div class="config-agent-cards">
-        <div v-for="(names, provider) in clientsByProvider" :key="provider" class="config-clients-by-provider">
+        <div
+          v-for="(names, provider) in clientsByProvider"
+          :key="provider"
+          class="config-clients-by-provider"
+        >
           <h4 class="config-provider-group-title">{{ provider }}</h4>
           <div v-for="name in names" :key="name" class="config-client-card">
             <div class="config-client-header">
@@ -265,7 +273,13 @@ watch(local, () => {
                 :value="getClient(name).name"
                 class="config-input config-input-inline"
                 placeholder="Client name"
-                @change="(e) => setClient(name, { ...getClient(name), name: (e.target as HTMLInputElement).value.trim() })"
+                @change="
+                  (e) =>
+                    setClient(name, {
+                      ...getClient(name),
+                      name: (e.target as HTMLInputElement).value.trim(),
+                    })
+                "
               />
               <span v-if="name === defaultClientName" class="config-badge-default">Default</span>
               <button
@@ -274,14 +288,22 @@ watch(local, () => {
                 class="btn btn--ghost btn--sm"
                 title="Remove client"
                 @click="removeClient(name)"
-              >Remove</button>
+              >
+                Remove
+              </button>
             </div>
             <div class="config-client-fields">
               <label class="config-label">Provider</label>
               <select
                 :value="getClient(name).provider"
                 class="config-input config-select"
-                @change="(e) => setClient(name, { ...getClient(name), provider: (e.target as HTMLSelectElement).value })"
+                @change="
+                  (e) =>
+                    setClient(name, {
+                      ...getClient(name),
+                      provider: (e.target as HTMLSelectElement).value,
+                    })
+                "
               >
                 <option v-for="p in LLM_PROVIDERS" :key="p" :value="p">{{ p }}</option>
               </select>
@@ -317,8 +339,11 @@ watch(local, () => {
       <!-- System default -->
       <div class="config-override-system-row">
         <div class="config-override-system-label">
-          <span class="config-label" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;">System default</span>
-          <span class="config-hint" style="font-size:11px;">All agents inherit this unless overridden</span>
+          <span
+            class="config-label"
+            style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em"
+          >System default</span>
+          <span class="config-hint" style="font-size: 11px">All agents inherit this unless overridden</span>
         </div>
         <select v-model="defaultClientName" class="config-input config-select config-select-sm">
           <option v-for="name in clientNames" :key="name" :value="name">{{ name }}</option>
@@ -340,7 +365,9 @@ watch(local, () => {
           <div
             class="config-agent-override-header"
             :class="{ 'is-expandable': functionsForAgent(agent.agent_package).length > 0 }"
-            @click="functionsForAgent(agent.agent_package).length > 0 && toggleAgent(agent.agent_package)"
+            @click="
+              functionsForAgent(agent.agent_package).length > 0 && toggleAgent(agent.agent_package)
+            "
           >
             <span
               v-if="functionsForAgent(agent.agent_package).length > 0"
@@ -348,7 +375,7 @@ watch(local, () => {
               :class="{ 'is-open': isExpanded(agent.agent_package) }"
               aria-hidden="true"
             >▶</span>
-            <span v-else class="config-agent-expand-spacer" aria-hidden="true" />
+            <span v-else class="config-agent-expand-spacer" aria-hidden="true"></span>
 
             <span class="config-agent-override-name">{{ agent.agent_package }}</span>
 
@@ -364,7 +391,10 @@ watch(local, () => {
                 :value="getAgentOverride(agent.agent_package)"
                 class="config-input config-select config-select-sm"
                 :aria-label="'Default client for ' + agent.agent_package"
-                @change="(e) => setAgentOverride(agent.agent_package, (e.target as HTMLSelectElement).value)"
+                @change="
+                  (e) =>
+                    setAgentOverride(agent.agent_package, (e.target as HTMLSelectElement).value)
+                "
               >
                 <option value="">{{ local.default }} (system default)</option>
                 <option v-for="c in clientNames" :key="c" :value="c">{{ c }}</option>
@@ -384,9 +414,14 @@ watch(local, () => {
                   :value="getFnOverride(agent.agent_package, fn)"
                   class="config-input config-select config-select-sm"
                   :aria-label="fn + ' client override'"
-                  @change="(e) => setFnOverride(agent.agent_package, fn, (e.target as HTMLSelectElement).value)"
+                  @change="
+                    (e) =>
+                      setFnOverride(agent.agent_package, fn, (e.target as HTMLSelectElement).value)
+                  "
                 >
-                  <option value="">{{ agentEffectiveLabel(agent.agent_package) }} (inherited)</option>
+                  <option value="">
+                    {{ agentEffectiveLabel(agent.agent_package) }} (inherited)
+                  </option>
                   <option v-for="c in clientNames" :key="c" :value="c">{{ c }}</option>
                 </select>
               </div>
@@ -397,7 +432,9 @@ watch(local, () => {
     </div>
 
     <ul v-if="validationErrors.length > 0" class="config-validation-errors">
-      <li v-for="(err, errIdx) in validationErrors" :key="errIdx" class="config-error">{{ err }}</li>
+      <li v-for="(err, errIdx) in validationErrors" :key="errIdx" class="config-error">
+        {{ err }}
+      </li>
     </ul>
   </div>
 </template>

@@ -72,10 +72,7 @@ watch(
     const last = props.messages[props.messages.length - 1];
     if (!last) return [props.messages.length];
     const eventCount =
-      last.contentBlocks?.reduce(
-        (n, b) => n + (b.type === "tool" ? b.events.length : 0),
-        0,
-      ) ?? 0;
+      last.contentBlocks?.reduce((n, b) => n + (b.type === "tool" ? b.events.length : 0), 0) ?? 0;
     return [props.messages.length, last.text, eventCount];
   },
   async () => {
@@ -88,11 +85,31 @@ watch(
 
 <template>
   <div class="chat-window">
-    <WorkflowProgress v-if="workflowProgress && workflowProgress.phase !== 'idle' && workflowProgress.pipelineActive" :progress="workflowProgress" />
-    <div ref="messagesContainer" class="messages" role="log" aria-live="polite" @scroll="onMessagesScroll">
+    <WorkflowProgress
+      v-if="
+        workflowProgress && workflowProgress.phase !== 'idle' && workflowProgress.pipelineActive
+      "
+      :progress="workflowProgress"
+    />
+    <div
+      ref="messagesContainer"
+      class="messages"
+      role="log"
+      aria-live="polite"
+      @scroll="onMessagesScroll"
+    >
       <div v-if="messages.length === 0" class="empty-state">
         <!-- Chat icon -->
-        <svg class="empty-state-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <svg
+          class="empty-state-icon"
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
         <span class="empty-state-text">Send a message to start chatting</span>
@@ -100,32 +117,52 @@ watch(
       <MessageBubble v-for="msg in messages" :key="msg.id" :message="msg" />
     </div>
     <div v-if="isLoading" class="working-indicator" role="status" aria-live="polite">
-      <span class="working-dots" aria-hidden="true"><span /><span /><span /></span>
+      <span class="working-dots" aria-hidden="true"><span></span><span></span><span></span></span>
       <span class="working-text">Agent is responding…</span>
     </div>
     <form class="input-bar" @submit.prevent="handleSend">
       <div class="input-wrapper">
         <textarea
           ref="textarea"
-          data-testid="message-input"
           v-model="input"
+          data-testid="message-input"
           rows="1"
           :placeholder="inputPlaceholder"
           :disabled="disabled || isLoading"
           autofocus
           @keydown="handleKeydown"
           @input="autoGrow"
-        />
+        ></textarea>
         <span class="input-hint">Enter to send, Shift+Enter for newline</span>
       </div>
-      <button v-if="isLoading" type="button" class="stop-btn" data-testid="stop-button" @click="emit('cancel')">
+      <button
+        v-if="isLoading"
+        type="button"
+        class="stop-btn"
+        data-testid="stop-button"
+        @click="emit('cancel')"
+      >
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
           <rect x="5" y="5" width="14" height="14" rx="2" />
         </svg>
       </button>
-      <button v-else type="submit" class="send-btn" data-testid="send-button" :disabled="disabled || !input.trim()">
+      <button
+        v-else
+        type="submit"
+        class="send-btn"
+        data-testid="send-button"
+        :disabled="disabled || !input.trim()"
+      >
         <!-- Send arrow icon -->
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
           <line x1="22" y1="2" x2="11" y2="13" />
           <polygon points="22 2 15 22 11 13 2 9 22 2" />
         </svg>

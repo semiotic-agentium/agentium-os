@@ -26,7 +26,8 @@ function toolUseSummary(ev: ToolEvent): { name: string; detail: string } | null 
       }
     } else if (input && typeof input === "object" && !Array.isArray(input)) {
       const o = input as Record<string, unknown>;
-      if (typeof o.file_path === "string") detail = (o.file_path as string).split("/").pop() ?? o.file_path;
+      if (typeof o.file_path === "string")
+        detail = (o.file_path as string).split("/").pop() ?? o.file_path;
       else if (typeof o.description === "string") detail = o.description as string;
       else if (typeof o.command === "string") detail = o.command as string;
     }
@@ -36,7 +37,12 @@ function toolUseSummary(ev: ToolEvent): { name: string; detail: string } | null 
   return { name, detail };
 }
 
-type DisplayEvent = { kind: string; text: string; toolUse?: { name: string; detail: string }; count?: number };
+type DisplayEvent = {
+  kind: string;
+  text: string;
+  toolUse?: { name: string; detail: string };
+  count?: number;
+};
 
 function eventDisplay(ev: ToolEvent): DisplayEvent {
   if (ev.kind === "assistant_thinking" && typeof ev.thinking === "string") {
@@ -49,7 +55,11 @@ function eventDisplay(ev: ToolEvent): DisplayEvent {
     const summary = toolUseSummary(ev);
     return {
       kind: "tool_use",
-      text: summary ? (summary.detail ? `${summary.name}: ${summary.detail}` : summary.name) : (ev.name ?? "tool"),
+      text: summary
+        ? summary.detail
+          ? `${summary.name}: ${summary.detail}`
+          : summary.name
+        : (ev.name ?? "tool"),
       toolUse: summary ?? undefined,
     };
   }
@@ -121,25 +131,23 @@ watch(
       <span class="tool-name">{{ displayName }}</span>
       <span class="tool-status">{{ block.status }}</span>
     </div>
-    <div
-      v-if="block.events.length"
-      ref="bodyEl"
-      class="tool-card-body"
-      @scroll="onBodyScroll"
-    >
+    <div v-if="block.events.length" ref="bodyEl" class="tool-card-body" @scroll="onBodyScroll">
       <div
         v-for="(disp, i) in displayEvents"
         :key="i"
         class="tool-event"
         :data-kind="disp.kind"
-        :class="{ 'system-active': disp.kind === 'system' && i === displayEvents.length - 1 && block.status === 'Running' }"
+        :class="{
+          'system-active':
+            disp.kind === 'system' && i === displayEvents.length - 1 && block.status === 'Running',
+        }"
       >
         <template v-if="disp.toolUse">
           <div class="tool-use-name">{{ disp.toolUse.name }}</div>
           <div v-if="disp.toolUse.detail" class="tool-use-detail">{{ disp.toolUse.detail }}</div>
         </template>
         <template v-else-if="disp.kind === 'system'">
-          <span class="system-dot" aria-hidden="true" />
+          <span class="system-dot" aria-hidden="true"></span>
           <span class="system-label">{{ disp.text }}</span>
           <span v-if="disp.count && disp.count > 1" class="system-count">×{{ disp.count }}</span>
         </template>
@@ -263,7 +271,12 @@ watch(
 }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 </style>

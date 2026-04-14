@@ -56,7 +56,8 @@ export function useConfigApi() {
           error: {
             status: res.status,
             title: "Invalid Response",
-            detail: "Config service is not available. Is the runner serving this app with config enabled?",
+            detail:
+              "Config service is not available. Is the runner serving this app with config enabled?",
           },
         };
       }
@@ -68,7 +69,8 @@ export function useConfigApi() {
           error: {
             status: 0,
             title: "Invalid Response",
-            detail: "Config service is not available. Is the runner serving this app with config enabled?",
+            detail:
+              "Config service is not available. Is the runner serving this app with config enabled?",
           },
         };
       }
@@ -154,9 +156,7 @@ export function useConfigApi() {
     toolName: string,
   ): Promise<{ data: SecretRequestDto[] } | { error: ConfigApiError }> {
     try {
-      const res = await fetch(
-        `/config/${encodeURIComponent(toolName)}/secret-requests`,
-      );
+      const res = await fetch(`/config/${encodeURIComponent(toolName)}/secret-requests`);
       if (!res.ok) {
         return { error: await parseProblem(res) };
       }
@@ -220,9 +220,7 @@ export function useConfigApi() {
     }
   }
 
-  async function fetchStoreKeys(): Promise<
-    { data: string[] } | { error: ConfigApiError }
-  > {
+  async function fetchStoreKeys(): Promise<{ data: string[] } | { error: ConfigApiError }> {
     try {
       const res = await fetch("/config/secrets/store-keys");
       if (!res.ok) {
@@ -287,10 +285,33 @@ export function useConfigApi() {
     }
   }
 
+  async function fetchConfigVersions(
+    bundleName: string,
+  ): Promise<{ data: ConfigVersionDto[] } | { error: ConfigApiError }> {
+    loading.value = true;
+    try {
+      const res = await fetch(`/config/${encodeURIComponent(bundleName)}/versions`);
+      if (!res.ok) return { error: await parseProblem(res) };
+      const data = (await res.json()) as ConfigVersionDto[];
+      return { data };
+    } catch (e) {
+      return {
+        error: {
+          status: 0,
+          title: "Network Error",
+          detail: e instanceof Error ? e.message : String(e),
+        },
+      };
+    } finally {
+      loading.value = false;
+    }
+  }
+
   return {
     loading,
     fetchConfigList,
     fetchConfig,
+    fetchConfigVersions,
     putConfig,
     fetchSecretRequests,
     fetchSecretsOverview,

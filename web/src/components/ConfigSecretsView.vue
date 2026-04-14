@@ -14,15 +14,15 @@ const unlinkingKey = ref<string | null>(null);
 const linkError = ref<string | null>(null);
 
 const unsatisfiedCount = computed(() =>
-  secrets.value ? secrets.value.filter((e) => !e.satisfied).length : 0
+  secrets.value ? secrets.value.filter((e) => !e.satisfied).length : 0,
 );
 
 const unsatisfiedSecrets = computed(() =>
-  secrets.value ? secrets.value.filter((e) => !e.satisfied) : []
+  secrets.value ? secrets.value.filter((e) => !e.satisfied) : [],
 );
 
 const satisfiedSecrets = computed(() =>
-  secrets.value ? secrets.value.filter((e) => e.satisfied) : []
+  secrets.value ? secrets.value.filter((e) => e.satisfied) : [],
 );
 
 /** Store keys (from fnox/env) that can be used as link_from. Independent of linkage; M:N. */
@@ -77,7 +77,8 @@ async function onLink(targetName: string) {
   linkingKey.value = null;
   if ("error" in result) {
     if (result.error.status === 501) {
-      linkError.value = "Linking is not available: the runner has no runtime secret store. Start the runner with config so the UI can link secrets.";
+      linkError.value =
+        "Linking is not available: the runner has no runtime secret store. Start the runner with config so the UI can link secrets.";
     } else {
       linkError.value = result.error.detail ?? result.error.title;
     }
@@ -107,7 +108,10 @@ function secretHint(name: string): string {
 <template>
   <div class="config-secrets-view">
     <p class="config-secrets-intro">
-      Link each required secret (request) to a key in your secret store. The dropdown lists keys that have a value in your store (fnox/env)—independent of what is currently linked. Choose a store key to link; Unlink clears the session override. You can re-link anytime. Satisfied = the runner currently has a value for that request.
+      Link each required secret (request) to a key in your secret store. The dropdown lists keys
+      that have a value in your store (fnox/env)—independent of what is currently linked. Choose a
+      store key to link; Unlink clears the session override. You can re-link anytime. Satisfied =
+      the runner currently has a value for that request.
     </p>
 
     <div class="config-secrets-toolbar">
@@ -134,12 +138,20 @@ function secretHint(name: string): string {
 
     <template v-else>
       <div v-if="unsatisfiedCount > 0" class="config-secrets-unsatisfied-alert" role="alert">
-        <strong>{{ unsatisfiedCount }}</strong> missing — link each to a key from your secret store using the dropdown below.
+        <strong>{{ unsatisfiedCount }}</strong> missing — link each to a key from your secret store
+        using the dropdown below.
       </div>
 
       <div class="config-secrets-list">
-        <section v-if="unsatisfiedSecrets.length > 0" class="config-secrets-group" aria-labelledby="secrets-missing-heading">
-          <h3 id="secrets-missing-heading" class="config-secrets-group-title config-secrets-group-title-missing">
+        <section
+          v-if="unsatisfiedSecrets.length > 0"
+          class="config-secrets-group"
+          aria-labelledby="secrets-missing-heading"
+        >
+          <h3
+            id="secrets-missing-heading"
+            class="config-secrets-group-title config-secrets-group-title-missing"
+          >
             Missing ({{ unsatisfiedSecrets.length }})
           </h3>
           <article
@@ -149,18 +161,26 @@ function secretHint(name: string): string {
           >
             <div class="config-secret-header">
               <code class="config-secret-name">{{ entry.name }}</code>
-              <span v-if="entry.linked_to" class="config-secret-linked-to" :title="'Linked to key: ' + entry.linked_to">
+              <span
+                v-if="entry.linked_to"
+                class="config-secret-linked-to"
+                :title="'Linked to key: ' + entry.linked_to"
+              >
                 Linked to <code>{{ entry.linked_to }}</code>
               </span>
-              <span v-if="entry.secret_type" class="config-secret-type">{{ entry.secret_type }}</span>
+              <span v-if="entry.secret_type" class="config-secret-type">{{
+                entry.secret_type
+              }}</span>
               <span class="config-secret-status config-secret-status-missing" aria-label="Missing">
                 Missing
               </span>
             </div>
-            <p v-if="entry.justification" class="config-secret-justification">{{ entry.justification }}</p>
+            <p v-if="entry.justification" class="config-secret-justification">
+              {{ entry.justification }}
+            </p>
             <p v-if="entry.descriptor" class="config-secret-descriptor">{{ entry.descriptor }}</p>
 
-            <div class="config-secret-link-section" v-if="linkableKeyNames.length > 0">
+            <div v-if="linkableKeyNames.length > 0" class="config-secret-link-section">
               <label :for="'link-combo-' + entry.name" class="config-secret-link-label">Link to</label>
               <select
                 :id="'link-combo-' + entry.name"
@@ -183,7 +203,10 @@ function secretHint(name: string): string {
                 {{ linkingKey === entry.name ? "Linking…" : "Link" }}
               </button>
             </div>
-            <p v-else class="config-secret-no-keys">No keys available to link. Add at least one secret to your store (e.g. fnox.toml or .env), restart the runner, then Refresh so it appears in the dropdown.</p>
+            <p v-else class="config-secret-no-keys">
+              No keys available to link. Add at least one secret to your store (e.g. fnox.toml or
+              .env), restart the runner, then Refresh so it appears in the dropdown.
+            </p>
 
             <div class="config-secret-consumers">
               <div v-if="entry.tool_consumers.length > 0" class="config-secret-consumer-group">
@@ -208,29 +231,40 @@ function secretHint(name: string): string {
           </article>
         </section>
 
-        <section v-if="satisfiedSecrets.length > 0" class="config-secrets-group" aria-labelledby="secrets-satisfied-heading">
-          <h3 id="secrets-satisfied-heading" class="config-secrets-group-title config-secrets-group-title-ok">
+        <section
+          v-if="satisfiedSecrets.length > 0"
+          class="config-secrets-group"
+          aria-labelledby="secrets-satisfied-heading"
+        >
+          <h3
+            id="secrets-satisfied-heading"
+            class="config-secrets-group-title config-secrets-group-title-ok"
+          >
             Satisfied ({{ satisfiedSecrets.length }})
           </h3>
-          <article
-            v-for="entry in satisfiedSecrets"
-            :key="entry.name"
-            class="config-secret-card"
-          >
+          <article v-for="entry in satisfiedSecrets" :key="entry.name" class="config-secret-card">
             <div class="config-secret-header">
               <code class="config-secret-name">{{ entry.name }}</code>
-              <span v-if="entry.linked_to" class="config-secret-linked-to" :title="'Linked to key: ' + entry.linked_to">
+              <span
+                v-if="entry.linked_to"
+                class="config-secret-linked-to"
+                :title="'Linked to key: ' + entry.linked_to"
+              >
                 Linked to <code>{{ entry.linked_to }}</code>
               </span>
-              <span v-if="entry.secret_type" class="config-secret-type">{{ entry.secret_type }}</span>
+              <span v-if="entry.secret_type" class="config-secret-type">{{
+                entry.secret_type
+              }}</span>
               <span class="config-secret-status config-secret-status-ok" aria-label="Linked">
                 Satisfied
               </span>
             </div>
-            <p v-if="entry.justification" class="config-secret-justification">{{ entry.justification }}</p>
+            <p v-if="entry.justification" class="config-secret-justification">
+              {{ entry.justification }}
+            </p>
             <p v-if="entry.descriptor" class="config-secret-descriptor">{{ entry.descriptor }}</p>
 
-            <div class="config-secret-link-section" v-if="linkableKeyNames.length > 0">
+            <div v-if="linkableKeyNames.length > 0" class="config-secret-link-section">
               <label :for="'link-combo-sat-' + entry.name" class="config-secret-link-label">Link to</label>
               <select
                 :id="'link-combo-sat-' + entry.name"

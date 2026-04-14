@@ -78,7 +78,15 @@ const showGaps = ref(false);
     <!-- Agent avatar -->
     <div v-if="message.role === 'agent'" class="message-avatar">
       <div class="avatar-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
           <rect x="3" y="11" width="18" height="10" rx="2" />
           <circle cx="12" cy="5" r="2" />
           <path d="M12 7v4" />
@@ -95,14 +103,27 @@ const showGaps = ref(false);
             <div :class="['bubble-text', message.role === 'agent' ? 'bubble-markdown' : '']">
               <template v-if="block.text">
                 <!-- eslint-disable-next-line vue/no-v-html -->
-                <div v-if="message.role === 'agent'" v-html="renderMarkdown(block.text)" />
+                <div v-if="message.role === 'agent'" v-html="renderMarkdown(block.text)"></div>
                 <template v-else>{{ block.text }}</template>
-                <span v-if="showInlineStreamingDots && message.isStreaming && idx === message.contentBlocks!.length - 1" class="thinking-dots inline">
-                  <span /><span /><span />
+                <span
+                  v-if="
+                    showInlineStreamingDots &&
+                      message.isStreaming &&
+                      idx === message.contentBlocks!.length - 1
+                  "
+                  class="thinking-dots inline"
+                >
+                  <span></span><span></span><span></span>
                 </span>
               </template>
-              <template v-else-if="showInlineStreamingDots && message.isStreaming && idx === message.contentBlocks!.length - 1">
-                <span class="thinking-dots"><span /><span /><span /></span>
+              <template
+                v-else-if="
+                  showInlineStreamingDots &&
+                    message.isStreaming &&
+                    idx === message.contentBlocks!.length - 1
+                "
+              >
+                <span class="thinking-dots"><span></span><span></span><span></span></span>
               </template>
             </div>
           </div>
@@ -114,14 +135,16 @@ const showGaps = ref(false);
             :aria-label="`Structured data (${block.mediaType})`"
           >
             <div class="structured-data-label">{{ block.mediaType }}</div>
-            <pre class="structured-data-pre">{{ formatStructuredBody(block.mediaType, block.data) }}</pre>
+            <pre class="structured-data-pre">{{
+              formatStructuredBody(block.mediaType, block.data)
+            }}</pre>
           </div>
         </template>
         <div v-if="showInlineStreamingDots && message.isStreaming" class="streaming-dots-row">
-          <span class="thinking-dots"><span /><span /><span /></span>
+          <span class="thinking-dots"><span></span><span></span><span></span></span>
         </div>
         <div v-if="message.awaitingInput" class="awaiting-input-hint" role="status">
-          <span class="awaiting-input-dot" aria-hidden="true" />
+          <span class="awaiting-input-dot" aria-hidden="true"></span>
           Waiting for your response
         </div>
       </template>
@@ -130,16 +153,17 @@ const showGaps = ref(false);
         <div :class="['bubble', message.role]">
           <div :class="['bubble-text', message.role === 'agent' ? 'bubble-markdown' : '']">
             <template v-if="showInlineStreamingDots && message.isStreaming && !message.text">
-              <span class="thinking-dots">
-                <span /><span /><span />
-              </span>
+              <span class="thinking-dots"> <span></span><span></span><span></span> </span>
             </template>
             <template v-else-if="message.text">
               <!-- eslint-disable-next-line vue/no-v-html -->
-              <div v-if="message.role === 'agent'" v-html="renderMarkdown(message.text)" />
+              <div v-if="message.role === 'agent'" v-html="renderMarkdown(message.text)"></div>
               <template v-else>{{ message.text }}</template>
-              <span v-if="showInlineStreamingDots && message.isStreaming" class="thinking-dots inline">
-                <span /><span /><span />
+              <span
+                v-if="showInlineStreamingDots && message.isStreaming"
+                class="thinking-dots inline"
+              >
+                <span></span><span></span><span></span>
               </span>
             </template>
             <template v-else>
@@ -147,7 +171,7 @@ const showGaps = ref(false);
             </template>
           </div>
           <div v-if="message.awaitingInput" class="awaiting-input-hint" role="status">
-            <span class="awaiting-input-dot" aria-hidden="true" />
+            <span class="awaiting-input-dot" aria-hidden="true"></span>
             Waiting for your response
           </div>
         </div>
@@ -187,7 +211,9 @@ const showGaps = ref(false);
 
         <div v-if="coordinatorData.actionableGoals.length > 0" class="coordinator-collapsible">
           <button class="collapsible-toggle" @click="showGoals = !showGoals">
-            {{ showGoals ? '\u25BE' : '\u25B8' }} Goals ({{ coordinatorData.actionableGoals.length }})
+            {{ showGoals ? "\u25BE" : "\u25B8" }} Goals ({{
+              coordinatorData.actionableGoals.length
+            }})
           </button>
           <ul v-if="showGoals" class="coordinator-list">
             <li v-for="(g, i) in coordinatorData.actionableGoals" :key="i">
@@ -200,7 +226,7 @@ const showGaps = ref(false);
 
         <div v-if="coordinatorData.gaps.length > 0" class="coordinator-collapsible">
           <button class="collapsible-toggle" @click="showGaps = !showGaps">
-            {{ showGaps ? '\u25BE' : '\u25B8' }} Gaps ({{ coordinatorData.gaps.length }})
+            {{ showGaps ? "\u25BE" : "\u25B8" }} Gaps ({{ coordinatorData.gaps.length }})
           </button>
           <ul v-if="showGaps" class="coordinator-list">
             <li v-for="(gap, i) in coordinatorData.gaps" :key="i">{{ gap }}</li>
@@ -213,7 +239,10 @@ const showGaps = ref(false);
         </div>
       </div>
 
-      <TaskTimeline v-if="message.stateTransitions?.length" :transitions="message.stateTransitions" />
+      <TaskTimeline
+        v-if="message.stateTransitions?.length"
+        :transitions="message.stateTransitions"
+      />
       <span class="message-time">{{ formatTime(props.message.timestamp) }}</span>
     </div>
   </div>

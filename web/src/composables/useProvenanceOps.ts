@@ -255,8 +255,8 @@ export function useProvenanceOps() {
       const tick = refreshTick;
       const active = refreshOptions.activeRef?.value ?? false;
       const delay = active
-        ? refreshOptions.activeIntervalMs ?? 1500
-        : refreshOptions.idleIntervalMs ?? 6000;
+        ? (refreshOptions.activeIntervalMs ?? 1500)
+        : (refreshOptions.idleIntervalMs ?? 6000);
       refreshTimer = setTimeout(async () => {
         if (!refreshOptions || tick !== refreshTick) return;
         await refresh();

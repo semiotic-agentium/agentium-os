@@ -203,12 +203,7 @@ export interface ContextPlanningResponse {
 }
 
 // Episode streaming types
-export type EpisodeTerminalStatus =
-  | "completed"
-  | "failed"
-  | "canceled"
-  | "rejected"
-  | string; // Other(string)
+export type EpisodeTerminalStatus = "completed" | "failed" | "canceled" | "rejected" | string; // Other(string)
 
 export interface EpisodeDuration {
   active_ms: number;
@@ -236,7 +231,14 @@ export type EpisodeStepType =
 export type EpisodeContent =
   | { type: "text"; text: string }
   | { type: "tool_invocation"; tool_name: string; description: string }
-  | { type: "tool_output"; tool_name: string; summary: string; line_count: number; byte_count: number; lines: string[] }
+  | {
+      type: "tool_output";
+      tool_name: string;
+      summary: string;
+      line_count: number;
+      byte_count: number;
+      lines: string[];
+    }
   | { type: "plan_revision_ref"; summary: string }
   | { type: "status_change"; old: string; new: string; message?: string }
   | { type: "artifact"; name: string; media_type?: string; size_bytes?: number };

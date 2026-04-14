@@ -92,7 +92,9 @@ function findOrCreateToolBlock(msg: ChatMessage, toolName: string): ToolNotifica
 function isToolBlockForBase(b: ContentBlock, baseName: string): b is ToolNotificationBlock {
   return (
     b.type === "tool" &&
-    (b.toolName === baseName || b.toolName === `${baseName} 2` || b.toolName.startsWith(`${baseName} `))
+    (b.toolName === baseName ||
+      b.toolName === `${baseName} 2` ||
+      b.toolName.startsWith(`${baseName} `))
   );
 }
 
@@ -103,7 +105,9 @@ function getOrCreateToolBlockForAppend(
   _completion: ToolCompletion | undefined,
 ): ToolNotificationBlock {
   const blocks = msg.contentBlocks!;
-  const toolBlocks = blocks.filter((b): b is ToolNotificationBlock => isToolBlockForBase(b, baseName));
+  const toolBlocks = blocks.filter((b): b is ToolNotificationBlock =>
+    isToolBlockForBase(b, baseName),
+  );
   const lastTool = toolBlocks[toolBlocks.length - 1];
   const needNewBlock = lastTool?.completion === "DONE";
   if (needNewBlock) {
@@ -118,7 +122,10 @@ const PHASE_BLOCK_LABEL = "Status";
 
 /** Phase blocks have toolName "Status" or "Status 2", "Status 3", …. */
 function isPhaseBlock(b: ContentBlock): b is ToolNotificationBlock {
-  return b.type === "tool" && (b.toolName === PHASE_BLOCK_LABEL || b.toolName.startsWith(`${PHASE_BLOCK_LABEL} `));
+  return (
+    b.type === "tool" &&
+    (b.toolName === PHASE_BLOCK_LABEL || b.toolName.startsWith(`${PHASE_BLOCK_LABEL} `))
+  );
 }
 
 /** When the last block is text, start a new phase block below it; otherwise append to the current one. */
@@ -128,7 +135,10 @@ function getOrCreatePhaseBlockForAppend(msg: ChatMessage): ToolNotificationBlock
   const lastBlock = blocks[blocks.length - 1];
   const needNewBlock = lastBlock?.type === "text";
   if (needNewBlock) {
-    const name = phaseBlocks.length === 0 ? PHASE_BLOCK_LABEL : `${PHASE_BLOCK_LABEL} ${phaseBlocks.length + 1}`;
+    const name =
+      phaseBlocks.length === 0
+        ? PHASE_BLOCK_LABEL
+        : `${PHASE_BLOCK_LABEL} ${phaseBlocks.length + 1}`;
     return findOrCreateToolBlock(msg, name);
   }
   const lastPhase = phaseBlocks[phaseBlocks.length - 1];
@@ -172,7 +182,10 @@ function syncMsgTextFromTextBlocks(msg: ChatMessage): void {
 }
 
 /** Append structured part blocks (text + data) in order; keeps msg.text as joined text blocks only. */
-function pushStructuredBlocks(msg: ChatMessage, blocks: Array<TextContentBlock | DataContentBlock>): void {
+function pushStructuredBlocks(
+  msg: ChatMessage,
+  blocks: Array<TextContentBlock | DataContentBlock>,
+): void {
   const arr = msg.contentBlocks!;
   for (const b of blocks) {
     arr.push(b);
@@ -213,7 +226,11 @@ export function useA2aClient() {
   const contextMetrics = ref<ContextMetricsResponse | null>(null);
 
   // Workflow progress tracker (parsed from coordinator SSE progress messages)
-  const workflowProgress = ref<WorkflowProgressState>({ phase: "idle", nodes: [], completedNodes: [] });
+  const workflowProgress = ref<WorkflowProgressState>({
+    phase: "idle",
+    nodes: [],
+    completedNodes: [],
+  });
 
   // Stream cancellation
   let _abortController: AbortController | null = null;
@@ -269,7 +286,12 @@ export function useA2aClient() {
 
   function updateWorkflowPhase(text: string): void {
     if (/discovering available/i.test(text)) {
-      workflowProgress.value = { phase: "discovery", nodes: [], completedNodes: workflowProgress.value.completedNodes, pipelineActive: true };
+      workflowProgress.value = {
+        phase: "discovery",
+        nodes: [],
+        completedNodes: workflowProgress.value.completedNodes,
+        pipelineActive: true,
+      };
     } else if (/planning workflow/i.test(text)) {
       const iterMatch = text.match(/iteration\s+(\d+)/i);
       workflowProgress.value = {
@@ -282,19 +304,28 @@ export function useA2aClient() {
     } else if (/executing\s+\d+\s+workflow\s+node/i.test(text)) {
       const nodeListMatch = text.match(/node\(s\):\s*(.+)/i);
       const nodeNames = nodeListMatch
-        ? nodeListMatch[1]!.split(",").map((n) => n.trim()).filter((n) => n.length > 0)
+        ? nodeListMatch[1]!
+            .split(",")
+            .map((n) => n.trim())
+            .filter((n) => n.length > 0)
         : [];
       const prev = workflowProgress.value;
       workflowProgress.value = {
         phase: "execution",
         nodes: nodeNames.map((name) => ({
           name,
-          status: prev.completedNodes.includes(name) ? "completed" as const : "running" as const,
+          status: prev.completedNodes.includes(name)
+            ? ("completed" as const)
+            : ("running" as const),
         })),
         completedNodes: prev.completedNodes,
       };
     } else if (/synthesiz/i.test(text) || /compiling final/i.test(text)) {
-      workflowProgress.value = { phase: "synthesis", nodes: [], completedNodes: workflowProgress.value.completedNodes };
+      workflowProgress.value = {
+        phase: "synthesis",
+        nodes: [],
+        completedNodes: workflowProgress.value.completedNodes,
+      };
     }
   }
 
@@ -458,8 +489,15 @@ export function useA2aClient() {
     if (!chunk) return;
 
     // Track multi-turn state (task and statusUpdate both carry contextId/taskId)
-    const ctx = chunk.task?.contextId ?? chunk.statusUpdate?.status_update?.contextId ?? chunk.statusUpdate?.statusUpdate?.contextId;
-    const tid = chunk.task?.id ?? chunk.statusUpdate?.taskId ?? chunk.statusUpdate?.status_update?.taskId ?? chunk.statusUpdate?.statusUpdate?.taskId;
+    const ctx =
+      chunk.task?.contextId ??
+      chunk.statusUpdate?.status_update?.contextId ??
+      chunk.statusUpdate?.statusUpdate?.contextId;
+    const tid =
+      chunk.task?.id ??
+      chunk.statusUpdate?.taskId ??
+      chunk.statusUpdate?.status_update?.taskId ??
+      chunk.statusUpdate?.statusUpdate?.taskId;
     if (ctx) _contextId.value = ctx;
     if (tid) _taskId.value = tid;
 
@@ -468,7 +506,12 @@ export function useA2aClient() {
     // - Tool: toolStreamChunk true, has tool payload — toolName and/or events and/or completion. One block per tool invocation (new block when previous for same tool is DONE).
     // Backend may send tool data at chunk top level (chunk.toolName/events/completion) or inside chunk.task.
     const toolChunk = result.toolStreamChunk
-      ? (chunk as ChunkPayload & { toolName?: string; events?: ToolEvent[]; completion?: ToolCompletion; task?: { toolName?: string; events?: ToolEvent[]; completion?: ToolCompletion } })
+      ? (chunk as ChunkPayload & {
+          toolName?: string;
+          events?: ToolEvent[];
+          completion?: ToolCompletion;
+          task?: { toolName?: string; events?: ToolEvent[]; completion?: ToolCompletion };
+        })
       : null;
     const toolName = toolChunk?.toolName ?? toolChunk?.task?.toolName;
     const toolEvents =
@@ -478,7 +521,7 @@ export function useA2aClient() {
       typeof (toolChunk as { chunk?: unknown }).chunk === "object" &&
       (toolChunk as { chunk?: { events?: ToolEvent[] } }).chunk &&
       "events" in (toolChunk as { chunk: object }).chunk
-        ? ((toolChunk as { chunk: { events?: ToolEvent[] } }).chunk.events)
+        ? (toolChunk as { chunk: { events?: ToolEvent[] } }).chunk.events
         : undefined) ??
       [];
     const toolCompletion =
@@ -488,7 +531,7 @@ export function useA2aClient() {
       typeof (toolChunk as { chunk?: unknown }).chunk === "object" &&
       (toolChunk as { chunk?: object }).chunk &&
       "completion" in (toolChunk as { chunk: object }).chunk
-        ? ((toolChunk as { chunk: { completion?: ToolCompletion } }).chunk.completion)
+        ? (toolChunk as { chunk: { completion?: ToolCompletion } }).chunk.completion
         : undefined);
     if (toolChunk && (!!toolName || toolEvents.length > 0 || !!toolCompletion)) {
       const baseName = toolName ?? "tool";
@@ -511,7 +554,9 @@ export function useA2aClient() {
       const statusText =
         extractTextFromStatusUpdate(chunk) ??
         extractText(chunk.statusUpdate?.status?.message) ??
-        extractText((chunk.statusUpdate?.statusUpdate ?? chunk.statusUpdate?.status_update)?.message);
+        extractText(
+          (chunk.statusUpdate?.statusUpdate ?? chunk.statusUpdate?.status_update)?.message,
+        );
       const trimmed = statusText?.trim();
       // Skip "Invoking tool: X" in the phase block — the tool has its own block; keeps order correct (phase after tool)
       if (trimmed && !trimmed.match(/^Invoking tool: /)) {
@@ -531,7 +576,10 @@ export function useA2aClient() {
           appliedStructured = true;
           return;
         }
-        if (chunk.task?.status?.message && tryApplyStructuredMessage(msg, chunk.task.status.message)) {
+        if (
+          chunk.task?.status?.message &&
+          tryApplyStructuredMessage(msg, chunk.task.status.message)
+        ) {
           appliedStructured = true;
         }
       });
@@ -596,8 +644,7 @@ export function useA2aClient() {
         msg.isStreaming = false;
         msg.awaitingInput = true;
         const prompt =
-          extractTextFromStatusUpdate(chunk) ??
-          extractText(chunk.statusUpdate?.status?.message);
+          extractTextFromStatusUpdate(chunk) ?? extractText(chunk.statusUpdate?.status?.message);
         if (prompt?.trim()) msg.inputRequiredPrompt = prompt.trim();
       });
     }
@@ -683,7 +730,9 @@ export function useA2aClient() {
     if (streamingMsg) {
       streamingMsg.isStreaming = false;
       if (streamingMsg.contentBlocks?.length) {
-        const lastText = [...streamingMsg.contentBlocks].reverse().find((b) => b.type === "text") as { type: "text"; text: string } | undefined;
+        const lastText = [...streamingMsg.contentBlocks]
+          .reverse()
+          .find((b) => b.type === "text") as { type: "text"; text: string } | undefined;
         if (lastText) {
           lastText.text = `${lastText.text ?? ""} _(cancelled)_`;
         } else {

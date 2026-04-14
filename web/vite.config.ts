@@ -33,6 +33,9 @@ export default defineConfig({
       "/contexts": runnerProxy(),
       "/provenance": runnerProxy(),
       "/tasks": runnerProxy(),
+      "/deploy": runnerProxy(),
+      "/undeploy": runnerProxy(),
+      "/deployments": runnerProxy(),
     },
   },
   build: {

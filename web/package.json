@@ -6,7 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write 'src/**/*.{ts,vue,css}'",
+    "format:check": "prettier --check 'src/**/*.{ts,vue,css}'",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "dompurify": "^3.3.1",
@@ -15,11 +21,22 @@
     "vue": "^3.5.25"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.10.1",
+    "@typescript-eslint/eslint-plugin": "^8.58.2",
+    "@typescript-eslint/parser": "^8.58.2",
     "@vitejs/plugin-vue": "^6.0.2",
+    "@vue/test-utils": "^2.4.6",
     "@vue/tsconfig": "^0.8.1",
+    "eslint": "^10.2.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-vue": "^10.8.0",
+    "jsdom": "^29.0.2",
+    "prettier": "^3.8.2",
     "typescript": "~5.9.3",
+    "typescript-eslint": "^8.58.2",
     "vite": "^7.3.1",
+    "vitest": "^4.1.4",
     "vue-tsc": "^3.1.5"
   }
 }
