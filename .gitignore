@@ -57,6 +57,10 @@ crates/baml-agent-runner/.runner-state/
 models/fastembed/**/blobs/*.lock
 models/fastembed/**/blobs/*.part
 
+# K8s secrets (templates in *.example files; real secrets must not be committed)
+deploy/k8s/secret-fnox.yaml
+deploy/k8s/surrealdb-credentials.yaml
+
 # Nix
 .direnv/
 result

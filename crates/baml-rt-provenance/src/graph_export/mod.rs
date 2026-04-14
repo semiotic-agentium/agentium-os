@@ -691,6 +691,10 @@ fn derive_display_name(label: &str, props: &HashMap<String, serde_json::Value>) 
             let agent_type = prop_str(a2a::AGENT_TYPE).unwrap_or_default();
             format!("🚀 Boot {agent_type}")
         }
+        Some(GraphNodeLabel::AgentStop) => {
+            let reason = prop_str("a2a_stop_reason").unwrap_or_default();
+            format!("🛑 Stop {reason}")
+        }
         Some(GraphNodeLabel::AgentArchive) => {
             let path = prop_str(a2a::ARCHIVE_PATH).unwrap_or_default();
             format!("📦 Archive {path}")

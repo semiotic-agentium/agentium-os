@@ -18,6 +18,8 @@ use baml_rt_repository::{
     package::source_bundle_from_tar_gz,
 };
 use common::{e2e_secs_ci_or_local, e2e_serial_gate};
+
+const TEST_RUNNER_TOKEN: &str = "test-runner-token-callback";
 use reqwest::StatusCode;
 use serde_json::Value;
 use test_support::common::{
@@ -91,6 +93,8 @@ impl RunningRunnerProcess {
             .arg(&repository_dir)
             .arg("--state-dir")
             .arg(&state_dir)
+            .arg("--runner-token")
+            .arg(TEST_RUNNER_TOKEN)
             .arg("--event-poll-interval-secs")
             .arg(event_poll_interval_secs.to_string())
             .env_remove("BAML_FNOX_CONFIG")
@@ -178,6 +182,7 @@ async fn publish_and_deploy_fixture(client: &reqwest::Client, base_url: &str, ta
     let deploy_url = format!("{base_url}/deploy");
     let deploy_resp = client
         .post(&deploy_url)
+        .header("X-Runner-Token", TEST_RUNNER_TOKEN)
         .json(&serde_json::json!({ "hash": hash }))
         .send()
         .await

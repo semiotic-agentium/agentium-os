@@ -640,6 +640,7 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
             ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates => "LlmCall",
             ProvenanceOpsResource::ToolCalls => "ToolCall",
             ProvenanceOpsResource::Messages => "Message",
+            ProvenanceOpsResource::LifecycleEvents => "AgentStop",
         };
 
         // Build WHERE clause with bind params only.
@@ -777,11 +778,15 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                     Value::Number(timestamp_ms.into()),
                 );
 
-                // Outcome / status: messages are always Completed/Success (
-                // query_message_rows unconditionally sets these). LLM/tool calls derive from
-                // the a2a_activity_outcome property.
-                let is_message = matches!(request.resource, ProvenanceOpsResource::Messages);
-                let (activity_outcome, activity_status) = if is_message {
+                // Outcome / status: messages and lifecycle events are fire-and-forget
+                // markers with no success/fail outcome — mark them Success/Completed so
+                // the outcome-segment filter below lets them through. LLM/tool calls
+                // derive from the a2a_activity_outcome property.
+                let is_outcome_synthetic = matches!(
+                    request.resource,
+                    ProvenanceOpsResource::Messages | ProvenanceOpsResource::LifecycleEvents
+                );
+                let (activity_outcome, activity_status) = if is_outcome_synthetic {
                     ("Success".to_string(), "Completed".to_string())
                 } else {
                     let outcome = out
@@ -817,6 +822,7 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                         }
                         ProvenanceOpsResource::ToolCalls => "tool_call".to_string(),
                         ProvenanceOpsResource::Messages => "message_turn".to_string(),
+                        ProvenanceOpsResource::LifecycleEvents => "lifecycle_event".to_string(),
                     }),
                 );
                 Some(out)
@@ -1205,6 +1211,10 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                     if let Some(v) = row.get("a2a_direction").cloned() {
                         row.insert("direction".to_string(), v);
                     }
+                }
+                ProvenanceOpsResource::LifecycleEvents => {
+                    // Lifecycle events (AgentStop) have minimal enrichment — just
+                    // surface the stop_reason so callers can assert on it.
                 }
             }
         }

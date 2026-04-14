@@ -103,6 +103,23 @@ pub struct UndeployResponseDto {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct MigrateRequestDto {
+    /// Content hash of the agent to migrate.
+    pub hash: String,
+    /// HTTP endpoint of the target runner (e.g. http://runner-1.runner.agentium.svc:18080).
+    pub target_runner_endpoint: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct MigrateResponseDto {
+    pub migrated: bool,
+    /// True when the remote deploy succeeded but the local undeploy failed.
+    /// The agent may be running on both runners until the source is cleaned up.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub source_undeploy_failed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct DeploymentRecordDto {
     pub content_hash: String,
     pub agent_name: String,

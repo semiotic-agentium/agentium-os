@@ -8,6 +8,7 @@
 mod agent_package;
 mod builder;
 mod callback_delivery;
+mod cluster;
 mod config;
 mod deployment_state;
 mod package;
@@ -18,7 +19,10 @@ mod stdio;
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -29,7 +33,6 @@ use baml_rt_llm_config::{
     apply_secret_links_state,
 };
 use baml_rt_observability::tracing_setup;
-use baml_rt_provenance::ToolIndexConfig;
 use baml_rt_repository::{
     BlobStore, LineageStore, MetadataStore, RepositoryService, SearchStore, SurrealStore,
 };
@@ -60,8 +63,52 @@ use services::{
 use stdio::unix_timestamp_secs;
 use tracing::{error, info, warn};
 
+/// Resolve `--claude-workspaces-base` to a canonical path before the async
+/// runtime starts, then pass the resolved value through config (no env vars).
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    let claude_workspaces_base = cli.claude_workspaces_base.as_ref().map(|base| {
+        let absolute = if base.is_absolute() {
+            base.clone()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(base)
+        };
+        if let Err(e) = std::fs::create_dir_all(&absolute) {
+            let path = absolute.display();
+            eprintln!("Error: Cannot create Claude workspaces base {path}: {e}");
+            std::process::exit(1);
+        }
+        std::fs::canonicalize(&absolute).unwrap_or(absolute)
+    });
+    tokio_main(cli, claude_workspaces_base)
+}
+
+/// Reject cluster endpoints that are not routable from other pods.
+/// Called during cluster setup — a poisoned placement table is worse than
+/// refusing to start.
+fn validate_cluster_endpoint(endpoint: &str) -> anyhow::Result<()> {
+    if let Ok(url) = url::Url::parse(endpoint) {
+        match url.host_str() {
+            Some("0.0.0.0") => anyhow::bail!(
+                "cluster endpoint {endpoint} uses 0.0.0.0 which is not routable from other pods; \
+                 set RUNNER_ENDPOINT (or --runner-endpoint) to a pod-specific address \
+                 (e.g. http://$(POD_NAME).runner.agentium.svc:18080)"
+            ),
+            Some("127.0.0.1") | Some("localhost") => anyhow::bail!(
+                "cluster endpoint {endpoint} uses a loopback address which is not routable from \
+                 other pods; set RUNNER_ENDPOINT (or --runner-endpoint) to a pod-specific address \
+                 (e.g. http://$(POD_NAME).runner.agentium.svc:18080)"
+            ),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow::Result<()> {
     // Load dotenv before tracing/OTEL bootstrap so OTEL_* from .env are visible
     // to `init_tracing()` and exporter wiring.
     let dotenv_result = dotenvy::dotenv();
@@ -73,41 +120,11 @@ async fn main() -> anyhow::Result<()> {
 
     info!("BAML Agent Runner starting");
 
-    let config = Cli::parse()
-        .into_config()
+    let config = cli
+        .into_config(claude_workspaces_base)
         .context("Failed to parse arguments")?;
-
     if let Some(ref base) = config.claude_workspaces_base {
-        let absolute = if base.is_absolute() {
-            base.clone()
-        } else {
-            std::env::current_dir()
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "current_dir failed, using .");
-                    PathBuf::from(".")
-                })
-                .join(base)
-        };
-        if let Err(e) = std::fs::create_dir_all(&absolute) {
-            eprintln!(
-                "Error: Cannot create Claude workspaces base {}: {}",
-                absolute.display(),
-                e
-            );
-            std::process::exit(1);
-        }
-        let canonical = std::fs::canonicalize(&absolute).unwrap_or_else(|e| {
-            tracing::warn!(path = %absolute.display(), error = %e, "canonicalize failed");
-            absolute
-        });
-        // SAFETY: single-threaded at this point; no other thread reads this var.
-        unsafe {
-            std::env::set_var(
-                "BAML_CLAUDE_WORKSPACES_BASE",
-                canonical.to_string_lossy().to_string(),
-            );
-        }
-        info!(base = %canonical.display(), "Claude workspaces base set from --claude-workspaces-base");
+        info!(base = %base.display(), "Claude workspaces base set from --claude-workspaces-base");
     }
 
     match &config.provenance_db {
@@ -117,6 +134,9 @@ async fn main() -> anyhow::Result<()> {
         ProvenanceDb::File(path) => {
             info!(path = %path.display(), "Provenance backend: SurrealKV directory")
         }
+        ProvenanceDb::Remote { endpoint, .. } => {
+            info!(endpoint = %endpoint, "Provenance backend: remote SurrealDB")
+        }
     }
 
     let config_service: Arc<dyn baml_rt_config::ConfigService> = match &config.provenance_db {
@@ -125,6 +145,17 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("Failed to create in-memory config store")?,
         ),
+        ProvenanceDb::Remote { .. } => {
+            tracing::warn!(
+                "remote SurrealDB provenance store but config_service is in-memory; \
+                 LLM configurations will not persist across pod restarts"
+            );
+            Arc::new(
+                baml_rt_config::SurrealConfigStore::in_memory()
+                    .await
+                    .context("Failed to create in-memory config store")?,
+            )
+        }
         ProvenanceDb::File(path) => Arc::new(
             baml_rt_config::SurrealConfigStore::open(
                 path.parent()
@@ -154,14 +185,12 @@ async fn main() -> anyhow::Result<()> {
         };
     apply_secret_links_state(&link_state, overlay.as_ref(), fnox_resolver.as_ref());
 
-    let provenance_config = provenance_config_builder(&config.provenance_db)
-        .await
-        .context("Failed to initialize provenance storage")?
-        .with_config_service(config_service)
-        .with_llm_secret_resolver(overlay.clone())
-        .with_runtime_secret_store(Some(overlay))
-        .build()
-        .context("Failed to build provenance config")?;
+    let provenance_config =
+        provenance_config_builder(&config.provenance_db, config_service, overlay.clone())
+            .await
+            .context("Failed to initialize provenance storage")?
+            .with_runtime_secret_store(Some(overlay))
+            .build();
 
     std::fs::create_dir_all(&config.state_dir).with_context(|| {
         format!(
@@ -224,18 +253,83 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let access_allowlist = parse_access_allowlist();
-    let tool_index = match &config.provenance_db {
-        ProvenanceDb::InMemory => Some(ToolIndexConfig::in_memory()),
-        ProvenanceDb::File(path) => Some(ToolIndexConfig::new(path)),
-    };
     let builder = builder::RunnerBuilder::<builder::Loading>::new(
         provenance_config,
         deployment_state,
-        tool_index,
         access_allowlist,
         config.stream_idle_secs,
+        config.claude_workspaces_base,
         config.repository_url.clone(),
-    );
+    )
+    .map_err(|e| anyhow::anyhow!("runner builder init: {e}"))?;
+
+    // --- Cluster registration (remote SurrealDB mode only) ---
+    // Constructed before the restore loop so that deploy_by_hash records
+    // cluster placements for restored agents (otherwise they are invisible
+    // to the cluster after a pod restart).
+    let cluster_mgr = if let ProvenanceDb::Remote {
+        ref endpoint,
+        ref username,
+        ref password,
+    } = config.provenance_db
+    {
+        let cluster_db = surrealdb::engine::any::connect(endpoint)
+            .await
+            .context("cluster: failed to connect to shared SurrealDB")?;
+        match (username, password) {
+            (Some(user), Some(pass)) => {
+                cluster_db
+                    .signin(surrealdb::opt::auth::Root {
+                        username: user.clone(),
+                        password: pass.clone(),
+                    })
+                    .await
+                    .context("cluster: failed to sign in to shared SurrealDB")?;
+            }
+            (None, None) => {}
+            _ => {
+                anyhow::bail!(
+                    "partial cluster credentials: both --surreal-username and --surreal-password are required"
+                );
+            }
+        }
+        cluster_db
+            .use_ns("cluster")
+            .use_db("registry")
+            .await
+            .context("cluster: failed to select namespace")?;
+
+        if config.serve_http.is_none() {
+            tracing::warn!(
+                "cluster mode active (--surreal-endpoint set) but --serve-http not specified; \
+                 runner will register as http://127.0.0.1:18080 which is unreachable from other pods"
+            );
+        }
+        let serve_addr = config.serve_http.as_deref().unwrap_or("127.0.0.1:18080");
+        let runner_http_endpoint = config
+            .runner_endpoint
+            .clone()
+            .unwrap_or_else(|| format!("http://{serve_addr}"));
+        validate_cluster_endpoint(&runner_http_endpoint)?;
+        let identity = cluster::RunnerIdentity::new(runner_http_endpoint);
+        let cluster_db = std::sync::Arc::new(cluster_db);
+        let mgr = Arc::new(
+            cluster::ClusterManager::new(cluster_db.clone(), identity, config.placement_ttl_ms)
+                .await
+                .map_err(|e| anyhow::anyhow!("cluster manager init: {e}"))?,
+        );
+
+        // Wire cluster resolver into the A2A router for cross-pod routing.
+        let resolver = Arc::new(mgr.resolver());
+        builder.runner.internal_a2a_router().set_cluster(resolver);
+        if builder.runner.cluster_manager.set(mgr.clone()).is_err() {
+            tracing::warn!("cluster manager already set on runner; ignoring duplicate");
+        }
+        info!("cluster mode enabled: runner registered before deployment restore");
+        Some(mgr)
+    } else {
+        None
+    };
 
     for mut deployment in existing_deployments {
         match builder
@@ -280,6 +374,18 @@ async fn main() -> anyhow::Result<()> {
     install_callback_delivery_gate(Arc::new(RunnerCallbackDeliveryGate {
         runner: ready.runner(),
     }));
+
+    // Start cluster heartbeat after restore is complete.
+    let _cluster_heartbeat = if let Some(ref mgr) = cluster_mgr {
+        let (_heartbeat_stop, _heartbeat_handle) = mgr.spawn_heartbeat();
+        info!("cluster heartbeat started");
+        Some((_heartbeat_stop, _heartbeat_handle))
+    } else {
+        None
+    };
+
+    // Readyz probe: starts false, flipped to true once all init phases are done.
+    let readyz = Arc::new(AtomicBool::new(false));
 
     if let Some((agent_name, function_name, json_args)) = config.invoke {
         let args_value: Value =
@@ -373,6 +479,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // All init phases complete (restore, cluster, event producers); signal readyz.
+    readyz.store(true, Ordering::Release);
+    tracing::info!("readyz probe: ready");
+
     let http_handle = if let Some(bind) = config.serve_http.clone() {
         let runner = ready.runner();
         let prov_config = runner.provenance_config();
@@ -401,6 +511,13 @@ async fn main() -> anyhow::Result<()> {
             "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a/sse, GET /config, GET /contexts/.../mermaid, GET /tasks/.../mermaid, GET /contexts/.../metrics, GET /provenance/..., GET /openapi.json)"
         );
         let runtime_secret_store = prov_config.runtime_secret_store();
+        let readyz_for_http = readyz.clone();
+        let runner_token = config.runner_token.clone();
+        let cluster_mode = if cluster_mgr.is_some() {
+            baml_rt_api::ClusterMode::Cluster
+        } else {
+            baml_rt_api::ClusterMode::Standalone
+        };
         Some(tokio::spawn(async move {
             baml_rt_api::serve_with_services_and_deploy(
                 registry_impl,
@@ -417,6 +534,9 @@ async fn main() -> anyhow::Result<()> {
                 config_service,
                 secret_resolver,
                 runtime_secret_store,
+                readyz_for_http,
+                runner_token,
+                cluster_mode,
                 web_dir.as_deref(),
             )
             .await
@@ -601,7 +721,7 @@ mod tests {
 
     use crate::{
         agent_package::BootedAgent,
-        config::{ProvenanceConfig, ProvenanceDb, provenance_config_builder},
+        config::{ProvenanceConfig, ProvenanceConfigBuilder},
         deployment_state,
         routing::{RunnerRegistry, ScopedInternalA2aRouter, extract_internal_a2a_target},
         runner::AgentRunner,
@@ -618,13 +738,12 @@ mod tests {
                 .await
                 .expect("in-memory config"),
         );
-        provenance_config_builder(&ProvenanceDb::InMemory)
-            .await
-            .expect("provenance builder")
-            .with_config_service(config_service)
-            .with_llm_secret_resolver(Arc::new(EmptySecretResolver))
+        let store = SurrealStoreBuilder::in_memory_isolated()
             .build()
-            .expect("provenance config")
+            .await
+            .expect("isolated in-memory store");
+        ProvenanceConfigBuilder::new(store, None, config_service, Arc::new(EmptySecretResolver))
+            .build()
     }
 
     async fn test_deployment_state() -> (
@@ -680,8 +799,8 @@ globalThis.onChatMessage = async function(_message) {
             agent,
             manifest,
             baml_functions: vec![],
-            content_hash: None,
-            repository_version: None,
+            provenance: crate::agent_package::DeploymentProvenance::Ephemeral,
+            lifecycle: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
         }
     }
 
@@ -689,14 +808,17 @@ globalThis.onChatMessage = async function(_message) {
         prov: ProvenanceConfig,
         state: Arc<deployment_state::DeploymentStateStore>,
     ) -> Arc<AgentRunner> {
-        let runner = Arc::new(AgentRunner::new(
-            prov,
-            state,
-            None,
-            baml_rt_tools::ToolAccessPolicy::default(),
-            None,
-            "http://127.0.0.1:18080/repository".to_string(),
-        ));
+        let runner = Arc::new(
+            AgentRunner::new(
+                prov,
+                state,
+                baml_rt_tools::ToolAccessPolicy::default(),
+                None,
+                None,
+                "http://127.0.0.1:18080/repository".to_string(),
+            )
+            .expect("test runner construction"),
+        );
         runner.internal_a2a_router().set_runner(Arc::clone(&runner));
         runner
     }
@@ -863,6 +985,208 @@ globalThis.onChatMessage = async function(_message) {
         assert!(!chunks.is_empty());
     }
 
+    // ── drain gate ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_draining_agent_rejects_a2a_request() {
+        use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey};
+        let prov = test_provenance_config().await;
+        let (_dir, state) = test_deployment_state().await;
+        let runner = make_runner(prov, state);
+
+        let agent = build_test_agent().await;
+        let booted = make_booted(agent.clone(), "drain-test");
+        let pkg = AgentPackageName::parse("drain-test").unwrap();
+        let route_key = AgentRouteKey::new(pkg, AgentInstanceId::default());
+        {
+            let mut routed = runner.routed_agents.write().expect("RwLock poison");
+            routed.insert(route_key.clone(), agent);
+            let mut agents = runner.agents.write().expect("RwLock poison");
+            agents.insert("drain-test".to_string(), booted.clone());
+        }
+
+        // Set draining — subsequent dispatch must be rejected.
+        booted.set_draining();
+
+        let request_val = json!({
+            "jsonrpc": "2.0",
+            "method": "message/send",
+            "id": "corr-drain-1",
+            "params": {
+                "message": {
+                    "messageId": "msg-1",
+                    "role": "user",
+                    "parts": [{"text": "hi"}]
+                }
+            }
+        });
+        let wire = baml_rt_core::A2aWireRequest::from(request_val);
+        let result = runner.handle_a2a_by_key(&route_key, wire).await;
+        assert!(result.is_err(), "draining agent should reject requests");
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            msg.contains("draining"),
+            "error should mention draining, got: {msg}"
+        );
+    }
+
+    // ── cluster resolver fallback ────────────────────────────────────────────
+
+    /// Mock resolver: returns a fixed result for any key.
+    struct MockResolver(baml_rt_core::Result<Option<String>>);
+
+    #[async_trait::async_trait]
+    impl crate::routing::ClusterEndpointResolver for MockResolver {
+        async fn resolve(
+            &self,
+            _key: &baml_rt_core::AgentRouteKey,
+        ) -> baml_rt_core::Result<Option<String>> {
+            match &self.0 {
+                Ok(v) => Ok(v.clone()),
+                Err(e) => Err(baml_rt_core::BamlRtError::Io(std::io::Error::other(
+                    e.to_string(),
+                ))),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_cluster_resolver_none_returns_not_found() {
+        use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey};
+        let prov = test_provenance_config().await;
+        let (_dir, state) = test_deployment_state().await;
+        let runner = make_runner(prov, state);
+
+        // Wire a mock resolver that returns None (agent not in cluster).
+        let resolver: Arc<dyn crate::routing::ClusterEndpointResolver> =
+            Arc::new(MockResolver(Ok(None)));
+        runner.internal_a2a_router().set_cluster(resolver);
+
+        let caller_pkg = AgentPackageName::parse("caller-agent").unwrap();
+        let caller_key = AgentRouteKey::new(caller_pkg, AgentInstanceId::default());
+
+        let request_val = json!({
+            "jsonrpc": "2.0",
+            "method": "message/send",
+            "id": "corr-cluster-1",
+            "params": {
+                "metadata": {
+                    "target": {"agent_package": "remote-agent", "agent_instance_id": "default"}
+                },
+                "message": {
+                    "messageId": "msg-1",
+                    "role": "user",
+                    "parts": [{"text": "hi"}]
+                }
+            }
+        });
+        let wire = baml_rt_core::A2aWireRequest::from(request_val);
+        let result = runner
+            .internal_a2a_router()
+            .route_from(&caller_key, wire)
+            .await;
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            msg.contains("not found locally or in cluster"),
+            "expected 'not found locally or in cluster', got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_route_cluster_resolver_error_propagates() {
+        use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey};
+        let prov = test_provenance_config().await;
+        let (_dir, state) = test_deployment_state().await;
+        let runner = make_runner(prov, state);
+
+        // Wire a mock resolver that returns a transient error.
+        let resolver: Arc<dyn crate::routing::ClusterEndpointResolver> =
+            Arc::new(MockResolver(Err(baml_rt_core::BamlRtError::Io(
+                std::io::Error::other("connection refused"),
+            ))));
+        runner.internal_a2a_router().set_cluster(resolver);
+
+        let caller_pkg = AgentPackageName::parse("caller-agent").unwrap();
+        let caller_key = AgentRouteKey::new(caller_pkg, AgentInstanceId::default());
+
+        let request_val = json!({
+            "jsonrpc": "2.0",
+            "method": "message/send",
+            "id": "corr-cluster-2",
+            "params": {
+                "metadata": {
+                    "target": {"agent_package": "unreachable-agent", "agent_instance_id": "default"}
+                },
+                "message": {
+                    "messageId": "msg-1",
+                    "role": "user",
+                    "parts": [{"text": "hi"}]
+                }
+            }
+        });
+        let wire = baml_rt_core::A2aWireRequest::from(request_val);
+        let result = runner
+            .internal_a2a_router()
+            .route_from(&caller_key, wire)
+            .await;
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
+        assert!(
+            msg.contains("placement lookup failed"),
+            "expected 'placement lookup failed', got: {msg}"
+        );
+    }
+
+    // ── deploy idempotency guard ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_deploy_by_hash_returns_already_deployed_for_existing() {
+        use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey, DeploymentManager};
+        let prov = test_provenance_config().await;
+        let (_dir, state) = test_deployment_state().await;
+        let runner = make_runner(prov, state);
+
+        // Manually insert a booted agent with a known content_hash to simulate
+        // a prior deploy. The idempotency guard checks the in-memory map before
+        // hitting the repository, so this exercises the fast-path.
+        let hash: baml_rt_core::DeploymentContentHash = "a".repeat(64).parse().expect("valid hash");
+        let agent = build_test_agent().await;
+        let booted = crate::agent_package::BootedAgent {
+            agent: agent.clone(),
+            manifest: baml_rt_core::AgentManifest {
+                name: "idempotent-agent".to_string(),
+                version: "1.0.0".to_string(),
+                entry_point: "dist/index.js".to_string(),
+                tools: vec![],
+                discovery: None,
+                tags: vec![],
+                signature: String::new(),
+            },
+            baml_functions: vec![],
+            provenance: crate::agent_package::DeploymentProvenance::Repository {
+                content_hash: hash.clone(),
+                version: 1,
+            },
+            lifecycle: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+        };
+        let pkg = AgentPackageName::parse("idempotent-agent").unwrap();
+        let rk = AgentRouteKey::new(pkg, AgentInstanceId::default());
+        {
+            let mut agents = runner.agents.write().expect("RwLock poison");
+            let mut routed = runner.routed_agents.write().expect("RwLock poison");
+            routed.insert(rk, agent);
+            agents.insert("idempotent-agent".to_string(), booted);
+        }
+
+        // deploy_by_hash should short-circuit with already_deployed.
+        let result = runner.deploy_by_hash(&hash).await.expect("deploy");
+        assert!(
+            result.already_deployed,
+            "deploy_by_hash must return already_deployed when agent is in memory"
+        );
+    }
+
     // ── runner prepare_a2a_request ────────────────────────────────────────────
 
     #[tokio::test]
@@ -1026,8 +1350,8 @@ globalThis.onChatMessage = async function(_message) {
                 signature: String::new(),
             },
             baml_functions: vec![],
-            content_hash: None,
-            repository_version: None,
+            provenance: crate::agent_package::DeploymentProvenance::Ephemeral,
+            lifecycle: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
         };
         let mut agents = std::collections::HashMap::new();
         agents.insert("other-agent".to_string(), make(agent1, "other-agent"));
@@ -1265,5 +1589,45 @@ globalThis.onChatMessage = async function(_message) {
             !query_result.rows.is_empty(),
             "Expected at least one message row"
         );
+    }
+
+    #[test]
+    fn cluster_endpoint_rejects_wildcard() {
+        let result = super::validate_cluster_endpoint("http://0.0.0.0:18080");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("0.0.0.0"),
+            "error should mention the address: {msg}"
+        );
+    }
+
+    #[test]
+    fn cluster_endpoint_rejects_loopback_ip() {
+        let result = super::validate_cluster_endpoint("http://127.0.0.1:18080");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("loopback"),
+            "error should mention loopback: {msg}"
+        );
+    }
+
+    #[test]
+    fn cluster_endpoint_rejects_localhost() {
+        let result = super::validate_cluster_endpoint("http://localhost:18080");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cluster_endpoint_accepts_pod_dns() {
+        let result = super::validate_cluster_endpoint("http://runner-0.runner.agentium.svc:18080");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cluster_endpoint_accepts_cluster_ip() {
+        let result = super::validate_cluster_endpoint("http://10.43.0.5:18080");
+        assert!(result.is_ok());
     }
 }

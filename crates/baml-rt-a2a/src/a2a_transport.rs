@@ -643,6 +643,24 @@ impl A2aAgent {
             > 0
     }
 
+    /// True when this agent has any active turn across all sessions,
+    /// including open host tool sessions.
+    ///
+    /// Used by the drain mechanism to wait for all in-flight work to complete
+    /// before undeploying an agent.
+    pub async fn has_any_in_flight(&self) -> bool {
+        let stream_in_flight = {
+            let sessions = self.stream_sessions.lock().await;
+            sessions.values().any(|session| session.in_flight)
+        };
+        if stream_in_flight {
+            return true;
+        }
+        // Also check for open host tool sessions (e.g. claude, slack).
+        let runtime = self.runtime.read().await;
+        runtime.has_any_open_tool_sessions()
+    }
+
     /// Subscribe to task update events for this agent instance.
     pub fn subscribe_task_updates(&self) -> broadcast::Receiver<TaskUpdateEvent> {
         self.update_tx.subscribe()

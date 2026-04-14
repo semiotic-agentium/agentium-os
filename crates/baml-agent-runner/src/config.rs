@@ -3,14 +3,20 @@
 use std::{path::PathBuf, sync::Arc};
 
 use baml_rt_core::{BamlRtError, Result};
-use baml_rt_provenance::SurrealStoreBuilder;
+use baml_rt_provenance::{RemoteConfig, RemoteCredentials, SurrealStoreBuilder};
 use clap::Parser;
 
-/// Provenance store: in-memory (default) or file-backed embedded SurrealDB (SurrealKV directory).
+/// Provenance store backend selection.
 #[derive(Debug, Clone)]
 pub(crate) enum ProvenanceDb {
     InMemory,
     File(PathBuf),
+    /// Remote SurrealDB server (WebSocket endpoint).
+    Remote {
+        endpoint: String,
+        username: Option<String>,
+        password: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -23,12 +29,19 @@ pub(crate) struct RunnerConfig {
     pub(crate) web_dir: Option<PathBuf>,
     pub(crate) provenance_db: ProvenanceDb,
     pub(crate) state_dir: PathBuf,
-    /// If set, used as Claude workspaces root (overrides BAML_CLAUDE_WORKSPACES_BASE env).
+    /// Resolved canonical path for Claude workspaces root, if provided via CLI.
     pub(crate) claude_workspaces_base: Option<PathBuf>,
     /// Stream collector idle timeout in seconds.
     pub(crate) stream_idle_secs: Option<u64>,
     /// Event producer poll interval. `None` disables the poll loop.
     pub(crate) event_poll_interval: Option<std::time::Duration>,
+    /// Shared secret for authenticating control-plane requests.
+    pub(crate) runner_token: Option<String>,
+    /// Override the endpoint URL this runner registers in the cluster.
+    pub(crate) runner_endpoint: Option<String>,
+    /// Placement TTL in milliseconds: placements on runners whose last heartbeat
+    /// is older than this are excluded from resolution.
+    pub(crate) placement_ttl_ms: u64,
 }
 
 #[derive(Debug, Parser)]
@@ -87,15 +100,55 @@ pub(crate) struct Cli {
     /// Event producer poll interval (seconds). 0 disables (default).
     #[arg(long, value_name = "SECS", default_value = "0")]
     pub(crate) event_poll_interval_secs: u64,
+
+    /// Remote SurrealDB endpoint (e.g. ws://surrealdb:8000). Overrides --provenance-db.
+    #[arg(long, value_name = "URL")]
+    pub(crate) surreal_endpoint: Option<String>,
+
+    /// SurrealDB authentication username (for remote mode).
+    #[arg(long, value_name = "USER", env = "SURREAL_USER")]
+    pub(crate) surreal_username: Option<String>,
+
+    /// SurrealDB authentication password (for remote mode).
+    #[arg(long, value_name = "PASS", env = "SURREAL_PASS")]
+    pub(crate) surreal_password: Option<String>,
+
+    /// Shared secret for authenticating control-plane requests (e.g. /control/migrate).
+    #[arg(long, value_name = "TOKEN", env = "RUNNER_TOKEN")]
+    pub(crate) runner_token: Option<String>,
+
+    /// Override the endpoint URL this runner registers in the cluster (e.g. https://runner-0:18080).
+    /// Defaults to http://{serve-http address}.
+    #[arg(long, value_name = "URL", env = "RUNNER_ENDPOINT")]
+    pub(crate) runner_endpoint: Option<String>,
+
+    /// Placement TTL in milliseconds. Placements on runners whose last heartbeat
+    /// is older than this are excluded from resolution (default: 90000 = 90s).
+    #[arg(
+        long,
+        value_name = "MS",
+        default_value = "90000",
+        env = "PLACEMENT_TTL_MS"
+    )]
+    pub(crate) placement_ttl_ms: u64,
 }
 
 impl Cli {
-    pub(crate) fn into_config(self) -> anyhow::Result<RunnerConfig> {
+    pub(crate) fn into_config(
+        self,
+        claude_workspaces_base: Option<PathBuf>,
+    ) -> anyhow::Result<RunnerConfig> {
         let invoke = self
             .invoke
             .map(|values| (values[0].clone(), values[1].clone(), values[2].clone()));
 
-        let provenance_db = if self.provenance_db == ":memory:" {
+        let provenance_db = if let Some(endpoint) = self.surreal_endpoint {
+            ProvenanceDb::Remote {
+                endpoint,
+                username: self.surreal_username,
+                password: self.surreal_password,
+            }
+        } else if self.provenance_db == ":memory:" {
             ProvenanceDb::InMemory
         } else {
             ProvenanceDb::File(PathBuf::from(self.provenance_db))
@@ -110,7 +163,7 @@ impl Cli {
             web_dir: self.web_dir,
             provenance_db,
             state_dir: self.state_dir,
-            claude_workspaces_base: self.claude_workspaces_base,
+            claude_workspaces_base,
             stream_idle_secs: Some(self.stream_idle_secs),
             event_poll_interval: if self.event_poll_interval_secs > 0 {
                 Some(std::time::Duration::from_secs(
@@ -119,6 +172,9 @@ impl Cli {
             } else {
                 None
             },
+            runner_token: self.runner_token,
+            runner_endpoint: self.runner_endpoint,
+            placement_ttl_ms: self.placement_ttl_ms,
         })
     }
 }
@@ -173,8 +229,8 @@ impl ProvenanceConfig {
 pub(crate) struct ProvenanceConfigBuilder {
     store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
     mermaid_cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
-    config_service: Option<Arc<dyn baml_rt_config::ConfigService>>,
-    llm_secret_resolver: Option<Arc<dyn baml_rt_llm_config::SecretResolver>>,
+    config_service: Arc<dyn baml_rt_config::ConfigService>,
+    llm_secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver>,
     runtime_secret_store: Option<Arc<dyn baml_rt_llm_config::RuntimeSecretStore>>,
 }
 
@@ -182,30 +238,16 @@ impl ProvenanceConfigBuilder {
     pub(crate) fn new(
         store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
         mermaid_cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
+        config_service: Arc<dyn baml_rt_config::ConfigService>,
+        llm_secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver>,
     ) -> Self {
         Self {
             store,
             mermaid_cache,
-            config_service: None,
-            llm_secret_resolver: None,
+            config_service,
+            llm_secret_resolver,
             runtime_secret_store: None,
         }
-    }
-
-    pub(crate) fn with_config_service(
-        mut self,
-        config_service: Arc<dyn baml_rt_config::ConfigService>,
-    ) -> Self {
-        self.config_service = Some(config_service);
-        self
-    }
-
-    pub(crate) fn with_llm_secret_resolver(
-        mut self,
-        llm_secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver>,
-    ) -> Self {
-        self.llm_secret_resolver = Some(llm_secret_resolver);
-        self
     }
 
     pub(crate) fn with_runtime_secret_store(
@@ -216,31 +258,22 @@ impl ProvenanceConfigBuilder {
         self
     }
 
-    pub(crate) fn build(self) -> Result<ProvenanceConfig> {
-        let config_service = self.config_service.ok_or_else(|| {
-            BamlRtError::InvalidArgument(
-                "ProvenanceConfigBuilder: config_service required (call with_config_service)"
-                    .into(),
-            )
-        })?;
-        let llm_secret_resolver = self.llm_secret_resolver.ok_or_else(|| {
-            BamlRtError::InvalidArgument(
-                "ProvenanceConfigBuilder: llm_secret_resolver required (call with_llm_secret_resolver)".into(),
-            )
-        })?;
-        Ok(ProvenanceConfig::Surreal {
+    pub(crate) fn build(self) -> ProvenanceConfig {
+        ProvenanceConfig::Surreal {
             store: self.store,
             mermaid_cache: self.mermaid_cache,
-            config_service,
-            llm_secret_resolver,
+            config_service: self.config_service,
+            llm_secret_resolver: self.llm_secret_resolver,
             runtime_secret_store: self.runtime_secret_store,
-        })
+        }
     }
 }
 
 /// Build the store and a linear builder for provenance config.
 pub(crate) async fn provenance_config_builder(
     db: &ProvenanceDb,
+    config_service: Arc<dyn baml_rt_config::ConfigService>,
+    llm_secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver>,
 ) -> Result<ProvenanceConfigBuilder> {
     match db {
         ProvenanceDb::InMemory => {
@@ -252,7 +285,12 @@ pub(crate) async fn provenance_config_builder(
                         "Provenance in-memory store failed to build: {e}",
                     ))
                 })?;
-            Ok(ProvenanceConfigBuilder::new(store, None))
+            Ok(ProvenanceConfigBuilder::new(
+                store,
+                None,
+                config_service,
+                llm_secret_resolver,
+            ))
         }
         ProvenanceDb::File(path) => {
             let cache = baml_rt_provenance::MermaidCache::new();
@@ -267,7 +305,66 @@ pub(crate) async fn provenance_config_builder(
                         anyhow::Error::from(e),
                     ))
                 })?;
-            Ok(ProvenanceConfigBuilder::new(store, Some(cache)))
+            Ok(ProvenanceConfigBuilder::new(
+                store,
+                Some(cache),
+                config_service,
+                llm_secret_resolver,
+            ))
+        }
+        ProvenanceDb::Remote {
+            endpoint,
+            username,
+            password,
+        } => {
+            let credentials = match (username, password) {
+                (Some(u), Some(p)) => Some(RemoteCredentials {
+                    username: u.clone(),
+                    password: p.clone(),
+                }),
+                (None, None) => None,
+                (Some(_), None) => {
+                    return Err(BamlRtError::InvalidArgument(
+                        "partial SurrealDB credentials: --surreal-password is required when --surreal-username is set".into(),
+                    ));
+                }
+                (None, Some(_)) => {
+                    return Err(BamlRtError::InvalidArgument(
+                        "partial SurrealDB credentials: --surreal-username is required when --surreal-password is set".into(),
+                    ));
+                }
+            };
+            let cache = baml_rt_provenance::MermaidCache::new();
+            let backend = baml_rt_provenance::SurrealBackend::Remote(RemoteConfig {
+                endpoint: endpoint.clone(),
+                namespace: "provenance".to_string(),
+                database: "store".to_string(),
+                credentials,
+            });
+            let store = SurrealStoreBuilder::backend(backend)
+                .with_mermaid_cache(cache.clone())
+                .build()
+                .await
+                .map_err(|e| {
+                    // Strip credentials from endpoint URL before including in error text.
+                    let safe_endpoint = url::Url::parse(endpoint)
+                        .map(|mut u| {
+                            let _ = u.set_username("");
+                            let _ = u.set_password(None);
+                            u.to_string()
+                        })
+                        .unwrap_or_else(|_| "<invalid URL>".to_string());
+                    BamlRtError::InvalidArgument(format!(
+                        "Provenance remote store failed to connect to {safe_endpoint}: {:#}",
+                        anyhow::Error::from(e),
+                    ))
+                })?;
+            Ok(ProvenanceConfigBuilder::new(
+                store,
+                Some(cache),
+                config_service,
+                llm_secret_resolver,
+            ))
         }
     }
 }

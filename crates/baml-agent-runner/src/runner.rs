@@ -2,7 +2,7 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock, atomic::AtomicU8},
 };
 
 use async_trait::async_trait;
@@ -18,13 +18,15 @@ use baml_rt_core::{
     scheduling_scope_from_dispatch_metadata,
 };
 use baml_rt_observability::spans;
-use baml_rt_provenance::{ProvEvent, ToolIndexConfig};
+use baml_rt_provenance::{ProvEvent, ProvenanceWriter};
 use baml_rt_tools::ToolAccessPolicy;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
 use crate::{
-    agent_package::{AgentPackage, BootedAgent, SnapshotAgentLister},
+    agent_package::{
+        AgentLifecycleState, AgentPackage, BootedAgent, DeploymentProvenance, SnapshotAgentLister,
+    },
     config::ProvenanceConfig,
     routing::{InternalA2aRouter, LiveAgentLister, ScopedInternalA2aRouter, scope_from_request},
     stdio::{
@@ -73,38 +75,41 @@ pub(crate) struct AgentRunner {
     pub(crate) agents: RwLock<HashMap<String, BootedAgent>>,
     pub(crate) provenance_config: ProvenanceConfig,
     pub(crate) deployment_state: Arc<crate::deployment_state::DeploymentStateStore>,
-    pub(crate) tool_index: Option<ToolIndexConfig>,
     pub(crate) access_policy: ToolAccessPolicy,
     pub(crate) routed_agents: std::sync::RwLock<HashMap<AgentRouteKey, baml_rt_a2a::A2aAgent>>,
     pub(crate) internal_a2a_router: Arc<InternalA2aRouter>,
     pub(crate) stream_idle_secs: Option<u64>,
+    pub(crate) claude_workspaces_base: Option<std::path::PathBuf>,
     pub(crate) repository_url: String,
     pub(crate) repository_http_client: reqwest::Client,
+    /// Cluster manager for recording agent placements. Set after construction via `set_cluster_manager`.
+    pub(crate) cluster_manager: std::sync::OnceLock<Arc<crate::cluster::ClusterManager>>,
 }
 
 impl AgentRunner {
     pub(crate) fn new(
         provenance_config: ProvenanceConfig,
         deployment_state: Arc<crate::deployment_state::DeploymentStateStore>,
-        tool_index: Option<ToolIndexConfig>,
         access_policy: ToolAccessPolicy,
         stream_idle_secs: Option<u64>,
+        claude_workspaces_base: Option<std::path::PathBuf>,
         repository_url: String,
-    ) -> Self {
+    ) -> baml_rt_core::Result<Self> {
         let routed_agents = std::sync::RwLock::new(HashMap::new());
-        let internal_a2a_router = Arc::new(InternalA2aRouter::new());
-        Self {
+        let internal_a2a_router = Arc::new(InternalA2aRouter::new()?);
+        Ok(Self {
             agents: RwLock::new(HashMap::new()),
             provenance_config,
             deployment_state,
-            tool_index,
             access_policy,
             routed_agents,
             internal_a2a_router,
             stream_idle_secs,
+            claude_workspaces_base,
             repository_url,
             repository_http_client: reqwest::Client::new(),
-        }
+            cluster_manager: std::sync::OnceLock::new(),
+        })
     }
 
     pub(crate) fn deployment_state(&self) -> &Arc<crate::deployment_state::DeploymentStateStore> {
@@ -113,10 +118,6 @@ impl AgentRunner {
 
     pub(crate) fn provenance_config(&self) -> &ProvenanceConfig {
         &self.provenance_config
-    }
-
-    pub(crate) fn tool_index(&self) -> &Option<ToolIndexConfig> {
-        &self.tool_index
     }
 
     pub(crate) fn access_policy(&self) -> &ToolAccessPolicy {
@@ -129,19 +130,6 @@ impl AgentRunner {
 
     pub(crate) fn internal_a2a_router(&self) -> &Arc<InternalA2aRouter> {
         &self.internal_a2a_router
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn insert_agent(&self, name: String, route_key: AgentRouteKey, booted: BootedAgent) {
-        {
-            let mut routed = self.routed_agents.write().expect("RwLock poison");
-            routed.insert(route_key, booted.agent.clone());
-        }
-        let mut guard = self.agents.write().expect("RwLock poison");
-        guard.insert(name.clone(), booted);
-        let count = guard.len();
-        drop(guard);
-        tracing::info!(agent = %name, total_agents = count, "Runner: agent inserted");
     }
 
     pub(crate) async fn requesting_task_still_in_flight(
@@ -301,7 +289,7 @@ impl AgentRunner {
         &self,
         bytes: &[u8],
         content_hash: &DeploymentContentHash,
-        repository_version: Option<u32>,
+        repository_version: u32,
     ) -> Result<(String, AgentRouteKey, BootedAgent)> {
         let mut package_file = tempfile::Builder::new()
             .prefix("baml-deploy-")
@@ -335,11 +323,11 @@ impl AgentRunner {
         let (agent, _agent_id) = package
             .boot(
                 self.provenance_config(),
-                self.tool_index().clone(),
                 self.access_policy(),
                 catalogue,
                 scoped_router,
                 self.stream_idle_secs(),
+                self.claude_workspaces_base.as_deref(),
             )
             .await?;
         let manifest = package.manifest().clone();
@@ -362,8 +350,11 @@ impl AgentRunner {
             agent,
             manifest,
             baml_functions,
-            content_hash: Some(content_hash.clone()),
-            repository_version,
+            provenance: DeploymentProvenance::Repository {
+                content_hash: content_hash.clone(),
+                version: repository_version,
+            },
+            lifecycle: Arc::new(AtomicU8::new(0)),
         };
         Ok((name, route_key, booted))
     }
@@ -407,8 +398,8 @@ impl AgentRunner {
                 let agent_card = AgentCard {
                     name: m.name.clone(),
                     version: version.clone(),
-                    content_hash: booted.content_hash.as_ref().map(|h| h.as_str().to_string()),
-                    repository_version: booted.repository_version,
+                    content_hash: booted.content_hash().map(|h| h.as_str().to_string()),
+                    repository_version: booted.repository_version(),
                     agent_package: pkg.clone(),
                     agent_instance_id: AgentInstanceId::DEFAULT.to_string(),
                     tools: m.tools.clone(),
@@ -442,21 +433,61 @@ impl AgentRunner {
         key: &AgentRouteKey,
         request: A2aWireRequest,
     ) -> Result<BusStream<A2aStreamChunk>> {
+        // Check drain state and resolve route atomically so requests cannot
+        // slip between a drain check and the route lookup.
         let routed_agent = {
+            let agents = self.agents.read().expect("RwLock poison");
+            if let Some(booted) = agents.get(key.agent_package.as_str())
+                && booted.lifecycle_state() == AgentLifecycleState::Draining
+            {
+                let agent = key.agent_package.as_str();
+                return Err(BamlRtError::AgentNotFound(format!(
+                    "Agent {agent} is draining (undeploy in progress)",
+                )));
+            }
             let routed_agents = self.routed_agents.read().expect("RwLock poison");
-            routed_agents.get(key).cloned().ok_or_else(|| {
-                BamlRtError::AgentNotFound(format!(
-                    "Agent {}/{} not found",
-                    key.agent_package.as_str(),
-                    key.agent_instance_id.as_str()
-                ))
-            })?
+            routed_agents.get(key).cloned()
         };
-        let scope = scope_from_request(request.as_ref(), routed_agent.agent_id().clone());
-        context::with_scope(scope.as_scope().clone(), async move {
-            routed_agent.handle_a2a_stream(request).await
-        })
-        .await
+
+        // Local fast path: agent is on this runner.
+        if let Some(routed_agent) = routed_agent {
+            let scope = scope_from_request(request.as_ref(), routed_agent.agent_id().clone());
+            return context::with_scope(scope.as_scope().clone(), async move {
+                routed_agent.handle_a2a_stream(request).await
+            })
+            .await;
+        }
+
+        // Cluster fallback: forward to the remote runner hosting this agent.
+        if let Some(resolver) = self.internal_a2a_router.cluster_resolver() {
+            match resolver.resolve(key).await {
+                Ok(Some(endpoint)) => {
+                    tracing::info!(
+                        agent = %key.agent_package.as_str(),
+                        endpoint = %endpoint,
+                        "forwarding external A2A request to remote runner"
+                    );
+                    return self
+                        .internal_a2a_router
+                        .forward_to_runner(&endpoint, key, request)
+                        .await;
+                }
+                Err(e) => {
+                    let pkg = key.agent_package.as_str();
+                    let inst = key.agent_instance_id.as_str();
+                    return Err(BamlRtError::Io(std::io::Error::other(format!(
+                        "cluster placement lookup failed for {pkg}/{inst}: {e}"
+                    ))));
+                }
+                Ok(None) => {}
+            }
+        }
+
+        let pkg = key.agent_package.as_str();
+        let inst = key.agent_instance_id.as_str();
+        Err(BamlRtError::AgentNotFound(format!(
+            "Agent {pkg}/{inst} not found"
+        )))
     }
 
     pub(crate) async fn handle_dispatch_by_key(
@@ -465,13 +496,20 @@ impl AgentRunner {
         request: AgentDispatchRequest,
     ) -> Result<AgentDispatchAck> {
         let routed_agent = {
+            let agents = self.agents.read().expect("RwLock poison");
+            if let Some(booted) = agents.get(key.agent_package.as_str())
+                && booted.lifecycle_state() == AgentLifecycleState::Draining
+            {
+                let agent = key.agent_package.as_str();
+                return Err(BamlRtError::AgentNotFound(format!(
+                    "Agent {agent} is draining (undeploy in progress)",
+                )));
+            }
             let routed_agents = self.routed_agents.read().expect("RwLock poison");
             routed_agents.get(key).cloned().ok_or_else(|| {
-                BamlRtError::AgentNotFound(format!(
-                    "Agent {}/{} not found",
-                    key.agent_package.as_str(),
-                    key.agent_instance_id.as_str()
-                ))
+                let pkg = key.agent_package.as_str();
+                let inst = key.agent_instance_id.as_str();
+                BamlRtError::AgentNotFound(format!("Agent {pkg}/{inst} not found"))
             })?
         };
         let link_event = callback_dispatch_context_link_event(&request, routed_agent.agent_id());
@@ -681,7 +719,7 @@ impl DeploymentManager for AgentRunner {
             let agents = self.agents.read().expect("RwLock poison");
             if agents
                 .values()
-                .any(|agent| agent.content_hash.as_ref() == Some(content_hash))
+                .any(|agent| agent.content_hash() == Some(content_hash))
             {
                 return Ok(baml_rt_core::DeployResult {
                     already_deployed: true,
@@ -709,43 +747,69 @@ impl DeploymentManager for AgentRunner {
         AgentRunner::verify_artifact_integrity(content_hash, &bytes, repository_version)?;
 
         let (name, route_key, booted) = self
-            .boot_from_blob_bytes(&bytes, content_hash, Some(repository_version))
+            .boot_from_blob_bytes(&bytes, content_hash, repository_version)
             .await?;
 
         {
             let mut agents = self.agents.write().expect("RwLock poison");
             if agents
                 .values()
-                .any(|agent| agent.content_hash.as_ref() == Some(content_hash))
+                .any(|agent| agent.content_hash() == Some(content_hash))
             {
                 return Ok(baml_rt_core::DeployResult {
                     already_deployed: true,
                 });
             }
             if let Some(existing) = agents.get(&name)
-                && existing.content_hash.as_ref() != Some(content_hash)
+                && existing.content_hash() != Some(content_hash)
             {
                 return Err(BamlRtError::Conflict(format!(
                     "Agent '{name}' is already loaded with a different content hash"
                 )));
             }
             let mut routed = self.routed_agents.write().expect("RwLock poison");
-            routed.insert(route_key, booted.agent.clone());
+            routed.insert(route_key.clone(), booted.agent.clone());
             agents.insert(name.clone(), booted);
         }
 
         let now = unix_timestamp_secs();
-        self.deployment_state
+        if let Err(e) = self
+            .deployment_state
             .save_deployment(&DeploymentRecord {
                 content_hash: content_hash.clone(),
-                agent_name: name,
+                agent_name: name.clone(),
                 deployed_at: now.clone(),
                 status: DeploymentStatus::Active,
                 last_error: None,
                 last_attempt_at: Some(now),
                 failure_count: 0,
             })
-            .await?;
+            .await
+        {
+            // Roll back the in-memory maps so the agent isn't routable without
+            // a persistent deployment record (it wouldn't survive a restart).
+            tracing::error!(
+                agent = %name,
+                error = %e,
+                "deployment state save failed; removing agent from maps to prevent ghost deployment"
+            );
+            let mut agents = self.agents.write().expect("RwLock poison");
+            let mut routed = self.routed_agents.write().expect("RwLock poison");
+            agents.remove(&name);
+            routed.remove(&route_key);
+            return Err(e);
+        }
+
+        // Record agent placement in cluster registry (if cluster mode is active).
+        if let Some(cluster_mgr) = self.cluster_manager.get()
+            && let Err(e) = cluster_mgr.record_placement(&route_key, content_hash).await
+        {
+            tracing::warn!(
+                error = %e,
+                agent = %route_key.agent_package.as_str(),
+                "failed to record agent placement in cluster registry"
+            );
+        }
 
         Ok(baml_rt_core::DeployResult {
             already_deployed: false,
@@ -756,31 +820,91 @@ impl DeploymentManager for AgentRunner {
         &self,
         content_hash: &DeploymentContentHash,
     ) -> Result<UndeployResult> {
-        let removed = {
-            let mut agents = self.agents.write().expect("RwLock poison");
-            let target_name = agents.iter().find_map(|(name, agent)| {
-                (agent.content_hash.as_ref() == Some(content_hash)).then_some(name.clone())
-            });
-            let Some(target_name) = target_name else {
+        // 1. Find the agent and mark as draining (stop accepting new requests).
+        let (target_name, booted) = {
+            let agents = self.agents.read().expect("RwLock poison");
+            let entry = agents
+                .iter()
+                .find(|(_, agent)| agent.content_hash() == Some(content_hash));
+            let Some((name, agent)) = entry else {
                 return Ok(UndeployResult { removed: false });
             };
-            let Some(booted) = agents.remove(&target_name) else {
-                return Ok(UndeployResult { removed: false });
-            };
-            drop(agents);
-            if let Some(package_name) = AgentPackageName::parse(&booted.manifest.name) {
-                let rk = AgentRouteKey::new(package_name, AgentInstanceId::default());
-                let mut routed = self.routed_agents.write().expect("RwLock poison");
-                routed.remove(&rk);
-            }
-            true
+            agent.set_draining();
+            (name.clone(), agent.clone())
         };
-        if removed {
-            self.deployment_state
-                .remove_deployment(content_hash)
-                .await?;
+
+        // 2. Wait for in-flight turns to complete (with timeout).
+        let drain_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if !booted.agent.has_any_in_flight().await {
+                break;
+            }
+            if tokio::time::Instant::now() >= drain_deadline {
+                tracing::warn!(
+                    agent = %target_name,
+                    "drain timeout exceeded after 30s, proceeding with undeploy"
+                );
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        Ok(UndeployResult { removed })
+
+        // 3. Remove from both maps atomically to prevent dispatch to a
+        //    destroyed agent between the two removals.
+        {
+            let mut agents = self.agents.write().expect("RwLock poison");
+            let mut routed = self.routed_agents.write().expect("RwLock poison");
+            agents.remove(&target_name);
+            match AgentPackageName::parse(&booted.manifest.name) {
+                Some(package_name) => {
+                    let rk = AgentRouteKey::new(package_name, AgentInstanceId::default());
+                    routed.remove(&rk);
+                }
+                None => {
+                    tracing::error!(
+                        name = %booted.manifest.name,
+                        "agent package name invalid at undeploy; skipping routed_agents removal"
+                    );
+                }
+            }
+        }
+
+        // 4. Remove placement from cluster registry.
+        if let Some(cluster_mgr) = self.cluster_manager.get()
+            && let Some(package_name) = AgentPackageName::parse(&target_name)
+        {
+            let rk = AgentRouteKey::new(package_name, AgentInstanceId::default());
+            if let Err(e) = cluster_mgr.remove_placement(&rk).await {
+                tracing::warn!(
+                    agent = %target_name,
+                    error = %e,
+                    "failed to remove agent placement from cluster registry"
+                );
+            }
+        }
+
+        // 5. Delete deployment record.
+        self.deployment_state
+            .remove_deployment(content_hash)
+            .await?;
+
+        // 6. Emit AgentStopped provenance event last: if the process crashes
+        //    before this point, the agent is already removed from routing and
+        //    cluster — restart will re-deploy and emit a fresh AgentBooted
+        //    without an orphaned AgentStopped in the graph.
+        let agent_id = booted.agent.agent_id().clone();
+        let stop_event = ProvEvent::agent_stopped(agent_id, "undeploy".to_string());
+        let store = self.provenance_config.store();
+        if let Err(e) = store.add_event(stop_event).await {
+            tracing::warn!(
+                agent = %target_name,
+                error = %e,
+                "failed to write AgentStopped provenance event"
+            );
+        }
+
+        tracing::info!(agent = %target_name, "agent drained and undeployed");
+        Ok(UndeployResult { removed: true })
     }
 
     async fn list_deployments(&self) -> Result<Vec<DeploymentRecord>> {

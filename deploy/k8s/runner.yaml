@@ -1,0 +1,112 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: runner
+  namespace: agentium
+spec:
+  selector:
+    app: runner
+  ports:
+    - port: 18080
+      targetPort: 18080
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: runner
+  namespace: agentium
+spec:
+  serviceName: runner
+  replicas: 2
+  selector:
+    matchLabels:
+      app: runner
+  template:
+    metadata:
+      labels:
+        app: runner
+    spec:
+      containers:
+        - name: runner
+          image: agentium-runner:demo
+          imagePullPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          args:
+            - --serve-http
+            - "0.0.0.0:18080"
+            - --surreal-endpoint
+            # Production deployments should use wss:// with TLS termination.
+            - "ws://surrealdb.agentium.svc:8000"
+            - --state-dir
+            - /data/runner-state
+            - --repository-dir
+            - /data/repository
+          ports:
+            - containerPort: 18080
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RUNNER_ENDPOINT
+              value: "http://$(POD_NAME).runner.agentium.svc:18080"
+            - name: SURREAL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: surrealdb-credentials
+                  key: username
+            - name: SURREAL_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: surrealdb-credentials
+                  key: password
+          envFrom:
+            - secretRef:
+                name: fnox-secrets
+                # LLM-dependent operations will fail without this secret.
+                optional: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            - name: npm-cache
+              mountPath: /tmp/npm-cache
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 18080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 18080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: npm-cache
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

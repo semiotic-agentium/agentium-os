@@ -3,7 +3,10 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
 };
 
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
@@ -12,7 +15,7 @@ use baml_rt_core::{
     DeploymentContentHash, Result, bus::BusStream, context::InvocationScope, ids::AgentId,
 };
 use baml_rt_observability::spans;
-use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, ToolIndexConfig, index_tools};
+use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
 use baml_rt_tools::{ManifestToolNames, ToolAccessPolicy, register_manifest_tools};
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
@@ -75,6 +78,7 @@ impl AgentPackage {
         agent_list_catalogue: Arc<dyn AgentLister>,
         a2a_handler: Arc<dyn A2aRequestHandler>,
         provenance_query: Arc<dyn baml_rt_provenance::ProvenanceOpsQuery>,
+        claude_workspaces_base: Option<&std::path::Path>,
     ) -> Result<ToolsRegistered> {
         let mut runtime_manager = loaded.runtime_manager;
         let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
@@ -87,35 +91,19 @@ impl AgentPackage {
             provenance_query,
         ))?;
 
-        let claude_workspace_root = match std::env::var("BAML_CLAUDE_WORKSPACES_BASE") {
-            Ok(ref base) if !base.trim().is_empty() => {
-                let path = std::path::PathBuf::from(base.trim());
-                let absolute = if path.is_absolute() {
-                    path
-                } else {
-                    std::env::current_dir()
-                        .unwrap_or_else(|e| {
-                            tracing::warn!(error = %e, "current_dir failed, using .");
-                            std::path::PathBuf::from(".")
-                        })
-                        .join(path)
-                };
-                std::fs::create_dir_all(&absolute).map_err(BamlRtError::Io)?;
-                let canonical = std::fs::canonicalize(&absolute).unwrap_or_else(|e| {
-                    tracing::warn!(path = %absolute.display(), error = %e, "canonicalize failed");
-                    absolute
-                });
+        let claude_workspace_root = match claude_workspaces_base {
+            Some(base) => {
                 info!(
-                    env = base.trim(), base = %canonical.display(),
-                    "Claude workspaces root from BAML_CLAUDE_WORKSPACES_BASE (persistent)",
+                    base = %base.display(),
+                    "Claude workspaces root from --claude-workspaces-base (persistent)",
                 );
-                canonical
+                base.to_path_buf()
             }
-            _ => {
+            None => {
                 let fallback = self.extract_dir.join(".claude-workspaces");
                 info!(
                     base = %fallback.display(),
-                    "Claude workspaces root under extract dir (BAML_CLAUDE_WORKSPACES_BASE unset or empty).",
+                    "Claude workspaces root under extract dir (no --claude-workspaces-base).",
                 );
                 fallback
             }
@@ -239,11 +227,11 @@ impl AgentPackage {
     pub(crate) async fn boot(
         &self,
         provenance_config: &ProvenanceConfig,
-        _tool_index: Option<ToolIndexConfig>,
         policy: &ToolAccessPolicy,
         agent_list_catalogue: Arc<dyn AgentLister>,
         a2a_handler: Arc<dyn A2aRequestHandler>,
         stream_idle_secs: Option<u64>,
+        claude_workspaces_base: Option<&std::path::Path>,
     ) -> Result<(A2aAgent, AgentId)> {
         let span = spans::load_agent_package(&self.extract_dir);
         let _guard = span.enter();
@@ -255,6 +243,7 @@ impl AgentPackage {
                 agent_list_catalogue,
                 a2a_handler,
                 provenance_config.store().clone(),
+                claude_workspaces_base,
             )
             .await?;
         let built = self
@@ -308,17 +297,66 @@ impl AgentPackage {
     }
 }
 
+/// Agent lifecycle state — used for drain-before-undeploy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum AgentLifecycleState {
+    Active = 0,
+    Draining = 1,
+}
+
+impl AgentLifecycleState {
+    pub(crate) fn from_u8(v: u8) -> Self {
+        if v == 1 { Self::Draining } else { Self::Active }
+    }
+}
+
+/// Tracks how a booted agent was sourced: from the content-addressable
+/// repository (production) or constructed inline (tests).
+#[derive(Clone, Debug)]
+pub(crate) enum DeploymentProvenance {
+    Repository {
+        content_hash: DeploymentContentHash,
+        version: u32,
+    },
+    #[allow(dead_code)] // constructed in test code only (bin target doesn't see cfg(test) usage)
+    Ephemeral,
+}
+
 /// Booted agent — holds the running A2aAgent and full manifest for discovery.
 #[derive(Clone)]
 pub(crate) struct BootedAgent {
     pub(crate) agent: A2aAgent,
     pub(crate) manifest: AgentManifest,
     pub(crate) baml_functions: Vec<String>,
-    pub(crate) content_hash: Option<DeploymentContentHash>,
-    pub(crate) repository_version: Option<u32>,
+    pub(crate) provenance: DeploymentProvenance,
+    pub(crate) lifecycle: Arc<AtomicU8>,
 }
 
 impl BootedAgent {
+    pub(crate) fn content_hash(&self) -> Option<&DeploymentContentHash> {
+        match &self.provenance {
+            DeploymentProvenance::Repository { content_hash, .. } => Some(content_hash),
+            DeploymentProvenance::Ephemeral => None,
+        }
+    }
+
+    pub(crate) fn repository_version(&self) -> Option<u32> {
+        match &self.provenance {
+            DeploymentProvenance::Repository { version, .. } => Some(*version),
+            DeploymentProvenance::Ephemeral => None,
+        }
+    }
+
+    pub(crate) fn lifecycle_state(&self) -> AgentLifecycleState {
+        AgentLifecycleState::from_u8(self.lifecycle.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn set_draining(&self) {
+        self.lifecycle
+            .store(AgentLifecycleState::Draining as u8, Ordering::Release);
+    }
+
     pub(crate) fn version(&self) -> &str {
         &self.manifest.version
     }

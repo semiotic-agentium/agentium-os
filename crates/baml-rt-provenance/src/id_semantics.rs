@@ -555,6 +555,33 @@ impl ProvDerivedIdTemplate for AgentBootActivityId {
     }
 }
 
+pub struct AgentStopActivityId;
+impl DerivedConstructible for AgentStopActivityId {}
+impl ProvIdSemantics for AgentStopActivityId {
+    const KIND: ProvKind = ProvKind::Activity;
+}
+impl ProvActivitySemantics for AgentStopActivityId {}
+impl ProvDerivedActivitySemantics for AgentStopActivityId {}
+impl ProvVocabularyType for AgentStopActivityId {
+    const VOCAB_TYPE: &'static str = a2a_types::AGENT_STOP;
+}
+
+pub struct AgentStopActivityInput<'a> {
+    pub agent_id: &'a AgentId,
+    pub anchor: &'a ActivityAnchorId,
+}
+
+impl ProvDerivedIdTemplate for AgentStopActivityId {
+    type Input<'a> = AgentStopActivityInput<'a>;
+
+    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
+        DerivedId::from_parts(
+            "agent_stop",
+            [input.agent_id.as_str(), input.anchor.as_str()],
+        )
+    }
+}
+
 /// Entity representing an agent archive (package identity).
 pub struct ArchiveEntityId;
 impl DerivedConstructible for ArchiveEntityId {}

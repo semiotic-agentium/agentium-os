@@ -66,20 +66,71 @@ mod planning_query;
 mod schema;
 mod writer;
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
-use baml_rt_core::ids::{AgentId, TaskId};
-pub use builder::{SurrealBackend, SurrealStoreBuilder};
+use baml_rt_core::{
+    backoff::backoff_delay,
+    ids::{AgentId, TaskId},
+};
+pub use builder::{RemoteConfig, RemoteCredentials, SurrealBackend, SurrealStoreBuilder};
 use dashmap::DashMap;
 use serde_json::Value;
-use surrealdb::{Surreal, engine::local::Db};
+use surrealdb::{Surreal, engine::any::Any};
 
 use self::helpers::{map_surreal_error, query_take_zero};
-use crate::{error::Result, mermaid_cache::MermaidCache, normalizer::ProvNormalizer};
+use crate::{
+    error::{ProvenanceError, Result},
+    mermaid_cache::MermaidCache,
+    normalizer::ProvNormalizer,
+};
+
+/// Maximum number of attempts (including the first) for a write that hits
+/// SurrealDB MVCC `Transaction conflict`. Concurrent writers targeting shared
+/// records (context/agent nodes) need a small retry budget; provenance writes
+/// are idempotent UPSERTs so retry is safe.
+///
+/// **Tuning signal:** if production observability ever shows a sustained
+/// non-zero retry rate, the strategic fix is per-shared-record write coalescing
+/// (single-flight on `agent_runtime_instance` / context entity per process) —
+/// not raising this constant. See `record_event_required` callers and the
+/// `concurrent_writes_test` regression coverage.
+const WRITE_CONFLICT_MAX_ATTEMPTS: u32 = 6;
+const WRITE_CONFLICT_BASE_DELAY: Duration = Duration::from_millis(2);
+const WRITE_CONFLICT_MAX_DELAY: Duration = Duration::from_millis(200);
+
+/// True when `e` is the SurrealDB optimistic-concurrency conflict signal.
+/// The error type carries no structured discriminator on the public boundary,
+/// so we match on the message prefix (`Transaction conflict: …. This transaction
+/// can be retried`, see `surrealdb-core`/`kvs/err.rs`).
+fn is_transaction_conflict(e: &surrealdb::Error) -> bool {
+    e.message().contains("Transaction conflict")
+}
+
+/// Equal-jitter backoff: half the budget is fixed, half is randomised in
+/// `[0, base/2]`. Without jitter, N parallel retriers wake in lockstep and
+/// re-collide on the next attempt; equal-jitter spreads them out without
+/// lengthening the worst-case wait beyond the base delay.
+///
+/// Jitter source is `SystemTime::subsec_nanos` — decorrelation only, no crypto
+/// guarantees needed and no extra dependency.
+fn jittered_backoff(attempt: u32) -> Duration {
+    let base =
+        backoff_delay(WRITE_CONFLICT_BASE_DELAY, WRITE_CONFLICT_MAX_DELAY, attempt).as_nanos();
+    let half = (base / 2) as u64;
+    let jitter = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let jitter_nanos = if half > 0 { jitter % half } else { 0 };
+    Duration::from_nanos(half + jitter_nanos)
+}
 
 /// SurrealDB-backed provenance store — the canonical implementation of all provenance traits.
 pub struct SurrealProvenanceStore {
-    db: Surreal<Db>,
+    db: Surreal<Any>,
     normalizer: Arc<dyn ProvNormalizer>,
     mermaid_cache: Option<Arc<MermaidCache>>,
     /// In-process cache of successful task → agent resolution for [`SurrealProvenanceStore::get_task_agent_id`].
@@ -91,7 +142,7 @@ pub struct SurrealProvenanceStore {
 
 impl SurrealProvenanceStore {
     /// Access the underlying SurrealDB connection for direct queries (graph export, tool index).
-    pub fn db(&self) -> &Surreal<Db> {
+    pub fn db(&self) -> &Surreal<Any> {
         &self.db
     }
 
@@ -117,12 +168,32 @@ impl SurrealProvenanceStore {
         if sql.trim().is_empty() {
             return Ok(());
         }
-        let mut q = self.db.query(&sql);
-        for crate::surreal_write_batch::TxBind { name, value } in binds {
-            q = q.bind((name, value));
+        for attempt in 0..WRITE_CONFLICT_MAX_ATTEMPTS {
+            let mut q = self.db.query(&sql);
+            for bind in &binds {
+                q = q.bind((bind.name.clone(), bind.value.clone()));
+            }
+            match q.await.and_then(surrealdb::IndexedResults::check) {
+                Ok(_) => return Ok(()),
+                Err(e) if is_transaction_conflict(&e) => {
+                    if attempt + 1 >= WRITE_CONFLICT_MAX_ATTEMPTS {
+                        return Err(ProvenanceError::Contention {
+                            details: e.message().to_string(),
+                        });
+                    }
+                    let delay = jittered_backoff(attempt);
+                    tracing::debug!(
+                        attempt = attempt + 1,
+                        max_attempts = WRITE_CONFLICT_MAX_ATTEMPTS,
+                        delay_ms = delay.as_millis() as u64,
+                        "provenance write hit MVCC conflict; retrying"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+                Err(e) => return Err(map_surreal_error(e)),
+            }
         }
-        q.await.map_err(map_surreal_error)?;
-        Ok(())
+        unreachable!("retry loop returns on every iteration");
     }
 }
 

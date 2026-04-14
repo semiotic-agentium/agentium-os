@@ -120,6 +120,7 @@ pub mod a2a_types {
     pub const LLM_CALL: &str = "a2a:LlmCall";
     pub const TOOL_CALL: &str = "a2a:ToolCall";
     pub const AGENT_BOOT: &str = "a2a:AgentBoot";
+    pub const AGENT_STOP: &str = "a2a:AgentStop";
     pub const TASK_EXECUTION: &str = "a2a:A2ATaskExecution";
     pub const MESSAGE_PROCESSING: &str = "a2a:A2AMessageProcessing";
     pub const LLM_PROMPT: &str = "a2a:LlmPrompt";
@@ -157,7 +158,7 @@ pub mod context_scope {
     /// Node labels that must NOT get SCOPED_TO edges. They cross context boundaries
     /// (e.g. AgentBoot/AgentArchive are shared across conversations).
     /// AgentRuntimeInstance gets SCOPED_TO so export can traverse TaskExecution -[WAS_EXECUTED_BY]-> AgentRuntimeInstance.
-    pub const SCOPE_EXEMPT_LABELS: &[&str] = &["AgentBoot", "AgentArchive"];
+    pub const SCOPE_EXEMPT_LABELS: &[&str] = &["AgentBoot", "AgentArchive", "AgentStop"];
 }
 
 pub mod semantic_labels {
@@ -325,6 +326,7 @@ pub mod node_labels {
     pub const LLM_CALL: &str = "LlmCall";
     pub const TOOL_CALL: &str = "ToolCall";
     pub const AGENT_BOOT: &str = "AgentBoot";
+    pub const AGENT_STOP: &str = "AgentStop";
     pub const TASK_EXECUTION: &str = "A2ATaskExecution";
     pub const MESSAGE_PROCESSING: &str = "A2AMessageProcessing";
     pub const LLM_PROMPT: &str = "LlmPrompt";
@@ -338,4 +340,17 @@ pub mod node_labels {
     pub const DELEGATION_TARGET: &str = "DelegationTarget";
     pub const FAILURE_CLASSIFICATION_ACTIVITY: &str = "FailureClassificationActivity";
     pub const FAILURE_CLASSIFICATION: &str = "FailureClassification";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::context_scope::SCOPE_EXEMPT_LABELS;
+
+    #[test]
+    fn agent_stop_is_scope_exempt() {
+        assert!(
+            SCOPE_EXEMPT_LABELS.contains(&"AgentStop"),
+            "AgentStop nodes have no context_id and must be scope-exempt"
+        );
+    }
 }

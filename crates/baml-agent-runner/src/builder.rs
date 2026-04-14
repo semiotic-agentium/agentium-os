@@ -7,7 +7,6 @@
 use std::sync::Arc;
 
 use baml_rt_core::Result;
-use baml_rt_provenance::ToolIndexConfig;
 use baml_rt_tools::ToolAccessPolicy;
 use serde_json::Value;
 
@@ -32,27 +31,27 @@ impl RunnerBuilder<Loading> {
     pub fn new(
         provenance_config: ProvenanceConfig,
         deployment_state: Arc<crate::deployment_state::DeploymentStateStore>,
-        tool_index: Option<ToolIndexConfig>,
         access_policy: ToolAccessPolicy,
         stream_idle_secs: Option<u64>,
+        claude_workspaces_base: Option<std::path::PathBuf>,
         repository_url: String,
-    ) -> Self {
+    ) -> Result<Self> {
         let runner = Arc::new(AgentRunner::new(
             provenance_config,
             deployment_state,
-            tool_index,
             access_policy,
             stream_idle_secs,
+            claude_workspaces_base,
             repository_url,
-        ));
+        )?);
         // Wire the internal A2A router to the runner for cross-agent dispatch.
         runner.internal_a2a_router().set_runner(Arc::clone(&runner));
         let registry = Arc::new(RunnerRegistry(Arc::clone(&runner)));
-        Self {
+        Ok(Self {
             runner,
             registry,
             _state: std::marker::PhantomData,
-        }
+        })
     }
 
     /// Finish wiring and transition to Ready. Execution entrypoints unlock.

@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
+assertion_line: 1075
 expression: snapshot
 ---
 {
@@ -50,6 +51,7 @@ expression: snapshot
             "agents"
           ],
           "summary": "Forward A2A JSON-RPC request (POST /agents/{agent_package}/{agent_instance_id}/a2a).",
+          "description": "Unauthenticated at the application layer. Cluster isolation relies on\nnetwork policy (K8s NetworkPolicy / service mesh); external client auth\nbelongs at the ingress. Control-plane endpoints use `require_control_token`.",
           "operationId": "post_a2a",
           "parameters": [
             {
@@ -109,6 +111,7 @@ expression: snapshot
             "agents"
           ],
           "summary": "A2A over Server-Sent Events: POST /agents/{agent_package}/{agent_instance_id}/a2a/sse\nRequest body: JSON-RPC request. Response: Content-Type: text/event-stream; each event's\n`data` is one JSON-RPC response. Keep-alive comments sent on interval while stream is open.",
+          "description": "Unauthenticated at the application layer (same policy as `post_a2a`).",
           "operationId": "post_a2a_sse",
           "parameters": [
             {
@@ -733,6 +736,53 @@ expression: snapshot
           }
         }
       },
+      "/control/migrate": {
+        "post": {
+          "tags": [
+            "control"
+          ],
+          "summary": "Migrate an agent from this runner to a target runner.",
+          "description": "Drains the agent locally (waits for in-flight turns), then tells the target\nrunner to deploy the same content hash.",
+          "operationId": "post_migrate",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrateRequestDto"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Agent migrated successfully",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/MigrateResponseDto"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Invalid request"
+            },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
+            "404": {
+              "description": "Agent not found locally"
+            },
+            "501": {
+              "description": "Deployment manager not configured"
+            },
+            "502": {
+              "description": "Target runner unreachable"
+            }
+          }
+        }
+      },
       "/deploy": {
         "post": {
           "tags": [
@@ -763,6 +813,9 @@ expression: snapshot
             },
             "400": {
               "description": "Invalid deploy payload"
+            },
+            "401": {
+              "description": "Missing or invalid runner token"
             },
             "404": {
               "description": "Hash or version target not found"
@@ -800,6 +853,9 @@ expression: snapshot
                 }
               }
             },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
             "500": {
               "description": "Internal error"
             },
@@ -818,6 +874,25 @@ expression: snapshot
           "responses": {
             "200": {
               "description": "Provenance aggregate query response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            }
+          }
+        }
+      },
+      "/provenance/lifecycle-events": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "summary": "Query lifecycle events (agent boot/stop) from provenance.",
+          "operationId": "get_provenance_lifecycle_events",
+          "responses": {
+            "200": {
+              "description": "Provenance lifecycle events query response",
               "content": {
                 "application/json": {
                   "schema": {}
@@ -1064,6 +1139,9 @@ expression: snapshot
             },
             "400": {
               "description": "Invalid undeploy payload"
+            },
+            "401": {
+              "description": "Missing or invalid runner token"
             },
             "404": {
               "description": "Deployment not found"
@@ -2024,6 +2102,38 @@ expression: snapshot
             "timestamp_ms": "[timestamp_ms]"
           }
         },
+        "MigrateRequestDto": {
+          "type": "object",
+          "required": [
+            "hash",
+            "target_runner_endpoint"
+          ],
+          "properties": {
+            "hash": {
+              "type": "string",
+              "description": "Content hash of the agent to migrate."
+            },
+            "target_runner_endpoint": {
+              "type": "string",
+              "description": "HTTP endpoint of the target runner (e.g. http://runner-1.runner.agentium.svc:18080)."
+            }
+          }
+        },
+        "MigrateResponseDto": {
+          "type": "object",
+          "required": [
+            "migrated"
+          ],
+          "properties": {
+            "migrated": {
+              "type": "boolean"
+            },
+            "source_undeploy_failed": {
+              "type": "boolean",
+              "description": "True when the remote deploy succeeded but the local undeploy failed.\nThe agent may be running on both runners until the source is cleaned up."
+            }
+          }
+        },
         "PlanRevisionDto": {
           "type": "object",
           "description": "Plan revision for UI display.",
@@ -2411,6 +2521,10 @@ expression: snapshot
       {
         "name": "config",
         "description": "Tool configuration and secret requests (schema includes config type schemas)"
+      },
+      {
+        "name": "control",
+        "description": "Operational control plane: agent migration between runners."
       }
     ]
   }

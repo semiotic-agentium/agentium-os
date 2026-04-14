@@ -39,8 +39,10 @@ clap = { workspace = true }
 dotenvy = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
+futures-util = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 baml-rt-repository = { path = "../baml-rt-repository" }
@@ -51,7 +53,6 @@ baml-derive-core = { path = "../baml-derive-core" }
 baml-tools-slack = { path = "../tools/slack", features = ["test-support"] }
 async-trait = { workspace = true }
 dotenvy = { workspace = true }
-futures-util = { workspace = true }
 serde = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
@@ -67,3 +68,4 @@ slack = ["dep:baml-tools-slack"]
 security-eval = ["dep:baml-tools-security-eval"]
 http-tools = ["clickup", "notion", "slack", "security-eval"]
 llm-tests = []
+cluster-tests = []

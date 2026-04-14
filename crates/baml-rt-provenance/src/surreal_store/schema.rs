@@ -1,6 +1,6 @@
 //! SurrealDB DDL for the provenance store (`DEFINE INDEX`, FTS analyzer).
 
-use surrealdb::{Surreal, engine::local::Db};
+use surrealdb::{Surreal, engine::any::Any};
 
 use super::helpers::map_surreal_error;
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
 pub(super) const NS: &str = "provenance";
 pub(super) const DB: &str = "store";
 
-pub(super) async fn init_schema(db: &Surreal<Db>) -> Result<()> {
+pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
     // Define indexes for efficient queries.
     // prov_node: unique by node_id, indexed by label and common property lookups.
     let schema_queries = [

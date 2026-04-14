@@ -1,3 +1,5 @@
+#![cfg(feature = "llm-tests")]
+
 #[allow(dead_code, unused_imports)]
 mod common;
 
