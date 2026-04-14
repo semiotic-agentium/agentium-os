@@ -70,6 +70,12 @@ The harness checks both conditions at startup and exits with a clear message if 
 | 7 | Graceful drain | In-flight request during pod termination is handled gracefully; AgentStopped provenance event emitted |
 | 8 | Heartbeat advances | `last_heartbeat_ms` in `cluster_runners` advances by at least 5s over a 12s window |
 | 9 | Readyz 503 window | New pod returns 503 on `/readyz` during initialization before transitioning to 200 |
+| 10 | Distributed multi-agent conversation | Cleese calls Chapman cross-pod via LLM-driven `internal_a2a`; full conversation flows through the cluster mesh |
+| 11 | Full agent lifecycle | One agent, one hash: publish → deploy → use → migrate → transparent forward → undeploy → redeploy |
+| 12 | Provenance survives migration | Audit trail follows the agent across infrastructure; both runners see identical provenance from shared SurrealDB |
+| 13 | Stale runner exclusion | Force-killed runner excluded from placement routing within heartbeat TTL; recovers automatically on restart |
+| 14 | Concurrent deployment convergence | Same agent deployed on both runners simultaneously; each serves locally, placement converges |
+| 15 | Task lifecycle across pods | Multi-turn conversation with INPUT_REQUIRED; documents behavior when agent migrates mid-conversation |
 
 ## Interpreting failures
 
