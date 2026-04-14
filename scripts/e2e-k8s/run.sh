@@ -935,10 +935,17 @@ scenario_13_stale_runner_exclusion() {
   assert_ge "$hb_ms_after" 1 "runner-0 re-registered with fresh heartbeat" || return 1
   log_info "runner-0 re-registered (heartbeat=${hb_ms_after})"
 
-  # Verify dispatch-echo is reachable again (restored from PVC, re-placed)
+  # Re-deploy dispatch-echo on the recovered runner-0.
+  # Force-kill may corrupt the state DB, so we don't rely on auto-restore;
+  # the repository (content-addressable archive) survives on the PVC.
+  publish_fixture dispatch-echo "$RUNNER0_PORT" >/dev/null || return 1
+  deploy_hash "$hash" "$RUNNER0_PORT" "$E2E_TOKEN" >/dev/null || {
+    log_fail "Re-deploy after recovery failed — repository PVC may be lost"
+    return 1
+  }
   resp=$(a2a_sse_request "$RUNNER0_PORT" "dispatch-echo" "post-recovery test")
   assert_contains "$resp" "dispatch-echo" "dispatch-echo reachable after runner-0 recovery" || return 1
-  log_info "dispatch-echo restored and reachable after recovery"
+  log_info "dispatch-echo re-deployed and reachable after recovery"
 
   # Clean up
   undeploy_hash "$hash" "$RUNNER0_PORT" "$E2E_TOKEN"
