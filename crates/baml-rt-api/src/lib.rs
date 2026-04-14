@@ -6,6 +6,7 @@
 mod config_handlers;
 mod context_metrics;
 pub mod endpoint_validation;
+mod conversation_history;
 pub mod episode;
 mod handlers;
 mod mermaid;
@@ -21,6 +22,13 @@ mod spans;
 pub use context_metrics::{
     ContextMetricsError, ContextMetricsResponseDto, ContextMetricsService,
     ContextSessionMetricsDto, ContextTurnMetricsDto, TokenUsageDto,
+};
+pub use conversation_history::{
+    ConversationHistoryContentDto, ConversationHistoryError, ConversationHistoryFormat,
+    ConversationHistoryItemDto, ConversationHistoryPageDto, ConversationHistoryPageRequest,
+    ConversationHistoryProfile, ConversationHistoryQueryParams, ConversationHistoryRequest,
+    ConversationHistoryRequestParseError, ConversationHistoryService, CursorToken,
+    SessionStepOpDto, ToolOutcomeDto, paginate_items, profile_filter,
 };
 pub use episode::{
     ArtifactSummaryDto, EpisodeContentDto, EpisodeDurationDto, EpisodeEntryDto, EpisodeError,

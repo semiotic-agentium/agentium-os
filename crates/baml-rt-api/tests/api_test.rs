@@ -13,8 +13,9 @@ use axum::{
 };
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_api::{
-    MermaidError, MermaidService, ProvenanceOpsError, ProvenanceOpsService, api_router,
-    api_router_with_services,
+    ConversationHistoryError, ConversationHistoryPageDto, ConversationHistoryProfile,
+    ConversationHistoryRequest, ConversationHistoryService, MermaidError, MermaidService,
+    ProvenanceOpsError, ProvenanceOpsService, api_router, api_router_with_services,
 };
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
@@ -83,6 +84,10 @@ fn redact_variant_parts(v: Value) -> Value {
                         V::String("[prov_activity_anchor]".to_string())
                     }
                     "timestamp_ms" => V::String("[timestamp_ms]".to_string()),
+                    "timestampMs" => match &val {
+                        V::Number(_) | V::String(_) => V::String("[timestamp_ms]".to_string()),
+                        _ => redact_variant_parts(val),
+                    },
                     // Monotonic / wall-clock ordering from store; varies every run.
                     "a2a_event_order" => V::String("[a2a_event_order]".to_string()),
                     // Wall-clock ms from Surreal / store; varies every run.
@@ -132,9 +137,10 @@ fn looks_like_prov_activity_anchor(s: &str) -> bool {
     s.starts_with("prov:v1:payload:")
 }
 
-async fn prov_test_router(
+async fn prov_test_router_with_history(
     registry: Arc<dyn AgentRegistry>,
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+    conversation_history: Option<Arc<dyn ConversationHistoryService>>,
 ) -> axum::Router {
     use baml_rt_config::SurrealConfigStore;
     use baml_rt_llm_config::EmptySecretResolver;
@@ -155,12 +161,20 @@ async fn prov_test_router(
         provenance_ops,
         None, // planning
         None, // episode
+        conversation_history,
         tool_catalog,
         config_service,
         secret_resolver,
         None,
         None,
     )
+}
+
+async fn prov_test_router(
+    registry: Arc<dyn AgentRegistry>,
+    provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+) -> axum::Router {
+    prov_test_router_with_history(registry, provenance_ops, None).await
 }
 
 /// Snapshot-friendly representation of finished spans: name + attributes (variant values redacted).
@@ -346,6 +360,10 @@ struct RealProvenanceOps {
     store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
 }
 
+struct RealConversationHistory {
+    store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
+}
+
 #[async_trait]
 impl ProvenanceOpsService for RealProvenanceOps {
     async fn query(
@@ -357,6 +375,30 @@ impl ProvenanceOpsService for RealProvenanceOps {
             .query_ops(request)
             .await
             .map_err(|e| ProvenanceOpsError::Other(Box::new(e)))
+    }
+}
+
+#[async_trait]
+impl ConversationHistoryService for RealConversationHistory {
+    async fn page(
+        &self,
+        request: &ConversationHistoryRequest,
+    ) -> std::result::Result<ConversationHistoryPageDto, ConversationHistoryError> {
+        use baml_rt_provenance::ProvenanceQueryApi;
+        let rows = self
+            .store
+            .query_conversation_context(&request.context_id, None, request.task_id.as_ref())
+            .await
+            .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
+        let mut page = baml_rt_api::paginate_items(rows, request)?;
+        if matches!(request.profile, ConversationHistoryProfile::Compact) {
+            page.items = page
+                .items
+                .into_iter()
+                .map(|item| baml_rt_api::profile_filter(item, request.profile))
+                .collect();
+        }
+        Ok(page)
     }
 }
 
@@ -1481,6 +1523,113 @@ async fn get_provenance_messages_returns_snapshot() {
         .await
         .unwrap();
 
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot = response_snapshot(status, &body);
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_conversation_history_returns_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let store = seeded_provenance_store().await;
+    let context_id = ContextId::new(100, 1).to_string();
+    let app = prov_test_router_with_history(
+        registry,
+        None,
+        Some(Arc::new(RealConversationHistory { store }) as Arc<dyn ConversationHistoryService>),
+    )
+    .await;
+    let uri = format!("/contexts/{context_id}/conversation-history?limit=3&profile=full");
+
+    let response = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot = response_snapshot(status, &body);
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_conversation_history_pagination_returns_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let store = seeded_provenance_store().await;
+    let context_id = ContextId::new(100, 1).to_string();
+    let app = prov_test_router_with_history(
+        registry,
+        None,
+        Some(Arc::new(RealConversationHistory { store }) as Arc<dyn ConversationHistoryService>),
+    )
+    .await;
+
+    let page_1_uri = format!("/contexts/{context_id}/conversation-history?limit=2");
+    let response_page_1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(page_1_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status_1 = response_page_1.status();
+    let body_1 = axum::body::to_bytes(response_page_1.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_1_json: Value = serde_json::from_slice(&body_1).unwrap();
+    let cursor = body_1_json
+        .get("nextCursor")
+        .and_then(Value::as_str)
+        .expect("nextCursor on first page")
+        .to_string();
+    let page_2_uri = format!("/contexts/{context_id}/conversation-history?limit=2&cursor={cursor}");
+
+    let response_page_2 = app
+        .oneshot(
+            Request::builder()
+                .uri(page_2_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status_2 = response_page_2.status();
+    let body_2 = axum::body::to_bytes(response_page_2.into_body(), usize::MAX)
+        .await
+        .unwrap();
+
+    let snapshot = serde_json::json!({
+        "page1": response_snapshot(status_1, &body_1),
+        "page2": response_snapshot(status_2, &body_2),
+    });
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_conversation_history_invalid_cursor_returns_400_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let store = seeded_provenance_store().await;
+    let context_id = ContextId::new(100, 1).to_string();
+    let app = prov_test_router_with_history(
+        registry,
+        None,
+        Some(Arc::new(RealConversationHistory { store }) as Arc<dyn ConversationHistoryService>),
+    )
+    .await;
+    let uri = format!("/contexts/{context_id}/conversation-history?cursor=bad-token");
+
+    let response = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
     let status = response.status();
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await

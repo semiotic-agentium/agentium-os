@@ -31,6 +31,10 @@ use serde_json::Value;
 use crate::{
     ApiState, ClusterMode,
     context_metrics::{ContextMetricsError, ContextMetricsResponseDto},
+    conversation_history::{
+        ConversationHistoryPageDto, ConversationHistoryQueryParams, ConversationHistoryRequest,
+        ConversationHistoryRequestParseError,
+    },
     episode::EpisodeSnapshotDto,
     mermaid::MermaidError,
     metrics,
@@ -121,6 +125,10 @@ fn problem(status: u16, title: &str, detail: impl Into<String>) -> HttpApiProble
         .expect("standard HTTP status codes are always valid")
         .title(title)
         .detail(detail)
+}
+
+fn bad_request_problem(detail: impl Into<String>) -> HttpApiProblem {
+    problem(400, "Bad Request", detail)
 }
 
 fn deployment_status_to_str(status: DeploymentStatus) -> &'static str {
@@ -1146,6 +1154,8 @@ pub async fn get_provenance_tool_calls(
     get,
     path = "/provenance/messages",
     tag = "provenance",
+    summary = "Message analytics query (not transcript reconstruction)",
+    description = "Analytics-only message aggregates/dimensions. For UI chat/provenance observation, use GET /contexts/{context_id}/conversation-history and /contexts/{context_id}/conversation-history/stream.",
     responses((status = 200, description = "Provenance message query response", body = Value))
 )]
 pub async fn get_provenance_messages(
@@ -1469,6 +1479,157 @@ pub async fn get_episode_stream(
         }
     };
     metrics::record_request("get_episode_stream", "success", start.elapsed());
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
+}
+
+fn parse_conversation_history_request(
+    context_id: &str,
+    query: ConversationHistoryQueryParams,
+) -> Result<ConversationHistoryRequest, HttpApiProblem> {
+    ConversationHistoryRequest::from_parts(context_id, query)
+        .map_err(|e: ConversationHistoryRequestParseError| bad_request_problem(e.to_string()))
+}
+
+/// Get normalized provenance conversation history for a context (optionally scoped to a task).
+#[utoipa::path(
+    get,
+    path = "/contexts/{context_id}/conversation-history",
+    tag = "provenance",
+    summary = "Conversation history page by context_id",
+    params(
+        ("context_id" = String, Path, description = "Provenance context ID"),
+        ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 100"),
+        ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
+        ("profile" = Option<String>, Query, description = "Payload profile: full or compact"),
+        ("format" = Option<String>, Query, description = "Response format: full")
+    ),
+    responses(
+        (status = 200, description = "Conversation history page", body = ConversationHistoryPageDto),
+        (status = 400, description = "Invalid context/query/cursor"),
+        (status = 501, description = "Conversation history service not configured"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_conversation_history(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+    Query(query): Query<ConversationHistoryQueryParams>,
+) -> HttpResult<Json<ConversationHistoryPageDto>> {
+    let span = spans::get_conversation_history(&context_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let req = parse_conversation_history_request(&context_id, query)?;
+    let Some(svc) = &state.conversation_history else {
+        metrics::record_request("get_conversation_history", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Conversation history service not configured",
+        ));
+    };
+    service_result_to_http("get_conversation_history", start, svc.page(&req).await)
+}
+
+/// SSE stream of normalized conversation snapshots for one context scope.
+///
+/// Event source is provenance-normalized reads, not A2A stream relays.
+#[utoipa::path(
+    get,
+    path = "/contexts/{context_id}/conversation-history/stream",
+    tag = "provenance",
+    summary = "Streaming conversation history updates by context_id",
+    params(
+        ("context_id" = String, Path, description = "Provenance context ID"),
+        ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 100"),
+        ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
+        ("profile" = Option<String>, Query, description = "Payload profile: full or compact"),
+        ("format" = Option<String>, Query, description = "Response format: full")
+    ),
+    responses(
+        (status = 200, description = "SSE stream of conversation history snapshots", content_type = "text/event-stream"),
+        (status = 400, description = "Invalid context/query/cursor"),
+        (status = 501, description = "Conversation history service not configured"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_conversation_history_stream(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+    Query(query): Query<ConversationHistoryQueryParams>,
+) -> HttpResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    let span = spans::get_conversation_history_stream(&context_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let req = parse_conversation_history_request(&context_id, query)?;
+    let Some(svc) = &state.conversation_history else {
+        metrics::record_request(
+            "get_conversation_history_stream",
+            "unavailable",
+            start.elapsed(),
+        );
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Conversation history service not configured",
+        ));
+    };
+    let initial = match service_result_to_http(
+        "get_conversation_history_stream",
+        start,
+        svc.page(&req).await,
+    ) {
+        Ok(axum::Json(s)) => s,
+        Err(e) => return Err(e),
+    };
+
+    let svc = Arc::clone(svc);
+    let request = req.clone();
+    let stream = async_stream::stream! {
+        let mut latest = initial.clone();
+        let data = serde_json::to_string(&initial).unwrap_or_else(|_| "{}".into());
+        yield Ok::<_, Infallible>(Event::default().event("snapshot").data(data));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            if std::time::Instant::now() > deadline {
+                let data = serde_json::to_string(&latest).unwrap_or_else(|_| "{}".into());
+                yield Ok::<_, Infallible>(Event::default().event("done").data(data));
+                break;
+            }
+            match svc.page(&request).await {
+                Ok(page) => {
+                    let changed = page.items.len() != latest.items.len()
+                        || page.next_cursor != latest.next_cursor
+                        || page
+                            .items
+                            .last()
+                            .map(|item| item.activity_anchor.as_str())
+                            != latest.items.last().map(|item| item.activity_anchor.as_str());
+                    if !changed {
+                        continue;
+                    }
+                    latest = page;
+                    let data = serde_json::to_string(&latest).unwrap_or_else(|_| "{}".into());
+                    yield Ok::<_, Infallible>(Event::default().event("snapshot").data(data));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        context_id = %request.context_id,
+                        error = %e,
+                        "Conversation history snapshot failed during stream"
+                    );
+                }
+            }
+        }
+    };
+    metrics::record_request(
+        "get_conversation_history_stream",
+        "success",
+        start.elapsed(),
+    );
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
 

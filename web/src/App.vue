@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, watch, ref } from "vue";
 import AgentSelector from "./components/AgentSelector.vue";
 import ChatTabs from "./components/ChatTabs.vue";
 import ChatWindow from "./components/ChatWindow.vue";
+import ConversationHistorySelector from "./components/ConversationHistorySelector.vue";
 import Dashboard from "./components/Dashboard.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import ErrorBoundary from "./components/ErrorBoundary.vue";
@@ -45,21 +46,45 @@ const isLoading = computed(() => activeClient.value?.isLoading.value ?? false);
 const provenanceDiagram = computed(() => activeClient.value?.provenanceDiagram.value ?? "");
 const traceRefreshGeneration = computed(() => activeClient.value?.traceRefreshGeneration.value ?? 0);
 const contextMetrics = computed(() => activeClient.value?.contextMetrics.value ?? null);
+const conversationHistoryOptions = computed(
+  () => activeClient.value?.conversationHistoryOptions.value ?? [],
+);
+const selectedHistoryContextId = computed(
+  () => activeClient.value?.selectedHistoryContextId.value ?? null,
+);
+const historyLoading = computed(() => activeClient.value?.historyLoading.value ?? false);
 const contextId = computed(() => activeClient.value?.contextId.value ?? undefined);
 const taskId = computed(() => activeClient.value?.taskId.value ?? null);
 const workflowProgress = computed(() => activeClient.value?.workflowProgress.value ?? { phase: "idle" as const, nodes: [], completedNodes: [] });
 const awaitingInput = computed(() => activeClient.value?.awaitingInput.value ?? false);
 const inputRequiredPrompt = computed(() => activeClient.value?.inputRequiredPrompt.value ?? "");
-
-function fetchAgents() { activeClient.value?.fetchAgents(); }
+function normalizeChatTitle(text: string): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  if (!compact) return "New Chat";
+  return compact.length > 48 ? `${compact.slice(0, 45)}...` : compact;
+}
+function maybeSetActiveTabTitle(title: string, force = false) {
+  if (!activeTabId.value) return;
+  const tab = tabs.value.find((t) => t.id === activeTabId.value);
+  if (!tab) return;
+  if (!force && tab.title !== "New Chat") return;
+  renameTab(tab.id, normalizeChatTitle(title));
+}
 function selectAgent(agent: AgentDiscoveryEntry) {
   activeClient.value?.selectAgent(agent);
-  if (activeTabId.value) {
-    renameTab(activeTabId.value, agent.agent_card?.name ?? agent.name);
-  }
 }
-function sendMessage(text: string) { activeClient.value?.sendMessage(text); }
+function sendMessage(text: string) {
+  maybeSetActiveTabTitle(text);
+  activeClient.value?.sendMessage(text);
+}
 function cancelStream() { activeClient.value?.cancelStream(); }
+function refreshConversationHistories() {
+  activeClient.value?.fetchConversationHistoryOptions();
+}
+function selectConversationHistory(option: { contextId: string; taskId?: string | null; preview?: string }) {
+  maybeSetActiveTabTitle(option.preview ?? option.contextId, true);
+  activeClient.value?.loadConversationHistoryContext(option.contextId);
+}
 
 const { confirm } = useConfirm();
 
@@ -78,6 +103,101 @@ const { createQuery } = useProvenanceOps();
 
 // Active view — defaults to dashboard as landing page
 const view = ref<"dashboard" | "chat" | "settings">("dashboard");
+const isApplyingRouteState = ref(false);
+let lastRouteKey = "";
+
+type ViewName = "dashboard" | "chat" | "settings";
+type UiRouteState = {
+  view: ViewName;
+  agentPackage: string | null;
+  agentInstance: string | null;
+  contextId: string | null;
+};
+
+function parseView(raw: string | null): ViewName {
+  if (raw === "chat" || raw === "settings" || raw === "dashboard") return raw;
+  return "dashboard";
+}
+
+function readRouteStateFromUrl(): UiRouteState {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    view: parseView(params.get("view")),
+    agentPackage: params.get("agentPackage"),
+    agentInstance: params.get("agentInstance"),
+    contextId: params.get("contextId"),
+  };
+}
+
+function routeStateKey(state: UiRouteState): string {
+  return JSON.stringify(state);
+}
+
+function currentRouteState(): UiRouteState {
+  return {
+    view: view.value,
+    agentPackage: selectedAgent.value?.agent_package ?? null,
+    agentInstance: selectedAgent.value?.agent_instance_id ?? null,
+    contextId: selectedHistoryContextId.value ?? contextId.value ?? null,
+  };
+}
+
+function writeRouteState(push: boolean): void {
+  if (isApplyingRouteState.value) return;
+  const state = currentRouteState();
+  const key = routeStateKey(state);
+  if (key === lastRouteKey) return;
+  const url = new URL(window.location.href);
+  const params = new URLSearchParams(url.search);
+  params.set("view", state.view);
+  if (state.agentPackage) params.set("agentPackage", state.agentPackage);
+  else params.delete("agentPackage");
+  if (state.agentInstance) params.set("agentInstance", state.agentInstance);
+  else params.delete("agentInstance");
+  if (state.contextId) params.set("contextId", state.contextId);
+  else params.delete("contextId");
+  url.search = params.toString();
+
+  if (push) {
+    window.history.pushState(state, "", url.toString());
+  } else {
+    window.history.replaceState(state, "", url.toString());
+  }
+  lastRouteKey = key;
+}
+
+async function applyRouteStateFromUrl(): Promise<void> {
+  const next = readRouteStateFromUrl();
+  const nextKey = routeStateKey(next);
+  if (nextKey === lastRouteKey) return;
+  isApplyingRouteState.value = true;
+  try {
+    view.value = next.view;
+    if (activeClient.value) {
+      await activeClient.value.fetchAgents();
+    }
+    if (next.agentPackage && activeClient.value?.agents.value.length) {
+      const match = activeClient.value.agents.value.find(
+        (a) =>
+          a.agent_package === next.agentPackage &&
+          (!next.agentInstance || a.agent_instance_id === next.agentInstance),
+      );
+      if (match) {
+        activeClient.value.selectAgent(match);
+      }
+    }
+    if (next.contextId && activeClient.value) {
+      await activeClient.value.loadConversationHistoryContext(next.contextId);
+    }
+    lastRouteKey = nextKey;
+  } finally {
+    isApplyingRouteState.value = false;
+  }
+}
+
+function onPopState(): void {
+  void applyRouteStateFromUrl();
+}
 
 // Trace pane only displays the first diagram; avoid parsing/rendering all agent mermaid blocks.
 const provenancePaneDiagrams = computed(() => {
@@ -147,14 +267,31 @@ async function checkHealth() {
 }
 
 onMounted(() => {
-  fetchAgents();
+  void applyRouteStateFromUrl().then(() => {
+    writeRouteState(false);
+  });
   checkHealth();
   healthTimer = setInterval(checkHealth, 30_000);
+  window.addEventListener("popstate", onPopState);
 });
 
 onUnmounted(() => {
   if (healthTimer) clearInterval(healthTimer);
+  window.removeEventListener("popstate", onPopState);
 });
+
+watch(
+  [
+    view,
+    () => activeTabId.value,
+    () => selectedAgent.value?.agent_package ?? null,
+    () => selectedAgent.value?.agent_instance_id ?? null,
+    () => selectedHistoryContextId.value ?? contextId.value ?? null,
+  ],
+  () => {
+    writeRouteState(true);
+  },
+);
 </script>
 
 <template>
@@ -193,6 +330,14 @@ onUnmounted(() => {
             @create="createTab()"
           />
           <AgentSelector :agents="agents" :selected="selectedAgent" @select="handleSelectAgent" />
+          <ConversationHistorySelector
+            :histories="conversationHistoryOptions"
+            :selected-context-id="selectedHistoryContextId"
+            :loading="historyLoading"
+            :disabled="!selectedAgent"
+            @select="selectConversationHistory"
+            @refresh="refreshConversationHistories"
+          />
         </div>
 
         <div class="app-body">

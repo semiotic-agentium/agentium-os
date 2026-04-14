@@ -26,8 +26,8 @@ use utoipa::openapi::OpenApi as OpenApiSpec;
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
-    ContextMetricsService, EpisodeService, MermaidService, PlanningService, ProvenanceOpsService,
-    config_handlers, handlers, repository_publish,
+    ContextMetricsService, ConversationHistoryService, EpisodeService, MermaidService,
+    PlanningService, ProvenanceOpsService, config_handlers, handlers, repository_publish,
 };
 
 /// Deployment topology governing control-endpoint authentication.
@@ -51,6 +51,7 @@ pub struct ApiState {
     pub provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     pub planning: Option<Arc<dyn PlanningService>>,
     pub episode: Option<Arc<dyn EpisodeService>>,
+    pub conversation_history: Option<Arc<dyn ConversationHistoryService>>,
     pub deployment_manager: Option<Arc<dyn DeploymentManager>>,
     pub repository_url: Option<String>,
     pub tool_catalog: Arc<dyn ToolCatalog>,
@@ -107,6 +108,7 @@ pub async fn api_router(
         None,
         None,
         None,
+        None,
         tool_catalog,
         config_service,
         secret_resolver,
@@ -125,6 +127,7 @@ pub fn api_router_with_services(
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     planning: Option<Arc<dyn PlanningService>>,
     episode: Option<Arc<dyn EpisodeService>>,
+    conversation_history: Option<Arc<dyn ConversationHistoryService>>,
     tool_catalog: Arc<dyn ToolCatalog>,
     config_service: Arc<dyn ConfigService>,
     secret_resolver: Arc<dyn SecretResolver>,
@@ -138,6 +141,7 @@ pub fn api_router_with_services(
         provenance_ops,
         planning,
         episode,
+        conversation_history,
         None,
         None,
         None,
@@ -161,6 +165,7 @@ pub fn api_router_with_services_and_deploy(
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     planning: Option<Arc<dyn PlanningService>>,
     episode: Option<Arc<dyn EpisodeService>>,
+    conversation_history: Option<Arc<dyn ConversationHistoryService>>,
     deployment_manager: Option<Arc<dyn DeploymentManager>>,
     repository_url: Option<String>,
     repository_service: Option<Arc<baml_rt_repository::RepositoryService>>,
@@ -207,6 +212,10 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(handlers::get_episode))
         .routes(utoipa_axum::routes!(handlers::get_episode_text))
         .routes(utoipa_axum::routes!(handlers::get_episode_stream))
+        .routes(utoipa_axum::routes!(handlers::get_conversation_history))
+        .routes(utoipa_axum::routes!(
+            handlers::get_conversation_history_stream
+        ))
         .routes(utoipa_axum::routes!(handlers::post_deploy))
         .routes(utoipa_axum::routes!(handlers::post_undeploy))
         .routes(utoipa_axum::routes!(handlers::get_deployments))
@@ -235,7 +244,10 @@ pub fn api_router_with_services_and_deploy(
     );
     let mut tag_provenance = utoipa::openapi::Tag::new("provenance");
     tag_provenance.description =
-        Some("Provenance-backed metrics and operational query APIs.".to_string());
+        Some(
+            "Provenance-backed read APIs. UI observation should use conversation-history/episode snapshot+stream routes; /provenance/messages remains analytics-oriented."
+                .to_string(),
+        );
     let mut tag_deployments = utoipa::openapi::Tag::new("deployments");
     tag_deployments.description =
         Some("Runner-local deployment lifecycle APIs (deploy, undeploy, list).".to_string());
@@ -263,6 +275,7 @@ pub fn api_router_with_services_and_deploy(
         provenance_ops,
         planning,
         episode,
+        conversation_history,
         deployment_manager,
         repository_url,
         tool_catalog,
@@ -324,6 +337,7 @@ pub async fn serve(
         None,
         None,
         None,
+        None,
         tool_catalog,
         config_service,
         secret_resolver,
@@ -343,6 +357,7 @@ pub async fn serve_with_services(
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     planning: Option<Arc<dyn PlanningService>>,
     episode: Option<Arc<dyn EpisodeService>>,
+    conversation_history: Option<Arc<dyn ConversationHistoryService>>,
     tool_catalog: Arc<dyn ToolCatalog>,
     config_service: Arc<dyn ConfigService>,
     secret_resolver: Arc<dyn SecretResolver>,
@@ -357,6 +372,7 @@ pub async fn serve_with_services(
         provenance_ops,
         planning,
         episode,
+        conversation_history,
         None,
         None,
         None,
@@ -382,6 +398,7 @@ pub async fn serve_with_services_and_deploy(
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     planning: Option<Arc<dyn PlanningService>>,
     episode: Option<Arc<dyn EpisodeService>>,
+    conversation_history: Option<Arc<dyn ConversationHistoryService>>,
     deployment_manager: Option<Arc<dyn DeploymentManager>>,
     repository_url: Option<String>,
     repository_service: Option<Arc<baml_rt_repository::RepositoryService>>,
@@ -401,6 +418,7 @@ pub async fn serve_with_services_and_deploy(
         provenance_ops,
         planning,
         episode,
+        conversation_history,
         deployment_manager,
         repository_url,
         repository_service,

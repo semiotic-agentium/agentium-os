@@ -44,6 +44,12 @@ type DisplayEvent = {
   count?: number;
 };
 
+type FsmStepState = {
+  key: string;
+  label: string;
+  status: "done" | "active" | "pending";
+};
+
 function eventDisplay(ev: ToolEvent): DisplayEvent {
   if (ev.kind === "assistant_thinking" && typeof ev.thinking === "string") {
     return { kind: "thinking", text: ev.thinking.trim() };
@@ -100,11 +106,46 @@ const displayEvents = computed<DisplayEvent[]>(() => {
   return collapsed;
 });
 
+const fsmSteps = computed<FsmStepState[]>(() => {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+
+  for (const ev of props.block.events) {
+    const raw = ev.subtype ?? ev.text ?? "";
+    const match = raw.match(/^(?:Session step|FSM phase):\s*(.+)$/i);
+    if (!match) continue;
+    const key = match[1]!.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    ordered.push(key);
+  }
+
+  if (ordered.length === 0) return [];
+  const activeIdx = ordered.length - 1;
+  return ordered.map((key, idx) => ({
+    key,
+    label: key.replace(/_/g, " "),
+    status:
+      idx < activeIdx
+        ? "done"
+        : idx === activeIdx && props.block.status === "Running"
+          ? "active"
+          : idx === activeIdx
+            ? "done"
+            : "pending",
+  }));
+});
+
 /** Show base name for repeated blocks: "Status 2" → "Status", "toolName 2" → "toolName". */
-const displayName = computed(() => {
+const nameParts = computed(() => {
   const n = props.block.toolName;
   const m = n.match(/^(.+) \d+$/);
-  return m ? m[1]! : n;
+  const ord = n.match(/^.+ (\d+)$/);
+  return {
+    displayName: m ? m[1]! : n,
+    ordinal: ord ? Number.parseInt(ord[1]!, 10) : 1,
+    hasExplicitOrdinal: Boolean(ord),
+  };
 });
 
 function onBodyScroll() {
@@ -128,8 +169,22 @@ watch(
 <template>
   <div class="tool-card">
     <div class="tool-card-header">
-      <span class="tool-name">{{ displayName }}</span>
+      <span class="tool-name">
+        {{ nameParts.displayName }}
+        <span v-if="nameParts.hasExplicitOrdinal" class="tool-ordinal">#{{ nameParts.ordinal }}</span>
+      </span>
       <span class="tool-status">{{ block.status }}</span>
+    </div>
+    <div v-if="fsmSteps.length > 0" class="fsm-progress" role="status" aria-label="FSM progress">
+      <div
+        v-for="(step, idx) in fsmSteps"
+        :key="`${step.key}-${idx}`"
+        class="fsm-step"
+        :data-status="step.status"
+      >
+        <span class="fsm-dot" aria-hidden="true"></span>
+        <span class="fsm-label">{{ step.label }}</span>
+      </div>
     </div>
     <div v-if="block.events.length" ref="bodyEl" class="tool-card-body" @scroll="onBodyScroll">
       <div
@@ -184,6 +239,13 @@ watch(
   color: var(--text);
 }
 
+.tool-ordinal {
+  margin-left: 0.35rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .tool-status {
   color: var(--text-muted);
 }
@@ -192,6 +254,53 @@ watch(
   max-height: 200px;
   overflow-y: auto;
   padding: 0.5rem 0.75rem;
+}
+
+.fsm-progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--primary-subtle) 35%, transparent);
+}
+
+.fsm-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  line-height: 1;
+  text-transform: lowercase;
+  color: var(--text-muted);
+}
+
+.fsm-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-muted);
+  opacity: 0.5;
+}
+
+.fsm-step[data-status="done"] {
+  color: var(--text-secondary);
+}
+
+.fsm-step[data-status="done"] .fsm-dot {
+  opacity: 0.95;
+  background: var(--status-green);
+}
+
+.fsm-step[data-status="active"] {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.fsm-step[data-status="active"] .fsm-dot {
+  opacity: 1;
+  background: var(--primary);
+  animation: pulse-dot 1.2s ease-in-out infinite;
 }
 
 .tool-event {

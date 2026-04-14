@@ -57,8 +57,8 @@ use clap::Parser;
 use config::{Cli, ProvenanceDb, provenance_config_builder};
 use serde_json::Value;
 use services::{
-    ContextMetricsServiceImpl, EpisodeServiceImpl, MermaidServiceImpl, PlanningServiceImpl,
-    ProvenanceOpsServiceImpl,
+    ContextMetricsServiceImpl, ConversationHistoryServiceImpl, EpisodeServiceImpl,
+    MermaidServiceImpl, PlanningServiceImpl, ProvenanceOpsServiceImpl,
 };
 use stdio::unix_timestamp_secs;
 use tracing::{error, info, warn};
@@ -504,6 +504,10 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         let registry_impl = ready.registry();
         let episode =
             Some(Arc::new(EpisodeServiceImpl::new(store)) as Arc<dyn baml_rt_api::EpisodeService>);
+        let conversation_history = Some(Arc::new(ConversationHistoryServiceImpl::new(
+            runner.provenance_config().store().clone(),
+        ))
+            as Arc<dyn baml_rt_api::ConversationHistoryService>);
         let web_dir = config.web_dir.clone();
         info!(
             bind = %bind,
@@ -527,6 +531,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
                 provenance_ops,
                 planning,
                 episode,
+                conversation_history,
                 Some(runner.clone() as Arc<dyn DeploymentManager>),
                 Some(config.repository_url.clone()),
                 Some(repository_service.clone()),
