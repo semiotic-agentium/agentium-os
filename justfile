@@ -610,3 +610,9 @@ list-tools:
 # SDK CLI: list all agent packages
 list-agents:
     cargo run --release -p cargo-agent-platform -- list-agents
+
+# Run E2E k8s tests against a real k3d cluster.
+# Prerequisites: docker/podman, k3d, kubectl, jq, curl, Rust toolchain, Node.js.
+# First run builds the Docker image (~5 min) and agent builder binary.
+e2e-k8s:
+    ./scripts/e2e-k8s/run.sh
