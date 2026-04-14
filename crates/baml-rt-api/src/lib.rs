@@ -6,8 +6,8 @@
 mod config_handlers;
 mod context_index;
 mod context_metrics;
-pub mod endpoint_validation;
 mod conversation_history;
+pub mod endpoint_validation;
 pub mod episode;
 mod handlers;
 mod mermaid;
