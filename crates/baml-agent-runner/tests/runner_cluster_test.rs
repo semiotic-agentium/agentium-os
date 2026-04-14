@@ -868,6 +868,35 @@ mod cluster {
     }
 
     #[tokio::test]
+    async fn get_deployments_requires_auth_in_cluster_mode() {
+        let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+        ensure_fixture_runtime_types();
+
+        let surreal = SurrealSubprocess::start();
+
+        // Cluster mode without a token → control endpoints fail-closed.
+        let runner = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .without_token()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint("http://10.0.0.1:18080"),
+        )
+        .await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .get(format!("{}/deployments", runner.base_url))
+            .send()
+            .await
+            .expect("GET /deployments without token in cluster mode");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "cluster mode should reject unauthenticated GET /deployments"
+        );
+    }
+
+    #[tokio::test]
     async fn cross_runner_a2a_forwarding() {
         let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
         ensure_fixture_runtime_types();

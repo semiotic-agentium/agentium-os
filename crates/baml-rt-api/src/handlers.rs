@@ -58,27 +58,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         == 0
 }
 
-/// Validate `X-Runner-Token` header against configured runner token.
-/// Returns Ok(()) if no token is configured or if the token matches.
-#[allow(clippy::result_large_err)]
-fn require_runner_token(state: &ApiState, headers: &HeaderMap) -> Result<(), HttpApiProblem> {
-    if let Some(expected) = &state.runner_token {
-        let provided = headers
-            .get("X-Runner-Token")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
-            return Err(problem(
-                401,
-                "Unauthorized",
-                "missing or invalid X-Runner-Token",
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Authorization decision for control endpoints (deploy, undeploy, migrate).
+/// Authorization decision for control endpoints (deploy, undeploy, migrate, deployments).
 ///
 /// - **Cluster mode**: rejects when no token is configured (fail-closed).
 /// - **Standalone mode**: allows unauthenticated access when no token is
@@ -403,7 +383,7 @@ pub async fn get_deployments(
     State(state): State<Arc<ApiState>>,
     headers: HeaderMap,
 ) -> HttpResult<Json<Vec<DeploymentRecordDto>>> {
-    require_runner_token(&state, &headers)?;
+    require_control_token(&state, &headers)?;
     let Some(manager) = &state.deployment_manager else {
         return Err(problem(
             501,
