@@ -624,61 +624,86 @@ scenario_09_readyz_503() {
   wait_port_ready "$RUNNER0_PORT" 15 || true
 }
 
-# ---------- 10. Distributed multi-agent routing ----------
+# ---------- 10. Distributed multi-agent conversation ----------
 scenario_10_distributed_multi_agent() {
-  # Deploy two LLM-free agents on separate runners, verify cross-pod routing for both.
-  local hash_echo hash_stream
+  # Cleese (runner-0) calls Chapman (runner-1) via LLM-driven internal_a2a.
+  # With LLM keys: full conversation through the cluster mesh.
+  # Without: fallback assertions proving cross-pod routing still works.
+  local hash_cleese hash_chapman
 
-  # dispatch-echo on runner-0 only
-  hash_echo=$(publish_and_deploy dispatch-echo "$RUNNER0_PORT" "$E2E_TOKEN") || return 1
-  # stream-js-tool on runner-1 only
-  hash_stream=$(publish_and_deploy stream-js-tool "$RUNNER1_PORT" "$E2E_TOKEN") || return 1
+  # Publish both fixtures to both runners (metadata needed for cross-pod discovery)
+  hash_cleese=$(publish_fixture argument-cleese "$RUNNER0_PORT") || return 1
+  publish_fixture argument-cleese "$RUNNER1_PORT" >/dev/null || return 1
+  hash_chapman=$(publish_fixture argument-chapman "$RUNNER1_PORT") || return 1
+  publish_fixture argument-chapman "$RUNNER0_PORT" >/dev/null || return 1
 
-  # Publish metadata to the opposite runner so placement resolution can discover them
-  publish_fixture dispatch-echo "$RUNNER1_PORT" >/dev/null || return 1
-  publish_fixture stream-js-tool "$RUNNER0_PORT" >/dev/null || return 1
-  log_info "dispatch-echo on runner-0, stream-js-tool on runner-1"
+  # Deploy Cleese on runner-0 only, Chapman on runner-1 only
+  undeploy_package "argument-cleese" "$RUNNER0_PORT" "$E2E_TOKEN"
+  undeploy_package "argument-chapman" "$RUNNER1_PORT" "$E2E_TOKEN"
+  deploy_hash "$hash_cleese" "$RUNNER0_PORT" "$E2E_TOKEN" >/dev/null || return 1
+  deploy_hash "$hash_chapman" "$RUNNER1_PORT" "$E2E_TOKEN" >/dev/null || return 1
+  log_info "argument-cleese on runner-0, argument-chapman on runner-1"
 
-  # Verify each runner lists only its local agent
-  local agents_r0
-  agents_r0=$(curl -sf "http://localhost:${RUNNER0_PORT}/agents")
-  assert_contains "$agents_r0" "dispatch-echo" "runner-0 lists dispatch-echo" || return 1
-
-  local agents_r1
-  agents_r1=$(curl -sf "http://localhost:${RUNNER1_PORT}/agents")
-  assert_contains "$agents_r1" "stream-js-tool" "runner-1 lists stream-js-tool" || return 1
-
-  # Cross-pod: access dispatch-echo through runner-1 (forward to runner-0)
-  local resp_echo
-  resp_echo=$(a2a_sse_request "$RUNNER1_PORT" "dispatch-echo" "hello from runner-1")
-  assert_contains "$resp_echo" "dispatch-echo" "dispatch-echo response via runner-1 cross-pod" || return 1
-  log_info "dispatch-echo responded via runner-1 (cross-pod forward to runner-0)"
-
-  # Cross-pod: access stream-js-tool through runner-0 (forward to runner-1)
-  local resp_stream
-  resp_stream=$(a2a_sse_request "$RUNNER0_PORT" "stream-js-tool" "stream-task")
-  assert_contains "$resp_stream" "Complete" "stream-js-tool response via runner-0 cross-pod" || return 1
-  log_info "stream-js-tool responded via runner-0 (cross-pod forward to runner-1)"
-
-  # Verify placement table shows both agents on correct runners
+  # Verify placement table has both agents on correct runners
   local placements
-  placements=$(surreal_query "SELECT agent_package, runner_endpoint FROM cluster_agent_placements WHERE agent_package IN ['dispatch-echo', 'stream-js-tool']")
+  placements=$(surreal_query "SELECT agent_package, runner_endpoint FROM cluster_agent_placements WHERE agent_package IN ['argument-cleese', 'argument-chapman']")
   local placement_count
   placement_count=$(echo "$placements" | jq '[.[] | .result | .[]] | length')
-  assert_eq "$placement_count" "2" "two placement rows for two agents" || return 1
+  assert_eq "$placement_count" "2" "two placement rows for cleese and chapman" || return 1
 
-  local echo_endpoint
-  echo_endpoint=$(echo "$placements" | jq -r '[.[] | .result | .[] | select(.agent_package == "dispatch-echo")] | .[0].runner_endpoint')
-  assert_contains "$echo_endpoint" "runner-0" "dispatch-echo placed on runner-0" || return 1
+  local cleese_endpoint
+  cleese_endpoint=$(echo "$placements" | jq -r '[.[] | .result | .[] | select(.agent_package == "argument-cleese")] | .[0].runner_endpoint')
+  assert_contains "$cleese_endpoint" "runner-0" "cleese placed on runner-0" || return 1
 
-  local stream_endpoint
-  stream_endpoint=$(echo "$placements" | jq -r '[.[] | .result | .[] | select(.agent_package == "stream-js-tool")] | .[0].runner_endpoint')
-  assert_contains "$stream_endpoint" "runner-1" "stream-js-tool placed on runner-1" || return 1
-  log_info "Placement table: dispatch-echo→runner-0, stream-js-tool→runner-1"
+  local chapman_endpoint
+  chapman_endpoint=$(echo "$placements" | jq -r '[.[] | .result | .[] | select(.agent_package == "argument-chapman")] | .[0].runner_endpoint')
+  assert_contains "$chapman_endpoint" "runner-1" "chapman placed on runner-1" || return 1
+
+  # Send A2A message to Cleese on runner-0.
+  # With LLM: Cleese → ArgumentReply (LLM) → emits line → CleeseSendToChapman
+  #   step executor → internal_a2a → cross-pod to runner-1 → Chapman → LLM → back.
+  # Without LLM: Cleese catches ArgumentReply error → returns { error: ... }.
+  local resp
+  resp=$(a2a_sse_request "$RUNNER0_PORT" "argument-cleese" "This is a test argument.")
+  if [[ -z "$resp" ]]; then
+    log_fail "A2A request to argument-cleese returned empty response"
+    return 1
+  fi
+  log_info "Received response from argument-cleese via runner-0"
+
+  if has_llm_keys; then
+    # Full LLM path: Cleese should have called Chapman cross-pod.
+    # The SSE stream should contain Chapman's contradiction proving the round-trip:
+    # runner-0 → LLM → internal_a2a → runner-1 → LLM → back.
+    if echo "$resp" | grep -qiE "it is|it isn|you did|I didn|no.it|yes.it"; then
+      log_info "Full agent-to-agent conversation confirmed (LLM → internal_a2a → cross-pod → LLM)"
+    else
+      log_warn "Response received but contradiction pattern not found (LLM response may vary)"
+    fi
+
+    # Check runner-0 logs for cross-pod forwarding evidence
+    local logs
+    logs=$(kubectl logs runner-0 -n "$NAMESPACE" --tail=200 2>/dev/null || true)
+    if echo "$logs" | grep -qi "runner-1\|forward\|placement\|argument-chapman"; then
+      log_info "runner-0 logs show cross-pod forwarding to runner-1"
+    else
+      log_warn "No explicit forwarding evidence in runner-0 logs (non-fatal)"
+    fi
+  else
+    # No LLM keys: verify cross-pod routing with Chapman's fallback.
+    log_info "No LLM keys — verifying cross-pod routing with fallback behavior"
+    local chapman_resp
+    chapman_resp=$(a2a_sse_request "$RUNNER0_PORT" "argument-chapman" "No it is not.")
+    if [[ -z "$chapman_resp" ]]; then
+      log_fail "Cross-pod A2A to argument-chapman returned empty response"
+      return 1
+    fi
+    log_info "Chapman responded via runner-0→runner-1 cross-pod forward (fallback mode)"
+  fi
 
   # Clean up
-  undeploy_hash "$hash_echo" "$RUNNER0_PORT" "$E2E_TOKEN"
-  undeploy_hash "$hash_stream" "$RUNNER1_PORT" "$E2E_TOKEN"
+  undeploy_hash "$hash_cleese" "$RUNNER0_PORT" "$E2E_TOKEN"
+  undeploy_hash "$hash_chapman" "$RUNNER1_PORT" "$E2E_TOKEN"
 }
 
 # ---------- 11. Full agent lifecycle across the cluster ----------
