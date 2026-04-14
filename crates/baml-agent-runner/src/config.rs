@@ -39,6 +39,9 @@ pub(crate) struct RunnerConfig {
     pub(crate) runner_token: Option<String>,
     /// Override the endpoint URL this runner registers in the cluster.
     pub(crate) runner_endpoint: Option<String>,
+    /// Placement TTL in milliseconds: placements on runners whose last heartbeat
+    /// is older than this are excluded from resolution.
+    pub(crate) placement_ttl_ms: u64,
 }
 
 #[derive(Debug, Parser)]
@@ -118,6 +121,16 @@ pub(crate) struct Cli {
     /// Defaults to http://{serve-http address}.
     #[arg(long, value_name = "URL", env = "RUNNER_ENDPOINT")]
     pub(crate) runner_endpoint: Option<String>,
+
+    /// Placement TTL in milliseconds. Placements on runners whose last heartbeat
+    /// is older than this are excluded from resolution (default: 90000 = 90s).
+    #[arg(
+        long,
+        value_name = "MS",
+        default_value = "90000",
+        env = "PLACEMENT_TTL_MS"
+    )]
+    pub(crate) placement_ttl_ms: u64,
 }
 
 impl Cli {
@@ -161,6 +174,7 @@ impl Cli {
             },
             runner_token: self.runner_token,
             runner_endpoint: self.runner_endpoint,
+            placement_ttl_ms: self.placement_ttl_ms,
         })
     }
 }

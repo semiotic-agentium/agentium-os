@@ -62,13 +62,19 @@ impl RunnerIdentity {
 pub(crate) struct PlacementResolver {
     db: Arc<Surreal<Any>>,
     local_runner_id: RunnerId,
+    placement_ttl_ms: u64,
 }
 
 impl PlacementResolver {
-    pub(crate) fn new(db: Arc<Surreal<Any>>, local_runner_id: RunnerId) -> Self {
+    pub(crate) fn new(
+        db: Arc<Surreal<Any>>,
+        local_runner_id: RunnerId,
+        placement_ttl_ms: u64,
+    ) -> Self {
         Self {
             db,
             local_runner_id,
+            placement_ttl_ms,
         }
     }
 }
@@ -78,11 +84,23 @@ impl ClusterEndpointResolver for PlacementResolver {
     async fn resolve(&self, key: &AgentRouteKey) -> baml_rt_core::Result<Option<String>> {
         let pkg = key.agent_package.as_str();
         let inst = key.agent_instance_id.as_str();
+        let ttl = self.placement_ttl_ms as i64;
         let result: Result<Vec<serde_json::Value>, _> = self
             .db
-            .query("SELECT * FROM cluster_agent_placements WHERE agent_package = $pkg AND agent_instance_id = $inst AND status = 'active' LIMIT 1")
+            .query(
+                "SELECT * FROM cluster_agent_placements \
+                 WHERE agent_package = $pkg \
+                 AND agent_instance_id = $inst \
+                 AND status = 'active' \
+                 AND runner_id IN (\
+                   SELECT VALUE runner_id FROM cluster_runners \
+                   WHERE last_heartbeat_ms > (time::millis(time::now()) - $ttl)\
+                 ) \
+                 LIMIT 1",
+            )
             .bind(("pkg", pkg.to_string()))
             .bind(("inst", inst.to_string()))
+            .bind(("ttl", ttl))
             .await
             .and_then(|mut r| r.take(0));
 
@@ -130,14 +148,20 @@ impl ClusterEndpointResolver for PlacementResolver {
 pub(crate) struct ClusterManager {
     db: Arc<Surreal<Any>>,
     identity: RunnerIdentity,
+    placement_ttl_ms: u64,
 }
 
 impl ClusterManager {
     pub(crate) async fn new(
         db: Arc<Surreal<Any>>,
         identity: RunnerIdentity,
+        placement_ttl_ms: u64,
     ) -> Result<Self, BamlRtError> {
-        let mgr = Self { db, identity };
+        let mgr = Self {
+            db,
+            identity,
+            placement_ttl_ms,
+        };
         mgr.init_schema().await?;
         mgr.register_runner().await?;
         Ok(mgr)
@@ -270,7 +294,11 @@ impl ClusterManager {
 
     /// Build a `PlacementResolver` that shares this manager's DB connection.
     pub(crate) fn resolver(&self) -> PlacementResolver {
-        PlacementResolver::new(self.db.clone(), self.identity.runner_id.clone())
+        PlacementResolver::new(
+            self.db.clone(),
+            self.identity.runner_id.clone(),
+            self.placement_ttl_ms,
+        )
     }
 
     /// Spawn a background heartbeat task (5s interval).
@@ -319,6 +347,9 @@ mod tests {
     use super::*;
     use crate::routing::ClusterEndpointResolver;
 
+    /// Generous TTL for tests that don't exercise heartbeat staleness.
+    const TEST_TTL_MS: u64 = 300_000;
+
     async fn test_db() -> Arc<Surreal<Any>> {
         let db = surrealdb::engine::any::connect("mem://")
             .await
@@ -344,8 +375,12 @@ mod tests {
         let id1 = RunnerIdentity::new("http://runner-1:18080".into());
         let id2 = RunnerIdentity::new("http://runner-2:18080".into());
 
-        let _mgr1 = ClusterManager::new(db.clone(), id1).await.unwrap();
-        let _mgr2 = ClusterManager::new(db.clone(), id2).await.unwrap();
+        let _mgr1 = ClusterManager::new(db.clone(), id1, TEST_TTL_MS)
+            .await
+            .unwrap();
+        let _mgr2 = ClusterManager::new(db.clone(), id2, TEST_TTL_MS)
+            .await
+            .unwrap();
 
         let rows: Vec<serde_json::Value> = db
             .query("SELECT * FROM cluster_runners")
@@ -360,14 +395,16 @@ mod tests {
     async fn placement_resolver_returns_remote_endpoint() {
         let db = test_db().await;
         let identity = RunnerIdentity::new("http://runner-1:18080".into());
-        let mgr = ClusterManager::new(db.clone(), identity).await.unwrap();
+        let mgr = ClusterManager::new(db.clone(), identity, TEST_TTL_MS)
+            .await
+            .unwrap();
 
         let key = test_route_key();
         let hash = test_hash();
         mgr.record_placement(&key, &hash).await.unwrap();
 
         let other_runner = RunnerId::new_random();
-        let resolver = PlacementResolver::new(db.clone(), other_runner);
+        let resolver = PlacementResolver::new(db.clone(), other_runner, TEST_TTL_MS);
         let endpoint = resolver.resolve(&key).await.unwrap();
         assert_eq!(endpoint, Some("http://runner-1:18080".to_string()));
     }
@@ -376,7 +413,9 @@ mod tests {
     async fn placement_resolver_returns_none_for_local() {
         let db = test_db().await;
         let identity = RunnerIdentity::new("http://runner-1:18080".into());
-        let mgr = ClusterManager::new(db.clone(), identity).await.unwrap();
+        let mgr = ClusterManager::new(db.clone(), identity, TEST_TTL_MS)
+            .await
+            .unwrap();
 
         let key = test_route_key();
         let hash = test_hash();
@@ -391,7 +430,9 @@ mod tests {
     async fn remove_placement_clears_record() {
         let db = test_db().await;
         let identity = RunnerIdentity::new("http://runner-1:18080".into());
-        let mgr = ClusterManager::new(db.clone(), identity).await.unwrap();
+        let mgr = ClusterManager::new(db.clone(), identity, TEST_TTL_MS)
+            .await
+            .unwrap();
 
         let key = test_route_key();
         let hash = test_hash();
@@ -399,7 +440,7 @@ mod tests {
         mgr.remove_placement(&key).await.unwrap();
 
         let other_runner = RunnerId::new_random();
-        let resolver = PlacementResolver::new(db.clone(), other_runner);
+        let resolver = PlacementResolver::new(db.clone(), other_runner, TEST_TTL_MS);
         assert_eq!(resolver.resolve(&key).await.unwrap(), None);
     }
 
@@ -408,8 +449,12 @@ mod tests {
         let db = test_db().await;
         let id1 = RunnerIdentity::new("http://runner-1:18080".into());
         let id2 = RunnerIdentity::new("http://runner-2:18080".into());
-        let mgr1 = ClusterManager::new(db.clone(), id1).await.unwrap();
-        let mgr2 = ClusterManager::new(db.clone(), id2).await.unwrap();
+        let mgr1 = ClusterManager::new(db.clone(), id1, TEST_TTL_MS)
+            .await
+            .unwrap();
+        let mgr2 = ClusterManager::new(db.clone(), id2, TEST_TTL_MS)
+            .await
+            .unwrap();
 
         let key = test_route_key();
         let hash = test_hash();
@@ -420,7 +465,7 @@ mod tests {
 
         // Observer sees runner 2's endpoint (last writer wins via UPSERT).
         let observer = RunnerId::new_random();
-        let resolver = PlacementResolver::new(db.clone(), observer);
+        let resolver = PlacementResolver::new(db.clone(), observer, TEST_TTL_MS);
         assert_eq!(
             resolver.resolve(&key).await.unwrap(),
             Some("http://runner-2:18080".to_string()),
@@ -428,22 +473,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_returns_endpoint_without_recent_heartbeat() {
+    async fn resolve_excludes_stale_runner() {
         let db = test_db().await;
         let identity = RunnerIdentity::new("http://runner-1:18080".into());
-        let mgr = ClusterManager::new(db.clone(), identity).await.unwrap();
+        let mgr = ClusterManager::new(db.clone(), identity, TEST_TTL_MS)
+            .await
+            .unwrap();
 
         let key = test_route_key();
         let hash = test_hash();
         mgr.record_placement(&key, &hash).await.unwrap();
 
-        // No heartbeat sent after initial registration — resolver still
-        // returns the endpoint because there is no heartbeat TTL check.
+        // Backdate the runner's heartbeat so it falls outside a short TTL.
+        db.query(
+            "UPDATE cluster_runners SET last_heartbeat_ms = 0 \
+             WHERE runner_id = $rid",
+        )
+        .bind(("rid", mgr.identity.runner_id.to_string()))
+        .await
+        .unwrap();
+
+        // With a 1ms TTL the backdated heartbeat is stale — resolve returns None.
         let other = RunnerId::new_random();
-        let resolver = PlacementResolver::new(db.clone(), other);
+        let resolver = PlacementResolver::new(db.clone(), other, 1);
         assert_eq!(
             resolver.resolve(&key).await.unwrap(),
-            Some("http://runner-1:18080".to_string()),
+            None,
+            "stale runner should be excluded from placement resolution",
         );
     }
 }

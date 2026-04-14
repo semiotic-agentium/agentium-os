@@ -314,7 +314,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         let identity = cluster::RunnerIdentity::new(runner_http_endpoint);
         let cluster_db = std::sync::Arc::new(cluster_db);
         let mgr = Arc::new(
-            cluster::ClusterManager::new(cluster_db.clone(), identity)
+            cluster::ClusterManager::new(cluster_db.clone(), identity, config.placement_ttl_ms)
                 .await
                 .map_err(|e| anyhow::anyhow!("cluster manager init: {e}"))?,
         );
