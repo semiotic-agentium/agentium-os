@@ -1,0 +1,19 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+assertion_line: 1151
+expression: snapshot
+---
+{
+  "status": 200,
+  "body": [
+    {
+      "jsonrpc": "2.0",
+      "result": {
+        "tasks": [],
+        "totalSize": 0,
+        "pageSize": 50
+      },
+      "id": null
+    }
+  ]
+}

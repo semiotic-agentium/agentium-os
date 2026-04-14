@@ -198,48 +198,17 @@ async fn post_a2a_sse_collect(
     url: &str,
     body: &Value,
 ) -> Result<Vec<Value>, Box<dyn std::error::Error + Send + Sync>> {
-    let mut response = client
-        .post(url)
-        .header("Accept", "text/event-stream")
-        .json(body)
-        .send()
-        .await?;
+    let request_url = url.replace("/a2a/sse", "/a2a");
+    let response = client.post(&request_url).json(body).send().await?;
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         return Err(format!("HTTP {status}: {text}").into());
     }
-
-    let mut responses = Vec::new();
-    let mut buffer = String::new();
-
-    while let Some(chunk) = response.chunk().await? {
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(newline_idx) = buffer.find('\n') {
-            let line = buffer[..newline_idx].trim().to_string();
-            buffer.drain(..=newline_idx);
-            if !line.starts_with("data:") {
-                continue;
-            }
-            let json_str = line.strip_prefix("data:").unwrap_or(&line).trim();
-            if json_str.is_empty() {
-                continue;
-            }
-            if let Ok(value) = serde_json::from_str::<Value>(json_str) {
-                let is_final = value
-                    .get("result")
-                    .and_then(|result| result.get("final"))
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                responses.push(value);
-                if is_final {
-                    return Ok(responses);
-                }
-            }
-        }
-    }
-
-    Ok(responses)
+    response
+        .json::<Vec<Value>>()
+        .await
+        .map_err(|e| format!("Invalid JSON-RPC response array: {e}").into())
 }
 
 struct CallbackScheduleRequest<'a> {

@@ -5,7 +5,12 @@
 //! routes. Shared pagination semantics are encoded through `CursorToken` and
 //! `ConversationHistoryPageRequest` rather than a cross-route `Option` bag.
 
-use std::{error::Error, fmt};
+use std::{
+    collections::hash_map::DefaultHasher,
+    error::Error,
+    fmt,
+    hash::{Hash, Hasher},
+};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -23,6 +28,12 @@ use utoipa::ToSchema;
 
 /// Service errors for conversation-history reads.
 pub type ConversationHistoryError = crate::service_error::ServiceError;
+
+#[derive(Debug, Clone)]
+pub struct ConversationHistoryUpdate {
+    pub context_id: String,
+    pub task_id: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversationHistoryProfile {
@@ -79,7 +90,7 @@ impl CursorToken {
             context_id: context_id.as_str().to_string(),
             task_id: task_id.map(|id| id.as_str().to_string()),
         };
-        let bytes = serde_json::to_vec(&state).unwrap_or_default();
+        let bytes = serde_json::to_vec(&state).expect("cursor state v1 serializes");
         Self(format!("v1.{:x}", HexBytes(bytes)))
     }
 
@@ -149,6 +160,16 @@ pub struct ConversationHistoryRequest {
     pub context_id: ContextId,
     pub task_id: Option<TaskId>,
     pub page: ConversationHistoryPageRequest,
+    pub profile: ConversationHistoryProfile,
+    pub format: ConversationHistoryFormat,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConversationHistoryDeltaRequest {
+    pub context_id: ContextId,
+    pub task_id: Option<TaskId>,
+    pub after_event_order: u64,
+    pub limit: usize,
     pub profile: ConversationHistoryProfile,
     pub format: ConversationHistoryFormat,
 }
@@ -261,6 +282,8 @@ pub struct ConversationHistoryPageDto {
     pub context_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    pub version: String,
+    pub max_event_order: u64,
     pub items: Vec<ConversationHistoryItemDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
@@ -440,6 +463,27 @@ pub trait ConversationHistoryService: Send + Sync {
         &self,
         request: &ConversationHistoryRequest,
     ) -> Result<ConversationHistoryPageDto, ConversationHistoryError>;
+
+    async fn delta_after_event_order(
+        &self,
+        request: &ConversationHistoryDeltaRequest,
+    ) -> Result<ConversationHistoryPageDto, ConversationHistoryError>;
+}
+
+pub fn page_version(items: &[ConversationHistoryItemDto]) -> String {
+    let mut hasher = DefaultHasher::new();
+    for item in items {
+        item.timestamp_ms.hash(&mut hasher);
+        item.activity_anchor.hash(&mut hasher);
+        item.role.hash(&mut hasher);
+        let content = serde_json::to_string(&item.content).unwrap_or_default();
+        content.hash(&mut hasher);
+    }
+    format!("v1:{:x}", hasher.finish())
+}
+
+pub trait ConversationHistoryEventService: Send + Sync {
+    fn subscribe_updates(&self) -> tokio::sync::broadcast::Receiver<ConversationHistoryUpdate>;
 }
 
 pub fn paginate_items(
@@ -470,11 +514,16 @@ pub fn paginate_items(
     } else {
         None
     };
+    let items: Vec<ConversationHistoryItemDto> = page_rows.into_iter().map(Into::into).collect();
+    let max_event_order = items.last().map(|item| item.timestamp_ms).unwrap_or(0);
+    let version = page_version(&items);
 
     Ok(ConversationHistoryPageDto {
         context_id: request.context_id.as_str().to_string(),
         task_id: request.task_id.as_ref().map(|id| id.as_str().to_string()),
-        items: page_rows.into_iter().map(Into::into).collect(),
+        version,
+        max_event_order,
+        items,
         next_cursor,
     })
 }

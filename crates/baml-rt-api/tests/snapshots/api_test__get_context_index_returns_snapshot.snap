@@ -1,0 +1,18 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+assertion_line: 1620
+expression: snapshot
+---
+{
+  "status": 200,
+  "body": {
+    "items": [
+      {
+        "contextId": "ctx-1",
+        "latestTimestampMs": 20,
+        "preview": "first user message"
+      }
+    ],
+    "nextCursor": "v1.7b2276223a312c226f6666736574223a312c226167656e745f7061636b616765223a22706b67227d"
+  }
+}

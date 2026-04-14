@@ -1,6 +1,5 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
-assertion_line: 1617
 expression: snapshot
 ---
 {
@@ -8,6 +7,8 @@ expression: snapshot
     "status": 200,
     "body": {
       "contextId": "ctx-100-1",
+      "version": "[conversation_history_version]",
+      "maxEventOrder": "[a2a_event_order]",
       "items": [
         {
           "timestampMs": "[timestamp_ms]",
@@ -39,6 +40,8 @@ expression: snapshot
     "status": 200,
     "body": {
       "contextId": "ctx-100-1",
+      "version": "[conversation_history_version]",
+      "maxEventOrder": "[a2a_event_order]",
       "items": [
         {
           "timestampMs": "[timestamp_ms]",

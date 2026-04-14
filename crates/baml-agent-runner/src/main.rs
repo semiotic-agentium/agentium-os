@@ -57,8 +57,9 @@ use clap::Parser;
 use config::{Cli, ProvenanceDb, provenance_config_builder};
 use serde_json::Value;
 use services::{
-    ContextMetricsServiceImpl, ConversationHistoryServiceImpl, EpisodeServiceImpl,
-    MermaidServiceImpl, PlanningServiceImpl, ProvenanceOpsServiceImpl,
+    ContextIndexServiceImpl, ContextMetricsServiceImpl, ConversationHistoryEventServiceImpl,
+    ConversationHistoryServiceImpl, EpisodeServiceImpl, MermaidServiceImpl, PlanningServiceImpl,
+    ProvenanceOpsServiceImpl,
 };
 use stdio::unix_timestamp_secs;
 use tracing::{error, info, warn};
@@ -508,11 +509,18 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             runner.provenance_config().store().clone(),
         ))
             as Arc<dyn baml_rt_api::ConversationHistoryService>);
+        let conversation_history_events = Some(Arc::new(ConversationHistoryEventServiceImpl::new(
+            runner.clone(),
+        ))
+            as Arc<dyn baml_rt_api::ConversationHistoryEventService>);
+        let context_index = Some(Arc::new(ContextIndexServiceImpl::new(
+            runner.provenance_config().store().clone(),
+        )) as Arc<dyn baml_rt_api::ContextIndexService>);
         let web_dir = config.web_dir.clone();
         info!(
             bind = %bind,
             web_dir = ?web_dir,
-            "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a/sse, GET /config, GET /contexts/.../mermaid, GET /tasks/.../mermaid, GET /contexts/.../metrics, GET /provenance/..., GET /openapi.json)"
+            "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a, GET /config, GET /contexts/.../mermaid, GET /tasks/.../mermaid, GET /contexts/.../metrics, GET /provenance/..., GET /openapi.json)"
         );
         let runtime_secret_store = prov_config.runtime_secret_store();
         let readyz_for_http = readyz.clone();
@@ -532,6 +540,8 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
                 planning,
                 episode,
                 conversation_history,
+                conversation_history_events,
+                context_index,
                 Some(runner.clone() as Arc<dyn DeploymentManager>),
                 Some(config.repository_url.clone()),
                 Some(repository_service.clone()),

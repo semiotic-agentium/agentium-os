@@ -13,6 +13,7 @@ use axum::{
 };
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_api::{
+    ContextIndexError, ContextIndexRequest, ContextIndexService, ContextPickerPageDto,
     ConversationHistoryError, ConversationHistoryPageDto, ConversationHistoryProfile,
     ConversationHistoryRequest, ConversationHistoryService, MermaidError, MermaidService,
     ProvenanceOpsError, ProvenanceOpsService, api_router, api_router_with_services,
@@ -28,7 +29,7 @@ use baml_rt_provenance::{
     CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceOpsQueryRequest,
     ProvenanceOpsQueryResponse, ProvenanceWriter, SurrealStoreBuilder, events::LlmDriftInfo,
 };
-use futures_util::{StreamExt, stream};
+use futures_util::stream;
 use opentelemetry::{global, trace::TracerProvider as _};
 use opentelemetry_sdk::{testing::trace::InMemorySpanExporterBuilder, trace::TracerProvider};
 use serde_json::Value;
@@ -88,6 +89,13 @@ fn redact_variant_parts(v: Value) -> Value {
                         V::Number(_) | V::String(_) => V::String("[timestamp_ms]".to_string()),
                         _ => redact_variant_parts(val),
                     },
+                    "maxEventOrder" => V::String("[a2a_event_order]".to_string()),
+                    "version" => match &val {
+                        V::String(s) if s.starts_with("v1:") => {
+                            V::String("[conversation_history_version]".to_string())
+                        }
+                        _ => redact_variant_parts(val),
+                    },
                     // Monotonic / wall-clock ordering from store; varies every run.
                     "a2a_event_order" => V::String("[a2a_event_order]".to_string()),
                     // Wall-clock ms from Surreal / store; varies every run.
@@ -141,6 +149,7 @@ async fn prov_test_router_with_history(
     registry: Arc<dyn AgentRegistry>,
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     conversation_history: Option<Arc<dyn ConversationHistoryService>>,
+    context_index: Option<Arc<dyn ContextIndexService>>,
 ) -> axum::Router {
     use baml_rt_config::SurrealConfigStore;
     use baml_rt_llm_config::EmptySecretResolver;
@@ -162,6 +171,8 @@ async fn prov_test_router_with_history(
         None, // planning
         None, // episode
         conversation_history,
+        None, // conversation_history_events
+        context_index,
         tool_catalog,
         config_service,
         secret_resolver,
@@ -174,7 +185,7 @@ async fn prov_test_router(
     registry: Arc<dyn AgentRegistry>,
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
 ) -> axum::Router {
-    prov_test_router_with_history(registry, provenance_ops, None).await
+    prov_test_router_with_history(registry, provenance_ops, None, None).await
 }
 
 /// Snapshot-friendly representation of finished spans: name + attributes (variant values redacted).
@@ -364,6 +375,8 @@ struct RealConversationHistory {
     store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
 }
 
+struct MockContextIndex;
+
 #[async_trait]
 impl ProvenanceOpsService for RealProvenanceOps {
     async fn query(
@@ -399,6 +412,82 @@ impl ConversationHistoryService for RealConversationHistory {
                 .collect();
         }
         Ok(page)
+    }
+
+    async fn delta_after_event_order(
+        &self,
+        request: &baml_rt_api::ConversationHistoryDeltaRequest,
+    ) -> std::result::Result<ConversationHistoryPageDto, ConversationHistoryError> {
+        use baml_rt_provenance::ProvenanceQueryApi;
+        let rows = self
+            .store
+            .query_conversation_context_after(
+                &request.context_id,
+                request.after_event_order,
+                Some(request.limit),
+                request.task_id.as_ref(),
+            )
+            .await
+            .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
+        let mut items = rows
+            .into_iter()
+            .map(baml_rt_api::ConversationHistoryItemDto::from)
+            .collect::<Vec<_>>();
+        if matches!(request.profile, ConversationHistoryProfile::Compact) {
+            items = items
+                .into_iter()
+                .map(|item| baml_rt_api::profile_filter(item, request.profile))
+                .collect();
+        }
+        let max_event_order = items.last().map(|item| item.timestamp_ms).unwrap_or(0);
+        let version = baml_rt_api::page_version(&items);
+        Ok(ConversationHistoryPageDto {
+            context_id: request.context_id.as_str().to_string(),
+            task_id: request.task_id.as_ref().map(|id| id.as_str().to_string()),
+            version,
+            max_event_order,
+            items,
+            next_cursor: None,
+        })
+    }
+}
+
+#[async_trait]
+impl ContextIndexService for MockContextIndex {
+    async fn page(
+        &self,
+        request: &ContextIndexRequest,
+    ) -> std::result::Result<ContextPickerPageDto, ContextIndexError> {
+        let all = vec![
+            baml_rt_api::ContextPickerItemDto {
+                context_id: "ctx-1".to_string(),
+                latest_timestamp_ms: 20,
+                preview: "first user message".to_string(),
+            },
+            baml_rt_api::ContextPickerItemDto {
+                context_id: "ctx-2".to_string(),
+                latest_timestamp_ms: 10,
+                preview: "another thread".to_string(),
+            },
+        ];
+        let end = request.offset.saturating_add(request.limit).min(all.len());
+        let items = if request.offset < all.len() {
+            all[request.offset..end].to_vec()
+        } else {
+            Vec::new()
+        };
+        let next_cursor = if end < all.len() {
+            Some(
+                baml_rt_api::ContextIndexCursorToken::encode_v1(
+                    end,
+                    request.agent_package.as_deref(),
+                )
+                .0,
+            )
+        } else {
+            None
+        };
+        Ok(ContextPickerPageDto { items, next_cursor })
     }
 }
 
@@ -661,12 +750,6 @@ impl MockRegistry {
 
     fn with_handle_ok(mut self, responses: Vec<Value>) -> Self {
         self.handle_ok = Some(responses.into_iter().map(A2aStreamChunk::from).collect());
-        self
-    }
-
-    /// Yields each value with a delay between yields. Used to assert server does not buffer.
-    fn with_handle_delayed(mut self, responses: Vec<Value>) -> Self {
-        self.handle_delayed = Some(responses.into_iter().map(A2aStreamChunk::from).collect());
         self
     }
 
@@ -1118,7 +1201,7 @@ async fn get_openapi_json_returns_spec() {
 }
 
 #[tokio::test]
-async fn post_a2a_sse_returns_event_stream() {
+async fn post_a2a_returns_jsonrpc_array() {
     let registry: Arc<dyn AgentRegistry> = Arc::new(
         MockRegistry::with_entries(vec![discovery_entry("pkg", "default", "pkg", "1.0.0")])
             .with_handle_ok(vec![serde_json::json!({
@@ -1133,7 +1216,7 @@ async fn post_a2a_sse_returns_event_stream() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/agents/pkg/default/a2a/sse")
+                .uri("/agents/pkg/default/a2a")
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     r#"{"jsonrpc":"2.0","method":"tasks.list","params":{},"id":null}"#,
@@ -1144,21 +1227,10 @@ async fn post_a2a_sse_returns_event_stream() {
         .unwrap();
 
     let status = response.status();
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let body_str = String::from_utf8_lossy(&body).into_owned();
-
-    let snapshot = serde_json::json!({
-        "status": status.as_u16(),
-        "content_type": content_type,
-        "body": body_str,
-    });
+    let snapshot = response_snapshot(status, &body);
     insta::assert_json_snapshot!(snapshot);
 }
 
@@ -1234,83 +1306,6 @@ async fn post_dispatch_rejects_empty_message_type() {
         body_text.contains("message_type must be non-empty"),
         "unexpected response body: {body_text}"
     );
-}
-
-/// Server must not buffer the A2A stream: events arrive incrementally.
-/// Mock yields three items with 80ms delay between each; first SSE event must arrive within 200ms.
-#[tokio::test]
-async fn post_a2a_sse_no_buffering_events_arrive_incrementally() {
-    let responses = vec![
-        serde_json::json!({"jsonrpc":"2.0","result":{"n":1},"id":null}),
-        serde_json::json!({"jsonrpc":"2.0","result":{"n":2},"id":null}),
-        serde_json::json!({"jsonrpc":"2.0","result":{"n":3},"id":null}),
-    ];
-    let registry: Arc<dyn AgentRegistry> = Arc::new(
-        MockRegistry::with_entries(vec![discovery_entry("pkg", "default", "pkg", "1.0.0")])
-            .with_handle_delayed(responses),
-    );
-    let app = api_router(registry, None, None).await;
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/agents/pkg/default/a2a/sse")
-                .header("Content-Type", "application/json")
-                .body(Body::from(
-                    r#"{"jsonrpc":"2.0","method":"tasks.list","params":{},"id":null}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    let status = response.status();
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-
-    let body = response.into_body();
-    let mut stream = body.into_data_stream();
-    let mut buf = Vec::new();
-    let mut events_received = 0u32;
-    let mut first_event_elapsed_ms: Option<u128> = None;
-    let start = std::time::Instant::now();
-    const FIRST_EVENT_MAX_MS: u128 = 200;
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.expect("body chunk");
-        buf.extend_from_slice(&chunk);
-        let mut line_start = 0;
-        while let Some(offset) = buf[line_start..].iter().position(|&b| b == b'\n') {
-            let line_end = line_start + offset + 1;
-            let line = &buf[line_start..line_end];
-            if line.starts_with(b"data:") && line.len() > 5 {
-                events_received += 1;
-                if first_event_elapsed_ms.is_none() {
-                    first_event_elapsed_ms = Some(start.elapsed().as_millis());
-                }
-            }
-            line_start = line_end;
-        }
-        buf.drain(..line_start);
-    }
-
-    let first_within_limit = first_event_elapsed_ms.map(|ms| ms < FIRST_EVENT_MAX_MS);
-    assert!(
-        first_within_limit == Some(true),
-        "first SSE event must arrive within {FIRST_EVENT_MAX_MS}ms (no server buffering); got {:?}",
-        first_event_elapsed_ms
-    );
-    let snapshot = serde_json::json!({
-        "status": status.as_u16(),
-        "content_type": content_type,
-        "events_received": events_received,
-        "first_event_within_limit": true,
-    });
-    insta::assert_json_snapshot!(snapshot);
 }
 
 #[tokio::test]
@@ -1540,6 +1535,7 @@ async fn get_conversation_history_returns_snapshot() {
         registry,
         None,
         Some(Arc::new(RealConversationHistory { store }) as Arc<dyn ConversationHistoryService>),
+        None,
     )
     .await;
     let uri = format!("/contexts/{context_id}/conversation-history?limit=3&profile=full");
@@ -1566,6 +1562,7 @@ async fn get_conversation_history_pagination_returns_snapshot() {
         registry,
         None,
         Some(Arc::new(RealConversationHistory { store }) as Arc<dyn ConversationHistoryService>),
+        None,
     )
     .await;
 
@@ -1622,12 +1619,71 @@ async fn get_conversation_history_invalid_cursor_returns_400_snapshot() {
         registry,
         None,
         Some(Arc::new(RealConversationHistory { store }) as Arc<dyn ConversationHistoryService>),
+        None,
     )
     .await;
     let uri = format!("/contexts/{context_id}/conversation-history?cursor=bad-token");
 
     let response = app
         .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot = response_snapshot(status, &body);
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_context_index_returns_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let app = prov_test_router_with_history(
+        registry,
+        None,
+        None,
+        Some(Arc::new(MockContextIndex) as Arc<dyn ContextIndexService>),
+    )
+    .await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/contexts?limit=1&agentPackage=pkg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot = response_snapshot(status, &body);
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_context_index_cursor_scope_mismatch_returns_400() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let app = prov_test_router_with_history(
+        registry,
+        None,
+        None,
+        Some(Arc::new(MockContextIndex) as Arc<dyn ContextIndexService>),
+    )
+    .await;
+
+    let cursor = baml_rt_api::ContextIndexCursorToken::encode_v1(1, Some("pkg-a")).0;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/contexts?agentPackage=pkg-b&cursor={cursor}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let status = response.status();

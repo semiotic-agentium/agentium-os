@@ -7,6 +7,7 @@ import type {
   ConversationHistoryItem,
   ConversationHistoryOption,
   ConversationHistoryPage,
+  ContextPickerPage,
   ContextMetricsResponse,
   DataContentBlock,
   JSONRPCResponse,
@@ -18,15 +19,6 @@ import type {
   ToolEvent,
   WorkflowProgressState,
 } from "../types/a2a";
-
-interface ProvenanceMessageRow {
-  context_id?: string;
-  task_id?: string | null;
-  timestamp_ms?: number;
-  message_text?: string;
-  agent_package?: string;
-  a2a_role?: string;
-}
 
 let counter = 0;
 function nextId(prefix: string): string {
@@ -372,6 +364,94 @@ function applyConversationHistoryPage(messages: Ref<ChatMessage[]>, page: Conver
   messages.value = rebuilt;
 }
 
+function applyConversationHistoryDelta(messages: Ref<ChatMessage[]>, page: ConversationHistoryPage): void {
+  if (!Array.isArray(page.items) || page.items.length === 0) return;
+  const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
+  for (const item of sorted) {
+    const isUser = item.role.toLowerCase() === "user";
+    const ts = new Date(normalizeEpochMs(item.timestampMs));
+    const content = item.content;
+    if (isUser) {
+      const text = content.type === "message" ? content.text : "";
+      messages.value.push({
+        id: `prov-user-${item.activityAnchor}`,
+        role: "user",
+        text,
+        timestamp: ts,
+      });
+      continue;
+    }
+
+    let msg = messages.value[messages.value.length - 1];
+    if (!msg || msg.role !== "agent") {
+      msg = {
+        id: `prov-agent-${item.activityAnchor}`,
+        role: "agent",
+        text: "",
+        timestamp: ts,
+        contentBlocks: [],
+      };
+      messages.value.push(msg);
+    }
+    ensureContentBlocks(msg);
+
+    switch (content.type) {
+      case "message":
+        if (content.text) pushTextBlock(msg, content.text);
+        break;
+      case "tool_call": {
+        const status = statusFromFsmPhase(content.fsm_phase);
+        const completion = completionFromStatus(status);
+        const block = getOrCreateToolBlockForAppend(msg, content.tool_name, completion);
+        block.events.push({ kind: "assistant_tool_use", name: content.tool_name, input: content.args });
+        block.events.push({
+          kind: "system_notice",
+          subtype: `FSM phase: ${content.fsm_phase}`,
+          text: `FSM phase: ${content.fsm_phase}`,
+        });
+        if (completion) block.completion = completion;
+        block.status = deriveToolStatus(block);
+        break;
+      }
+      case "tool_result": {
+        const status = statusFromFsmPhase(content.fsm_phase);
+        const completion = completionFromStatus(status) ?? "DONE";
+        const block = getOrCreateToolBlockForAppend(msg, content.tool_name, completion);
+        block.events.push({
+          kind: "system_notice",
+          subtype: `FSM phase: ${content.fsm_phase}`,
+          text: `FSM phase: ${content.fsm_phase}`,
+        });
+        block.events.push({
+          kind: "terminal_result",
+          subtype: "success",
+          result: typeof content.outcome === "string" ? content.outcome : JSON.stringify(content.outcome),
+        });
+        block.completion = completion;
+        block.status = deriveToolStatus(block);
+        break;
+      }
+      case "session_step": {
+        const stepKind = content.op.kind;
+        const done = stepKind === "send_done" || stepKind === "finish";
+        const completion = done ? "DONE" : undefined;
+        const block = getOrCreateToolBlockForAppend(msg, content.tool_name, completion);
+        block.events.push({
+          kind: "system_notice",
+          subtype: `Session step: ${stepKind}`,
+          text: `Session step: ${stepKind}`,
+        });
+        if (Array.isArray(content.read_replay_lines) && content.read_replay_lines.length > 0) {
+          block.events.push({ kind: "assistant_text", text: content.read_replay_lines.join("\n") });
+        }
+        if (completion) block.completion = completion;
+        block.status = deriveToolStatus(block);
+        break;
+      }
+    }
+  }
+}
+
 function normalizePreview(text: string | undefined): string {
   if (!text) return "Untitled conversation";
   const singleLine = text.replace(/\s+/g, " ").trim();
@@ -431,16 +511,12 @@ export function useA2aClient() {
 
   // Stream cancellation
   let _abortController: AbortController | null = null;
-  let _streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let _historyStream: EventSource | null = null;
   let _historyStreamKey = "";
+  let _historyVersion = "";
 
   // Provenance diagram source (raw mermaid text fetched after each response)
   const provenanceDiagram = ref<string>("");
-  /** Throttle diagram refetch during stream (ms); updated on each fetch */
-  let lastDiagramFetchAt = 0;
-  /** Provenance diagram refetch during SSE — keep low churn vs trace Mermaid cost */
-  const diagramThrottleMs = 2000;
   /** Monotonic id so slower diagram HTTP responses cannot overwrite newer ones */
   let diagramFetchSeq = 0;
 
@@ -457,6 +533,8 @@ export function useA2aClient() {
     traceRefreshDebounceTimer = setTimeout(() => {
       traceRefreshDebounceTimer = null;
       traceRefreshGeneration.value += 1;
+      // Edge-trigger Mermaid refresh from evented provenance updates (no periodic UI polling).
+      void fetchProvenanceDiagram();
     }, TRACE_REFRESH_DEBOUNCE_MS);
   }
 
@@ -482,7 +560,20 @@ export function useA2aClient() {
     stream.addEventListener("snapshot", (ev) => {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
+        if (page.version === _historyVersion) return;
         applyConversationHistoryPage(messages, page);
+        _historyVersion = page.version;
+        selectedHistoryContextId.value = page.contextId;
+      } catch {
+        // Ignore malformed stream event payloads.
+      }
+    });
+    stream.addEventListener("delta", (ev) => {
+      try {
+        const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
+        if (page.version === _historyVersion) return;
+        applyConversationHistoryDelta(messages, page);
+        _historyVersion = page.version;
         selectedHistoryContextId.value = page.contextId;
       } catch {
         // Ignore malformed stream event payloads.
@@ -491,7 +582,7 @@ export function useA2aClient() {
     stream.addEventListener("done", (ev) => {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
-        applyConversationHistoryPage(messages, page);
+        _historyVersion = page.version;
       } catch {
         // Ignore malformed stream event payloads.
       } finally {
@@ -532,68 +623,20 @@ export function useA2aClient() {
     }
     historyLoading.value = true;
     try {
-      const response = await fetch(
-        "/provenance/messages?pageSize=200&sortBy=timestamp_ms&sortDir=desc&outcome=both",
-      );
+      const params = new URLSearchParams();
+      params.set("limit", "100");
+      const response = await fetch(`/contexts?${params.toString()}`);
       if (!response.ok) {
         conversationHistoryOptions.value = [];
         return;
       }
-      const payload = (await response.json()) as { rows?: ProvenanceMessageRow[] };
-      const rows = Array.isArray(payload.rows) ? payload.rows : [];
-      const byContext = new Map<
-        string,
-        {
-          contextId: string;
-          taskId: string | null;
-          latestTimestampMs: number;
-          latestPreview: string;
-          firstUserTimestampMs: number;
-          firstUserMessage: string;
-        }
-      >();
-      const selectedPackage = selectedAgent.value.agent_package;
-
-      for (const row of rows) {
-        if (row.agent_package && row.agent_package !== selectedPackage) continue;
-        const contextId = row.context_id;
-        if (!contextId) continue;
-        const ts = normalizeEpochMs(row.timestamp_ms);
-        const existing = byContext.get(contextId) ?? {
-          contextId,
-          taskId: null,
-          latestTimestampMs: 0,
-          latestPreview: "Untitled conversation",
-          firstUserTimestampMs: Number.MAX_SAFE_INTEGER,
-          firstUserMessage: "",
-        };
-
-        if (ts >= existing.latestTimestampMs) {
-          existing.latestTimestampMs = ts;
-          existing.latestPreview = normalizePreview(row.message_text);
-        }
-
-        const role = row.a2a_role?.toUpperCase() ?? "";
-        if (
-          role === "ROLE_USER" &&
-          typeof row.message_text === "string" &&
-          row.message_text.trim().length > 0 &&
-          ts > 0 &&
-          ts <= existing.firstUserTimestampMs
-        ) {
-          existing.firstUserTimestampMs = ts;
-          existing.firstUserMessage = normalizePreview(row.message_text);
-        }
-
-        byContext.set(contextId, existing);
-      }
-
-      conversationHistoryOptions.value = [...byContext.values()]
-        .map<ConversationHistoryOption>((ctx) => ({
-          contextId: ctx.contextId,
-          taskId: ctx.taskId,
-          latestTimestampMs: ctx.latestTimestampMs,
-          preview: ctx.firstUserMessage || ctx.latestPreview,
+      const payload = (await response.json()) as ContextPickerPage;
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      conversationHistoryOptions.value = items
+        .map((item) => ({
+          contextId: item.contextId,
+          latestTimestampMs: normalizeEpochMs(item.latestTimestampMs),
+          preview: normalizePreview(item.preview),
         }))
         .sort((a, b) => b.latestTimestampMs - a.latestTimestampMs);
     } catch {
@@ -617,6 +660,7 @@ export function useA2aClient() {
       traceRefreshDebounceTimer = null;
     }
     closeConversationHistoryStream();
+    _historyVersion = "";
     conversationHistoryOptions.value = [];
     selectedHistoryContextId.value = null;
     void fetchConversationHistoryOptions();
@@ -690,7 +734,7 @@ export function useA2aClient() {
     }
 
     const agent = selectedAgent.value;
-    const url = `/agents/${agent.agent_package}/${agent.agent_instance_id}/a2a/sse`;
+    const url = `/agents/${agent.agent_package}/${agent.agent_instance_id}/a2a`;
 
     // Add user message
     messages.value.push({
@@ -706,8 +750,13 @@ export function useA2aClient() {
       role: "user",
       parts: [{ text: text.trim() }],
     };
+    if (!_contextId.value) {
+      _contextId.value = nextId("ctx");
+      selectedHistoryContextId.value = _contextId.value;
+    }
     if (_contextId.value) message.contextId = _contextId.value;
     if (_taskId.value) message.taskId = _taskId.value;
+    ensureConversationHistoryStream();
 
     const request = {
       jsonrpc: "2.0",
@@ -742,11 +791,19 @@ export function useA2aClient() {
         signal: controller.signal,
       });
 
-      if (!response.ok || !response.body) {
+      if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      await readSSEStream(response.body, agentMsgId);
+      const events = (await response.json()) as JSONRPCResponse[];
+      if (Array.isArray(events)) {
+        for (const event of events) {
+          processEvent(event, agentMsgId);
+        }
+      }
+      updateMessage(messages, agentMsgId, (msg) => {
+        msg.isStreaming = false;
+      });
       await Promise.all([
         hydrateMessagesFromConversationHistory(),
         fetchProvenanceDiagram(),
@@ -762,58 +819,8 @@ export function useA2aClient() {
       });
     } finally {
       _abortController = null;
-      _streamReader = null;
       isLoading.value = false;
     }
-  }
-
-  async function readSSEStream(
-    body: ReadableStream<Uint8Array>,
-    agentMsgId: string,
-  ): Promise<void> {
-    const reader = body.getReader();
-    _streamReader = reader;
-    const decoder = new TextDecoder();
-    let buffer = "";
-    /** Macrotask yield every N SSE data events so the stream loop is not one timer per line */
-    let sseYieldCounter = 0;
-
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        if (line.startsWith("data:")) {
-          const jsonStr = line.slice(5).trim();
-          if (!jsonStr) continue;
-          try {
-            const event: JSONRPCResponse = JSON.parse(jsonStr);
-            processEvent(event, agentMsgId);
-            // Yield occasionally so the UI can paint; avoid setTimeout per line on chatty streams
-            sseYieldCounter++;
-            if ((sseYieldCounter & 3) === 0) {
-              await new Promise((resolve) => setTimeout(resolve, 0));
-            }
-            // Refresh provenance diagram (throttled); do not await — keeps SSE ahead of HTTP latency
-            if (_contextId.value && Date.now() - lastDiagramFetchAt >= diagramThrottleMs) {
-              lastDiagramFetchAt = Date.now();
-              void fetchProvenanceDiagram();
-            }
-          } catch {
-            // skip malformed events
-          }
-        }
-      }
-    }
-
-    // Mark streaming complete
-    updateMessage(messages, agentMsgId, (msg) => {
-      msg.isStreaming = false;
-    });
   }
 
   function processEvent(event: JSONRPCResponse, agentMsgId: string): void {
@@ -1071,6 +1078,7 @@ export function useA2aClient() {
       const page = (await response.json()) as ConversationHistoryPage;
       if (!Array.isArray(page.items)) return;
       applyConversationHistoryPage(messages, page);
+      _historyVersion = page.version;
       selectedHistoryContextId.value = page.contextId;
     } catch {
       // conversation-history endpoint not available; keep stream-derived chat
@@ -1081,6 +1089,7 @@ export function useA2aClient() {
     contextId: string,
   ): Promise<void> {
     closeConversationHistoryStream();
+    _historyVersion = "";
     _contextId.value = contextId;
     _taskId.value = null;
     workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
@@ -1105,10 +1114,6 @@ export function useA2aClient() {
   });
 
   function cancelStream(): void {
-    if (_streamReader) {
-      _streamReader.cancel().catch(() => {});
-      _streamReader = null;
-    }
     if (_abortController) {
       _abortController.abort();
       _abortController = null;

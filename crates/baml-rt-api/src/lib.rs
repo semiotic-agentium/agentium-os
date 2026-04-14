@@ -4,6 +4,7 @@
 //! (A2A JSON-RPC forward). Delegates to an internal [`AgentRegistry`](baml_rt_a2a::AgentRegistry) implementation.
 
 mod config_handlers;
+mod context_index;
 mod context_metrics;
 pub mod endpoint_validation;
 mod conversation_history;
@@ -19,16 +20,21 @@ mod router;
 pub mod service_error;
 mod spans;
 
+pub use context_index::{
+    ContextIndexCursorToken, ContextIndexError, ContextIndexQueryParams, ContextIndexRequest,
+    ContextIndexRequestParseError, ContextIndexService, ContextPickerItemDto, ContextPickerPageDto,
+};
 pub use context_metrics::{
     ContextMetricsError, ContextMetricsResponseDto, ContextMetricsService,
     ContextSessionMetricsDto, ContextTurnMetricsDto, TokenUsageDto,
 };
 pub use conversation_history::{
-    ConversationHistoryContentDto, ConversationHistoryError, ConversationHistoryFormat,
-    ConversationHistoryItemDto, ConversationHistoryPageDto, ConversationHistoryPageRequest,
-    ConversationHistoryProfile, ConversationHistoryQueryParams, ConversationHistoryRequest,
-    ConversationHistoryRequestParseError, ConversationHistoryService, CursorToken,
-    SessionStepOpDto, ToolOutcomeDto, paginate_items, profile_filter,
+    ConversationHistoryContentDto, ConversationHistoryDeltaRequest, ConversationHistoryError,
+    ConversationHistoryEventService, ConversationHistoryFormat, ConversationHistoryItemDto,
+    ConversationHistoryPageDto, ConversationHistoryPageRequest, ConversationHistoryProfile,
+    ConversationHistoryQueryParams, ConversationHistoryRequest,
+    ConversationHistoryRequestParseError, ConversationHistoryService, ConversationHistoryUpdate,
+    CursorToken, SessionStepOpDto, ToolOutcomeDto, page_version, paginate_items, profile_filter,
 };
 pub use episode::{
     ArtifactSummaryDto, EpisodeContentDto, EpisodeDurationDto, EpisodeEntryDto, EpisodeError,

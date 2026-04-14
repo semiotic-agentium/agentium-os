@@ -54,6 +54,8 @@ export interface ContextMetricsResponse {
 export interface ConversationHistoryPage {
   contextId: string;
   taskId?: string | null;
+  version: string;
+  maxEventOrder: number;
   items: ConversationHistoryItem[];
   nextCursor?: string | null;
 }
@@ -67,9 +69,13 @@ export interface ConversationHistoryItem {
 
 export interface ConversationHistoryOption {
   contextId: string;
-  taskId?: string | null;
   latestTimestampMs: number;
   preview: string;
+}
+
+export interface ContextPickerPage {
+  items: ConversationHistoryOption[];
+  nextCursor?: string | null;
 }
 
 export type ConversationHistoryContent =

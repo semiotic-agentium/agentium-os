@@ -5,8 +5,8 @@ Reference: [Agent2Agent Protocol (A2A) Specification](https://google.github.io/A
 ## Aligned with spec
 
 - **Transport**: A2A communication over **HTTP(S)**. We expose:
-  - **POST** `/agents/{agent_package}/{agent_instance_id}/a2a/sse` — JSON-RPC request body; response is **Server-Sent Events** (`Content-Type: text/event-stream`). Each event’s `data` field is one JSON-RPC 2.0 response. Chunking: one event per response. Liveness: keep-alive comments sent on an interval (15s) while the stream is open.
-- **Data format**: **JSON-RPC 2.0** for requests and responses. `Content-Type: application/json` for POST body; SSE response uses `text/event-stream`.
+  - **POST** `/agents/{agent_package}/{agent_instance_id}/a2a` — JSON-RPC request body; response is a JSON array of JSON-RPC 2.0 responses collected from the internal stream.
+- **Data format**: **JSON-RPC 2.0** for requests and responses. `Content-Type: application/json` for POST body and response.
 - **Discovery**: We provide **GET** `/agents` returning a list of running agents (package, instance id, name, version). The spec allows registries/catalogs; we use a custom registry format rather than full Agent Cards at `/.well-known/agent.json`.
 - **Methods**: We support A2A methods including `tasks.list`, `tasks.get`, `tasks.subscribe`, `message.sendStream` (dot-separated names; spec prose sometimes uses slashes like `message/stream` — same logical methods).
 

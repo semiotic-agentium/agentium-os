@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useTheme } from "../composables/useTheme";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useProvenanceOps } from "../composables/useProvenanceOps";
@@ -24,7 +24,7 @@ const props = defineProps<{
   selectedAgentId?: string;
   isStreaming: boolean;
   diagrams?: string[];
-  /** Bumps when A2A SSE signals new provenance (tool done, task state, final); edge-triggers Live refresh */
+  /** Bumps when evented provenance signals new rows; edge-triggers Live refresh */
   traceRefreshTick?: number;
 }>();
 
@@ -74,7 +74,6 @@ const exploreTabRef = ref<InstanceType<typeof ExploreTab> | null>(null);
 // ── Polling & planning ─────────────────────────────────────────────────────
 
 const isExploreTab = computed(() => activeTab.value === "explore");
-const pollTimer = ref<number | null>(null);
 const pollInFlight = ref(false);
 const planningState = ref<{
   loading: boolean;
@@ -143,24 +142,6 @@ async function refreshPlanning() {
   } finally {
     planningState.value.loading = false;
   }
-}
-
-function stopPolling() {
-  if (pollTimer.value !== null) {
-    window.clearTimeout(pollTimer.value);
-    pollTimer.value = null;
-  }
-}
-
-function schedulePolling(immediate = false) {
-  stopPolling();
-  if (!props.contextId || activeTab.value === "explore") return;
-  // While streaming, rely on traceRefreshTick edge triggers; long interval is a safety net only
-  const delay = immediate ? 0 : props.isStreaming ? 45000 : 12000;
-  pollTimer.value = window.setTimeout(async () => {
-    await refreshForActiveTab();
-    schedulePolling(false);
-  }, delay);
 }
 
 // ── Derived data for child components ──────────────────────────────────────
@@ -283,11 +264,8 @@ function downloadSvg(svg: string, index: number) {
 watch(
   () => [props.contextId, props.selectedAgentId],
   () => {
-    if (!props.contextId) return;
+    if (!props.contextId || isExploreTab.value) return;
     void refreshForActiveTab();
-    if (!isExploreTab.value) {
-      schedulePolling(true);
-    }
   },
   { immediate: true },
 );
@@ -298,33 +276,17 @@ watch(
     if (tick === prev) return;
     if (!props.contextId || isExploreTab.value) return;
     void refreshForActiveTab();
-    schedulePolling(false);
   },
 );
 
 watch(
   () => [activeTab.value] as const,
   ([tab]) => {
-    if (tab === "explore") {
-      stopPolling();
-      return;
-    }
-    schedulePolling(true);
+    if (!props.contextId || tab === "explore") return;
+    void refreshForActiveTab();
   },
   { immediate: true },
 );
-
-onMounted(() => {
-  if (isExploreTab.value) {
-    stopPolling();
-  } else {
-    schedulePolling(true);
-  }
-});
-
-onUnmounted(() => {
-  stopPolling();
-});
 </script>
 
 <template>
