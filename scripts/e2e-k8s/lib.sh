@@ -211,10 +211,12 @@ surreal_query() {
 # Echoes a JSON-RPC 2.0 message.sendStream request body.
 jsonrpc_send_stream() {
   local text="$1"
-  local msg_id
-  msg_id="e2e-$(date +%s)-${RANDOM}"
+  local msg_id corr_id millis
+  millis=$(python3 -c 'import time; print(int(time.time()*1000))')
+  msg_id="e2e-${millis}-${RANDOM}"
+  corr_id="corr-${millis}-${RANDOM}"
   cat <<JSONEOF
-{"jsonrpc":"2.0","id":1,"method":"message.sendStream","params":{"message":{"messageId":"${msg_id}","role":"user","parts":[{"kind":"text","text":"${text}"}]}}}
+{"jsonrpc":"2.0","id":"${corr_id}","method":"message.sendStream","params":{"message":{"messageId":"${msg_id}","role":"user","parts":[{"kind":"text","text":"${text}"}]}}}
 JSONEOF
 }
 
@@ -236,10 +238,12 @@ a2a_sse_request() {
 # Echoes a JSON-RPC 2.0 message.sendStream request body with a contextId for multi-turn.
 jsonrpc_send_stream_with_context() {
   local text="$1" context_id="$2"
-  local msg_id
-  msg_id="e2e-$(date +%s)-${RANDOM}"
+  local msg_id corr_id millis
+  millis=$(python3 -c 'import time; print(int(time.time()*1000))')
+  msg_id="e2e-${millis}-${RANDOM}"
+  corr_id="corr-${millis}-${RANDOM}"
   cat <<JSONEOF
-{"jsonrpc":"2.0","id":1,"method":"message.sendStream","params":{"message":{"messageId":"${msg_id}","role":"user","parts":[{"kind":"text","text":"${text}"}],"contextId":"${context_id}"}}}
+{"jsonrpc":"2.0","id":"${corr_id}","method":"message.sendStream","params":{"message":{"messageId":"${msg_id}","role":"user","parts":[{"kind":"text","text":"${text}"}],"contextId":"${context_id}"}}}
 JSONEOF
 }
 
