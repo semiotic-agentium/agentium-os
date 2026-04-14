@@ -150,6 +150,7 @@ Other fixtures (stream-js-tool, stream-baml-tool, conversational-context-auto, e
 Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 
 - **nextest (workspace)** — `cargo nextest run --workspace --locked --profile ci` with all feature flags enabled (`http-tools`, `llm-tests`, `memory`). Uses rust-cache with shared key `ci-nextest`. JUnit report published via `mikepenz/action-junit-report`. Secrets written to `fnox.toml` from GitHub secrets. **`regen_fixtures` is not run in CI**; generated `agents/**` and `tests/fixtures/agents/**` outputs stay committed, refreshed locally via `just regen-fixtures` / the pre-commit `regen-fixtures` hook.
+- **CLAUDE.md sync** — `claude-md-sync.yml` runs on pushes to main, analyzes architectural changes via OpenRouter API (Claude Sonnet 4), and creates PRs with proposed CLAUDE.md updates when needed. Skips if only CLAUDE.md changed to avoid loops.
 - Toolchain: stable for build/test, nightly for `cargo fmt --check` only.
 
 ## Testing Conventions
