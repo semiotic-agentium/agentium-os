@@ -51,6 +51,45 @@ export interface ContextMetricsResponse {
   session: SessionMetrics;
 }
 
+export interface ConversationHistoryPage {
+  contextId: string;
+  taskId?: string | null;
+  version: string;
+  maxEventOrder: number;
+  items: ConversationHistoryItem[];
+  nextCursor?: string | null;
+}
+
+export interface ConversationHistoryItem {
+  timestampMs: number;
+  activityAnchor: string;
+  role: string;
+  content: ConversationHistoryContent;
+}
+
+export interface ConversationHistoryOption {
+  contextId: string;
+  latestTimestampMs: number;
+  preview: string;
+}
+
+export interface ContextPickerPage {
+  items: ConversationHistoryOption[];
+  nextCursor?: string | null;
+}
+
+export type ConversationHistoryContent =
+  | { type: "message"; text: string; citations?: string[] }
+  | { type: "tool_call"; tool_name: string; args: unknown; fsm_phase: string }
+  | { type: "tool_result"; tool_name: string; fsm_phase: string; outcome: unknown }
+  | {
+      type: "session_step";
+      tool_name: string;
+      op: { kind: string };
+      send_done_replay_payload?: unknown;
+      read_replay_lines?: string[];
+    };
+
 /** A2A message part (wire may use snake_case media_type) */
 export interface Part {
   text?: string;

@@ -1,6 +1,6 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
-assertion_line: 1075
+assertion_line: 1200
 expression: snapshot
 ---
 {
@@ -98,64 +98,6 @@ expression: snapshot
             },
             "404": {
               "description": "Agent not found"
-            },
-            "500": {
-              "description": "Internal error"
-            }
-          }
-        }
-      },
-      "/agents/{agent_package}/{agent_instance_id}/a2a/sse": {
-        "post": {
-          "tags": [
-            "agents"
-          ],
-          "summary": "A2A over Server-Sent Events: POST /agents/{agent_package}/{agent_instance_id}/a2a/sse\nRequest body: JSON-RPC request. Response: Content-Type: text/event-stream; each event's\n`data` is one JSON-RPC response. Keep-alive comments sent on interval while stream is open.",
-          "description": "Unauthenticated at the application layer (same policy as `post_a2a`).",
-          "operationId": "post_a2a_sse",
-          "parameters": [
-            {
-              "name": "agent_package",
-              "in": "path",
-              "description": "Agent package identifier",
-              "required": true,
-              "schema": {
-                "type": "string"
-              }
-            },
-            {
-              "name": "agent_instance_id",
-              "in": "path",
-              "description": "Agent instance identifier",
-              "required": true,
-              "schema": {
-                "type": "string"
-              }
-            }
-          ],
-          "requestBody": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "required": true
-          },
-          "responses": {
-            "200": {
-              "description": "SSE stream of JSON-RPC responses",
-              "content": {
-                "text/event-stream": {}
-              }
-            },
-            "400": {
-              "description": "Malformed request"
-            },
-            "404": {
-              "description": "Agent not found"
-            },
-            "409": {
-              "description": "Conflicting concurrent stream request"
             },
             "500": {
               "description": "Internal error"
@@ -617,6 +559,241 @@ expression: snapshot
           }
         }
       },
+      "/contexts": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "summary": "Context picker index",
+          "description": "Typed context index for chat history selection. This is the product workflow source for context-scoped restore.",
+          "operationId": "get_context_index",
+          "parameters": [
+            {
+              "name": "agentPackage",
+              "in": "query",
+              "description": "Optional agent package filter",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "description": "Page size in range [1, 200], default 50",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            },
+            {
+              "name": "cursor",
+              "in": "query",
+              "description": "Opaque pagination cursor",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Context picker page",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ContextPickerPageDto"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Invalid query/cursor"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Context index service not configured"
+            }
+          }
+        }
+      },
+      "/contexts/{context_id}/conversation-history": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "summary": "Conversation history page by context_id",
+          "operationId": "get_conversation_history",
+          "parameters": [
+            {
+              "name": "context_id",
+              "in": "path",
+              "description": "Provenance context ID",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "taskId",
+              "in": "query",
+              "description": "Optional task scope",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "description": "Page size in range [1, 500], default 100",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            },
+            {
+              "name": "cursor",
+              "in": "query",
+              "description": "Opaque pagination cursor",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "profile",
+              "in": "query",
+              "description": "Payload profile: full or compact",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "format",
+              "in": "query",
+              "description": "Response format: full",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Conversation history page",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ConversationHistoryPageDto"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Invalid context/query/cursor"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Conversation history service not configured"
+            }
+          }
+        }
+      },
+      "/contexts/{context_id}/conversation-history/stream": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "summary": "Streaming conversation history updates by context_id",
+          "description": "Event source is provenance-normalized reads, not A2A stream relays.",
+          "operationId": "get_conversation_history_stream",
+          "parameters": [
+            {
+              "name": "context_id",
+              "in": "path",
+              "description": "Provenance context ID",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "taskId",
+              "in": "query",
+              "description": "Optional task scope",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "description": "Page size in range [1, 500], default 100",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            },
+            {
+              "name": "cursor",
+              "in": "query",
+              "description": "Opaque pagination cursor",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "profile",
+              "in": "query",
+              "description": "Payload profile: full or compact",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "format",
+              "in": "query",
+              "description": "Response format: full",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "SSE stream of conversation history snapshots",
+              "content": {
+                "text/event-stream": {}
+              }
+            },
+            "400": {
+              "description": "Invalid context/query/cursor"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Conversation history service not configured"
+            }
+          }
+        }
+      },
       "/contexts/{context_id}/mermaid": {
         "get": {
           "tags": [
@@ -925,6 +1102,8 @@ expression: snapshot
           "tags": [
             "provenance"
           ],
+          "summary": "Message analytics query (not transcript reconstruction)",
+          "description": "Analytics-only message aggregates/dimensions. For UI chat/provenance observation, use GET /contexts/{context_id}/conversation-history and /contexts/{context_id}/conversation-history/stream.",
           "operationId": "get_provenance_messages",
           "responses": {
             "200": {
@@ -1425,6 +1604,47 @@ expression: snapshot
             }
           }
         },
+        "ContextPickerItemDto": {
+          "type": "object",
+          "required": [
+            "contextId",
+            "latestTimestampMs",
+            "preview"
+          ],
+          "properties": {
+            "contextId": {
+              "type": "string"
+            },
+            "latestTimestampMs": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "preview": {
+              "type": "string"
+            }
+          }
+        },
+        "ContextPickerPageDto": {
+          "type": "object",
+          "required": [
+            "items"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ContextPickerItemDto"
+              }
+            },
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
         "ContextSessionMetricsDto": {
           "type": "object",
           "description": "Session-level aggregate metrics for one context id.",
@@ -1492,6 +1712,177 @@ expression: snapshot
               "type": "integer",
               "format": "int64",
               "minimum": 0
+            }
+          }
+        },
+        "ConversationHistoryContentDto": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "text",
+                "type"
+              ],
+              "properties": {
+                "citations": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "text": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "message"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "tool_name",
+                "args",
+                "fsm_phase",
+                "type"
+              ],
+              "properties": {
+                "args": {},
+                "fsm_phase": {
+                  "type": "string"
+                },
+                "tool_name": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "tool_call"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "tool_name",
+                "fsm_phase",
+                "outcome",
+                "type"
+              ],
+              "properties": {
+                "fsm_phase": {
+                  "type": "string"
+                },
+                "outcome": {
+                  "$ref": "#/components/schemas/ToolOutcomeDto"
+                },
+                "tool_name": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "tool_result"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "tool_name",
+                "op",
+                "type"
+              ],
+              "properties": {
+                "op": {
+                  "$ref": "#/components/schemas/SessionStepOpDto"
+                },
+                "read_replay_lines": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "send_done_replay_payload": {},
+                "tool_name": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "session_step"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "ConversationHistoryItemDto": {
+          "type": "object",
+          "required": [
+            "timestampMs",
+            "activityAnchor",
+            "role",
+            "content"
+          ],
+          "properties": {
+            "activityAnchor": {
+              "type": "string"
+            },
+            "content": {
+              "$ref": "#/components/schemas/ConversationHistoryContentDto"
+            },
+            "role": {
+              "type": "string"
+            },
+            "timestampMs": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        },
+        "ConversationHistoryPageDto": {
+          "type": "object",
+          "required": [
+            "contextId",
+            "version",
+            "maxEventOrder",
+            "items"
+          ],
+          "properties": {
+            "contextId": {
+              "type": "string"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ConversationHistoryItemDto"
+              }
+            },
+            "maxEventOrder": "[a2a_event_order]",
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "taskId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "type": "string"
             }
           }
         },
@@ -2310,6 +2701,110 @@ expression: snapshot
             }
           }
         },
+        "SessionStepOpDto": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "open"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "archive_ref",
+                "header",
+                "informed_by",
+                "kind"
+              ],
+              "properties": {
+                "archive_ref": {
+                  "type": "string"
+                },
+                "header": {
+                  "type": "string"
+                },
+                "informed_by": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "send_done"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "archive_ref",
+                "grep",
+                "offset",
+                "limit",
+                "kind"
+              ],
+              "properties": {
+                "archive_ref": {
+                  "type": "string"
+                },
+                "grep": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "search_read"
+                  ]
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "offset": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "archive_ref",
+                "offset",
+                "limit",
+                "kind"
+              ],
+              "properties": {
+                "archive_ref": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "page_read"
+                  ]
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "offset": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        },
         "StepTypeDto": {
           "type": "string",
           "description": "Episode step type for UI display.",
@@ -2477,6 +2972,56 @@ expression: snapshot
             }
           }
         },
+        "ToolOutcomeDto": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "value",
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "result"
+                  ]
+                },
+                "value": {}
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "value",
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "error"
+                  ]
+                },
+                "value": {}
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "status_only"
+                  ]
+                }
+              }
+            }
+          ]
+        },
         "UndeployRequestDto": {
           "type": "object",
           "required": [
@@ -2512,7 +3057,7 @@ expression: snapshot
       },
       {
         "name": "provenance",
-        "description": "Provenance-backed metrics and operational query APIs."
+        "description": "Provenance-backed read APIs. UI observation should use conversation-history/episode snapshot+stream routes; /provenance/messages remains analytics-oriented."
       },
       {
         "name": "deployments",

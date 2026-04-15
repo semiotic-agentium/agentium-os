@@ -108,7 +108,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         context_id: &ContextId,
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(context_id, limit, None)
+        self.conversation_context_filtered(context_id, limit, None, None, false)
             .await
     }
 
@@ -118,7 +118,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         limit: Option<usize>,
         task_id: Option<&TaskId>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(context_id, limit, task_id)
+        self.conversation_context_filtered(context_id, limit, task_id, None, false)
             .await
     }
 }
@@ -129,6 +129,8 @@ impl SurrealProvenanceStore {
         context_id: &ContextId,
         limit: Option<usize>,
         task_id: Option<&TaskId>,
+        after_event_order: Option<u64>,
+        forward_limit: bool,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
         let ctx_node_id = context_entity_id_string(context_id.as_str());
         let scoped_to = context_scope::SCOPED_TO;
@@ -160,6 +162,11 @@ impl SurrealProvenanceStore {
             }
         };
 
+        let after_filter_sql = match after_event_order {
+            Some(_) => "AND props.a2a_event_order > $after_event_order",
+            None => "",
+        };
+
         // Single SCOPED_TO edge traversal: fetch all Message, ToolCall, SessionStep
         // nodes scoped to this context in one query.
         let main_query = format!(
@@ -170,6 +177,7 @@ impl SurrealProvenanceStore {
                  AND from_label IN ['Message', 'ToolCall', 'SessionStep']\
              ) \
              AND (label != 'ToolCall' OR props.a2a_activity_outcome IN ['Success', 'Failed']) \
+             {after_filter_sql} \
              {task_filter_sql} \
              ORDER BY event_order ASC"
         );
@@ -183,6 +191,9 @@ impl SurrealProvenanceStore {
                 task_execution_activity_id_string(tid.as_str()),
             ));
             q = q.bind(("task_id_str", tid.as_str().to_string()));
+        }
+        if let Some(after) = after_event_order {
+            q = q.bind(("after_event_order", after));
         }
         let mut response = q.await.map_err(map_surreal_error)?;
         let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
@@ -628,7 +639,11 @@ impl SurrealProvenanceStore {
                 return Ok(Vec::new());
             }
             if items.len() > n {
-                items = items.split_off(items.len() - n);
+                if forward_limit {
+                    items.truncate(n);
+                } else {
+                    items = items.split_off(items.len() - n);
+                }
             }
         }
         Ok(items)
@@ -651,7 +666,24 @@ impl ProvenanceQueryApi for SurrealProvenanceStore {
         limit: Option<usize>,
         task_id: Option<&TaskId>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(context_id, limit, task_id)
+        self.conversation_context_filtered(context_id, limit, task_id, None, false)
             .await
+    }
+
+    async fn query_conversation_context_after(
+        &self,
+        context_id: &ContextId,
+        after_event_order: u64,
+        limit: Option<usize>,
+        task_id: Option<&TaskId>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        self.conversation_context_filtered(
+            context_id,
+            limit,
+            task_id,
+            Some(after_event_order),
+            true,
+        )
+        .await
     }
 }

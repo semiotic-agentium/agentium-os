@@ -380,6 +380,32 @@ pub trait ProvenanceQueryApi: Send + Sync {
         limit: Option<usize>,
         task_id: Option<&TaskId>,
     ) -> Result<Vec<ProvenanceConversationContextItem>>;
+
+    /// Incremental conversation rows strictly after `after_event_order` in ascending order.
+    ///
+    /// Default implementation falls back to filtering `query_conversation_context`.
+    async fn query_conversation_context_after(
+        &self,
+        context_id: &ContextId,
+        after_event_order: u64,
+        limit: Option<usize>,
+        task_id: Option<&TaskId>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        let rows = self
+            .query_conversation_context(context_id, None, task_id)
+            .await?;
+        let mut filtered = rows
+            .into_iter()
+            .filter(|row| row.timestamp_ms > after_event_order)
+            .collect::<Vec<_>>();
+        filtered.sort_by_key(|row| row.timestamp_ms);
+        if let Some(n) = limit
+            && filtered.len() > n
+        {
+            filtered.truncate(n);
+        }
+        Ok(filtered)
+    }
 }
 
 /// Planning snapshot for explainability. `intent_id` is the **task-scoped planning alias** from

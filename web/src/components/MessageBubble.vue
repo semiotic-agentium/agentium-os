@@ -17,7 +17,9 @@ const props = withDefaults(
 );
 
 function formatTime(date: Date): string {
-  return new Date(date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const parsed = new Date(date);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function isToolBlock(block: ContentBlock): block is import("../types/a2a").ToolNotificationBlock {

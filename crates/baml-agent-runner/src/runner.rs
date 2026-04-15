@@ -21,7 +21,7 @@ use baml_rt_observability::spans;
 use baml_rt_provenance::{ProvEvent, ProvenanceWriter};
 use baml_rt_tools::ToolAccessPolicy;
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
+use tokio::{io::AsyncWriteExt, sync::broadcast};
 
 use crate::{
     agent_package::{
@@ -425,6 +425,16 @@ impl AgentRunner {
                     agent_card,
                 }
             })
+            .collect()
+    }
+
+    pub(crate) fn subscribe_task_update_receivers(
+        &self,
+    ) -> Vec<broadcast::Receiver<baml_rt_a2a::a2a_store::TaskUpdateEvent>> {
+        let routed_agents = self.routed_agents.read().expect("RwLock poison");
+        routed_agents
+            .values()
+            .map(|agent| agent.subscribe_task_updates())
             .collect()
     }
 

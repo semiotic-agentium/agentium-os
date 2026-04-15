@@ -1367,6 +1367,7 @@ dependencies = [
  "test-support",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -1585,12 +1586,14 @@ dependencies = [
  "reqwest 0.12.26",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tower 0.5.3",
  "tower-http",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
  "utoipa",
  "utoipa-axum",
 ]

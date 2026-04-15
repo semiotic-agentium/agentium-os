@@ -1,4 +1,4 @@
-//! HTTP handlers: discovery, A2A forward (POST and SSE), and deterministic dispatch.
+//! HTTP handlers: discovery, A2A forward (POST), and deterministic dispatch.
 
 use std::{
     convert::Infallible,
@@ -24,13 +24,22 @@ use baml_rt_provenance::{
     ProvenanceOpsFilters, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
     ProvenanceOutcomeSegment, ProvenanceResponseProfile,
 };
-use futures_util::stream::{Stream, StreamExt};
+use futures_util::stream::Stream;
 use http_api_problem::HttpApiProblem;
 use serde_json::Value;
 
 use crate::{
     ApiState, ClusterMode,
+    context_index::{
+        ContextIndexQueryParams, ContextIndexRequest, ContextIndexRequestParseError,
+        ContextPickerPageDto,
+    },
     context_metrics::{ContextMetricsError, ContextMetricsResponseDto},
+    conversation_history::{
+        ConversationHistoryDeltaRequest, ConversationHistoryPageDto,
+        ConversationHistoryQueryParams, ConversationHistoryRequest,
+        ConversationHistoryRequestParseError,
+    },
     episode::EpisodeSnapshotDto,
     mermaid::MermaidError,
     metrics,
@@ -121,6 +130,10 @@ fn problem(status: u16, title: &str, detail: impl Into<String>) -> HttpApiProble
         .expect("standard HTTP status codes are always valid")
         .title(title)
         .detail(detail)
+}
+
+fn bad_request_problem(detail: impl Into<String>) -> HttpApiProblem {
+    problem(400, "Bad Request", detail)
 }
 
 fn deployment_status_to_str(status: DeploymentStatus) -> &'static str {
@@ -615,115 +628,6 @@ pub async fn post_a2a(
     }
 }
 
-/// A2A over Server-Sent Events: POST /agents/{agent_package}/{agent_instance_id}/a2a/sse
-/// Request body: JSON-RPC request. Response: Content-Type: text/event-stream; each event's
-/// `data` is one JSON-RPC response. Keep-alive comments sent on interval while stream is open.
-///
-/// Unauthenticated at the application layer (same policy as `post_a2a`).
-#[utoipa::path(
-    post,
-    path = "/agents/{agent_package}/{agent_instance_id}/a2a/sse",
-    tag = "agents",
-    params(
-        ("agent_package" = String, Path, description = "Agent package identifier"),
-        ("agent_instance_id" = String, Path, description = "Agent instance identifier")
-    ),
-    request_body = Value,
-    responses(
-        (status = 200, description = "SSE stream of JSON-RPC responses", content_type = "text/event-stream"),
-        (status = 400, description = "Malformed request"),
-        (status = 409, description = "Conflicting concurrent stream request"),
-        (status = 404, description = "Agent not found"),
-        (status = 500, description = "Internal error")
-    )
-)]
-pub async fn post_a2a_sse(
-    State(state): State<Arc<ApiState>>,
-    axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
-    Json(body): Json<Value>,
-) -> HttpResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
-    tracing::info!(
-        agent_package = %agent_package,
-        agent_instance_id = %agent_instance_id,
-        "A2A SSE request received"
-    );
-    let span = spans::post_a2a_sse(&agent_package, &agent_instance_id);
-    let _guard = span.enter();
-    let start = Instant::now();
-    let package_name = AgentPackageName::parse(&agent_package)
-        .ok_or_else(|| problem(400, "Bad Request", "agent_package must match [A-Za-z0-9_-]"))?;
-    let instance_id = AgentInstanceId::parse(&agent_instance_id).ok_or_else(|| {
-        problem(
-            400,
-            "Bad Request",
-            "agent_instance_id must match [A-Za-z0-9_-]",
-        )
-    })?;
-    let key = AgentRouteKey::new(package_name, instance_id);
-
-    if !body.is_object() {
-        metrics::record_request("post_a2a_sse", "bad_request", start.elapsed());
-        return Err(problem(
-            400,
-            "Bad Request",
-            "Body must be a JSON object (JSON-RPC request)",
-        ));
-    }
-
-    tracing::debug!(%agent_package, "A2A SSE: calling handle_a2a_stream");
-    let stream = match state
-        .registry
-        .handle_a2a_stream(&key, A2aWireRequest::from(body))
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            metrics::record_request(
-                "post_a2a_sse",
-                result_label_for_domain_error(&e),
-                start.elapsed(),
-            );
-            return Err(domain_to_problem(&e, &agent_package, &agent_instance_id));
-        }
-    };
-    let stream_obtained_at = Instant::now();
-    metrics::record_live_stream_phase_duration(
-        "http_handle_a2a_stream",
-        stream_obtained_at.duration_since(start),
-    );
-    tracing::info!(
-        %agent_package,
-        handle_wait_ms = stream_obtained_at.duration_since(start).as_millis(),
-        "A2A SSE: stream obtained, forwarding incrementally"
-    );
-    let mut first_bus_chunk = true;
-    let event_stream = stream.map(move |chunk| {
-        if first_bus_chunk {
-            first_bus_chunk = false;
-            let since_stream = stream_obtained_at.elapsed();
-            metrics::record_a2a_sse_first_data_duration_ms(since_stream);
-            metrics::record_a2a_sse_ttfb_from_handler_entry_ms(start.elapsed());
-            tracing::debug!(
-                since_stream_ms = since_stream.as_millis(),
-                ttfb_from_handler_entry_ms = start.elapsed().as_millis(),
-                "A2A SSE: first bus chunk mapped to SSE data event"
-            );
-        }
-        let data = serde_json::to_string(chunk.as_ref()).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "SSE chunk serialization failed");
-            r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"Chunk serialization failed"}}"#
-                .to_string()
-        });
-        Ok::<_, Infallible>(Event::default().data(data))
-    });
-
-    let sse = Sse::new(event_stream)
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text(""));
-
-    metrics::record_request("post_a2a_sse", "success", start.elapsed());
-    Ok(sse)
-}
-
 /// Get provenance graph as a Mermaid sequence diagram for an A2A context.
 #[utoipa::path(
     get,
@@ -1146,6 +1050,8 @@ pub async fn get_provenance_tool_calls(
     get,
     path = "/provenance/messages",
     tag = "provenance",
+    summary = "Message analytics query (not transcript reconstruction)",
+    description = "Analytics-only message aggregates/dimensions. For UI chat/provenance observation, use GET /contexts/{context_id}/conversation-history and /contexts/{context_id}/conversation-history/stream.",
     responses((status = 200, description = "Provenance message query response", body = Value))
 )]
 pub async fn get_provenance_messages(
@@ -1469,6 +1375,272 @@ pub async fn get_episode_stream(
         }
     };
     metrics::record_request("get_episode_stream", "success", start.elapsed());
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
+}
+
+fn parse_conversation_history_request(
+    context_id: &str,
+    query: ConversationHistoryQueryParams,
+) -> Result<ConversationHistoryRequest, HttpApiProblem> {
+    ConversationHistoryRequest::from_parts(context_id, query)
+        .map_err(|e: ConversationHistoryRequestParseError| bad_request_problem(e.to_string()))
+}
+
+fn parse_context_index_request(
+    query: ContextIndexQueryParams,
+) -> Result<ContextIndexRequest, HttpApiProblem> {
+    ContextIndexRequest::from_query(query)
+        .map_err(|e: ContextIndexRequestParseError| bad_request_problem(e.to_string()))
+}
+
+/// Context-scoped picker index for chat history restore.
+#[utoipa::path(
+    get,
+    path = "/contexts",
+    tag = "provenance",
+    summary = "Context picker index",
+    description = "Typed context index for chat history selection. This is the product workflow source for context-scoped restore.",
+    params(
+        ("agentPackage" = Option<String>, Query, description = "Optional agent package filter"),
+        ("limit" = Option<u32>, Query, description = "Page size in range [1, 200], default 50"),
+        ("cursor" = Option<String>, Query, description = "Opaque pagination cursor")
+    ),
+    responses(
+        (status = 200, description = "Context picker page", body = ContextPickerPageDto),
+        (status = 400, description = "Invalid query/cursor"),
+        (status = 501, description = "Context index service not configured"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_context_index(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<ContextIndexQueryParams>,
+) -> HttpResult<Json<ContextPickerPageDto>> {
+    let span = spans::get_context_index();
+    let _guard = span.enter();
+    let start = Instant::now();
+    let req = parse_context_index_request(query)?;
+    let Some(svc) = &state.context_index else {
+        metrics::record_request("get_context_index", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Context index service not configured",
+        ));
+    };
+    service_result_to_http("get_context_index", start, svc.page(&req).await)
+}
+
+/// Get normalized provenance conversation history for a context (optionally scoped to a task).
+#[utoipa::path(
+    get,
+    path = "/contexts/{context_id}/conversation-history",
+    tag = "provenance",
+    summary = "Conversation history page by context_id",
+    params(
+        ("context_id" = String, Path, description = "Provenance context ID"),
+        ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 100"),
+        ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
+        ("profile" = Option<String>, Query, description = "Payload profile: full or compact"),
+        ("format" = Option<String>, Query, description = "Response format: full")
+    ),
+    responses(
+        (status = 200, description = "Conversation history page", body = ConversationHistoryPageDto),
+        (status = 400, description = "Invalid context/query/cursor"),
+        (status = 501, description = "Conversation history service not configured"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_conversation_history(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+    Query(query): Query<ConversationHistoryQueryParams>,
+) -> HttpResult<Json<ConversationHistoryPageDto>> {
+    let span = spans::get_conversation_history(&context_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let req = parse_conversation_history_request(&context_id, query)?;
+    let Some(svc) = &state.conversation_history else {
+        metrics::record_request("get_conversation_history", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Conversation history service not configured",
+        ));
+    };
+    service_result_to_http("get_conversation_history", start, svc.page(&req).await)
+}
+
+/// SSE stream of normalized conversation snapshots for one context scope.
+///
+/// Event source is provenance-normalized reads, not A2A stream relays.
+#[utoipa::path(
+    get,
+    path = "/contexts/{context_id}/conversation-history/stream",
+    tag = "provenance",
+    summary = "Streaming conversation history updates by context_id",
+    params(
+        ("context_id" = String, Path, description = "Provenance context ID"),
+        ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 100"),
+        ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
+        ("profile" = Option<String>, Query, description = "Payload profile: full or compact"),
+        ("format" = Option<String>, Query, description = "Response format: full")
+    ),
+    responses(
+        (status = 200, description = "SSE stream of conversation history snapshots", content_type = "text/event-stream"),
+        (status = 400, description = "Invalid context/query/cursor"),
+        (status = 501, description = "Conversation history service not configured"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_conversation_history_stream(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+    Query(query): Query<ConversationHistoryQueryParams>,
+) -> HttpResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    let span = spans::get_conversation_history_stream(&context_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let req = parse_conversation_history_request(&context_id, query)?;
+    let Some(svc) = &state.conversation_history else {
+        metrics::record_request(
+            "get_conversation_history_stream",
+            "unavailable",
+            start.elapsed(),
+        );
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Conversation history service not configured",
+        ));
+    };
+    let Some(event_svc) = &state.conversation_history_events else {
+        metrics::record_request(
+            "get_conversation_history_stream",
+            "unavailable",
+            start.elapsed(),
+        );
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Conversation history event service not configured",
+        ));
+    };
+    let initial_query_start = Instant::now();
+    let initial = match service_result_to_http(
+        "get_conversation_history_stream",
+        start,
+        svc.page(&req).await,
+    ) {
+        Ok(axum::Json(s)) => s,
+        Err(e) => return Err(e),
+    };
+    metrics::record_conversation_history_phase_duration(
+        "initial_query",
+        initial_query_start.elapsed(),
+    );
+
+    let svc = Arc::clone(svc);
+    let request = req.clone();
+    let limit = request.page.limit();
+    let mut updates = event_svc.subscribe_updates();
+    let stream = async_stream::stream! {
+        let mut latest = initial.clone();
+        let mut last_event_order = latest.max_event_order;
+        let mut last_version = latest.version.clone();
+        let serialize_start = Instant::now();
+        let data = serde_json::to_string(&initial).unwrap_or_else(|_| "{}".into());
+        metrics::record_conversation_history_phase_duration("serialize_snapshot", serialize_start.elapsed());
+        metrics::record_conversation_history_payload("snapshot", data.len(), initial.items.len());
+        yield Ok::<_, Infallible>(Event::default().event("snapshot").data(data));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                let data = serde_json::to_string(&latest).unwrap_or_else(|_| "{}".into());
+                yield Ok::<_, Infallible>(Event::default().event("done").data(data));
+                break;
+            }
+            let wait_budget = deadline.saturating_duration_since(now);
+            let should_refresh = match tokio::time::timeout(wait_budget, updates.recv()).await {
+                Ok(Ok(update)) => {
+                    if update.context_id != request.context_id.as_str() {
+                        false
+                    } else if let Some(req_task_id) = request.task_id.as_ref().map(TaskId::as_str) {
+                        update.task_id.as_deref() == Some(req_task_id)
+                    } else {
+                        true
+                    }
+                }
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => true,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                    let data = serde_json::to_string(&latest).unwrap_or_else(|_| "{}".into());
+                    yield Ok::<_, Infallible>(Event::default().event("done").data(data));
+                    break;
+                }
+                Err(_) => {
+                    let data = serde_json::to_string(&latest).unwrap_or_else(|_| "{}".into());
+                    yield Ok::<_, Infallible>(Event::default().event("done").data(data));
+                    break;
+                }
+            };
+            if !should_refresh {
+                continue;
+            }
+            let delta_req = ConversationHistoryDeltaRequest {
+                context_id: request.context_id.clone(),
+                task_id: request.task_id.clone(),
+                after_event_order: last_event_order,
+                limit,
+                profile: request.profile,
+                format: request.format,
+            };
+
+            let delta_query_start = Instant::now();
+            match svc.delta_after_event_order(&delta_req).await {
+                Ok(page) => {
+                    metrics::record_conversation_history_phase_duration(
+                        "delta_query",
+                        delta_query_start.elapsed(),
+                    );
+                    if page.items.is_empty() {
+                        continue;
+                    }
+                    if page.version == last_version {
+                        continue;
+                    }
+                    latest.items.extend(page.items.clone());
+                    latest.max_event_order = page.max_event_order.max(latest.max_event_order);
+                    latest.version = page.version.clone();
+                    last_event_order = latest.max_event_order;
+                    last_version = latest.version.clone();
+                    let serialize_start = Instant::now();
+                    let data = serde_json::to_string(&page).unwrap_or_else(|_| "{}".into());
+                    metrics::record_conversation_history_phase_duration(
+                        "serialize_delta",
+                        serialize_start.elapsed(),
+                    );
+                    metrics::record_conversation_history_payload("delta", data.len(), page.items.len());
+                    yield Ok::<_, Infallible>(Event::default().event("delta").data(data));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        context_id = %request.context_id,
+                        error = %e,
+                        "Conversation history snapshot failed during stream"
+                    );
+                }
+            }
+        }
+    };
+    metrics::record_request(
+        "get_conversation_history_stream",
+        "success",
+        start.elapsed(),
+    );
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
 

@@ -1,0 +1,73 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "page1": {
+    "status": 200,
+    "body": {
+      "contextId": "ctx-100-1",
+      "version": "[conversation_history_version]",
+      "maxEventOrder": "[a2a_event_order]",
+      "items": [
+        {
+          "timestampMs": "[timestamp_ms]",
+          "activityAnchor": "[prov_activity_anchor]",
+          "role": "user",
+          "content": {
+            "type": "message",
+            "text": "run analysis"
+          }
+        },
+        {
+          "timestampMs": "[timestamp_ms]",
+          "activityAnchor": "[prov_activity_anchor]",
+          "role": "tool",
+          "content": {
+            "type": "tool_call",
+            "tool_name": "support/calculate",
+            "args": {
+              "expression": "2+2"
+            },
+            "fsm_phase": ""
+          }
+        }
+      ],
+      "nextCursor": "v1.7b2276223a312c226f6666736574223a322c22636f6e746578745f6964223a226374782d3130302d31222c227461736b5f6964223a6e756c6c7d"
+    }
+  },
+  "page2": {
+    "status": 200,
+    "body": {
+      "contextId": "ctx-100-1",
+      "version": "[conversation_history_version]",
+      "maxEventOrder": "[a2a_event_order]",
+      "items": [
+        {
+          "timestampMs": "[timestamp_ms]",
+          "activityAnchor": "[prov_activity_anchor]",
+          "role": "tool",
+          "content": {
+            "type": "tool_result",
+            "tool_name": "support/calculate",
+            "fsm_phase": "",
+            "outcome": {
+              "kind": "error",
+              "value": "timeout while calling tool"
+            }
+          }
+        },
+        {
+          "timestampMs": "[timestamp_ms]",
+          "activityAnchor": "[prov_activity_anchor]",
+          "role": "assistant",
+          "content": {
+            "type": "message",
+            "text": "BAML validation failed: invalid response schema"
+          }
+        }
+      ],
+      "nextCursor": "v1.7b2276223a312c226f6666736574223a342c22636f6e746578745f6964223a226374782d3130302d31222c227461736b5f6964223a6e756c6c7d"
+    }
+  }
+}

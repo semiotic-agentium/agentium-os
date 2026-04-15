@@ -15,9 +15,9 @@ flowchart TB
   end
 
   subgraph API["baml-rt-api"]
-    Router["Router\n/agents, /agents/.../a2a/sse, /contexts/*, /tasks/*, /openapi.json"]
+    Router["Router\n/agents, /agents/.../a2a, /contexts/*, /tasks/*, /openapi.json"]
     State["ApiState\nregistry, openapi, mermaid"]
-    Handlers["Handlers\nlist_agents, post_a2a_sse,\nget_mermaid_context, get_mermaid_task"]
+    Handlers["Handlers\nlist_agents, post_a2a,\nget_mermaid_context, get_mermaid_task"]
     Obs["Observability\nspans.rs, metrics.rs"]
   end
 
@@ -36,7 +36,7 @@ flowchart TB
 |Module|Role|
 |---|---|
 |`router`|Builds Axum `Router`, `ApiState`, and `serve()` entrypoint.|
-|`handlers`|HTTP handlers: discovery and A2A (POST + SSE).|
+|`handlers`|HTTP handlers: discovery and A2A (POST JSON-RPC forwarding).|
 |`openapi`|DTOs and utoipa types for OpenAPI spec.|
 |`spans`|OTel span helpers (orthogonal to handlers).|
 |`metrics`|OTel request counters/histograms (OnceLock-cached).|
@@ -48,7 +48,7 @@ flowchart TB
 |Method|Path|Description|
 |---|---|---|
 |**GET**|`/agents`|List running agents. Returns JSON array of `{ agent_package, agent_instance_id, name, version }`.|
-|**POST**|`/agents/{agent_package}/{agent_instance_id}/a2a/sse`|A2A JSON-RPC request. Body: single JSON-RPC 2.0 object. Response is **Server-Sent Events** (`text/event-stream`) streamed directly from `BusStream`. One event per JSON-RPC response; 15s keep-alive.|
+|**POST**|`/agents/{agent_package}/{agent_instance_id}/a2a`|A2A JSON-RPC request. Body: single JSON-RPC 2.0 object. Response is JSON array of JSON-RPC responses collected from the internal stream.|
 |**GET**|`/contexts/{context_id}/mermaid`|Mermaid sequence diagram for a provenance context (when Mermaid service is configured).|
 |**GET**|`/tasks/{task_id}/mermaid`|Mermaid sequence diagram for a provenance task (when Mermaid service is configured).|
 |**GET**|`/contexts/{context_id}/metrics`|Context token/call metrics (when ContextMetrics service is configured).|
@@ -69,10 +69,10 @@ Single JSON-RPC 2.0 request, e.g.:
 
 Supported methods include `tasks.list`, `tasks.get`, `tasks.subscribe`, `message.sendStream`. Use `id: null` to let the server assign a correlation id.
 
-### Streaming Boundary
+### Stream Collection Boundary
 
 - `AgentRegistry` is stream-first: `handle_a2a_stream(...) -> BusStream<Value>`.
-- `/a2a/sse` forwards stream items directly as SSE events.
+- `/a2a` collects stream items and returns a JSON array response.
 
 ### Errors
 

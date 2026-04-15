@@ -77,6 +77,7 @@ pub enum A2aWireMethod {
 /// params (null or missing) on the wire and treat them as empty.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct ListTasksParams {
     pub context_id: Option<ContextId>,
     pub history_length: Option<NumberOrString>,
@@ -86,8 +87,6 @@ pub struct ListTasksParams {
     pub status: Option<TaskState>,
     pub status_timestamp_after: Option<String>,
     pub tenant: Option<String>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, Value>,
 }
 
 impl From<ListTasksParams> for ListTasksRequest {
@@ -101,19 +100,18 @@ impl From<ListTasksParams> for ListTasksRequest {
             status: params.status,
             status_timestamp_after: params.status_timestamp_after,
             tenant: params.tenant,
-            extra: params.extra,
+            extra: HashMap::new(),
         }
     }
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct SubscribeToTaskParams {
     pub id: TaskId,
     pub tenant: Option<String>,
     pub stream: Option<bool>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, Value>,
 }
 
 impl From<SubscribeToTaskParams> for SubscribeToTaskRequest {
@@ -122,7 +120,7 @@ impl From<SubscribeToTaskParams> for SubscribeToTaskRequest {
         Self {
             id: params.id,
             tenant: params.tenant,
-            extra: params.extra,
+            extra: HashMap::new(),
         }
     }
 }
