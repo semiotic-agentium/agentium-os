@@ -1580,4 +1580,3 @@ pub async fn get_conversation_history_stream(
     );
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
-
