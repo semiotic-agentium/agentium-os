@@ -62,6 +62,12 @@ pub async fn forward_request(
 
     // Pin all resolved addresses so the HTTP client connects to the validated IPs.
     builder = builder.resolve_to_addrs(&target.host, &target.resolved_addrs);
+    tracing::debug!(
+        url = %target.url,
+        host = %target.host,
+        resolved_addrs = ?target.resolved_addrs,
+        "forwarding cluster A2A request with DNS-pinned addresses"
+    );
 
     let client = builder.build().map_err(|e| {
         BamlRtError::Io(std::io::Error::other(format!(
