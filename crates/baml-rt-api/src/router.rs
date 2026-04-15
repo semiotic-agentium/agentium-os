@@ -244,7 +244,11 @@ pub fn api_router_with_services_and_deploy(
         runner_token: runner_token.clone(),
         cluster_mode,
     });
-    let control_router = control_router.layer(auth_layer);
+    // Use `route_layer` so the auth check only runs for the control routes and
+    // does NOT cover the fallback 404 handler. With `layer` the merged router
+    // would 401 every unmatched path (including legitimate typos like
+    // `/agents/<pkg>/default/a2a/sse`), masking routing bugs as auth failures.
+    let control_router = control_router.route_layer(auth_layer);
 
     openapi.merge(control_openapi);
     let api_router = public_router.merge(control_router);
