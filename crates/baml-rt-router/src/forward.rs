@@ -60,10 +60,8 @@ pub async fn forward_request(
         .timeout(std::time::Duration::from_secs(60))
         .redirect(reqwest::redirect::Policy::none());
 
-    // Pin each resolved address so the HTTP client connects to the validated IPs.
-    for addr in &target.resolved_addrs {
-        builder = builder.resolve(&target.host, *addr);
-    }
+    // Pin all resolved addresses so the HTTP client connects to the validated IPs.
+    builder = builder.resolve_to_addrs(&target.host, &target.resolved_addrs);
 
     let client = builder.build().map_err(|e| {
         BamlRtError::Io(std::io::Error::other(format!(
@@ -117,7 +115,6 @@ async fn read_body_capped(resp: reqwest::Response, max_bytes: usize) -> String {
                 max_bytes = max_bytes,
                 "response body exceeded size cap, truncating"
             );
-            parts.push(chunk);
             break;
         }
         parts.push(chunk);

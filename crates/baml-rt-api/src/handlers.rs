@@ -414,9 +414,7 @@ pub async fn post_migrate(
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none());
-    for addr in &resolved_addrs {
-        builder = builder.resolve(&host, *addr);
-    }
+    builder = builder.resolve_to_addrs(&host, &resolved_addrs);
     let client = builder.build().map_err(|e| {
         problem(
             500,

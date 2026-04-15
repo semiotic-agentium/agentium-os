@@ -83,7 +83,15 @@ pub struct ClusterAuthLayer {
 }
 
 impl ClusterAuthLayer {
+    /// # Panics
+    ///
+    /// Panics if `runner_token` is `Some("")` — an empty token would silently
+    /// pass authentication for any request without an `X-Runner-Token` header.
     pub fn new(config: ClusterAuthConfig) -> Self {
+        assert!(
+            config.runner_token.as_deref() != Some(""),
+            "runner_token must not be an empty string; use None to disable token auth"
+        );
         Self {
             config: Arc::new(config),
         }
@@ -122,12 +130,19 @@ where
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let provided = req
-            .headers()
-            .get("X-Runner-Token")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
+        let raw_header = req.headers().get("X-Runner-Token");
+        let provided = match raw_header {
+            Some(v) => match v.to_str() {
+                Ok(s) => s.to_string(),
+                Err(_) => {
+                    tracing::warn!(
+                        "X-Runner-Token header contains non-UTF8 bytes, treating as absent"
+                    );
+                    String::new()
+                }
+            },
+            None => String::new(),
+        };
 
         let auth_result = check_control_auth(
             self.config.runner_token.as_deref(),
@@ -220,5 +235,86 @@ mod tests {
     #[test]
     fn tokens_match_empty() {
         assert!(tokens_match(b"", b""));
+    }
+
+    #[test]
+    #[should_panic(expected = "runner_token must not be an empty string")]
+    fn rejects_empty_configured_token() {
+        ClusterAuthLayer::new(ClusterAuthConfig {
+            runner_token: Some(String::new()),
+            cluster_mode: ClusterMode::Standalone,
+        });
+    }
+
+    // -- ClusterAuthLayer integration tests --
+
+    use axum::{body::Body, http::StatusCode, routing::get};
+    use tower::ServiceExt;
+
+    fn test_router(token: Option<&str>, mode: ClusterMode) -> axum::Router {
+        let layer = ClusterAuthLayer::new(ClusterAuthConfig {
+            runner_token: token.map(String::from),
+            cluster_mode: mode,
+        });
+        axum::Router::new()
+            .route("/control/test", get(|| async { "ok" }))
+            .layer(layer)
+    }
+
+    #[tokio::test]
+    async fn layer_forwards_with_valid_token() {
+        let app = test_router(Some("secret"), ClusterMode::Cluster);
+        let req = Request::builder()
+            .uri("/control/test")
+            .header("X-Runner-Token", "secret")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn layer_rejects_missing_token() {
+        let app = test_router(Some("secret"), ClusterMode::Cluster);
+        let req = Request::builder()
+            .uri("/control/test")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn layer_rejects_wrong_token() {
+        let app = test_router(Some("secret"), ClusterMode::Cluster);
+        let req = Request::builder()
+            .uri("/control/test")
+            .header("X-Runner-Token", "wrong")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn layer_standalone_no_token_allows() {
+        let app = test_router(None, ClusterMode::Standalone);
+        let req = Request::builder()
+            .uri("/control/test")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn layer_cluster_no_token_rejects() {
+        let app = test_router(None, ClusterMode::Cluster);
+        let req = Request::builder()
+            .uri("/control/test")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

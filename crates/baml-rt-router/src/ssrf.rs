@@ -10,7 +10,7 @@ use std::net::{IpAddr, SocketAddr};
 /// - Unspecified addresses (0.0.0.0, ::)
 /// - Link-local / metadata addresses (169.254.0.0/16, fe80::/10)
 /// - Known cloud metadata hostnames
-/// - Cloud metadata IPs (169.254.169.254, 100.100.100.100, fd00:ec2::/32)
+/// - Cloud metadata IPs (169.254.169.254, 100.100.100.200, fd00:ec2::/32)
 pub fn validate_cluster_endpoint(raw: &str) -> Result<url::Url, String> {
     // Reject non-ASCII input before URL parsing to prevent IDNA normalization
     // bypasses (e.g. Unicode look-alikes that normalize to blocked hostnames).
