@@ -17,6 +17,8 @@ use baml_rt_a2a::AgentRegistry;
 use baml_rt_config::{ConfigService, SurrealConfigStore};
 use baml_rt_core::DeploymentManager;
 use baml_rt_llm_config::{EmptySecretResolver, RuntimeSecretStore, SecretResolver};
+pub use baml_rt_router::auth::ClusterMode;
+use baml_rt_router::auth::{ClusterAuthConfig, ClusterAuthLayer};
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use tower_http::{
     services::{ServeDir, ServeFile},
@@ -30,17 +32,6 @@ use crate::{
     MermaidService, PlanningService, ProvenanceOpsService, config_handlers, handlers,
     repository_publish,
 };
-
-/// Deployment topology governing control-endpoint authentication.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClusterMode {
-    /// Single runner — control endpoints allow unauthenticated access when no
-    /// runner token is configured (backwards-compatible).
-    Standalone,
-    /// Cluster (shared SurrealDB) — control endpoints reject requests when no
-    /// runner token is configured (fail-closed).
-    Cluster,
-}
 
 /// Shared state for API handlers: registry, OpenAPI spec, and **injected** config/catalog/resolver.
 #[derive(Clone)]
@@ -204,7 +195,8 @@ pub fn api_router_with_services_and_deploy(
         )
     });
 
-    let (api_router, openapi) = OpenApiRouter::new()
+    // Public routes: no auth required.
+    let (public_router, mut openapi) = OpenApiRouter::new()
         .routes(utoipa_axum::routes!(handlers::list_agents))
         .routes(utoipa_axum::routes!(handlers::get_context_index))
         .routes(utoipa_axum::routes!(handlers::post_a2a))
@@ -227,9 +219,6 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(
             handlers::get_conversation_history_stream
         ))
-        .routes(utoipa_axum::routes!(handlers::post_deploy))
-        .routes(utoipa_axum::routes!(handlers::post_undeploy))
-        .routes(utoipa_axum::routes!(handlers::get_deployments))
         .routes(utoipa_axum::routes!(config_handlers::list_secrets_overview))
         .routes(utoipa_axum::routes!(config_handlers::list_store_keys))
         .routes(utoipa_axum::routes!(config_handlers::put_secret))
@@ -241,8 +230,24 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(config_handlers::list_config_versions))
         .routes(utoipa_axum::routes!(config_handlers::get_config_version))
         .routes(utoipa_axum::routes!(config_handlers::list_secret_requests))
+        .split_for_parts();
+
+    // Control routes: protected by ClusterAuthLayer (deploy, undeploy, deployments, migrate).
+    let (control_router, control_openapi) = OpenApiRouter::new()
+        .routes(utoipa_axum::routes!(handlers::post_deploy))
+        .routes(utoipa_axum::routes!(handlers::post_undeploy))
+        .routes(utoipa_axum::routes!(handlers::get_deployments))
         .routes(utoipa_axum::routes!(handlers::post_migrate))
         .split_for_parts();
+
+    let auth_layer = ClusterAuthLayer::new(ClusterAuthConfig {
+        runner_token: runner_token.clone(),
+        cluster_mode,
+    });
+    let control_router = control_router.layer(auth_layer);
+
+    openapi.merge(control_openapi);
+    let api_router = public_router.merge(control_router);
 
     let mut openapi = openapi;
     let mut tag_agents = utoipa::openapi::Tag::new("agents");

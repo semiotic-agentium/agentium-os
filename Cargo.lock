@@ -1343,6 +1343,7 @@ dependencies = [
  "baml-rt-provenance",
  "baml-rt-quickjs",
  "baml-rt-repository",
+ "baml-rt-router",
  "baml-rt-tools",
  "baml-rt-tools-claude",
  "baml-tools-calculator",
@@ -1576,6 +1577,7 @@ dependencies = [
  "baml-rt-observability",
  "baml-rt-provenance",
  "baml-rt-repository",
+ "baml-rt-router",
  "baml-rt-tools",
  "futures-util",
  "http-api-problem",
@@ -1586,7 +1588,6 @@ dependencies = [
  "reqwest 0.12.26",
  "serde",
  "serde_json",
- "sha2",
  "tokio",
  "tower 0.5.3",
  "tower-http",
@@ -1854,6 +1855,23 @@ dependencies = [
  "tracing",
  "utoipa",
  "uuid",
+]
+
+[[package]]
+name = "baml-rt-router"
+version = "0.1.0"
+dependencies = [
+ "axum 0.8.8",
+ "baml-rt-core",
+ "http-api-problem",
+ "reqwest 0.12.26",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tokio",
+ "tower 0.5.3",
+ "tracing",
+ "url",
 ]
 
 [[package]]

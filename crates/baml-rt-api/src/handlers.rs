@@ -9,7 +9,7 @@ use std::{
 use axum::{
     Json,
     extract::{Query, State},
-    http::{HeaderMap, StatusCode as AxumStatus},
+    http::StatusCode as AxumStatus,
     response::{
         IntoResponse,
         sse::{Event, KeepAlive, Sse},
@@ -29,7 +29,7 @@ use http_api_problem::HttpApiProblem;
 use serde_json::Value;
 
 use crate::{
-    ApiState, ClusterMode,
+    ApiState,
     context_index::{
         ContextIndexQueryParams, ContextIndexRequest, ContextIndexRequestParseError,
         ContextPickerPageDto,
@@ -52,63 +52,6 @@ use crate::{
     service_error::service_result_to_http,
     spans,
 };
-
-/// Constant-time byte comparison to prevent timing attacks on bearer tokens.
-/// Hashes both inputs to a fixed length before comparing so that the token
-/// length is never observable via timing.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    use sha2::{Digest, Sha256};
-    let ha = Sha256::digest(a);
-    let hb = Sha256::digest(b);
-    ha.as_slice()
-        .iter()
-        .zip(hb.as_slice().iter())
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
-}
-
-/// Authorization decision for control endpoints (deploy, undeploy, migrate, deployments).
-///
-/// - **Cluster mode**: rejects when no token is configured (fail-closed).
-/// - **Standalone mode**: allows unauthenticated access when no token is
-///   configured (backwards-compatible single-runner behaviour).
-/// - When a token *is* configured, both modes validate it.
-#[allow(clippy::result_large_err)]
-fn check_control_auth(
-    runner_token: Option<&str>,
-    cluster_mode: ClusterMode,
-    provided: &str,
-) -> Result<(), HttpApiProblem> {
-    match runner_token {
-        Some(expected) => {
-            if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
-                return Err(problem(
-                    401,
-                    "Unauthorized",
-                    "missing or invalid X-Runner-Token",
-                ));
-            }
-            Ok(())
-        }
-        None if cluster_mode == ClusterMode::Cluster => Err(problem(
-            401,
-            "Unauthorized",
-            "runner_token is not configured; control endpoints require authentication in cluster mode",
-        )),
-        None => Ok(()),
-    }
-}
-
-/// Strict token check for write/control endpoints (deploy, undeploy, migrate).
-/// Behaviour depends on cluster mode — see [`check_control_auth`].
-#[allow(clippy::result_large_err)]
-fn require_control_token(state: &ApiState, headers: &HeaderMap) -> Result<(), HttpApiProblem> {
-    let provided = headers
-        .get("X-Runner-Token")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    check_control_auth(state.runner_token.as_deref(), state.cluster_mode, provided)
-}
 
 /// HTTP result type for handlers that return RFC 7807 problem details on error.
 type HttpResult<T> = Result<T, HttpApiProblem>;
@@ -301,10 +244,8 @@ pub async fn list_agents(
 )]
 pub async fn post_deploy(
     State(state): State<Arc<ApiState>>,
-    headers: HeaderMap,
     Json(body): Json<DeployRequestDto>,
 ) -> HttpResult<Json<DeployResponseDto>> {
-    require_control_token(&state, &headers)?;
     let Some(manager) = &state.deployment_manager else {
         return Err(problem(
             501,
@@ -349,10 +290,8 @@ pub async fn post_deploy(
 )]
 pub async fn post_undeploy(
     State(state): State<Arc<ApiState>>,
-    headers: HeaderMap,
     Json(body): Json<UndeployRequestDto>,
 ) -> HttpResult<Json<UndeployResponseDto>> {
-    require_control_token(&state, &headers)?;
     let Some(manager) = &state.deployment_manager else {
         return Err(problem(
             501,
@@ -394,9 +333,7 @@ pub async fn post_undeploy(
 )]
 pub async fn get_deployments(
     State(state): State<Arc<ApiState>>,
-    headers: HeaderMap,
 ) -> HttpResult<Json<Vec<DeploymentRecordDto>>> {
-    require_control_token(&state, &headers)?;
     let Some(manager) = &state.deployment_manager else {
         return Err(problem(
             501,
@@ -446,11 +383,8 @@ pub async fn get_deployments(
 )]
 pub async fn post_migrate(
     State(state): State<Arc<ApiState>>,
-    headers: HeaderMap,
     Json(body): Json<MigrateRequestDto>,
 ) -> HttpResult<Json<MigrateResponseDto>> {
-    require_control_token(&state, &headers)?;
-
     let Some(manager) = &state.deployment_manager else {
         return Err(problem(
             501,
@@ -463,28 +397,33 @@ pub async fn post_migrate(
     let target = &body.target_runner_endpoint;
 
     // SSRF protection: validate target endpoint and resolve DNS to block
-    // private/metadata IPs behind attacker-controlled hostnames.
-    let target_url = crate::endpoint_validation::resolve_and_validate_cluster_endpoint(target)
-        .await
-        .map_err(|e| problem(400, "Bad Request", e))?;
+    // private/metadata IPs behind attacker-controlled hostnames. Pin resolved
+    // IPs to close the DNS-rebinding TOCTOU gap.
+    let (target_url, resolved_addrs) =
+        crate::endpoint_validation::resolve_and_validate_cluster_endpoint(target)
+            .await
+            .map_err(|e| problem(400, "Bad Request", e))?;
 
     let content_hash = hash
         .parse::<DeploymentContentHash>()
         .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
 
     // 1. Forward deploy to target runner FIRST (before local undeploy).
-    let client = reqwest::Client::builder()
+    let host = target_url.host_str().unwrap_or("").to_string();
+    let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| {
-            problem(
-                500,
-                "Internal Server Error",
-                format!("HTTP client build: {e}"),
-            )
-        })?;
+        .redirect(reqwest::redirect::Policy::none());
+    for addr in &resolved_addrs {
+        builder = builder.resolve(&host, *addr);
+    }
+    let client = builder.build().map_err(|e| {
+        problem(
+            500,
+            "Internal Server Error",
+            format!("HTTP client build: {e}"),
+        )
+    })?;
 
     let base = crate::endpoint_validation::origin_url(&target_url);
     let deploy_url = format!("{base}/deploy");
@@ -558,7 +497,7 @@ pub async fn post_migrate(
 ///
 /// Unauthenticated at the application layer. Cluster isolation relies on
 /// network policy (K8s NetworkPolicy / service mesh); external client auth
-/// belongs at the ingress. Control-plane endpoints use `require_control_token`.
+/// belongs at the ingress. Control-plane endpoints are protected by `ClusterAuthLayer`.
 #[utoipa::path(
     post,
     path = "/agents/{agent_package}/{agent_instance_id}/a2a",
@@ -1644,65 +1583,3 @@ pub async fn get_conversation_history_stream(
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn standalone_no_token_allows_access() {
-        let result = check_control_auth(None, ClusterMode::Standalone, "");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn standalone_no_token_allows_any_header() {
-        let result = check_control_auth(None, ClusterMode::Standalone, "anything");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn standalone_with_token_accepts_match() {
-        let result = check_control_auth(Some("secret"), ClusterMode::Standalone, "secret");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn standalone_with_token_rejects_mismatch() {
-        let result = check_control_auth(Some("secret"), ClusterMode::Standalone, "wrong");
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().status.unwrap().as_u16(), 401);
-    }
-
-    #[test]
-    fn standalone_with_token_rejects_empty() {
-        let result = check_control_auth(Some("secret"), ClusterMode::Standalone, "");
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().status.unwrap().as_u16(), 401);
-    }
-
-    #[test]
-    fn cluster_no_token_rejects() {
-        let result = check_control_auth(None, ClusterMode::Cluster, "");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.status.unwrap().as_u16(), 401);
-        let detail = err.detail.as_deref().unwrap_or("");
-        assert!(
-            detail.contains("cluster mode"),
-            "detail should mention cluster mode: {detail}"
-        );
-    }
-
-    #[test]
-    fn cluster_with_token_accepts_match() {
-        let result = check_control_auth(Some("secret"), ClusterMode::Cluster, "secret");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn cluster_with_token_rejects_mismatch() {
-        let result = check_control_auth(Some("secret"), ClusterMode::Cluster, "wrong");
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().status.unwrap().as_u16(), 401);
-    }
-}

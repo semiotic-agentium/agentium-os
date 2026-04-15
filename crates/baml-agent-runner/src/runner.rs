@@ -96,7 +96,7 @@ impl AgentRunner {
         repository_url: String,
     ) -> baml_rt_core::Result<Self> {
         let routed_agents = std::sync::RwLock::new(HashMap::new());
-        let internal_a2a_router = Arc::new(InternalA2aRouter::new()?);
+        let internal_a2a_router = Arc::new(InternalA2aRouter::new());
         Ok(Self {
             agents: RwLock::new(HashMap::new()),
             provenance_config,

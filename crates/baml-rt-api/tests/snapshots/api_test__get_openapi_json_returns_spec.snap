@@ -51,7 +51,7 @@ expression: snapshot
             "agents"
           ],
           "summary": "Forward A2A JSON-RPC request (POST /agents/{agent_package}/{agent_instance_id}/a2a).",
-          "description": "Unauthenticated at the application layer. Cluster isolation relies on\nnetwork policy (K8s NetworkPolicy / service mesh); external client auth\nbelongs at the ingress. Control-plane endpoints use `require_control_token`.",
+          "description": "Unauthenticated at the application layer. Cluster isolation relies on\nnetwork policy (K8s NetworkPolicy / service mesh); external client auth\nbelongs at the ingress. Control-plane endpoints are protected by `ClusterAuthLayer`.",
           "operationId": "post_a2a",
           "parameters": [
             {

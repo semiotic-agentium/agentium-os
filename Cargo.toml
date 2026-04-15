@@ -23,6 +23,7 @@ members = [
   "crates/baml-rt-provenance",
   "crates/baml-rt-quickjs",
   "crates/baml-rt-repository",
+  "crates/baml-rt-router",
   "crates/baml-rt-tools",
   "crates/test-support",
   "crates/task-daemon",
@@ -106,6 +107,7 @@ async-channel = "2"
 async-stream = "0.3"
 futures-core = "0.3"
 sha2 = "0.10"
+subtle = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 flate2 = "1"
 tar = "0.4"

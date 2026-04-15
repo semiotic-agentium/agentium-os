@@ -107,26 +107,14 @@ pub(crate) trait ClusterEndpointResolver: Send + Sync {
 pub(crate) struct InternalA2aRouter {
     runner: std::sync::OnceLock<Arc<AgentRunner>>,
     cluster: std::sync::OnceLock<Arc<dyn ClusterEndpointResolver>>,
-    http_client: reqwest::Client,
 }
 
 impl InternalA2aRouter {
-    pub(crate) fn new() -> Result<Self> {
-        let http_client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .timeout(std::time::Duration::from_secs(60))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| {
-                BamlRtError::Io(std::io::Error::other(format!(
-                    "HTTP client build failed: {e}"
-                )))
-            })?;
-        Ok(Self {
+    pub(crate) fn new() -> Self {
+        Self {
             runner: std::sync::OnceLock::new(),
             cluster: std::sync::OnceLock::new(),
-            http_client,
-        })
+        }
     }
 
     /// Return the cluster endpoint resolver, if one has been configured.
@@ -246,49 +234,11 @@ impl InternalA2aRouter {
         key: &AgentRouteKey,
         request: A2aWireRequest,
     ) -> Result<BusStream<A2aStreamChunk>> {
-        // SSRF protection: validate the endpoint and resolve DNS names to
-        // block private/metadata IPs hidden behind attacker-controlled hostnames.
-        let validated =
-            baml_rt_api::endpoint_validation::resolve_and_validate_cluster_endpoint(endpoint)
-                .await
-                .map_err(|e| {
-                    BamlRtError::InvalidArgument(format!("cluster endpoint rejected: {e}"))
-                })?;
-
-        let base = baml_rt_api::endpoint_validation::origin_url(&validated);
         let pkg = key.agent_package.as_str();
         let inst = key.agent_instance_id.as_str();
-        let url = format!("{base}/agents/{pkg}/{inst}/a2a");
+        let target = baml_rt_router::forward::resolve_forward_target(endpoint, pkg, inst).await?;
         let body = request.into_inner();
-        let resp = self
-            .http_client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                BamlRtError::Io(std::io::Error::other(format!(
-                    "cluster A2A forward failed: {e}"
-                )))
-            })?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "<unreadable>".to_string());
-            let text = baml_rt_api::endpoint_validation::truncate_body(&text, 512);
-            return Err(BamlRtError::Io(std::io::Error::other(format!(
-                "cluster A2A forward returned {status}: {text}"
-            ))));
-        }
-
-        let items: Vec<Value> = resp.json().await.map_err(|e| {
-            BamlRtError::Io(std::io::Error::other(format!(
-                "cluster A2A response parse: {e}"
-            )))
-        })?;
+        let items = baml_rt_router::forward::forward_request(&target, &body).await?;
         let chunks = response_body_to_chunks(items);
         Ok(Box::pin(futures_util::stream::iter(chunks)))
     }
