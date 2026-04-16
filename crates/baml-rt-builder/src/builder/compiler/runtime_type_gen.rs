@@ -77,7 +77,11 @@ impl TypeGenerator for RuntimeTypeGenerator {
             // Resolve tool metadata once — used by both polymorphic type generation
             // and per-phase function generation.
             let tool_metadata = if !tool_names.is_empty() {
-                baml_rt_tools::tool_catalog::resolve_manifest_tools(&tool_names)?
+                let catalog = baml_rt_tools::external_tools::build_builder_catalog()?;
+                baml_rt_tools::tool_catalog::resolve_manifest_tools_with_catalog(
+                    &catalog,
+                    &tool_names,
+                )?
             } else {
                 Vec::new()
             };

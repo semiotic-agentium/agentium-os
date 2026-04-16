@@ -8,6 +8,8 @@
 
 pub mod handler;
 pub mod invoker;
+pub(crate) mod metadata;
+pub mod metadata_catalog;
 pub mod policy;
 pub mod protocol;
 pub mod resolver;
@@ -18,6 +20,9 @@ use std::sync::Arc;
 pub use handler::{ProcessToolHandler, ProcessToolSession};
 pub use invoker::{
     ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, map_jsonrpc_error,
+};
+pub use metadata_catalog::{
+    BUILDER_EXTERNAL_TOOLS_ENV, ExternalMetadataCatalog, build_builder_catalog,
 };
 pub use policy::{
     BACKOFF_SCHEDULE_MS, DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT, DEFAULT_MAX_CONCURRENT,

@@ -16,64 +16,20 @@ use std::{
 };
 
 use baml_rt_core::{BamlRtError, Result};
-use serde::Deserialize;
-use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use super::{
     ExternalLifecycleEvent, ExternalLifecycleRecorder,
     handler::ProcessToolHandler,
     invoker::{ExternalInvoker, ToolDescribe},
+    metadata::{RawToolMetadata, build_tool_metadata, metadata_schema_hash, read_raw_metadata},
     policy::{DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT},
     protocol::PROTOCOL_VERSION,
     stdio::StdioSubprocessInvoker,
 };
 use crate::{
     ExternalToolResolver, ToolName,
-    tools::{
-        BundleName, SecretRequest, SessionPolicy, ToolAccess, ToolBackend, ToolFunctionMetadata,
-        ToolHandler, ToolOrigin, ToolTypeSpec,
-    },
+    tools::{ToolFunctionMetadata, ToolHandler},
 };
-
-/// Raw shape of `tool-metadata.json` (deserialized then projected into
-/// `ToolFunctionMetadata` + `SecretRequest` + capability struct).
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)] // `bundle` / `local_name` are read by schema validation; kept for completeness.
-struct RawToolMetadata {
-    tool_abi_version: String,
-    name: String,
-    description: String,
-    bundle: String,
-    local_name: String,
-    access_level: String,
-    #[serde(default)]
-    tags: Vec<String>,
-    invocation_mode: String,
-    #[serde(default)]
-    session_policy: RawSessionPolicy,
-    schemas: RawSchemas,
-    #[serde(default)]
-    secrets: Vec<String>,
-    #[serde(default)]
-    capabilities: Value,
-    #[serde(default)]
-    config_bundle: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum RawSessionPolicy {
-    #[default]
-    Strict,
-    MultiSend,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RawSchemas {
-    input: Value,
-    output: Value,
-}
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 struct DescribeCacheKey {
@@ -138,34 +94,9 @@ async fn load_tool_dir(
     dir: &Path,
     lifecycle_recorder: Option<&ExternalLifecycleRecorder>,
 ) -> Result<(ToolName, ToolFunctionMetadata, Arc<dyn ToolHandler>)> {
-    let metadata_path = dir.join("tool-metadata.json");
     let bin_path = dir.join("tool-server");
+    let raw = read_raw_metadata(dir)?;
 
-    let raw = std::fs::read_to_string(&metadata_path).map_err(|e| {
-        BamlRtError::InvalidArgumentWithSource {
-            message: format!("failed to read {}", metadata_path.display()),
-            source: Box::new(e),
-        }
-    })?;
-    let raw: RawToolMetadata =
-        serde_json::from_str(&raw).map_err(|e| BamlRtError::InvalidArgumentWithSource {
-            message: format!("failed to parse {}", metadata_path.display()),
-            source: Box::new(e),
-        })?;
-
-    // Minimum sanity checks — the JSON Schema would enforce the rest.
-    if raw.tool_abi_version != "1" {
-        return Err(BamlRtError::InvalidArgument(format!(
-            "external tool '{}' declares unsupported ABI version '{}' (expected '1')",
-            raw.name, raw.tool_abi_version
-        )));
-    }
-    if raw.invocation_mode != "single_shot" {
-        return Err(BamlRtError::InvalidArgument(format!(
-            "external tool '{}' declares unsupported invocation_mode '{}' (expected 'single_shot')",
-            raw.name, raw.invocation_mode
-        )));
-    }
     if !bin_path.exists() {
         if let Some(recorder) = lifecycle_recorder {
             recorder(ExternalLifecycleEvent::Artifact {
@@ -185,7 +116,7 @@ async fn load_tool_dir(
     }
 
     let tool_name = ToolName::parse(&raw.name)?;
-    let metadata = build_metadata(&raw, &tool_name)?;
+    let metadata = build_tool_metadata(&raw, &tool_name)?;
 
     if let Some(recorder) = lifecycle_recorder {
         recorder(ExternalLifecycleEvent::Artifact {
@@ -367,106 +298,6 @@ fn validate_describe_contract(
     Ok(())
 }
 
-fn metadata_schema_hash(raw: &RawToolMetadata) -> String {
-    let payload = serde_json::json!({
-        "input": sort_json_keys(&raw.schemas.input),
-        "output": sort_json_keys(&raw.schemas.output),
-    });
-
-    let canonical = serde_json::to_string(&payload)
-        .expect("serializing canonical tool schema payload should not fail");
-
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
-    format!("sha256:{:x}", hasher.finalize())
-}
-
-fn sort_json_keys(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut pairs: Vec<_> = map.iter().collect();
-            pairs.sort_by_key(|(ka, _)| *ka);
-            let sorted = pairs
-                .into_iter()
-                .map(|(k, v)| (k.clone(), sort_json_keys(v)))
-                .collect();
-            Value::Object(sorted)
-        }
-        Value::Array(values) => Value::Array(values.iter().map(sort_json_keys).collect()),
-        _ => value.clone(),
-    }
-}
-
-fn build_metadata(raw: &RawToolMetadata, tool_name: &ToolName) -> Result<ToolFunctionMetadata> {
-    let access = match raw.access_level.as_str() {
-        "read" => Some(ToolAccess::Read),
-        "write" => Some(ToolAccess::Write),
-        "delete" => Some(ToolAccess::Delete),
-        other => {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "external tool '{}' has invalid access_level '{}'",
-                tool_name, other
-            )));
-        }
-    };
-
-    let class_name = ToolFunctionMetadata::derive_class_name(tool_name.bundle(), tool_name.local());
-
-    let config_bundle = match &raw.config_bundle {
-        Some(s) => Some(BundleName::new(s)?),
-        None => None,
-    };
-
-    let secret_requests: Vec<SecretRequest> = raw
-        .secrets
-        .iter()
-        .map(|s| {
-            SecretRequest::api_key(
-                s.clone(),
-                format!("Required by external tool {}", raw.name),
-                s.clone(),
-            )
-        })
-        .collect();
-
-    Ok(ToolFunctionMetadata {
-        name: tool_name.clone(),
-        class_name: class_name.clone(),
-        description: raw.description.clone(),
-        // External tools have no "open input" concept in V1 — single-shot invoke.
-        open_input_schema: serde_json::json!({}),
-        input_schema: raw.schemas.input.clone(),
-        output_schema: raw.schemas.output.clone(),
-        open_input_type: ToolTypeSpec {
-            name: "()".to_string(),
-            ts_decl: None,
-        },
-        input_type: ToolTypeSpec {
-            name: format!("{}Input", class_name),
-            ts_decl: None,
-        },
-        output_type: ToolTypeSpec {
-            name: format!("{}Output", class_name),
-            ts_decl: None,
-        },
-        baml_decl: None,
-        extra_ts_decls: Vec::new(),
-        access,
-        tags: raw.tags.clone(),
-        secret_requests,
-        config: None,
-        config_bundle,
-        origin: ToolOrigin::Host,
-        backend: ToolBackend::ExternalProcess,
-        projection_semantics: None,
-        session_policy: match raw.session_policy {
-            RawSessionPolicy::Strict => SessionPolicy::Strict,
-            RawSessionPolicy::MultiSend => SessionPolicy::MultiSend,
-        },
-        event_sources: Vec::new(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -480,7 +311,10 @@ mod tests {
     use uuid::Uuid;
 
     use super::{DevModeResolver, ExternalLifecycleEvent, ExternalLifecycleRecorder};
-    use crate::{ExternalToolResolver, ToolName, tools::SessionPolicy};
+    use crate::{
+        ExternalToolResolver, ToolName, external_tools::metadata::metadata_schema_hash,
+        tools::SessionPolicy,
+    };
 
     #[tokio::test]
     async fn dev_mode_resolver_accepts_matching_describe_and_caches() {
@@ -513,7 +347,7 @@ mod tests {
         )
         .unwrap();
 
-        let schema_hash = super::metadata_schema_hash(&serde_json::from_value(metadata).unwrap());
+        let schema_hash = metadata_schema_hash(&serde_json::from_value(metadata).unwrap());
         let counter_path = tool_dir.join("describe-count");
         let response = format!(
             "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/invoke\"],\"schema_hash\":\"{schema_hash}\"}}}}"

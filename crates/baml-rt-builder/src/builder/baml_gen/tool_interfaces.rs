@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 
 use baml_rt_tools::{
-    OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY,
-    schema_allows_empty_or_optional_open_input, tool_catalog::resolve_manifest_tools,
+    OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY, external_tools::build_builder_catalog,
+    schema_allows_empty_or_optional_open_input, tool_catalog::resolve_manifest_tools_with_catalog,
     tools::ToolFunctionMetadata,
 };
 use baml_tools_calculator as _;
@@ -29,7 +29,8 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     #[cfg(feature = "slack")]
     let _ = baml_tools_slack::SlackTool::new;
 
-    let tool_metadata = resolve_manifest_tools(tool_names)?;
+    let builder_catalog = build_builder_catalog()?;
+    let tool_metadata = resolve_manifest_tools_with_catalog(&builder_catalog, tool_names)?;
     let mut w = BamlWriter::new();
     w.push_block(&generated_tools_prelude());
     let out = w.as_mut_string();
