@@ -643,7 +643,7 @@ mod tests {
             config: None,
             config_bundle: None,
             origin: ToolOrigin::Host,
-            backend: ToolBackend::ExternalProcess,
+            backend: ToolBackend::External,
             projection_semantics: None,
             session_policy: Default::default(),
             event_sources: Vec::new(),

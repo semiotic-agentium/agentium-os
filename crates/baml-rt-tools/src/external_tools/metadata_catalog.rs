@@ -158,7 +158,7 @@ mod tests {
 
         let parsed = ToolName::parse(tool_name).unwrap();
         let meta = catalog.by_name(&parsed).expect("tool resolves by name");
-        assert_eq!(meta.backend, ToolBackend::ExternalProcess);
+        assert_eq!(meta.backend, ToolBackend::External);
         assert!(meta.tags.contains(&"external".to_string()));
 
         let _ = fs::remove_dir_all(base);

@@ -510,7 +510,7 @@ pub enum ProvEventData {
         /// Content-addressed digest of the tool artifact (external tools only).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_digest: Option<String>,
-        /// Execution backend that served this invocation (e.g. "InProcess", "ExternalProcess").
+        /// Execution backend that served this invocation (e.g. "Static", "External").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_backend: Option<String>,
     },
@@ -527,7 +527,7 @@ pub enum ProvEventData {
         /// Content-addressed digest of the tool artifact (external tools only).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_digest: Option<String>,
-        /// Execution backend that served this invocation (e.g. "InProcess", "ExternalProcess").
+        /// Execution backend that served this invocation (e.g. "Static", "External").
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_backend: Option<String>,
     },

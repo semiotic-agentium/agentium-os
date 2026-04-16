@@ -849,7 +849,7 @@ pub struct ToolFunctionMetadata {
     pub config_bundle: Option<BundleName>,
     /// Origin of this tool (host vs guest)
     pub origin: ToolOrigin,
-    /// Execution backend (in-process, external process, Wasm). Defaults to `InProcess`.
+    /// Execution backend (Static, External, or Wasm). Defaults to `Static`.
     pub backend: ToolBackend,
     /// Optional tool-specific semantics for projection modes used during SearchRead/PageRead steps.
     pub projection_semantics: Option<ToolProjectionSemantics>,
@@ -1221,15 +1221,19 @@ pub enum ToolOrigin {
 }
 
 /// Execution backend for a tool. Orthogonal to [`ToolOrigin`] (ownership).
+///
+/// - `Static`: compiled into the runner at build time and linked via inventory.
+/// - `External`: resolved at deploy time and spawned as a subprocess per invocation.
+/// - `Wasm`: loaded per invocation into a Wasm sandbox (future).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolBackend {
     /// Compiled into the runner via inventory (current default).
     #[default]
-    InProcess,
+    Static,
     /// Runs as a standalone process speaking the tool protocol over stdio/UDS.
-    ExternalProcess,
+    External,
     /// Runs inside a Wasm sandbox (future).
-    ExternalWasm,
+    Wasm,
 }
 
 /// Context passed to a tool when a session is opened. context_id and agent_id (from invocation

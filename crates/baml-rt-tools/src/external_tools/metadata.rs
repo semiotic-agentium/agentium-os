@@ -155,7 +155,7 @@ pub(crate) fn build_tool_metadata(
         config: None,
         config_bundle,
         origin: ToolOrigin::Host,
-        backend: ToolBackend::ExternalProcess,
+        backend: ToolBackend::External,
         projection_semantics: None,
         session_policy: match raw.session_policy {
             RawSessionPolicy::Strict => SessionPolicy::Strict,
