@@ -36,16 +36,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Refresh apt indices (retry; mitigates mirror sync races)
+        run: bash scripts/ci/apt-update-retry.sh
+
       - name: Ensure zstd available
         run: |
           if ! command -v zstd &>/dev/null; then
-            sudo apt-get update && sudo apt-get install -y zstd
+            sudo apt-get install -y zstd
           fi
 
       - name: Ensure ONNX model artifacts are materialized (git-lfs)
         run: |
           if ! command -v git-lfs &>/dev/null; then
-            sudo apt-get update && sudo apt-get install -y git-lfs
+            sudo apt-get install -y git-lfs
           fi
           git lfs install --local
           # Best-effort hydrate checked-in model blobs; validation/repair happens
@@ -82,13 +85,23 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev libclang-dev util-linux lld
+          sudo apt-get install -y build-essential pkg-config libssl-dev libclang-dev util-linux lld
 
       - name: Install Node.js and TypeScript
         run: |
           if ! command -v node &>/dev/null; then
-            curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-            sudo apt-get install -y nodejs
+            for attempt in $(seq 1 5); do
+              if curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - \
+                && sudo apt-get install -y nodejs; then
+                break
+              fi
+              echo "NodeSource install failed (attempt ${attempt}/5); sleeping 30s before retry..." >&2
+              if [ "$attempt" -eq 5 ]; then
+                exit 1
+              fi
+              sleep 30
+              bash scripts/ci/apt-update-retry.sh || true
+            done
           fi
           # Pin TS 6.x: builder agents rely on tsc behaviour guarded in tsconfig (e.g. rootDir ./src).
           # Unpinned `typescript` tracks latest major and can break CI without a coordinated bump.
