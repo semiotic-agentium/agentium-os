@@ -27,24 +27,46 @@ pub const BUILDER_EXTERNAL_TOOLS_ENV: &str = "BAML_EXTERNAL_TOOLS_DIR";
 /// Build a [`CompositeCatalog`] for the builder: inventory first, plus an
 /// external metadata source from [`BUILDER_EXTERNAL_TOOLS_ENV`] (if set).
 ///
-/// Returns a composite in first-match-wins order, so inventory tools shadow
-/// any accidental duplicate declared externally. The builder uses the same
-/// metadata shape regardless of source, so BAML/TS generation is uniform.
+/// Fails closed on any name collision between the compiled inventory and the
+/// external metadata source — duplicate tool IDs across static and external
+/// are not allowed (design invariant §7 #8).
 pub fn build_builder_catalog() -> Result<CompositeCatalog> {
-    let mut composite = CompositeCatalog::new();
-    composite.add(Box::new(InventoryCatalog::new()));
+    let inventory = InventoryCatalog::new();
 
-    if let Some(dirs) = external_dirs_from_env() {
-        let catalog = ExternalMetadataCatalog::from_dirs(&dirs)?;
-        if !catalog.is_empty() {
-            composite.add(Box::new(catalog));
+    let external = match external_dirs_from_env() {
+        Some(dirs) => {
+            let catalog = ExternalMetadataCatalog::from_dirs(&dirs)?;
+            if catalog.is_empty() {
+                None
+            } else {
+                Some(catalog)
+            }
+        }
+        None => None,
+    };
+
+    if let Some(ext) = &external {
+        // Strict collision check: any external tool name also present in
+        // inventory is a hard build-time error.
+        for meta in ext.iter() {
+            if inventory.by_name(&meta.name).is_some() {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Tool name collision at build time: '{}' exists in both the compiled inventory AND {}. Duplicate tool IDs across static and external are not allowed.",
+                    meta.name, BUILDER_EXTERNAL_TOOLS_ENV
+                )));
+            }
         }
     }
 
+    let mut composite = CompositeCatalog::new();
+    composite.add(Box::new(inventory));
+    if let Some(ext) = external {
+        composite.add(Box::new(ext));
+    }
     Ok(composite)
 }
 
-fn external_dirs_from_env() -> Option<Vec<PathBuf>> {
+pub fn external_dirs_from_env() -> Option<Vec<PathBuf>> {
     let raw = std::env::var(BUILDER_EXTERNAL_TOOLS_ENV).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {

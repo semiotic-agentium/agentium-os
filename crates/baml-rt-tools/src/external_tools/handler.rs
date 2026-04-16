@@ -644,6 +644,7 @@ mod tests {
             config_bundle: None,
             origin: ToolOrigin::Host,
             backend: ToolBackend::External,
+            digest: None,
             projection_semantics: None,
             session_policy: Default::default(),
             event_sources: Vec::new(),

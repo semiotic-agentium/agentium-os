@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Dev-mode echo tool — speaks the external tool JSON-RPC protocol.
+#
+# Wire contract:
+#   stdin  : one JSON-RPC request frame (runner closes stdin after send).
+#   stdout : exactly one JSON-RPC response frame then exit.
+#   stderr : free-form logs (any text here is safe; runner forwards to tracing).
+#
+# Requires: bash, jq.
+set -euo pipefail
+
+# Read the single request frame the runner writes to stdin.
+read -r request
+
+id=$(jq -r '.id' <<<"$request")
+method=$(jq -r '.method' <<<"$request")
+
+# Uncomment the next line for local debugging; writes to stderr only.
+# echo "echo-tool: method=$method id=$id" >&2
+
+case "$method" in
+  "tool/describe")
+    jq -nc --argjson id "$id" '{
+      jsonrpc: "2.0",
+      id: $id,
+      result: {
+        protocol_version: "1",
+        tool_name: "dev/echo",
+        supported_methods: ["tool/invoke"]
+      }
+    }'
+    ;;
+
+  "tool/invoke")
+    message=$(jq -r '.params.input.message // ""' <<<"$request")
+    invocation_id=$(jq -r '.params.invocation_id // "unknown"' <<<"$request")
+    # UTC timestamp with microsecond precision — proves each invoke is distinct.
+    now_utc=$(date -u +"%Y-%m-%dT%H:%M:%S.%6NZ")
+    # Pack timestamp inside the echoed string so the existing schema stays intact.
+    echoed="${message} [at=${now_utc} pid=$$ invocation_id=${invocation_id}]"
+    # Visible proof on runner's stderr/tracing:
+    echo "echo-tool INVOKED invocation_id=$invocation_id message='$message' at=$now_utc pid=$$" >&2
+    # Log to file for post-hoc auditing — survives runner restart.
+    printf '%s\tpid=%s\tinvocation_id=%s\tmessage=%s\n' \
+      "$now_utc" "$$" "$invocation_id" "$message" \
+      >> /tmp/echo-tool-calls.log
+    jq -nc --argjson id "$id" --arg echoed "$echoed" '{
+      jsonrpc: "2.0",
+      id: $id,
+      result: {
+        output: { echoed: $echoed },
+        done: true
+      }
+    }'
+    ;;
+
+  *)
+    jq -nc --argjson id "$id" --arg method "$method" '{
+      jsonrpc: "2.0",
+      id: $id,
+      error: {
+        code: -32601,
+        message: ("method not found: " + $method),
+        data: { error_class: "invalid_argument" }
+      }
+    }'
+    ;;
+esac

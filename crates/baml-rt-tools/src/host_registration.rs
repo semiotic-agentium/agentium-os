@@ -72,34 +72,51 @@ pub fn register_manifest_tools_with_fallback(
         enforce_tool_access(&name.to_string(), policy)?;
 
         if pre_registered.contains(name) {
+            // Host-bundle tool already registered. Still refuse to let an
+            // external resolver shadow it — fail closed per design invariant.
+            if let Some(resolver) = fallback
+                && resolver.resolve(name)?.is_some()
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Tool name collision: '{}' is registered by a host bundle AND declared by the external resolver. Rename one.",
+                    name
+                )));
+            }
             continue;
         }
 
-        // Try inventory first.
-        if let Some(provider) = by_name.get(name) {
-            let metadata = (provider.metadata)();
-            let handler =
-                (provider.build)().map_err(|e| BamlRtError::InvalidArgumentWithSource {
-                    message: format!("Tool '{}' failed to build", name),
-                    source: Box::new(e),
-                })?;
-            registry.register_dynamic(metadata, handler)?;
-            continue;
-        }
+        let inventory_hit = by_name.get(name);
+        let external_hit = match fallback {
+            Some(resolver) => resolver.resolve(name)?,
+            None => None,
+        };
 
-        // Fall back to external resolver (if provided).
-        if let Some(resolver) = fallback
-            && let Some((metadata, handler)) = resolver.resolve(name)?
-        {
-            registry.register_dynamic(metadata, handler)?;
-            continue;
+        match (inventory_hit, external_hit) {
+            (Some(_), Some(_)) => {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Tool name collision: '{}' exists in both the compiled inventory AND the external resolver. Duplicate tool IDs across static and external are not allowed.",
+                    name
+                )));
+            }
+            (Some(provider), None) => {
+                let metadata = (provider.metadata)();
+                let handler =
+                    (provider.build)().map_err(|e| BamlRtError::InvalidArgumentWithSource {
+                        message: format!("Tool '{}' failed to build", name),
+                        source: Box::new(e),
+                    })?;
+                registry.register_dynamic(metadata, handler)?;
+            }
+            (None, Some((metadata, handler))) => {
+                registry.register_dynamic(metadata, handler)?;
+            }
+            (None, None) => {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Unknown tool in manifest: {}",
+                    name
+                )));
+            }
         }
-
-        // Neither inventory nor fallback knows this tool.
-        return Err(BamlRtError::InvalidArgument(format!(
-            "Unknown tool in manifest: {}",
-            name
-        )));
     }
 
     Ok(())

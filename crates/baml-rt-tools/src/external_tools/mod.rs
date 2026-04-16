@@ -8,6 +8,7 @@
 
 pub mod handler;
 pub mod invoker;
+pub mod lockfile;
 pub(crate) mod metadata;
 pub mod metadata_catalog;
 pub mod policy;
@@ -21,8 +22,13 @@ pub use handler::{ProcessToolHandler, ProcessToolSession};
 pub use invoker::{
     ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, map_jsonrpc_error,
 };
+pub use lockfile::{
+    EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode, ExternalToolLockEntry,
+    ExternalToolsLockfile,
+};
 pub use metadata_catalog::{
     BUILDER_EXTERNAL_TOOLS_ENV, ExternalMetadataCatalog, build_builder_catalog,
+    external_dirs_from_env,
 };
 pub use policy::{
     BACKOFF_SCHEDULE_MS, DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT, DEFAULT_MAX_CONCURRENT,

@@ -1275,6 +1275,39 @@ impl ProvEvent {
         })
     }
 
+    /// Annotate a `ToolCallStarted` / `ToolCallCompleted` event with execution
+    /// backend + content digest. No-op for other event kinds. Use at emission
+    /// time to populate provenance audit fields without bloating constructor
+    /// signatures.
+    pub fn with_tool_backend_digest(
+        mut self,
+        backend: Option<String>,
+        digest: Option<String>,
+    ) -> Self {
+        let data = match &mut self {
+            ProvEvent::Task(event) => &mut event.data,
+            ProvEvent::Global(event) => &mut event.data,
+            ProvEvent::AgentBooted(_) | ProvEvent::AgentStopped(_) => return self,
+        };
+        match data {
+            ProvEventData::ToolCallStarted {
+                tool_backend,
+                tool_digest,
+                ..
+            }
+            | ProvEventData::ToolCallCompleted {
+                tool_backend,
+                tool_digest,
+                ..
+            } => {
+                *tool_backend = backend;
+                *tool_digest = digest;
+            }
+            _ => {}
+        }
+        self
+    }
+
     pub fn external_tool_lifecycle(
         context_id: ContextId,
         tool_name: String,

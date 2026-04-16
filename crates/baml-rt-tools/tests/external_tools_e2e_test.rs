@@ -6,9 +6,9 @@ use std::{
 
 use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 use baml_rt_tools::{
-    ManifestToolNames, ToolAccessPolicy, ToolRegistry, register_manifest_tools_with_fallback,
+    ManifestToolNames, ToolAccessPolicy, ToolRegistry, external_tools::DevModeResolver,
+    register_manifest_tools_with_fallback,
 };
-use baml_rt_tools::external_tools::DevModeResolver;
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -73,7 +73,10 @@ fi\n",
         other => panic!("expected Done step, got {other:?}"),
     };
 
-    assert_eq!(output.get("reply").and_then(Value::as_str), Some("pong-from-external"));
+    assert_eq!(
+        output.get("reply").and_then(Value::as_str),
+        Some("pong-from-external")
+    );
 
     registry
         .session_finish(&session_id)

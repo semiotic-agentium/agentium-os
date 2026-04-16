@@ -1682,6 +1682,10 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                         metadata.metadata.clone(),
                         metadata.delegation_target.clone(),
                     )
+                    .with_tool_backend_digest(
+                        metadata.tool_backend.clone(),
+                        metadata.tool_digest.clone(),
+                    )
                 },
                 |ctx_id, msg_id| {
                     ProvEvent::tool_call_started_global(
@@ -1692,6 +1696,10 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                         metadata.args.clone(),
                         metadata.metadata.clone(),
                         metadata.delegation_target.clone(),
+                    )
+                    .with_tool_backend_digest(
+                        metadata.tool_backend.clone(),
+                        metadata.tool_digest.clone(),
                     )
                 },
             )?,
@@ -1725,7 +1733,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     &enriched_metadata,
                     ProvenanceEventType::ToolCall,
                     |ctx_id, task_id| {
-                        if let Some(id) = reserved_anchor.clone() {
+                        let event = if let Some(id) = reserved_anchor.clone() {
                             ProvEvent::tool_call_completed_task_with_id(
                                 id,
                                 ctx_id,
@@ -1750,10 +1758,14 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                                 *outcome,
                                 metadata.delegation_target.clone(),
                             )
-                        }
+                        };
+                        event.with_tool_backend_digest(
+                            metadata.tool_backend.clone(),
+                            metadata.tool_digest.clone(),
+                        )
                     },
                     |ctx_id, msg_id| {
-                        if let Some(id) = reserved_anchor.clone() {
+                        let event = if let Some(id) = reserved_anchor.clone() {
                             ProvEvent::tool_call_completed_global_with_id(
                                 id,
                                 ctx_id,
@@ -1778,7 +1790,11 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                                 *outcome,
                                 metadata.delegation_target.clone(),
                             )
-                        }
+                        };
+                        event.with_tool_backend_digest(
+                            metadata.tool_backend.clone(),
+                            metadata.tool_digest.clone(),
+                        )
                     },
                 ) {
                     Some(event) => event,

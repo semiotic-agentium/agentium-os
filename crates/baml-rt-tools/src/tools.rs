@@ -851,6 +851,9 @@ pub struct ToolFunctionMetadata {
     pub origin: ToolOrigin,
     /// Execution backend (Static, External, or Wasm). Defaults to `Static`.
     pub backend: ToolBackend,
+    /// Content-addressed digest for external tool artifact / package bytes.
+    /// `None` for static tools and for external tools when verification is disabled.
+    pub digest: Option<String>,
     /// Optional tool-specific semantics for projection modes used during SearchRead/PageRead steps.
     pub projection_semantics: Option<ToolProjectionSemantics>,
     /// FSM scheduling policy for the step executor. Controls which ops are
@@ -933,6 +936,7 @@ impl ToolFunctionMetadata {
             config_bundle: None,
             origin,
             backend: ToolBackend::default(),
+            digest: None,
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
             event_sources: Vec::new(),
@@ -952,6 +956,7 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     config_bundle: Option<BundleName>,
     origin: ToolOrigin,
     backend: ToolBackend,
+    digest: Option<String>,
     projection_semantics: Option<ToolProjectionSemantics>,
     extra_ts_decls: Vec<String>,
     access: Option<ToolAccess>,
@@ -981,6 +986,7 @@ where
             config_bundle: None,
             origin: ToolOrigin::Host,
             backend: ToolBackend::default(),
+            digest: None,
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
             event_sources: Vec::new(),
@@ -1024,6 +1030,12 @@ where
     /// Set the tool origin
     pub fn with_origin(mut self, origin: ToolOrigin) -> Self {
         self.origin = origin;
+        self
+    }
+
+    /// Set explicit digest for external tool artifact/package bytes.
+    pub fn with_digest(mut self, digest: String) -> Self {
+        self.digest = Some(digest);
         self
     }
 
@@ -1095,6 +1107,7 @@ where
         metadata.config = self.config;
         metadata.config_bundle = self.config_bundle;
         metadata.backend = self.backend;
+        metadata.digest = self.digest;
         metadata.projection_semantics = self.projection_semantics;
         metadata.session_policy = self.session_policy;
         metadata.event_sources = self.event_sources;
@@ -1122,6 +1135,8 @@ pub struct ToolFunctionMetadataExport {
     pub origin: ToolOrigin,
     #[serde(default)]
     pub backend: ToolBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
     pub projection_semantics: Option<ToolProjectionSemantics>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_sources: Vec<EventSourceKind>,
@@ -1147,6 +1162,7 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             config: metadata.config.clone(),
             origin: metadata.origin,
             backend: metadata.backend,
+            digest: metadata.digest.clone(),
             projection_semantics: metadata.projection_semantics.clone(),
             event_sources: metadata.event_sources.clone(),
         }
@@ -1165,6 +1181,8 @@ pub struct ToolDiscoveryRecord {
     pub origin: ToolOrigin,
     #[serde(default)]
     pub backend: ToolBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_sources: Vec<EventSourceKind>,
 }
@@ -1179,6 +1197,7 @@ impl ToolDiscoveryRecord {
             access: metadata.access,
             origin: metadata.origin,
             backend: metadata.backend,
+            digest: metadata.digest.clone(),
             event_sources: metadata.event_sources.clone(),
         }
     }

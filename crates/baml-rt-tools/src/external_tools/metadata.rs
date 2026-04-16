@@ -7,7 +7,7 @@
 //! Keeping the parsing in one place guarantees the runner and builder agree
 //! on field semantics (the design doc calls this out as a hard invariant).
 
-use std::path::Path;
+use std::{fs, path::Path};
 
 use baml_rt_core::{BamlRtError, Result};
 use serde::Deserialize;
@@ -156,6 +156,7 @@ pub(crate) fn build_tool_metadata(
         config_bundle,
         origin: ToolOrigin::Host,
         backend: ToolBackend::External,
+        digest: None,
         projection_semantics: None,
         session_policy: match raw.session_policy {
             RawSessionPolicy::Strict => SessionPolicy::Strict,
@@ -179,7 +180,77 @@ pub(crate) fn metadata_schema_hash(raw: &RawToolMetadata) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
-fn sort_json_keys(value: &Value) -> Value {
+/// Compute deterministic digest for a local external tool package directory.
+///
+/// Digest input (in order):
+/// - magic/version marker: `baml-ext-tool-v1\0`
+/// - tool binary bytes prefixed by u64 little-endian length
+/// - canonicalized metadata bytes prefixed by u64 little-endian length
+/// - filesystem mode bits (`stat().mode() & 0o7777`) as u32 little-endian
+pub fn compute_tool_digest(dir: &Path) -> Result<String> {
+    let bin_path = dir.join("tool-server");
+    let metadata_path = dir.join("tool-metadata.json");
+
+    let bin_bytes = fs::read(&bin_path).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+        message: format!("failed to read external tool binary {}", bin_path.display()),
+        source: Box::new(e),
+    })?;
+
+    let metadata_raw =
+        fs::read_to_string(&metadata_path).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+            message: format!(
+                "failed to read external tool metadata {}",
+                metadata_path.display()
+            ),
+            source: Box::new(e),
+        })?;
+    let metadata_json: Value = serde_json::from_str(&metadata_raw).map_err(|e| {
+        BamlRtError::InvalidArgumentWithSource {
+            message: format!(
+                "failed to parse external tool metadata {}",
+                metadata_path.display()
+            ),
+            source: Box::new(e),
+        }
+    })?;
+    let canonical_metadata =
+        serde_json::to_string(&sort_json_keys(&metadata_json)).map_err(|e| {
+            BamlRtError::InvalidArgumentWithSource {
+                message: "failed to canonicalize external tool metadata JSON".to_string(),
+                source: Box::new(e),
+            }
+        })?;
+
+    let mode_bits = file_mode_bits(&bin_path)?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"baml-ext-tool-v1\0");
+    hasher.update((bin_bytes.len() as u64).to_le_bytes());
+    hasher.update(&bin_bytes);
+    hasher.update((canonical_metadata.len() as u64).to_le_bytes());
+    hasher.update(canonical_metadata.as_bytes());
+    hasher.update(mode_bits.to_le_bytes());
+
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+#[cfg(unix)]
+fn file_mode_bits(path: &Path) -> Result<u32> {
+    use std::os::unix::fs::MetadataExt;
+
+    let meta = fs::metadata(path).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+        message: format!("failed to stat {}", path.display()),
+        source: Box::new(e),
+    })?;
+    Ok(meta.mode() & 0o7777)
+}
+
+#[cfg(not(unix))]
+fn file_mode_bits(_path: &Path) -> Result<u32> {
+    Ok(0)
+}
+
+pub(crate) fn sort_json_keys(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
             let mut pairs: Vec<_> = map.iter().collect();

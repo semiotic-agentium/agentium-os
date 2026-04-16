@@ -21,7 +21,11 @@ use super::{
     ExternalLifecycleEvent, ExternalLifecycleRecorder,
     handler::ProcessToolHandler,
     invoker::{ExternalInvoker, ToolDescribe},
-    metadata::{RawToolMetadata, build_tool_metadata, metadata_schema_hash, read_raw_metadata},
+    lockfile::{ExternalLockfileMode, ExternalToolsLockfile},
+    metadata::{
+        RawToolMetadata, build_tool_metadata, compute_tool_digest, metadata_schema_hash,
+        read_raw_metadata,
+    },
     policy::{DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT},
     protocol::PROTOCOL_VERSION,
     stdio::StdioSubprocessInvoker,
@@ -41,14 +45,25 @@ static DESCRIBE_CACHE: OnceLock<Mutex<HashMap<DescribeCacheKey, ToolDescribe>>> 
 
 /// Local-filesystem resolver built from a set of tool package directories.
 pub struct DevModeResolver {
-    entries: HashMap<ToolName, (ToolFunctionMetadata, Arc<dyn ToolHandler>)>,
+    entries: HashMap<ToolName, DevToolEntry>,
+    lockfile: Option<ExternalToolsLockfile>,
+    lockfile_mode: ExternalLockfileMode,
+    lifecycle_recorder: Option<ExternalLifecycleRecorder>,
+}
+
+#[derive(Clone)]
+struct DevToolEntry {
+    metadata: ToolFunctionMetadata,
+    handler: Arc<dyn ToolHandler>,
+    digest: String,
+    artifact_ref: String,
 }
 
 impl DevModeResolver {
     /// Load all tool packages from the supplied directories. Each directory
     /// must contain `tool-metadata.json` and a `tool-server` executable.
     pub async fn from_dirs(dirs: &[PathBuf]) -> Result<Self> {
-        Self::from_dirs_with_lifecycle(dirs, None).await
+        Self::from_dirs_with_policy(dirs, None, ExternalLockfileMode::Off, None).await
     }
 
     /// Same as [`Self::from_dirs`] but emits lifecycle callbacks for external-tool
@@ -57,9 +72,18 @@ impl DevModeResolver {
         dirs: &[PathBuf],
         lifecycle_recorder: Option<ExternalLifecycleRecorder>,
     ) -> Result<Self> {
+        Self::from_dirs_with_policy(dirs, None, ExternalLockfileMode::Off, lifecycle_recorder).await
+    }
+
+    pub async fn from_dirs_with_policy(
+        dirs: &[PathBuf],
+        lockfile: Option<ExternalToolsLockfile>,
+        lockfile_mode: ExternalLockfileMode,
+        lifecycle_recorder: Option<ExternalLifecycleRecorder>,
+    ) -> Result<Self> {
         let mut entries = HashMap::new();
         for dir in dirs {
-            let (name, metadata, handler) = load_tool_dir(dir, lifecycle_recorder.as_ref()).await?;
+            let (name, entry) = load_tool_dir(dir, lifecycle_recorder.as_ref()).await?;
             if entries.contains_key(&name) {
                 return Err(BamlRtError::InvalidArgument(format!(
                     "duplicate external tool '{}' loaded from {}",
@@ -67,9 +91,14 @@ impl DevModeResolver {
                     dir.display()
                 )));
             }
-            entries.insert(name, (metadata, handler));
+            entries.insert(name, entry);
         }
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            lockfile,
+            lockfile_mode,
+            lifecycle_recorder,
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -86,15 +115,128 @@ impl ExternalToolResolver for DevModeResolver {
         &self,
         name: &ToolName,
     ) -> Result<Option<(ToolFunctionMetadata, Arc<dyn ToolHandler>)>> {
-        Ok(self.entries.get(name).cloned())
+        let Some(entry) = self.entries.get(name) else {
+            return Ok(None);
+        };
+
+        let mut metadata = entry.metadata.clone();
+        metadata.digest = Some(entry.digest.clone());
+
+        match self.lockfile_mode {
+            ExternalLockfileMode::Off => {
+                return Ok(Some((metadata, entry.handler.clone())));
+            }
+            ExternalLockfileMode::Permissive | ExternalLockfileMode::Enforce => {}
+        }
+
+        let Some(lockfile) = self.lockfile.as_ref() else {
+            self.emit_lockfile_artifact_event(
+                name,
+                &entry.artifact_ref,
+                Some(entry.digest.clone()),
+                "lockfile_missing",
+                serde_json::json!({
+                    "mode": format!("{:?}", self.lockfile_mode),
+                    "computed_digest": entry.digest,
+                }),
+            );
+            if self.lockfile_mode.should_enforce() {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "external lockfile missing while resolving '{name}'"
+                )));
+            }
+            return Ok(Some((metadata, entry.handler.clone())));
+        };
+
+        let Some(lock_entry) = lockfile.by_name(name) else {
+            self.emit_lockfile_artifact_event(
+                name,
+                &entry.artifact_ref,
+                Some(entry.digest.clone()),
+                "lockfile_entry_missing",
+                serde_json::json!({
+                    "computed_digest": entry.digest,
+                }),
+            );
+            if self.lockfile_mode.should_enforce() {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "external lockfile missing entry for tool '{name}'"
+                )));
+            }
+            return Ok(Some((metadata, entry.handler.clone())));
+        };
+
+        if lock_entry.digest != entry.digest {
+            self.emit_lockfile_artifact_event(
+                name,
+                &entry.artifact_ref,
+                Some(entry.digest.clone()),
+                "digest_mismatch",
+                serde_json::json!({
+                    "expected_digest": lock_entry.digest,
+                    "computed_digest": entry.digest,
+                }),
+            );
+            if self.lockfile_mode.should_enforce() {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "external tool digest mismatch for '{name}': expected {}, got {}",
+                    lock_entry.digest, entry.digest
+                )));
+            }
+        }
+
+        Ok(Some((metadata, entry.handler.clone())))
+    }
+}
+
+impl DevModeResolver {
+    fn emit_lockfile_artifact_event(
+        &self,
+        tool_name: &ToolName,
+        artifact_ref: &str,
+        digest: Option<String>,
+        verification_result: &str,
+        details: serde_json::Value,
+    ) {
+        if let Some(recorder) = &self.lifecycle_recorder {
+            recorder(ExternalLifecycleEvent::Artifact {
+                tool_name: tool_name.to_string(),
+                artifact_ref: artifact_ref.to_string(),
+                digest,
+                signer: None,
+                verification_result: verification_result.to_string(),
+                pull_latency_ms: None,
+                details,
+            });
+        }
     }
 }
 
 async fn load_tool_dir(
     dir: &Path,
     lifecycle_recorder: Option<&ExternalLifecycleRecorder>,
-) -> Result<(ToolName, ToolFunctionMetadata, Arc<dyn ToolHandler>)> {
+) -> Result<(ToolName, DevToolEntry)> {
     let bin_path = dir.join("tool-server");
+    let metadata_path = dir.join("tool-metadata.json");
+
+    if !metadata_path.exists() {
+        if let Some(recorder) = lifecycle_recorder {
+            recorder(ExternalLifecycleEvent::Artifact {
+                tool_name: "unknown".to_string(),
+                artifact_ref: metadata_path.display().to_string(),
+                digest: None,
+                signer: None,
+                verification_result: "metadata_missing".to_string(),
+                pull_latency_ms: None,
+                details: serde_json::json!({ "dir": dir.display().to_string() }),
+            });
+        }
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool metadata not found at {}",
+            metadata_path.display()
+        )));
+    }
+
     let raw = read_raw_metadata(dir)?;
 
     if !bin_path.exists() {
@@ -116,13 +258,15 @@ async fn load_tool_dir(
     }
 
     let tool_name = ToolName::parse(&raw.name)?;
-    let metadata = build_tool_metadata(&raw, &tool_name)?;
+    let digest = compute_tool_digest(dir)?;
+    let mut metadata = build_tool_metadata(&raw, &tool_name)?;
+    metadata.digest = Some(digest.clone());
 
     if let Some(recorder) = lifecycle_recorder {
         recorder(ExternalLifecycleEvent::Artifact {
             tool_name: tool_name.to_string(),
             artifact_ref: bin_path.display().to_string(),
-            digest: None,
+            digest: Some(digest.clone()),
             signer: None,
             verification_result: "dev_mode_local_present".to_string(),
             pull_latency_ms: Some(0),
@@ -143,7 +287,16 @@ async fn load_tool_dir(
     }
     let handler: Arc<dyn ToolHandler> = Arc::new(handler_builder);
 
-    Ok((tool_name, metadata, handler))
+    let artifact_ref = dir.join("tool-server").display().to_string();
+    Ok((
+        tool_name,
+        DevToolEntry {
+            metadata,
+            handler,
+            digest,
+            artifact_ref,
+        },
+    ))
 }
 
 async fn describe_with_cache(

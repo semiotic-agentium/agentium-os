@@ -435,6 +435,8 @@ impl BamlRuntimeManager {
                                 Some("search_read"),
                             ),
                             delegation_target: None,
+                            tool_backend: None,
+                            tool_digest: None,
                         };
                         if let Ok(token) = emitter
                             .start_tool(plan_scope.context_id().clone(), read_meta)
@@ -550,6 +552,8 @@ impl BamlRuntimeManager {
                                 Some("page_read"),
                             ),
                             delegation_target: None,
+                            tool_backend: None,
+                            tool_digest: None,
                         };
                         if let Ok(token) = emitter
                             .start_tool(plan_scope.context_id().clone(), read_meta)

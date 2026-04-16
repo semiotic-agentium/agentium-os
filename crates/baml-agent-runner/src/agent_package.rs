@@ -22,7 +22,10 @@ use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
 use baml_rt_tools::{
     BundleRegistrar, ExternalToolResolver, ManifestToolNames, ToolAccessPolicy, ToolRegistry,
-    external_tools::{DevModeResolver, ExternalLifecycleEvent, ExternalLifecycleRecorder},
+    external_tools::{
+        DevModeResolver, EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleEvent,
+        ExternalLifecycleRecorder, ExternalLockfileMode, ExternalToolsLockfile,
+    },
     register_manifest_tools_with_fallback,
 };
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
@@ -142,7 +145,13 @@ impl AgentPackage {
         // the digest-pinned lockfile resolver instead.
         let lifecycle_writer: Arc<dyn ProvenanceWriter> = provenance_store.clone();
         let lifecycle_recorder = build_external_lifecycle_recorder(lifecycle_writer);
-        let external_resolver = build_dev_mode_resolver(Some(lifecycle_recorder)).await?;
+        let lockfile_path = self.extract_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
+        let external_resolver = build_dev_mode_resolver(
+            Some(lifecycle_recorder),
+            &lockfile_path,
+            ExternalLockfileMode::from_env(),
+        )
+        .await?;
 
         register_manifest_tools_with_fallback(
             runtime_manager.tool_registry().as_ref(),
@@ -536,25 +545,115 @@ fn build_external_lifecycle_recorder(
 /// when the env var is absent or empty, meaning "no external tools in dev mode".
 async fn build_dev_mode_resolver(
     lifecycle_recorder: Option<ExternalLifecycleRecorder>,
+    lockfile_path: &Path,
+    lockfile_mode: ExternalLockfileMode,
 ) -> Result<Option<Box<dyn ExternalToolResolver>>> {
+    let lockfile = if lockfile_path.exists() {
+        match ExternalToolsLockfile::read_from_path(lockfile_path) {
+            Ok(lockfile) => Some(lockfile),
+            Err(err) => {
+                emit_external_lockfile_event(
+                    lifecycle_recorder.as_ref(),
+                    "lockfile_parse_error",
+                    serde_json::json!({
+                        "path": lockfile_path.display().to_string(),
+                        "error": err.to_string(),
+                        "mode": format!("{lockfile_mode:?}"),
+                    }),
+                );
+                if lockfile_mode.should_enforce() {
+                    return Err(err);
+                }
+                tracing::warn!(
+                    error = %err,
+                    mode = ?lockfile_mode,
+                    path = %lockfile_path.display(),
+                    "failed to read external tools lockfile; continuing due to non-enforce mode"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let raw = match std::env::var("BAML_EXTERNAL_TOOLS_DIR") {
         Ok(v) if !v.trim().is_empty() => v,
-        _ => return Ok(None),
+        _ => {
+            if let Some(lockfile) = lockfile.as_ref()
+                && !lockfile.tools.is_empty()
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "package contains {} external tool lockfile entries at {}, but BAML_EXTERNAL_TOOLS_DIR is not set",
+                    lockfile.tools.len(),
+                    lockfile_path.display()
+                )));
+            }
+            return Ok(None);
+        }
     };
+
     let dirs: Vec<PathBuf> = raw
         .split(':')
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .collect();
     if dirs.is_empty() {
+        if let Some(lockfile) = lockfile.as_ref()
+            && !lockfile.tools.is_empty()
+        {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "BAML_EXTERNAL_TOOLS_DIR resolved to zero tool directories while package lockfile {} declares external tools",
+                lockfile_path.display()
+            )));
+        }
         return Ok(None);
     }
+
+    if lockfile.is_none() && lockfile_mode.should_enforce() {
+        emit_external_lockfile_event(
+            lifecycle_recorder.as_ref(),
+            "lockfile_missing",
+            serde_json::json!({
+                "path": lockfile_path.display().to_string(),
+                "mode": format!("{lockfile_mode:?}"),
+                "external_dir_count": dirs.len(),
+            }),
+        );
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tools lockfile missing at {} while lockfile mode is enforce",
+            lockfile_path.display()
+        )));
+    }
+
     info!(
         count = dirs.len(),
+        mode = ?lockfile_mode,
         "Loading external tools from BAML_EXTERNAL_TOOLS_DIR"
     );
-    let resolver = DevModeResolver::from_dirs_with_lifecycle(&dirs, lifecycle_recorder).await?;
+
+    let resolver =
+        DevModeResolver::from_dirs_with_policy(&dirs, lockfile, lockfile_mode, lifecycle_recorder)
+            .await?;
     Ok(Some(Box::new(resolver)))
+}
+
+fn emit_external_lockfile_event(
+    lifecycle_recorder: Option<&ExternalLifecycleRecorder>,
+    verification_result: &str,
+    details: serde_json::Value,
+) {
+    if let Some(recorder) = lifecycle_recorder {
+        recorder(ExternalLifecycleEvent::Artifact {
+            tool_name: "unknown".to_string(),
+            artifact_ref: EXTERNAL_TOOLS_LOCKFILE_NAME.to_string(),
+            digest: None,
+            signer: None,
+            verification_result: verification_result.to_string(),
+            pull_latency_ms: None,
+            details,
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -628,5 +727,163 @@ impl BundleRegistrar for MemoryBundleRegistrar {
     fn register(&self, registry: &ToolRegistry) -> Result<()> {
         let memory_bundle = baml_tools_memory::MemoryBundle::new(&self.agent_name)?;
         registry.register_bundle(memory_bundle)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::Path,
+        sync::{Mutex, OnceLock},
+    };
+
+    use baml_rt_tools::external_tools::{ExternalToolLockEntry, ExternalToolsLockfile};
+    use tempfile::tempdir;
+
+    use super::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode, build_dev_mode_resolver};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn set_env(key: &str, value: &str) {
+        // SAFETY: tests in this module serialize env-var mutation via `env_lock`.
+        unsafe { std::env::set_var(key, value) }
+    }
+
+    fn remove_env(key: &str) {
+        // SAFETY: tests in this module serialize env-var mutation via `env_lock`.
+        unsafe { std::env::remove_var(key) }
+    }
+
+    fn write_tool_fixture(dir: &Path, tool_name: &str) {
+        fs::create_dir_all(dir).expect("create tool fixture dir");
+        let metadata = serde_json::json!({
+            "tool_abi_version": "1",
+            "name": tool_name,
+            "description": "test tool",
+            "bundle": "support",
+            "local_name": "test",
+            "access_level": "read",
+            "tags": [],
+            "invocation_mode": "single_shot",
+            "schemas": {
+                "input": {"type": "object"},
+                "output": {"type": "object"}
+            },
+            "secrets": [],
+            "capabilities": {}
+        });
+        fs::write(
+            dir.join("tool-metadata.json"),
+            serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+        )
+        .expect("write metadata");
+
+        let describe = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/invoke\"]}}}}"
+        );
+        let script =
+            format!("#!/bin/sh\nwhile IFS= read -r _; do :; done\nprintf '%s\\n' '{describe}'\n");
+        let bin = dir.join("tool-server");
+        fs::write(&bin, script.as_bytes()).expect("write tool-server");
+        let mut perms = fs::metadata(&bin).expect("stat tool-server").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&bin, perms).expect("chmod tool-server");
+    }
+
+    #[tokio::test]
+    async fn build_dev_mode_resolver_enforce_fails_when_lockfile_missing() {
+        let _guard = env_lock().lock().expect("lock env mutex");
+
+        let temp = tempdir().expect("tempdir");
+        let tool_dir = temp.path().join("tool");
+        write_tool_fixture(&tool_dir, "support/test");
+        set_env(
+            "BAML_EXTERNAL_TOOLS_DIR",
+            tool_dir.to_str().expect("utf8 tool path"),
+        );
+
+        let missing_lockfile = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
+        let result =
+            build_dev_mode_resolver(None, &missing_lockfile, ExternalLockfileMode::Enforce).await;
+
+        remove_env("BAML_EXTERNAL_TOOLS_DIR");
+
+        let err = match result {
+            Ok(_) => panic!("enforce mode must fail when lockfile is missing"),
+            Err(err) => err,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("lockfile") && msg.contains("enforce"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_dev_mode_resolver_fails_with_entries_when_env_unset() {
+        let _guard = env_lock().lock().expect("lock env mutex");
+
+        remove_env("BAML_EXTERNAL_TOOLS_DIR");
+
+        let temp = tempdir().expect("tempdir");
+        let lockfile_path = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
+        let lockfile = ExternalToolsLockfile {
+            version: "1".to_string(),
+            tools: vec![ExternalToolLockEntry {
+                name: "support/test".to_string(),
+                digest: "sha256:deadbeef".to_string(),
+                abi_version: "1".to_string(),
+                protocol_version: "1".to_string(),
+                oci_ref: None,
+                platform: None,
+                signer: None,
+                capabilities: None,
+            }],
+        };
+        lockfile
+            .write_to_path(&lockfile_path)
+            .expect("write lockfile");
+
+        let err =
+            match build_dev_mode_resolver(None, &lockfile_path, ExternalLockfileMode::Permissive)
+                .await
+            {
+                Ok(_) => panic!("env unset with lockfile entries should fail with explicit error"),
+                Err(err) => err,
+            };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("BAML_EXTERNAL_TOOLS_DIR") && msg.contains("external tool"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_dev_mode_resolver_permissive_continues_on_lockfile_parse_error() {
+        let _guard = env_lock().lock().expect("lock env mutex");
+
+        let temp = tempdir().expect("tempdir");
+        let tool_dir = temp.path().join("tool");
+        write_tool_fixture(&tool_dir, "support/test");
+        set_env(
+            "BAML_EXTERNAL_TOOLS_DIR",
+            tool_dir.to_str().expect("utf8 tool path"),
+        );
+
+        let bad_lockfile = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
+        fs::write(&bad_lockfile, b"{not-json").expect("write malformed lockfile");
+
+        let resolver =
+            build_dev_mode_resolver(None, &bad_lockfile, ExternalLockfileMode::Permissive)
+                .await
+                .expect("permissive mode should continue with malformed lockfile");
+        remove_env("BAML_EXTERNAL_TOOLS_DIR");
+
+        assert!(resolver.is_some(), "resolver should still be constructed");
     }
 }

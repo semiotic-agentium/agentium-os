@@ -2,7 +2,10 @@
 
 use std::{collections::HashMap, fs, path::Path};
 
-use baml_rt_tools::get_session_coordination_baml_for_tools;
+use baml_rt_tools::{
+    external_tools::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolsLockfile, external_dirs_from_env},
+    get_session_coordination_baml_for_tools,
+};
 use baml_runtime::BamlRuntime;
 use tokio::task;
 
@@ -189,13 +192,21 @@ impl TypeGenerator for RuntimeTypeGenerator {
 
             // Emit tool-to-step-executor mapping for polymorphic shim auto-narrowing.
             // Direct tool_name → single-tool step executor function name.
-            let tool_step_executors = build_tool_step_executors_map(&session_plan_map);
+            let tool_step_executors =
+                build_tool_step_executors_map(&session_plan_map, &tool_metadata);
             if !tool_step_executors.is_empty() {
                 let executors_path = build_dir.join("tool_step_executors.json");
                 let json = serde_json::to_string_pretty(&tool_step_executors)
                     .map_err(BamlBuilderError::Json)?;
                 atomic_write(&executors_path, json.as_bytes())?;
             }
+
+            // Always emit external_tools.lock.json at package root (empty if no externals).
+            let lockfile = build_external_tools_lockfile(&tool_metadata)?;
+            let lockfile_json =
+                serde_json::to_string_pretty(&lockfile).map_err(BamlBuilderError::Json)?;
+            let lockfile_path = build_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
+            atomic_write(&lockfile_path, lockfile_json.as_bytes())?;
 
             Ok(())
         })
@@ -212,8 +223,8 @@ impl TypeGenerator for RuntimeTypeGenerator {
 /// Open selects a tool — one direct lookup, no reverse index.
 fn build_tool_step_executors_map(
     session_plan_map: &baml_rt_tools::SessionPlanFunctionsMap,
+    tool_metadata: &[baml_rt_tools::tools::ToolFunctionMetadata],
 ) -> HashMap<String, String> {
-    let tool_metadata = baml_rt_tools::tool_catalog::all_tool_metadata();
     let class_to_tool: HashMap<&str, String> = tool_metadata
         .iter()
         .map(|m| (m.class_name.as_str(), m.name.to_string()))
@@ -229,6 +240,28 @@ fn build_tool_step_executors_map(
         }
     }
     map
+}
+
+fn build_external_tools_lockfile(
+    tool_metadata: &[baml_rt_tools::tools::ToolFunctionMetadata],
+) -> Result<ExternalToolsLockfile> {
+    let external_tool_count = tool_metadata
+        .iter()
+        .filter(|meta| matches!(meta.backend, baml_rt_tools::ToolBackend::External))
+        .count();
+
+    if external_tool_count == 0 {
+        return Ok(ExternalToolsLockfile::empty());
+    }
+
+    let dirs = external_dirs_from_env().ok_or_else(|| {
+        BamlBuilderError::InvalidArgument(
+            "manifest uses external tools, but BAML_EXTERNAL_TOOLS_DIR is not set; builder must hash local tool artifacts to produce external_tools.lock.json"
+                .to_string(),
+        )
+    })?;
+
+    ExternalToolsLockfile::from_tool_dirs(&dirs).map_err(BamlBuilderError::from)
 }
 
 fn copy_dir_all_impl(src: &Path, dst: &Path) -> Result<()> {

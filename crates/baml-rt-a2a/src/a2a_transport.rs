@@ -725,6 +725,7 @@ impl A2aAgent {
             config_bundle: None,
             origin: baml_rt_tools::ToolOrigin::Guest,
             backend: baml_rt_tools::ToolBackend::default(),
+            digest: None,
             projection_semantics: None,
             session_policy: baml_rt_tools::SessionPolicy::default(),
         };

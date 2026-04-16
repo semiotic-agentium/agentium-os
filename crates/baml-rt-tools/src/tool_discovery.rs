@@ -132,6 +132,7 @@ mod tests {
             config_bundle: None,
             origin: ToolOrigin::Host,
             backend: crate::tools::ToolBackend::default(),
+            digest: None,
             projection_semantics: None,
             session_policy: crate::tools::SessionPolicy::default(),
             event_sources: vec![],

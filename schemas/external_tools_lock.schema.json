@@ -16,7 +16,7 @@
       "description": "Pinned external tool entries.",
       "items": {
         "type": "object",
-        "required": ["name", "oci_ref", "digest", "platform", "signer", "abi_version", "protocol_version"],
+        "required": ["name", "digest", "abi_version", "protocol_version"],
         "properties": {
           "name": {
             "type": "string",
