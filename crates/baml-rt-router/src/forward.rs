@@ -44,7 +44,7 @@ pub async fn resolve_forward_target(
     // Build the forward URL from the validated `url::Url` rather than via
     // string formatting. This strips attacker-controlled path/query/fragment
     // and automatically brackets IPv6 literals on render.
-    let forward_url = build_a2a_forward_url(&validated, agent_package, agent_instance_id);
+    let forward_url = build_a2a_forward_url(&validated, agent_package, agent_instance_id)?;
     // `url::Url::host_str` includes the square brackets for IPv6 literals;
     // hyper's DNS override map is keyed on the bare address, so match on
     // `Host` to get the unbracketed form.
@@ -64,7 +64,7 @@ pub async fn resolve_forward_target(
 
 /// Construct the forwarded A2A URL from a validated cluster endpoint URL.
 ///
-/// - Strips attacker-controlled path, query, and fragment from the origin.
+/// - Strips userinfo, path, query, and fragment from the origin.
 /// - Appends `/agents/{agent_package}/{agent_instance_id}/a2a` via
 ///   [`url::Url::path_segments_mut`] so segments are percent-encoded.
 /// - IPv6 literals are bracketed automatically by the [`url::Url`] renderer.
@@ -72,18 +72,26 @@ fn build_a2a_forward_url(
     validated: &url::Url,
     agent_package: &str,
     agent_instance_id: &str,
-) -> url::Url {
+) -> Result<url::Url, BamlRtError> {
     let mut url = validated.clone();
+    url.set_username("").map_err(|()| {
+        BamlRtError::InvalidArgument("cannot clear username on endpoint URL".to_string())
+    })?;
+    url.set_password(None).map_err(|()| {
+        BamlRtError::InvalidArgument("cannot clear password on endpoint URL".to_string())
+    })?;
     url.set_query(None);
     url.set_fragment(None);
     url.path_segments_mut()
-        .expect("validated http(s) URL must support path segments")
+        .map_err(|()| {
+            BamlRtError::InvalidArgument("endpoint URL cannot have path segments".to_string())
+        })?
         .clear()
         .push("agents")
         .push(agent_package)
         .push(agent_instance_id)
         .push("a2a");
-    url
+    Ok(url)
 }
 
 /// Forward a JSON body to a remote runner via HTTP POST, reading the response
@@ -283,6 +291,55 @@ mod tests {
                 .expect("endpoint should validate");
 
         assert_eq!(target.url, "http://10.0.0.1:18080/agents/pkg/inst/a2a");
+    }
+
+    /// Regression: `build_a2a_forward_url` cloned the validated `url::Url`
+    /// without stripping userinfo, so `http://user:pass@host` leaked
+    /// credentials into the forwarded URL (and into debug logs).
+    #[tokio::test]
+    async fn resolve_forward_target_strips_ipv4_userinfo() {
+        let target =
+            resolve_forward_target("http://user:pass@10.0.0.1:18080", "my-agent", "default")
+                .await
+                .expect("endpoint with userinfo should validate after stripping");
+
+        assert_eq!(
+            target.url, "http://10.0.0.1:18080/agents/my-agent/default/a2a",
+            "forwarded URL must not contain userinfo"
+        );
+        assert!(
+            !target.url.contains('@'),
+            "forwarded URL must not contain '@'"
+        );
+        assert!(
+            !target.url.contains("user"),
+            "forwarded URL must not contain username"
+        );
+        assert!(
+            !target.url.contains("pass"),
+            "forwarded URL must not contain password"
+        );
+        assert_eq!(target.host, "10.0.0.1");
+    }
+
+    /// Same regression as above, but with an IPv6 literal — ensures bracket
+    /// handling and userinfo stripping compose correctly.
+    #[tokio::test]
+    async fn resolve_forward_target_strips_ipv6_userinfo() {
+        let target =
+            resolve_forward_target("http://user:pass@[fd12::1]:18080", "my-agent", "default")
+                .await
+                .expect("IPv6 endpoint with userinfo should validate after stripping");
+
+        assert_eq!(
+            target.url, "http://[fd12::1]:18080/agents/my-agent/default/a2a",
+            "forwarded URL must strip userinfo and preserve IPv6 brackets"
+        );
+        assert!(
+            !target.url.contains('@'),
+            "forwarded URL must not contain '@'"
+        );
+        assert_eq!(target.host, "fd12::1");
     }
 
     /// Regression test for the body-read swallowing bug: when the upstream
