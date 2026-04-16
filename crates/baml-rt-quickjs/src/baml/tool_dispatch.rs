@@ -80,7 +80,7 @@ impl BamlRuntimeManager {
         source_baml_function: Option<&str>,
         invocation_args: Option<&Value>,
     ) -> Result<Value> {
-        tracing::info!(
+        tracing::debug!(
             baml_result = %baml_result,
             source_function = ?source_baml_function,
             "execute_tool_from_baml_result_or_value: entry"
@@ -100,7 +100,7 @@ impl BamlRuntimeManager {
             BamlToolInvocationPlan::SessionPlan { .. } => "session_plan",
             BamlToolInvocationPlan::OneShot { .. } => "one_shot",
         };
-        tracing::info!(
+        tracing::debug!(
             plan_kind,
             "execute_tool_from_baml_result_or_value: classified invocation plan"
         );

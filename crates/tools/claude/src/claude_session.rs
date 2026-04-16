@@ -582,7 +582,7 @@ impl ToolHandler for ClaudeSessionToolHandler {
             .await?;
         let session_id_str = ctx.session_id.to_string();
         let workspace_base = self.workspace_registry.base_dir();
-        tracing::info!(
+        tracing::debug!(
             session_id = %session_id_str,
             agent_id = %agent_id,
             workspace = %workspace_name,
@@ -712,14 +712,14 @@ impl ToolSession for ClaudeSession {
         let consumer_span = spans::stream_turn_consumer(&session_id_for_task);
         let handle = tokio::spawn(
             async move {
-                tracing::info!(
+                tracing::debug!(
                     session_id = %session_id_for_task,
                     "claude stream: turn started",
                 );
                 let stream_result = source.stream_turn(request).await;
                 let mut stream = match stream_result {
                     Ok(stream) => {
-                        tracing::info!(
+                        tracing::debug!(
                             session_id = %session_id_for_task,
                             "claude stream: stream opened",
                         );
@@ -768,7 +768,7 @@ impl ToolSession for ClaudeSession {
                                 }
                             }
                             if message_count == 1 {
-                                tracing::info!(
+                                tracing::debug!(
                                     session_id = %session_id_for_task,
                                     event_count = n,
                                     "claude stream: first message received",
@@ -782,7 +782,7 @@ impl ToolSession for ClaudeSession {
                                 );
                             }
                             if let Some(completion) = normalized.completion {
-                                tracing::info!(
+                                tracing::debug!(
                                     session_id = %session_id_for_task,
                                     completion = ?completion,
                                     message_count,
@@ -839,7 +839,7 @@ impl ToolSession for ClaudeSession {
             );
         } else if let Some(rx) = &self.output_rx {
             drop(_next_guard);
-            tracing::info!(
+            tracing::debug!(
                 session_id = %session_id_str,
                 "claude next: waiting on channel",
             );
@@ -849,7 +849,7 @@ impl ToolSession for ClaudeSession {
                 .await;
             match &item {
                 Ok(_) => {
-                    tracing::info!(
+                    tracing::debug!(
                         session_id = %session_id_str,
                         "claude next: received from channel",
                     );
@@ -958,7 +958,7 @@ impl ToolSession for ClaudeSession {
             Some(ClaudeCompletion::Done) | Some(ClaudeCompletion::Interrupted) => "Done",
             None => "Streaming",
         };
-        tracing::info!(
+        tracing::debug!(
             session_id = %session_id_str,
             step = step_kind,
             event_count,

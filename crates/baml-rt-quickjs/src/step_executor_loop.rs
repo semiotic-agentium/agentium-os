@@ -326,7 +326,7 @@ pub async fn run_step_executor_loop<R: StepExecutorRuntime>(
             obj.insert("session_context".to_string(), session_context);
         }
 
-        tracing::info!(
+        tracing::debug!(
             hop = hop_idx,
             prompt = %function_id.prompt_name(),
             function = %current_function,
@@ -340,7 +340,7 @@ pub async fn run_step_executor_loop<R: StepExecutorRuntime>(
         };
 
         match &result {
-            Ok(v) => tracing::info!(hop = hop_idx, result = %v, "step_executor_loop: hop ok"),
+            Ok(v) => tracing::debug!(hop = hop_idx, result = %v, "step_executor_loop: hop ok"),
             Err(e) => tracing::error!(hop = hop_idx, error = %e, "step_executor_loop: hop error"),
         }
 

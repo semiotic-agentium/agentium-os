@@ -3,6 +3,8 @@
 //! Provides a [`BamlTool`] implementation that calls the ClickUp v2 REST API.
 //! Supports listing, getting, creating, and updating tasks.
 
+mod spans;
+
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::{BamlRtError, Result, semantics::ErrorDisposition};
@@ -337,8 +339,9 @@ impl ClickUpTool {
         ClickUpClient::api_key().map_err(ClickUpError::Client)
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn list_teams(&self, api_key: &str) -> Result<ClickUpOutput> {
+        let span = spans::list_teams();
+        let _guard = span.enter();
         let json = self
             .client
             .send_json(self.client.get("/team", api_key))
@@ -372,8 +375,9 @@ impl ClickUpTool {
         })
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn list_spaces(&self, api_key: &str, team_id: &str) -> Result<ClickUpOutput> {
+        let span = spans::list_spaces(team_id);
+        let _guard = span.enter();
         let json = self
             .client
             .send_json(self.client.get(&format!("/team/{team_id}/space"), api_key))
@@ -407,8 +411,9 @@ impl ClickUpTool {
         })
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn list_lists(&self, api_key: &str, space_id: &str) -> Result<ClickUpOutput> {
+        let span = spans::list_lists(space_id);
+        let _guard = span.enter();
         let json = self
             .client
             .send_json(self.client.get(&format!("/space/{space_id}/list"), api_key))
@@ -443,8 +448,9 @@ impl ClickUpTool {
         })
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn list_tasks(&self, api_key: &str, list_id: &str) -> Result<ClickUpOutput> {
+        let span = spans::list_tasks(list_id);
+        let _guard = span.enter();
         let json = self
             .client
             .send_json(self.client.get(&format!("/list/{list_id}/task"), api_key))
@@ -479,8 +485,9 @@ impl ClickUpTool {
         })
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn get_task(&self, api_key: &str, task_id: &str) -> Result<ClickUpOutput> {
+        let span = spans::get_task(task_id);
+        let _guard = span.enter();
         let json = self
             .client
             .send_json(self.client.get(&format!("/task/{task_id}"), api_key))
@@ -501,7 +508,6 @@ impl ClickUpTool {
         })
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn create_task(
         &self,
         api_key: &str,
@@ -510,6 +516,8 @@ impl ClickUpTool {
         description: Option<&str>,
         priority: Option<u8>,
     ) -> Result<ClickUpOutput> {
+        let span = spans::create_task(list_id);
+        let _guard = span.enter();
         let mut body = serde_json::json!({ "name": name });
         if let Some(desc) = description {
             body["description"] = serde_json::Value::String(desc.to_string());
@@ -542,7 +550,6 @@ impl ClickUpTool {
         })
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn update_task(
         &self,
         api_key: &str,
@@ -551,6 +558,8 @@ impl ClickUpTool {
         description: Option<&str>,
         priority: Option<u8>,
     ) -> Result<ClickUpOutput> {
+        let span = spans::update_task(task_id);
+        let _guard = span.enter();
         let mut body = serde_json::Map::new();
         if let Some(s) = status {
             body.insert(
@@ -592,8 +601,9 @@ impl ClickUpTool {
         })
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn delete_task(&self, api_key: &str, task_id: &str) -> Result<ClickUpOutput> {
+        let span = spans::delete_task(task_id);
+        let _guard = span.enter();
         self.client
             .send_no_content(self.client.delete(&format!("/task/{task_id}"), api_key))
             .await
@@ -634,7 +644,6 @@ impl BamlTool for ClickUpTool {
         "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
     }
 
-    #[tracing::instrument(skip(self), fields(action))]
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let action = match &args {
             ClickUpInput::ListTeams(_) => "ListTeams",
@@ -646,7 +655,8 @@ impl BamlTool for ClickUpTool {
             ClickUpInput::UpdateTask(_) => "UpdateTask",
             ClickUpInput::DeleteTask(_) => "DeleteTask",
         };
-        tracing::Span::current().record("action", action);
+        let span = spans::execute(action);
+        let _guard = span.enter();
 
         let api_key = Self::api_key()?;
         let mut output = match args {

@@ -7,7 +7,7 @@ impl BamlRuntimeManager {
 
     /// Create a new BAML runtime manager
     pub fn new() -> Result<Self> {
-        tracing::info!("Initializing BAML runtime manager");
+        tracing::debug!("Initializing BAML runtime manager");
 
         Ok(Self {
             state: BamlRuntimeState::default(),

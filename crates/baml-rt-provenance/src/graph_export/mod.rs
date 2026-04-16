@@ -30,6 +30,7 @@ use crate::{
     graph_export::activity_outcome::NodeActivityOutcome,
     graph_model::GraphNodeLabel,
     id_semantics::context_entity_id_string,
+    spans,
     surreal_store::SurrealProvenanceStore,
     vocabulary::{a2a, context_scope, message_directions, prov, storage_safe},
 };
@@ -105,8 +106,9 @@ impl GraphExporter {
     }
 
     /// Export the full subgraph for a given `context_id`.
-    #[tracing::instrument(skip(self), fields(context_id))]
     pub async fn export_by_context(&self, context_id: &str) -> Result<ExportedGraph> {
+        let span = spans::graph_export_by_context(context_id);
+        let _guard = span.enter();
         let graph = self.export_context_core(context_id).await?;
         let allowed: HashSet<String> = std::iter::once(context_id.to_string()).collect();
         Ok(filter_scope_multi(graph, a2a::CONTEXT_ID, &allowed))
@@ -222,8 +224,9 @@ impl GraphExporter {
     }
 
     /// Export the full subgraph for a given `task_id`.
-    #[tracing::instrument(skip(self), fields(task_id))]
     pub async fn export_by_task(&self, task_id: &str) -> Result<ExportedGraph> {
+        let span = spans::graph_export_by_task(task_id);
+        let _guard = span.enter();
         let context_id = self.task_context_id(task_id).await?;
         let graph = if let Some(ctx_id) = context_id {
             let mut g = self.export_context_core(&ctx_id).await?;

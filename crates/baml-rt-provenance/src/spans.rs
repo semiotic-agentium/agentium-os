@@ -6,8 +6,28 @@
 
 use tracing::Span;
 
-/// Create span for a single SurrealQL execution (read or write).
+/// Create span for exporting the provenance graph scoped to a `context_id`.
 ///
+/// Parent: caller (e.g. HTTP handler). Children: SurrealQL work inside `GraphExporter`.
+#[inline]
+pub(crate) fn graph_export_by_context(context_id: &str) -> Span {
+    tracing::debug_span!(
+        "baml_rt_provenance.graph_export.by_context",
+        provenance.context_id = context_id,
+    )
+}
+
+/// Create span for exporting the provenance graph scoped to a `task_id`.
+///
+/// Parent: caller. Resolves context then reuses context export path.
+#[inline]
+pub(crate) fn graph_export_by_task(task_id: &str) -> Span {
+    tracing::debug_span!(
+        "baml_rt_provenance.graph_export.by_task",
+        provenance.task_id = task_id,
+    )
+}
+
 /// Create span for sequence diagram rendering (graph → Mermaid string).
 ///
 /// Level: debug — business operation (graph transform), not HTTP or low-level protocol.

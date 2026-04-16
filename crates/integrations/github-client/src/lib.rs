@@ -1,3 +1,5 @@
+mod spans;
+
 /// GitHub REST API v3 base URL.
 pub const BASE_URL: &str = "https://api.github.com";
 
@@ -69,11 +71,18 @@ impl GitHubClient {
             .header("User-Agent", "baml-agent-platform")
     }
 
-    #[tracing::instrument(skip_all, fields(url))]
     pub async fn send_json(
         &self,
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, GitHubClientError> {
+        let span = spans::send_json();
+        let _guard = span.enter();
+        if let Some(rb) = request.try_clone()
+            && let Ok(req) = rb.build()
+        {
+            span.record("url", tracing::field::display(req.url().as_str()));
+        }
+
         let resp = request.send().await.map_err(GitHubClientError::Http)?;
 
         let status = resp.status();

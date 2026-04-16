@@ -13,7 +13,7 @@ impl BamlRuntimeManager {
     ///
     /// The schema_path should point to the baml_src directory.
     pub fn load_schema(&mut self, schema_path: &str) -> Result<()> {
-        tracing::info!(schema_path = schema_path, "Loading BAML IL");
+        tracing::debug!(schema_path = schema_path, "Loading BAML IL");
 
         use std::path::Path;
 
@@ -80,7 +80,7 @@ impl BamlRuntimeManager {
             std::collections::HashMap<String, String>,
         >(project_root, "tool_step_executors.json");
 
-        tracing::info!(
+        tracing::debug!(
             function_count = self.state.function_registry.len(),
             session_plan_manifest = self
                 .state

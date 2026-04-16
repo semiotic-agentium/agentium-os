@@ -49,7 +49,7 @@ impl BamlRuntimeManager {
                 .map(|raw| FunctionToolManifest::build(raw, &self.state.tool_registry))
                 .unwrap_or_default(),
         );
-        tracing::info!(
+        tracing::debug!(
             function_tool_bindings = self.state.function_tool_manifest.len(),
             "Function-tool manifest built"
         );

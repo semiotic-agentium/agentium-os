@@ -83,7 +83,7 @@ impl ToolSessionExecutionHandle {
             delegation_target,
         };
 
-        tracing::info!(
+        tracing::debug!(
             tool_name = tool_name,
             context_id = %context_id,
             "Tool session open: start"
@@ -133,7 +133,7 @@ impl ToolSessionExecutionHandle {
                 session_id, context_id, scope_len
             ));
         }
-        tracing::info!(
+        tracing::debug!(
             tool_name = tool_name,
             context_id = %context_id,
             session_id = %session_id,
@@ -314,7 +314,7 @@ impl ToolSessionExecutionHandle {
         let session_scope =
             session_scope.ok_or_else(|| self.scope_not_found_error(session_id, "send"))?;
 
-        tracing::info!(
+        tracing::debug!(
             session_id = %session_id,
             tool_name = %session_scope.tool_name,
             context_id = %session_scope.scope.context_id(),
@@ -476,7 +476,7 @@ impl ToolSessionExecutionHandle {
                 "Tool session send: error"
             );
         } else {
-            tracing::info!(
+            tracing::debug!(
                 session_id = %session_id,
                 tool_name = %session_scope.tool_name,
                 context_id = %session_scope.scope.context_id(),
@@ -494,7 +494,7 @@ impl ToolSessionExecutionHandle {
         let session_scope = self.tool_session_scopes.get(session_id).map(|r| r.clone());
 
         let run = || async {
-            tracing::info!(session_id = %session_id, "Tool session read: start");
+            tracing::debug!(session_id = %session_id, "Tool session read: start");
 
             // Ensure an effect token exists for this Read so provenance captures
             // the response side of the conversation. Send completes its own token
@@ -645,7 +645,7 @@ impl ToolSessionExecutionHandle {
             .scope;
         let result = run().await;
         if let Ok(ref step) = result {
-            tracing::info!(
+            tracing::debug!(
                 session_id = %session_id,
                 step = ?step,
                 "Tool session read: ok"
@@ -662,7 +662,7 @@ impl ToolSessionExecutionHandle {
             .ok_or_else(|| self.scope_not_found_error(session_id, "finish"))?
             .scope;
 
-        tracing::info!(session_id = %session_id, "Tool session finish: start");
+        tracing::debug!(session_id = %session_id, "Tool session finish: start");
         let result = self.ctx.tool_registry.session_finish(session_id).await;
 
         let outcome = if result.is_ok() {
@@ -680,7 +680,7 @@ impl ToolSessionExecutionHandle {
         if let Err(ref e) = result {
             tracing::error!(session_id = %session_id, error = %e, "Tool session finish: error");
         } else {
-            tracing::info!(session_id = %session_id, "Tool session finish: ok");
+            tracing::debug!(session_id = %session_id, "Tool session finish: ok");
         }
         result
     }
@@ -695,7 +695,7 @@ impl ToolSessionExecutionHandle {
             .ok_or_else(|| self.scope_not_found_error(session_id, "abort"))?
             .scope;
 
-        tracing::info!(session_id = %session_id, reason = ?reason, "Tool session abort: start");
+        tracing::debug!(session_id = %session_id, reason = ?reason, "Tool session abort: start");
         let result = self
             .ctx
             .tool_registry
@@ -711,7 +711,7 @@ impl ToolSessionExecutionHandle {
         if let Err(ref e) = result {
             tracing::error!(session_id = %session_id, error = %e, "Tool session abort: error");
         } else {
-            tracing::info!(session_id = %session_id, "Tool session abort: ok");
+            tracing::debug!(session_id = %session_id, "Tool session abort: ok");
         }
         result
     }

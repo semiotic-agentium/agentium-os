@@ -459,7 +459,7 @@ pub async fn intercept_llm_call_pre_execution(
             prompt_payload_bytes_vec,
         );
 
-    tracing::info!(
+    tracing::debug!(
         client = context.client,
         model = context.model,
         function = function_name,
@@ -467,7 +467,7 @@ pub async fn intercept_llm_call_pre_execution(
         prompt_message_count,
         "LLM pre-execution telemetry"
     );
-    tracing::info!(
+    tracing::debug!(
         function = function_name,
         context_id = %context.runtime_scope.context_id(),
         previous_payload_bytes,

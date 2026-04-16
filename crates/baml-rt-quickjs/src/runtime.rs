@@ -349,7 +349,7 @@ impl RuntimeBuilder {
 
     /// Build the runtime environment
     pub async fn build(mut self) -> Result<Runtime> {
-        tracing::info!("Building runtime environment");
+        tracing::debug!("Building runtime environment");
 
         // Create BAML runtime manager
         let mut baml_manager = BamlRuntimeManager::new()?;
