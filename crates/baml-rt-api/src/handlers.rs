@@ -152,7 +152,7 @@ async fn resolve_deploy_hash(state: &Arc<ApiState>, body: DeployRequestDto) -> H
     }
     if !response.status().is_success() {
         let status = response.status();
-        let body_text = crate::endpoint_validation::truncate_body(
+        let body_text = baml_rt_router::ssrf::truncate_body(
             &response.text().await.unwrap_or_default(),
             512,
         );
@@ -400,7 +400,7 @@ pub async fn post_migrate(
     // private/metadata IPs behind attacker-controlled hostnames. Pin resolved
     // IPs to close the DNS-rebinding TOCTOU gap.
     let (target_url, resolved_addrs) =
-        crate::endpoint_validation::resolve_and_validate_cluster_endpoint(target)
+        baml_rt_router::ssrf::resolve_and_validate_cluster_endpoint(target)
             .await
             .map_err(|e| problem(400, "Bad Request", e))?;
 
@@ -409,7 +409,14 @@ pub async fn post_migrate(
         .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
 
     // 1. Forward deploy to target runner FIRST (before local undeploy).
-    let host = target_url.host_str().unwrap_or("").to_string();
+    // Use `host()` (not `host_str()`) to get the unbracketed form for IPv6
+    // literals — hyper's DNS override map is keyed on the bare address.
+    let host = match target_url.host() {
+        Some(url::Host::Domain(d)) => d.to_string(),
+        Some(url::Host::Ipv4(ip)) => ip.to_string(),
+        Some(url::Host::Ipv6(ip)) => ip.to_string(),
+        None => String::new(),
+    };
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(30))
@@ -423,7 +430,7 @@ pub async fn post_migrate(
         )
     })?;
 
-    let base = crate::endpoint_validation::origin_url(&target_url);
+    let base = baml_rt_router::ssrf::origin_url(&target_url);
     let deploy_url = format!("{base}/deploy");
     let deploy_body = serde_json::json!({ "hash": hash });
     let mut req = client.post(&deploy_url).json(&deploy_body);
@@ -444,7 +451,7 @@ pub async fn post_migrate(
             .text()
             .await
             .unwrap_or_else(|_| "<unreadable>".to_string());
-        let text = crate::endpoint_validation::truncate_body(&text, 512);
+        let text = baml_rt_router::ssrf::truncate_body(&text, 512);
         return Err(problem(
             502,
             "Bad Gateway",
