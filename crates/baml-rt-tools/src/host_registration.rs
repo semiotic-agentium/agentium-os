@@ -1,22 +1,50 @@
 //! Host registration: register manifest tools from the single tool-provider inventory.
+//! Supports an optional external fallback resolver for tools not found in inventory.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use baml_rt_core::{BamlRtError, Result};
 
 use crate::{
     access::{ToolAccessPolicy, enforce_tool_access},
     tool_catalog::{ManifestToolNames, ToolProvider},
-    tools::{ToolName, ToolRegistry},
+    tools::{ToolFunctionMetadata, ToolHandler, ToolName, ToolRegistry},
 };
+
+/// Extension point for resolving tools that are not compiled into the runner.
+///
+/// When `register_manifest_tools` cannot find a tool in the inventory, it
+/// consults the fallback resolver (if provided). Returning `None` means the
+/// resolver does not know about the tool either, which is a hard error.
+pub trait ExternalToolResolver: Send + Sync {
+    fn resolve(
+        &self,
+        name: &ToolName,
+    ) -> Result<Option<(ToolFunctionMetadata, Arc<dyn ToolHandler>)>>;
+}
 
 /// Register all manifest tools from the single inventory.
 /// Metadata is always from type level; build() only produces the handler.
 /// Pre-registered host-managed tools are skipped so host tooling needn't be hard-coded in this layer.
+///
+/// When `fallback` is `None`, behavior is identical to the original implementation.
 pub fn register_manifest_tools(
     registry: &ToolRegistry,
     tool_names: &ManifestToolNames,
     policy: &ToolAccessPolicy,
+) -> Result<()> {
+    register_manifest_tools_with_fallback(registry, tool_names, policy, None)
+}
+
+/// Same as [`register_manifest_tools`] but accepts an optional external fallback resolver.
+///
+/// If a manifest tool is not found in the inventory **and** a fallback is provided,
+/// the fallback is consulted before returning an error.
+pub fn register_manifest_tools_with_fallback(
+    registry: &ToolRegistry,
+    tool_names: &ManifestToolNames,
+    policy: &ToolAccessPolicy,
+    fallback: Option<&dyn ExternalToolResolver>,
 ) -> Result<()> {
     let pre_registered: HashSet<ToolName> = registry
         .all_metadata()
@@ -47,22 +75,31 @@ pub fn register_manifest_tools(
             continue;
         }
 
-        let provider = match by_name.get(name) {
-            Some(p) => p,
-            None => {
-                return Err(BamlRtError::InvalidArgument(format!(
-                    "Unknown tool in manifest: {}",
-                    name
-                )));
-            }
-        };
+        // Try inventory first.
+        if let Some(provider) = by_name.get(name) {
+            let metadata = (provider.metadata)();
+            let handler =
+                (provider.build)().map_err(|e| BamlRtError::InvalidArgumentWithSource {
+                    message: format!("Tool '{}' failed to build", name),
+                    source: Box::new(e),
+                })?;
+            registry.register_dynamic(metadata, handler)?;
+            continue;
+        }
 
-        let metadata = (provider.metadata)();
-        let handler = (provider.build)().map_err(|e| BamlRtError::InvalidArgumentWithSource {
-            message: format!("Tool '{}' failed to build", name),
-            source: Box::new(e),
-        })?;
-        registry.register_dynamic(metadata, handler)?;
+        // Fall back to external resolver (if provided).
+        if let Some(resolver) = fallback
+            && let Some((metadata, handler)) = resolver.resolve(name)?
+        {
+            registry.register_dynamic(metadata, handler)?;
+            continue;
+        }
+
+        // Neither inventory nor fallback knows this tool.
+        return Err(BamlRtError::InvalidArgument(format!(
+            "Unknown tool in manifest: {}",
+            name
+        )));
     }
 
     Ok(())

@@ -507,6 +507,12 @@ pub enum ProvEventData {
         /// For system/internal_a2a: the delegated-to agent package (write-time provenance).
         /// Emitted on start so WAS_DELEGATED_TO exists during delegation (before completion).
         delegation_target: Option<String>,
+        /// Content-addressed digest of the tool artifact (external tools only).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_digest: Option<String>,
+        /// Execution backend that served this invocation (e.g. "InProcess", "ExternalProcess").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_backend: Option<String>,
     },
     ToolCallCompleted {
         scope: CallScope,
@@ -518,6 +524,12 @@ pub enum ProvEventData {
         outcome: Outcome,
         /// For system/internal_a2a: the delegated-to agent package (write-time provenance).
         delegation_target: Option<String>,
+        /// Content-addressed digest of the tool artifact (external tools only).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_digest: Option<String>,
+        /// Execution backend that served this invocation (e.g. "InProcess", "ExternalProcess").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_backend: Option<String>,
     },
     /// A single step within a tool session (Open / SendDone / SearchRead / PageRead).
     /// Written synchronously so conversation_context sees session state mid-execution.
@@ -1035,6 +1047,8 @@ impl ProvEvent {
                 args,
                 metadata,
                 delegation_target,
+                tool_digest: None,
+                tool_backend: None,
             },
         })
     }
@@ -1060,6 +1074,8 @@ impl ProvEvent {
                 args,
                 metadata,
                 delegation_target,
+                tool_digest: None,
+                tool_backend: None,
             },
         })
     }
@@ -1116,6 +1132,8 @@ impl ProvEvent {
                 duration_ms,
                 outcome,
                 delegation_target,
+                tool_digest: None,
+                tool_backend: None,
             },
         })
     }
@@ -1173,6 +1191,8 @@ impl ProvEvent {
                 duration_ms,
                 outcome,
                 delegation_target,
+                tool_digest: None,
+                tool_backend: None,
             },
         })
     }

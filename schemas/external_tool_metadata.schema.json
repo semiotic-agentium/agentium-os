@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semiotic.ai/schemas/external_tool_metadata.schema.json",
+  "title": "External Tool Metadata",
+  "description": "Metadata contract for external tool packages. Shipped inside the tool OCI artifact as tool-metadata.json.",
+  "type": "object",
+  "required": [
+    "tool_abi_version",
+    "name",
+    "description",
+    "bundle",
+    "local_name",
+    "access_level",
+    "invocation_mode",
+    "schemas",
+    "secrets",
+    "capabilities"
+  ],
+  "properties": {
+    "tool_abi_version": {
+      "type": "string",
+      "description": "Protocol ABI version this tool targets.",
+      "enum": ["1"]
+    },
+    "name": {
+      "type": "string",
+      "description": "Fully qualified tool name (bundle/local_name).",
+      "pattern": "^[a-z][a-z0-9_]*/[a-z][a-z0-9_]*$"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable description of the tool."
+    },
+    "bundle": {
+      "type": "string",
+      "description": "Bundle namespace (e.g. 'support')."
+    },
+    "local_name": {
+      "type": "string",
+      "description": "Tool name within its bundle (e.g. 'clickup')."
+    },
+    "access_level": {
+      "type": "string",
+      "description": "Default access level required to invoke this tool.",
+      "enum": ["read", "write", "delete"]
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Tags for indexing/search."
+    },
+    "invocation_mode": {
+      "type": "string",
+      "description": "How the tool is invoked.",
+      "enum": ["single_shot"]
+    },
+    "idempotency": {
+      "type": "object",
+      "description": "Idempotency declarations per operation.",
+      "properties": {
+        "default": {
+          "type": "string",
+          "enum": ["idempotent", "non_idempotent"]
+        },
+        "operations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["idempotent", "non_idempotent"]
+          }
+        }
+      }
+    },
+    "schemas": {
+      "type": "object",
+      "description": "Input/output JSON Schemas for the tool.",
+      "required": ["input", "output"],
+      "properties": {
+        "input": {
+          "type": "object",
+          "description": "JSON Schema for tool input."
+        },
+        "output": {
+          "type": "object",
+          "description": "JSON Schema for tool output."
+        }
+      }
+    },
+    "secrets": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Secret names required by this tool (resolved by runner)."
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "Capability declarations for policy intersection.",
+      "properties": {
+        "http": {
+          "type": ["object", "null"],
+          "properties": {
+            "hosts": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "grpc": {
+          "type": ["object", "null"]
+        },
+        "tcp": {
+          "type": ["object", "null"]
+        },
+        "fs": {
+          "type": ["object", "null"]
+        },
+        "env": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
+      }
+    },
+    "config_bundle": {
+      "type": "string",
+      "description": "Bundle key for config store lookup (optional)."
+    },
+    "resource_limits": {
+      "type": "object",
+      "description": "Resource limits for the tool process.",
+      "properties": {
+        "max_memory_mb": { "type": "integer", "minimum": 1 },
+        "max_cpu_seconds": { "type": "integer", "minimum": 1 },
+        "max_open_fds": { "type": "integer", "minimum": 1 },
+        "max_concurrent_invocations": { "type": "integer", "minimum": 1, "default": 10 }
+      }
+    }
+  },
+  "additionalProperties": false
+}

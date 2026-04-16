@@ -33,14 +33,16 @@ pub use access::{ToolAccessPolicy, enforce_tool_access, parse_access_allowlist};
 /// Re-export the `#[baml_tool]` attribute macro so tool crates can use
 /// `use baml_rt_tools::baml_tool;` as a single import path.
 pub use baml_tool_derive::baml_tool;
-pub use bundles::{BundleType, Support};
+pub use bundles::{BundleRegistrar, BundleType, Support};
 pub use config_resolver::ConfigResolver;
 pub use event_producer::{
     EventProducer, EventProducerBuildContext, EventProducerBuildFuture, EventProducerProvider,
     ProducerCheckpoint, ProducerPoll, ProducerRegistry, load_configured_event_producers,
     load_configured_event_producers_with_checkpoints,
 };
-pub use host_registration::register_manifest_tools;
+pub use host_registration::{
+    ExternalToolResolver, register_manifest_tools, register_manifest_tools_with_fallback,
+};
 pub use ingress_store::{
     IngressId, IngressItem, IngressStore, clear_ingress_store, ingress_store,
     install_ingress_store, require_ingress_store,
@@ -50,7 +52,7 @@ pub use opaque_json::{
 };
 pub use open_input_schema::schema_allows_empty_or_optional_open_input;
 pub use session_coordination::get_session_coordination_baml_for_tools;
-pub use tool_catalog::{InventoryCatalog, ManifestToolNames, ToolCatalog};
+pub use tool_catalog::{CompositeCatalog, InventoryCatalog, ManifestToolNames, ToolCatalog};
 pub use tool_discovery::search_tools;
 pub use tool_error_classify::{
     ClassifiedToolError, ToolExecutionClassifier, a2a_retryability, classify_for_session,
@@ -64,7 +66,7 @@ pub use tool_schema::{DescribeAction, ToolType, json_schema_value, ts_decl, ts_n
 pub use tools::{
     BamlTool, BundleName, FunctionPlanBinding, FunctionRole, LocalToolName, SecretRequest,
     SecretType, SessionPlanFunctionsMap, SessionPlanTypeName, SessionPolicy, SessionTypeNames,
-    ToolAccess, ToolBundle, ToolBundleMetadata, ToolCapability, ToolConfigMetadata,
+    ToolAccess, ToolBackend, ToolBundle, ToolBundleMetadata, ToolCapability, ToolConfigMetadata,
     ToolDiscoveryRecord, ToolExecutor, ToolFunctionMetadataExport, ToolHandler,
     ToolMetadataBuilder, ToolName, ToolOrigin, ToolRegistry, ToolSessionAdvance, ToolSessionHandle,
     ToolSlug, ToolTypeSpec, TypeBasedMetadataBuilder, create_multi_send_session_tool_from_async,

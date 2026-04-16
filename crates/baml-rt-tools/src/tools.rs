@@ -849,6 +849,8 @@ pub struct ToolFunctionMetadata {
     pub config_bundle: Option<BundleName>,
     /// Origin of this tool (host vs guest)
     pub origin: ToolOrigin,
+    /// Execution backend (in-process, external process, Wasm). Defaults to `InProcess`.
+    pub backend: ToolBackend,
     /// Optional tool-specific semantics for projection modes used during SearchRead/PageRead steps.
     pub projection_semantics: Option<ToolProjectionSemantics>,
     /// FSM scheduling policy for the step executor. Controls which ops are
@@ -930,6 +932,7 @@ impl ToolFunctionMetadata {
             config: None,
             config_bundle: None,
             origin,
+            backend: ToolBackend::default(),
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
             event_sources: Vec::new(),
@@ -948,6 +951,7 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     config: Option<ToolConfigMetadata>,
     config_bundle: Option<BundleName>,
     origin: ToolOrigin,
+    backend: ToolBackend,
     projection_semantics: Option<ToolProjectionSemantics>,
     extra_ts_decls: Vec<String>,
     access: Option<ToolAccess>,
@@ -976,6 +980,7 @@ where
             config: None,
             config_bundle: None,
             origin: ToolOrigin::Host,
+            backend: ToolBackend::default(),
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
             event_sources: Vec::new(),
@@ -1060,6 +1065,12 @@ where
         self.event_sources = event_sources;
         self
     }
+
+    /// Set the execution backend for this tool.
+    pub fn with_backend(mut self, backend: ToolBackend) -> Self {
+        self.backend = backend;
+        self
+    }
 }
 
 impl<OpenInput, Input, Output> ToolMetadataBuilder
@@ -1083,6 +1094,7 @@ where
         metadata.baml_decl = self.baml_decl;
         metadata.config = self.config;
         metadata.config_bundle = self.config_bundle;
+        metadata.backend = self.backend;
         metadata.projection_semantics = self.projection_semantics;
         metadata.session_policy = self.session_policy;
         metadata.event_sources = self.event_sources;
@@ -1108,6 +1120,8 @@ pub struct ToolFunctionMetadataExport {
     pub secret_requests: Vec<SecretRequest>,
     pub config: Option<ToolConfigMetadata>,
     pub origin: ToolOrigin,
+    #[serde(default)]
+    pub backend: ToolBackend,
     pub projection_semantics: Option<ToolProjectionSemantics>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_sources: Vec<EventSourceKind>,
@@ -1132,6 +1146,7 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             secret_requests: metadata.secret_requests.clone(),
             config: metadata.config.clone(),
             origin: metadata.origin,
+            backend: metadata.backend,
             projection_semantics: metadata.projection_semantics.clone(),
             event_sources: metadata.event_sources.clone(),
         }
@@ -1148,6 +1163,8 @@ pub struct ToolDiscoveryRecord {
     pub tags: Vec<String>,
     pub access: Option<ToolAccess>,
     pub origin: ToolOrigin,
+    #[serde(default)]
+    pub backend: ToolBackend,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_sources: Vec<EventSourceKind>,
 }
@@ -1161,6 +1178,7 @@ impl ToolDiscoveryRecord {
             tags: metadata.tags.clone(),
             access: metadata.access,
             origin: metadata.origin,
+            backend: metadata.backend,
             event_sources: metadata.event_sources.clone(),
         }
     }
@@ -1200,6 +1218,18 @@ pub enum ToolOrigin {
     Host,
     /// Tool is a guest tool (no allowlist restriction)
     Guest,
+}
+
+/// Execution backend for a tool. Orthogonal to [`ToolOrigin`] (ownership).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolBackend {
+    /// Compiled into the runner via inventory (current default).
+    #[default]
+    InProcess,
+    /// Runs as a standalone process speaking the tool protocol over stdio/UDS.
+    ExternalProcess,
+    /// Runs inside a Wasm sandbox (future).
+    ExternalWasm,
 }
 
 /// Context passed to a tool when a session is opened. context_id and agent_id (from invocation

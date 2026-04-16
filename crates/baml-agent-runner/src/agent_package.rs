@@ -18,7 +18,9 @@ use baml_rt_core::{
 use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
-use baml_rt_tools::{ManifestToolNames, ToolAccessPolicy, register_manifest_tools};
+use baml_rt_tools::{
+    BundleRegistrar, ManifestToolNames, ToolAccessPolicy, ToolRegistry, register_manifest_tools,
+};
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_system::SystemBundle;
 use serde_json::Value;
@@ -85,13 +87,8 @@ impl AgentPackage {
         let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
 
         let tool_registry = runtime_manager.tool_registry();
-        tool_registry.register_bundle(SystemBundle::new_with_provenance(
-            agent_list_catalogue,
-            tool_registry.clone(),
-            a2a_handler,
-            provenance_query,
-        ))?;
 
+        // --- Build registrars with pre-injected dependencies ---
         let claude_workspace_root = match claude_workspaces_base {
             Some(base) => {
                 info!(
@@ -109,14 +106,30 @@ impl AgentPackage {
                 fallback
             }
         };
-        tool_registry.register_bundle(ClaudeSessionBundle::new(Arc::new(
-            AgentWorkspaceRegistry::new(claude_workspace_root),
-        )))?;
+
+        #[allow(unused_mut)] // mut needed only when `memory` feature adds to vec
+        let mut registrars: Vec<Box<dyn BundleRegistrar>> = vec![
+            Box::new(SystemBundleRegistrar {
+                agent_list_catalogue,
+                tool_registry: tool_registry.clone(),
+                a2a_handler,
+                provenance_query,
+            }),
+            Box::new(ClaudeBundleRegistrar {
+                workspace_root: claude_workspace_root,
+            }),
+        ];
 
         #[cfg(feature = "memory")]
-        if self.manifest.tools.iter().any(|t| t.starts_with("memory/")) {
-            let memory_bundle = baml_tools_memory::MemoryBundle::new(&self.manifest.name)?;
-            tool_registry.register_bundle(memory_bundle)?;
+        registrars.push(Box::new(MemoryBundleRegistrar {
+            agent_name: self.manifest.name.clone(),
+        }));
+
+        // --- Registrar loop: check + register ---
+        for registrar in &registrars {
+            if registrar.should_register(&self.manifest.tools) {
+                registrar.register(&tool_registry)?;
+            }
         }
 
         register_manifest_tools(
@@ -408,5 +421,79 @@ pub(crate) struct SnapshotAgentLister {
 impl AgentLister for SnapshotAgentLister {
     fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
         self.entries.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BundleRegistrar implementations — one per built-in bundle.
+// ---------------------------------------------------------------------------
+
+/// Registrar for system tools (discover_agents, discover_tools, internal_a2a, etc.).
+struct SystemBundleRegistrar {
+    agent_list_catalogue: Arc<dyn AgentLister>,
+    tool_registry: Arc<ToolRegistry>,
+    a2a_handler: Arc<dyn A2aRequestHandler>,
+    provenance_query: Arc<dyn baml_rt_provenance::ProvenanceOpsQuery>,
+}
+
+impl BundleRegistrar for SystemBundleRegistrar {
+    fn name(&self) -> &str {
+        "system"
+    }
+
+    fn should_register(&self, _manifest_tools: &[String]) -> bool {
+        true // system tools always register
+    }
+
+    fn register(&self, registry: &ToolRegistry) -> Result<()> {
+        registry.register_bundle(SystemBundle::new_with_provenance(
+            self.agent_list_catalogue.clone(),
+            self.tool_registry.clone(),
+            self.a2a_handler.clone(),
+            self.provenance_query.clone(),
+        ))
+    }
+}
+
+/// Registrar for Claude session tools (code workspace management).
+struct ClaudeBundleRegistrar {
+    workspace_root: PathBuf,
+}
+
+impl BundleRegistrar for ClaudeBundleRegistrar {
+    fn name(&self) -> &str {
+        "claude"
+    }
+
+    fn should_register(&self, _manifest_tools: &[String]) -> bool {
+        true // claude session tools always register
+    }
+
+    fn register(&self, registry: &ToolRegistry) -> Result<()> {
+        registry.register_bundle(ClaudeSessionBundle::new(Arc::new(
+            AgentWorkspaceRegistry::new(self.workspace_root.clone()),
+        )))
+    }
+}
+
+/// Registrar for memory tools (feature-gated, conditional on manifest).
+#[cfg(feature = "memory")]
+struct MemoryBundleRegistrar {
+    agent_name: String,
+}
+
+#[cfg(feature = "memory")]
+impl BundleRegistrar for MemoryBundleRegistrar {
+    fn name(&self) -> &str {
+        "memory"
+    }
+
+    fn should_register(&self, manifest_tools: &[String]) -> bool {
+        manifest_tools.iter().any(|t| t.starts_with("memory/"))
+    }
+
+    fn register(&self, registry: &ToolRegistry) -> Result<()> {
+        let memory_bundle = baml_tools_memory::MemoryBundle::new(&self.agent_name)?;
+        registry.register_bundle(memory_bundle)
     }
 }

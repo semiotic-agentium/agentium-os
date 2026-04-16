@@ -1,5 +1,5 @@
-//! Single tool-provider inventory: type-level metadata + runtime handler build.
-//! One mechanism for catalog and host registration.
+//! Tool catalog: type-level metadata sources for tool discovery and resolution.
+//! Supports composing multiple catalog sources (inventory, external, etc.).
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -56,6 +56,45 @@ impl ToolCatalog for InventoryCatalog {
 
     fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = &'a ToolFunctionMetadata> + 'a> {
         Box::new(self.tools.iter())
+    }
+}
+
+/// Composable catalog that chains multiple [`ToolCatalog`] sources.
+///
+/// Lookups are resolved in source order (first match wins).
+/// `InventoryCatalog` is typically the first source; external catalogs
+/// (e.g. from lockfile/registry) can be appended later.
+pub struct CompositeCatalog {
+    sources: Vec<Box<dyn ToolCatalog>>,
+}
+
+impl CompositeCatalog {
+    /// Create empty composite. Use [`Self::add`] to append sources.
+    pub fn new() -> Self {
+        Self {
+            sources: Vec::new(),
+        }
+    }
+
+    /// Append a catalog source. First-added sources take priority in lookups.
+    pub fn add(&mut self, source: Box<dyn ToolCatalog>) {
+        self.sources.push(source);
+    }
+}
+
+impl Default for CompositeCatalog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ToolCatalog for CompositeCatalog {
+    fn by_name(&self, name: &ToolName) -> Option<&ToolFunctionMetadata> {
+        self.sources.iter().find_map(|s| s.by_name(name))
+    }
+
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = &'a ToolFunctionMetadata> + 'a> {
+        Box::new(self.sources.iter().flat_map(|s| s.iter()))
     }
 }
 
