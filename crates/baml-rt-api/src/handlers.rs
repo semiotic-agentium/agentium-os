@@ -152,10 +152,8 @@ async fn resolve_deploy_hash(state: &Arc<ApiState>, body: DeployRequestDto) -> H
     }
     if !response.status().is_success() {
         let status = response.status();
-        let body_text = baml_rt_router::ssrf::truncate_body(
-            &response.text().await.unwrap_or_default(),
-            512,
-        );
+        let body_text =
+            baml_rt_router::ssrf::truncate_body(&response.text().await.unwrap_or_default(), 512);
         return Err(problem(
             500,
             "Internal Server Error",
