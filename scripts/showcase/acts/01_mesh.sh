@@ -14,8 +14,9 @@ act_01_mesh() {
     "on top of their agent runtime. Agentium's placement IS the control plane."
 
   # Clean slate — no leftovers from prior acts or prior runs.
-  undeploy_by_name dispatch-echo "$RUNNER0_PORT"
-  undeploy_by_name dispatch-echo "$RUNNER1_PORT"
+  if [[ "$SHOWCASE_DRY_RUN" != "true" ]]; then
+    clean_agent_state dispatch-echo
+  fi
 
   step "Resolve the dispatch-echo package (same content hash on both runners)"
 

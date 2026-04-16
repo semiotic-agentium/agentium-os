@@ -17,8 +17,7 @@ act_03_provenance() {
   # Fresh start — act 1 left dispatch-echo on runner-1; undeploy it so we
   # can start clean on runner-0 using the same shared hash.
   if [[ "$SHOWCASE_DRY_RUN" != "true" ]]; then
-    undeploy_by_name dispatch-echo "$RUNNER0_PORT"
-    undeploy_by_name dispatch-echo "$RUNNER1_PORT"
+    clean_agent_state dispatch-echo
   fi
 
   step "Deploy dispatch-echo on runner-0 and exercise it"
@@ -58,16 +57,23 @@ act_03_provenance() {
   local sample
   if [[ "$SHOWCASE_DRY_RUN" == "true" ]]; then
     sample='{
-  "kind": "AgentBooted",
-  "agent_package": "dispatch-echo",
-  "runner_endpoint": "http://runner-0.runner.agentium.svc:18080",
-  "timestamp_ms": 1776277128123,
-  "content_hash": "696a408aae..."
+  "event": "a2a:AgentBoot",
+  "kind": "lifecycle_event",
+  "status": "Completed",
+  "outcome": "Success",
+  "timestamp_ms": 1776277128123
 }'
   else
     local lifecycle
     lifecycle=$(curl -sf "http://localhost:${RUNNER0_PORT}/provenance/lifecycle-events" 2>/dev/null || echo '{"rows":[]}')
-    sample=$(echo "$lifecycle" | jq '.rows[0] // {}' 2>/dev/null || echo '{}')
+    # Select only the fields that matter on a projector — strip internal IDs.
+    sample=$(echo "$lifecycle" | jq '.rows[-1] // {} | {
+      event: .prov_type,
+      kind: .activity_kind,
+      status: .activity_status,
+      outcome: .activity_outcome,
+      timestamp_ms
+    }' 2>/dev/null || echo '{}')
   fi
   show "$sample"
   result "Structured, queryable, graph-native. Not a line of free-text log."
@@ -119,17 +125,21 @@ act_03_provenance() {
   local stopped
   if [[ "$SHOWCASE_DRY_RUN" == "true" ]]; then
     stopped='{
-  "kind": "AgentStopped",
-  "agent_package": "dispatch-echo",
-  "runner_endpoint": "http://runner-0.runner.agentium.svc:18080",
-  "a2a_stop_reason": "undeploy",
+  "event": "a2a:AgentStop",
+  "stop_reason": "undeploy",
+  "status": "Completed",
   "timestamp_ms": 1776277130001
 }'
   else
     local lifecycle_after
     lifecycle_after=$(curl -sf "http://localhost:${RUNNER1_PORT}/provenance/lifecycle-events" 2>/dev/null || echo '{"rows":[]}')
-    # Pick the most-recent undeploy event — the one from this demo's migration.
-    stopped=$(echo "$lifecycle_after" | jq '[.rows[] | select(.a2a_stop_reason=="undeploy")] | sort_by(.prov_endTime) | last // {}' 2>/dev/null)
+    # Pick the most-recent undeploy event — strip to projector-friendly fields.
+    stopped=$(echo "$lifecycle_after" | jq '[.rows[] | select(.a2a_stop_reason=="undeploy")] | sort_by(.prov_endTime) | last // {} | {
+      event: .prov_type,
+      stop_reason: .a2a_stop_reason,
+      status: .activity_status,
+      timestamp_ms
+    }' 2>/dev/null)
   fi
   if [[ "$stopped" != "{}" && -n "$stopped" ]]; then
     show "$stopped"

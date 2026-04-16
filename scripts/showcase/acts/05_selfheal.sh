@@ -14,12 +14,12 @@ act_05_selfheal() {
     "application-level heartbeat TTL. A dead runner is invisible to routing" \
     "as soon as its heartbeat goes stale — ahead of any kubelet signal."
 
-  # Clean slate.
+  # Clean slate — direct DB cleanup ensures no stale placements survive from
+  # prior acts or previous demo runs (runner-level undeploy can miss agents
+  # that re-deployed from disk state after a pod restart).
   if [[ "$SHOWCASE_DRY_RUN" != "true" ]]; then
-    undeploy_by_name task-lifecycle-demo "$RUNNER0_PORT"
-    undeploy_by_name task-lifecycle-demo "$RUNNER1_PORT"
-    undeploy_by_name dispatch-echo "$RUNNER0_PORT"
-    undeploy_by_name dispatch-echo "$RUNNER1_PORT"
+    clean_agent_state task-lifecycle-demo
+    clean_agent_state dispatch-echo
   fi
 
   step "Deploy dispatch-echo on runner-0; verify cross-pod routing works"
@@ -75,7 +75,11 @@ act_05_selfheal() {
     stale_count=$(echo "$stale_placements" | jq '[.[] | .result | .[]] | length')
   fi
   show "  ${stale_count} row(s)"
-  result "Zero. runner-0's placement is invisible. The router cannot route to a corpse."
+  if (( stale_count == 0 )); then
+    result "Zero. runner-0's placement is invisible. The router cannot route to a corpse."
+  else
+    fail_soft "Expected 0 rows but got ${stale_count} — stale placement from prior state."
+  fi
 
   step "Confirm end-to-end: request via runner-1 for the agent that lived on runner-0"
 
@@ -90,11 +94,16 @@ act_05_selfheal() {
       -H "Accept: text/event-stream" -H "Content-Type: application/json" -d "$body" \
       "http://localhost:${RUNNER1_PORT}/agents/dispatch-echo/default/a2a" 2>/dev/null)
   fi
-  result "HTTP ${code} — the request does NOT get routed to the dead runner. It just fails clean."
+  if [[ "$code" =~ ^4 ]]; then
+    result "HTTP ${code} — the request does NOT get routed to the dead runner. It just fails clean."
+  else
+    fail_soft "Expected HTTP 4xx but got ${code} — stale deployment may still be serving on runner-1."
+  fi
 
   step "Recovery: the StatefulSet recreates runner-0. It re-registers on boot."
 
   if [[ "$SHOWCASE_DRY_RUN" != "true" ]]; then
+    explain "Waiting for StatefulSet to recreate runner-0..."
     restart_pf runner-0 "$RUNNER0_PORT"
   fi
   explain "New pod boots, new heartbeat is fresh, placement query includes it again."

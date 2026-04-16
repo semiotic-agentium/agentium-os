@@ -20,8 +20,7 @@ act_04_continuity() {
 
   # Fresh start.
   if [[ "$SHOWCASE_DRY_RUN" != "true" ]]; then
-    undeploy_by_name task-lifecycle-demo "$RUNNER0_PORT"
-    undeploy_by_name task-lifecycle-demo "$RUNNER1_PORT"
+    clean_agent_state task-lifecycle-demo
   fi
 
   step "Deploy task-lifecycle-demo on runner-0"

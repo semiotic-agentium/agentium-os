@@ -241,6 +241,17 @@ undeploy_by_name() {
   return 0
 }
 
+# clean_agent_state <pkg> — belt-and-suspenders cleanup of all traces of an
+# agent across both runners AND the SurrealDB placement table.  Runner-level
+# undeploy is best-effort (agent may not be listed after restarts); the DB
+# delete ensures no stale placement persists from prior runs.
+clean_agent_state() {
+  local pkg="$1"
+  undeploy_by_name "$pkg" "$RUNNER0_PORT"
+  undeploy_by_name "$pkg" "$RUNNER1_PORT"
+  surreal_sql "DELETE FROM cluster_agent_placements WHERE agent_package = '${pkg}'" >/dev/null
+}
+
 # short_hash <hash> — truncate SHA for readability.
 short_hash() {
   echo "${1:0:10}..."
