@@ -1,23 +1,36 @@
 import { ref, computed, type Ref } from "vue";
+import { applyConversationHistoryDelta, applyConversationHistoryPage } from "../chat/conversationHistoryHydration";
+import { normalizeEpochMs, normalizePreview } from "../chat/chatTime";
+import {
+  ensureContentBlocks,
+  partsToContentBlocks,
+  pushStructuredBlocks,
+  pushTextBlock,
+} from "../chat/chatMessageBlocks";
+import { appendExecutionErrorCard, parseExecutionErrorText } from "../chat/executionErrorCard";
+import {
+  deriveToolStatus,
+  detectToolAppendMode,
+  getOrCreateToolBlockForAppend,
+} from "../chat/toolBlocks";
+import {
+  pushToolEventsDeduped,
+  withSessionStepDetailEvents,
+} from "../chat/toolNotificationEvents";
+import { isWorkflowStatusText } from "../chat/workflowUiFilters";
 import type {
   AgentDiscoveryEntry,
   A2aMessage,
   ChatMessage,
-  ContentBlock,
-  ConversationHistoryItem,
-  ConversationHistoryOption,
   ConversationHistoryPage,
   ContextPickerPage,
   ContextMetricsResponse,
-  DataContentBlock,
   JSONRPCResponse,
   ChunkPayload,
-  Part,
-  TextContentBlock,
-  ToolNotificationBlock,
   ToolCompletion,
   ToolEvent,
   WorkflowProgressState,
+  ConversationHistoryOption,
 } from "../types/a2a";
 
 let counter = 0;
@@ -34,437 +47,6 @@ function updateMessage(
   if (idx !== -1) {
     updater(messages.value[idx]!);
   }
-}
-
-/** Format status/phase text for display: surface phase or tool name, avoid "Calling model: unknown (X)". */
-function formatStatusPhaseText(raw: string): string {
-  const phaseMatch = raw.match(/Calling model: unknown \((.+)\)/);
-  const toolMatch = raw.match(/Invoking tool: (.+)/);
-  return phaseMatch ? phaseMatch[1]! : toolMatch ? `Tool: ${toolMatch[1]}` : raw;
-}
-
-function deriveToolStatus(block: ToolNotificationBlock): string {
-  if (block.completion === "DONE") return "Done";
-  if (block.completion === "INPUT_REQUIRED") return "Input required";
-  if (block.completion === "INTERRUPTED") return "Interrupted";
-  const last = block.events[block.events.length - 1];
-  if (!last) return "Running";
-  switch (last.kind) {
-    case "assistant_thinking":
-      return "Thinking…";
-    case "assistant_tool_use":
-      return "Using tool";
-    case "assistant_text":
-      return "Writing…";
-    case "terminal_result":
-      return "Complete";
-    case "system_notice": {
-      const phase = last.subtype ? formatStatusPhaseText(last.subtype) : "System";
-      const model = typeof last.model === "string" ? last.model : undefined;
-      return model ? `${phase} · ${model}` : phase;
-    }
-    default:
-      return "Running";
-  }
-}
-
-function ensureContentBlocks(msg: ChatMessage): void {
-  if (msg.contentBlocks) return;
-  msg.contentBlocks = [];
-  if (msg.text) {
-    msg.contentBlocks.push({ type: "text", text: msg.text });
-  }
-}
-
-function findOrCreateToolBlock(msg: ChatMessage, toolName: string): ToolNotificationBlock {
-  const blocks = msg.contentBlocks!;
-  const existing = blocks.find(
-    (b): b is ToolNotificationBlock => b.type === "tool" && b.toolName === toolName,
-  );
-  if (existing) return existing;
-  const block: ToolNotificationBlock = {
-    type: "tool",
-    toolName,
-    status: "Running",
-    events: [],
-  };
-  blocks.push(block);
-  return block;
-}
-
-/** Blocks for a given tool (baseName or "baseName 2", "baseName 3", …). */
-function isToolBlockForBase(b: ContentBlock, baseName: string): b is ToolNotificationBlock {
-  return (
-    b.type === "tool" &&
-    (b.toolName === baseName ||
-      b.toolName === `${baseName} 2` ||
-      b.toolName.startsWith(`${baseName} `))
-  );
-}
-
-/** When the last block for this tool is already DONE, start a new block (new invocation); otherwise append. */
-function getOrCreateToolBlockForAppend(
-  msg: ChatMessage,
-  baseName: string,
-  _completion: ToolCompletion | undefined,
-): ToolNotificationBlock {
-  const blocks = msg.contentBlocks!;
-  const toolBlocks = blocks.filter((b): b is ToolNotificationBlock =>
-    isToolBlockForBase(b, baseName),
-  );
-  const lastTool = toolBlocks[toolBlocks.length - 1];
-  const needNewBlock = lastTool?.completion === "DONE";
-  if (needNewBlock) {
-    const name = toolBlocks.length === 1 ? `${baseName} 2` : `${baseName} ${toolBlocks.length + 1}`;
-    return findOrCreateToolBlock(msg, name);
-  }
-  return lastTool ?? findOrCreateToolBlock(msg, baseName);
-}
-
-/** Label for phase/status blocks (no tool payload: statusUpdate.message only). Distinct from tool blocks (toolName + events/completion). */
-const PHASE_BLOCK_LABEL = "Status";
-
-/** Phase blocks have toolName "Status" or "Status 2", "Status 3", …. */
-function isPhaseBlock(b: ContentBlock): b is ToolNotificationBlock {
-  return (
-    b.type === "tool" &&
-    (b.toolName === PHASE_BLOCK_LABEL || b.toolName.startsWith(`${PHASE_BLOCK_LABEL} `))
-  );
-}
-
-/** When the last block is text, start a new phase block below it; otherwise append to the current one. */
-function getOrCreatePhaseBlockForAppend(msg: ChatMessage): ToolNotificationBlock {
-  const blocks = msg.contentBlocks!;
-  const phaseBlocks = blocks.filter(isPhaseBlock);
-  const lastBlock = blocks[blocks.length - 1];
-  const needNewBlock = lastBlock?.type === "text";
-  if (needNewBlock) {
-    const name =
-      phaseBlocks.length === 0
-        ? PHASE_BLOCK_LABEL
-        : `${PHASE_BLOCK_LABEL} ${phaseBlocks.length + 1}`;
-    return findOrCreateToolBlock(msg, name);
-  }
-  const lastPhase = phaseBlocks[phaseBlocks.length - 1];
-  return lastPhase ?? findOrCreateToolBlock(msg, PHASE_BLOCK_LABEL);
-}
-
-/** Push a new text block so each message/chunk is its own area (no concatenation). */
-function pushTextBlock(msg: ChatMessage, text: string): void {
-  const blocks = msg.contentBlocks!;
-  blocks.push({ type: "text", text });
-  syncMsgTextFromTextBlocks(msg);
-}
-
-/** Map A2A wire parts to UI blocks (prose + optional structured data parts). */
-function partsToContentBlocks(parts: Part[]): Array<TextContentBlock | DataContentBlock> {
-  const out: Array<TextContentBlock | DataContentBlock> = [];
-  for (const p of parts) {
-    const rawText = p.text;
-    if (typeof rawText === "string" && rawText.trim() !== "") {
-      out.push({ type: "text", text: rawText });
-    }
-    const mediaHint = p.media_type ?? p.mediaType;
-    const hasData = p.data !== undefined;
-    if (hasData || mediaHint) {
-      out.push({
-        type: "data",
-        mediaType: mediaHint ?? "application/octet-stream",
-        data: hasData ? p.data : null,
-      });
-    }
-  }
-  return out;
-}
-
-function syncMsgTextFromTextBlocks(msg: ChatMessage): void {
-  const blocks = msg.contentBlocks ?? [];
-  msg.text = blocks
-    .filter((b): b is TextContentBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n\n");
-}
-
-/** Append structured part blocks (text + data) in order; keeps msg.text as joined text blocks only. */
-function pushStructuredBlocks(
-  msg: ChatMessage,
-  blocks: Array<TextContentBlock | DataContentBlock>,
-): void {
-  const arr = msg.contentBlocks!;
-  for (const b of blocks) {
-    arr.push(b);
-  }
-  syncMsgTextFromTextBlocks(msg);
-}
-
-function statusFromFsmPhase(fsmPhase: string): string {
-  const phase = fsmPhase.toLowerCase();
-  if (phase.includes("complete") || phase.includes("done") || phase.includes("finish")) return "Done";
-  if (phase.includes("error") || phase.includes("fail") || phase.includes("abort")) return "Interrupted";
-  return "Running";
-}
-
-function completionFromStatus(status: string): ToolCompletion | undefined {
-  if (status === "Done") return "DONE";
-  if (status === "Interrupted") return "INTERRUPTED";
-  return undefined;
-}
-
-function stableJsonSignature(value: unknown): string {
-  const visit = (v: unknown): unknown => {
-    if (Array.isArray(v)) return v.map(visit);
-    if (v && typeof v === "object") {
-      const obj = v as Record<string, unknown>;
-      return Object.keys(obj)
-        .sort()
-        .reduce<Record<string, unknown>>((acc, key) => {
-          acc[key] = visit(obj[key]);
-          return acc;
-        }, {});
-    }
-    return v;
-  };
-  return JSON.stringify(visit(value));
-}
-
-function applyConversationHistoryPage(messages: Ref<ChatMessage[]>, page: ConversationHistoryPage): void {
-  const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
-  const rebuilt: ChatMessage[] = [];
-  let turnOrdinal = 0;
-  let activeAgentMsg: ChatMessage | null = null;
-  // Per-turn dedupe: repeated send_done payload snapshots for same tool.
-  let sendDonePayloadSignaturesByTool = new Map<string, Set<string>>();
-
-  const ensureAgentMsg = (item: ConversationHistoryItem): ChatMessage => {
-    if (activeAgentMsg) return activeAgentMsg;
-    const msg: ChatMessage = {
-      id: `prov-agent-${turnOrdinal}-${item.activityAnchor}`,
-      role: "agent",
-      text: "",
-      timestamp: new Date(normalizeEpochMs(item.timestampMs)),
-      contentBlocks: [],
-    };
-    rebuilt.push(msg);
-    activeAgentMsg = msg;
-    return msg;
-  };
-
-  for (const item of sorted) {
-    const isUser = item.role.toLowerCase() === "user";
-    const ts = new Date(normalizeEpochMs(item.timestampMs));
-    const content = item.content;
-
-    if (isUser) {
-      turnOrdinal += 1;
-      activeAgentMsg = null;
-      sendDonePayloadSignaturesByTool = new Map<string, Set<string>>();
-      const text = content.type === "message" ? content.text : "";
-      rebuilt.push({
-        id: `prov-user-${item.activityAnchor}`,
-        role: "user",
-        text,
-        timestamp: ts,
-      });
-      continue;
-    }
-
-    if (
-      content.type === "session_step" &&
-      content.op.kind === "send_done" &&
-      content.send_done_replay_payload !== undefined
-    ) {
-      const signature = stableJsonSignature(content.send_done_replay_payload);
-      const toolName = content.tool_name;
-      const seen = sendDonePayloadSignaturesByTool.get(toolName) ?? new Set<string>();
-      if (seen.has(signature)) {
-        // Collapse duplicate send_done steps with equivalent replay payload.
-        continue;
-      }
-      seen.add(signature);
-      sendDonePayloadSignaturesByTool.set(toolName, seen);
-    }
-
-    const msg = ensureAgentMsg(item);
-    ensureContentBlocks(msg);
-
-    switch (content.type) {
-      case "message": {
-        if (content.text) {
-          pushTextBlock(msg, content.text);
-        }
-        if (Array.isArray(content.citations) && content.citations.length > 0) {
-          const prev = Array.isArray(msg.metadata?.citations)
-            ? (msg.metadata!.citations as unknown[]).filter((x): x is string => typeof x === "string")
-            : [];
-          const merged = [...new Set([...prev, ...content.citations])];
-          msg.metadata = { ...(msg.metadata ?? {}), citations: merged };
-        }
-        break;
-      }
-      case "tool_call": {
-        const status = statusFromFsmPhase(content.fsm_phase);
-        const completion = completionFromStatus(status);
-        const block = getOrCreateToolBlockForAppend(msg, content.tool_name, completion);
-        block.events.push({
-          kind: "assistant_tool_use",
-          name: content.tool_name,
-          input: content.args,
-        });
-        block.events.push({
-          kind: "system_notice",
-          subtype: `FSM phase: ${content.fsm_phase}`,
-          text: `FSM phase: ${content.fsm_phase}`,
-        });
-        if (completion) block.completion = completion;
-        block.status = deriveToolStatus(block);
-        break;
-      }
-      case "tool_result": {
-        const status = statusFromFsmPhase(content.fsm_phase);
-        const completion = completionFromStatus(status) ?? "DONE";
-        const block = getOrCreateToolBlockForAppend(msg, content.tool_name, completion);
-        block.events.push({
-          kind: "system_notice",
-          subtype: `FSM phase: ${content.fsm_phase}`,
-          text: `FSM phase: ${content.fsm_phase}`,
-        });
-        block.events.push({
-          kind: "terminal_result",
-          subtype: "success",
-          result:
-            typeof content.outcome === "string" ? content.outcome : JSON.stringify(content.outcome),
-        });
-        block.completion = completion;
-        block.status = deriveToolStatus(block);
-        break;
-      }
-      case "session_step": {
-        const stepKind = content.op.kind;
-        const done = stepKind === "send_done" || stepKind === "finish";
-        const completion = done ? "DONE" : undefined;
-        const block = getOrCreateToolBlockForAppend(msg, content.tool_name, completion);
-        block.events.push({
-          kind: "system_notice",
-          subtype: `Session step: ${stepKind}`,
-          text: `Session step: ${stepKind}`,
-        });
-        if (Array.isArray(content.read_replay_lines) && content.read_replay_lines.length > 0) {
-          block.events.push({
-            kind: "assistant_text",
-            text: content.read_replay_lines.join("\n"),
-          });
-        }
-        if (completion) block.completion = completion;
-        block.status = deriveToolStatus(block);
-        break;
-      }
-    }
-  }
-
-  messages.value = rebuilt;
-}
-
-function applyConversationHistoryDelta(messages: Ref<ChatMessage[]>, page: ConversationHistoryPage): void {
-  if (!Array.isArray(page.items) || page.items.length === 0) return;
-  const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
-  for (const item of sorted) {
-    const isUser = item.role.toLowerCase() === "user";
-    const ts = new Date(normalizeEpochMs(item.timestampMs));
-    const content = item.content;
-    if (isUser) {
-      const text = content.type === "message" ? content.text : "";
-      messages.value.push({
-        id: `prov-user-${item.activityAnchor}`,
-        role: "user",
-        text,
-        timestamp: ts,
-      });
-      continue;
-    }
-
-    let msg = messages.value[messages.value.length - 1];
-    if (!msg || msg.role !== "agent") {
-      msg = {
-        id: `prov-agent-${item.activityAnchor}`,
-        role: "agent",
-        text: "",
-        timestamp: ts,
-        contentBlocks: [],
-      };
-      messages.value.push(msg);
-    }
-    ensureContentBlocks(msg);
-
-    switch (content.type) {
-      case "message":
-        if (content.text) pushTextBlock(msg, content.text);
-        break;
-      case "tool_call": {
-        const status = statusFromFsmPhase(content.fsm_phase);
-        const completion = completionFromStatus(status);
-        const block = getOrCreateToolBlockForAppend(msg, content.tool_name, completion);
-        block.events.push({ kind: "assistant_tool_use", name: content.tool_name, input: content.args });
-        block.events.push({
-          kind: "system_notice",
-          subtype: `FSM phase: ${content.fsm_phase}`,
-          text: `FSM phase: ${content.fsm_phase}`,
-        });
-        if (completion) block.completion = completion;
-        block.status = deriveToolStatus(block);
-        break;
-      }
-      case "tool_result": {
-        const status = statusFromFsmPhase(content.fsm_phase);
-        const completion = completionFromStatus(status) ?? "DONE";
-        const block = getOrCreateToolBlockForAppend(msg, content.tool_name, completion);
-        block.events.push({
-          kind: "system_notice",
-          subtype: `FSM phase: ${content.fsm_phase}`,
-          text: `FSM phase: ${content.fsm_phase}`,
-        });
-        block.events.push({
-          kind: "terminal_result",
-          subtype: "success",
-          result: typeof content.outcome === "string" ? content.outcome : JSON.stringify(content.outcome),
-        });
-        block.completion = completion;
-        block.status = deriveToolStatus(block);
-        break;
-      }
-      case "session_step": {
-        const stepKind = content.op.kind;
-        const done = stepKind === "send_done" || stepKind === "finish";
-        const completion = done ? "DONE" : undefined;
-        const block = getOrCreateToolBlockForAppend(msg, content.tool_name, completion);
-        block.events.push({
-          kind: "system_notice",
-          subtype: `Session step: ${stepKind}`,
-          text: `Session step: ${stepKind}`,
-        });
-        if (Array.isArray(content.read_replay_lines) && content.read_replay_lines.length > 0) {
-          block.events.push({ kind: "assistant_text", text: content.read_replay_lines.join("\n") });
-        }
-        if (completion) block.completion = completion;
-        block.status = deriveToolStatus(block);
-        break;
-      }
-    }
-  }
-}
-
-function normalizePreview(text: string | undefined): string {
-  if (!text) return "Untitled conversation";
-  const singleLine = text.replace(/\s+/g, " ").trim();
-  if (singleLine.length === 0) return "Untitled conversation";
-  return singleLine.length > 80 ? `${singleLine.slice(0, 77)}...` : singleLine;
-}
-
-function normalizeEpochMs(raw: number | string | undefined): number {
-  const numeric = typeof raw === "string" ? Number(raw) : raw;
-  if (!Number.isFinite(numeric) || !numeric || numeric <= 0) return 0;
-  // Some provenance reads surface nanoseconds; convert to milliseconds for UI dates.
-  if (numeric > 10_000_000_000_000) return Math.floor(numeric / 1_000_000);
-  return numeric;
 }
 
 function tryApplyStructuredMessage(msg: ChatMessage, wire: A2aMessage): boolean {
@@ -857,6 +439,9 @@ export function useA2aClient() {
       ensureConversationHistoryStream();
     }
 
+    // Track whether this chunk implies new provenance/planning material.
+    let sawProvenanceMutation = false;
+
     // Shape: toolStreamChunk chunks split into two kinds.
     // - Phase (status): toolStreamChunk true, no tool payload — statusUpdate.status_update.status.message only (e.g. "Calling model: unknown (PhaseName)", "Invoking tool: X"). One block per "segment" (new segment after each message).
     // - Tool: toolStreamChunk true, has tool payload — toolName and/or events and/or completion. One block per tool invocation (new block when previous for same tool is DONE).
@@ -891,13 +476,14 @@ export function useA2aClient() {
         : undefined);
     if (toolChunk && (!!toolName || toolEvents.length > 0 || !!toolCompletion)) {
       const baseName = toolName ?? "tool";
-      const events = toolEvents;
+      const events = withSessionStepDetailEvents(toolEvents);
       const completion = toolCompletion;
+      const appendMode = detectToolAppendMode(events, completion);
 
       updateMessage(messages, agentMsgId, (msg) => {
         ensureContentBlocks(msg);
-        const block = getOrCreateToolBlockForAppend(msg, baseName, completion);
-        if (events.length) block.events.push(...events);
+        const block = getOrCreateToolBlockForAppend(msg, baseName, appendMode);
+        if (events.length) pushToolEventsDeduped(block, events);
         if (completion) block.completion = completion;
         block.status = deriveToolStatus(block);
       });
@@ -905,8 +491,10 @@ export function useA2aClient() {
         markWorkflowNodeCompleted(baseName);
         scheduleTraceRefreshBump();
       }
+      sawProvenanceMutation = true;
     } else if (result.toolStreamChunk && toolChunk) {
-      // Phase chunk: toolStreamChunk true but no tool payload — statusUpdate.message only
+      // Phase chunk: toolStreamChunk true but no tool payload — statusUpdate.message only.
+      // Keep workflow state in the header and avoid duplicating phase chatter in chat bubbles.
       const statusText =
         extractTextFromStatusUpdate(chunk) ??
         extractText(chunk.statusUpdate?.status?.message) ??
@@ -914,15 +502,10 @@ export function useA2aClient() {
           (chunk.statusUpdate?.statusUpdate ?? chunk.statusUpdate?.status_update)?.message,
         );
       const trimmed = statusText?.trim();
-      // Skip "Invoking tool: X" in the phase block — the tool has its own block; keeps order correct (phase after tool)
+      // Skip "Invoking tool: X" in phase text — tool cards already render invocation details.
       if (trimmed && !trimmed.match(/^Invoking tool: /)) {
         updateWorkflowPhase(trimmed);
-        updateMessage(messages, agentMsgId, (msg) => {
-          ensureContentBlocks(msg);
-          const block = getOrCreatePhaseBlockForAppend(msg);
-          block.events.push({ kind: "system_notice", subtype: trimmed, text: trimmed });
-          block.status = deriveToolStatus(block);
-        });
+        sawProvenanceMutation = true;
       }
     } else {
       // Structured multi-part assistant messages (text + media_type/data + metadata.citations)
@@ -948,13 +531,25 @@ export function useA2aClient() {
           extractTextFromStatusUpdate(chunk);
 
         if (text) {
-          updateMessage(messages, agentMsgId, (msg) => {
-            if (msg.contentBlocks) {
-              pushTextBlock(msg, text);
-            } else {
-              msg.text = msg.text ? `${msg.text}\n\n${text}` : text;
-            }
-          });
+          const trimmed = text.trim();
+          if (trimmed && isWorkflowStatusText(trimmed)) {
+            updateWorkflowPhase(trimmed);
+            sawProvenanceMutation = true;
+          } else if (trimmed && parseExecutionErrorText(trimmed)) {
+            updateMessage(messages, agentMsgId, (msg) => {
+              appendExecutionErrorCard(msg, text);
+            });
+            sawProvenanceMutation = true;
+          } else {
+            updateMessage(messages, agentMsgId, (msg) => {
+              if (msg.contentBlocks) {
+                pushTextBlock(msg, text);
+              } else {
+                msg.text = msg.text ? `${msg.text}\n\n${text}` : text;
+              }
+            });
+            sawProvenanceMutation = true;
+          }
         }
       }
     }
@@ -965,6 +560,7 @@ export function useA2aClient() {
     if (state && state !== lastSeenTaskState) {
       lastSeenTaskState = state;
       scheduleTraceRefreshBump();
+      sawProvenanceMutation = true;
     }
 
     // Record state transitions for the task timeline
@@ -980,6 +576,12 @@ export function useA2aClient() {
     }
 
     if (result.final) {
+      scheduleTraceRefreshBump();
+      sawProvenanceMutation = true;
+    }
+
+    // Keep planning/provenance panes live while tool chunks are flowing, not only on restore.
+    if (_contextId.value && (sawProvenanceMutation || result.toolStreamChunk)) {
       scheduleTraceRefreshBump();
     }
 

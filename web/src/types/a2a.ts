@@ -67,6 +67,32 @@ export interface ConversationHistoryItem {
   content: ConversationHistoryContent;
 }
 
+export type SessionStepOp =
+  | { kind: "open" }
+  | {
+      kind: "send_done";
+      archive_ref: string;
+      header: string;
+      informed_by: string;
+    }
+  | {
+      kind: "search_read";
+      archive_ref: string;
+      grep: string;
+      offset: number;
+      limit: number;
+    }
+  | {
+      kind: "page_read";
+      archive_ref: string;
+      offset: number;
+      limit: number;
+    }
+  | {
+      kind: string;
+      [key: string]: unknown;
+    };
+
 export interface ConversationHistoryOption {
   contextId: string;
   latestTimestampMs: number;
@@ -85,7 +111,7 @@ export type ConversationHistoryContent =
   | {
       type: "session_step";
       tool_name: string;
-      op: { kind: string };
+      op: SessionStepOp;
       send_done_replay_payload?: unknown;
       read_replay_lines?: string[];
     };
