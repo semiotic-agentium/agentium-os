@@ -10,9 +10,8 @@ use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, ClassifiedToolError, ErrorDisposition, Result};
 use serde_json::Value;
 
-use crate::ToolName;
-
 use super::protocol::{ErrorClass, JsonRpcError, ToolDescribeResult};
+use crate::ToolName;
 
 /// Runner-side request for `tool/invoke`.
 #[derive(Debug, Clone)]
@@ -40,6 +39,7 @@ pub struct ToolDescribe {
     pub supported_methods: Vec<String>,
     pub max_payload_bytes: Option<u64>,
     pub schema_hash: Option<String>,
+    pub capabilities: Option<Value>,
 }
 
 impl From<ToolDescribeResult> for ToolDescribe {
@@ -50,6 +50,7 @@ impl From<ToolDescribeResult> for ToolDescribe {
             supported_methods: r.supported_methods,
             max_payload_bytes: r.max_payload_bytes,
             schema_hash: r.schema_hash,
+            capabilities: r.capabilities,
         }
     }
 }
@@ -85,13 +86,17 @@ pub fn map_jsonrpc_error(tool: &ToolName, err: &JsonRpcError) -> BamlRtError {
         ErrorClass::Execution => ErrorDisposition::InformAndContinue,
     };
 
-    let code = format!("external_{}_{}", tool, match class {
-        ErrorClass::Configuration => "configuration",
-        ErrorClass::InvalidArgument => "invalid_argument",
-        ErrorClass::Transient => "transient",
-        ErrorClass::Permission => "permission",
-        ErrorClass::Execution => "execution",
-    });
+    let code = format!(
+        "external_{}_{}",
+        tool,
+        match class {
+            ErrorClass::Configuration => "configuration",
+            ErrorClass::InvalidArgument => "invalid_argument",
+            ErrorClass::Transient => "transient",
+            ErrorClass::Permission => "permission",
+            ErrorClass::Execution => "execution",
+        }
+    );
 
     let retry_after_ms = err
         .data

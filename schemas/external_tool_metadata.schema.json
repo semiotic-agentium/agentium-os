@@ -55,6 +55,12 @@
       "description": "How the tool is invoked.",
       "enum": ["single_shot"]
     },
+    "session_policy": {
+      "type": "string",
+      "description": "Planner/session policy for repeated send/read behavior. Omitted defaults to strict.",
+      "enum": ["strict", "multi_send"],
+      "default": "strict"
+    },
     "idempotency": {
       "type": "object",
       "description": "Idempotency declarations per operation.",

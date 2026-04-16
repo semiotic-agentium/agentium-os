@@ -57,7 +57,7 @@ pub struct JsonRpcError {
 }
 
 /// Machine-readable error class carried in `error.data.error_class`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorClass {
     /// Tool misconfigured (e.g. missing/invalid API key).
@@ -69,13 +69,8 @@ pub enum ErrorClass {
     /// Authorization/permission denied.
     Permission,
     /// Generic execution failure (default when class is absent/unknown).
+    #[default]
     Execution,
-}
-
-impl Default for ErrorClass {
-    fn default() -> Self {
-        ErrorClass::Execution
-    }
 }
 
 /// Result payload returned from `tool/describe`.
@@ -89,6 +84,8 @@ pub struct ToolDescribeResult {
     pub max_payload_bytes: Option<u64>,
     #[serde(default)]
     pub schema_hash: Option<String>,
+    #[serde(default)]
+    pub capabilities: Option<Value>,
 }
 
 /// Params for `tool/invoke`.

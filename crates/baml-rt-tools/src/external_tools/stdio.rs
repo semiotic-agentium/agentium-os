@@ -24,14 +24,13 @@ use tokio::{
 };
 use tracing::{debug, warn};
 
-use crate::ToolName;
-
 use super::{
     invoker::{ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, map_jsonrpc_error},
     protocol::{
         JsonRpcRequest, JsonRpcResponse, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult,
     },
 };
+use crate::ToolName;
 
 /// V1 default invoker: spawn subprocess per call, talk JSON-RPC over stdio.
 pub struct StdioSubprocessInvoker {
@@ -89,29 +88,30 @@ impl StdioSubprocessInvoker {
             cmd.current_dir(dir);
         }
 
-        let mut child = cmd.spawn().map_err(|e| {
-            BamlRtError::InvalidArgumentWithSource {
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| BamlRtError::InvalidArgumentWithSource {
                 message: format!(
                     "failed to spawn external tool: {}",
                     self.executable.display()
                 ),
                 source: Box::new(e),
-            }
-        })?;
+            })?;
 
-        let frame = serde_json::to_vec(request).map_err(|e| {
-            BamlRtError::InvalidArgumentWithSource {
+        let frame =
+            serde_json::to_vec(request).map_err(|e| BamlRtError::InvalidArgumentWithSource {
                 message: "failed to serialize JSON-RPC request".into(),
                 source: Box::new(e),
-            }
-        })?;
+            })?;
 
-        let mut stdin = child.stdin.take().ok_or_else(|| {
-            BamlRtError::InvalidArgument("child has no stdin".into())
-        })?;
-        let mut stdout = child.stdout.take().ok_or_else(|| {
-            BamlRtError::InvalidArgument("child has no stdout".into())
-        })?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| BamlRtError::InvalidArgument("child has no stdin".into()))?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| BamlRtError::InvalidArgument("child has no stdout".into()))?;
         let stderr_opt = child.stderr.take();
 
         let interaction = async move {
@@ -213,12 +213,11 @@ impl ExternalInvoker for StdioSubprocessInvoker {
             secrets: req.secrets,
             capabilities: req.capabilities,
         };
-        let params_value = serde_json::to_value(&params).map_err(|e| {
-            BamlRtError::InvalidArgumentWithSource {
+        let params_value =
+            serde_json::to_value(&params).map_err(|e| BamlRtError::InvalidArgumentWithSource {
                 message: "failed to serialize tool/invoke params".into(),
                 source: Box::new(e),
-            }
-        })?;
+            })?;
         let request = JsonRpcRequest::new("tool/invoke", self.next_request_id(), params_value);
         let response = self.call_once(&request, req.timeout).await?;
 
@@ -228,12 +227,13 @@ impl ExternalInvoker for StdioSubprocessInvoker {
         let result_value = response.result.ok_or_else(|| {
             BamlRtError::InvalidArgument("tool/invoke: missing result field".into())
         })?;
-        let invoke_result: ToolInvokeResult = serde_json::from_value(result_value).map_err(
-            |e| BamlRtError::InvalidArgumentWithSource {
-                message: "tool/invoke: result did not match schema".into(),
-                source: Box::new(e),
-            },
-        )?;
+        let invoke_result: ToolInvokeResult =
+            serde_json::from_value(result_value).map_err(|e| {
+                BamlRtError::InvalidArgumentWithSource {
+                    message: "tool/invoke: result did not match schema".into(),
+                    source: Box::new(e),
+                }
+            })?;
         Ok(InvokeResponse {
             output: invoke_result.output,
             done: invoke_result.done,

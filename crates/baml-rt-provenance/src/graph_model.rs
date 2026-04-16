@@ -122,10 +122,11 @@ pub enum EventGraphKind {
     MessageReceived,
     MessageSent,
     ToolSessionStep,
+    ExternalToolLifecycle,
     CallbackDispatchContextsLinked,
 }
 
-pub const ALL_EVENT_KINDS: [EventGraphKind; 19] = [
+pub const ALL_EVENT_KINDS: [EventGraphKind; 20] = [
     EventGraphKind::IntentResolved,
     EventGraphKind::PlanGenerated,
     EventGraphKind::PlanStepStatusChanged,
@@ -144,6 +145,7 @@ pub const ALL_EVENT_KINDS: [EventGraphKind; 19] = [
     EventGraphKind::MessageReceived,
     EventGraphKind::MessageSent,
     EventGraphKind::ToolSessionStep,
+    EventGraphKind::ExternalToolLifecycle,
     EventGraphKind::CallbackDispatchContextsLinked,
 ];
 
@@ -310,6 +312,13 @@ const MAPPING_MESSAGE_SENT: EventGraphMapping = EventGraphMapping {
     required_properties: &[a2a::MESSAGE_ID, a2a::ROLE, a2a::CONTENT, a2a::DIRECTION],
 };
 
+const MAPPING_EXTERNAL_TOOL_LIFECYCLE: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::ExternalToolLifecycle,
+    primary_node: GraphNodeLabel::ToolCall,
+    expected_edges: &[],
+    required_properties: &[a2a::TOOL_NAME],
+};
+
 const MAPPING_CALLBACK_DISPATCH_CONTEXTS_LINKED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::CallbackDispatchContextsLinked,
     primary_node: GraphNodeLabel::Task,
@@ -337,6 +346,7 @@ pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
         ProvEventData::MessageReceived { .. } => EventGraphKind::MessageReceived,
         ProvEventData::MessageSent { .. } => EventGraphKind::MessageSent,
         ProvEventData::ToolSessionStep { .. } => EventGraphKind::ToolSessionStep,
+        ProvEventData::ExternalToolLifecycle { .. } => EventGraphKind::ExternalToolLifecycle,
         ProvEventData::CallbackDispatchContextsLinked { .. } => {
             EventGraphKind::CallbackDispatchContextsLinked
         }
@@ -363,6 +373,7 @@ pub fn mapping_for_event_kind(kind: EventGraphKind) -> &'static EventGraphMappin
         EventGraphKind::MessageReceived => &MAPPING_MESSAGE_RECEIVED,
         EventGraphKind::MessageSent => &MAPPING_MESSAGE_SENT,
         EventGraphKind::ToolSessionStep => &MAPPING_TOOL_SESSION_STEP,
+        EventGraphKind::ExternalToolLifecycle => &MAPPING_EXTERNAL_TOOL_LIFECYCLE,
         EventGraphKind::CallbackDispatchContextsLinked => {
             &MAPPING_CALLBACK_DISPATCH_CONTEXTS_LINKED
         }

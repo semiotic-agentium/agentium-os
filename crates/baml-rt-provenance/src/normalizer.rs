@@ -2221,6 +2221,10 @@ fn normalize_event_with_registry(
                 }
             }
         }
+        ProvEventData::ExternalToolLifecycle { .. } => {
+            // Lifecycle events are currently query-first (event stream / ops queries).
+            // They intentionally do not participate in graph entity construction yet.
+        }
         ProvEventData::CallbackDispatchContextsLinked {
             scheduling_context_id,
             scheduling_task_id,

@@ -553,6 +553,14 @@ pub enum ProvEventData {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         informed_by_tool_activity_anchor: Option<String>,
     },
+    /// Operational lifecycle events for external tools (describe/artifact/quarantine transitions).
+    /// Stored as first-class provenance events for query/audit without log forensics.
+    ExternalToolLifecycle {
+        tool_name: String,
+        phase: String,
+        result: String,
+        details: JsonValue,
+    },
     AgentBooted {
         agent_id: AgentId,
         agent_type: AgentType,
@@ -1263,6 +1271,26 @@ impl ProvEvent {
                 offset,
                 limit,
                 informed_by_tool_activity_anchor: informed_by,
+            },
+        })
+    }
+
+    pub fn external_tool_lifecycle(
+        context_id: ContextId,
+        tool_name: String,
+        phase: String,
+        result: String,
+        details: JsonValue,
+    ) -> Self {
+        ProvEvent::Global(GlobalEvent {
+            id: next_activity_anchor_id(),
+            context_id,
+            timestamp_ms: now_millis(),
+            data: ProvEventData::ExternalToolLifecycle {
+                tool_name,
+                phase,
+                result,
+                details,
             },
         })
     }

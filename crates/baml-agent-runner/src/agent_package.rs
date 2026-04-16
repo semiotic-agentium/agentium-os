@@ -12,15 +12,18 @@ use std::{
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentDiscoveryEntry, AgentInstanceId, AgentLister,
-    AgentManifest, AgentPackageName, BamlRtError, DeploymentContentHash, Result, bus::BusStream,
-    context::InvocationScope, ids::AgentId,
+    AgentManifest, AgentPackageName, BamlRtError, DeploymentContentHash, Result,
+    bus::BusStream,
+    context::{InvocationScope, generate_context_id},
+    ids::AgentId,
 };
 use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
 use baml_rt_tools::{
     BundleRegistrar, ExternalToolResolver, ManifestToolNames, ToolAccessPolicy, ToolRegistry,
-    external_tools::DevModeResolver, register_manifest_tools_with_fallback,
+    external_tools::{DevModeResolver, ExternalLifecycleEvent, ExternalLifecycleRecorder},
+    register_manifest_tools_with_fallback,
 };
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_system::SystemBundle;
@@ -81,7 +84,7 @@ impl AgentPackage {
         policy: &ToolAccessPolicy,
         agent_list_catalogue: Arc<dyn AgentLister>,
         a2a_handler: Arc<dyn A2aRequestHandler>,
-        provenance_query: Arc<dyn baml_rt_provenance::ProvenanceOpsQuery>,
+        provenance_store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
         claude_workspaces_base: Option<&std::path::Path>,
     ) -> Result<ToolsRegistered> {
         let mut runtime_manager = loaded.runtime_manager;
@@ -114,7 +117,7 @@ impl AgentPackage {
                 agent_list_catalogue,
                 tool_registry: tool_registry.clone(),
                 a2a_handler,
-                provenance_query,
+                provenance_query: provenance_store.clone(),
             }),
             Box::new(ClaudeBundleRegistrar {
                 workspace_root: claude_workspace_root,
@@ -137,7 +140,9 @@ impl AgentPackage {
         // Each colon-separated entry is a tool package dir containing
         // tool-metadata.json + tool-server binary. Production (Phase 2) uses
         // the digest-pinned lockfile resolver instead.
-        let external_resolver = build_dev_mode_resolver()?;
+        let lifecycle_writer: Arc<dyn ProvenanceWriter> = provenance_store.clone();
+        let lifecycle_recorder = build_external_lifecycle_recorder(lifecycle_writer);
+        let external_resolver = build_dev_mode_resolver(Some(lifecycle_recorder)).await?;
 
         register_manifest_tools_with_fallback(
             runtime_manager.tool_registry().as_ref(),
@@ -436,11 +441,102 @@ impl AgentLister for SnapshotAgentLister {
 // External tool resolver (dev mode).
 // ---------------------------------------------------------------------------
 
+fn build_external_lifecycle_recorder(
+    writer: Arc<dyn ProvenanceWriter>,
+) -> ExternalLifecycleRecorder {
+    Arc::new(move |event| {
+        let writer = writer.clone();
+        tokio::spawn(async move {
+            let (tool_name, phase, result, details) = match event {
+                ExternalLifecycleEvent::Describe {
+                    tool_name,
+                    identity,
+                    protocol_version,
+                    latency_ms,
+                    result,
+                    details,
+                } => (
+                    tool_name,
+                    "describe".to_string(),
+                    result,
+                    serde_json::json!({
+                        "identity": identity,
+                        "protocol_version": protocol_version,
+                        "latency_ms": latency_ms,
+                        "details": details,
+                    }),
+                ),
+                ExternalLifecycleEvent::Artifact {
+                    tool_name,
+                    artifact_ref,
+                    digest,
+                    signer,
+                    verification_result,
+                    pull_latency_ms,
+                    details,
+                } => (
+                    tool_name,
+                    "artifact".to_string(),
+                    verification_result,
+                    serde_json::json!({
+                        "artifact_ref": artifact_ref,
+                        "digest": digest,
+                        "signer": signer,
+                        "pull_latency_ms": pull_latency_ms,
+                        "details": details,
+                    }),
+                ),
+                ExternalLifecycleEvent::Quarantine {
+                    tool_name,
+                    reason,
+                    consecutive_failures,
+                    started_at_ms,
+                } => (
+                    tool_name,
+                    "quarantine".to_string(),
+                    "started".to_string(),
+                    serde_json::json!({
+                        "reason": reason,
+                        "consecutive_failures": consecutive_failures,
+                        "started_at_ms": started_at_ms,
+                    }),
+                ),
+                ExternalLifecycleEvent::QuarantineLifted {
+                    tool_name,
+                    lifted_by,
+                    lifted_at_ms,
+                } => (
+                    tool_name,
+                    "quarantine".to_string(),
+                    "lifted".to_string(),
+                    serde_json::json!({
+                        "lifted_by": lifted_by,
+                        "lifted_at_ms": lifted_at_ms,
+                    }),
+                ),
+            };
+
+            let event = ProvEvent::external_tool_lifecycle(
+                generate_context_id(),
+                tool_name,
+                phase,
+                result,
+                details,
+            );
+            if let Err(e) = writer.add_event(event).await {
+                tracing::warn!(error = ?e, "failed to record external tool lifecycle provenance event");
+            }
+        });
+    })
+}
+
 /// Build a [`DevModeResolver`] from the `BAML_EXTERNAL_TOOLS_DIR` env var, if set.
 ///
 /// Value is a colon-separated list of tool package directories. Returns `None`
 /// when the env var is absent or empty, meaning "no external tools in dev mode".
-fn build_dev_mode_resolver() -> Result<Option<Box<dyn ExternalToolResolver>>> {
+async fn build_dev_mode_resolver(
+    lifecycle_recorder: Option<ExternalLifecycleRecorder>,
+) -> Result<Option<Box<dyn ExternalToolResolver>>> {
     let raw = match std::env::var("BAML_EXTERNAL_TOOLS_DIR") {
         Ok(v) if !v.trim().is_empty() => v,
         _ => return Ok(None),
@@ -453,8 +549,11 @@ fn build_dev_mode_resolver() -> Result<Option<Box<dyn ExternalToolResolver>>> {
     if dirs.is_empty() {
         return Ok(None);
     }
-    info!(count = dirs.len(), "Loading external tools from BAML_EXTERNAL_TOOLS_DIR");
-    let resolver = DevModeResolver::from_dirs(&dirs)?;
+    info!(
+        count = dirs.len(),
+        "Loading external tools from BAML_EXTERNAL_TOOLS_DIR"
+    );
+    let resolver = DevModeResolver::from_dirs_with_lifecycle(&dirs, lifecycle_recorder).await?;
     Ok(Some(Box::new(resolver)))
 }
 

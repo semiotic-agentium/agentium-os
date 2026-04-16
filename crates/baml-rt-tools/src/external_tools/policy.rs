@@ -118,13 +118,11 @@ impl InvocationPolicy {
                 });
             }
         }
-        self.semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| PolicyError::ConcurrencyExhausted {
+        self.semaphore.clone().acquire_owned().await.map_err(|_| {
+            PolicyError::ConcurrencyExhausted {
                 tool: self.tool_name.clone(),
-            })
+            }
+        })
     }
 
     /// Record a successful invocation. Resets failure counters.
@@ -231,7 +229,7 @@ mod tests {
             },
         );
         policy.record_failure("boom").await;
-        let err = policy.acquire().await.err().expect("must fail closed");
+        let err = policy.acquire().await.expect_err("must fail closed");
         assert!(matches!(err, PolicyError::Quarantined { .. }));
     }
 
