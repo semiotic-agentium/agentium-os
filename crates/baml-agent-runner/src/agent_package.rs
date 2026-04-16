@@ -19,7 +19,8 @@ use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
 use baml_rt_tools::{
-    BundleRegistrar, ManifestToolNames, ToolAccessPolicy, ToolRegistry, register_manifest_tools,
+    BundleRegistrar, ExternalToolResolver, ManifestToolNames, ToolAccessPolicy, ToolRegistry,
+    external_tools::DevModeResolver, register_manifest_tools_with_fallback,
 };
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_system::SystemBundle;
@@ -132,10 +133,17 @@ impl AgentPackage {
             }
         }
 
-        register_manifest_tools(
+        // Dev-mode external tools: BAML_EXTERNAL_TOOLS_DIR=/path/to/tool_a:/path/to/tool_b
+        // Each colon-separated entry is a tool package dir containing
+        // tool-metadata.json + tool-server binary. Production (Phase 2) uses
+        // the digest-pinned lockfile resolver instead.
+        let external_resolver = build_dev_mode_resolver()?;
+
+        register_manifest_tools_with_fallback(
             runtime_manager.tool_registry().as_ref(),
             &manifest_tool_names,
             policy,
+            external_resolver.as_deref(),
         )?;
         runtime_manager.rebuild_function_tool_manifest();
         runtime_manager
@@ -422,6 +430,32 @@ impl AgentLister for SnapshotAgentLister {
     fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
         self.entries.clone()
     }
+}
+
+// ---------------------------------------------------------------------------
+// External tool resolver (dev mode).
+// ---------------------------------------------------------------------------
+
+/// Build a [`DevModeResolver`] from the `BAML_EXTERNAL_TOOLS_DIR` env var, if set.
+///
+/// Value is a colon-separated list of tool package directories. Returns `None`
+/// when the env var is absent or empty, meaning "no external tools in dev mode".
+fn build_dev_mode_resolver() -> Result<Option<Box<dyn ExternalToolResolver>>> {
+    let raw = match std::env::var("BAML_EXTERNAL_TOOLS_DIR") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return Ok(None),
+    };
+    let dirs: Vec<PathBuf> = raw
+        .split(':')
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    if dirs.is_empty() {
+        return Ok(None);
+    }
+    info!(count = dirs.len(), "Loading external tools from BAML_EXTERNAL_TOOLS_DIR");
+    let resolver = DevModeResolver::from_dirs(&dirs)?;
+    Ok(Some(Box::new(resolver)))
 }
 
 // ---------------------------------------------------------------------------

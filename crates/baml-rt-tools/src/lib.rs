@@ -13,6 +13,7 @@ pub mod bundles;
 pub mod citations;
 pub mod config_resolver;
 pub mod event_producer;
+pub mod external_tools;
 pub mod host_registration;
 pub mod ingress_store;
 mod metrics;
