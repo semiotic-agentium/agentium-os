@@ -1,6 +1,6 @@
 //! Cluster endpoint validation: blocks SSRF-dangerous targets.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 /// Validate that a raw URL string is safe for cluster-internal forwarding.
 ///
@@ -10,6 +10,7 @@ use std::net::IpAddr;
 /// - Unspecified addresses (0.0.0.0, ::)
 /// - Link-local / metadata addresses (169.254.0.0/16, fe80::/10)
 /// - Known cloud metadata hostnames
+/// - Cloud metadata IPs (169.254.169.254, 100.100.100.200, fd00:ec2::/32)
 pub fn validate_cluster_endpoint(raw: &str) -> Result<url::Url, String> {
     // Reject non-ASCII input before URL parsing to prevent IDNA normalization
     // bypasses (e.g. Unicode look-alikes that normalize to blocked hostnames).
@@ -61,38 +62,45 @@ pub fn validate_cluster_endpoint(raw: &str) -> Result<url::Url, String> {
 
 /// Async DNS-resolving variant: validates the URL (scheme, blocked hostnames,
 /// literal-IP ranges) and then resolves DNS names to check every resolved IP
-/// against the blocklist. This closes the DNS-rebinding gap where a hostname
-/// resolves to a private/metadata IP at request time.
-pub async fn resolve_and_validate_cluster_endpoint(raw: &str) -> Result<url::Url, String> {
+/// against the blocklist.
+///
+/// Returns the validated URL and the resolved socket addresses so callers can
+/// pin the HTTP client to the validated IPs (closing the DNS-rebinding TOCTOU gap).
+pub async fn resolve_and_validate_cluster_endpoint(
+    raw: &str,
+) -> Result<(url::Url, Vec<SocketAddr>), String> {
     let parsed = validate_cluster_endpoint(raw)?;
+
+    let host = parsed.host_str().unwrap_or("");
+    let port = parsed.port_or_known_default().unwrap_or(80);
 
     // Literal IPs are already checked by validate_cluster_endpoint.
     // DNS names need resolution + IP check.
     match parsed.host() {
-        Some(url::Host::Ipv4(_) | url::Host::Ipv6(_)) => {}
+        Some(url::Host::Ipv4(v4)) => {
+            let addr = SocketAddr::new(IpAddr::V4(v4), port);
+            Ok((parsed, vec![addr]))
+        }
+        Some(url::Host::Ipv6(v6)) => {
+            let addr = SocketAddr::new(IpAddr::V6(v6), port);
+            Ok((parsed, vec![addr]))
+        }
         _ => {
-            let host = parsed.host_str().unwrap_or("");
-            let port = parsed.port_or_known_default().unwrap_or(80);
-            let addr = format!("{host}:{port}");
-            let resolved = tokio::net::lookup_host(&addr)
+            let lookup = format!("{host}:{port}");
+            let resolved = tokio::net::lookup_host(&lookup)
                 .await
                 .map_err(|e| format!("DNS resolution failed for '{host}': {e}"))?;
-            let ips: Vec<_> = resolved.collect();
+            let ips: Vec<SocketAddr> = resolved.collect();
             if ips.is_empty() {
                 return Err(format!("DNS resolution returned no addresses for '{host}'"));
             }
             for sock_addr in &ips {
                 reject_dangerous_ip(sock_addr.ip(), host)?;
             }
+            Ok((parsed, ips))
         }
     }
-
-    Ok(parsed)
 }
-
-/// AWS IPv6 IMDS endpoint (fd00:ec2::254) — not caught by link-local checks.
-const AWS_IPV6_IMDS: std::net::Ipv6Addr =
-    std::net::Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254);
 
 fn reject_dangerous_ip(ip: IpAddr, host: &str) -> Result<(), String> {
     if ip.is_loopback() {
@@ -106,7 +114,7 @@ fn reject_dangerous_ip(ip: IpAddr, host: &str) -> Result<(), String> {
             "endpoint host '{host}' is a link-local or metadata address"
         ));
     }
-    if ip == IpAddr::V6(AWS_IPV6_IMDS) {
+    if is_cloud_metadata_ip(ip) {
         return Err(format!(
             "endpoint host '{host}' is a cloud metadata address"
         ));
@@ -125,6 +133,21 @@ fn is_link_local_or_metadata(ip: IpAddr) -> bool {
             let segments = v6.segments();
             // fe80::/10 — IPv6 link-local
             segments[0] & 0xffc0 == 0xfe80
+        }
+    }
+}
+
+fn is_cloud_metadata_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            // Alibaba Cloud metadata: 100.100.100.200
+            octets == [100, 100, 100, 200]
+        }
+        IpAddr::V6(v6) => {
+            let segments = v6.segments();
+            // AWS IPv6 IMDS: fd00:ec2::/32 prefix (covers fd00:ec2::254 and the full range)
+            segments[0] == 0xfd00 && segments[1] == 0x0ec2
         }
     }
 }
@@ -247,11 +270,37 @@ mod tests {
     }
 
     #[test]
-    fn rejects_aws_ipv6_imds() {
+    fn rejects_aws_ipv6_imds_exact() {
         let err = validate_cluster_endpoint("http://[fd00:ec2::254]/latest/meta-data").unwrap_err();
         assert!(
             err.contains("cloud metadata"),
             "error should mention cloud metadata: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_aws_ipv6_imds_prefix() {
+        let err = validate_cluster_endpoint("http://[fd00:ec2::1]:18080").unwrap_err();
+        assert!(
+            err.contains("cloud metadata"),
+            "fd00:ec2::/32 prefix should be blocked: {err}"
+        );
+    }
+
+    #[test]
+    fn allows_different_ipv6_ula_prefix() {
+        assert!(
+            validate_cluster_endpoint("http://[fd00:ec3::1]:18080").is_ok(),
+            "fd00:ec3:: is not in the fd00:ec2::/32 range and must be allowed"
+        );
+    }
+
+    #[test]
+    fn rejects_alibaba_metadata_ip() {
+        let err = validate_cluster_endpoint("http://100.100.100.200:18080").unwrap_err();
+        assert!(
+            err.contains("cloud metadata"),
+            "Alibaba Cloud metadata IP should be blocked: {err}"
         );
     }
 
@@ -314,8 +363,6 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_rejects_localhost_dns() {
-        // "localhost" resolves to 127.0.0.1 — the hostname blocklist catches it
-        // before DNS resolution, but even if it didn't, the IP check would.
         let err = resolve_and_validate_cluster_endpoint("http://localhost:18080")
             .await
             .unwrap_err();
@@ -327,9 +374,11 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_accepts_literal_ip() {
-        // Public IP should pass both sync and async validation.
-        let url = resolve_and_validate_cluster_endpoint("http://8.8.8.8:18080").await;
-        assert!(url.is_ok(), "expected Ok, got {url:?}");
+        let result = resolve_and_validate_cluster_endpoint("http://8.8.8.8:18080").await;
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        let (_url, addrs) = result.unwrap();
+        assert!(!addrs.is_empty(), "resolved addresses should be non-empty");
+        assert_eq!(addrs[0].ip(), "8.8.8.8".parse::<IpAddr>().unwrap());
     }
 
     #[test]

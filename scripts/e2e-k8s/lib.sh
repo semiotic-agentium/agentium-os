@@ -137,7 +137,7 @@ undeploy_package() {
   local agents
   agents=$(curl -sf "http://localhost:${port}/agents" 2>/dev/null || echo "[]")
   local hash
-  hash=$(echo "$agents" | jq -r ".[] | select(.agent_package == \"${pkg}\") | .content_hash // empty" 2>/dev/null | head -1)
+  hash=$(echo "$agents" | jq -r ".[] | select(.agent_package == \"${pkg}\") | .agent_card.content_hash // empty" 2>/dev/null | head -1)
   if [[ -n "$hash" ]]; then
     undeploy_hash "$hash" "$port" "$token"
   fi
@@ -231,7 +231,7 @@ a2a_sse_request() {
     -H "Accept: text/event-stream" \
     -H "Content-Type: application/json" \
     -d "$body" \
-    "http://localhost:${port}/agents/${pkg}/default/a2a/sse" 2>/dev/null
+    "http://localhost:${port}/agents/${pkg}/default/a2a" 2>/dev/null
 }
 
 # jsonrpc_send_stream_with_context <text> <context_id>
@@ -258,7 +258,7 @@ a2a_sse_request_with_context() {
     -H "Accept: text/event-stream" \
     -H "Content-Type: application/json" \
     -d "$body" \
-    "http://localhost:${port}/agents/${pkg}/default/a2a/sse" 2>/dev/null
+    "http://localhost:${port}/agents/${pkg}/default/a2a" 2>/dev/null
 }
 
 # extract_context_id <sse_response>

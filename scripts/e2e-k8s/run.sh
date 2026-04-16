@@ -174,6 +174,9 @@ setup_cluster() {
   log_info "Injecting RUNNER_TOKEN into runner StatefulSet"
   kubectl -n "$NAMESPACE" set env statefulset/runner "RUNNER_TOKEN=${E2E_TOKEN}"
 
+  # Enable baml_rt_router debug logging so scenario 3 can verify DNS pinning.
+  kubectl -n "$NAMESPACE" set env statefulset/runner "RUST_LOG=info,baml_rt_router=debug"
+
   log_info "Mounting fnox.toml ConfigMap into runner StatefulSet"
   kubectl -n "$NAMESPACE" patch statefulset runner --type=json -p='[
     {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"fnox-config","configMap":{"name":"fnox-config","optional":true}}},
@@ -299,11 +302,19 @@ scenario_03_cross_pod_a2a() {
 
   # Check runner-0 logs for forwarding evidence
   local logs
-  logs=$(kubectl logs runner-0 -n "$NAMESPACE" --tail=100 2>/dev/null || true)
+  logs=$(kubectl logs runner-0 -n "$NAMESPACE" --tail=200 2>/dev/null || true)
   if echo "$logs" | grep -qi "runner-1\|forward\|placement"; then
     log_info "runner-0 logs show forwarding evidence"
   else
     log_warn "Could not find explicit forwarding evidence in runner-0 logs (non-fatal)"
+  fi
+
+  # Verify DNS pinning was applied (forward.rs tracing::debug! in forward_request).
+  if echo "$logs" | grep -qi "DNS-pinned addresses"; then
+    log_info "DNS pinning confirmed in runner-0 logs (resolve_to_addrs applied)"
+  else
+    log_fail "DNS pinning log absent from runner-0 logs — forward_request may be re-resolving DNS"
+    return 1
   fi
 
   # Clean up
@@ -375,6 +386,8 @@ scenario_05_ssrf_rejection() {
     "http://127.0.0.1:18080"
     "http://169.254.169.254"
     "http://metadata.google.internal"
+    "http://100.100.100.200:18080"    # Alibaba Cloud IMDS
+    "http://[fd00:ec2::1]:18080"       # AWS IPv6 IMDS /32 prefix (not just ::254)
   )
 
   for target in "${targets[@]}"; do
@@ -440,6 +453,20 @@ scenario_06_token_enforcement() {
     "http://localhost:${RUNNER0_PORT}/deploy")
   assert_eq "$code_ok" "200" "deploy with correct token" || return 1
   log_info "Correct token → 200"
+
+  # Verify the auth middleware also covers /control/migrate (same layer, other route).
+  local migrate_body='{"hash":"deadbeef","target_runner_endpoint":"http://runner-1.runner.agentium.svc:18080"}'
+  local code_mig_none
+  code_mig_none=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Content-Type: application/json" -d "$migrate_body" \
+    "http://localhost:${RUNNER0_PORT}/control/migrate")
+  assert_eq "$code_mig_none" "401" "migrate without token" || return 1
+  local code_mig_ok
+  code_mig_ok=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "Content-Type: application/json" -H "X-Runner-Token: ${E2E_TOKEN}" \
+    -d "$migrate_body" "http://localhost:${RUNNER0_PORT}/control/migrate")
+  assert_ne "$code_mig_ok" "401" "migrate with correct token (auth boundary only)" || return 1
+  log_info "/control/migrate auth enforced (no-token=401, token=${code_mig_ok})"
 
   # Clean up
   undeploy_hash "$hash" "$RUNNER0_PORT" "$E2E_TOKEN"
