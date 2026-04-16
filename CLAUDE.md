@@ -70,6 +70,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling
 - **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence
 - **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search
+- **baml-rt-router** — Cluster routing, SSRF validation, token auth, and cross-pod A2A forwarding
 - **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors
 
 **Derive macros**
@@ -97,7 +98,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 **Top-level binaries and facades**
 - **baml-rt** — Facade crate re-exporting subcrates via feature flags (default: all enabled)
 - **baml-rt-builder** — Agent build pipeline: BAML type generation, tar.gz packaging. Binary: `baml-agent-builder`
-- **baml-agent-runner** — A2A host (stdio and/or HTTP); embedded agent repository and deploy-by-hash. Add agents with `baml-agent-builder publish` or `POST /deploy`. Binary: `baml-agent-runner`
+- **baml-agent-runner** — A2A host (stdio and/or HTTP); embedded agent repository and deploy-by-hash. Binary: `baml-agent-runner`
 - **task-daemon** — Local polling daemon substrate for extracting actionable tasks from sources (Slack, etc.)
 
 **Test**
