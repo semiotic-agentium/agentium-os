@@ -143,7 +143,7 @@ impl baml_rt_api::ContextIndexService for ContextIndexServiceImpl {
         }
 
         let mut contexts = grouped.into_values().collect::<Vec<_>>();
-        contexts.sort_by(|a, b| b.latest_timestamp_ms.cmp(&a.latest_timestamp_ms));
+        contexts.sort_by_key(|ctx| std::cmp::Reverse(ctx.latest_timestamp_ms));
 
         if request.offset > contexts.len() {
             return Ok(baml_rt_api::ContextPickerPageDto {

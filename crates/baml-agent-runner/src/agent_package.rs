@@ -733,12 +733,7 @@ impl BundleRegistrar for MemoryBundleRegistrar {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-        path::Path,
-        sync::{Mutex, OnceLock},
-    };
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path, sync::OnceLock};
 
     use baml_rt_tools::external_tools::{ExternalToolLockEntry, ExternalToolsLockfile};
     use tempfile::tempdir;
@@ -748,9 +743,9 @@ mod tests {
         build_dev_mode_resolver,
     };
 
-    fn env_lock() -> &'static Mutex<()> {
-        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    fn env_lock() -> &'static tokio::sync::Mutex<()> {
+        static ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     fn set_env(key: &str, value: &str) {
@@ -801,7 +796,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_dev_mode_resolver_enforce_fails_when_lockfile_missing() {
-        let _guard = env_lock().lock().expect("lock env mutex");
+        let _guard = env_lock().lock().await;
 
         let temp = tempdir().expect("tempdir");
         let tool_dir = temp.path().join("tool");
@@ -830,7 +825,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_dev_mode_resolver_fails_with_entries_when_env_unset() {
-        let _guard = env_lock().lock().expect("lock env mutex");
+        let _guard = env_lock().lock().await;
 
         remove_env(BUILDER_EXTERNAL_TOOLS_ENV);
 
@@ -869,7 +864,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_dev_mode_resolver_permissive_continues_on_lockfile_parse_error() {
-        let _guard = env_lock().lock().expect("lock env mutex");
+        let _guard = env_lock().lock().await;
 
         let temp = tempdir().expect("tempdir");
         let tool_dir = temp.path().join("tool");

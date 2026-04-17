@@ -1641,13 +1641,6 @@ async fn undeploy_emits_agent_stopped_event() {
     // Poll lifecycle events endpoint for the AgentStopped event.
     let lifecycle_url = format!("{}/provenance/lifecycle-events", runner.base_url);
     let deadline = Instant::now() + Duration::from_secs(10);
-    // Seeded with placeholders so the panic-diagnostic below always has
-    // well-typed values even if the loop never reaches an assignment;
-    // the allow silences clippy about the placeholder being overwritten.
-    #[allow(unused_assignments)]
-    let mut last_body = Value::Null;
-    #[allow(unused_assignments)]
-    let mut last_status = StatusCode::OK;
     loop {
         let resp = client
             .get(&lifecycle_url)
@@ -1655,25 +1648,24 @@ async fn undeploy_emits_agent_stopped_event() {
             .await
             .expect("GET /provenance/lifecycle-events");
 
-        last_status = resp.status();
+        let status = resp.status();
         let body: Value = resp
             .json()
             .await
             .unwrap_or_else(|_| serde_json::json!({"error": "non-JSON response"}));
 
-        if last_status.is_success() {
-            if let Some(rows) = body.get("rows").and_then(Value::as_array) {
-                let has_stop = rows.iter().any(|row| {
-                    row.get("a2a_stop_reason")
-                        .and_then(Value::as_str)
-                        .is_some_and(|r| r == "undeploy")
-                });
-                if has_stop {
-                    return; // Success!
-                }
+        if status.is_success()
+            && let Some(rows) = body.get("rows").and_then(Value::as_array)
+        {
+            let has_stop = rows.iter().any(|row| {
+                row.get("a2a_stop_reason")
+                    .and_then(Value::as_str)
+                    .is_some_and(|r| r == "undeploy")
+            });
+            if has_stop {
+                return; // Success!
             }
         }
-        last_body = body;
 
         if Instant::now() >= deadline {
             // Dump runner log for diagnosis.
@@ -1690,7 +1682,7 @@ async fn undeploy_emits_agent_stopped_event() {
                 .collect();
             panic!(
                 "AgentStopped event with reason 'undeploy' not found within 10s.\n\
-                 Last response (status {last_status}): {last_body}\n\
+                 Last response (status {status}): {body}\n\
                  Relevant runner log lines:\n{}",
                 stop_lines.join("\n")
             );
