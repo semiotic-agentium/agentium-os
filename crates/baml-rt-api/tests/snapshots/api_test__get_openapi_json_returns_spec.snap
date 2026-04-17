@@ -1,6 +1,6 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
-assertion_line: 1200
+assertion_line: 1201
 expression: snapshot
 ---
 {
@@ -183,10 +183,18 @@ expression: snapshot
                 }
               }
             },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
             "503": {
               "description": "Config service not available"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/config/secrets-overview": {
@@ -210,10 +218,18 @@ expression: snapshot
                 }
               }
             },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
             "503": {
               "description": "Tool catalog not available"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/config/secrets/store-keys": {
@@ -236,8 +252,16 @@ expression: snapshot
                   }
                 }
               }
+            },
+            "401": {
+              "description": "Missing or invalid runner token"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/config/secrets/{name}": {
@@ -275,10 +299,18 @@ expression: snapshot
             "400": {
               "description": "Invalid name or link_from has no value in store"
             },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
             "501": {
               "description": "Runtime secret store not available (add keys to fnox and restart)"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         },
         "delete": {
           "tags": [
@@ -304,10 +336,18 @@ expression: snapshot
             "400": {
               "description": "Invalid name"
             },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
             "501": {
               "description": "Runtime secret store not available"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/config/{bundle_name}": {
@@ -339,13 +379,21 @@ expression: snapshot
                 }
               }
             },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
             "404": {
               "description": "Bundle not found or has no config schema"
             },
             "503": {
               "description": "Config service not available"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         },
         "put": {
           "tags": [
@@ -387,6 +435,9 @@ expression: snapshot
             "400": {
               "description": "Invalid config"
             },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
             "404": {
               "description": "Bundle not found"
             },
@@ -396,7 +447,12 @@ expression: snapshot
             "503": {
               "description": "Config service not available"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         },
         "delete": {
           "tags": [
@@ -419,13 +475,21 @@ expression: snapshot
             "204": {
               "description": "Config removed"
             },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
             "404": {
               "description": "Bundle not found"
             },
             "503": {
               "description": "Config service not available"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/config/{bundle_name}/versions": {
@@ -460,13 +524,21 @@ expression: snapshot
                 }
               }
             },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
             "404": {
               "description": "Bundle not found"
             },
             "503": {
               "description": "Config service not available"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/config/{bundle_name}/versions/{version}": {
@@ -509,13 +581,21 @@ expression: snapshot
                 }
               }
             },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
             "404": {
               "description": "Bundle or version not found"
             },
             "503": {
               "description": "Config service not available"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/config/{tool_name}/secret-requests": {
@@ -550,13 +630,21 @@ expression: snapshot
                 }
               }
             },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
             "404": {
               "description": "Tool not found"
             },
             "503": {
               "description": "Tool catalog not available"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/contexts": {
@@ -957,7 +1045,12 @@ expression: snapshot
             "502": {
               "description": "Target runner unreachable"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/deploy": {
@@ -1006,7 +1099,12 @@ expression: snapshot
             "501": {
               "description": "Deployment manager not configured"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/deployments": {
@@ -1039,7 +1137,12 @@ expression: snapshot
             "501": {
               "description": "Deployment manager not configured"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/provenance/aggregates": {
@@ -1331,7 +1434,12 @@ expression: snapshot
             "501": {
               "description": "Deployment manager not configured"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       }
     },
@@ -3043,6 +3151,13 @@ expression: snapshot
               "type": "boolean"
             }
           }
+        }
+      },
+      "securitySchemes": {
+        "RunnerToken": {
+          "type": "apiKey",
+          "in": "header",
+          "name": "X-Runner-Token"
         }
       }
     },

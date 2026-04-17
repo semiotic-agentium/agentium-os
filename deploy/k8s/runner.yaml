@@ -66,6 +66,12 @@ spec:
                 secretKeyRef:
                   name: surrealdb-credentials
                   key: password
+            - name: RUNNER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: runner-token
+                  key: token
+                  optional: true
           envFrom:
             - secretRef:
                 name: fnox-secrets

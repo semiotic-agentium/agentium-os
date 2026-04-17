@@ -29,6 +29,7 @@ use crate::{
 /// Shared state for all repository handlers.
 pub type RepoState = Arc<RepositoryService>;
 
+/// Get a repository entry by content hash (GET /repository/entries/{hash}).
 pub async fn get_by_hash(
     State(svc): State<RepoState>,
     Path(p): Path<GetByHashPath>,
@@ -41,6 +42,7 @@ pub async fn get_by_hash(
     }
 }
 
+/// List repository entries with optional name/version filter (GET /repository/entries).
 pub async fn get_entries(
     State(svc): State<RepoState>,
     Query(q): Query<EntriesQuery>,
@@ -71,6 +73,7 @@ pub async fn get_entries(
     Ok(Json(EntriesResponse { entries, total }))
 }
 
+/// Get a repository entry by agent name and version (GET /repository/entries/{name}/{version}).
 pub async fn get_by_version(
     State(svc): State<RepoState>,
     Path(p): Path<GetByVersionPath>,
@@ -90,11 +93,13 @@ pub async fn get_by_version(
     }
 }
 
+/// List agent names in the repository (GET /repository/agents).
 pub async fn list_agents(State(svc): State<RepoState>) -> HttpResult<ListAgentsResponse> {
     let agents = svc.list_agents().await.map_err(HttpApiProblem::from)?;
     Ok(Json(ListAgentsResponse { agents }))
 }
 
+/// List versions for an agent (GET /repository/agents/{name}/versions).
 pub async fn list_versions(
     State(svc): State<RepoState>,
     Path(p): Path<ListVersionsPath>,
@@ -115,6 +120,7 @@ pub async fn publish(
     Ok(Json(result))
 }
 
+/// Fork an existing entry to create a new lineage branch (POST /repository/fork, operator-authenticated).
 pub async fn fork(
     State(svc): State<RepoState>,
     Json(cmd): Json<ForkCommand>,
@@ -123,6 +129,7 @@ pub async fn fork(
     Ok(Json(result))
 }
 
+/// Search repository entries by metadata and content (POST /repository/search).
 pub async fn search(
     State(svc): State<RepoState>,
     Json(query): Json<SearchQuery>,
@@ -132,6 +139,7 @@ pub async fn search(
     Ok(Json(SearchResponse { results, total }))
 }
 
+/// Get lineage subgraph for an entry (GET /repository/lineage/{hash}).
 pub async fn get_lineage(
     State(svc): State<RepoState>,
     Path(p): Path<LineagePath>,
@@ -145,6 +153,7 @@ pub async fn get_lineage(
     Ok(Json(LineageResponse { subgraph }))
 }
 
+/// Add a tag to a repository entry (POST /repository/entries/{hash}/tags, operator-authenticated).
 pub async fn add_tag(
     State(svc): State<RepoState>,
     Path(p): Path<TagPath>,
@@ -157,6 +166,7 @@ pub async fn add_tag(
     Ok(Json(()))
 }
 
+/// Remove a tag from a repository entry (DELETE /repository/entries/{hash}/tags, operator-authenticated).
 pub async fn remove_tag(
     State(svc): State<RepoState>,
     Path(p): Path<TagPath>,
@@ -170,6 +180,7 @@ pub async fn remove_tag(
     Ok(Json(()))
 }
 
+/// Download the built artifact blob for an entry (GET /repository/blobs/{hash}).
 pub async fn get_blob(
     State(svc): State<RepoState>,
     Path(p): Path<BlobPath>,
