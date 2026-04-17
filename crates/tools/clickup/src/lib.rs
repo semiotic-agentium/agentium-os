@@ -13,6 +13,7 @@ use baml_rt_tools::{ClassifiedToolError, baml_tool, bundles::Support, tools::Bam
 pub use integrations_clickup_client::BASE_URL;
 use integrations_clickup_client::{ClickUpClient, ClickUpClientError};
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 
 fn option_is_empty(opt: &Option<String>) -> bool {
     opt.as_ref().is_none_or(|s| s.is_empty())
@@ -340,172 +341,182 @@ impl ClickUpTool {
     }
 
     async fn list_teams(&self, api_key: &str) -> Result<ClickUpOutput> {
-        let span = spans::list_teams();
-        let _guard = span.enter();
-        let json = self
-            .client
-            .send_json(self.client.get("/team", api_key))
-            .await
-            .map_err(ClickUpError::Client)?;
-        let raw: RawTeamList =
-            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
-                message: format!("unexpected teams response shape: {e}"),
-            })?;
+        async {
+            let json = self
+                .client
+                .send_json(self.client.get("/team", api_key))
+                .await
+                .map_err(ClickUpError::Client)?;
+            let raw: RawTeamList =
+                serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                    message: format!("unexpected teams response shape: {e}"),
+                })?;
 
-        let items: Vec<ClickUpItem> = raw
-            .teams
-            .into_iter()
-            .map(|t| ClickUpItem {
-                id: t.id,
-                name: t.name,
-                kind: "team".to_string(),
+            let items: Vec<ClickUpItem> = raw
+                .teams
+                .into_iter()
+                .map(|t| ClickUpItem {
+                    id: t.id,
+                    name: t.name,
+                    kind: "team".to_string(),
+                })
+                .collect();
+
+            let count = items.len();
+            let next_hint = items
+                .first()
+                .map(|t| format!(" Next: ListSpacesInput with team_id: {}", t.id))
+                .unwrap_or_default();
+            Ok(ClickUpOutput {
+                tasks: vec![],
+                items,
+                message: format!("Found {count} team(s).{next_hint}"),
+                operation: Some(ClickUpOperation::ListTeams),
             })
-            .collect();
-
-        let count = items.len();
-        let next_hint = items
-            .first()
-            .map(|t| format!(" Next: ListSpacesInput with team_id: {}", t.id))
-            .unwrap_or_default();
-        Ok(ClickUpOutput {
-            tasks: vec![],
-            items,
-            message: format!("Found {count} team(s).{next_hint}"),
-            operation: Some(ClickUpOperation::ListTeams),
-        })
+        }
+        .instrument(spans::list_teams())
+        .await
     }
 
     async fn list_spaces(&self, api_key: &str, team_id: &str) -> Result<ClickUpOutput> {
-        let span = spans::list_spaces(team_id);
-        let _guard = span.enter();
-        let json = self
-            .client
-            .send_json(self.client.get(&format!("/team/{team_id}/space"), api_key))
-            .await
-            .map_err(ClickUpError::Client)?;
-        let raw: RawSpaceList =
-            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
-                message: format!("unexpected spaces response shape: {e}"),
-            })?;
+        async {
+            let json = self
+                .client
+                .send_json(self.client.get(&format!("/team/{team_id}/space"), api_key))
+                .await
+                .map_err(ClickUpError::Client)?;
+            let raw: RawSpaceList =
+                serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                    message: format!("unexpected spaces response shape: {e}"),
+                })?;
 
-        let items: Vec<ClickUpItem> = raw
-            .spaces
-            .into_iter()
-            .map(|s| ClickUpItem {
-                id: s.id,
-                name: s.name,
-                kind: "space".to_string(),
+            let items: Vec<ClickUpItem> = raw
+                .spaces
+                .into_iter()
+                .map(|s| ClickUpItem {
+                    id: s.id,
+                    name: s.name,
+                    kind: "space".to_string(),
+                })
+                .collect();
+
+            let count = items.len();
+            let next_hint = items
+                .first()
+                .map(|s| format!(" Next: ListListsInput with space_id: {}", s.id))
+                .unwrap_or_default();
+            Ok(ClickUpOutput {
+                tasks: vec![],
+                items,
+                message: format!("Found {count} space(s) in team {team_id}.{next_hint}"),
+                operation: Some(ClickUpOperation::ListSpaces),
             })
-            .collect();
-
-        let count = items.len();
-        let next_hint = items
-            .first()
-            .map(|s| format!(" Next: ListListsInput with space_id: {}", s.id))
-            .unwrap_or_default();
-        Ok(ClickUpOutput {
-            tasks: vec![],
-            items,
-            message: format!("Found {count} space(s) in team {team_id}.{next_hint}"),
-            operation: Some(ClickUpOperation::ListSpaces),
-        })
+        }
+        .instrument(spans::list_spaces(team_id))
+        .await
     }
 
     async fn list_lists(&self, api_key: &str, space_id: &str) -> Result<ClickUpOutput> {
-        let span = spans::list_lists(space_id);
-        let _guard = span.enter();
-        let json = self
-            .client
-            .send_json(self.client.get(&format!("/space/{space_id}/list"), api_key))
-            .await
-            .map_err(ClickUpError::Client)?;
+        async {
+            let json = self
+                .client
+                .send_json(self.client.get(&format!("/space/{space_id}/list"), api_key))
+                .await
+                .map_err(ClickUpError::Client)?;
 
-        let raw: RawFolderlessList =
-            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
-                message: format!("unexpected lists response shape: {e}"),
-            })?;
+            let raw: RawFolderlessList =
+                serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                    message: format!("unexpected lists response shape: {e}"),
+                })?;
 
-        let items: Vec<ClickUpItem> = raw
-            .lists
-            .into_iter()
-            .map(|l| ClickUpItem {
-                id: l.id,
-                name: l.name,
-                kind: "list".to_string(),
+            let items: Vec<ClickUpItem> = raw
+                .lists
+                .into_iter()
+                .map(|l| ClickUpItem {
+                    id: l.id,
+                    name: l.name,
+                    kind: "list".to_string(),
+                })
+                .collect();
+
+            let count = items.len();
+            let next_hint = items
+                .first()
+                .map(|l| format!(" Next: ListTasksInput with list_id: {}", l.id))
+                .unwrap_or_default();
+            Ok(ClickUpOutput {
+                tasks: vec![],
+                items,
+                message: format!("Found {count} list(s) in space {space_id}.{next_hint}"),
+                operation: Some(ClickUpOperation::ListLists),
             })
-            .collect();
-
-        let count = items.len();
-        let next_hint = items
-            .first()
-            .map(|l| format!(" Next: ListTasksInput with list_id: {}", l.id))
-            .unwrap_or_default();
-        Ok(ClickUpOutput {
-            tasks: vec![],
-            items,
-            message: format!("Found {count} list(s) in space {space_id}.{next_hint}"),
-            operation: Some(ClickUpOperation::ListLists),
-        })
+        }
+        .instrument(spans::list_lists(space_id))
+        .await
     }
 
     async fn list_tasks(&self, api_key: &str, list_id: &str) -> Result<ClickUpOutput> {
-        let span = spans::list_tasks(list_id);
-        let _guard = span.enter();
-        let json = self
-            .client
-            .send_json(self.client.get(&format!("/list/{list_id}/task"), api_key))
-            .await
-            .map_err(ClickUpError::Client)?;
+        async {
+            let json = self
+                .client
+                .send_json(self.client.get(&format!("/list/{list_id}/task"), api_key))
+                .await
+                .map_err(ClickUpError::Client)?;
 
-        let raw_list: RawTaskList =
-            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
-                message: format!("unexpected response shape: {e}"),
-            })?;
+            let raw_list: RawTaskList =
+                serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                    message: format!("unexpected response shape: {e}"),
+                })?;
 
-        let mut tasks = Vec::with_capacity(raw_list.tasks.len());
-        for (idx, raw_value) in raw_list.tasks.into_iter().enumerate() {
-            match serde_json::from_value::<RawClickUpTask>(raw_value) {
-                Ok(raw_task) => tasks.push(ClickUpTaskSummary::from(raw_task)),
-                Err(err) => {
-                    tracing::warn!(
-                        task_index = idx,
-                        error = %err,
-                        "Skipping malformed task entry from ClickUp response",
-                    );
+            let mut tasks = Vec::with_capacity(raw_list.tasks.len());
+            for (idx, raw_value) in raw_list.tasks.into_iter().enumerate() {
+                match serde_json::from_value::<RawClickUpTask>(raw_value) {
+                    Ok(raw_task) => tasks.push(ClickUpTaskSummary::from(raw_task)),
+                    Err(err) => {
+                        tracing::warn!(
+                            task_index = idx,
+                            error = %err,
+                            "Skipping malformed task entry from ClickUp response",
+                        );
+                    }
                 }
             }
-        }
 
-        let count = tasks.len();
-        Ok(ClickUpOutput {
-            tasks,
-            items: vec![],
-            message: format!("Found {count} task(s) in list {list_id}"),
-            operation: Some(ClickUpOperation::ListTasks),
-        })
+            let count = tasks.len();
+            Ok(ClickUpOutput {
+                tasks,
+                items: vec![],
+                message: format!("Found {count} task(s) in list {list_id}"),
+                operation: Some(ClickUpOperation::ListTasks),
+            })
+        }
+        .instrument(spans::list_tasks(list_id))
+        .await
     }
 
     async fn get_task(&self, api_key: &str, task_id: &str) -> Result<ClickUpOutput> {
-        let span = spans::get_task(task_id);
-        let _guard = span.enter();
-        let json = self
-            .client
-            .send_json(self.client.get(&format!("/task/{task_id}"), api_key))
-            .await
-            .map_err(ClickUpError::Client)?;
+        async {
+            let json = self
+                .client
+                .send_json(self.client.get(&format!("/task/{task_id}"), api_key))
+                .await
+                .map_err(ClickUpError::Client)?;
 
-        let raw: RawClickUpTask =
-            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
-                message: format!("unexpected task shape: {e}"),
-            })?;
+            let raw: RawClickUpTask =
+                serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                    message: format!("unexpected task shape: {e}"),
+                })?;
 
-        let summary = ClickUpTaskSummary::from(raw);
-        Ok(ClickUpOutput {
-            message: format!("Task {task_id}: {}", summary.name),
-            tasks: vec![summary],
-            items: vec![],
-            operation: Some(ClickUpOperation::GetTask),
-        })
+            let summary = ClickUpTaskSummary::from(raw);
+            Ok(ClickUpOutput {
+                message: format!("Task {task_id}: {}", summary.name),
+                tasks: vec![summary],
+                items: vec![],
+                operation: Some(ClickUpOperation::GetTask),
+            })
+        }
+        .instrument(spans::get_task(task_id))
+        .await
     }
 
     async fn create_task(
@@ -516,38 +527,40 @@ impl ClickUpTool {
         description: Option<&str>,
         priority: Option<u8>,
     ) -> Result<ClickUpOutput> {
-        let span = spans::create_task(list_id);
-        let _guard = span.enter();
-        let mut body = serde_json::json!({ "name": name });
-        if let Some(desc) = description {
-            body["description"] = serde_json::Value::String(desc.to_string());
+        async {
+            let mut body = serde_json::json!({ "name": name });
+            if let Some(desc) = description {
+                body["description"] = serde_json::Value::String(desc.to_string());
+            }
+            if let Some(p) = priority {
+                body["priority"] = serde_json::json!(p);
+            }
+
+            let json = self
+                .client
+                .send_json(
+                    self.client
+                        .post(&format!("/list/{list_id}/task"), api_key)
+                        .json(&body),
+                )
+                .await
+                .map_err(ClickUpError::Client)?;
+
+            let raw: RawClickUpTask =
+                serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                    message: format!("unexpected task shape: {e}"),
+                })?;
+
+            let summary = ClickUpTaskSummary::from(raw);
+            Ok(ClickUpOutput {
+                message: format!("Created task '{}' in list {list_id}", summary.name),
+                tasks: vec![summary],
+                items: vec![],
+                operation: Some(ClickUpOperation::CreateTask),
+            })
         }
-        if let Some(p) = priority {
-            body["priority"] = serde_json::json!(p);
-        }
-
-        let json = self
-            .client
-            .send_json(
-                self.client
-                    .post(&format!("/list/{list_id}/task"), api_key)
-                    .json(&body),
-            )
-            .await
-            .map_err(ClickUpError::Client)?;
-
-        let raw: RawClickUpTask =
-            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
-                message: format!("unexpected task shape: {e}"),
-            })?;
-
-        let summary = ClickUpTaskSummary::from(raw);
-        Ok(ClickUpOutput {
-            message: format!("Created task '{}' in list {list_id}", summary.name),
-            tasks: vec![summary],
-            items: vec![],
-            operation: Some(ClickUpOperation::CreateTask),
-        })
+        .instrument(spans::create_task(list_id))
+        .await
     }
 
     async fn update_task(
@@ -558,63 +571,67 @@ impl ClickUpTool {
         description: Option<&str>,
         priority: Option<u8>,
     ) -> Result<ClickUpOutput> {
-        let span = spans::update_task(task_id);
-        let _guard = span.enter();
-        let mut body = serde_json::Map::new();
-        if let Some(s) = status {
-            body.insert(
-                "status".to_string(),
-                serde_json::Value::String(s.to_string()),
-            );
-        }
-        if let Some(desc) = description {
-            body.insert(
-                "description".to_string(),
-                serde_json::Value::String(desc.to_string()),
-            );
-        }
-        if let Some(p) = priority {
-            body.insert("priority".to_string(), serde_json::json!(p));
-        }
+        async {
+            let mut body = serde_json::Map::new();
+            if let Some(s) = status {
+                body.insert(
+                    "status".to_string(),
+                    serde_json::Value::String(s.to_string()),
+                );
+            }
+            if let Some(desc) = description {
+                body.insert(
+                    "description".to_string(),
+                    serde_json::Value::String(desc.to_string()),
+                );
+            }
+            if let Some(p) = priority {
+                body.insert("priority".to_string(), serde_json::json!(p));
+            }
 
-        let json = self
-            .client
-            .send_json(
-                self.client
-                    .put(&format!("/task/{task_id}"), api_key)
-                    .json(&serde_json::Value::Object(body)),
-            )
-            .await
-            .map_err(ClickUpError::Client)?;
+            let json = self
+                .client
+                .send_json(
+                    self.client
+                        .put(&format!("/task/{task_id}"), api_key)
+                        .json(&serde_json::Value::Object(body)),
+                )
+                .await
+                .map_err(ClickUpError::Client)?;
 
-        let raw: RawClickUpTask =
-            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
-                message: format!("unexpected task shape: {e}"),
-            })?;
+            let raw: RawClickUpTask =
+                serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                    message: format!("unexpected task shape: {e}"),
+                })?;
 
-        let summary = ClickUpTaskSummary::from(raw);
-        Ok(ClickUpOutput {
-            message: format!("Updated task {task_id}"),
-            tasks: vec![summary],
-            items: vec![],
-            operation: Some(ClickUpOperation::UpdateTask),
-        })
+            let summary = ClickUpTaskSummary::from(raw);
+            Ok(ClickUpOutput {
+                message: format!("Updated task {task_id}"),
+                tasks: vec![summary],
+                items: vec![],
+                operation: Some(ClickUpOperation::UpdateTask),
+            })
+        }
+        .instrument(spans::update_task(task_id))
+        .await
     }
 
     async fn delete_task(&self, api_key: &str, task_id: &str) -> Result<ClickUpOutput> {
-        let span = spans::delete_task(task_id);
-        let _guard = span.enter();
-        self.client
-            .send_no_content(self.client.delete(&format!("/task/{task_id}"), api_key))
-            .await
-            .map_err(ClickUpError::Client)?;
+        async {
+            self.client
+                .send_no_content(self.client.delete(&format!("/task/{task_id}"), api_key))
+                .await
+                .map_err(ClickUpError::Client)?;
 
-        Ok(ClickUpOutput {
-            message: format!("Deleted task {task_id}"),
-            tasks: vec![],
-            items: vec![],
-            operation: Some(ClickUpOperation::DeleteTask),
-        })
+            Ok(ClickUpOutput {
+                message: format!("Deleted task {task_id}"),
+                tasks: vec![],
+                items: vec![],
+                operation: Some(ClickUpOperation::DeleteTask),
+            })
+        }
+        .instrument(spans::delete_task(task_id))
+        .await
     }
 }
 
@@ -656,53 +673,56 @@ impl BamlTool for ClickUpTool {
             ClickUpInput::DeleteTask(_) => "DeleteTask",
         };
         let span = spans::execute(action);
-        let _guard = span.enter();
 
-        let api_key = Self::api_key()?;
-        let mut output = match args {
-            ClickUpInput::ListTeams(_) => self.list_teams(&api_key).await,
-            ClickUpInput::ListSpaces(input) => self.list_spaces(&api_key, &input.team_id).await,
-            ClickUpInput::ListLists(input) => self.list_lists(&api_key, &input.space_id).await,
-            ClickUpInput::ListTasks(input) => self.list_tasks(&api_key, &input.list_id).await,
-            ClickUpInput::GetTask(input) => self.get_task(&api_key, &input.task_id).await,
-            ClickUpInput::CreateTask(input) => {
-                self.create_task(
-                    &api_key,
-                    &input.list_id,
-                    &input.name,
-                    input.description.as_deref(),
-                    input.priority,
-                )
-                .await
-            }
-            ClickUpInput::UpdateTask(input) => {
-                self.update_task(
-                    &api_key,
-                    &input.task_id,
-                    input.status.as_deref(),
-                    input.description.as_deref(),
-                    input.priority,
-                )
-                .await
-            }
-            ClickUpInput::DeleteTask(input) => {
-                if !input.confirm_delete {
-                    Ok(ClickUpOutput {
-                        message: format!(
-                            "Task {} identified. Please confirm you want to delete it.",
-                            input.task_id
-                        ),
-                        tasks: vec![],
-                        items: vec![],
-                        operation: Some(ClickUpOperation::DeleteTask),
-                    })
-                } else {
-                    self.delete_task(&api_key, &input.task_id).await
+        async {
+            let api_key = Self::api_key()?;
+            let mut output = match args {
+                ClickUpInput::ListTeams(_) => self.list_teams(&api_key).await,
+                ClickUpInput::ListSpaces(input) => self.list_spaces(&api_key, &input.team_id).await,
+                ClickUpInput::ListLists(input) => self.list_lists(&api_key, &input.space_id).await,
+                ClickUpInput::ListTasks(input) => self.list_tasks(&api_key, &input.list_id).await,
+                ClickUpInput::GetTask(input) => self.get_task(&api_key, &input.task_id).await,
+                ClickUpInput::CreateTask(input) => {
+                    self.create_task(
+                        &api_key,
+                        &input.list_id,
+                        &input.name,
+                        input.description.as_deref(),
+                        input.priority,
+                    )
+                    .await
                 }
-            }
-        }?;
-        output.operation = None;
-        Ok(output)
+                ClickUpInput::UpdateTask(input) => {
+                    self.update_task(
+                        &api_key,
+                        &input.task_id,
+                        input.status.as_deref(),
+                        input.description.as_deref(),
+                        input.priority,
+                    )
+                    .await
+                }
+                ClickUpInput::DeleteTask(input) => {
+                    if !input.confirm_delete {
+                        Ok(ClickUpOutput {
+                            message: format!(
+                                "Task {} identified. Please confirm you want to delete it.",
+                                input.task_id
+                            ),
+                            tasks: vec![],
+                            items: vec![],
+                            operation: Some(ClickUpOperation::DeleteTask),
+                        })
+                    } else {
+                        self.delete_task(&api_key, &input.task_id).await
+                    }
+                }
+            }?;
+            output.operation = None;
+            Ok(output)
+        }
+        .instrument(span)
+        .await
     }
 
     fn describe_result(&self, output: &Self::Output) -> String {

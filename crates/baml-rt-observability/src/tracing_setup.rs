@@ -15,6 +15,19 @@ pub const RUST_LOG_FMT_ENV: &str = "RUST_LOG_FMT";
 /// `RUST_LOG=debug` can still print full console diagnostics.
 pub const RUST_LOG_OTEL_ENV: &str = "RUST_LOG_OTEL";
 
+/// Noise-suppression directives shared by both console and OTLP filters.
+const QUICKJS_NOISE_DIRECTIVES: &[&str] = &[
+    "quickjs_runtime::quickjsrealmadapter=warn",
+    "quickjs_runtime::typescript=warn",
+];
+
+/// Append the shared QuickJS noise-suppression directives to a filter.
+fn with_quickjs_suppression(filter: EnvFilter) -> EnvFilter {
+    QUICKJS_NOISE_DIRECTIVES.iter().fold(filter, |f, d| {
+        f.add_directive(d.parse().expect("static directive"))
+    })
+}
+
 fn console_env_filter() -> EnvFilter {
     if let Ok(spec) = std::env::var(RUST_LOG_FMT_ENV)
         && !spec.trim().is_empty()
@@ -27,25 +40,17 @@ fn console_env_filter() -> EnvFilter {
         }
     }
 
-    EnvFilter::from_default_env()
-        .add_directive("baml_rt=info".parse().expect("static directive"))
-        .add_directive("baml_rt_quickjs=debug".parse().expect("static directive"))
-        .add_directive(
-            "baml_rt_interceptor=debug"
-                .parse()
-                .expect("static directive"),
-        )
-        .add_directive("baml_agent_runner=info".parse().expect("static directive"))
-        .add_directive(
-            "quickjs_runtime::quickjsrealmadapter=warn"
-                .parse()
-                .expect("static directive"),
-        )
-        .add_directive(
-            "quickjs_runtime::typescript=warn"
-                .parse()
-                .expect("static directive"),
-        )
+    with_quickjs_suppression(
+        EnvFilter::from_default_env()
+            .add_directive("baml_rt=info".parse().expect("static directive"))
+            .add_directive("baml_rt_quickjs=debug".parse().expect("static directive"))
+            .add_directive(
+                "baml_rt_interceptor=debug"
+                    .parse()
+                    .expect("static directive"),
+            )
+            .add_directive("baml_agent_runner=info".parse().expect("static directive")),
+    )
 }
 
 fn otel_trace_env_filter() -> EnvFilter {
@@ -60,12 +65,7 @@ fn otel_trace_env_filter() -> EnvFilter {
         }
     }
 
-    EnvFilter::try_new(concat!(
-        "info,",
-        "quickjs_runtime::quickjsrealmadapter=warn,",
-        "quickjs_runtime::typescript=warn",
-    ))
-    .expect("static RUST_LOG_OTEL default")
+    with_quickjs_suppression(EnvFilter::try_new("info").expect("static RUST_LOG_OTEL default"))
 }
 
 /// Initialize tracing/logging and optionally OTLP export (traces + metrics) from env.

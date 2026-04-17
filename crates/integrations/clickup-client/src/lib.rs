@@ -1,6 +1,7 @@
 mod spans;
 
 use baml_rt_llm_config::{FnoxFileSecretResolver, SecretResolver};
+use tracing::Instrument;
 
 /// ClickUp v2 REST API base URL.
 pub const BASE_URL: &str = "https://api.clickup.com/api/v2";
@@ -112,42 +113,45 @@ impl ClickUpClient {
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, ClickUpClientError> {
         let span = spans::send_json();
-        let _guard = span.enter();
         if let Some(rb) = request.try_clone()
             && let Ok(req) = rb.build()
         {
             span.record("url", tracing::field::display(req.url().as_str()));
         }
 
-        let resp = request.send().await.map_err(ClickUpClientError::Http)?;
+        async move {
+            let resp = request.send().await.map_err(ClickUpClientError::Http)?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            let reset_at = resp
-                .headers()
-                .get("x-ratelimit-reset")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown")
-                .to_string();
-            let body = resp.text().await.unwrap_or_default();
+            let status = resp.status();
+            if !status.is_success() {
+                let code = status.as_u16();
+                let reset_at = resp
+                    .headers()
+                    .get("x-ratelimit-reset")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let body = resp.text().await.unwrap_or_default();
 
-            let is_fake_auth_error = code == 401
-                && body.contains("OAUTH_0")
-                && (body.contains("token not found") || body.contains("Token not found"));
+                let is_fake_auth_error = code == 401
+                    && body.contains("OAUTH_0")
+                    && (body.contains("token not found") || body.contains("Token not found"));
 
-            return Err(match code {
-                401 if is_fake_auth_error => ClickUpClientError::NotFound {
-                    body: format!("Resource not found : {body}"),
-                },
-                401 => ClickUpClientError::Unauthorized { body },
-                404 => ClickUpClientError::NotFound { body },
-                429 => ClickUpClientError::RateLimited { body, reset_at },
-                _ => ClickUpClientError::Api { status: code, body },
-            });
+                return Err(match code {
+                    401 if is_fake_auth_error => ClickUpClientError::NotFound {
+                        body: format!("Resource not found : {body}"),
+                    },
+                    401 => ClickUpClientError::Unauthorized { body },
+                    404 => ClickUpClientError::NotFound { body },
+                    429 => ClickUpClientError::RateLimited { body, reset_at },
+                    _ => ClickUpClientError::Api { status: code, body },
+                });
+            }
+
+            resp.json().await.map_err(ClickUpClientError::Http)
         }
-
-        resp.json().await.map_err(ClickUpClientError::Http)
+        .instrument(span)
+        .await
     }
 
     pub async fn send_no_content(
