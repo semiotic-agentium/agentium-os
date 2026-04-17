@@ -1496,6 +1496,12 @@ impl A2aRequestHandler for A2aAgent {
 
 impl A2aJsChatHost for A2aAgent {}
 
+/// Signals whether the outer turn loop should continue or break after an instrumented turn body.
+enum TurnAction {
+    Continue,
+    Break,
+}
+
 impl A2aAgent {
     async fn handle_live_message_stream(
         &self,
@@ -1617,9 +1623,8 @@ impl A2aAgent {
         let mut suspended: Option<SuspendedState> = None;
 
         while let Ok(turn) = turn_rx.recv().await {
-            // Turn-level grouping span: sub-operations (outcome_inner, drain, store)
-            // use Instrument instead of Span::enter() to avoid holding guards across .await.
-            let _turn_span = spans::live_stream_session_turn(session_context_id.as_str());
+            let turn_span = spans::live_stream_session_turn(session_context_id.as_str());
+            let action = async {
             let turn_started = Instant::now();
             metrics::record_live_stream_event("turn_dequeued");
             tracing::debug!(
@@ -1644,7 +1649,7 @@ impl A2aAgent {
                 let request_id = a2a::extract_jsonrpc_id(&turn.request);
                 if resume_tx.send(turn.request).await.is_err() {
                     tracing::debug!("resume_tx send failed (collector dropped)");
-                    break;
+                    return TurnAction::Break;
                 }
                 metrics::record_live_stream_event("resume_injected");
                 tracing::debug!(
@@ -1712,7 +1717,7 @@ impl A2aAgent {
                                     "live stream error/synthetic-final send failed (receiver dropped)"
                                 );
                             }
-                            break;
+                            return TurnAction::Break;
                         }
                     };
                     // Allow bursty tool/status relay chunks without backpressuring the live session.
@@ -1762,7 +1767,7 @@ impl A2aAgent {
                                 session.relay_tx = None;
                             }
                         }
-                        break;
+                        return TurnAction::Break;
                     }
                 };
                 metrics::record_live_stream_phase_duration(
@@ -1786,7 +1791,7 @@ impl A2aAgent {
                         {
                             tracing::debug!("live stream response send failed (receiver dropped)");
                         }
-                        break;
+                        return TurnAction::Break;
                     }
                     a2a::A2aOutcome::Stream(handle) => {
                         metrics::record_live_stream_event("outcome_stream");
@@ -1803,193 +1808,199 @@ impl A2aAgent {
                 }
             };
 
-            let _drain_span = spans::live_stream_drain(session_context_id.as_str());
-            tracing::debug!(
-                context_id = %session_context_id,
-                from_resume,
-                elapsed_since_turn_start_ms = turn_started.elapsed().as_millis(),
-                "live stream drain started (store_result will run per chunk)"
-            );
+            // Drain phase: read chunks from the collector and forward to client.
             let mut completion = None;
             let mut last_task_id: Option<String> = None;
             let mut resume_chunk_count: u32 = 0;
-            let drain_wait_start = Instant::now();
-            let mut first_drain_chunk = true;
 
-            loop {
-                let outcome_msg = rx.recv().await;
+            async {
+                tracing::debug!(
+                    context_id = %session_context_id,
+                    from_resume,
+                    elapsed_since_turn_start_ms = turn_started.elapsed().as_millis(),
+                    "live stream drain started (store_result will run per chunk)"
+                );
+                let drain_wait_start = Instant::now();
+                let mut first_drain_chunk = true;
 
-                let Some(outcome_msg) = outcome_msg else {
-                    // rx closed without terminal completion (collector dropped before finalizing).
-                    // Emit completion chunk for client and store for provenance so task lifecycle completes.
-                    let tid = last_task_id
-                        .clone()
-                        .or(session_task_id_str.clone())
-                        .or_else(|| {
-                            a2a::A2aRequest::from_value(request_value.clone())
-                                .ok()
-                                .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
-                        })
-                        .unwrap_or_else(|| format!("stream-{}", session_context_id));
-                    let completion_chunk = json!({
-                        "task": {
-                            "id": tid,
-                            "contextId": session_context_id.as_str(),
-                            "status": { "state": "TASK_STATE_COMPLETED" },
-                            "final": true
+                loop {
+                    let outcome_msg = rx.recv().await;
+
+                    let Some(outcome_msg) = outcome_msg else {
+                        // rx closed without terminal completion (collector dropped before finalizing).
+                        // Emit completion chunk for client and store for provenance so task lifecycle completes.
+                        let tid = last_task_id
+                            .clone()
+                            .or(session_task_id_str.clone())
+                            .or_else(|| {
+                                a2a::A2aRequest::from_value(request_value.clone())
+                                    .ok()
+                                    .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
+                            })
+                            .unwrap_or_else(|| format!("stream-{}", session_context_id));
+                        let completion_chunk = json!({
+                            "task": {
+                                "id": tid,
+                                "contextId": session_context_id.as_str(),
+                                "status": { "state": "TASK_STATE_COMPLETED" },
+                                "final": true
+                            }
+                        });
+                        if let Err(e) = self
+                            .live_result_pipeline
+                            .store_result(&completion_chunk)
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "live stream: store_result for rx-closed completion failed (provenance may show Running)"
+                            );
                         }
-                    });
-                    if let Err(e) = self
-                        .live_result_pipeline
-                        .store_result(&completion_chunk)
-                        .await
-                    {
-                        tracing::warn!(
-                            error = %e,
-                            "live stream: store_result for rx-closed completion failed (provenance may show Running)"
+                        let formatted = self.response_formatter.format_stream_chunk(
+                            request_id.clone(),
+                            completion_chunk,
+                            0_usize,
+                            true,
+                        );
+                        if response_tx
+                            .send(LiveResponseChunk(formatted))
+                            .await
+                            .is_err()
+                        {
+                            tracing::debug!(
+                                "live stream synthetic-final send failed (receiver dropped)"
+                            );
+                            completion = Some(StreamCompletion::ChannelClosed);
+                            break;
+                        }
+                        break;
+                    };
+                    if first_drain_chunk {
+                        first_drain_chunk = false;
+                        let wait = drain_wait_start.elapsed();
+                        metrics::record_live_stream_phase_duration("drain_first_chunk", wait);
+                        metrics::record_live_stream_event("first_chunk_from_collector");
+                        tracing::debug!(
+                            context_id = %session_context_id,
+                            from_resume,
+                            wait_ms = wait.as_millis(),
+                            elapsed_since_turn_start_ms = turn_started.elapsed().as_millis(),
+                            "live stream: first chunk from collector (mpsc)"
                         );
                     }
-                    let formatted = self.response_formatter.format_stream_chunk(
+                    let (chunk, index, comp) = outcome_msg;
+
+                    completion = comp;
+                    let view = StreamChunkView::new(chunk);
+                    if !view.is_null() {
+                        if let Some(tid) = view.task_id() {
+                            last_task_id = Some(tid.as_str().to_string());
+                        }
+                        let store_span =
+                            spans::live_stream_store_result(index, view.has_storable_payload());
+                        async {
+                            let raw_for_store = if view.raw.get("__toolStreamChunk").is_some() {
+                                let mut c = view.raw.clone();
+                                c.as_object_mut()
+                                    .and_then(|o| o.remove("__toolStreamChunk"));
+                                c
+                            } else {
+                                view.raw.clone()
+                            };
+                            let store_result =
+                                self.live_result_pipeline.store_result(&raw_for_store).await;
+                            let ok = store_result.is_ok();
+                            Span::current().record("store_result_ok", ok);
+                            if let Err(e) = store_result {
+                                tracing::warn!(
+                                    error = %e,
+                                    "live stream: store_result failed (task/subscribe may miss task)"
+                                );
+                            }
+                        }
+                        .instrument(store_span)
+                        .await;
+                    }
+                    if comp == Some(StreamCompletion::InputRequired) && view.is_null() {
+                        // Emit a minimal wire chunk so the client receives TASK_STATE_INPUT_REQUIRED and can show the banner.
+                        let tid = last_task_id
+                            .clone()
+                            .or(session_task_id_str.clone())
+                            .unwrap_or_else(|| format!("stream-{}", session_context_id));
+                        let input_required_chunk = json!({
+                            "task": {
+                                "id": tid,
+                                "contextId": session_context_id.as_str(),
+                                "status": { "state": "TASK_STATE_INPUT_REQUIRED" }
+                            },
+                            "final": false
+                        });
+                        let formatted = self.response_formatter.format_stream_chunk(
+                            request_id.clone(),
+                            input_required_chunk,
+                            index,
+                            false,
+                        );
+                        if response_tx
+                            .send(LiveResponseChunk(formatted))
+                            .await
+                            .is_err()
+                        {
+                            tracing::debug!(
+                                "live stream input_required chunk send failed (receiver dropped)"
+                            );
+                            completion = Some(StreamCompletion::ChannelClosed);
+                        }
+                        break;
+                    }
+                    let is_final = comp.is_some_and(StreamCompletion::is_wire_final);
+                    let mut chunk_for_format = view.raw.clone();
+                    let is_tool_stream = chunk_for_format
+                        .as_object_mut()
+                        .and_then(|o| o.remove("__toolStreamChunk"))
+                        .and_then(|v| v.as_bool())
+                        == Some(true);
+                    let mut formatted = self.response_formatter.format_stream_chunk(
                         request_id.clone(),
-                        completion_chunk,
-                        0_usize,
-                        true,
+                        chunk_for_format,
+                        index,
+                        is_final,
                     );
+                    if is_tool_stream
+                        && let Some(obj) = formatted.as_object_mut()
+                        && let Some(result) = obj.get_mut("result")
+                        && let Some(result_obj) = result.as_object_mut()
+                    {
+                        result_obj.insert(
+                            crate::live_stream_working_relay::A2A_RESULT_TOOL_STREAM_CHUNK
+                                .to_string(),
+                            serde_json::Value::Bool(true),
+                        );
+                    }
                     if response_tx
                         .send(LiveResponseChunk(formatted))
                         .await
                         .is_err()
                     {
-                        tracing::debug!(
-                            "live stream synthetic-final send failed (receiver dropped)"
-                        );
+                        tracing::debug!("live stream chunk send failed (receiver dropped)");
                         completion = Some(StreamCompletion::ChannelClosed);
                         break;
-                    }
-                    break;
-                };
-                if first_drain_chunk {
-                    first_drain_chunk = false;
-                    let wait = drain_wait_start.elapsed();
-                    metrics::record_live_stream_phase_duration("drain_first_chunk", wait);
-                    metrics::record_live_stream_event("first_chunk_from_collector");
-                    tracing::debug!(
-                        context_id = %session_context_id,
-                        from_resume,
-                        wait_ms = wait.as_millis(),
-                        elapsed_since_turn_start_ms = turn_started.elapsed().as_millis(),
-                        "live stream: first chunk from collector (mpsc)"
-                    );
-                }
-                let (chunk, index, comp) = outcome_msg;
-
-                completion = comp;
-                let view = StreamChunkView::new(chunk);
-                if !view.is_null() {
-                    if let Some(tid) = view.task_id() {
-                        last_task_id = Some(tid.as_str().to_string());
-                    }
-                    let store_span =
-                        spans::live_stream_store_result(index, view.has_storable_payload());
-                    async {
-                        let raw_for_store = if view.raw.get("__toolStreamChunk").is_some() {
-                            let mut c = view.raw.clone();
-                            c.as_object_mut()
-                                .and_then(|o| o.remove("__toolStreamChunk"));
-                            c
-                        } else {
-                            view.raw.clone()
-                        };
-                        let store_result =
-                            self.live_result_pipeline.store_result(&raw_for_store).await;
-                        let ok = store_result.is_ok();
-                        Span::current().record("store_result_ok", ok);
-                        if let Err(e) = store_result {
-                            tracing::warn!(
-                                error = %e,
-                                "live stream: store_result failed (task/subscribe may miss task)"
+                    } else if from_resume {
+                        resume_chunk_count += 1;
+                        if resume_chunk_count == 1 {
+                            tracing::debug!(
+                                context_id = %session_context_id,
+                                "live stream resume drain: first chunk forwarded to client"
                             );
                         }
                     }
-                    .instrument(store_span)
-                    .await;
-                }
-                if comp == Some(StreamCompletion::InputRequired) && view.is_null() {
-                    // Emit a minimal wire chunk so the client receives TASK_STATE_INPUT_REQUIRED and can show the banner.
-                    let tid = last_task_id
-                        .clone()
-                        .or(session_task_id_str.clone())
-                        .unwrap_or_else(|| format!("stream-{}", session_context_id));
-                    let input_required_chunk = json!({
-                        "task": {
-                            "id": tid,
-                            "contextId": session_context_id.as_str(),
-                            "status": { "state": "TASK_STATE_INPUT_REQUIRED" }
-                        },
-                        "final": false
-                    });
-                    let formatted = self.response_formatter.format_stream_chunk(
-                        request_id.clone(),
-                        input_required_chunk,
-                        index,
-                        false,
-                    );
-                    if response_tx
-                        .send(LiveResponseChunk(formatted))
-                        .await
-                        .is_err()
-                    {
-                        tracing::debug!(
-                            "live stream input_required chunk send failed (receiver dropped)"
-                        );
-                        completion = Some(StreamCompletion::ChannelClosed);
+                    if comp.is_some() {
+                        break;
                     }
-                    break;
-                }
-                let is_final = comp.is_some_and(StreamCompletion::is_wire_final);
-                let mut chunk_for_format = view.raw.clone();
-                let is_tool_stream = chunk_for_format
-                    .as_object_mut()
-                    .and_then(|o| o.remove("__toolStreamChunk"))
-                    .and_then(|v| v.as_bool())
-                    == Some(true);
-                let mut formatted = self.response_formatter.format_stream_chunk(
-                    request_id.clone(),
-                    chunk_for_format,
-                    index,
-                    is_final,
-                );
-                if is_tool_stream
-                    && let Some(obj) = formatted.as_object_mut()
-                    && let Some(result) = obj.get_mut("result")
-                    && let Some(result_obj) = result.as_object_mut()
-                {
-                    result_obj.insert(
-                        crate::live_stream_working_relay::A2A_RESULT_TOOL_STREAM_CHUNK.to_string(),
-                        serde_json::Value::Bool(true),
-                    );
-                }
-                if response_tx
-                    .send(LiveResponseChunk(formatted))
-                    .await
-                    .is_err()
-                {
-                    tracing::debug!("live stream chunk send failed (receiver dropped)");
-                    completion = Some(StreamCompletion::ChannelClosed);
-                    break;
-                } else if from_resume {
-                    resume_chunk_count += 1;
-                    if resume_chunk_count == 1 {
-                        tracing::debug!(
-                            context_id = %session_context_id,
-                            "live stream resume drain: first chunk forwarded to client"
-                        );
-                    }
-                }
-                if comp.is_some() {
-                    break;
                 }
             }
+            .instrument(spans::live_stream_drain(session_context_id.as_str()))
+            .await;
 
             session_task_id = last_task_id
                 .or(session_task_id_str)
@@ -2011,14 +2022,17 @@ impl A2aAgent {
                             session.in_flight = false;
                         }
                     }
-                    continue;
+                    TurnAction::Continue
                 }
-                Some(
-                    StreamCompletion::SemanticFinal
-                    | StreamCompletion::ChannelClosed
-                    | StreamCompletion::Timeout,
-                ) => break,
-                None => break,
+                _ => TurnAction::Break,
+            }
+            }
+            .instrument(turn_span)
+            .await;
+
+            match action {
+                TurnAction::Continue => continue,
+                TurnAction::Break => break,
             }
         }
 
