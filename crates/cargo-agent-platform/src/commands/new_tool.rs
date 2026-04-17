@@ -22,7 +22,7 @@ use console::style;
 
 use crate::{
     templates::external_tool::{
-        Access, GeneratedFile, Language, ScaffoldContext, metadata_json, readme_md,
+        Access, GeneratedFile, Language, Runtime, ScaffoldContext, metadata_json, readme_md,
     },
     transaction::TransactionalWriter,
 };
@@ -50,6 +50,10 @@ pub fn run(
     bundle: &str,
     lang: Language,
     access: Access,
+    runtime: Runtime,
+    sandbox_image: Option<&str>,
+    runtime_digest: Option<&str>,
+    sandbox_entrypoint: &[String],
     description: &str,
     output: Option<&str>,
     mode: RunMode,
@@ -73,12 +77,18 @@ pub fn run(
         description.trim()
     };
 
+    validate_runtime_options(runtime, sandbox_image, runtime_digest, sandbox_entrypoint)?;
+
     let ctx = ScaffoldContext {
         name,
         bundle,
         access,
         language: lang,
         description,
+        runtime,
+        sandbox_image: sandbox_image.map(ToOwned::to_owned),
+        runtime_digest: runtime_digest.map(ToOwned::to_owned),
+        sandbox_entrypoint: sandbox_entrypoint.to_vec(),
     };
 
     let files = build_file_set(&ctx);
@@ -90,6 +100,23 @@ pub fn run(
         println!("  Tool ID:   {}", style(ctx.tool_id()).cyan());
         println!("  Language:  {}", style(lang.as_str()).cyan());
         println!("  Access:    {}", style(access.as_str()).cyan());
+        println!("  Runtime:   {}", style(runtime.as_str()).cyan());
+        if runtime == Runtime::Sandbox {
+            println!(
+                "  Image:     {}",
+                style(ctx.sandbox_image.as_deref().unwrap_or("(missing)")).cyan()
+            );
+            println!(
+                "  Digest:    {}",
+                style(ctx.runtime_digest.as_deref().unwrap_or("(missing)")).cyan()
+            );
+            if !ctx.sandbox_entrypoint.is_empty() {
+                println!(
+                    "  Entrypoint:{}",
+                    style(format!(" {}", ctx.sandbox_entrypoint.join(" "))).cyan()
+                );
+            }
+        }
         println!("  Output:    {}", style(output_dir.display()).cyan());
         println!("  Desc:      {}", style(description).cyan());
     }
@@ -222,6 +249,44 @@ fn validate_tool_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_runtime_options(
+    runtime: Runtime,
+    sandbox_image: Option<&str>,
+    runtime_digest: Option<&str>,
+    sandbox_entrypoint: &[String],
+) -> Result<()> {
+    match runtime {
+        Runtime::Process => {
+            if sandbox_image.is_some() || runtime_digest.is_some() || !sandbox_entrypoint.is_empty()
+            {
+                bail!(
+                    "Error: sandbox-only options were supplied with --runtime process.\nHint: remove --sandbox-image/--runtime-digest/--sandbox-entrypoint or use --runtime sandbox."
+                );
+            }
+        }
+        Runtime::Sandbox => {
+            let image = sandbox_image.ok_or_else(|| {
+                anyhow!("Error: --runtime sandbox requires --sandbox-image <ref@sha256:...>.")
+            })?;
+            if !image.contains("@sha256:") {
+                bail!("Error: --sandbox-image must be digest-pinned (missing @sha256:): {image}");
+            }
+
+            let digest = runtime_digest.ok_or_else(|| {
+                anyhow!("Error: --runtime sandbox requires --runtime-digest sha256:<64-hex>.")
+            })?;
+            let digest_ok = digest.starts_with("sha256:")
+                && digest.len() == 71
+                && digest[7..].chars().all(|c| c.is_ascii_hexdigit());
+            if !digest_ok {
+                bail!("Error: --runtime-digest must match sha256:<64-hex>; got '{digest}'.");
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
@@ -250,7 +315,7 @@ fn set_executable_bits(output_dir: &Path, files: &[GeneratedFile]) -> Result<()>
 
 #[cfg(test)]
 mod tests {
-    use baml_rt_tools::external_tools::metadata_catalog::ExternalMetadataCatalog;
+    use baml_rt_tools::external_tools::{ToolRuntime, metadata_catalog::ExternalMetadataCatalog};
 
     use super::*;
 
@@ -261,6 +326,10 @@ mod tests {
             access: Access::Read,
             language: lang,
             description: "Echo external tool",
+            runtime: Runtime::Process,
+            sandbox_image: None,
+            runtime_digest: None,
+            sandbox_entrypoint: Vec::new(),
         }
     }
 
@@ -348,10 +417,58 @@ mod tests {
             access: Access::Read,
             language: Language::Bash,
             description: &desc_with_specials,
+            runtime: Runtime::Process,
+            sandbox_image: None,
+            runtime_digest: None,
+            sandbox_entrypoint: Vec::new(),
         };
 
         let raw = metadata_json::generate(&ctx);
         serde_json::from_str::<serde_json::Value>(&raw)
             .expect("metadata must round-trip through serde_json regardless of description chars");
+    }
+
+    #[test]
+    fn scaffolded_metadata_emits_explicit_process_runtime_block() {
+        let ctx = ctx(Language::Rust);
+        let raw = metadata_json::generate(&ctx);
+        let parsed: baml_rt_tools::external_tools::ExternalToolMetadata =
+            serde_json::from_str(&raw).expect("metadata parses");
+
+        match parsed.runtime {
+            Some(ToolRuntime::Process(spec)) => {
+                assert_eq!(spec.command, vec!["./tool-server".to_string()]);
+            }
+            other => panic!("expected explicit process runtime, got {other:?}"),
+        }
+        assert!(parsed.runtime_digest.is_none());
+    }
+
+    #[test]
+    fn scaffolded_metadata_emits_sandbox_runtime_block_when_requested() {
+        let mut ctx = ctx(Language::Rust);
+        ctx.runtime = Runtime::Sandbox;
+        ctx.sandbox_image =
+            Some("ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111".to_string());
+        ctx.runtime_digest = Some(
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222".to_string(),
+        );
+        ctx.sandbox_entrypoint = vec!["/app/tool-adapter".to_string()];
+
+        let raw = metadata_json::generate(&ctx);
+        let parsed: baml_rt_tools::external_tools::ExternalToolMetadata =
+            serde_json::from_str(&raw).expect("metadata parses");
+
+        match parsed.runtime {
+            Some(ToolRuntime::Sandbox(spec)) => {
+                assert!(spec.image.contains("@sha256:"));
+                assert_eq!(spec.entrypoint, vec!["/app/tool-adapter".to_string()]);
+            }
+            other => panic!("expected sandbox runtime, got {other:?}"),
+        }
+        assert_eq!(
+            parsed.runtime_digest.as_deref(),
+            Some("sha256:2222222222222222222222222222222222222222222222222222222222222222")
+        );
     }
 }

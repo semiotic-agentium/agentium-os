@@ -3,6 +3,7 @@
 pub(crate) mod agent_discovery;
 pub mod build;
 pub mod chat;
+pub mod check_external_tool;
 pub mod deploy;
 pub mod doctor;
 pub mod list_agents;

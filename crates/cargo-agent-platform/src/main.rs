@@ -23,6 +23,7 @@
 //! - `regen` — Regenerate type declarations for all agents
 //! - `doctor` — Validate workspace integrity
 //! - `chat` — Interactive terminal chat with a deployed agent
+//! - `check-external-tool` — Validate tool metadata schema/runtime compatibility
 
 mod commands;
 mod event_schemas;
@@ -39,7 +40,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use commands::{
     new_tool::RunMode, publish::PublishOriginArg, utils::resolve_runner_token,
 };
-use templates::external_tool::{Access, DEFAULT_BUNDLE, Language};
+use templates::external_tool::{Access, DEFAULT_BUNDLE, Language, Runtime};
 
 /// Agent Platform SDK CLI
 ///
@@ -79,6 +80,22 @@ enum Commands {
         /// Access level: read (default), write, or delete
         #[arg(long, value_enum)]
         access: Option<Access>,
+
+        /// Runtime declaration to scaffold into tool-metadata.json
+        #[arg(long, value_enum, default_value_t = Runtime::Process)]
+        runtime: Runtime,
+
+        /// Sandbox image reference (`...@sha256:...`) when --runtime sandbox
+        #[arg(long)]
+        sandbox_image: Option<String>,
+
+        /// Runtime identity digest (`sha256:...`) when --runtime sandbox
+        #[arg(long)]
+        runtime_digest: Option<String>,
+
+        /// Optional sandbox entrypoint argv, comma-separated
+        #[arg(long, value_delimiter = ',')]
+        sandbox_entrypoint: Vec<String>,
 
         /// Human-readable description for this tool
         #[arg(long)]
@@ -276,6 +293,13 @@ enum Commands {
         names: Vec<String>,
     },
 
+    /// Validate standalone external tool metadata against schema + runtime parser
+    CheckExternalTool {
+        /// Path to external tool directory (contains tool-metadata.json)
+        #[arg(long, default_value = ".")]
+        path: String,
+    },
+
     /// Validate workspace integrity
     Doctor {
         /// Exit non-zero on any issue (for CI)
@@ -319,6 +343,12 @@ fn parse_language_or_default(raw: &str) -> Language {
     Language::from_str(raw.trim(), true).unwrap_or(Language::Rust)
 }
 
+/// Parse an interactive-prompt string into a [`Runtime`]; fall back to Process
+/// when the user typed something unexpected.
+fn parse_runtime_or_default(raw: &str) -> Runtime {
+    Runtime::from_str(raw.trim(), true).unwrap_or(Runtime::Process)
+}
+
 fn main() -> anyhow::Result<()> {
     // Force-link all tools so the inventory is complete
     baml_tool_links::force_link_all_tools!();
@@ -339,6 +369,10 @@ fn main() -> anyhow::Result<()> {
             bundle,
             lang,
             access,
+            runtime,
+            sandbox_image,
+            runtime_digest,
+            sandbox_entrypoint,
             description,
             output,
             dry_run,
@@ -384,6 +418,32 @@ fn main() -> anyhow::Result<()> {
                 lang
             };
 
+            let runtime = if interactive {
+                parse_runtime_or_default(&interactive::prompt_external_tool_runtime()?)
+            } else {
+                runtime
+            };
+
+            let (sandbox_image, runtime_digest, sandbox_entrypoint) = if runtime == Runtime::Sandbox
+            {
+                let image = match sandbox_image {
+                    Some(v) if !interactive => v,
+                    _ => interactive::prompt_external_tool_sandbox_image()?,
+                };
+                let digest = match runtime_digest {
+                    Some(v) if !interactive => v,
+                    _ => interactive::prompt_external_tool_runtime_digest()?,
+                };
+                let entrypoint = if interactive {
+                    interactive::prompt_external_tool_sandbox_entrypoint()?
+                } else {
+                    sandbox_entrypoint
+                };
+                (Some(image), Some(digest), entrypoint)
+            } else {
+                (None, None, Vec::new())
+            };
+
             // Interactive flow always gets a confirm prompt so a mistyped
             // choice is still recoverable; non-interactive honours --dry-run.
             let mode = if interactive {
@@ -399,6 +459,10 @@ fn main() -> anyhow::Result<()> {
                 &bundle,
                 lang,
                 access,
+                runtime,
+                sandbox_image.as_deref(),
+                runtime_digest.as_deref(),
+                &sandbox_entrypoint,
                 &description,
                 output.as_deref(),
                 mode,
@@ -599,6 +663,8 @@ fn main() -> anyhow::Result<()> {
         Commands::ListDeployedInstances { url } => commands::list_deployed_instances::run(&url),
 
         Commands::Regen { names } => commands::regen::run(&names),
+
+        Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
 
         Commands::Doctor {
             ci,

@@ -2931,6 +2931,7 @@ dependencies = [
  "futures-util",
  "indicatif",
  "inquire 0.7.5",
+ "jsonschema",
  "regex",
  "reqwest 0.12.26",
  "reqwest-eventsource",

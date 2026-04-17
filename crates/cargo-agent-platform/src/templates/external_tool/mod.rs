@@ -93,6 +93,22 @@ impl Access {
     }
 }
 
+/// Runtime target encoded in scaffolded `tool-metadata.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Runtime {
+    Process,
+    Sandbox,
+}
+
+impl Runtime {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Process => "process",
+            Self::Sandbox => "sandbox",
+        }
+    }
+}
+
 /// Language the tool is authored in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Language {
@@ -146,6 +162,14 @@ pub struct ScaffoldContext<'a> {
     pub access: Access,
     pub language: Language,
     pub description: &'a str,
+    /// Runtime metadata block to emit in `tool-metadata.json`.
+    pub runtime: Runtime,
+    /// Sandbox image reference (`image@sha256:...`) when runtime is sandbox.
+    pub sandbox_image: Option<String>,
+    /// Runtime identity digest (`sha256:...`) when runtime is sandbox.
+    pub runtime_digest: Option<String>,
+    /// Optional sandbox entrypoint argv.
+    pub sandbox_entrypoint: Vec<String>,
 }
 
 impl<'a> ScaffoldContext<'a> {

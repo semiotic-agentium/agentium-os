@@ -40,6 +40,19 @@ impl std::fmt::Display for AccessOption {
     }
 }
 
+/// Runtime options for external tool metadata scaffold.
+#[derive(Debug, Clone)]
+pub struct ExternalToolRuntimeOption {
+    pub value: &'static str,
+    pub label: &'static str,
+}
+
+impl std::fmt::Display for ExternalToolRuntimeOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label)
+    }
+}
+
 /// Language options for new-tool (external scaffold).
 #[derive(Debug, Clone)]
 pub struct ExternalToolLanguageOption {
@@ -180,6 +193,26 @@ pub fn prompt_tool_description() -> Result<String> {
     Ok(description.trim().to_string())
 }
 
+/// Prompt for external tool runtime metadata kind.
+pub fn prompt_external_tool_runtime() -> Result<String> {
+    let options = vec![
+        ExternalToolRuntimeOption {
+            value: "process",
+            label: "process (default) - local tool-server executable",
+        },
+        ExternalToolRuntimeOption {
+            value: "sandbox",
+            label: "sandbox - metadata targets microsandbox backend",
+        },
+    ];
+
+    let selected = Select::new("Runtime:", options)
+        .with_help_message("Choose runtime declaration written into tool-metadata.json")
+        .prompt()?;
+
+    Ok(selected.value.to_string())
+}
+
 /// Prompt for external tool language.
 pub fn prompt_external_tool_language() -> Result<String> {
     let options = vec![
@@ -206,6 +239,49 @@ pub fn prompt_external_tool_language() -> Result<String> {
         .prompt()?;
 
     Ok(selected.value.to_string())
+}
+
+/// Prompt for sandbox image reference (`...@sha256:...`).
+pub fn prompt_external_tool_sandbox_image() -> Result<String> {
+    let image = Text::new("Sandbox image:")
+        .with_help_message("Digest-pinned image ref, e.g. ghcr.io/org/tool@sha256:<64hex>")
+        .prompt()?;
+    let trimmed = image.trim();
+    if trimmed.is_empty() {
+        bail!("Sandbox image cannot be empty when runtime is sandbox");
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Prompt for runtime identity digest (`sha256:<64hex>`).
+pub fn prompt_external_tool_runtime_digest() -> Result<String> {
+    let digest = Text::new("Runtime digest:")
+        .with_help_message("Runtime identity digest, e.g. sha256:<64hex>")
+        .prompt()?;
+    let trimmed = digest.trim();
+    if trimmed.is_empty() {
+        bail!("Runtime digest cannot be empty when runtime is sandbox");
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Prompt for optional sandbox entrypoint argv as comma-separated values.
+pub fn prompt_external_tool_sandbox_entrypoint() -> Result<Vec<String>> {
+    let raw = Text::new("Sandbox entrypoint (optional, comma-separated):")
+        .with_help_message("Example: /app/tool-adapter or leave blank to use image default")
+        .prompt()?;
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    Ok(trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
 }
 
 /// Prompt for external tool output directory.

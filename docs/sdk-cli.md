@@ -19,6 +19,7 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `list-event-sources` | List event source kinds and known schema versions |
 | `regen [names]...` | Regenerate type declarations for agents (all if omitted) |
 | `doctor` | Validate workspace integrity |
+| `check-external-tool --path <dir>` | Validate external tool metadata against schema + runtime parser |
 | `chat --agent <name>` | Interactive terminal chat with a deployed agent |
 
 ## Installation
@@ -80,7 +81,7 @@ cargo agent-platform deploy --hash <sha256> --url https://runner.example.com \
 
 ### `new-tool`
 
-Creates a standalone external tool scaffold that speaks the V1 tool protocol over stdio. This is the default path for most users — the tool lives in its own directory and the runner picks it up at deploy time via `BAML_EXTERNAL_TOOLS_DIR`. Omit `name` for interactive mode.
+Creates a standalone external tool scaffold that speaks the V1 tool protocol over stdio. This is the default path for most users — the tool lives in its own directory and the runner picks it up at deploy time via `BAML_EXTERNAL_TOOLS_DIR`. Omit `name` for interactive mode (the prompt now includes runtime selection: `process` or `sandbox`).
 
 ```bash
 cargo agent-platform new-tool [name] [options]
@@ -92,16 +93,25 @@ cargo agent-platform new-tool [name] [options]
 | `--bundle <bundle>` | `support` | Bundle namespace. Free-form (e.g. `support`, `travel`, `acme`). Must be non-empty and contain no `/`. Validated against `baml_rt_tools::BundleName` at scaffold and runtime. |
 | `--lang <lang>` | `rust` | Scaffold language: `rust`, `bash`, `python`, `typescript` |
 | `--access <level>` | `read` | `read` (query-only), `write` (create/update), or `delete` (strictest level) |
+| `--runtime <kind>` | `process` | Metadata runtime: `process` or `sandbox` |
+| `--sandbox-image <ref@sha256:...>` | — | Required when `--runtime sandbox` |
+| `--runtime-digest <sha256:...>` | — | Required when `--runtime sandbox` |
+| `--sandbox-entrypoint <argv,...>` | — | Optional comma-separated entrypoint argv for sandbox runtime |
 | `--description <text>` | `""` | Human-readable description written into metadata |
 | `--output <dir>` | `./<name>` | Output directory for standalone tool project |
 | `--dry-run` | off | Preview changes without writing files (non-interactive only) |
 
-Generated scaffold always includes `tool-metadata.json`, `tool-server`, and `README.md`, plus language-specific files.
+Generated scaffold always includes `tool-metadata.json`, `tool-server`, and `README.md`, plus language-specific files. `tool-metadata.json` always emits an explicit `runtime` block (`process` by default, or `sandbox` when selected).
 
 ```bash
 cargo agent-platform new-tool echo --lang bash --output ./echo-tool
 cargo agent-platform new-tool weather --lang typescript --access write
 cargo agent-platform new-tool flight-search --lang rust --bundle travel
+cargo agent-platform new-tool secure-devtool \
+  --runtime sandbox \
+  --sandbox-image ghcr.io/acme/secure-devtool@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --runtime-digest sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 \
+  --sandbox-entrypoint /app/tool-adapter
 ```
 
 ---
@@ -407,6 +417,23 @@ Run after adding/modifying tools or BAML schemas, and before committing.
 cargo agent-platform regen
 cargo agent-platform regen clickup-agent notion-agent
 ```
+
+---
+
+### `check-external-tool`
+
+Validates a standalone external tool's `tool-metadata.json` against:
+
+1. `schemas/external_tool_metadata.schema.json`
+2. The runtime typed parser (`ExternalToolMetadata`)
+
+```bash
+cargo agent-platform check-external-tool --path ./echo-tool
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--path <dir>` | `.` | Tool directory containing `tool-metadata.json` |
 
 ---
 
