@@ -26,6 +26,8 @@ use baml_rt_tools::{
         BUILDER_EXTERNAL_TOOLS_ENV, DevModeResolver, EXTERNAL_TOOLS_LOCKFILE_NAME,
         ExternalLifecycleEvent, ExternalLifecycleRecorder, ExternalLockfileMode,
         ExternalToolsLockfile,
+        resolver::SandboxRuntimeWiring,
+        sandbox::{MockSandboxProvider, SandboxProvider, fresh_runner_id, stock_wiring},
     },
     register_manifest_tools_with_fallback,
 };
@@ -147,10 +149,12 @@ impl AgentPackage {
         let lifecycle_writer: Arc<dyn ProvenanceWriter> = provenance_store.clone();
         let lifecycle_recorder = build_external_lifecycle_recorder(lifecycle_writer);
         let lockfile_path = self.extract_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
+        let sandbox_wiring = build_sandbox_wiring()?;
         let external_resolver = build_dev_mode_resolver(
             Some(lifecycle_recorder),
             &lockfile_path,
             ExternalLockfileMode::from_env(),
+            sandbox_wiring,
         )
         .await?;
 
@@ -544,10 +548,49 @@ fn build_external_lifecycle_recorder(
 ///
 /// Value is a colon-separated list of tool package directories. Returns `None`
 /// when the env var is absent or empty, meaning "no external tools in dev mode".
+/// Env var controlling the sandbox backend used by this runner.
+///
+/// - unset / `off` / empty → no sandbox provider; sandbox-declared tools
+///   fail at resolve time with a clear message.
+/// - `mock`               → [`MockSandboxProvider::echo`] (dev / fixture
+///   mode; no VM required).
+/// - `microsandbox`       → real microsandbox backend; requires the
+///   `sandbox-provider` cargo feature to be built in.
+pub const SANDBOX_PROVIDER_ENV: &str = "BAML_SANDBOX_PROVIDER";
+
+fn build_sandbox_wiring() -> Result<Option<SandboxRuntimeWiring>> {
+    let raw = std::env::var(SANDBOX_PROVIDER_ENV).unwrap_or_default();
+    let kind = raw.trim().to_ascii_lowercase();
+    match kind.as_str() {
+        "" | "off" => Ok(None),
+        "mock" => {
+            let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::echo());
+            Ok(Some(stock_wiring(provider, fresh_runner_id())))
+        }
+        "microsandbox" => {
+            #[cfg(feature = "sandbox-provider")]
+            {
+                use baml_rt_tools::external_tools::sandbox::MicrosandboxProvider;
+                let provider: Arc<dyn SandboxProvider> = Arc::new(MicrosandboxProvider::new()?);
+                Ok(Some(stock_wiring(provider, fresh_runner_id())))
+            }
+            #[cfg(not(feature = "sandbox-provider"))]
+            Err(BamlRtError::InvalidArgument(
+                "BAML_SANDBOX_PROVIDER=microsandbox requires building with the 'sandbox-provider' cargo feature"
+                    .to_string(),
+            ))
+        }
+        other => Err(BamlRtError::InvalidArgument(format!(
+            "unknown {SANDBOX_PROVIDER_ENV}='{other}'; expected 'off', 'mock', or 'microsandbox'"
+        ))),
+    }
+}
+
 async fn build_dev_mode_resolver(
     lifecycle_recorder: Option<ExternalLifecycleRecorder>,
     lockfile_path: &Path,
     lockfile_mode: ExternalLockfileMode,
+    sandbox: Option<SandboxRuntimeWiring>,
 ) -> Result<Option<Box<dyn ExternalToolResolver>>> {
     let lockfile = if lockfile_path.exists() {
         match ExternalToolsLockfile::read_from_path(lockfile_path) {
@@ -633,9 +676,27 @@ async fn build_dev_mode_resolver(
         "Loading external tools from BAML_EXTERNAL_TOOLS_DIR"
     );
 
-    let resolver =
-        DevModeResolver::from_dirs_with_policy(&dirs, lockfile, lockfile_mode, lifecycle_recorder)
-            .await?;
+    let resolver = match sandbox {
+        Some(wiring) => {
+            DevModeResolver::from_dirs_with_sandbox(
+                &dirs,
+                lockfile,
+                lockfile_mode,
+                lifecycle_recorder,
+                wiring,
+            )
+            .await?
+        }
+        None => {
+            DevModeResolver::from_dirs_with_policy(
+                &dirs,
+                lockfile,
+                lockfile_mode,
+                lifecycle_recorder,
+            )
+            .await?
+        }
+    };
     Ok(Some(Box::new(resolver)))
 }
 
@@ -807,8 +868,13 @@ mod tests {
         );
 
         let missing_lockfile = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
-        let result =
-            build_dev_mode_resolver(None, &missing_lockfile, ExternalLockfileMode::Enforce).await;
+        let result = build_dev_mode_resolver(
+            None,
+            &missing_lockfile,
+            ExternalLockfileMode::Enforce,
+            None,
+        )
+        .await;
 
         remove_env(BUILDER_EXTERNAL_TOOLS_ENV);
 
@@ -848,13 +914,17 @@ mod tests {
             .write_to_path(&lockfile_path)
             .expect("write lockfile");
 
-        let err =
-            match build_dev_mode_resolver(None, &lockfile_path, ExternalLockfileMode::Permissive)
-                .await
-            {
-                Ok(_) => panic!("env unset with lockfile entries should fail with explicit error"),
-                Err(err) => err,
-            };
+        let err = match build_dev_mode_resolver(
+            None,
+            &lockfile_path,
+            ExternalLockfileMode::Permissive,
+            None,
+        )
+        .await
+        {
+            Ok(_) => panic!("env unset with lockfile entries should fail with explicit error"),
+            Err(err) => err,
+        };
         let msg = err.to_string();
         assert!(
             msg.contains(BUILDER_EXTERNAL_TOOLS_ENV) && msg.contains("external tool"),
@@ -877,10 +947,14 @@ mod tests {
         let bad_lockfile = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
         fs::write(&bad_lockfile, b"{not-json").expect("write malformed lockfile");
 
-        let resolver =
-            build_dev_mode_resolver(None, &bad_lockfile, ExternalLockfileMode::Permissive)
-                .await
-                .expect("permissive mode should continue with malformed lockfile");
+        let resolver = build_dev_mode_resolver(
+            None,
+            &bad_lockfile,
+            ExternalLockfileMode::Permissive,
+            None,
+        )
+        .await
+        .expect("permissive mode should continue with malformed lockfile");
         remove_env(BUILDER_EXTERNAL_TOOLS_ENV);
 
         assert!(resolver.is_some(), "resolver should still be constructed");

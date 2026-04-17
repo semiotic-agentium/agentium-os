@@ -20,6 +20,7 @@ pub mod microsandbox_provider;
 pub mod mock;
 pub mod provider;
 pub mod spec;
+pub mod wiring;
 
 #[cfg(test)]
 mod tests;
@@ -34,4 +35,8 @@ pub use spec::{
     Destination, DestinationGroup, ImageDigest, NetworkPolicy, NetworkRule, PortMapping, Protocol,
     PullPolicy, SandboxEvent, SandboxHandle, SandboxSpec, SecretBinding, SecretBindingMode,
     VolumeMount,
+};
+pub use wiring::{
+    DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MAX_DURATION_SECS, default_spec_factory, fresh_runner_id,
+    stock_wiring,
 };
