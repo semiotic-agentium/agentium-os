@@ -1255,6 +1255,7 @@ pub enum ToolOrigin {
 ///
 /// - `Static`: compiled into the runner at build time and linked via inventory.
 /// - `External`: resolved at deploy time and spawned as a subprocess per invocation.
+/// - `Sandbox`: runs inside a microsandbox-backed microVM; dispatch lands in Workstream B.
 /// - `Wasm`: loaded per invocation into a Wasm sandbox (future).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolBackend {
@@ -1263,6 +1264,8 @@ pub enum ToolBackend {
     Static,
     /// Runs as a standalone process speaking the tool protocol over stdio/UDS.
     External,
+    /// Runs inside a microsandbox-backed microVM (Workstream B).
+    Sandbox,
     /// Runs inside a Wasm sandbox (future).
     Wasm,
 }

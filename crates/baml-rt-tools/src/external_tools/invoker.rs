@@ -66,6 +66,32 @@ pub trait ExternalInvoker: Send + Sync {
     async fn invoke(&self, req: InvokeRequest) -> Result<InvokeResponse>;
 }
 
+/// Backend-agnostic invoker surface (Workstream A of `tool_sandbox.md` §7.2).
+///
+/// Introduced so future [`SandboxInvoker`](super) and [`WasmInvoker`](super)
+/// implementations share one trait. The blanket impl below means every
+/// existing [`ExternalInvoker`] is already a `ToolInvoker`, so adding the
+/// abstraction is a zero-behavior-change refactor.
+///
+/// Future workstreams may rename `ExternalInvoker` to `ProcessInvoker` and
+/// collapse the two traits into one; keeping them split in Workstream A
+/// avoids cascading refactors across call sites.
+#[async_trait]
+pub trait ToolInvoker: Send + Sync {
+    async fn describe(&self, tool: &ToolName, timeout: Duration) -> Result<ToolDescribe>;
+    async fn invoke(&self, req: InvokeRequest) -> Result<InvokeResponse>;
+}
+
+#[async_trait]
+impl<T: ExternalInvoker + ?Sized> ToolInvoker for T {
+    async fn describe(&self, tool: &ToolName, timeout: Duration) -> Result<ToolDescribe> {
+        <Self as ExternalInvoker>::describe(self, tool, timeout).await
+    }
+    async fn invoke(&self, req: InvokeRequest) -> Result<InvokeResponse> {
+        <Self as ExternalInvoker>::invoke(self, req).await
+    }
+}
+
 /// Map a JSON-RPC error to a [`BamlRtError`] with preserved classification.
 ///
 /// Reads `error.data.error_class` when present; missing/unknown classes default

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::protocol::PROTOCOL_VERSION;
+use super::{protocol::PROTOCOL_VERSION, runtime::ToolRuntime};
 use crate::{
     ToolName,
     tools::{
@@ -65,6 +65,15 @@ pub struct ExternalToolMetadata {
     /// Bundle key for config store lookup (optional).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_bundle: Option<String>,
+    /// Optional execution-runtime declaration. Missing => process mode with
+    /// the wrapper default (§4.2 of `tool_sandbox.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<ToolRuntime>,
+    /// Runtime identity digest for sandbox runtimes (`sha256:<hex>`).
+    ///
+    /// Required when `runtime.kind == "sandbox"`; omitted for process tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_digest: Option<String>,
 }
 
 impl ExternalToolMetadata {
@@ -98,6 +107,8 @@ impl ExternalToolMetadata {
             secrets: Vec::new(),
             capabilities: Value::Object(Default::default()),
             config_bundle: None,
+            runtime: None,
+            runtime_digest: None,
         }
     }
 
@@ -351,5 +362,76 @@ pub(crate) fn sort_json_keys(value: &Value) -> Value {
         }
         Value::Array(values) => Value::Array(values.iter().map(sort_json_keys).collect()),
         _ => value.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::external_tools::SandboxRuntimeSpec;
+
+    #[test]
+    fn metadata_deserializes_without_runtime_fields_for_back_compat() {
+        let raw = serde_json::json!({
+            "tool_abi_version": "1",
+            "name": "support/echo",
+            "description": "echo",
+            "bundle": "support",
+            "local_name": "echo",
+            "access_level": "read",
+            "invocation_mode": "single_shot",
+            "schemas": {
+                "input": {"type": "object"},
+                "output": {"type": "object"}
+            },
+            "secrets": [],
+            "capabilities": {}
+        });
+
+        let parsed: ExternalToolMetadata =
+            serde_json::from_value(raw).expect("legacy metadata should parse");
+        assert!(parsed.runtime.is_none());
+        assert!(parsed.runtime_digest.is_none());
+    }
+
+    #[test]
+    fn metadata_deserializes_sandbox_runtime_with_digest() {
+        let raw = serde_json::json!({
+            "tool_abi_version": "1",
+            "name": "support/sbox",
+            "description": "sandbox",
+            "bundle": "support",
+            "local_name": "sbox",
+            "access_level": "read",
+            "invocation_mode": "single_shot",
+            "schemas": {
+                "input": {"type": "object"},
+                "output": {"type": "object"}
+            },
+            "secrets": [],
+            "capabilities": {},
+            "runtime": {
+                "kind": "sandbox",
+                "image": "ghcr.io/org/tool@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "entrypoint": ["/app/tool-adapter"]
+            },
+            "runtime_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        });
+
+        let parsed: ExternalToolMetadata =
+            serde_json::from_value(raw).expect("sandbox metadata should parse");
+
+        match parsed.runtime {
+            Some(ToolRuntime::Sandbox(SandboxRuntimeSpec { image, entrypoint })) => {
+                assert!(image.starts_with("ghcr.io/"));
+                assert_eq!(entrypoint, vec!["/app/tool-adapter".to_string()]);
+            }
+            other => panic!("expected sandbox runtime, got {other:?}"),
+        }
+
+        assert_eq!(
+            parsed.runtime_digest.as_deref(),
+            Some("sha256:2222222222222222222222222222222222222222222222222222222222222222")
+        );
     }
 }

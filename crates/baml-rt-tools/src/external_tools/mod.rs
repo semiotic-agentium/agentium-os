@@ -14,13 +14,14 @@ pub mod metadata_catalog;
 pub mod policy;
 pub mod protocol;
 pub mod resolver;
+pub mod runtime;
 pub mod stdio;
 
 use std::sync::Arc;
 
 pub use handler::{ProcessToolHandler, ProcessToolSession};
 pub use invoker::{
-    ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, map_jsonrpc_error,
+    ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, ToolInvoker, map_jsonrpc_error,
 };
 pub use lockfile::{
     EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode, ExternalToolLockEntry,
@@ -44,6 +45,9 @@ pub use protocol::{
     ToolDescribeResult, ToolInvokeParams, ToolInvokeResult,
 };
 pub use resolver::DevModeResolver;
+pub use runtime::{
+    DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxRuntimeSpec, ToolRuntime, ToolRuntimeKind,
+};
 use serde_json::Value;
 pub use stdio::StdioSubprocessInvoker;
 
