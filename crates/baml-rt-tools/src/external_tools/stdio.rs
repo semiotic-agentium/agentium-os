@@ -27,7 +27,8 @@ use tracing::{debug, warn};
 use super::{
     invoker::{ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, map_jsonrpc_error},
     protocol::{
-        JsonRpcRequest, JsonRpcResponse, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult,
+        JsonRpcRequest, JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, ToolDescribeResult,
+        ToolInvokeParams, ToolInvokeResult,
     },
 };
 use crate::ToolName;
@@ -187,7 +188,7 @@ impl StdioSubprocessInvoker {
 impl ExternalInvoker for StdioSubprocessInvoker {
     async fn describe(&self, tool: &ToolName, call_timeout: Duration) -> Result<ToolDescribe> {
         let params = serde_json::json!({ "tool_name": tool.to_string() });
-        let request = JsonRpcRequest::new("tool/describe", self.next_request_id(), params);
+        let request = JsonRpcRequest::new(METHOD_DESCRIBE, self.next_request_id(), params);
         let response = self.call_once(&request, call_timeout).await?;
 
         if let Some(err) = response.error {
@@ -218,7 +219,7 @@ impl ExternalInvoker for StdioSubprocessInvoker {
                 message: "failed to serialize tool/invoke params".into(),
                 source: Box::new(e),
             })?;
-        let request = JsonRpcRequest::new("tool/invoke", self.next_request_id(), params_value);
+        let request = JsonRpcRequest::new(METHOD_INVOKE, self.next_request_id(), params_value);
         let response = self.call_once(&request, req.timeout).await?;
 
         if let Some(err) = response.error {

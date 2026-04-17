@@ -23,11 +23,11 @@ use super::{
     invoker::{ExternalInvoker, ToolDescribe},
     lockfile::{ExternalLockfileMode, ExternalToolsLockfile},
     metadata::{
-        RawToolMetadata, build_tool_metadata, compute_tool_digest, metadata_schema_hash,
-        read_raw_metadata,
+        ExternalToolMetadata, build_tool_metadata, compute_tool_digest, metadata_schema_hash,
+        read_external_metadata,
     },
     policy::{DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT},
-    protocol::PROTOCOL_VERSION,
+    protocol::{METHOD_INVOKE, PROTOCOL_VERSION},
     stdio::StdioSubprocessInvoker,
 };
 use crate::{
@@ -237,12 +237,12 @@ async fn load_tool_dir(
         )));
     }
 
-    let raw = read_raw_metadata(dir)?;
+    let meta = read_external_metadata(dir)?;
 
     if !bin_path.exists() {
         if let Some(recorder) = lifecycle_recorder {
             recorder(ExternalLifecycleEvent::Artifact {
-                tool_name: raw.name.clone(),
+                tool_name: meta.name.clone(),
                 artifact_ref: bin_path.display().to_string(),
                 digest: None,
                 signer: None,
@@ -257,9 +257,9 @@ async fn load_tool_dir(
         )));
     }
 
-    let tool_name = ToolName::parse(&raw.name)?;
+    let tool_name = ToolName::parse(&meta.name)?;
     let digest = compute_tool_digest(dir)?;
-    let mut metadata = build_tool_metadata(&raw, &tool_name)?;
+    let mut metadata = build_tool_metadata(&meta, &tool_name)?;
     metadata.digest = Some(digest.clone());
 
     if let Some(recorder) = lifecycle_recorder {
@@ -277,11 +277,11 @@ async fn load_tool_dir(
     let invoker = Arc::new(StdioSubprocessInvoker::new(bin_path.clone()));
     let describe =
         describe_with_cache(invoker.as_ref(), &tool_name, &bin_path, lifecycle_recorder).await?;
-    validate_describe_contract(&raw, &tool_name, &describe)?;
+    validate_describe_contract(&meta, &tool_name, &describe)?;
 
     let mut handler_builder =
         ProcessToolHandler::new(metadata.clone(), invoker, DEFAULT_INVOKE_TIMEOUT)
-            .with_capabilities(raw.capabilities.clone());
+            .with_capabilities(meta.capabilities.clone());
     if let Some(recorder) = lifecycle_recorder {
         handler_builder = handler_builder.with_lifecycle_recorder(recorder.clone());
     }
@@ -400,14 +400,14 @@ fn dev_identity(binary_path: &Path) -> Result<String> {
 }
 
 fn validate_describe_contract(
-    raw: &RawToolMetadata,
+    meta: &ExternalToolMetadata,
     tool_name: &ToolName,
     describe: &ToolDescribe,
 ) -> Result<()> {
-    if describe.tool_name != raw.name {
+    if describe.tool_name != meta.name {
         return Err(BamlRtError::InvalidArgument(format!(
             "external tool '{}' describe mismatch: metadata name '{}' != describe name '{}'",
-            tool_name, raw.name, describe.tool_name
+            tool_name, meta.name, describe.tool_name
         )));
     }
 
@@ -421,16 +421,16 @@ fn validate_describe_contract(
     if !describe
         .supported_methods
         .iter()
-        .any(|method| method == "tool/invoke")
+        .any(|method| method == METHOD_INVOKE)
     {
         return Err(BamlRtError::InvalidArgument(format!(
-            "external tool '{}' describe mismatch: supported_methods must include 'tool/invoke'",
-            tool_name
+            "external tool '{}' describe mismatch: supported_methods must include '{}'",
+            tool_name, METHOD_INVOKE
         )));
     }
 
     if let Some(describe_schema_hash) = describe.schema_hash.as_ref() {
-        let expected = metadata_schema_hash(raw);
+        let expected = metadata_schema_hash(meta);
         if describe_schema_hash != &expected {
             return Err(BamlRtError::InvalidArgument(format!(
                 "external tool '{}' describe mismatch: metadata schema hash '{}' != describe schema hash '{}'",
@@ -440,7 +440,7 @@ fn validate_describe_contract(
     }
 
     if let Some(describe_capabilities) = describe.capabilities.as_ref()
-        && describe_capabilities != &raw.capabilities
+        && describe_capabilities != &meta.capabilities
     {
         return Err(BamlRtError::InvalidArgument(format!(
             "external tool '{}' describe mismatch: metadata capabilities contradict describe capabilities",

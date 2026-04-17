@@ -23,8 +23,9 @@ use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdap
 use baml_rt_tools::{
     BundleRegistrar, ExternalToolResolver, ManifestToolNames, ToolAccessPolicy, ToolRegistry,
     external_tools::{
-        DevModeResolver, EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleEvent,
-        ExternalLifecycleRecorder, ExternalLockfileMode, ExternalToolsLockfile,
+        BUILDER_EXTERNAL_TOOLS_ENV, DevModeResolver, EXTERNAL_TOOLS_LOCKFILE_NAME,
+        ExternalLifecycleEvent, ExternalLifecycleRecorder, ExternalLockfileMode,
+        ExternalToolsLockfile,
     },
     register_manifest_tools_with_fallback,
 };
@@ -577,7 +578,7 @@ async fn build_dev_mode_resolver(
         None
     };
 
-    let raw = match std::env::var("BAML_EXTERNAL_TOOLS_DIR") {
+    let raw = match std::env::var(BUILDER_EXTERNAL_TOOLS_ENV) {
         Ok(v) if !v.trim().is_empty() => v,
         _ => {
             if let Some(lockfile) = lockfile.as_ref()
@@ -742,7 +743,10 @@ mod tests {
     use baml_rt_tools::external_tools::{ExternalToolLockEntry, ExternalToolsLockfile};
     use tempfile::tempdir;
 
-    use super::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode, build_dev_mode_resolver};
+    use super::{
+        BUILDER_EXTERNAL_TOOLS_ENV, EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode,
+        build_dev_mode_resolver,
+    };
 
     fn env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -803,7 +807,7 @@ mod tests {
         let tool_dir = temp.path().join("tool");
         write_tool_fixture(&tool_dir, "support/test");
         set_env(
-            "BAML_EXTERNAL_TOOLS_DIR",
+            BUILDER_EXTERNAL_TOOLS_ENV,
             tool_dir.to_str().expect("utf8 tool path"),
         );
 
@@ -811,7 +815,7 @@ mod tests {
         let result =
             build_dev_mode_resolver(None, &missing_lockfile, ExternalLockfileMode::Enforce).await;
 
-        remove_env("BAML_EXTERNAL_TOOLS_DIR");
+        remove_env(BUILDER_EXTERNAL_TOOLS_ENV);
 
         let err = match result {
             Ok(_) => panic!("enforce mode must fail when lockfile is missing"),
@@ -828,7 +832,7 @@ mod tests {
     async fn build_dev_mode_resolver_fails_with_entries_when_env_unset() {
         let _guard = env_lock().lock().expect("lock env mutex");
 
-        remove_env("BAML_EXTERNAL_TOOLS_DIR");
+        remove_env(BUILDER_EXTERNAL_TOOLS_ENV);
 
         let temp = tempdir().expect("tempdir");
         let lockfile_path = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
@@ -858,7 +862,7 @@ mod tests {
             };
         let msg = err.to_string();
         assert!(
-            msg.contains("BAML_EXTERNAL_TOOLS_DIR") && msg.contains("external tool"),
+            msg.contains(BUILDER_EXTERNAL_TOOLS_ENV) && msg.contains("external tool"),
             "unexpected error: {msg}"
         );
     }
@@ -871,7 +875,7 @@ mod tests {
         let tool_dir = temp.path().join("tool");
         write_tool_fixture(&tool_dir, "support/test");
         set_env(
-            "BAML_EXTERNAL_TOOLS_DIR",
+            BUILDER_EXTERNAL_TOOLS_ENV,
             tool_dir.to_str().expect("utf8 tool path"),
         );
 
@@ -882,7 +886,7 @@ mod tests {
             build_dev_mode_resolver(None, &bad_lockfile, ExternalLockfileMode::Permissive)
                 .await
                 .expect("permissive mode should continue with malformed lockfile");
-        remove_env("BAML_EXTERNAL_TOOLS_DIR");
+        remove_env(BUILDER_EXTERNAL_TOOLS_ENV);
 
         assert!(resolver.is_some(), "resolver should still be constructed");
     }

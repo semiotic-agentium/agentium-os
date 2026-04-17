@@ -266,7 +266,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        external_tools::invoker::{InvokeResponse, ToolDescribe},
+        external_tools::{
+            invoker::{InvokeResponse, ToolDescribe},
+            protocol::METHOD_INVOKE,
+        },
         tool_fsm::ToolSessionId,
         tools::{ToolAccess, ToolBackend, ToolOrigin, ToolSessionContext, ToolTypeSpec},
     };
@@ -303,7 +306,7 @@ mod tests {
             Ok(ToolDescribe {
                 protocol_version: "1".to_string(),
                 tool_name: tool.to_string(),
-                supported_methods: vec!["tool/invoke".to_string()],
+                supported_methods: vec![METHOD_INVOKE.to_string()],
                 max_payload_bytes: None,
                 schema_hash: None,
                 capabilities: None,
@@ -365,7 +368,7 @@ mod tests {
             Ok(ToolDescribe {
                 protocol_version: "1".to_string(),
                 tool_name: tool.to_string(),
-                supported_methods: vec!["tool/invoke".to_string()],
+                supported_methods: vec![METHOD_INVOKE.to_string()],
                 max_payload_bytes: None,
                 schema_hash: None,
                 capabilities: None,

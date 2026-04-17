@@ -38,21 +38,33 @@ use crate::{
     ts_gen::render_tool_typescript,
 };
 
+/// Access level a tool declares it needs. Serialized as lowercase
+/// (`"read"` / `"write"` / `"delete"`) so `tool-metadata.json` stays
+/// human-readable and matches the canonical spelling used by the runtime,
+/// builder, and CLI scaffolder.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolAccess {
     Read,
     Write,
     Delete,
 }
 
-impl std::fmt::Display for ToolAccess {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
+impl ToolAccess {
+    /// Canonical lowercase spelling used in `tool-metadata.json` and
+    /// everywhere the access level is serialized as a string.
+    pub fn as_str(self) -> &'static str {
+        match self {
             ToolAccess::Read => "read",
             ToolAccess::Write => "write",
             ToolAccess::Delete => "delete",
-        };
-        write!(f, "{}", value)
+        }
+    }
+}
+
+impl std::fmt::Display for ToolAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

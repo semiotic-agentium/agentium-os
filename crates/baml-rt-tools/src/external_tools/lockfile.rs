@@ -3,7 +3,7 @@ use std::{collections::HashMap, fs, path::Path};
 use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
 
-use super::metadata::{compute_tool_digest, read_raw_metadata};
+use super::metadata::{compute_tool_digest, read_external_metadata};
 use crate::ToolName;
 
 pub const EXTERNAL_TOOLS_LOCKFILE_NAME: &str = "external_tools.lock.json";
@@ -96,20 +96,20 @@ impl ExternalToolsLockfile {
         let mut seen = HashMap::<String, std::path::PathBuf>::new();
 
         for dir in dirs {
-            let raw = read_raw_metadata(dir)?;
+            let meta = read_external_metadata(dir)?;
             let digest = compute_tool_digest(dir)?;
-            if let Some(prev) = seen.insert(raw.name.clone(), dir.clone()) {
+            if let Some(prev) = seen.insert(meta.name.clone(), dir.clone()) {
                 return Err(BamlRtError::InvalidArgument(format!(
                     "duplicate external tool '{}' across lockfile sources: {} and {}",
-                    raw.name,
+                    meta.name,
                     prev.display(),
                     dir.display()
                 )));
             }
             entries.push(ExternalToolLockEntry {
-                name: raw.name,
+                name: meta.name,
                 digest,
-                abi_version: raw.tool_abi_version,
+                abi_version: meta.tool_abi_version,
                 protocol_version: "1".to_string(),
                 oci_ref: None,
                 platform: None,

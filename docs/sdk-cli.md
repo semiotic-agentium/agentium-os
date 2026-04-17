@@ -6,7 +6,8 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 
 | Command | Description |
 |---------|-------------|
-| `new-tool [name]` | Create a new tool crate with all necessary patches |
+| `new-tool [name]` | Create a standalone external tool scaffold (Rust/Bash/Python/TypeScript) — default path for most users |
+| `new-static-tool [name]` | Create a compiled-in static tool crate with workspace patches — platform-internal use |
 | `new-agent [name]` | Create a new agent package with templates |
 | `build [names]...` | Package agents into distributable tar.gz files |
 | `publish --agent-dir <path>` | Publish agent source bundle to repository |
@@ -79,10 +80,41 @@ cargo agent-platform deploy --hash <sha256> --url https://runner.example.com \
 
 ### `new-tool`
 
-Creates a new tool crate with all necessary file patches. Omit `name` for interactive mode.
+Creates a standalone external tool scaffold that speaks the V1 tool protocol over stdio. This is the default path for most users — the tool lives in its own directory and the runner picks it up at deploy time via `BAML_EXTERNAL_TOOLS_DIR`. Omit `name` for interactive mode.
 
 ```bash
 cargo agent-platform new-tool [name] [options]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `name` | *(interactive)* | Tool local name in kebab-case (e.g. `echo`) |
+| `--bundle <bundle>` | `support` | Bundle namespace. Free-form (e.g. `support`, `travel`, `acme`). Must be non-empty and contain no `/`. Validated against `baml_rt_tools::BundleName` at scaffold and runtime. |
+| `--lang <lang>` | `rust` | Scaffold language: `rust`, `bash`, `python`, `typescript` |
+| `--access <level>` | `read` | `read` (query-only), `write` (create/update), or `delete` (strictest level) |
+| `--description <text>` | `""` | Human-readable description written into metadata |
+| `--output <dir>` | `./<name>` | Output directory for standalone tool project |
+| `--dry-run` | off | Preview changes without writing files (non-interactive only) |
+
+Generated scaffold always includes `tool-metadata.json`, `tool-server`, and `README.md`, plus language-specific files.
+
+```bash
+cargo agent-platform new-tool echo --lang bash --output ./echo-tool
+cargo agent-platform new-tool weather --lang typescript --access write
+cargo agent-platform new-tool flight-search --lang rust --bundle travel
+```
+
+---
+
+### `new-static-tool`
+
+Creates a *static* tool crate — compiled into the platform workspace and linked
+at build time. Use this only when extending the platform itself (e.g. adding
+a system bundle); every other case should prefer `new-tool`, which produces a
+standalone external scaffold. Omit `name` for interactive mode.
+
+```bash
+cargo agent-platform new-static-tool [name] [options]
 ```
 
 | Option | Default | Description |
@@ -100,8 +132,8 @@ cargo agent-platform new-tool [name] [options]
 > If your tool needs runtime context (agent name, manifest data), also manually edit `optional_tool_bundles.rs` in runner and builder. See the `memory` tool for an example.
 
 ```bash
-cargo agent-platform new-tool github --dry-run
-cargo agent-platform new-tool github --access write --description "GitHub REST API"
+cargo agent-platform new-static-tool github --dry-run
+cargo agent-platform new-static-tool github --access write --description "GitHub REST API"
 ```
 
 ---

@@ -27,7 +27,7 @@ impl std::fmt::Display for BundleOption {
     }
 }
 
-/// Access level options for new-tool.
+/// Access level options for tool scaffolding.
 #[derive(Debug, Clone)]
 pub struct AccessOption {
     pub value: &'static str,
@@ -35,6 +35,19 @@ pub struct AccessOption {
 }
 
 impl std::fmt::Display for AccessOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label)
+    }
+}
+
+/// Language options for new-tool (external scaffold).
+#[derive(Debug, Clone)]
+pub struct ExternalToolLanguageOption {
+    pub value: &'static str,
+    pub label: &'static str,
+}
+
+impl std::fmt::Display for ExternalToolLanguageOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.label)
     }
@@ -92,13 +105,29 @@ pub fn prompt_bundle() -> Result<String> {
     }];
 
     let selected = Select::new("Bundle type:", options)
-        .with_help_message("Only 'support' is currently available")
+        .with_help_message("Only 'support' is currently available for static tool scaffolding")
         .prompt()?;
 
     Ok(selected.value.to_string())
 }
 
-/// Prompt for access level.
+/// Prompt for external tool bundle namespace.
+pub fn prompt_external_tool_bundle() -> Result<String> {
+    let raw = Text::new("Bundle namespace:")
+        .with_default("support")
+        .with_help_message(
+            "Any non-empty name without '/'. `support` is the default for integrations.",
+        )
+        .prompt()?;
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("Bundle name cannot be empty");
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Prompt for static tool access level.
 pub fn prompt_access() -> Result<String> {
     let options = vec![
         AccessOption {
@@ -118,6 +147,30 @@ pub fn prompt_access() -> Result<String> {
     Ok(selected.value.to_string())
 }
 
+/// Prompt for external tool access level.
+pub fn prompt_external_tool_access() -> Result<String> {
+    let options = vec![
+        AccessOption {
+            value: "read",
+            label: "read (default) - Query-only, no side effects",
+        },
+        AccessOption {
+            value: "write",
+            label: "write - Can create/update data",
+        },
+        AccessOption {
+            value: "delete",
+            label: "delete - Can remove data (strictest level)",
+        },
+    ];
+
+    let selected = Select::new("Access level:", options)
+        .with_help_message("Choose the external tool's permission level")
+        .prompt()?;
+
+    Ok(selected.value.to_string())
+}
+
 /// Prompt for tool description.
 pub fn prompt_tool_description() -> Result<String> {
     let description = Text::new("Description (optional):")
@@ -125,6 +178,44 @@ pub fn prompt_tool_description() -> Result<String> {
         .prompt()?;
 
     Ok(description.trim().to_string())
+}
+
+/// Prompt for external tool language.
+pub fn prompt_external_tool_language() -> Result<String> {
+    let options = vec![
+        ExternalToolLanguageOption {
+            value: "rust",
+            label: "rust (default) - Cargo project with src/main.rs",
+        },
+        ExternalToolLanguageOption {
+            value: "bash",
+            label: "bash - Single tool-server script (requires jq)",
+        },
+        ExternalToolLanguageOption {
+            value: "python",
+            label: "python - main.py + tool-server shim",
+        },
+        ExternalToolLanguageOption {
+            value: "typescript",
+            label: "typescript - src/main.ts compiled to dist/main.js",
+        },
+    ];
+
+    let selected = Select::new("Language:", options)
+        .with_help_message("Choose the scaffold language")
+        .prompt()?;
+
+    Ok(selected.value.to_string())
+}
+
+/// Prompt for external tool output directory.
+pub fn prompt_external_tool_output(default_dir: &str) -> Result<String> {
+    let output = Text::new("Output directory:")
+        .with_default(default_dir)
+        .with_help_message("Directory to create the standalone external tool scaffold")
+        .prompt()?;
+
+    Ok(output.trim().to_string())
 }
 
 // ---------------------------------------------------------------------------

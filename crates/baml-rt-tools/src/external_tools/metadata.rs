@@ -1,19 +1,24 @@
-//! Shared parsing for `tool-metadata.json`.
+//! External tool metadata — the contract for `tool-metadata.json`.
 //!
-//! Consumed by:
-//! - `resolver::DevModeResolver` — runtime, needs metadata + handler.
-//! - `metadata_catalog::ExternalMetadataCatalog` — build time, metadata only.
+//! [`ExternalToolMetadata`] is the public typed model for everything a scaffolder
+//! writes and the runtime reads. Keeping one struct means the CLI scaffolder
+//! (`cargo-agent-platform`), the build-time catalog
+//! ([`super::metadata_catalog::ExternalMetadataCatalog`]), and the runtime
+//! resolver ([`super::resolver::DevModeResolver`]) cannot drift from each
+//! other — field renames become compile errors, not schema mismatches.
 //!
-//! Keeping the parsing in one place guarantees the runner and builder agree
-//! on field semantics (the design doc calls this out as a hard invariant).
+//! Downstream machinery (secret requests, session policies, digest helpers)
+//! still lives here so there is a single place where the metadata file's
+//! semantics are defined.
 
 use std::{fs, path::Path};
 
 use baml_rt_core::{BamlRtError, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use super::protocol::PROTOCOL_VERSION;
 use crate::{
     ToolName,
     tools::{
@@ -22,47 +27,142 @@ use crate::{
     },
 };
 
-/// Raw shape of `tool-metadata.json` (deserialized then projected into
-/// [`ToolFunctionMetadata`] + [`SecretRequest`] + capability struct).
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)] // `bundle` / `local_name` are present for schema validation parity
-pub(crate) struct RawToolMetadata {
+/// Typed representation of `tool-metadata.json`.
+///
+/// The struct *is* the schema: renaming a field here is a compile-error for
+/// every consumer (CLI scaffolder writer, runtime reader). Optional fields use
+/// `Option<_>` / `#[serde(default)]` so hand-written metadata can omit them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalToolMetadata {
+    /// Protocol ABI version. V1 only accepts `"1"`.
     pub tool_abi_version: String,
+    /// Fully qualified tool name (`bundle/local_name`).
     pub name: String,
+    /// Human-readable description surfaced in discovery listings.
     pub description: String,
+    /// Bundle namespace (free-form; validated via [`BundleName`]).
     pub bundle: String,
+    /// Local tool name within the bundle.
     pub local_name: String,
-    pub access_level: String,
+    /// Permission level the tool needs; `read` / `write` / `delete`.
+    pub access_level: ToolAccess,
     #[serde(default)]
     pub tags: Vec<String>,
-    pub invocation_mode: String,
+    /// Invocation semantics — V1 supports single-shot only.
+    pub invocation_mode: InvocationMode,
+    /// FSM scheduling policy. Defaults to `Strict`.
     #[serde(default)]
-    pub session_policy: RawSessionPolicy,
-    pub schemas: RawSchemas,
+    pub session_policy: ExternalSessionPolicy,
+    /// Input and output JSON Schemas.
+    pub schemas: MetadataSchemas,
+    /// Secret names the runtime must resolve for this tool.
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Capability declaration (HTTP hosts, FS access, etc.). Free-form JSON
+    /// until Phase 2-full formalises it into a typed struct.
     #[serde(default)]
     pub capabilities: Value,
-    #[serde(default)]
+    /// Bundle key for config store lookup (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_bundle: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+impl ExternalToolMetadata {
+    /// Construct a single-shot external tool with default optional fields.
+    ///
+    /// The scaffolder uses this to avoid hand-rolling JSON; the runtime never
+    /// calls it (metadata comes in via `serde::Deserialize` on disk bytes).
+    pub fn new(
+        name: impl Into<String>,
+        bundle: impl Into<String>,
+        local_name: impl Into<String>,
+        access_level: ToolAccess,
+        description: impl Into<String>,
+        input_schema: Value,
+        output_schema: Value,
+    ) -> Self {
+        Self {
+            tool_abi_version: PROTOCOL_VERSION.to_string(),
+            name: name.into(),
+            description: description.into(),
+            bundle: bundle.into(),
+            local_name: local_name.into(),
+            access_level,
+            tags: Vec::new(),
+            invocation_mode: InvocationMode::SingleShot,
+            session_policy: ExternalSessionPolicy::default(),
+            schemas: MetadataSchemas {
+                input: input_schema,
+                output: output_schema,
+            },
+            secrets: Vec::new(),
+            capabilities: Value::Object(Default::default()),
+            config_bundle: None,
+        }
+    }
+
+    /// Set discovery tags on this metadata (builder-style).
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = tags;
+        self
+    }
+
+    /// Serialize to pretty JSON with trailing newline, the shape the CLI
+    /// writes into `tool-metadata.json`.
+    pub fn to_pretty_json(&self) -> Result<String> {
+        let mut out = serde_json::to_string_pretty(self).map_err(|e| {
+            BamlRtError::InvalidArgumentWithSource {
+                message: "failed to serialize external tool metadata".to_string(),
+                source: Box::new(e),
+            }
+        })?;
+        out.push('\n');
+        Ok(out)
+    }
+}
+
+/// Invocation semantics declared by the tool. V1 only supports single-shot
+/// (stateless spawn-per-invoke); streaming/keep-alive lands in a future phase
+/// and will add a new variant — the compiler enforces we handle it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum RawSessionPolicy {
+pub enum InvocationMode {
+    SingleShot,
+}
+
+/// Session policy encoded in the external metadata file. Separate from the
+/// runtime's [`SessionPolicy`] only because serde rename semantics differ;
+/// round-trips losslessly via [`ExternalSessionPolicy::to_session_policy`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalSessionPolicy {
     #[default]
     Strict,
     MultiSend,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct RawSchemas {
+impl ExternalSessionPolicy {
+    pub fn to_session_policy(self) -> SessionPolicy {
+        match self {
+            Self::Strict => SessionPolicy::Strict,
+            Self::MultiSend => SessionPolicy::MultiSend,
+        }
+    }
+}
+
+/// Input/output JSON Schemas carried in the metadata file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetadataSchemas {
     pub input: Value,
     pub output: Value,
 }
 
-/// Read and minimally validate `<dir>/tool-metadata.json`.
-pub(crate) fn read_raw_metadata(dir: &Path) -> Result<RawToolMetadata> {
+/// Read + validate `<dir>/tool-metadata.json` into the typed model.
+///
+/// Typed deserialization rejects malformed enums (e.g. an unknown
+/// `access_level`) before the runtime sees them, so there's no extra manual
+/// string-matching for access/session/invocation fields.
+pub fn read_external_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
     let metadata_path = dir.join("tool-metadata.json");
     let raw = std::fs::read_to_string(&metadata_path).map_err(|e| {
         BamlRtError::InvalidArgumentWithSource {
@@ -70,58 +170,49 @@ pub(crate) fn read_raw_metadata(dir: &Path) -> Result<RawToolMetadata> {
             source: Box::new(e),
         }
     })?;
-    let raw: RawToolMetadata =
+    let parsed: ExternalToolMetadata =
         serde_json::from_str(&raw).map_err(|e| BamlRtError::InvalidArgumentWithSource {
             message: format!("failed to parse {}", metadata_path.display()),
             source: Box::new(e),
         })?;
 
-    if raw.tool_abi_version != "1" {
+    if parsed.tool_abi_version != PROTOCOL_VERSION {
         return Err(BamlRtError::InvalidArgument(format!(
-            "external tool '{}' declares unsupported ABI version '{}' (expected '1')",
-            raw.name, raw.tool_abi_version
+            "external tool '{}' declares unsupported ABI version '{}' (expected '{}')",
+            parsed.name, parsed.tool_abi_version, PROTOCOL_VERSION
         )));
     }
-    if raw.invocation_mode != "single_shot" {
-        return Err(BamlRtError::InvalidArgument(format!(
-            "external tool '{}' declares unsupported invocation_mode '{}' (expected 'single_shot')",
-            raw.name, raw.invocation_mode
-        )));
-    }
-    Ok(raw)
+
+    Ok(parsed)
+}
+
+/// Deprecated alias kept for the old call sites still in migration.
+/// Remove once every caller points at [`read_external_metadata`].
+#[deprecated(note = "use read_external_metadata")]
+#[allow(dead_code)]
+pub(crate) fn read_raw_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
+    read_external_metadata(dir)
 }
 
 /// Project parsed metadata into the runtime [`ToolFunctionMetadata`] shape.
 pub(crate) fn build_tool_metadata(
-    raw: &RawToolMetadata,
+    meta: &ExternalToolMetadata,
     tool_name: &ToolName,
 ) -> Result<ToolFunctionMetadata> {
-    let access = match raw.access_level.as_str() {
-        "read" => Some(ToolAccess::Read),
-        "write" => Some(ToolAccess::Write),
-        "delete" => Some(ToolAccess::Delete),
-        other => {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "external tool '{}' has invalid access_level '{}'",
-                tool_name, other
-            )));
-        }
-    };
-
     let class_name = ToolFunctionMetadata::derive_class_name(tool_name.bundle(), tool_name.local());
 
-    let config_bundle = match &raw.config_bundle {
+    let config_bundle = match &meta.config_bundle {
         Some(s) => Some(BundleName::new(s)?),
         None => None,
     };
 
-    let secret_requests: Vec<SecretRequest> = raw
+    let secret_requests: Vec<SecretRequest> = meta
         .secrets
         .iter()
         .map(|s| {
             SecretRequest::api_key(
                 s.clone(),
-                format!("Required by external tool {}", raw.name),
+                format!("Required by external tool {}", meta.name),
                 s.clone(),
             )
         })
@@ -130,11 +221,11 @@ pub(crate) fn build_tool_metadata(
     Ok(ToolFunctionMetadata {
         name: tool_name.clone(),
         class_name: class_name.clone(),
-        description: raw.description.clone(),
+        description: meta.description.clone(),
         // External tools have no "open input" concept in V1 — single-shot invoke.
         open_input_schema: serde_json::json!({}),
-        input_schema: raw.schemas.input.clone(),
-        output_schema: raw.schemas.output.clone(),
+        input_schema: meta.schemas.input.clone(),
+        output_schema: meta.schemas.output.clone(),
         open_input_type: ToolTypeSpec {
             name: "()".to_string(),
             ts_decl: None,
@@ -149,8 +240,8 @@ pub(crate) fn build_tool_metadata(
         },
         baml_decl: None,
         extra_ts_decls: Vec::new(),
-        access,
-        tags: raw.tags.clone(),
+        access: Some(meta.access_level),
+        tags: meta.tags.clone(),
         secret_requests,
         config: None,
         config_bundle,
@@ -158,20 +249,17 @@ pub(crate) fn build_tool_metadata(
         backend: ToolBackend::External,
         digest: None,
         projection_semantics: None,
-        session_policy: match raw.session_policy {
-            RawSessionPolicy::Strict => SessionPolicy::Strict,
-            RawSessionPolicy::MultiSend => SessionPolicy::MultiSend,
-        },
+        session_policy: meta.session_policy.to_session_policy(),
         event_sources: Vec::new(),
     })
 }
 
 /// Canonical SHA-256 of the input+output schemas. Both runner and tool author
 /// must compute this identically for describe-mismatch detection to work.
-pub(crate) fn metadata_schema_hash(raw: &RawToolMetadata) -> String {
+pub(crate) fn metadata_schema_hash(meta: &ExternalToolMetadata) -> String {
     let payload = serde_json::json!({
-        "input": sort_json_keys(&raw.schemas.input),
-        "output": sort_json_keys(&raw.schemas.output),
+        "input": sort_json_keys(&meta.schemas.input),
+        "output": sort_json_keys(&meta.schemas.output),
     });
     let canonical = serde_json::to_string(&payload)
         .expect("serializing canonical tool schema payload should not fail");

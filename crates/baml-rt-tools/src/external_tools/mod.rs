@@ -9,7 +9,7 @@
 pub mod handler;
 pub mod invoker;
 pub mod lockfile;
-pub(crate) mod metadata;
+pub mod metadata;
 pub mod metadata_catalog;
 pub mod policy;
 pub mod protocol;
@@ -26,6 +26,10 @@ pub use lockfile::{
     EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode, ExternalToolLockEntry,
     ExternalToolsLockfile,
 };
+pub use metadata::{
+    ExternalSessionPolicy, ExternalToolMetadata, InvocationMode, MetadataSchemas,
+    compute_tool_digest, read_external_metadata,
+};
 pub use metadata_catalog::{
     BUILDER_EXTERNAL_TOOLS_ENV, ExternalMetadataCatalog, build_builder_catalog,
     external_dirs_from_env,
@@ -35,7 +39,8 @@ pub use policy::{
     DEFAULT_QUARANTINE_THRESHOLD, InvocationPolicy, PolicyError, QuarantineState, ToolQuota,
 };
 pub use protocol::{
-    ErrorClass, JsonRpcError, JsonRpcRequest, JsonRpcResponse, PROTOCOL_VERSION,
+    ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR, ErrorClass, JsonRpcError, JsonRpcRequest,
+    JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, PROTOCOL_VERSION, SUPPORTED_METHODS,
     ToolDescribeResult, ToolInvokeParams, ToolInvokeResult,
 };
 pub use resolver::DevModeResolver;

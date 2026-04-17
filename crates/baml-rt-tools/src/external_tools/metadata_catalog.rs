@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use baml_rt_core::{BamlRtError, Result};
 
-use super::metadata::{build_tool_metadata, read_raw_metadata};
+use super::metadata::{build_tool_metadata, read_external_metadata};
 use crate::{
     ToolName,
     tool_catalog::{CompositeCatalog, InventoryCatalog, ToolCatalog},
@@ -130,9 +130,9 @@ impl ToolCatalog for ExternalMetadataCatalog {
 }
 
 fn load_metadata(dir: &Path) -> Result<ToolFunctionMetadata> {
-    let raw = read_raw_metadata(dir)?;
-    let tool_name = ToolName::parse(&raw.name)?;
-    build_tool_metadata(&raw, &tool_name)
+    let meta = read_external_metadata(dir)?;
+    let tool_name = ToolName::parse(&meta.name)?;
+    build_tool_metadata(&meta, &tool_name)
 }
 
 #[cfg(test)]

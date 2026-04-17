@@ -15,6 +15,30 @@ use serde_json::Value;
 /// Protocol version supported by V1.
 pub const PROTOCOL_VERSION: &str = "1";
 
+/// Method name for the tool description handshake.
+pub const METHOD_DESCRIBE: &str = "tool/describe";
+
+/// Method name for invoking the tool.
+pub const METHOD_INVOKE: &str = "tool/invoke";
+
+/// Method names a V1 tool is expected to declare in its `tool/describe`
+/// response under `supported_methods`. Scaffolders render this list into the
+/// generated handler so CLI output and runtime contract stay aligned.
+///
+/// `tool/describe` itself is not in this list — it is the handshake that
+/// produces the list, not a member of it.
+pub const SUPPORTED_METHODS: &[&str] = &[METHOD_INVOKE];
+
+/// JSON-RPC 2.0 "Method not found" error code. Mirrors the spec constant.
+pub const ERR_METHOD_NOT_FOUND: i32 = -32601;
+
+/// JSON-RPC 2.0 "Parse error" error code. Used when the request is not valid JSON.
+pub const ERR_PARSE_ERROR: i32 = -32700;
+
+/// Application-defined server error code for generic tool execution failures.
+/// Mirrors the lower bound of the JSON-RPC 2.0 reserved implementation-defined range.
+pub const ERR_INTERNAL: i32 = -32000;
+
 /// JSON-RPC 2.0 request envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {

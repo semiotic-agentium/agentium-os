@@ -43,6 +43,7 @@ async fn tool_index_creates_tool_nodes() {
         access: None,
         origin: baml_rt_tools::ToolOrigin::Host,
         backend: baml_rt_tools::ToolBackend::default(),
+        digest: None,
         projection_semantics: None,
         event_sources: Vec::new(),
     }];
