@@ -13,6 +13,7 @@ use baml_rt_repository::{
 };
 use http_api_problem::HttpApiProblem;
 
+/// Publish an agent: build from source and store in repository (POST /repository/publish, operator-authenticated).
 pub async fn publish_with_build(
     State(svc): State<Arc<RepositoryService>>,
     Json(cmd): Json<PublishCommand>,

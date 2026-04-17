@@ -12,6 +12,7 @@ mod normalize;
 mod producer;
 pub(crate) mod socket_mode;
 mod spans;
+use tracing::Instrument;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
@@ -1515,19 +1516,23 @@ impl BamlTool for SlackTool {
             SlackInput::SearchMessages(_) => "SearchMessages",
         };
         let span = spans::execute(action);
-        let _guard = span.enter();
-        let mut output = match args {
-            SlackInput::ListConversations(input) => self.client.list_conversations(input).await,
-            SlackInput::GetConversationHistory(input) => {
-                self.client.get_conversation_history(input).await
-            }
-            SlackInput::GetThreadReplies(input) => self.client.get_thread_replies(input).await,
-            SlackInput::ResolveUsers(input) => self.client.resolve_users(input).await,
-            SlackInput::SearchMessages(input) => self.client.search_messages(input).await,
-        }?;
-        // Internal discriminator; omit from host / LLM-facing payloads.
-        output.operation = None;
-        Ok(output)
+
+        async {
+            let mut output = match args {
+                SlackInput::ListConversations(input) => self.client.list_conversations(input).await,
+                SlackInput::GetConversationHistory(input) => {
+                    self.client.get_conversation_history(input).await
+                }
+                SlackInput::GetThreadReplies(input) => self.client.get_thread_replies(input).await,
+                SlackInput::ResolveUsers(input) => self.client.resolve_users(input).await,
+                SlackInput::SearchMessages(input) => self.client.search_messages(input).await,
+            }?;
+            // Internal discriminator; omit from host / LLM-facing payloads.
+            output.operation = None;
+            Ok(output)
+        }
+        .instrument(span)
+        .await
     }
 
     fn describe_result(&self, output: &Self::Output) -> String {

@@ -1,0 +1,17 @@
+# Operator authentication token for the runner control plane.
+# Config mutations, secret mutations, deployment lifecycle, repository publish,
+# and migration endpoints require this token via the X-Runner-Token header.
+#
+# Generate a random token:
+#   openssl rand -hex 32
+#
+# Then create the secret:
+#   kubectl -n agentium create secret generic runner-token --from-literal=token=<your-token>
+apiVersion: v1
+kind: Secret
+metadata:
+  name: runner-token
+  namespace: agentium
+type: Opaque
+stringData:
+  token: "REPLACE_ME_WITH_GENERATED_TOKEN"

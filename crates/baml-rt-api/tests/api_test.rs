@@ -13,10 +13,11 @@ use axum::{
 };
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_api::{
-    ContextIndexError, ContextIndexRequest, ContextIndexService, ContextPickerPageDto,
+    ClusterMode, ContextIndexError, ContextIndexRequest, ContextIndexService, ContextPickerPageDto,
     ConversationHistoryError, ConversationHistoryPageDto, ConversationHistoryProfile,
     ConversationHistoryRequest, ConversationHistoryService, MermaidError, MermaidService,
     ProvenanceOpsError, ProvenanceOpsService, api_router, api_router_with_services,
+    api_router_with_services_and_deploy,
 };
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
@@ -1201,6 +1202,115 @@ async fn get_openapi_json_returns_spec() {
 }
 
 #[tokio::test]
+async fn get_openapi_json_with_repository_returns_repo_paths() {
+    let app = authed_test_router_with_repo(Some("secret"), ClusterMode::Cluster).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let spec: Value = serde_json::from_slice(&body).expect("valid openapi json");
+
+    // Read routes are present
+    assert!(
+        spec.pointer("/paths/~1repository~1agents").is_some(),
+        "/repository/agents should be in spec when repository is wired"
+    );
+    assert!(
+        spec.pointer("/paths/~1repository~1entries").is_some(),
+        "/repository/entries should be in spec when repository is wired"
+    );
+
+    // Mutation routes are present with RunnerToken security
+    let publish_security = spec
+        .pointer("/paths/~1repository~1publish/post/security")
+        .expect("/repository/publish should have security");
+    assert_eq!(
+        publish_security,
+        &serde_json::json!([{"RunnerToken": []}]),
+        "publish must require RunnerToken"
+    );
+
+    let tags_security = spec
+        .pointer("/paths/~1repository~1entries~1{hash}~1tags/post/security")
+        .expect("/repository/entries/{hash}/tags POST should have security");
+    assert_eq!(
+        tags_security,
+        &serde_json::json!([{"RunnerToken": []}]),
+        "add_tag must require RunnerToken"
+    );
+
+    // Repository tag is present
+    let tags = spec
+        .get("tags")
+        .and_then(Value::as_array)
+        .expect("tags array");
+    assert!(
+        tags.iter()
+            .any(|t| t.get("name").and_then(Value::as_str) == Some("repository")),
+        "repository tag should be present when repository is wired"
+    );
+}
+
+#[tokio::test]
+async fn get_openapi_json_repo_less_omits_repository_paths() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let app = api_router(registry, None, None).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let spec: Value = serde_json::from_slice(&body).expect("valid openapi json");
+
+    // No /repository/* paths in the spec
+    let paths = spec
+        .get("paths")
+        .and_then(Value::as_object)
+        .expect("paths object");
+    let repo_paths: Vec<&String> = paths
+        .keys()
+        .filter(|k| k.starts_with("/repository"))
+        .collect();
+    assert!(
+        repo_paths.is_empty(),
+        "repo-less router should not advertise /repository/* paths, found: {repo_paths:?}"
+    );
+
+    // No repository tag
+    let tags = spec
+        .get("tags")
+        .and_then(Value::as_array)
+        .expect("tags array");
+    assert!(
+        !tags
+            .iter()
+            .any(|t| t.get("name").and_then(Value::as_str) == Some("repository")),
+        "repository tag should not be present in repo-less router"
+    );
+}
+
+#[tokio::test]
 async fn post_a2a_returns_jsonrpc_array() {
     let registry: Arc<dyn AgentRegistry> = Arc::new(
         MockRegistry::with_entries(vec![discovery_entry("pkg", "default", "pkg", "1.0.0")])
@@ -1908,4 +2018,371 @@ async fn get_mermaid_context_emits_http_and_handler_spans() {
         "spans": spans_snapshot_for_test(&spans, "get_mermaid_context_emits_http_and_handler_spans"),
     });
     insta::assert_json_snapshot!(snapshot);
+}
+
+// ── Auth boundary tests ──────────────────────────────────────────────
+
+/// Build a router with explicit auth configuration for boundary tests.
+async fn authed_test_router(token: Option<&str>, mode: ClusterMode) -> axum::Router {
+    authed_test_router_inner(token, mode, None).await
+}
+
+#[tokio::test]
+async fn config_put_secret_requires_auth_in_cluster_mode() {
+    let app = authed_test_router(Some("secret"), ClusterMode::Cluster).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/config/secrets/MY_KEY")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"link_from":"SOME_STORE_KEY"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn config_delete_secret_requires_auth_in_cluster_mode() {
+    let app = authed_test_router(Some("secret"), ClusterMode::Cluster).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/config/secrets/MY_KEY")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn config_put_bundle_requires_auth_in_cluster_mode() {
+    let app = authed_test_router(Some("secret"), ClusterMode::Cluster).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/config/llm")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn config_delete_bundle_requires_auth_in_cluster_mode() {
+    let app = authed_test_router(Some("secret"), ClusterMode::Cluster).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/config/llm")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn deploy_requires_auth_in_cluster_mode() {
+    let app = authed_test_router(Some("secret"), ClusterMode::Cluster).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/deploy")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"hash":"abc123"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn config_reads_require_auth_in_cluster_mode() {
+    let app = authed_test_router(Some("secret"), ClusterMode::Cluster).await;
+
+    for path in [
+        "/config",
+        "/config/secrets-overview",
+        "/config/secrets/store-keys",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "GET {path} should require auth in cluster mode"
+        );
+    }
+}
+
+#[tokio::test]
+async fn config_reads_allowed_with_valid_token_in_cluster_mode() {
+    let app = authed_test_router(Some("secret"), ClusterMode::Cluster).await;
+
+    for path in [
+        "/config",
+        "/config/secrets-overview",
+        "/config/secrets/store-keys",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("X-Runner-Token", "secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "GET {path} with valid token should pass auth"
+        );
+    }
+}
+
+#[tokio::test]
+async fn config_reads_allowed_without_auth_in_standalone_mode() {
+    let app = authed_test_router(None, ClusterMode::Standalone).await;
+
+    for path in [
+        "/config",
+        "/config/secrets-overview",
+        "/config/secrets/store-keys",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "GET {path} should not require auth in standalone mode"
+        );
+    }
+}
+
+#[tokio::test]
+async fn public_routes_unaffected_by_auth() {
+    let app = authed_test_router(Some("secret"), ClusterMode::Cluster).await;
+
+    for path in ["/agents", "/healthz", "/readyz", "/openapi.json"] {
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "GET {path} should return 200"
+        );
+    }
+}
+
+#[tokio::test]
+async fn standalone_mode_allows_mutations_without_token() {
+    let app = authed_test_router(None, ClusterMode::Standalone).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/config/llm")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "Standalone mode should not require auth"
+    );
+}
+
+#[tokio::test]
+async fn operator_routes_allow_with_valid_token() {
+    let app = authed_test_router(Some("secret"), ClusterMode::Cluster).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/config/llm")
+                .header("content-type", "application/json")
+                .header("X-Runner-Token", "secret")
+                .body(Body::from(r#"{"model":"test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "Valid token should pass auth"
+    );
+}
+
+/// Build a router with a real in-memory repository and auth configured.
+async fn authed_test_router_with_repo(token: Option<&str>, mode: ClusterMode) -> axum::Router {
+    let store = Arc::new(
+        baml_rt_repository::SurrealStore::open_in_memory()
+            .await
+            .expect("in-memory repository store"),
+    );
+    let repo_service = Arc::new(baml_rt_repository::RepositoryService::new(
+        store.clone() as Arc<dyn baml_rt_repository::BlobStore>,
+        store.clone() as Arc<dyn baml_rt_repository::MetadataStore>,
+        store.clone() as Arc<dyn baml_rt_repository::LineageStore>,
+        store as Arc<dyn baml_rt_repository::SearchStore>,
+    ));
+    authed_test_router_inner(token, mode, Some(repo_service)).await
+}
+
+async fn authed_test_router_inner(
+    token: Option<&str>,
+    mode: ClusterMode,
+    repo_service: Option<Arc<baml_rt_repository::RepositoryService>>,
+) -> axum::Router {
+    use std::sync::atomic::AtomicBool;
+
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> =
+        Arc::new(baml_rt_tools::InventoryCatalog::new());
+    let config_service: Arc<dyn baml_rt_config::ConfigService> = Arc::new(
+        baml_rt_config::SurrealConfigStore::in_memory()
+            .await
+            .expect("in-memory config store for auth test"),
+    );
+    let secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver> =
+        Arc::new(baml_rt_llm_config::EmptySecretResolver);
+
+    api_router_with_services_and_deploy(
+        registry,
+        None, // mermaid
+        None, // context_metrics
+        None, // provenance_ops
+        None, // planning
+        None, // episode
+        None, // conversation_history
+        None, // conversation_history_events
+        None, // context_index
+        None, // deployment_manager
+        None, // repository_url
+        repo_service,
+        tool_catalog,
+        config_service,
+        secret_resolver,
+        None, // runtime_secret_store
+        Arc::new(AtomicBool::new(true)),
+        token.map(String::from),
+        mode,
+        None, // web_dir
+    )
+}
+
+#[tokio::test]
+async fn repository_publish_requires_auth_in_cluster_mode() {
+    let app = authed_test_router_with_repo(Some("secret"), ClusterMode::Cluster).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/repository/publish")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn repository_fork_requires_auth_in_cluster_mode() {
+    let app = authed_test_router_with_repo(Some("secret"), ClusterMode::Cluster).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/repository/fork")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn repository_reads_allowed_without_auth_in_cluster_mode() {
+    let app = authed_test_router_with_repo(Some("secret"), ClusterMode::Cluster).await;
+
+    for path in ["/repository/agents", "/repository/entries"] {
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "GET {path} should be public"
+        );
+    }
+}
+
+#[tokio::test]
+async fn repository_add_tag_requires_auth_in_cluster_mode() {
+    let app = authed_test_router_with_repo(Some("secret"), ClusterMode::Cluster).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/repository/entries/abc123/tags")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"tag":"stable"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn repository_remove_tag_requires_auth_in_cluster_mode() {
+    let app = authed_test_router_with_repo(Some("secret"), ClusterMode::Cluster).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/repository/entries/abc123/tags")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"tag":"stable"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }

@@ -229,6 +229,7 @@ pub async fn list_agents(
     post,
     path = "/deploy",
     tag = "deployments",
+    security(("RunnerToken" = [])),
     request_body = DeployRequestDto,
     responses(
         (status = 200, description = "Deployment accepted", body = DeployResponseDto),
@@ -289,6 +290,7 @@ pub async fn post_deploy(
     post,
     path = "/undeploy",
     tag = "deployments",
+    security(("RunnerToken" = [])),
     request_body = UndeployRequestDto,
     responses(
         (status = 200, description = "Undeploy accepted", body = UndeployResponseDto),
@@ -348,6 +350,7 @@ pub async fn post_undeploy(
     get,
     path = "/deployments",
     tag = "deployments",
+    security(("RunnerToken" = [])),
     responses(
         (status = 200, description = "Deployment records", body = [DeploymentRecordDto]),
         (status = 401, description = "Missing or invalid runner token"),
@@ -407,6 +410,7 @@ pub async fn get_deployments(
 #[utoipa::path(
     post,
     path = "/control/migrate",
+    security(("RunnerToken" = [])),
     request_body = MigrateRequestDto,
     responses(
         (status = 200, description = "Agent migrated successfully", body = MigrateResponseDto),

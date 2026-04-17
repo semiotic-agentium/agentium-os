@@ -1,5 +1,7 @@
 mod spans;
 
+use tracing::Instrument;
+
 /// GitHub REST API v3 base URL.
 pub const BASE_URL: &str = "https://api.github.com";
 
@@ -76,38 +78,41 @@ impl GitHubClient {
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, GitHubClientError> {
         let span = spans::send_json();
-        let _guard = span.enter();
         if let Some(rb) = request.try_clone()
             && let Ok(req) = rb.build()
         {
             span.record("url", tracing::field::display(req.url().as_str()));
         }
 
-        let resp = request.send().await.map_err(GitHubClientError::Http)?;
+        async move {
+            let resp = request.send().await.map_err(GitHubClientError::Http)?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            let reset_at = resp
-                .headers()
-                .get("x-ratelimit-reset")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown")
-                .to_string();
-            let body = resp.text().await.unwrap_or_default();
+            let status = resp.status();
+            if !status.is_success() {
+                let code = status.as_u16();
+                let reset_at = resp
+                    .headers()
+                    .get("x-ratelimit-reset")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let body = resp.text().await.unwrap_or_default();
 
-            return Err(match code {
-                401 => GitHubClientError::Unauthorized { body },
-                403 if body.contains("rate limit") => {
-                    GitHubClientError::RateLimited { body, reset_at }
-                }
-                404 => GitHubClientError::NotFound { body },
-                422 => GitHubClientError::Unprocessable { body },
-                _ => GitHubClientError::Api { status: code, body },
-            });
+                return Err(match code {
+                    401 => GitHubClientError::Unauthorized { body },
+                    403 if body.contains("rate limit") => {
+                        GitHubClientError::RateLimited { body, reset_at }
+                    }
+                    404 => GitHubClientError::NotFound { body },
+                    422 => GitHubClientError::Unprocessable { body },
+                    _ => GitHubClientError::Api { status: code, body },
+                });
+            }
+
+            resp.json().await.map_err(GitHubClientError::Http)
         }
-
-        resp.json().await.map_err(GitHubClientError::Http)
+        .instrument(span)
+        .await
     }
 }
 

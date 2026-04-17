@@ -96,34 +96,60 @@ k3d image import "$IMPORT_TAR" -c "$CLUSTER_NAME"
 rm -f "$IMPORT_TAR"
 
 # 4. Apply k8s manifests
-echo "[4/8] Applying k8s manifests..."
+echo "[4/9] Applying k8s manifests..."
 kubectl apply -f "$REPO_ROOT/deploy/k8s/namespace.yaml"
 kubectl apply -f "$REPO_ROOT/deploy/k8s/surrealdb-credentials.yaml"
 kubectl apply -f "$REPO_ROOT/deploy/k8s/surrealdb.yaml"
 kubectl apply -f "$REPO_ROOT/deploy/k8s/secret-fnox.yaml"
+
+# Generate runner-token secret if it does not already exist in the cluster.
+if ! kubectl -n agentium get secret runner-token >/dev/null 2>&1; then
+    RUNNER_TOKEN="$(openssl rand -hex 32)"
+    kubectl -n agentium create secret generic runner-token --from-literal=token="$RUNNER_TOKEN"
+    echo "  Generated runner-token secret (token saved for later output)."
+else
+    RUNNER_TOKEN=""
+    echo "  runner-token secret already exists, reusing."
+fi
+
 kubectl apply -f "$REPO_ROOT/deploy/k8s/runner.yaml"
+kubectl apply -f "$REPO_ROOT/deploy/k8s/networkpolicy.yaml"
 
 # 5. Wait for readiness
-echo "[5/8] Waiting for pods to be ready..."
+echo "[5/9] Waiting for pods to be ready..."
 kubectl -n agentium wait --for=condition=ready pod -l app=surrealdb --timeout=120s
 kubectl -n agentium wait --for=condition=ready pod -l app=runner --timeout=120s
 
-echo "[6/8] Runners ready. Listing pods:"
+echo "[6/9] Runners ready. Listing pods:"
 kubectl -n agentium get pods -o wide
 
 # 7. Port-forward runner-0 for demo interaction
-echo "[7/8] Port-forwarding runner-0 to localhost:18080..."
+echo "[7/9] Port-forwarding runner-0 to localhost:18080..."
 kubectl -n agentium port-forward runner-0 18080:18080 &
 PF_PID=$!
 trap 'kill $PF_PID 2>/dev/null' EXIT INT TERM
 sleep 2
 
-echo "[8/8] Demo environment ready."
+# 8. Retrieve the runner token for usage output (if not freshly generated).
+if [ -z "$RUNNER_TOKEN" ]; then
+    RUNNER_TOKEN="$(kubectl -n agentium get secret runner-token -o jsonpath='{.data.token}' | base64 -d 2>/dev/null || true)"
+fi
+
+echo "[8/9] Runner token configured."
+echo "[9/9] Demo environment ready."
 echo ""
 echo "  runner-0: http://localhost:18080"
-echo "  Health:   curl http://localhost:18080/healthz"
-echo "  Ready:    curl http://localhost:18080/readyz"
-echo "  Agents:   curl http://localhost:18080/agents"
+echo ""
+echo "  Public routes (no auth required):"
+echo "    curl http://localhost:18080/healthz"
+echo "    curl http://localhost:18080/readyz"
+echo "    curl http://localhost:18080/agents"
+echo ""
+echo "  Operator routes (require X-Runner-Token):"
+echo "    curl -H 'X-Runner-Token: $RUNNER_TOKEN' http://localhost:18080/config"
+echo "    curl -H 'X-Runner-Token: $RUNNER_TOKEN' http://localhost:18080/config/secrets-overview"
+echo "    curl -X POST -H 'X-Runner-Token: $RUNNER_TOKEN' -H 'Content-Type: application/json' \\"
+echo "         -d '{\"hash\":\"<content_hash>\"}' http://localhost:18080/deploy"
 echo ""
 echo "To clean up: k3d cluster delete $CLUSTER_NAME"
 echo "Port-forward PID: $PF_PID (kill $PF_PID to stop)"
