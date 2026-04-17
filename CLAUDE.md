@@ -39,6 +39,10 @@ cargo run -p baml-agent-runner                           # HTTP A2A + embedded /
 # Nextest (CI-style: one run, JUnit)
 cargo install cargo-nextest        # once
 ./scripts/nextest-ci-local.sh      # full workspace + http-tools; JUnit at target/nextest/ci/junit.xml
+
+# Load testing scripts
+python3 scripts/measure_a2a_sse.py --package PACKAGE --text "message"           # single SSE stream timing
+python3 scripts/concurrent_a2a_sse.py --package PACKAGE --concurrency N         # parallel SSE streams
 ```
 
 ### Secrets
