@@ -24,11 +24,24 @@ opentelemetry = { workspace = true }
 dashmap = "6.1.0"
 regex = "1"
 sha2 = { workspace = true }
+futures-util = { workspace = true }
+# microsandbox is a beta crate ("expect breaking changes"). Exact pin per
+# tool_sandbox.md §7.3; bumps go through explicit review. Behind the
+# `sandbox-provider` feature so the runtime still builds when the beta crate
+# has platform-specific build issues; the `SandboxProvider` trait boundary
+# isolates the rest of the runtime from the churn.
+microsandbox = { version = "=0.3.13", optional = true }
 
 [features]
 default = []
 # No-op for CI/workspace feature parity; runner and builder enable clickup/notion via their own deps.
 http-tools = []
+# Enable MicrosandboxProvider (Workstream B of tool_sandbox.md). When off,
+# sandbox runtime declarations still parse, but instantiating the provider
+# returns an explicit "sandbox support not compiled in" error. The activation
+# model remains metadata-declaration (§15); this feature is purely a
+# build-safety gate for the microsandbox beta crate.
+sandbox-provider = ["dep:microsandbox"]
 
 [dev-dependencies]
 test-support = { path = "../test-support" }

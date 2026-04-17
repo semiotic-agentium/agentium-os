@@ -28,12 +28,35 @@ use super::{
     },
     policy::{DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT},
     protocol::{METHOD_INVOKE, PROTOCOL_VERSION},
+    runtime::ToolRuntime,
+    sandbox::{SandboxCache, SandboxProvider, SandboxSpecBuilder, SandboxToolHandler},
     stdio::StdioSubprocessInvoker,
 };
 use crate::{
     ExternalToolResolver, ToolName,
     tools::{ToolFunctionMetadata, ToolHandler},
 };
+
+/// Per-tool callback the resolver invokes to build a
+/// [`SandboxSpecBuilder`] from parsed metadata. Workstream D plugs in
+/// policy compilation, secret resolution, and runtime-digest selection
+/// behind this type.
+pub type SandboxSpecFactory = Arc<
+    dyn Fn(&ToolName, &ExternalToolMetadata) -> Result<SandboxSpecBuilder> + Send + Sync + 'static,
+>;
+
+/// Plumbing the runner passes in when it wants sandbox-declared tools to be
+/// routed through [`SandboxToolHandler`] at resolve time. Without this
+/// wiring, a tool whose metadata declares `runtime.kind = "sandbox"` is
+/// rejected with `sandbox runtime not wired`.
+///
+/// Ownership model: the runner keeps one provider + cache per process
+/// (§9.2 `runner_id`).
+pub struct SandboxRuntimeWiring {
+    pub provider: Arc<dyn SandboxProvider>,
+    pub cache: Arc<SandboxCache>,
+    pub spec_factory: SandboxSpecFactory,
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 struct DescribeCacheKey {
@@ -81,9 +104,41 @@ impl DevModeResolver {
         lockfile_mode: ExternalLockfileMode,
         lifecycle_recorder: Option<ExternalLifecycleRecorder>,
     ) -> Result<Self> {
+        Self::from_dirs_full(dirs, lockfile, lockfile_mode, lifecycle_recorder, None).await
+    }
+
+    /// Extended constructor accepting sandbox runtime wiring. Tool packages
+    /// whose metadata declares `runtime.kind = "sandbox"` are routed through
+    /// [`SandboxToolHandler`]; process packages follow the existing path.
+    /// Missing wiring + sandbox metadata → hard error at load time.
+    pub async fn from_dirs_with_sandbox(
+        dirs: &[PathBuf],
+        lockfile: Option<ExternalToolsLockfile>,
+        lockfile_mode: ExternalLockfileMode,
+        lifecycle_recorder: Option<ExternalLifecycleRecorder>,
+        sandbox: SandboxRuntimeWiring,
+    ) -> Result<Self> {
+        Self::from_dirs_full(
+            dirs,
+            lockfile,
+            lockfile_mode,
+            lifecycle_recorder,
+            Some(sandbox),
+        )
+        .await
+    }
+
+    async fn from_dirs_full(
+        dirs: &[PathBuf],
+        lockfile: Option<ExternalToolsLockfile>,
+        lockfile_mode: ExternalLockfileMode,
+        lifecycle_recorder: Option<ExternalLifecycleRecorder>,
+        sandbox: Option<SandboxRuntimeWiring>,
+    ) -> Result<Self> {
         let mut entries = HashMap::new();
         for dir in dirs {
-            let (name, entry) = load_tool_dir(dir, lifecycle_recorder.as_ref()).await?;
+            let (name, entry) =
+                load_tool_dir(dir, lifecycle_recorder.as_ref(), sandbox.as_ref()).await?;
             if entries.contains_key(&name) {
                 return Err(BamlRtError::InvalidArgument(format!(
                     "duplicate external tool '{}' loaded from {}",
@@ -215,8 +270,8 @@ impl DevModeResolver {
 async fn load_tool_dir(
     dir: &Path,
     lifecycle_recorder: Option<&ExternalLifecycleRecorder>,
+    sandbox: Option<&SandboxRuntimeWiring>,
 ) -> Result<(ToolName, DevToolEntry)> {
-    let bin_path = dir.join("tool-server");
     let metadata_path = dir.join("tool-metadata.json");
 
     if !metadata_path.exists() {
@@ -238,6 +293,27 @@ async fn load_tool_dir(
     }
 
     let meta = read_external_metadata(dir)?;
+    let tool_name = ToolName::parse(&meta.name)?;
+    let runtime_kind = meta.runtime.as_ref().map(ToolRuntime::kind);
+
+    // Dispatch by runtime kind (tool_sandbox.md Workstream B step 6).
+    // - None / Some(Process) → existing subprocess + stdio path.
+    // - Some(Sandbox)        → SandboxToolHandler (requires sandbox wiring).
+    match runtime_kind {
+        Some(crate::external_tools::runtime::ToolRuntimeKind::Sandbox) => {
+            load_sandbox_tool_dir(dir, meta, tool_name, sandbox, lifecycle_recorder).await
+        }
+        _ => load_process_tool_dir(dir, meta, tool_name, lifecycle_recorder).await,
+    }
+}
+
+async fn load_process_tool_dir(
+    dir: &Path,
+    meta: ExternalToolMetadata,
+    tool_name: ToolName,
+    lifecycle_recorder: Option<&ExternalLifecycleRecorder>,
+) -> Result<(ToolName, DevToolEntry)> {
+    let bin_path = dir.join("tool-server");
 
     if !bin_path.exists() {
         if let Some(recorder) = lifecycle_recorder {
@@ -257,7 +333,6 @@ async fn load_tool_dir(
         )));
     }
 
-    let tool_name = ToolName::parse(&meta.name)?;
     let digest = compute_tool_digest(dir)?;
     let mut metadata = build_tool_metadata(&meta, &tool_name)?;
     metadata.digest = Some(digest.clone());
@@ -287,7 +362,76 @@ async fn load_tool_dir(
     }
     let handler: Arc<dyn ToolHandler> = Arc::new(handler_builder);
 
-    let artifact_ref = dir.join("tool-server").display().to_string();
+    let artifact_ref = bin_path.display().to_string();
+    Ok((
+        tool_name,
+        DevToolEntry {
+            metadata,
+            handler,
+            digest,
+            artifact_ref,
+        },
+    ))
+}
+
+async fn load_sandbox_tool_dir(
+    dir: &Path,
+    meta: ExternalToolMetadata,
+    tool_name: ToolName,
+    sandbox: Option<&SandboxRuntimeWiring>,
+    lifecycle_recorder: Option<&ExternalLifecycleRecorder>,
+) -> Result<(ToolName, DevToolEntry)> {
+    let wiring = sandbox.ok_or_else(|| {
+        BamlRtError::InvalidArgument(format!(
+            "tool '{tool_name}' declares sandbox runtime but no sandbox wiring was provided to the resolver (see DevModeResolver::from_dirs_with_sandbox)"
+        ))
+    })?;
+
+    // Sandbox-kind tools don't ship a tool-server binary — the adapter lives
+    // inside the image. Digest comes from the image field (§8.4); runtime
+    // digest validation is Workstream C's schema job. For the resolver we
+    // synthesize a best-effort digest off the metadata until the full
+    // sandbox artifact digesting story lands.
+    let digest = format!("sandbox:{}", meta.name);
+    let mut metadata = build_tool_metadata(&meta, &tool_name)?;
+    metadata.digest = Some(digest.clone());
+
+    if let Some(recorder) = lifecycle_recorder {
+        recorder(ExternalLifecycleEvent::Artifact {
+            tool_name: tool_name.to_string(),
+            artifact_ref: dir.display().to_string(),
+            digest: Some(digest.clone()),
+            signer: None,
+            verification_result: "sandbox_runtime_declared".to_string(),
+            pull_latency_ms: None,
+            details: serde_json::json!({
+                "dir": dir.display().to_string(),
+                "runtime_kind": "sandbox",
+            }),
+        });
+    }
+
+    // describe() is deferred to first invoke for sandbox tools — issuing a
+    // describe here would require materializing a sandbox per tool at
+    // resolve time, which conflicts with §9.4 lazy first-use. Contract
+    // validation still happens once per (agent_instance, context) at the
+    // first invoke.
+    let spec_builder = (wiring.spec_factory)(&tool_name, &meta)?;
+
+    let mut handler_builder = SandboxToolHandler::new(
+        metadata.clone(),
+        wiring.provider.clone(),
+        wiring.cache.clone(),
+        spec_builder,
+        DEFAULT_INVOKE_TIMEOUT,
+    )
+    .with_capabilities(meta.capabilities.clone());
+    if let Some(recorder) = lifecycle_recorder {
+        handler_builder = handler_builder.with_lifecycle_recorder(recorder.clone());
+    }
+    let handler: Arc<dyn ToolHandler> = Arc::new(handler_builder);
+
+    let artifact_ref = dir.display().to_string();
     Ok((
         tool_name,
         DevToolEntry {

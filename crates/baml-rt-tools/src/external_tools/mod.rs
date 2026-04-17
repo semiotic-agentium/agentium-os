@@ -15,6 +15,7 @@ pub mod policy;
 pub mod protocol;
 pub mod resolver;
 pub mod runtime;
+pub mod sandbox;
 pub mod stdio;
 
 use std::sync::Arc;
