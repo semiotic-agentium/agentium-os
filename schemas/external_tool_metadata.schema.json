@@ -140,7 +140,73 @@
         "max_open_fds": { "type": "integer", "minimum": 1 },
         "max_concurrent_invocations": { "type": "integer", "minimum": 1, "default": 10 }
       }
+    },
+    "runtime": {
+      "description": "Optional runtime declaration. Omitted defaults to process wrapper mode.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "process" },
+            "command": {
+              "type": "array",
+              "items": { "type": "string" },
+              "minItems": 1,
+              "description": "argv command for process runtime"
+            },
+            "setup": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "optional deploy-time setup commands"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "image"],
+          "properties": {
+            "kind": { "const": "sandbox" },
+            "image": {
+              "type": "string",
+              "pattern": "^.+@sha256:[A-Fa-f0-9]{64}$",
+              "description": "digest-pinned OCI image reference"
+            },
+            "entrypoint": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "optional argv entrypoint for tool adapter"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "runtime_digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "runtime identity digest (required for sandbox runtime)"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["runtime"],
+        "properties": {
+          "runtime": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": { "const": "sandbox" }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": ["runtime_digest"]
+      }
+    }
+  ],
   "additionalProperties": false
 }
