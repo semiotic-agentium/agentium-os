@@ -75,7 +75,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence
 - **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search
 - **baml-rt-router** — Cluster routing, SSRF validation, token auth, and cross-pod A2A forwarding
-- **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors
+- **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors, operator auth boundary
 
 **Derive macros**
 - **baml-derive-core** — Core types and rendering for derive macro (`BamlType` trait)
@@ -136,6 +136,24 @@ Other fixtures (stream-js-tool, stream-baml-tool, conversational-context-auto, e
 
 **Dispatch (event delivery):** `dispatch-echo` fixture (`tests/fixtures/agents/dispatch-echo/`) is the minimal example of `onDispatch` handling. Agents declare subscriptions in `manifest.json` under `discovery.subscriptions` to receive events. See `docs/host-to-agent-event-delivery.md`.
 
+### HTTP API Authentication
+
+The runner HTTP API has two access tiers:
+
+**Public routes** (no authentication required):
+- `GET /healthz`, `GET /readyz` — health checks
+- `GET /agents` — agent discovery
+- `POST /agents/{pkg}/{inst}/chat` — A2A JSON-RPC forwarding
+
+**Operator routes** (require `X-Runner-Token` header in cluster mode):
+- `GET /config`, `POST /config` — configuration management
+- `GET /config/secrets-overview` — secrets inventory
+- `POST /deploy`, `POST /undeploy` — deployment lifecycle
+- `POST /migrate` — database migration
+- Repository mutation endpoints
+
+The runner token is configured via the `RUNNER_TOKEN` environment variable or `runner-token` Kubernetes secret. In cluster mode, operator routes reject requests without a valid token. Cross-pod A2A forwarding uses network isolation as the trust boundary.
+
 ### Feature Flags (baml-rt facade)
 
 - `tools` → baml-rt-tools
@@ -157,6 +175,24 @@ Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 - **nextest (workspace)** — `cargo nextest run --workspace --locked --profile ci` with all feature flags enabled (`http-tools`, `llm-tests`, `memory`). Uses rust-cache with shared key `ci-nextest`. JUnit report published via `mikepenz/action-junit-report`. Secrets written to `fnox.toml` from GitHub secrets. **`regen_fixtures` is not run in CI**; generated `agents/**` and `tests/fixtures/agents/**` outputs stay committed, refreshed locally via `just regen-fixtures` / the pre-commit `regen-fixtures` hook.
 - Toolchain: stable for build/test, nightly for `cargo fmt --check` only.
 - **APT reliability:** CI uses `scripts/ci/apt-update-retry.sh` to mitigate transient Ubuntu mirror sync failures during package installation.
+
+## Deployment
+
+### Demo Environment
+
+The `deploy/demo/run-demo.sh` script sets up a local k3d cluster with:
+- SurrealDB for provenance storage
+- Runner pods with operator authentication
+- NetworkPolicy for defense-in-depth
+- Port-forwarding to localhost:18080
+
+The script generates a runner token automatically if one doesn't exist and displays usage examples for both public and operator routes.
+
+### Kubernetes Manifests
+
+- `deploy/k8s/runner-token.yaml.example` — Template for operator authentication secret
+- `deploy/k8s/networkpolicy.yaml` — Network isolation policies for runner and SurrealDB pods
+- `deploy/k8s/runner.yaml` — Runner deployment with `RUNNER_TOKEN` environment variable
 
 ## Testing Conventions
 
