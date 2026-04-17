@@ -32,7 +32,7 @@ use baml_rt_tools::{
 use baml_tools_system::A2aSessionBundle;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
-use tracing::Span;
+use tracing::{Instrument, Span};
 
 use crate::{
     a2a,
@@ -1581,12 +1581,14 @@ impl A2aAgent {
                 "live stream: spawning run_live_stream_session task"
             );
             metrics::record_live_stream_event("session_spawn");
-            tokio::spawn(async move {
-                let _guard = span.enter();
-                agent
-                    .run_live_stream_session(key, session_context_id, turn_rx)
-                    .await;
-            });
+            tokio::spawn(
+                async move {
+                    agent
+                        .run_live_stream_session(key, session_context_id, turn_rx)
+                        .await;
+                }
+                .instrument(span),
+            );
         }
 
         Ok(Box::pin(async_stream::stream! {
@@ -1615,8 +1617,9 @@ impl A2aAgent {
         let mut suspended: Option<SuspendedState> = None;
 
         while let Ok(turn) = turn_rx.recv().await {
+            // Turn-level grouping span: sub-operations (outcome_inner, drain, store)
+            // use Instrument instead of Span::enter() to avoid holding guards across .await.
             let _turn_span = spans::live_stream_session_turn(session_context_id.as_str());
-            let _turn_guard = _turn_span.enter();
             let turn_started = Instant::now();
             metrics::record_live_stream_event("turn_dequeued");
             tracing::debug!(
@@ -1717,8 +1720,6 @@ impl A2aAgent {
                     session.relay_tx = Some(relay_tx);
                     Some(relay_rx)
                 };
-                let _outcome_span = spans::live_stream_outcome_inner(session_context_id.as_str());
-                let _outcome_guard = _outcome_span.enter();
                 let outcome_inner_start = Instant::now();
                 let (request_id, outcome) = match self
                     .handle_a2a_outcome_inner(
@@ -1727,6 +1728,9 @@ impl A2aAgent {
                         resume_channel,
                         relay_rx,
                     )
+                    .instrument(spans::live_stream_outcome_inner(
+                        session_context_id.as_str(),
+                    ))
                     .await
                 {
                     Ok(x) => x,
@@ -1799,8 +1803,7 @@ impl A2aAgent {
                 }
             };
 
-            let drain_span = spans::live_stream_drain(session_context_id.as_str());
-            let _drain_guard = drain_span.enter();
+            let _drain_span = spans::live_stream_drain(session_context_id.as_str());
             tracing::debug!(
                 context_id = %session_context_id,
                 from_resume,
@@ -1888,24 +1891,28 @@ impl A2aAgent {
                     }
                     let store_span =
                         spans::live_stream_store_result(index, view.has_storable_payload());
-                    let _store_guard = store_span.enter();
-                    let raw_for_store = if view.raw.get("__toolStreamChunk").is_some() {
-                        let mut c = view.raw.clone();
-                        c.as_object_mut()
-                            .and_then(|o| o.remove("__toolStreamChunk"));
-                        c
-                    } else {
-                        view.raw.clone()
-                    };
-                    let store_result = self.live_result_pipeline.store_result(&raw_for_store).await;
-                    let ok = store_result.is_ok();
-                    store_span.record("store_result_ok", ok);
-                    if let Err(e) = store_result {
-                        tracing::warn!(
-                            error = %e,
-                            "live stream: store_result failed (task/subscribe may miss task)"
-                        );
+                    async {
+                        let raw_for_store = if view.raw.get("__toolStreamChunk").is_some() {
+                            let mut c = view.raw.clone();
+                            c.as_object_mut()
+                                .and_then(|o| o.remove("__toolStreamChunk"));
+                            c
+                        } else {
+                            view.raw.clone()
+                        };
+                        let store_result =
+                            self.live_result_pipeline.store_result(&raw_for_store).await;
+                        let ok = store_result.is_ok();
+                        Span::current().record("store_result_ok", ok);
+                        if let Err(e) = store_result {
+                            tracing::warn!(
+                                error = %e,
+                                "live stream: store_result failed (task/subscribe may miss task)"
+                            );
+                        }
                     }
+                    .instrument(store_span)
+                    .await;
                 }
                 if comp == Some(StreamCompletion::InputRequired) && view.is_null() {
                     // Emit a minimal wire chunk so the client receives TASK_STATE_INPUT_REQUIRED and can show the banner.
@@ -2147,41 +2154,43 @@ impl A2aAgent {
                 correlation_id.as_str(),
             )
         };
-        let _guard = span.enter();
         let start = std::time::Instant::now();
         let method = parsed_request.method();
         let invocation = parsed_request.invocation;
 
-        let outcome = correlation::with_correlation_id(correlation_id, async move {
-            let invocation_scope = InvocationScope::new(scope.clone());
-            context::with_scope(scope, async move {
-                if let a2a::A2aParams::MessageSendStream(params) = &parsed_request.params {
-                    let canonical_context_id = invocation_scope.context_id().clone();
-                    let receiver_task_id = invocation_scope.task_id_opt().cloned();
-                    if let Some(ref task_id) = receiver_task_id {
+        let outcome = correlation::with_correlation_id(
+            correlation_id,
+            async move {
+                let invocation_scope = InvocationScope::new(scope.clone());
+                context::with_scope(scope, async move {
+                    if let a2a::A2aParams::MessageSendStream(params) = &parsed_request.params {
+                        let canonical_context_id = invocation_scope.context_id().clone();
+                        let receiver_task_id = invocation_scope.task_id_opt().cloned();
+                        if let Some(ref task_id) = receiver_task_id {
+                            self.task_store
+                                .ensure_task_exists(task_id, Some(&canonical_context_id))
+                                .await?;
+                        }
                         self.task_store
-                            .ensure_task_exists(task_id, Some(&canonical_context_id))
+                            .insert_message_for_receiver(
+                                &params.message,
+                                canonical_context_id,
+                                receiver_task_id,
+                            )
                             .await?;
                     }
-                    self.task_store
-                        .insert_message_for_receiver(
-                            &params.message,
-                            canonical_context_id,
-                            receiver_task_id,
-                        )
-                        .await?;
-                }
-                let route_span = spans::a2a_route(
-                    parsed_request.method().as_str(),
-                    invocation_scope.context_id().as_str(),
-                );
-                let _route_guard = route_span.enter();
-                self.request_router
-                    .route(&parsed_request, &invocation_scope, resume_channel, relay_rx)
-                    .await
-            })
-            .await
-        })
+                    self.request_router
+                        .route(&parsed_request, &invocation_scope, resume_channel, relay_rx)
+                        .instrument(spans::a2a_route(
+                            parsed_request.method().as_str(),
+                            invocation_scope.context_id().as_str(),
+                        ))
+                        .await
+                })
+                .await
+            }
+            .instrument(span),
+        )
         .await;
 
         let duration = start.elapsed();
