@@ -15,6 +15,7 @@ use baml_rt_quickjs::{
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::{a2a, a2a_types, handlers::TaskHandler, result_pipeline::ResultStoragePipeline};
 
@@ -186,8 +187,8 @@ impl RequestRouter for MethodBasedRouter {
                 let start = Instant::now();
                 let context_id = scope.context_id().clone();
                 let route_span = spans::a2a_route(request.method().as_str(), context_id.as_str());
-                let _route_guard = route_span.enter();
 
+                async {
                 // Build metadata
                 let mut metadata_map = serde_json::Map::new();
                 if let Some(id) = request.id.as_ref() {
@@ -238,9 +239,6 @@ impl RequestRouter for MethodBasedRouter {
 
                 // Compute result so we always emit A2aCompleted on every exit (success or failure)
                 let result = async {
-                    let js_span =
-                        spans::a2a_js_invoke(request.method().as_str(), request.invocation);
-                    let _js_guard = js_span.enter();
                     if request.is_stream() {
                         // Incremental only: no internal collect. Outermost consumer (transport/SSE) drains the receiver.
                         let resume_tx = resume_channel
@@ -378,6 +376,10 @@ impl RequestRouter for MethodBasedRouter {
                         Ok(a2a::A2aOutcome::Response(normalized))
                     }
                 }
+                .instrument(spans::a2a_js_invoke(
+                    request.method().as_str(),
+                    request.invocation,
+                ))
                 .await;
 
                 let duration = start.elapsed();
@@ -408,6 +410,9 @@ impl RequestRouter for MethodBasedRouter {
                 }
 
                 result
+                }
+                .instrument(route_span)
+                .await
             }
         }
     }

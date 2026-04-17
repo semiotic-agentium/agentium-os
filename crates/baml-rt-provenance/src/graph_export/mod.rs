@@ -25,6 +25,7 @@ use baml_rt_observability::record_provenance_read;
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::Instrument;
 
 use crate::{
     error::{ProvenanceError, Result},
@@ -109,13 +110,13 @@ impl GraphExporter {
     /// Export the full subgraph for a given `context_id`.
     pub async fn export_by_context(&self, context_id: &str) -> Result<ExportedGraph> {
         let span = spans::graph_export_by_context(context_id);
-        let _guard = span.enter();
         let start = std::time::Instant::now();
         let result = async {
             let graph = self.export_context_core(context_id).await?;
             let allowed: HashSet<String> = std::iter::once(context_id.to_string()).collect();
             Ok(filter_scope_multi(graph, a2a::CONTEXT_ID, &allowed))
         }
+        .instrument(span)
         .await;
         let result_label = match &result {
             Ok(_) => "success",
@@ -237,7 +238,6 @@ impl GraphExporter {
     /// Export the full subgraph for a given `task_id`.
     pub async fn export_by_task(&self, task_id: &str) -> Result<ExportedGraph> {
         let span = spans::graph_export_by_task(task_id);
-        let _guard = span.enter();
         let start = std::time::Instant::now();
         let result = async {
             let context_id = self.task_context_id(task_id).await?;
@@ -254,6 +254,7 @@ impl GraphExporter {
             };
             Ok(filter_scope(graph, a2a::TASK_ID, task_id))
         }
+        .instrument(span)
         .await;
         let result_label = match &result {
             Ok(_) => "success",

@@ -19,6 +19,7 @@ pub use notion_read::BASE_URL;
 /// Notion API version header value.
 pub use notion_read::NOTION_VERSION;
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 const MAX_BLOCK_DEPTH: u32 = 10;
 
 const MAX_BLOCK_PAGES: usize = 10;
@@ -427,95 +428,102 @@ impl NotionClient {
         start_cursor: Option<&str>,
         page_size: Option<u32>,
     ) -> Result<NotionOutput> {
-        let span = spans::notion_search_pages(query.map(|q| q.len()), page_size);
-        let _guard = span.enter();
-        let mut body = serde_json::Map::new();
-        if let Some(q) = query {
+        async {
+            let mut body = serde_json::Map::new();
+            if let Some(q) = query {
+                body.insert(
+                    "query".to_string(),
+                    serde_json::Value::String(q.to_string()),
+                );
+            }
             body.insert(
-                "query".to_string(),
-                serde_json::Value::String(q.to_string()),
+                "filter".to_string(),
+                serde_json::json!({"property": "object", "value": "page"}),
             );
-        }
-        body.insert(
-            "filter".to_string(),
-            serde_json::json!({"property": "object", "value": "page"}),
-        );
-        if let Some(cursor) = start_cursor {
-            body.insert(
-                "start_cursor".to_string(),
-                serde_json::Value::String(cursor.to_string()),
-            );
-        }
-        if let Some(size) = page_size {
-            body.insert("page_size".to_string(), serde_json::json!(size));
-        }
+            if let Some(cursor) = start_cursor {
+                body.insert(
+                    "start_cursor".to_string(),
+                    serde_json::Value::String(cursor.to_string()),
+                );
+            }
+            if let Some(size) = page_size {
+                body.insert("page_size".to_string(), serde_json::json!(size));
+            }
 
-        let json = self
-            .send_request(
-                self.client
-                    .post("/search", api_key)
-                    .map_err(NotionError::from)?
-                    .json(&serde_json::Value::Object(body)),
-            )
-            .await?;
+            let json = self
+                .send_request(
+                    self.client
+                        .post("/search", api_key)
+                        .map_err(NotionError::from)?
+                        .json(&serde_json::Value::Object(body)),
+                )
+                .await?;
 
-        let (pages, sources) = extract_pages(&json);
-        let next_cursor = json
-            .get("next_cursor")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let has_more = json
-            .get("has_more")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            let (pages, sources) = extract_pages(&json);
+            let next_cursor = json
+                .get("next_cursor")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let has_more = json
+                .get("has_more")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
-        let count = pages.len();
-        Ok(NotionOutput {
-            pages,
-            blocks: Vec::new(),
-            next_cursor,
-            has_more,
-            sources,
-            message: format!("Found {count} page(s)"),
-            operation: Some(NotionOperation::SearchPages),
-        })
+            let count = pages.len();
+            Ok(NotionOutput {
+                pages,
+                blocks: Vec::new(),
+                next_cursor,
+                has_more,
+                sources,
+                message: format!("Found {count} page(s)"),
+                operation: Some(NotionOperation::SearchPages),
+            })
+        }
+        .instrument(spans::notion_search_pages(
+            query.map(|q| q.len()),
+            page_size,
+        ))
+        .await
     }
 
     async fn get_page(&self, api_key: &str, page_id: &str) -> Result<NotionOutput> {
-        let span = spans::notion_get_page(page_id);
-        let _guard = span.enter();
-        let normalized = Self::normalize_id(page_id)?;
-        let json = self
-            .send_request(
-                self.client
-                    .get(&format!("/pages/{normalized}"), api_key)
-                    .map_err(NotionError::from)?,
-            )
-            .await?;
+        async {
+            let normalized = Self::normalize_id(page_id)?;
+            let json = self
+                .send_request(
+                    self.client
+                        .get(&format!("/pages/{normalized}"), api_key)
+                        .map_err(NotionError::from)?,
+                )
+                .await?;
 
-        let (pages, sources) = extract_pages(&json);
-        let title = pages
-            .first()
-            .map(|p| p.title.clone())
-            .unwrap_or_else(|| "Untitled".to_string());
+            let (pages, sources) = extract_pages(&json);
+            let title = pages
+                .first()
+                .map(|p| p.title.clone())
+                .unwrap_or_else(|| "Untitled".to_string());
 
-        let page_id_for_blocks = pages
-            .first()
-            .map(|p| p.id.clone())
-            .unwrap_or_else(|| normalized.to_string());
-        Ok(NotionOutput {
-            pages,
-            blocks: Vec::new(),
-            next_cursor: None,
-            has_more: false,
-            sources,
-            message: format!(
-                "Page metadata only: title and URL for '{title}'. \
-                 This result contains NO page content. \
-                 To read the actual page text, use GetPageBlocks with block_id: {page_id_for_blocks}"
-            ),
-            operation: Some(NotionOperation::GetPage),
-        })
+            let page_id_for_blocks = pages
+                .first()
+                .map(|p| p.id.clone())
+                .unwrap_or_else(|| normalized.to_string());
+            Ok(NotionOutput {
+                pages,
+                blocks: Vec::new(),
+                next_cursor: None,
+                has_more: false,
+                sources,
+                message: format!(
+                    "Page metadata only: title and URL for '{title}'. \
+                     This result contains NO page content. \
+                     To read the actual page text, use GetPageBlocks with block_id: {page_id_for_blocks}"
+                ),
+                operation: Some(NotionOperation::GetPage),
+            })
+        }
+        .instrument(spans::notion_get_page(page_id))
+        .await
     }
 
     async fn get_page_blocks(
@@ -527,50 +535,52 @@ impl NotionClient {
         render_mode: BlockRenderMode,
         max_depth: u32,
     ) -> Result<NotionOutput> {
-        let span = spans::notion_get_page_blocks(block_id);
-        let _guard = span.enter();
-        let normalized = Self::normalize_id(block_id)?;
-        let (pages, sources, mut blocks, next_cursor, has_more) = self
-            .fetch_blocks_all_pages(
-                api_key,
-                &normalized,
-                start_cursor,
-                page_size,
-                render_mode,
-                true,
-            )
-            .await?;
-
-        let mut visited = std::collections::HashSet::new();
-        visited.insert(normalized.clone());
-        if max_depth > 0 {
-            let child_blocks = self
-                .fetch_child_blocks_recursive(
+        async {
+            let normalized = Self::normalize_id(block_id)?;
+            let (pages, sources, mut blocks, next_cursor, has_more) = self
+                .fetch_blocks_all_pages(
                     api_key,
-                    &blocks,
-                    &mut visited,
-                    max_depth,
+                    &normalized,
+                    start_cursor,
+                    page_size,
                     render_mode,
+                    true,
                 )
                 .await?;
-            blocks.extend(child_blocks);
-        }
 
-        if !render_mode.is_raw()
-            && let Some(notable) = extract_notable_lines(&blocks)
-        {
-            blocks.insert(0, notable);
-        }
+            let mut visited = std::collections::HashSet::new();
+            visited.insert(normalized.clone());
+            if max_depth > 0 {
+                let child_blocks = self
+                    .fetch_child_blocks_recursive(
+                        api_key,
+                        &blocks,
+                        &mut visited,
+                        max_depth,
+                        render_mode,
+                    )
+                    .await?;
+                blocks.extend(child_blocks);
+            }
 
-        Ok(NotionOutput {
-            pages,
-            blocks,
-            next_cursor,
-            has_more,
-            sources,
-            message: "Retrieved page blocks".to_string(),
-            operation: Some(NotionOperation::GetPageBlocks),
-        })
+            if !render_mode.is_raw()
+                && let Some(notable) = extract_notable_lines(&blocks)
+            {
+                blocks.insert(0, notable);
+            }
+
+            Ok(NotionOutput {
+                pages,
+                blocks,
+                next_cursor,
+                has_more,
+                sources,
+                message: "Retrieved page blocks".to_string(),
+                operation: Some(NotionOperation::GetPageBlocks),
+            })
+        }
+        .instrument(spans::notion_get_page_blocks(block_id))
+        .await
     }
 
     async fn fetch_page_summary(
@@ -578,19 +588,21 @@ impl NotionClient {
         api_key: &str,
         page_id: &str,
     ) -> std::result::Result<NotionPageSummary, NotionError> {
-        let span = spans::notion_fetch_page_summary(page_id);
-        let _guard = span.enter();
-        let normalized = Self::normalize_id(page_id)?;
-        let json = self
-            .send_request(
-                self.client
-                    .get(&format!("/pages/{normalized}"), api_key)
-                    .map_err(NotionError::from)?,
-            )
-            .await?;
-        parse_page_summary(&json).ok_or_else(|| NotionError::UnexpectedShape {
-            message: "unexpected page shape".to_string(),
-        })
+        async {
+            let normalized = Self::normalize_id(page_id)?;
+            let json = self
+                .send_request(
+                    self.client
+                        .get(&format!("/pages/{normalized}"), api_key)
+                        .map_err(NotionError::from)?,
+                )
+                .await?;
+            parse_page_summary(&json).ok_or_else(|| NotionError::UnexpectedShape {
+                message: "unexpected page shape".to_string(),
+            })
+        }
+        .instrument(spans::notion_fetch_page_summary(page_id))
+        .await
     }
 
     async fn fetch_blocks_page(
@@ -608,48 +620,50 @@ impl NotionClient {
         Option<String>,
         bool,
     )> {
-        let span = spans::notion_get_page_blocks(block_id);
-        let _guard = span.enter();
-        let mut request = self
-            .client
-            .get(&format!("/blocks/{block_id}/children"), api_key)
-            .map_err(NotionError::from)?;
-        let mut params: Vec<(&str, String)> = Vec::new();
-        if let Some(cursor) = start_cursor {
-            params.push(("start_cursor", cursor.to_string()));
-        }
-        if let Some(size) = page_size {
-            params.push(("page_size", size.to_string()));
-        }
-        if !params.is_empty() {
-            request = request.query(&params);
-        }
+        async {
+            let mut request = self
+                .client
+                .get(&format!("/blocks/{block_id}/children"), api_key)
+                .map_err(NotionError::from)?;
+            let mut params: Vec<(&str, String)> = Vec::new();
+            if let Some(cursor) = start_cursor {
+                params.push(("start_cursor", cursor.to_string()));
+            }
+            if let Some(size) = page_size {
+                params.push(("page_size", size.to_string()));
+            }
+            if !params.is_empty() {
+                request = request.query(&params);
+            }
 
-        let json = self.send_request(request).await?;
-        let blocks = extract_blocks(&json, render_mode);
-        let next_cursor = json
-            .get("next_cursor")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let has_more = json
-            .get("has_more")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            let json = self.send_request(request).await?;
+            let blocks = extract_blocks(&json, render_mode);
+            let next_cursor = json
+                .get("next_cursor")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let has_more = json
+                .get("has_more")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
-        let mut pages = Vec::new();
-        let mut sources = Vec::new();
-        if include_page_summary
-            && let Some(parent_page_id) = extract_parent_page_id(&json)
-            && let Ok(page) = self.fetch_page_summary(api_key, &parent_page_id).await
-        {
-            sources.push(NotionSource {
-                page_id: page.id.clone(),
-                url: page.url.clone(),
-            });
-            pages.push(page);
+            let mut pages = Vec::new();
+            let mut sources = Vec::new();
+            if include_page_summary
+                && let Some(parent_page_id) = extract_parent_page_id(&json)
+                && let Ok(page) = self.fetch_page_summary(api_key, &parent_page_id).await
+            {
+                sources.push(NotionSource {
+                    page_id: page.id.clone(),
+                    url: page.url.clone(),
+                });
+                pages.push(page);
+            }
+
+            Ok((pages, sources, blocks, next_cursor, has_more))
         }
-
-        Ok((pages, sources, blocks, next_cursor, has_more))
+        .instrument(spans::notion_get_page_blocks(block_id))
+        .await
     }
 
     async fn fetch_blocks_all_pages(
@@ -735,10 +749,9 @@ impl NotionClient {
             let Some(next_depth) = next_depth_for_children(depth, max_depth) else {
                 continue;
             };
-            let span = spans::notion_fetch_child_blocks(&block_id);
-            let _guard = span.enter();
             let (_pages, _sources, child_blocks, _next, _has_more) = self
                 .fetch_blocks_all_pages(api_key, &block_id, None, None, render_mode, false)
+                .instrument(spans::notion_fetch_child_blocks(&block_id))
                 .await?;
             for child in child_blocks.iter().filter(|b| b.has_children) {
                 if !visited.contains(&child.id) {

@@ -22,6 +22,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex as TokioMutex;
+use tracing::Instrument;
 
 use crate::{
     bundles::BundleType,
@@ -1554,22 +1555,23 @@ impl<State: SessionState> Drop for ToolSessionHandle<State> {
         let registry = self.registry.clone();
         let session_id = self.id.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let reason = "session dropped";
-                let span = crate::spans::session_abort(&session_id, Some(reason));
-                let _guard = span.enter();
-
-                if let Err(e) = registry
-                    .session_abort(&session_id, Some(reason.to_string()))
-                    .await
-                {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        error = ?e,
-                        "Failed to abort session during drop"
-                    );
+            let span = crate::spans::session_abort(&session_id, Some("session dropped"));
+            handle.spawn(
+                async move {
+                    let reason = "session dropped";
+                    if let Err(e) = registry
+                        .session_abort(&session_id, Some(reason.to_string()))
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = ?e,
+                            "Failed to abort session during drop"
+                        );
+                    }
                 }
-            });
+                .instrument(span),
+            );
         }
     }
 }
@@ -2187,94 +2189,101 @@ impl ToolRegistry {
         let start = std::time::Instant::now();
         let parsed = ToolName::parse(name)?;
         let session_id = ToolSessionId::random();
-        let span = crate::spans::open_session(&session_id, &parsed);
-        let _guard = span.enter();
 
-        let (metadata, handler) = {
-            let inner = self.inner.lock().unwrap();
-            let (metadata, handler) = inner.tools.get(&parsed).ok_or_else(|| {
-                BamlRtError::FunctionNotFound(format!("Tool '{}' not found", parsed))
-            })?;
-            if metadata.origin == ToolOrigin::Host
-                && let Some(allowlist) = &inner.allowlist
-                && !allowlist.contains(&parsed)
-            {
-                return Err(BamlRtError::InvalidArgument(format!(
-                    "Tool '{}' is not declared in the manifest allowlist",
-                    parsed
-                )));
-            }
-            (metadata.clone(), handler.clone())
-        };
-
-        let (config, config_version) = {
-            let resolver = self.inner.lock().unwrap().config_resolver.clone();
-            let config_key = metadata.config_bundle.as_ref();
-            match (resolver, &metadata.config, config_key) {
-                (Some(r), Some(config_meta), Some(bundle_name)) => {
-                    let opt = r
-                        .get_config_with_version(bundle_name)
-                        .await
-                        .ok()
-                        .flatten()
-                        .or_else(|| Some((config_meta.default.clone(), 0u64)));
-                    opt.map(|(v, ver)| (Some(v), Some(ver)))
-                        .unwrap_or((None, None))
+        let result = async {
+            let (metadata, handler) = {
+                let inner = self.inner.lock().unwrap();
+                let (metadata, handler) = inner.tools.get(&parsed).ok_or_else(|| {
+                    BamlRtError::FunctionNotFound(format!("Tool '{}' not found", parsed))
+                })?;
+                if metadata.origin == ToolOrigin::Host
+                    && let Some(allowlist) = &inner.allowlist
+                    && !allowlist.contains(&parsed)
+                {
+                    return Err(BamlRtError::InvalidArgument(format!(
+                        "Tool '{}' is not declared in the manifest allowlist",
+                        parsed
+                    )));
                 }
-                _ => (metadata.config.as_ref().map(|m| m.default.clone()), None),
-            }
-        };
+                (metadata.clone(), handler.clone())
+            };
 
-        let handler_for_classify = handler.clone();
-        let execution_classifier: ToolExecutionClassifier =
-            Arc::new(move |err| handler_for_classify.classify_execution_error(err));
-        let ctx = ToolSessionContext {
-            session_id: session_id.clone(),
-            tool_name: metadata.name.clone(),
-            context_id: context_id.clone(),
-            agent_id: agent_id.clone(),
-            config,
-            config_version,
-            task_id: task_id.cloned(),
-            execution_classifier: Some(execution_classifier),
-        };
-        let session = handler.open_session(ctx, open_input).await?;
-        self.sessions
-            .insert(session_id.clone(), Arc::new(TokioMutex::new(session)));
-        if let Some(ver) = config_version {
-            self.session_config_version.insert(session_id.clone(), ver);
+            let (config, config_version) = {
+                let resolver = self.inner.lock().unwrap().config_resolver.clone();
+                let config_key = metadata.config_bundle.as_ref();
+                match (resolver, &metadata.config, config_key) {
+                    (Some(r), Some(config_meta), Some(bundle_name)) => {
+                        let opt = r
+                            .get_config_with_version(bundle_name)
+                            .await
+                            .ok()
+                            .flatten()
+                            .or_else(|| Some((config_meta.default.clone(), 0u64)));
+                        opt.map(|(v, ver)| (Some(v), Some(ver)))
+                            .unwrap_or((None, None))
+                    }
+                    _ => (metadata.config.as_ref().map(|m| m.default.clone()), None),
+                }
+            };
+
+            let handler_for_classify = handler.clone();
+            let execution_classifier: ToolExecutionClassifier =
+                Arc::new(move |err| handler_for_classify.classify_execution_error(err));
+            let ctx = ToolSessionContext {
+                session_id: session_id.clone(),
+                tool_name: metadata.name.clone(),
+                context_id: context_id.clone(),
+                agent_id: agent_id.clone(),
+                config,
+                config_version,
+                task_id: task_id.cloned(),
+                execution_classifier: Some(execution_classifier),
+            };
+            let session = handler.open_session(ctx, open_input).await?;
+            self.sessions
+                .insert(session_id.clone(), Arc::new(TokioMutex::new(session)));
+            if let Some(ver) = config_version {
+                self.session_config_version.insert(session_id.clone(), ver);
+            }
+
+            Ok(())
         }
+        .instrument(crate::spans::open_session(&session_id, &parsed))
+        .await;
 
         let duration = start.elapsed();
         crate::metrics::record_session_open(&parsed.to_string());
         crate::metrics::record_session_operation("open", duration);
 
+        result?;
         Ok(session_id)
     }
 
     pub async fn session_send(&self, session_id: &ToolSessionId, input: Value) -> Result<()> {
         let start = std::time::Instant::now();
-        let span = crate::spans::session_send(session_id);
-        let _guard = span.enter();
 
-        let session = self
-            .sessions
-            .get(session_id)
-            .map(|entry| entry.value().clone());
-        let session = session.ok_or_else(|| {
-            if tool_registry_trace_enabled() {
-                tool_registry_trace(&format!(
-                    "session_send missing: session_id={}, known_sessions={}",
-                    session_id,
-                    self.sessions.len()
-                ));
-            }
-            BamlRtError::SessionLifecycle(SessionLifecycleError::ToolSessionNotFound {
-                session_id: session_id.to_string(),
-            })
-        })?;
-        let mut guard = session.lock().await;
-        let result = guard.send(input).await.map_err(map_session_error);
+        let result = async {
+            let session = self
+                .sessions
+                .get(session_id)
+                .map(|entry| entry.value().clone());
+            let session = session.ok_or_else(|| {
+                if tool_registry_trace_enabled() {
+                    tool_registry_trace(&format!(
+                        "session_send missing: session_id={}, known_sessions={}",
+                        session_id,
+                        self.sessions.len()
+                    ));
+                }
+                BamlRtError::SessionLifecycle(SessionLifecycleError::ToolSessionNotFound {
+                    session_id: session_id.to_string(),
+                })
+            })?;
+            let mut guard = session.lock().await;
+            guard.send(input).await.map_err(map_session_error)
+        }
+        .instrument(crate::spans::session_send(session_id))
+        .await;
 
         let duration = start.elapsed();
         crate::metrics::record_session_operation("send", duration);
@@ -2284,27 +2293,29 @@ impl ToolRegistry {
 
     pub async fn session_read(&self, session_id: &ToolSessionId, input: Value) -> Result<ToolStep> {
         let start = std::time::Instant::now();
-        let span = crate::spans::session_read(session_id);
-        let _guard = span.enter();
 
-        let session = self
-            .sessions
-            .get(session_id)
-            .map(|entry| entry.value().clone());
-        let session = session.ok_or_else(|| {
-            if tool_registry_trace_enabled() {
-                tool_registry_trace(&format!(
-                    "session_read missing: session_id={}, known_sessions={}",
-                    session_id,
-                    self.sessions.len()
-                ));
-            }
-            BamlRtError::SessionLifecycle(SessionLifecycleError::ToolSessionNotFound {
-                session_id: session_id.to_string(),
-            })
-        })?;
-        let mut guard = session.lock().await;
-        let result = guard.read(input).await.map_err(map_session_error);
+        let result = async {
+            let session = self
+                .sessions
+                .get(session_id)
+                .map(|entry| entry.value().clone());
+            let session = session.ok_or_else(|| {
+                if tool_registry_trace_enabled() {
+                    tool_registry_trace(&format!(
+                        "session_read missing: session_id={}, known_sessions={}",
+                        session_id,
+                        self.sessions.len()
+                    ));
+                }
+                BamlRtError::SessionLifecycle(SessionLifecycleError::ToolSessionNotFound {
+                    session_id: session_id.to_string(),
+                })
+            })?;
+            let mut guard = session.lock().await;
+            guard.read(input).await.map_err(map_session_error)
+        }
+        .instrument(crate::spans::session_read(session_id))
+        .await;
 
         let duration = start.elapsed();
         crate::metrics::record_session_operation("read", duration);
@@ -2314,20 +2325,23 @@ impl ToolRegistry {
 
     pub async fn session_finish(&self, session_id: &ToolSessionId) -> Result<()> {
         let start = std::time::Instant::now();
-        let span = crate::spans::session_finish(session_id);
-        let _guard = span.enter();
 
-        self.session_config_version.remove(session_id);
-        let session = self.sessions.remove(session_id).map(|(_, session)| session);
-        if let Some(session) = session {
-            let mut guard = session.lock().await;
-            guard.finish().await.map_err(map_session_error)?;
+        let result = async {
+            self.session_config_version.remove(session_id);
+            let session = self.sessions.remove(session_id).map(|(_, session)| session);
+            if let Some(session) = session {
+                let mut guard = session.lock().await;
+                guard.finish().await.map_err(map_session_error)?;
+            }
+            Ok(())
         }
+        .instrument(crate::spans::session_finish(session_id))
+        .await;
 
         let duration = start.elapsed();
         crate::metrics::record_session_operation("finish", duration);
 
-        Ok(())
+        result
     }
 
     pub async fn session_abort(
@@ -2336,20 +2350,24 @@ impl ToolRegistry {
         reason: Option<String>,
     ) -> Result<()> {
         let start = std::time::Instant::now();
-        let span = crate::spans::session_abort(session_id, reason.as_deref());
-        let _guard = span.enter();
 
-        self.session_config_version.remove(session_id);
-        let session = self.sessions.remove(session_id).map(|(_, session)| session);
-        if let Some(session) = session {
-            let mut guard = session.lock().await;
-            guard.abort(reason).await.map_err(map_session_error)?;
+        let span = crate::spans::session_abort(session_id, reason.as_deref());
+        let result = async {
+            self.session_config_version.remove(session_id);
+            let session = self.sessions.remove(session_id).map(|(_, session)| session);
+            if let Some(session) = session {
+                let mut guard = session.lock().await;
+                guard.abort(reason).await.map_err(map_session_error)?;
+            }
+            Ok(())
         }
+        .instrument(span)
+        .await;
 
         let duration = start.elapsed();
         crate::metrics::record_session_operation("abort", duration);
 
-        Ok(())
+        result
     }
 
     /// Config version used when this session was opened (for provenance linkage).
@@ -2365,55 +2383,56 @@ impl ToolRegistry {
         context_id: &ContextId,
         agent_id: &AgentId,
     ) -> Result<Value> {
-        let span = crate::spans::execute_tool(name);
-        let _guard = span.enter();
+        async {
+            tracing::debug!(
+                tool = name,
+                args = ?args,
+                "Executing tool function"
+            );
 
-        tracing::debug!(
-            tool = name,
-            args = ?args,
-            "Executing tool function"
-        );
+            let parsed = ToolName::parse(name)?;
+            let handler = {
+                let inner = self.inner.lock().unwrap();
+                let (_, handler) = inner.tools.get(&parsed).ok_or_else(|| {
+                    BamlRtError::FunctionNotFound(format!("Tool '{}' not found", parsed))
+                })?;
+                handler.clone()
+            };
+            if handler.capability() != ToolCapability::OneShot {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Tool '{}' requires a streaming session; use open_session",
+                    parsed
+                )));
+            }
 
-        let parsed = ToolName::parse(name)?;
-        let handler = {
-            let inner = self.inner.lock().unwrap();
-            let (_, handler) = inner.tools.get(&parsed).ok_or_else(|| {
-                BamlRtError::FunctionNotFound(format!("Tool '{}' not found", parsed))
-            })?;
-            handler.clone()
-        };
-        if handler.capability() != ToolCapability::OneShot {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "Tool '{}' requires a streaming session; use open_session",
-                parsed
-            )));
+            // For execute, open_input is always () (empty object)
+            let session_id = self
+                .open_session(
+                    &parsed.to_string(),
+                    empty_open_input(),
+                    context_id,
+                    agent_id,
+                )
+                .await?;
+            self.session_send(&session_id, args).await?;
+            match self.session_read(&session_id, Value::Null).await? {
+                ToolStep::Streaming { output } | ToolStep::Suspended { output } => {
+                    self.session_finish(&session_id).await?;
+                    Ok(output)
+                }
+                ToolStep::Done { output } => {
+                    self.session_finish(&session_id).await?;
+                    Ok(output.unwrap_or(Value::Null))
+                }
+                ToolStep::Error { error } => {
+                    self.session_abort(&session_id, Some(error.message.clone()))
+                        .await?;
+                    Err(map_session_error(ToolSessionError::Tool(error)))
+                }
+            }
         }
-
-        // For execute, open_input is always () (empty object)
-        let session_id = self
-            .open_session(
-                &parsed.to_string(),
-                empty_open_input(),
-                context_id,
-                agent_id,
-            )
-            .await?;
-        self.session_send(&session_id, args).await?;
-        match self.session_read(&session_id, Value::Null).await? {
-            ToolStep::Streaming { output } | ToolStep::Suspended { output } => {
-                self.session_finish(&session_id).await?;
-                Ok(output)
-            }
-            ToolStep::Done { output } => {
-                self.session_finish(&session_id).await?;
-                Ok(output.unwrap_or(Value::Null))
-            }
-            ToolStep::Error { error } => {
-                self.session_abort(&session_id, Some(error.message.clone()))
-                    .await?;
-                Err(map_session_error(ToolSessionError::Tool(error)))
-            }
-        }
+        .instrument(crate::spans::execute_tool(name))
+        .await
     }
 }
 
