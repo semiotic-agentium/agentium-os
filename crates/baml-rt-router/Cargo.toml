@@ -8,6 +8,7 @@ description = "Cluster routing, SSRF validation, token auth, and cross-pod A2A f
 
 [dependencies]
 baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-observability = { path = "../baml-rt-observability" }
 axum = { workspace = true }
 http-api-problem = { workspace = true }
 reqwest = { workspace = true }

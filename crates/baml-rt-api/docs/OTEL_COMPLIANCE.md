@@ -1,6 +1,6 @@
 # OpenTelemetry compliance (baml-rt-api)
 
-This crate follows the patterns in `otel-trace-instrumentation-guide.md` and `otel-metrics-instrumentation-guide.md`.
+This crate follows the patterns in `otel-trace-instrumentation-guide.md` and `otel-metrics-instrumentation-guide.md`. Workspace-wide metric names and purposes: [`docs/metrics-inventory.md`](../../../docs/metrics-inventory.md).
 
 ## Trace (spans)
 

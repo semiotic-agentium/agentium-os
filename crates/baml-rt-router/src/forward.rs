@@ -1,8 +1,9 @@
 //! Cross-pod A2A request forwarding with SSRF protection and response size cap.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Instant};
 
 use baml_rt_core::BamlRtError;
+use baml_rt_observability::metrics;
 
 use crate::ssrf;
 
@@ -100,6 +101,37 @@ fn build_a2a_forward_url(
 /// The caller is responsible for building the `ForwardTarget` via
 /// [`resolve_forward_target`] so the DNS-pinned addresses are used.
 pub async fn forward_request(
+    target: &ForwardTarget,
+    body: &serde_json::Value,
+) -> Result<Vec<serde_json::Value>, BamlRtError> {
+    let start = Instant::now();
+    let out = forward_request_inner(target, body).await;
+    let label = match &out {
+        Ok(_) => "success",
+        Err(e) => cluster_forward_error_label(e),
+    };
+    metrics::record_cluster_a2a_forward(label, start.elapsed());
+    out
+}
+
+fn cluster_forward_error_label(e: &BamlRtError) -> &'static str {
+    match e {
+        BamlRtError::InvalidArgument(_) => "invalid_argument",
+        BamlRtError::Io(io) => {
+            let m = io.to_string();
+            if m.contains("forward returned") {
+                "http_error"
+            } else if m.contains("parse") || m.contains("JSON") {
+                "parse_error"
+            } else {
+                "transport_error"
+            }
+        }
+        _ => "error",
+    }
+}
+
+async fn forward_request_inner(
     target: &ForwardTarget,
     body: &serde_json::Value,
 ) -> Result<Vec<serde_json::Value>, BamlRtError> {

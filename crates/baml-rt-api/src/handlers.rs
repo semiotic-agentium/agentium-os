@@ -244,31 +244,44 @@ pub async fn post_deploy(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<DeployRequestDto>,
 ) -> HttpResult<Json<DeployResponseDto>> {
-    let Some(manager) = &state.deployment_manager else {
-        return Err(problem(
-            501,
-            "Not Implemented",
-            "Deployment manager not configured",
-        ));
-    };
+    let start = Instant::now();
+    let result = async {
+        let Some(manager) = &state.deployment_manager else {
+            return Err(problem(
+                501,
+                "Not Implemented",
+                "Deployment manager not configured",
+            ));
+        };
 
-    let hash = resolve_deploy_hash(&state, body).await?;
-    let content_hash = hash
-        .parse::<DeploymentContentHash>()
-        .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
-    let deploy_result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(manager.deploy_by_hash(&content_hash))
-    });
-    match deploy_result {
-        Ok(result) => Ok(Json(DeployResponseDto {
-            hash,
-            already_deployed: result.already_deployed,
-        })),
-        Err(BamlRtError::AgentNotFound(msg)) => Err(problem(404, "Not Found", msg)),
-        Err(BamlRtError::InvalidArgument(msg)) => Err(problem(400, "Bad Request", msg)),
-        Err(BamlRtError::Conflict(msg)) => Err(problem(409, "Conflict", msg)),
-        Err(e) => Err(problem(500, "Internal Server Error", e.to_string())),
+        let hash = resolve_deploy_hash(&state, body).await?;
+        let content_hash = hash
+            .parse::<DeploymentContentHash>()
+            .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
+        let deploy_result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(manager.deploy_by_hash(&content_hash))
+        });
+        match deploy_result {
+            Ok(result) => Ok(Json(DeployResponseDto {
+                hash,
+                already_deployed: result.already_deployed,
+            })),
+            Err(BamlRtError::AgentNotFound(msg)) => Err(problem(404, "Not Found", msg)),
+            Err(BamlRtError::InvalidArgument(msg)) => Err(problem(400, "Bad Request", msg)),
+            Err(BamlRtError::Conflict(msg)) => Err(problem(409, "Conflict", msg)),
+            Err(e) => Err(problem(500, "Internal Server Error", e.to_string())),
+        }
     }
+    .await;
+    match &result {
+        Ok(_) => metrics::record_request("post_deploy", "success", start.elapsed()),
+        Err(e) => metrics::record_request(
+            "post_deploy",
+            metrics::http_problem_result_label(e),
+            start.elapsed(),
+        ),
+    }
+    result
 }
 
 /// Undeploy an active deployment by content hash.
@@ -290,31 +303,44 @@ pub async fn post_undeploy(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<UndeployRequestDto>,
 ) -> HttpResult<Json<UndeployResponseDto>> {
-    let Some(manager) = &state.deployment_manager else {
-        return Err(problem(
-            501,
-            "Not Implemented",
-            "Deployment manager not configured",
-        ));
-    };
+    let start = Instant::now();
+    let result = async {
+        let Some(manager) = &state.deployment_manager else {
+            return Err(problem(
+                501,
+                "Not Implemented",
+                "Deployment manager not configured",
+            ));
+        };
 
-    let content_hash = body
-        .hash
-        .parse::<DeploymentContentHash>()
-        .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
-    let undeploy_result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(manager.undeploy_by_hash(&content_hash))
-    });
-    match undeploy_result {
-        Ok(result) if result.removed => Ok(Json(UndeployResponseDto { removed: true })),
-        Ok(_) => Err(problem(
-            404,
-            "Not Found",
-            format!("deployment not found for hash {hash}", hash = body.hash),
-        )),
-        Err(BamlRtError::InvalidArgument(msg)) => Err(problem(400, "Bad Request", msg)),
-        Err(e) => Err(problem(500, "Internal Server Error", e.to_string())),
+        let content_hash = body
+            .hash
+            .parse::<DeploymentContentHash>()
+            .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
+        let undeploy_result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(manager.undeploy_by_hash(&content_hash))
+        });
+        match undeploy_result {
+            Ok(result) if result.removed => Ok(Json(UndeployResponseDto { removed: true })),
+            Ok(_) => Err(problem(
+                404,
+                "Not Found",
+                format!("deployment not found for hash {hash}", hash = body.hash),
+            )),
+            Err(BamlRtError::InvalidArgument(msg)) => Err(problem(400, "Bad Request", msg)),
+            Err(e) => Err(problem(500, "Internal Server Error", e.to_string())),
+        }
     }
+    .await;
+    match &result {
+        Ok(_) => metrics::record_request("post_undeploy", "success", start.elapsed()),
+        Err(e) => metrics::record_request(
+            "post_undeploy",
+            metrics::http_problem_result_label(e),
+            start.elapsed(),
+        ),
+    }
+    result
 }
 
 /// List runner-local deployment records.
@@ -332,33 +358,46 @@ pub async fn post_undeploy(
 pub async fn get_deployments(
     State(state): State<Arc<ApiState>>,
 ) -> HttpResult<Json<Vec<DeploymentRecordDto>>> {
-    let Some(manager) = &state.deployment_manager else {
-        return Err(problem(
-            501,
-            "Not Implemented",
-            "Deployment manager not configured",
-        ));
-    };
-    let deployments_result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(manager.list_deployments())
-    });
-    match deployments_result {
-        Ok(records) => Ok(Json(
-            records
-                .into_iter()
-                .map(|record| DeploymentRecordDto {
-                    content_hash: record.content_hash.as_str().to_string(),
-                    agent_name: record.agent_name,
-                    deployed_at: record.deployed_at,
-                    status: deployment_status_to_str(record.status).to_string(),
-                    last_error: record.last_error,
-                    last_attempt_at: record.last_attempt_at,
-                    failure_count: record.failure_count,
-                })
-                .collect(),
-        )),
-        Err(e) => Err(problem(500, "Internal Server Error", e.to_string())),
+    let start = Instant::now();
+    let result = async {
+        let Some(manager) = &state.deployment_manager else {
+            return Err(problem(
+                501,
+                "Not Implemented",
+                "Deployment manager not configured",
+            ));
+        };
+        let deployments_result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(manager.list_deployments())
+        });
+        match deployments_result {
+            Ok(records) => Ok(Json(
+                records
+                    .into_iter()
+                    .map(|record| DeploymentRecordDto {
+                        content_hash: record.content_hash.as_str().to_string(),
+                        agent_name: record.agent_name,
+                        deployed_at: record.deployed_at,
+                        status: deployment_status_to_str(record.status).to_string(),
+                        last_error: record.last_error,
+                        last_attempt_at: record.last_attempt_at,
+                        failure_count: record.failure_count,
+                    })
+                    .collect(),
+            )),
+            Err(e) => Err(problem(500, "Internal Server Error", e.to_string())),
+        }
     }
+    .await;
+    match &result {
+        Ok(_) => metrics::record_request("get_deployments", "success", start.elapsed()),
+        Err(e) => metrics::record_request(
+            "get_deployments",
+            metrics::http_problem_result_label(e),
+            start.elapsed(),
+        ),
+    }
+    result
 }
 
 /// Migrate an agent from this runner to a target runner.
@@ -383,117 +422,130 @@ pub async fn post_migrate(
     State(state): State<Arc<ApiState>>,
     Json(body): Json<MigrateRequestDto>,
 ) -> HttpResult<Json<MigrateResponseDto>> {
-    let Some(manager) = &state.deployment_manager else {
-        return Err(problem(
-            501,
-            "Not Implemented",
-            "Deployment manager not configured",
-        ));
-    };
+    let start = Instant::now();
+    let result = async {
+        let Some(manager) = &state.deployment_manager else {
+            return Err(problem(
+                501,
+                "Not Implemented",
+                "Deployment manager not configured",
+            ));
+        };
 
-    let hash = &body.hash;
-    let target = &body.target_runner_endpoint;
+        let hash = &body.hash;
+        let target = &body.target_runner_endpoint;
 
-    // SSRF protection: validate target endpoint and resolve DNS to block
-    // private/metadata IPs behind attacker-controlled hostnames. Pin resolved
-    // IPs to close the DNS-rebinding TOCTOU gap.
-    let (target_url, resolved_addrs) =
-        baml_rt_router::ssrf::resolve_and_validate_cluster_endpoint(target)
-            .await
-            .map_err(|e| problem(400, "Bad Request", e))?;
+        // SSRF protection: validate target endpoint and resolve DNS to block
+        // private/metadata IPs behind attacker-controlled hostnames. Pin resolved
+        // IPs to close the DNS-rebinding TOCTOU gap.
+        let (target_url, resolved_addrs) =
+            baml_rt_router::ssrf::resolve_and_validate_cluster_endpoint(target)
+                .await
+                .map_err(|e| problem(400, "Bad Request", e))?;
 
-    let content_hash = hash
-        .parse::<DeploymentContentHash>()
-        .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
+        let content_hash = hash
+            .parse::<DeploymentContentHash>()
+            .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
 
-    // 1. Forward deploy to target runner FIRST (before local undeploy).
-    // Use `host()` (not `host_str()`) to get the unbracketed form for IPv6
-    // literals — hyper's DNS override map is keyed on the bare address.
-    let host = match target_url.host() {
-        Some(url::Host::Domain(d)) => d.to_string(),
-        Some(url::Host::Ipv4(ip)) => ip.to_string(),
-        Some(url::Host::Ipv6(ip)) => ip.to_string(),
-        None => String::new(),
-    };
-    let mut builder = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::none());
-    builder = builder.resolve_to_addrs(&host, &resolved_addrs);
-    let client = builder.build().map_err(|e| {
-        problem(
-            500,
-            "Internal Server Error",
-            format!("HTTP client build: {e}"),
-        )
-    })?;
+        // 1. Forward deploy to target runner FIRST (before local undeploy).
+        // Use `host()` (not `host_str()`) to get the unbracketed form for IPv6
+        // literals — hyper's DNS override map is keyed on the bare address.
+        let host = match target_url.host() {
+            Some(url::Host::Domain(d)) => d.to_string(),
+            Some(url::Host::Ipv4(ip)) => ip.to_string(),
+            Some(url::Host::Ipv6(ip)) => ip.to_string(),
+            None => String::new(),
+        };
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none());
+        builder = builder.resolve_to_addrs(&host, &resolved_addrs);
+        let client = builder.build().map_err(|e| {
+            problem(
+                500,
+                "Internal Server Error",
+                format!("HTTP client build: {e}"),
+            )
+        })?;
 
-    let base = baml_rt_router::ssrf::origin_url(&target_url);
-    let deploy_url = format!("{base}/deploy");
-    let deploy_body = serde_json::json!({ "hash": hash });
-    let mut req = client.post(&deploy_url).json(&deploy_body);
-    if let Some(token) = &state.runner_token {
-        req = req.header("X-Runner-Token", token.as_str());
-    }
-    let resp = req.send().await.map_err(|e| {
-        problem(
-            502,
-            "Bad Gateway",
-            format!("failed to reach target runner: {e}"),
-        )
-    })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status().as_u16();
-        let text = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "<unreadable>".to_string());
-        let text = baml_rt_router::ssrf::truncate_body(&text, 512);
-        return Err(problem(
-            502,
-            "Bad Gateway",
-            format!("target runner returned {status}: {text}"),
-        ));
-    }
-
-    // 2. Target confirmed deploy success — now drain and undeploy locally.
-    let undeploy_result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(manager.undeploy_by_hash(&content_hash))
-    });
-    let source_undeploy_failed = match &undeploy_result {
-        Ok(r) if !r.removed => {
-            tracing::warn!(
-                %hash,
-                "agent deployed to target but not found locally for undeploy"
-            );
-            false
+        let base = baml_rt_router::ssrf::origin_url(&target_url);
+        let deploy_url = format!("{base}/deploy");
+        let deploy_body = serde_json::json!({ "hash": hash });
+        let mut req = client.post(&deploy_url).json(&deploy_body);
+        if let Some(token) = &state.runner_token {
+            req = req.header("X-Runner-Token", token.as_str());
         }
-        Err(e) => {
-            tracing::error!(
-                %hash,
-                error = %e,
-                "agent deployed to target but local undeploy failed"
-            );
-            true
-        }
-        _ => false,
-    };
+        let resp = req.send().await.map_err(|e| {
+            problem(
+                502,
+                "Bad Gateway",
+                format!("failed to reach target runner: {e}"),
+            )
+        })?;
 
-    tracing::info!(%hash, target = %target_url, source_undeploy_failed, "agent migrated");
-    if source_undeploy_failed {
-        // Agent is running on both source and target — callers must not
-        // treat this as a clean migration.
-        return Err(problem(
-            500,
-            "Internal Server Error",
-            "agent deployed to target but local undeploy failed; agent may be running on both runners",
-        ));
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let text = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable>".to_string());
+            let text = baml_rt_router::ssrf::truncate_body(&text, 512);
+            return Err(problem(
+                502,
+                "Bad Gateway",
+                format!("target runner returned {status}: {text}"),
+            ));
+        }
+
+        // 2. Target confirmed deploy success — now drain and undeploy locally.
+        let undeploy_result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(manager.undeploy_by_hash(&content_hash))
+        });
+        let source_undeploy_failed = match &undeploy_result {
+            Ok(r) if !r.removed => {
+                tracing::warn!(
+                    %hash,
+                    "agent deployed to target but not found locally for undeploy"
+                );
+                false
+            }
+            Err(e) => {
+                tracing::error!(
+                    %hash,
+                    error = %e,
+                    "agent deployed to target but local undeploy failed"
+                );
+                true
+            }
+            _ => false,
+        };
+
+        tracing::info!(%hash, target = %target_url, source_undeploy_failed, "agent migrated");
+        if source_undeploy_failed {
+            // Agent is running on both source and target — callers must not
+            // treat this as a clean migration.
+            return Err(problem(
+                500,
+                "Internal Server Error",
+                "agent deployed to target but local undeploy failed; agent may be running on both runners",
+            ));
+        }
+        Ok(Json(MigrateResponseDto {
+            migrated: true,
+            source_undeploy_failed,
+        }))
     }
-    Ok(Json(MigrateResponseDto {
-        migrated: true,
-        source_undeploy_failed,
-    }))
+    .await;
+    match &result {
+        Ok(_) => metrics::record_request("post_migrate", "success", start.elapsed()),
+        Err(e) => metrics::record_request(
+            "post_migrate",
+            metrics::http_problem_result_label(e),
+            start.elapsed(),
+        ),
+    }
+    result
 }
 
 /// Forward A2A JSON-RPC request (POST /agents/{agent_package}/{agent_instance_id}/a2a).
@@ -1125,10 +1177,12 @@ pub async fn post_dispatch(
 ) -> impl IntoResponse {
     let span = spans::post_dispatch(&agent_package, &agent_instance_id);
     let _guard = span.enter();
+    let start = Instant::now();
 
     let package_name = match AgentPackageName::parse(&agent_package) {
         Some(n) => n,
         None => {
+            metrics::record_request("post_dispatch", "bad_request", start.elapsed());
             return (
                 AxumStatus::BAD_REQUEST,
                 format!("invalid agent_package: {agent_package}"),
@@ -1139,6 +1193,7 @@ pub async fn post_dispatch(
     let instance_id = match AgentInstanceId::parse(&agent_instance_id) {
         Some(i) => i,
         None => {
+            metrics::record_request("post_dispatch", "bad_request", start.elapsed());
             return (
                 AxumStatus::BAD_REQUEST,
                 format!("invalid agent_instance_id: {agent_instance_id}"),
@@ -1149,15 +1204,26 @@ pub async fn post_dispatch(
     let key = AgentRouteKey::new(package_name, instance_id);
     let request: AgentDispatchRequest = match body.try_into() {
         Ok(r) => r,
-        Err(e) => return (AxumStatus::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => {
+            metrics::record_request("post_dispatch", "bad_request", start.elapsed());
+            return (AxumStatus::BAD_REQUEST, e.to_string()).into_response();
+        }
     };
 
     match state.registry.handle_dispatch(&key, request).await {
         Ok(ack) => {
+            metrics::record_request("post_dispatch", "success", start.elapsed());
             let dto: crate::openapi::AgentDispatchAckDto = ack.into();
             Json(dto).into_response()
         }
-        Err(e) => domain_to_problem(&e, &agent_package, &agent_instance_id).into_response(),
+        Err(e) => {
+            metrics::record_request(
+                "post_dispatch",
+                result_label_for_domain_error(&e),
+                start.elapsed(),
+            );
+            domain_to_problem(&e, &agent_package, &agent_instance_id).into_response()
+        }
     }
 }
 

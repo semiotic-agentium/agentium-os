@@ -47,6 +47,10 @@ crates/baml-agent-runner/.runner-state/
 # Repo-root local runner dev and debug artifacts (do not commit)
 /.repository/
 /.runner-state/
+# E2E / integration SurrealKV trees (LOCK, manifest/, wal/); never commit
+/provenance-e2e.db/
+/.repository-e2e/
+/.runner-state-e2e/
 /provenance_db
 /provenance_db-shm
 /provenance_db-wal

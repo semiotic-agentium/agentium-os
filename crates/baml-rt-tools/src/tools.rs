@@ -2365,7 +2365,6 @@ impl ToolRegistry {
         context_id: &ContextId,
         agent_id: &AgentId,
     ) -> Result<Value> {
-        let start = std::time::Instant::now();
         let span = crate::spans::execute_tool(name);
         let _guard = span.enter();
 
@@ -2400,7 +2399,7 @@ impl ToolRegistry {
             )
             .await?;
         self.session_send(&session_id, args).await?;
-        let result = match self.session_read(&session_id, Value::Null).await? {
+        match self.session_read(&session_id, Value::Null).await? {
             ToolStep::Streaming { output } | ToolStep::Suspended { output } => {
                 self.session_finish(&session_id).await?;
                 Ok(output)
@@ -2414,14 +2413,7 @@ impl ToolRegistry {
                     .await?;
                 Err(map_session_error(ToolSessionError::Tool(error)))
             }
-        };
-
-        // Record metrics
-        let duration = start.elapsed();
-        let result_str = if result.is_ok() { "success" } else { "error" };
-        crate::metrics::record_tool_execution(name, result_str, duration);
-
-        result
+        }
     }
 }
 

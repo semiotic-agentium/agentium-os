@@ -14,8 +14,6 @@ use opentelemetry::{
 
 // Static caches - initialized once, reused forever
 static TOOL_REGISTRATION_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
-static TOOL_EXECUTION_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
-static TOOL_EXECUTION_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 static TOOL_SESSION_OPEN_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static TOOL_SESSION_OPERATION_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 
@@ -24,22 +22,6 @@ fn tool_registration_counter() -> &'static Counter<u64> {
     TOOL_REGISTRATION_COUNTER.get_or_init(|| {
         global::meter("baml_rt_tools")
             .u64_counter("baml_rt_tools.tool.registration.total")
-            .init()
-    })
-}
-
-fn tool_execution_counter() -> &'static Counter<u64> {
-    TOOL_EXECUTION_COUNTER.get_or_init(|| {
-        global::meter("baml_rt_tools")
-            .u64_counter("baml_rt_tools.tool.execution.total")
-            .init()
-    })
-}
-
-fn tool_execution_histogram() -> &'static Histogram<f64> {
-    TOOL_EXECUTION_HISTOGRAM.get_or_init(|| {
-        global::meter("baml_rt_tools")
-            .f64_histogram("baml_rt_tools.tool.execution.duration_ms")
             .init()
     })
 }
@@ -63,17 +45,6 @@ fn tool_session_operation_histogram() -> &'static Histogram<f64> {
 /// Record tool registration event.
 pub(crate) fn record_tool_registration(tool_name: &str) {
     tool_registration_counter().add(1, &[KeyValue::new("tool", tool_name.to_string())]);
-}
-
-/// Record tool execution with duration and result.
-pub(crate) fn record_tool_execution(tool_name: &str, result: &str, duration: Duration) {
-    let attributes = &[
-        KeyValue::new("tool", tool_name.to_string()),
-        KeyValue::new("result", result.to_string()),
-    ];
-
-    tool_execution_counter().add(1, attributes);
-    tool_execution_histogram().record(duration.as_millis() as f64, attributes);
 }
 
 /// Record tool session open event.

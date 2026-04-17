@@ -608,12 +608,25 @@ fn build_hotspot_groups(
     out
 }
 
+fn provenance_ops_query_op_label(r: &ProvenanceOpsResource) -> &'static str {
+    match r {
+        ProvenanceOpsResource::LlmCalls => "ops_query_llm_calls",
+        ProvenanceOpsResource::ToolCalls => "ops_query_tool_calls",
+        ProvenanceOpsResource::Messages => "ops_query_messages",
+        ProvenanceOpsResource::Aggregates => "ops_query_aggregates",
+        ProvenanceOpsResource::LifecycleEvents => "ops_query_lifecycle_events",
+    }
+}
+
 #[async_trait]
 impl ProvenanceOpsQuery for SurrealProvenanceStore {
     async fn query_ops(
         &self,
         mut request: ProvenanceOpsQueryRequest,
     ) -> Result<ProvenanceOpsQueryResponse> {
+        let start = std::time::Instant::now();
+        let resource_op = provenance_ops_query_op_label(&request.resource);
+        let result = async {
         let profile = request
             .response_profile
             .clone()
@@ -1440,6 +1453,13 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                 ),
             ]),
         })
+        }.await;
+        let result_label = match &result {
+            Ok(_) => "success",
+            Err(_) => "error",
+        };
+        baml_rt_observability::record_provenance_read(resource_op, result_label, start.elapsed());
+        result
     }
 
     async fn resolve_archive_ref(

@@ -22,18 +22,20 @@ just otel-summary 15m
 - `just otel-summary <window>` prints a plain-text Prometheus summary (LLM vs tool time split, top functions/tools).
 - `just runner` and `just runner-provenance` set OTEL env defaults (otlp/grpc to `localhost:4317`) and auto-start the OTEL stack unless `OTEL_AUTO_UP=0`.
 
-### Current exported runtime metrics (selected)
+### Current exported runtime metrics
 
-- `baml_rt.a2a.request_total`
-- `baml_rt.a2a.request_duration_ms`
-- `baml_rt.a2a.error_total`
-- `baml_rt.tool.invocation_total`
-- `baml_rt.tool.invocation_duration_ms`
-- `baml_rt.llm.call_total`
-- `baml_rt.llm.call_duration_ms`
-- `baml_rt.llm.prompt_bytes`
-- `baml_rt.llm.tokens_in_total`
-- `baml_rt.llm.tokens_out_total`
+**Workspace inventory (names, meters, purpose):** [metrics-inventory.md](./metrics-inventory.md). Keep that document updated when adding or removing instruments.
+
+High-signal families:
+
+- **A2A host:** `baml_rt.a2a.request_*`, `baml_rt.a2a.error_total`, stream chunk counters/histograms, live-stream and SSE TTFB histograms; event producer sweep `baml_rt.a2a.event_poll.*` and per-event dispatch `baml_rt.a2a.event_dispatch.*` ([`baml-rt-a2a`](../crates/baml-rt-a2a/src/event_dispatcher.rs)).
+- **Cluster A2A forward:** `baml_rt.cluster.a2a_forward_*` when routing to another runner ([`baml-rt-router`](../crates/baml-rt-router/src/forward.rs)).
+- **Tools:** `baml_rt.tool.invocation_*` — **single canonical** completion signal for host tools (emitted from the QuickJS bridge when a tool run finishes). Registry FSM timings use `baml_rt_tools.tool.session.*` (opens and per-op durations); do **not** duplicate full tool completion in a second `baml_rt_tools` execution counter.
+- **LLM / ONNX:** `baml_rt.llm.*`, `baml_rt.onnx.*` (provenance subscriber + embedding paths).
+- **HTTP API:** `baml_rt_api.http.*` and conversation-history histograms ([`baml-rt-api` metrics module](../crates/baml-rt-api/src/metrics.rs)); config and static routes are listed in [metrics-inventory.md](./metrics-inventory.md).
+- **Repository:** `repository.*` ([`baml-rt-repository`](../crates/baml-rt-repository/src/metrics.rs)).
+- **Provenance reads:** `baml_rt_provenance.read.*` for heavy Surreal paths (graph export, ops query).
+- **task-daemon:** `baml_rt_task_daemon.run_once.*` ([`baml-rt-observability`](../crates/baml-rt-observability/src/metrics.rs)).
 
 A starter Grafana dashboard is provisioned at:
 `observability/grafana/dashboards/agent-platform-overview.json`.
@@ -702,13 +704,14 @@ pub fn record_operation(operation: &str, result: &str, duration: Duration) {
 
 **Golden Rules:**
 
-1. **Separate metrics module** - keep instrumentation orthogonal
-2. **Static metric names** - service.domain.metric_type format
-3. **Structured attributes** - NEVER string interpolation in names
-4. **Low cardinality attributes** - avoid user IDs, use bucketing
-5. **Record both counts and durations** for operations
-6. **Instrument all outcomes** (success, failure, specific errors)
-7. **Use OTEL native API** - no bridges needed
+1. **Maintain the workspace inventory** — [metrics-inventory.md](./metrics-inventory.md) lists every exported metric name and its operational role; update it when instruments change.
+2. **Separate metrics module** - keep instrumentation orthogonal
+3. **Static metric names** - service.domain.metric_type format
+4. **Structured attributes** - NEVER string interpolation in names
+5. **Low cardinality attributes** - avoid user IDs, use bucketing
+6. **Record both counts and durations** for operations
+7. **Instrument all outcomes** (success, failure, specific errors)
+8. **Use OTEL native API** - no bridges needed
 
 **This pattern gives you:**
 
