@@ -1084,7 +1084,7 @@ impl A2aAgentBuilderWithEffectEmitter {
     /// The `effect_emitter` field is guaranteed to be present by the type system.
     /// All other fields use defaults if not explicitly provided.
     pub async fn build(self) -> Result<A2aAgent> {
-        tracing::info!("A2aAgentBuilder::build: Starting build");
+        tracing::debug!("A2aAgentBuilder::build: Starting build");
 
         // Resolve runtime: provided or default
         tracing::debug!("A2aAgentBuilder::build: Resolving runtime");
@@ -1123,7 +1123,7 @@ impl A2aAgentBuilderWithEffectEmitter {
                 handle
             }
             BridgeConfig::AutoCreate => {
-                tracing::info!(
+                tracing::debug!(
                     "A2aAgentBuilder::build: Creating QuickJS bridge (this may take a moment)"
                 );
                 // Add timeout around bridge creation to detect hangs
@@ -1145,7 +1145,7 @@ impl A2aAgentBuilderWithEffectEmitter {
                         "QuickJS bridge creation failed: {error}",
                         error = e
                     )))?;
-                tracing::info!("A2aAgentBuilder::build: QuickJS bridge created successfully");
+                tracing::debug!("A2aAgentBuilder::build: QuickJS bridge created successfully");
                 let raw_bridge = Arc::new(Mutex::new(bridge));
                 Arc::new(BridgeHandle::new(raw_bridge, &agent_id.to_string()))
             }

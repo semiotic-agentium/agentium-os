@@ -174,7 +174,7 @@ impl BamlRuntimeManager {
                             continue;
                         }
                         let existing = existing.clone();
-                        tracing::info!(
+                        tracing::debug!(
                             tool = %tool_name_str,
                             previous_session_id = %existing,
                             reason = ?reason,

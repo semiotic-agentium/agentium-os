@@ -843,6 +843,32 @@ async fn test_full_flow() {
 
 ---
 
+## Per-layer env filters (baml-rt binaries)
+
+[`baml_rt_observability::init_tracing`](crates/baml-rt-observability/src/tracing_setup.rs) wires **separate** [`EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/struct.EnvFilter.html) instances for the console (`fmt`) layer and the OpenTelemetry trace layer:
+
+| Variable | Layer | When unset |
+|----------|--------|--------------|
+| `RUST_LOG_FMT` | Console only | `RUST_LOG` via `from_default_env()`, then defaults: `baml_rt=info`, `baml_rt_quickjs=debug`, `baml_rt_interceptor=debug`, `baml_agent_runner=info`, QuickJS adapter crates `warn`. |
+| `RUST_LOG_OTEL` | OTLP span export only | `info` plus QuickJS adapter `warn` — so `RUST_LOG=debug` for local logs does **not** automatically export every `debug` span to the collector. |
+
+**Example:** verbose console, slimmer traces:
+
+```bash
+export RUST_LOG_FMT=debug,baml_rt_quickjs=trace
+export RUST_LOG_OTEL=info,baml_rt=debug
+```
+
+Constants `RUST_LOG_FMT_ENV` and `RUST_LOG_OTEL_ENV` in `tracing_setup.rs` match these names.
+
+### Span and log levels (`baml_rt_observability` + runtime)
+
+- **Ingress / RPC roots** (`a2a_request`, `a2a_stream`, `a2a_cancel`, `a2a_stdio_request`): `info_span!`.
+- **Agent execution and inner routing** (`invoke_function`, `a2a_route`, `a2a_js_invoke`, `init_baml_runtime`): `debug_span!` so default `RUST_LOG_OTEL=info` traces stay operational; widen `RUST_LOG_OTEL` for deep span export.
+- **Interceptor and QuickJS** payload-style logs: `debug!` (see `baml_rt_interceptor::interceptors::tracing`, `baml_rt_quickjs`); provenance remains the transcript of record.
+
+---
+
 ## References
 
 - **Semantic Conventions**: https://opentelemetry.io/docs/specs/semconv/http/

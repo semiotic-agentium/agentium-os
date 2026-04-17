@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use baml_rt_core::Result;
 use serde_json::Value;
-use tracing::{Level, error, info, span};
+use tracing::{Level, debug, error, span};
 
 use crate::interceptor::{
     InterceptorDecision, LLMCallContext, LLMInterceptor, ToolCallContext, ToolInterceptor,
@@ -48,7 +48,7 @@ impl LLMInterceptor for TracingLLMInterceptor {
         );
         let _guard = span.enter();
 
-        info!(
+        debug!(
             prompt = ?context.prompt,
             metadata = ?context.metadata,
             "LLM call intercepted (pre-execution)"
@@ -77,7 +77,7 @@ impl LLMInterceptor for TracingLLMInterceptor {
 
         match result {
             Ok(value) => {
-                info!(
+                debug!(
                     result = ?value,
                     success = true,
                     "LLM call completed"
@@ -127,7 +127,7 @@ impl ToolInterceptor for TracingToolInterceptor {
         let _guard = span.enter();
 
         // Use structured fields - no string interpolation in log messages
-        info!(
+        debug!(
             args = ?context.args,
             metadata = ?context.metadata,
             "Tool call intercepted"
@@ -155,7 +155,7 @@ impl ToolInterceptor for TracingToolInterceptor {
 
         match result {
             Ok(value) => {
-                info!(
+                debug!(
                     result = ?value,
                     success = true,
                     "Tool call completed"

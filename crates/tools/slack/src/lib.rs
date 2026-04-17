@@ -11,6 +11,7 @@
 mod normalize;
 mod producer;
 pub(crate) mod socket_mode;
+mod spans;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
@@ -1505,7 +1506,6 @@ impl BamlTool for SlackTool {
         "Read-only Slack access: list conversations, fetch history/thread replies, resolve users, and search messages."
     }
 
-    #[tracing::instrument(skip(self), fields(action))]
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let action = match &args {
             SlackInput::ListConversations(_) => "ListConversations",
@@ -1514,7 +1514,8 @@ impl BamlTool for SlackTool {
             SlackInput::ResolveUsers(_) => "ResolveUsers",
             SlackInput::SearchMessages(_) => "SearchMessages",
         };
-        tracing::Span::current().record("action", action);
+        let span = spans::execute(action);
+        let _guard = span.enter();
         let mut output = match args {
             SlackInput::ListConversations(input) => self.client.list_conversations(input).await,
             SlackInput::GetConversationHistory(input) => {

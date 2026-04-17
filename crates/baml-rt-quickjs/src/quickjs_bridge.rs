@@ -127,7 +127,7 @@ impl QuickJSBridge {
         agent_id: baml_rt_core::ids::AgentId,
         config: crate::runtime::QuickJSConfig,
     ) -> Result<Self> {
-        tracing::info!(
+        tracing::debug!(
             memory_limit = ?config.memory_limit,
             max_stack_size = ?config.max_stack_size,
             gc_threshold = ?config.gc_threshold,
@@ -268,7 +268,7 @@ impl QuickJSBridge {
     /// **INVARIANT L1:** This operation MUST terminate within bounded time (5 seconds).
     /// If it hangs, the QuickJS runtime may have a blocking operation.
     async fn initialize_sandbox(&mut self) -> Result<()> {
-        tracing::info!("Initializing QuickJS sandbox environment");
+        tracing::debug!("Initializing QuickJS sandbox environment");
 
         // Initialize safe console and ensure dangerous globals aren't available
         // QuickJS by default doesn't expose require, fetch, etc., but we ensure console.log works safely
@@ -327,7 +327,7 @@ impl QuickJSBridge {
             source: Box::new(e),
         })?;
 
-        tracing::info!("QuickJS sandbox initialized - I/O restricted to runtime host functions");
+        tracing::debug!("QuickJS sandbox initialized - I/O restricted to runtime host functions");
         Ok(())
     }
 
@@ -336,7 +336,7 @@ impl QuickJSBridge {
     /// This maps Rust BAML functions to JavaScript callables.
     /// When JS calls the function, it will invoke the Rust BAML execution.
     pub async fn register_baml_functions(&mut self) -> Result<()> {
-        tracing::info!("Registering BAML functions with QuickJS");
+        tracing::debug!("Registering BAML functions with QuickJS");
 
         {
             let mut manager = self.baml_manager.write().await;

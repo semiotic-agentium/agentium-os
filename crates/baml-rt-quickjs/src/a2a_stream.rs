@@ -179,7 +179,7 @@ impl BridgeHandle {
             .name(thread_name.clone())
             .spawn(move || {
                 let lane_tx = tx_for_lane;
-                tracing::info!(thread = %thread_name, "handover lane: thread started");
+                tracing::debug!(thread = %thread_name, "handover lane: thread started");
                 // Multi-threaded runtime so spawn_blocking can use the thread pool and
                 // concurrent LLM/IO futures (spawned by __baml_invoke promise bodies) can
                 // run on worker threads while the LocalSet drives !Send JS tasks on this thread.
@@ -288,7 +288,7 @@ impl BridgeHandle {
                         });
                     }
                 }));
-                tracing::info!("handover lane: receiver closed, thread exiting");
+                tracing::debug!("handover lane: receiver closed, thread exiting");
             })
             .expect("failed to spawn handover lane thread");
         Self {

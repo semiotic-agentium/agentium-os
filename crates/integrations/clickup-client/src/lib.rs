@@ -1,3 +1,5 @@
+mod spans;
+
 use baml_rt_llm_config::{FnoxFileSecretResolver, SecretResolver};
 
 /// ClickUp v2 REST API base URL.
@@ -105,11 +107,18 @@ impl ClickUpClient {
             .header("Authorization", api_key)
     }
 
-    #[tracing::instrument(skip_all, fields(url))]
     pub async fn send_json(
         &self,
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, ClickUpClientError> {
+        let span = spans::send_json();
+        let _guard = span.enter();
+        if let Some(rb) = request.try_clone()
+            && let Ok(req) = rb.build()
+        {
+            span.record("url", tracing::field::display(req.url().as_str()));
+        }
+
         let resp = request.send().await.map_err(ClickUpClientError::Http)?;
 
         let status = resp.status();

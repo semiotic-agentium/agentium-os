@@ -21,10 +21,13 @@ jobs:
         with:
           fetch-depth: 2
 
+      - name: Refresh apt indices (retry; mitigates mirror sync races)
+        run: bash scripts/ci/apt-update-retry.sh
+
       - name: Ensure required tools
         run: |
-          command -v jq >/dev/null || (sudo apt-get update && sudo apt-get install -y jq)
-          command -v gh >/dev/null || (sudo apt-get update && sudo apt-get install -y gh)
+          command -v jq >/dev/null || sudo apt-get install -y jq
+          command -v gh >/dev/null || sudo apt-get install -y gh
 
       - name: Check skip conditions
         id: skip-check

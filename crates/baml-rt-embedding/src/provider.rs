@@ -22,7 +22,7 @@ pub(crate) fn models_cache_dir() -> Option<PathBuf> {
     {
         let dir = PathBuf::from(base).join("fastembed");
         if dir.exists() {
-            tracing::info!(
+            tracing::debug!(
                 cache_dir = %dir.display(),
                 "using BAML_MODELS_DIR for fastembed ONNX cache (in-repo or custom tree)"
             );
@@ -40,7 +40,7 @@ pub(crate) fn models_cache_dir() -> Option<PathBuf> {
     if let Some(workspace) = manifest.parent().and_then(|p| p.parent()) {
         let dir = workspace.join("models").join("fastembed");
         if dir.exists() {
-            tracing::info!(
+            tracing::debug!(
                 cache_dir = %dir.display(),
                 "using workspace models/fastembed for ONNX (git LFS / just download-models)"
             );
@@ -148,13 +148,13 @@ impl FastEmbedProvider {
         };
 
         let embedding = if let Some(dir) = cache_dir {
-            tracing::info!(
+            tracing::debug!(
                 "FastEmbed TextEmbedding: loading ONNX session from local cache (CPU graph build can take 10-40s even from disk)"
             );
             let t0 = Instant::now();
             match TextEmbedding::try_new(make_opts(Some(dir))) {
                 Ok(e) => {
-                    tracing::info!(
+                    tracing::debug!(
                         elapsed_ms = t0.elapsed().as_millis(),
                         "FastEmbed TextEmbedding: ONNX session ready"
                     );
@@ -170,12 +170,12 @@ impl FastEmbedProvider {
                 }
             }
         } else {
-            tracing::info!(
+            tracing::debug!(
                 "FastEmbed TextEmbedding: loading ONNX session (CPU graph build can take 10-40s even from disk)"
             );
             let t0 = Instant::now();
             let e = TextEmbedding::try_new(make_opts(None)).map_err(EmbeddingError::ModelInit)?;
-            tracing::info!(
+            tracing::debug!(
                 elapsed_ms = t0.elapsed().as_millis(),
                 "FastEmbed TextEmbedding: ONNX session ready"
             );

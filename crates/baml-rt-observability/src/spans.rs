@@ -125,12 +125,13 @@ pub fn evaluate_agent_code(entry_point: &str) -> Span {
     tracing::debug_span!("baml_rt.evaluate_agent_code", entry_point = entry_point,)
 }
 
-/// Create span for invoking an agent function.
+/// Create span for invoking an agent function (BAML / JS execution path).
 ///
 /// Parent: CLI command span or interactive loop
 /// Children: invoke_js_function, invoke_baml_function
 ///
-/// This is a root span - includes runtime scope attributes for context propagation.
+/// **Level `debug`:** semantic transcript and tool/LLM detail belong in provenance; default OTLP
+/// filters keep operational roots (`a2a_request`, etc.) at `info` without exporting every hop here.
 #[inline]
 pub fn invoke_function(
     scope: Option<&RuntimeScope>,
@@ -141,7 +142,7 @@ pub fn invoke_function(
         .map(|id| id.as_str().to_string())
         .unwrap_or_else(|| "none".to_string());
     let (context_id, message_id, task_id) = scope_attributes(scope);
-    tracing::info_span!(
+    tracing::debug_span!(
         "baml_rt.invoke_function",
         agent = agent_name,
         function = function_name,
@@ -253,10 +254,10 @@ pub fn register_tool(tool_name: &str) -> Span {
 
 /// Create span for BAML runtime initialization.
 ///
-/// Parent: load_baml_schema
+/// Parent: load_baml_schema. **Level `debug`:** per-load hot path; not an ingress milestone.
 #[inline]
 pub fn init_baml_runtime() -> Span {
-    tracing::info_span!("baml_rt.init_baml_runtime")
+    tracing::debug_span!("baml_rt.init_baml_runtime")
 }
 
 // A2A stdio loop and routing
@@ -276,10 +277,11 @@ pub fn a2a_stdio_request(agent_name: &str, method: &str, correlation_id: &str) -
 
 /// Create span for A2A routing and dispatch (method-based router).
 ///
-/// Parent: a2a_request / a2a_stream / a2a_stdio_request
+/// Parent: a2a_request / a2a_stream / a2a_stdio_request. **Level `debug`:** inner routing; ingress
+/// roots stay at `info`.
 #[inline]
 pub fn a2a_route(method: &str, context_id: &str) -> Span {
-    tracing::info_span!(
+    tracing::debug_span!(
         "baml_rt.a2a_route",
         method = method,
         context_id = context_id,
@@ -288,10 +290,10 @@ pub fn a2a_route(method: &str, context_id: &str) -> Span {
 
 /// Create span for JS handler invocation (onChatMessage / stream).
 ///
-/// Parent: a2a_route
+/// Parent: a2a_route. **Level `debug`:** agent execution; provenance captures conversation graph.
 #[inline]
 pub fn a2a_js_invoke(method: &str, invocation: InvocationKind) -> Span {
-    tracing::info_span!(
+    tracing::debug_span!(
         "baml_rt.a2a_js_invoke",
         method = method,
         is_stream = invocation.is_stream(),

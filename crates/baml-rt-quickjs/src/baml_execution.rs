@@ -189,7 +189,7 @@ impl BamlExecutor {
     /// BAML schema's `api_key env.X` references resolve correctly without relying on
     /// std::env::var. Pass the result of `BamlRuntimeManager::resolve_secrets_as_env_vars()`.
     pub fn load_il(baml_src_dir: &Path, env_vars: HashMap<String, String>) -> Result<Self> {
-        tracing::info!(?baml_src_dir, "Loading BAML runtime from directory");
+        tracing::debug!(?baml_src_dir, "Loading BAML runtime from directory");
 
         let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
 
@@ -415,7 +415,7 @@ impl BamlExecutor {
             }
 
             let planner_metrics = planner_state_telemetry(&args);
-            tracing::info!(
+            tracing::debug!(
                 function = function_name,
                 context_id = %scope.context_id().as_str(),
                 message_id = %scope.message_id().as_str(),
@@ -487,7 +487,7 @@ impl BamlExecutor {
 
             match parsed_result.as_ref() {
                 Ok(parsed) => {
-                    tracing::info!(
+                    tracing::debug!(
                         function = function_name,
                         hop_elapsed_ms = attempt_start.elapsed().as_millis() as u64,
                         elapsed_ms = start_time.elapsed().as_millis() as u64,

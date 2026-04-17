@@ -55,7 +55,7 @@ pub(super) fn parse_session_id_arg(
 impl QuickJSBridge {
     /// Register all tool functions with QuickJS
     pub(crate) async fn register_tool_functions(&mut self) -> Result<()> {
-        tracing::info!("Registering tool functions with QuickJS");
+        tracing::debug!("Registering tool functions with QuickJS");
 
         // Register helper function to execute tools
         tracing::debug!("register_tool_functions: register_tool_invoke_helper start");
@@ -1082,7 +1082,7 @@ impl QuickJSBridge {
 
         self.js_tools.insert(tool_name.clone());
 
-        tracing::info!(
+        tracing::debug!(
             tool = tool_name.as_str(),
             "Registered JavaScript tool function"
         );

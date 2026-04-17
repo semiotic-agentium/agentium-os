@@ -150,11 +150,11 @@ impl FastRerankProvider {
             opts
         };
         if let Some(dir) = cache_dir {
-            tracing::info!("FastEmbed TextRerank (JINA): loading ONNX from local cache");
+            tracing::debug!("FastEmbed TextRerank (JINA): loading ONNX from local cache");
             let t0 = Instant::now();
             match TextRerank::try_new(make_opts(Some(dir))) {
                 Ok(r) => {
-                    tracing::info!(
+                    tracing::debug!(
                         elapsed_ms = t0.elapsed().as_millis(),
                         "FastEmbed TextRerank (JINA): ONNX session ready"
                     );
