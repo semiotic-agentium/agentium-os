@@ -130,6 +130,8 @@ fn secret_name_from_option_value(v: &str) -> Option<String> {
 pub async fn list_secrets_overview(
     State(state): State<Arc<crate::router::ApiState>>,
 ) -> HttpResult<Vec<SecretOverviewEntryDto>> {
+    let start = std::time::Instant::now();
+    let result = async {
     let catalog = &state.tool_catalog;
     // LLM_CONFIG_BUNDLE_NAME is a crate constant guaranteed by baml_rt_llm_config to pass BundleName::new.
     let llm_bundle = BundleName::new(LLM_CONFIG_BUNDLE_NAME).expect("llm bundle name valid");
@@ -221,6 +223,9 @@ pub async fn list_secrets_overview(
     out.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(Json(out))
+    }.await;
+    crate::metrics::finish_json_http_metrics("config_secrets_overview", start, &result);
+    result
 }
 
 /// List keys in the secret store that have a value (for link dropdown). Returns only keys that the backend (e.g. fnox) actually resolved — not secret request names from the overview. M:N: each secret request is linked to one of these store keys.
@@ -235,13 +240,19 @@ pub async fn list_secrets_overview(
 pub async fn list_store_keys(
     State(state): State<Arc<crate::router::ApiState>>,
 ) -> HttpResult<Vec<String>> {
-    let keys = state
-        .secret_resolver
-        .list_store_keys()
-        .into_iter()
-        .map(|k| k.as_str().to_string())
-        .collect();
-    Ok(Json(keys))
+    let start = std::time::Instant::now();
+    let result = async {
+        let keys = state
+            .secret_resolver
+            .list_store_keys()
+            .into_iter()
+            .map(|k| k.as_str().to_string())
+            .collect();
+        Ok(Json(keys))
+    }
+    .await;
+    crate::metrics::finish_json_http_metrics("config_store_keys", start, &result);
+    result
 }
 
 /// Link a secret by name (PUT /config/secrets/{name}).
@@ -263,6 +274,8 @@ pub async fn put_secret(
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(body): Json<ProvisionSecretDto>,
 ) -> Result<AxumStatus, HttpApiProblem> {
+    let start = std::time::Instant::now();
+    let result = async {
     let store = state
         .runtime_secret_store
         .as_ref()
@@ -305,6 +318,9 @@ pub async fn put_secret(
         .await
         .map_err(|e| *e)?;
     Ok(AxumStatus::NO_CONTENT)
+    }.await;
+    crate::metrics::finish_status_http_metrics("config_secret_put", start, &result);
+    result
 }
 
 /// Unlink a secret (DELETE /config/secrets/{name}).
@@ -324,30 +340,36 @@ pub async fn delete_secret(
     State(state): State<Arc<crate::router::ApiState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<AxumStatus, HttpApiProblem> {
-    let store = state.runtime_secret_store.as_ref().ok_or_else(|| {
-        problem(
-            501,
-            "Not Implemented",
-            "Runtime secret store not available.",
-        )
-    })?;
-    let name = name.trim();
-    if name.is_empty() {
-        return Err(problem(400, "Bad Request", "Secret name must be non-empty"));
+    let start = std::time::Instant::now();
+    let result = async {
+        let store = state.runtime_secret_store.as_ref().ok_or_else(|| {
+            problem(
+                501,
+                "Not Implemented",
+                "Runtime secret store not available.",
+            )
+        })?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(problem(400, "Bad Request", "Secret name must be non-empty"));
+        }
+        let request = SecretRequestName::new(name);
+        store.remove(&request);
+        let mut link_state = load_secret_links_state(state.config_service.as_ref())
+            .await
+            .map_err(|e| *e)?;
+        link_state.links.remove(&request);
+        if !link_state.unlinked.iter().any(|r| r.as_str() == name) {
+            link_state.unlinked.push(request);
+        }
+        save_secret_links_state(state.config_service.as_ref(), &link_state)
+            .await
+            .map_err(|e| *e)?;
+        Ok(AxumStatus::NO_CONTENT)
     }
-    let request = SecretRequestName::new(name);
-    store.remove(&request);
-    let mut link_state = load_secret_links_state(state.config_service.as_ref())
-        .await
-        .map_err(|e| *e)?;
-    link_state.links.remove(&request);
-    if !link_state.unlinked.iter().any(|r| r.as_str() == name) {
-        link_state.unlinked.push(request);
-    }
-    save_secret_links_state(state.config_service.as_ref(), &link_state)
-        .await
-        .map_err(|e| *e)?;
-    Ok(AxumStatus::NO_CONTENT)
+    .await;
+    crate::metrics::finish_status_http_metrics("config_secret_delete", start, &result);
+    result
 }
 
 /// List bundles with config schema and whether each has stored config (GET /config).
@@ -363,60 +385,66 @@ pub async fn delete_secret(
 pub async fn list_config(
     State(state): State<Arc<crate::router::ApiState>>,
 ) -> HttpResult<Vec<ToolConfigSchemaDto>> {
-    let catalog = &state.tool_catalog;
-    let config = &state.config_service;
+    let start = std::time::Instant::now();
+    let result = async {
+        let catalog = &state.tool_catalog;
+        let config = &state.config_service;
 
-    let with_config: std::collections::HashSet<String> = config
-        .list_with_config()
-        .await
-        .map_err(config_err_500)?
-        .into_iter()
-        .map(|b| b.as_str().to_string())
-        .collect();
+        let with_config: std::collections::HashSet<String> = config
+            .list_with_config()
+            .await
+            .map_err(config_err_500)?
+            .into_iter()
+            .map(|b| b.as_str().to_string())
+            .collect();
 
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
 
-    // Always expose the LLM config bundle so the UI can show the LLM section.
-    // LLM_CONFIG_BUNDLE_NAME is a crate constant guaranteed by baml_rt_llm_config to pass BundleName::new.
-    let llm_bundle = BundleName::new(LLM_CONFIG_BUNDLE_NAME).expect("llm bundle name is valid");
-    seen.insert(llm_bundle.clone());
-    let default_llm_value =
-        serde_json::to_value(LlmClientConfig::sensible_default()).map_err(|e| {
-            problem(
-                500,
-                "Internal Error",
-                format!("serialize default LLM config: {e}"),
-            )
-        })?;
-    out.push(ToolConfigSchemaDto {
-        tool_name: LLM_CONFIG_BUNDLE_NAME.to_string(),
-        schema: llm_bundle_schema(),
-        default: Some(default_llm_value),
-        has_config: with_config.contains(LLM_CONFIG_BUNDLE_NAME),
-    });
-
-    for metadata in catalog.iter() {
-        let Some(ref config_bundle) = metadata.config_bundle else {
-            continue;
-        };
-        let Some(ref config_meta) = metadata.config else {
-            continue;
-        };
-        if !seen.insert(config_bundle.clone()) {
-            continue;
-        }
-        let bundle_name = config_bundle.as_str().to_string();
-        let has_config = with_config.contains(config_bundle.as_str());
+        // Always expose the LLM config bundle so the UI can show the LLM section.
+        // LLM_CONFIG_BUNDLE_NAME is a crate constant guaranteed by baml_rt_llm_config to pass BundleName::new.
+        let llm_bundle = BundleName::new(LLM_CONFIG_BUNDLE_NAME).expect("llm bundle name is valid");
+        seen.insert(llm_bundle.clone());
+        let default_llm_value =
+            serde_json::to_value(LlmClientConfig::sensible_default()).map_err(|e| {
+                problem(
+                    500,
+                    "Internal Error",
+                    format!("serialize default LLM config: {e}"),
+                )
+            })?;
         out.push(ToolConfigSchemaDto {
-            tool_name: bundle_name,
-            schema: config_meta.schema.clone(),
-            default: Some(config_meta.default.clone()),
-            has_config,
+            tool_name: LLM_CONFIG_BUNDLE_NAME.to_string(),
+            schema: llm_bundle_schema(),
+            default: Some(default_llm_value),
+            has_config: with_config.contains(LLM_CONFIG_BUNDLE_NAME),
         });
-    }
 
-    Ok(Json(out))
+        for metadata in catalog.iter() {
+            let Some(ref config_bundle) = metadata.config_bundle else {
+                continue;
+            };
+            let Some(ref config_meta) = metadata.config else {
+                continue;
+            };
+            if !seen.insert(config_bundle.clone()) {
+                continue;
+            }
+            let bundle_name = config_bundle.as_str().to_string();
+            let has_config = with_config.contains(config_bundle.as_str());
+            out.push(ToolConfigSchemaDto {
+                tool_name: bundle_name,
+                schema: config_meta.schema.clone(),
+                default: Some(config_meta.default.clone()),
+                has_config,
+            });
+        }
+
+        Ok(Json(out))
+    }
+    .await;
+    crate::metrics::finish_json_http_metrics("config_list", start, &result);
+    result
 }
 
 /// Get config schema + current config for a bundle (GET /config/{bundle_name}).
@@ -435,67 +463,73 @@ pub async fn get_config(
     State(state): State<Arc<crate::router::ApiState>>,
     axum::extract::Path(bundle_name): axum::extract::Path<String>,
 ) -> HttpResult<ToolConfigDto> {
-    let catalog = &state.tool_catalog;
-    let config = &state.config_service;
+    let start = std::time::Instant::now();
+    let result = async {
+        let catalog = &state.tool_catalog;
+        let config = &state.config_service;
 
-    let parsed = BundleName::new(&bundle_name).map_err(|_| {
-        problem(
-            400,
-            "Bad Request",
-            format!("Invalid bundle name: {bundle_name}"),
-        )
-    })?;
-
-    let (config_value, version) = if parsed.as_str() == LLM_CONFIG_BUNDLE_NAME {
-        match config
-            .get_with_version(&parsed)
-            .await
-            .map_err(config_err_500)?
-        {
-            Some(s) => (s.config, s.version.into()),
-            None => (
-                serde_json::to_value(LlmClientConfig::sensible_default()).map_err(|e| {
-                    problem(
-                        500,
-                        "Internal Error",
-                        format!("serialize default LLM config: {e}"),
-                    )
-                })?,
-                0,
-            ),
-        }
-    } else {
-        let metadata = catalog.bundle_config(&parsed).ok_or_else(|| {
+        let parsed = BundleName::new(&bundle_name).map_err(|_| {
             problem(
-                404,
-                "Not Found",
-                format!("Bundle '{bundle_name}' not found or has no config schema"),
+                400,
+                "Bad Request",
+                format!("Invalid bundle name: {bundle_name}"),
             )
         })?;
 
-        let config_meta = metadata.config.as_ref().ok_or_else(|| {
-            problem(
-                404,
-                "Not Found",
-                format!("Bundle '{bundle_name}' has no config schema"),
-            )
-        })?;
+        let (config_value, version) = if parsed.as_str() == LLM_CONFIG_BUNDLE_NAME {
+            match config
+                .get_with_version(&parsed)
+                .await
+                .map_err(config_err_500)?
+            {
+                Some(s) => (s.config, s.version.into()),
+                None => (
+                    serde_json::to_value(LlmClientConfig::sensible_default()).map_err(|e| {
+                        problem(
+                            500,
+                            "Internal Error",
+                            format!("serialize default LLM config: {e}"),
+                        )
+                    })?,
+                    0,
+                ),
+            }
+        } else {
+            let metadata = catalog.bundle_config(&parsed).ok_or_else(|| {
+                problem(
+                    404,
+                    "Not Found",
+                    format!("Bundle '{bundle_name}' not found or has no config schema"),
+                )
+            })?;
 
-        match config
-            .get_with_version(&parsed)
-            .await
-            .map_err(config_err_500)?
-        {
-            Some(s) => (s.config, s.version.into()),
-            None => (config_meta.default.clone(), 0),
-        }
-    };
+            let config_meta = metadata.config.as_ref().ok_or_else(|| {
+                problem(
+                    404,
+                    "Not Found",
+                    format!("Bundle '{bundle_name}' has no config schema"),
+                )
+            })?;
 
-    Ok(Json(ToolConfigDto {
-        tool_name: bundle_name,
-        config: config_value,
-        version,
-    }))
+            match config
+                .get_with_version(&parsed)
+                .await
+                .map_err(config_err_500)?
+            {
+                Some(s) => (s.config, s.version.into()),
+                None => (config_meta.default.clone(), 0),
+            }
+        };
+
+        Ok(Json(ToolConfigDto {
+            tool_name: bundle_name,
+            config: config_value,
+            version,
+        }))
+    }
+    .await;
+    crate::metrics::finish_json_http_metrics("config_get", start, &result);
+    result
 }
 
 /// Create or update config (PUT /config/{bundle_name}).
@@ -521,6 +555,8 @@ pub async fn put_config(
     headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> HttpResult<ConfigVersionDto> {
+    let start = std::time::Instant::now();
+    let result = async {
     let catalog = &state.tool_catalog;
     let config = &state.config_service;
 
@@ -597,6 +633,9 @@ pub async fn put_config(
         config: version.config,
         created_at_ms: version.created_at_ms.into(),
     }))
+    }.await;
+    crate::metrics::finish_json_http_metrics("config_put", start, &result);
+    result
 }
 
 /// Remove stored config (DELETE /config/{bundle_name}).
@@ -615,36 +654,42 @@ pub async fn delete_config(
     State(state): State<Arc<crate::router::ApiState>>,
     axum::extract::Path(bundle_name): axum::extract::Path<String>,
 ) -> Result<AxumStatus, HttpApiProblem> {
-    let catalog = &state.tool_catalog;
-    let config = &state.config_service;
+    let start = std::time::Instant::now();
+    let result = async {
+        let catalog = &state.tool_catalog;
+        let config = &state.config_service;
 
-    let parsed = BundleName::new(&bundle_name).map_err(|_| {
-        problem(
-            400,
-            "Bad Request",
-            format!("Invalid bundle name: {bundle_name}"),
-        )
-    })?;
+        let parsed = BundleName::new(&bundle_name).map_err(|_| {
+            problem(
+                400,
+                "Bad Request",
+                format!("Invalid bundle name: {bundle_name}"),
+            )
+        })?;
 
-    if parsed.as_str() == LLM_CONFIG_BUNDLE_NAME {
-        return Err(problem(
-            400,
-            "Bad Request",
-            "Deletion of the default LLM config is not allowed",
-        ));
+        if parsed.as_str() == LLM_CONFIG_BUNDLE_NAME {
+            return Err(problem(
+                400,
+                "Bad Request",
+                "Deletion of the default LLM config is not allowed",
+            ));
+        }
+
+        catalog.bundle_config(&parsed).ok_or_else(|| {
+            problem(
+                404,
+                "Not Found",
+                format!("Bundle '{bundle_name}' not found"),
+            )
+        })?;
+
+        config.delete(&parsed).await.map_err(config_err_500)?;
+
+        Ok(AxumStatus::NO_CONTENT)
     }
-
-    catalog.bundle_config(&parsed).ok_or_else(|| {
-        problem(
-            404,
-            "Not Found",
-            format!("Bundle '{bundle_name}' not found"),
-        )
-    })?;
-
-    config.delete(&parsed).await.map_err(config_err_500)?;
-
-    Ok(AxumStatus::NO_CONTENT)
+    .await;
+    crate::metrics::finish_status_http_metrics("config_delete", start, &result);
+    result
 }
 
 /// List version history (GET /config/{bundle_name}/versions).
@@ -663,42 +708,48 @@ pub async fn list_config_versions(
     State(state): State<Arc<crate::router::ApiState>>,
     axum::extract::Path(bundle_name): axum::extract::Path<String>,
 ) -> HttpResult<Vec<ConfigVersionDto>> {
-    let catalog = &state.tool_catalog;
-    let config = &state.config_service;
+    let start = std::time::Instant::now();
+    let result = async {
+        let catalog = &state.tool_catalog;
+        let config = &state.config_service;
 
-    let parsed = BundleName::new(&bundle_name).map_err(|_| {
-        problem(
-            400,
-            "Bad Request",
-            format!("Invalid bundle name: {bundle_name}"),
-        )
-    })?;
-
-    if parsed.as_str() != LLM_CONFIG_BUNDLE_NAME {
-        catalog.bundle_config(&parsed).ok_or_else(|| {
+        let parsed = BundleName::new(&bundle_name).map_err(|_| {
             problem(
-                404,
-                "Not Found",
-                format!("Bundle '{bundle_name}' not found"),
+                400,
+                "Bad Request",
+                format!("Invalid bundle name: {bundle_name}"),
             )
         })?;
+
+        if parsed.as_str() != LLM_CONFIG_BUNDLE_NAME {
+            catalog.bundle_config(&parsed).ok_or_else(|| {
+                problem(
+                    404,
+                    "Not Found",
+                    format!("Bundle '{bundle_name}' not found"),
+                )
+            })?;
+        }
+
+        let versions = config
+            .list_versions(&parsed)
+            .await
+            .map_err(config_err_500)?;
+
+        let dtos: Vec<ConfigVersionDto> = versions
+            .into_iter()
+            .map(|v| ConfigVersionDto {
+                version: v.version.into(),
+                config: v.config,
+                created_at_ms: v.created_at_ms.into(),
+            })
+            .collect();
+
+        Ok(Json(dtos))
     }
-
-    let versions = config
-        .list_versions(&parsed)
-        .await
-        .map_err(config_err_500)?;
-
-    let dtos: Vec<ConfigVersionDto> = versions
-        .into_iter()
-        .map(|v| ConfigVersionDto {
-            version: v.version.into(),
-            config: v.config,
-            created_at_ms: v.created_at_ms.into(),
-        })
-        .collect();
-
-    Ok(Json(dtos))
+    .await;
+    crate::metrics::finish_json_http_metrics("config_list_versions", start, &result);
+    result
 }
 
 /// Get config at specific version (GET /config/{bundle_name}/versions/{version}).
@@ -720,38 +771,44 @@ pub async fn get_config_version(
     State(state): State<Arc<crate::router::ApiState>>,
     axum::extract::Path((bundle_name, version)): axum::extract::Path<(String, u64)>,
 ) -> HttpResult<ConfigVersionDto> {
-    let catalog = &state.tool_catalog;
-    let config = &state.config_service;
+    let start = std::time::Instant::now();
+    let result = async {
+        let catalog = &state.tool_catalog;
+        let config = &state.config_service;
 
-    let parsed = BundleName::new(&bundle_name).map_err(|_| {
-        problem(
-            400,
-            "Bad Request",
-            format!("Invalid bundle name: {bundle_name}"),
-        )
-    })?;
-
-    if parsed.as_str() != LLM_CONFIG_BUNDLE_NAME {
-        catalog.bundle_config(&parsed).ok_or_else(|| {
+        let parsed = BundleName::new(&bundle_name).map_err(|_| {
             problem(
-                404,
-                "Not Found",
-                format!("Bundle '{bundle_name}' not found"),
+                400,
+                "Bad Request",
+                format!("Invalid bundle name: {bundle_name}"),
             )
         })?;
+
+        if parsed.as_str() != LLM_CONFIG_BUNDLE_NAME {
+            catalog.bundle_config(&parsed).ok_or_else(|| {
+                problem(
+                    404,
+                    "Not Found",
+                    format!("Bundle '{bundle_name}' not found"),
+                )
+            })?;
+        }
+
+        let v = config
+            .get_version(&parsed, version)
+            .await
+            .map_err(config_err_500)?
+            .ok_or_else(|| problem(404, "Not Found", format!("Version {version} not found")))?;
+
+        Ok(Json(ConfigVersionDto {
+            version: v.version.into(),
+            config: v.config,
+            created_at_ms: v.created_at_ms.into(),
+        }))
     }
-
-    let v = config
-        .get_version(&parsed, version)
-        .await
-        .map_err(config_err_500)?
-        .ok_or_else(|| problem(404, "Not Found", format!("Version {version} not found")))?;
-
-    Ok(Json(ConfigVersionDto {
-        version: v.version.into(),
-        config: v.config,
-        created_at_ms: v.created_at_ms.into(),
-    }))
+    .await;
+    crate::metrics::finish_json_http_metrics("config_get_version", start, &result);
+    result
 }
 
 /// List secret requests for a tool (GET /config/{tool_name}/secret-requests).
@@ -770,30 +827,36 @@ pub async fn list_secret_requests(
     State(state): State<Arc<crate::router::ApiState>>,
     axum::extract::Path(tool_name): axum::extract::Path<String>,
 ) -> HttpResult<Vec<SecretRequestDto>> {
-    let catalog = &state.tool_catalog;
+    let start = std::time::Instant::now();
+    let result = async {
+        let catalog = &state.tool_catalog;
 
-    let parsed = ToolName::parse(&tool_name).map_err(|_| {
-        problem(
-            400,
-            "Bad Request",
-            format!("Invalid tool name: {tool_name}"),
-        )
-    })?;
+        let parsed = ToolName::parse(&tool_name).map_err(|_| {
+            problem(
+                400,
+                "Bad Request",
+                format!("Invalid tool name: {tool_name}"),
+            )
+        })?;
 
-    let metadata = catalog
-        .by_name(&parsed)
-        .ok_or_else(|| problem(404, "Not Found", format!("Tool '{tool_name}' not found")))?;
+        let metadata = catalog
+            .by_name(&parsed)
+            .ok_or_else(|| problem(404, "Not Found", format!("Tool '{tool_name}' not found")))?;
 
-    let dtos: Vec<SecretRequestDto> = metadata
-        .secret_requests
-        .iter()
-        .map(|sr| SecretRequestDto {
-            name: sr.name.clone(),
-            secret_type: sr.secret_type.as_str().to_string(),
-            justification: sr.justification.clone(),
-            descriptor: sr.descriptor.clone(),
-        })
-        .collect();
+        let dtos: Vec<SecretRequestDto> = metadata
+            .secret_requests
+            .iter()
+            .map(|sr| SecretRequestDto {
+                name: sr.name.clone(),
+                secret_type: sr.secret_type.as_str().to_string(),
+                justification: sr.justification.clone(),
+                descriptor: sr.descriptor.clone(),
+            })
+            .collect();
 
-    Ok(Json(dtos))
+        Ok(Json(dtos))
+    }
+    .await;
+    crate::metrics::finish_json_http_metrics("config_secret_requests", start, &result);
+    result
 }

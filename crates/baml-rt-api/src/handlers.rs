@@ -75,20 +75,6 @@ fn problem(status: u16, title: &str, detail: impl Into<String>) -> HttpApiProble
         .detail(detail)
 }
 
-fn result_label_for_http_problem(problem: &HttpApiProblem) -> &'static str {
-    match problem.status.as_ref().map(|s| s.as_u16()) {
-        Some(400) => "bad_request",
-        Some(401) => "unauthorized",
-        Some(404) => "not_found",
-        Some(409) => "conflict",
-        Some(501) => "unavailable",
-        Some(502) => "bad_gateway",
-        Some(500) => "internal",
-        Some(503) => "unavailable",
-        _ => "internal",
-    }
-}
-
 fn bad_request_problem(detail: impl Into<String>) -> HttpApiProblem {
     problem(400, "Bad Request", detail)
 }
@@ -291,7 +277,7 @@ pub async fn post_deploy(
         Ok(_) => metrics::record_request("post_deploy", "success", start.elapsed()),
         Err(e) => metrics::record_request(
             "post_deploy",
-            result_label_for_http_problem(e),
+            metrics::http_problem_result_label(e),
             start.elapsed(),
         ),
     }
@@ -350,7 +336,7 @@ pub async fn post_undeploy(
         Ok(_) => metrics::record_request("post_undeploy", "success", start.elapsed()),
         Err(e) => metrics::record_request(
             "post_undeploy",
-            result_label_for_http_problem(e),
+            metrics::http_problem_result_label(e),
             start.elapsed(),
         ),
     }
@@ -407,7 +393,7 @@ pub async fn get_deployments(
         Ok(_) => metrics::record_request("get_deployments", "success", start.elapsed()),
         Err(e) => metrics::record_request(
             "get_deployments",
-            result_label_for_http_problem(e),
+            metrics::http_problem_result_label(e),
             start.elapsed(),
         ),
     }
@@ -555,7 +541,7 @@ pub async fn post_migrate(
         Ok(_) => metrics::record_request("post_migrate", "success", start.elapsed()),
         Err(e) => metrics::record_request(
             "post_migrate",
-            result_label_for_http_problem(e),
+            metrics::http_problem_result_label(e),
             start.elapsed(),
         ),
     }

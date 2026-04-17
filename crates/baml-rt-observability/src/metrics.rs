@@ -51,6 +51,15 @@ static EVENT_POLL_EVENTS_PROCESSED_COUNTER: OnceLock<Counter<u64>> = OnceLock::n
 static PROVENANCE_READ_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static PROVENANCE_READ_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 
+static CLUSTER_A2A_FORWARD_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static CLUSTER_A2A_FORWARD_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+
+static EVENT_DISPATCH_NO_SUBSCRIBERS_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static EVENT_DISPATCH_OUTCOME_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+
+static TASK_DAEMON_RUN_ONCE_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static TASK_DAEMON_RUN_ONCE_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+
 fn a2a_request_counter() -> &'static Counter<u64> {
     A2A_REQUEST_COUNTER.get_or_init(|| {
         global::meter(METER_NAME)
@@ -352,6 +361,98 @@ pub fn record_event_poll_producer(
         let key_only = &[KeyValue::new("producer_key", producer_key.to_string())];
         event_poll_events_processed_counter().add(events_processed, key_only);
     }
+}
+
+fn cluster_a2a_forward_counter() -> &'static Counter<u64> {
+    CLUSTER_A2A_FORWARD_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.cluster.a2a_forward_total")
+            .init()
+    })
+}
+
+fn cluster_a2a_forward_histogram() -> &'static Histogram<f64> {
+    CLUSTER_A2A_FORWARD_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.cluster.a2a_forward_duration_ms")
+            .init()
+    })
+}
+
+/// Cross-runner HTTP A2A forward (cluster placement). `result`: `success`, `http_error`, `transport_error`, `parse_error`, etc.
+pub fn record_cluster_a2a_forward(result: &str, duration: Duration) {
+    let attrs = &[KeyValue::new("result", result.to_string())];
+    cluster_a2a_forward_counter().add(1, attrs);
+    cluster_a2a_forward_histogram().record(duration.as_secs_f64() * 1000.0, attrs);
+}
+
+fn event_dispatch_no_subscribers_counter() -> &'static Counter<u64> {
+    EVENT_DISPATCH_NO_SUBSCRIBERS_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.a2a.event_dispatch.no_subscribers_total")
+            .init()
+    })
+}
+
+fn event_dispatch_outcome_counter() -> &'static Counter<u64> {
+    EVENT_DISPATCH_OUTCOME_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.a2a.event_dispatch.subscriber_delivery_total")
+            .init()
+    })
+}
+
+/// Produced event had no matching agent subscriptions (`producer_key` must stay bounded).
+pub fn record_event_dispatch_no_subscribers(producer_key: &str) {
+    let attrs = &[KeyValue::new("producer_key", producer_key.to_string())];
+    event_dispatch_no_subscribers_counter().add(1, attrs);
+}
+
+/// After attempting delivery to matching subscribers. `outcome`: `all_accepted`, `partial_rejection`, `all_rejected`.
+pub fn record_event_dispatch_subscriber_batch(
+    producer_key: &str,
+    subscribers_matched: usize,
+    outcome: &str,
+) {
+    let bucket = match subscribers_matched {
+        0 => "0",
+        1 => "1",
+        _ => "many",
+    };
+    let attrs = &[
+        KeyValue::new("producer_key", producer_key.to_string()),
+        KeyValue::new("subscribers_bucket", bucket.to_string()),
+        KeyValue::new("outcome", outcome.to_string()),
+    ];
+    event_dispatch_outcome_counter().add(1, attrs);
+}
+
+const TASK_DAEMON_METER: &str = "baml_rt_task_daemon";
+
+fn task_daemon_run_once_counter() -> &'static Counter<u64> {
+    TASK_DAEMON_RUN_ONCE_COUNTER.get_or_init(|| {
+        global::meter(TASK_DAEMON_METER)
+            .u64_counter("baml_rt_task_daemon.run_once.total")
+            .init()
+    })
+}
+
+fn task_daemon_run_once_histogram() -> &'static Histogram<f64> {
+    TASK_DAEMON_RUN_ONCE_HISTOGRAM.get_or_init(|| {
+        global::meter(TASK_DAEMON_METER)
+            .f64_histogram("baml_rt_task_daemon.run_once.duration_ms")
+            .init()
+    })
+}
+
+/// One task-daemon poll / extract / deliver iteration. `source_kind`: `slack`, `clickup`, etc.
+pub fn record_task_daemon_run_once(source_kind: &str, result: &str, duration: Duration) {
+    let attrs = &[
+        KeyValue::new("source_kind", source_kind.to_string()),
+        KeyValue::new("result", result.to_string()),
+    ];
+    task_daemon_run_once_counter().add(1, attrs);
+    task_daemon_run_once_histogram().record(duration.as_secs_f64() * 1000.0, attrs);
 }
 
 fn quickjs_invoke_counter() -> &'static Counter<u64> {

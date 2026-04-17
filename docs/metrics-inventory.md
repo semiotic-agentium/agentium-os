@@ -28,6 +28,10 @@ Core runtime: A2A, tools (via QuickJS), LLM, QuickJS bridge, live stream, ONNX, 
 | `baml_rt.a2a.event_poll.producer_outcome_total` | Counter | Per-producer poll by bounded `producer_key` and `outcome` (`empty`, `poll_error`, `validation_error`, `delivery_error`, `partial_rejection`, `success`). |
 | `baml_rt.a2a.event_poll.producer_duration_ms` | Histogram | Latency per producer within a sweep (same attributes as `producer_outcome_total`). |
 | `baml_rt.a2a.event_poll.events_processed_total` | Counter | Events in a non-empty batch (`producer_key` only; adds batch size per outcome). |
+| `baml_rt.a2a.event_dispatch.no_subscribers_total` | Counter | Published event had no matching subscriptions (`producer_key`). |
+| `baml_rt.a2a.event_dispatch.subscriber_delivery_total` | Counter | After attempting delivery to matching subscribers: `subscribers_bucket` (`0` / `1` / `many`), `outcome` (`all_accepted`, `partial_rejection`, `all_rejected`). |
+| `baml_rt.cluster.a2a_forward_total` | Counter | Cross-runner HTTP A2A forward completions (`result`). |
+| `baml_rt.cluster.a2a_forward_duration_ms` | Histogram | Latency for those forwards. |
 | `baml_rt.quickjs.invoke_total` | Counter | QuickJS invoke path by `mode`, `result` (stream vs sync). |
 | `baml_rt.quickjs.invoke_duration_ms` | Histogram | Latency of QuickJS invoke. |
 | `baml_rt.a2a.live_stream.event_total` | Counter | Low-cardinality milestones on HTTP `message.sendStream` (`event`). |
@@ -58,7 +62,18 @@ Core runtime: A2A, tools (via QuickJS), LLM, QuickJS bridge, live stream, ONNX, 
 | `baml_rt_provenance.read.operation_total` | Counter | Heavy Surreal-backed graph reads by `operation`, `result`. |
 | `baml_rt_provenance.read.duration_ms` | Histogram | Latency of those reads. |
 
-`operation` values include `export_by_context`, `export_by_task`, `list_contexts` (see [`graph_export/mod.rs`](../crates/baml-rt-provenance/src/graph_export/mod.rs)).
+`operation` values include graph export/list (`export_by_context`, `export_by_task`, `list_contexts` in [`graph_export/mod.rs`](../crates/baml-rt-provenance/src/graph_export/mod.rs)) and ops UI queries (`ops_query_llm_calls`, `ops_query_tool_calls`, `ops_query_messages`, `ops_query_aggregates`, `ops_query_lifecycle_events` in [`ops_query.rs`](../crates/baml-rt-provenance/src/surreal_store/ops_query.rs)).
+
+---
+
+## `baml_rt_task_daemon` meter — [`crates/baml-rt-observability/src/metrics.rs`](../crates/baml-rt-observability/src/metrics.rs)
+
+Task daemon poll / extract / deliver loop (when OTLP is enabled for the binary).
+
+| Metric name | Type | Purpose |
+|-------------|------|---------|
+| `baml_rt_task_daemon.run_once.total` | Counter | One iteration per `source_kind`, `result`. |
+| `baml_rt_task_daemon.run_once.duration_ms` | Histogram | Wall time for that iteration. |
 
 ---
 
@@ -87,7 +102,7 @@ HTTP API surface (embedded in runner or standalone).
 | `baml_rt_api.conversation_history.payload_bytes` | Histogram | Response body size by `event` kind. |
 | `baml_rt_api.conversation_history.item_count` | Histogram | Items per page/snapshot by `event`. |
 
-**Note:** Control-plane routes `post_deploy`, `post_undeploy`, `get_deployments`, `post_migrate`, and agent `post_dispatch` record `route` + `result`. Config CRUD and static `/healthz` / OpenAPI JSON remain without per-route `record_request` unless extended (see [Gap review](#operational-gap-review)).
+**Routes:** Deploy/undeploy/list/migrate/dispatch handlers call `record_request`. Config CRUD uses stable `route` labels in [`config_handlers.rs`](../crates/baml-rt-api/src/config_handlers.rs) (e.g. `config_get`, `config_put`, `config_secrets_overview`). Static `/openapi.json`, `/healthz`, `/readyz` and nested repository paths are timed in [`router.rs`](../crates/baml-rt-api/src/router.rs) (`get_openapi_json`, `get_healthz`, `get_readyz`, plus `repository_*` via middleware).
 
 ---
 
@@ -129,36 +144,17 @@ Prometheus summary helper: `just otel-summary <window>`.
 
 ## Operational gap review
 
-Structured gaps: **what operators care about**, **what exists today**, **what to add or wire**, **priority**.
+Prior gap items below are **wired** in tree; extend only when new surfaces ship (new HTTP routes, new heavy Surreal reads, new daemons).
 
-### P1 — Host control plane visibility
+| Area | Coverage |
+|------|----------|
+| **Control plane HTTP** | Deploy/undeploy/list/migrate/dispatch + config CRUD + OpenAPI/health/ready + repository nested router (`baml_rt_api.http.*`). |
+| **Event pipeline** | Poll sweep (`baml_rt.a2a.event_poll.*`) + per-delivery aggregation (`baml_rt.a2a.event_dispatch.*`) from [`event_dispatcher.rs`](../crates/baml-rt-a2a/src/event_dispatcher.rs). |
+| **Provenance reads** | Graph export/list + `query_ops` resource kinds (`baml_rt_provenance.read.*`). |
+| **Cluster A2A** | HTTP forwards (`baml_rt.cluster.a2a_forward_*`) in [`forward.rs`](../crates/baml-rt-router/src/forward.rs). |
+| **task-daemon** | Run loop (`baml_rt_task_daemon.run_once.*`) when the binary exports OTLP. |
 
-| Gap | Today | Recommendation |
-|-----|--------|----------------|
-| **Deploy / undeploy / list deployments HTTP** | **Done:** `post_deploy`, `post_undeploy`, `get_deployments`, and `post_migrate` call `record_request`; `post_dispatch` is instrumented. | — |
-| **Config / OpenAPI / health** | Config CRUD and static routes may still lack `record_request`. | Audit `router.rs` vs handlers; optional Axum middleware for uniform `baml_rt_api.http.*` (see OTEL_COMPLIANCE “gaps”). |
-
-### P1 — Event producer pipeline
-
-| Gap | Today | Recommendation |
-|-----|--------|----------------|
-| **Producer poll loop** | **Done:** `baml_rt.a2a.event_poll.*` from [`EventDispatcher::poll_and_deliver`](../crates/baml-rt-a2a/src/event_dispatcher.rs) (cycle + per-producer outcomes and durations; `events_processed_total` for batch sizes). | — |
-| **Dispatch outcomes vs subscriptions** | Partially visible via A2A if agents receive; not aggregated per producer. | Optional: `event_dispatch.subscriber_matched_total` / `no_match_total` per `producer_key` pattern (careful with cardinality). |
-
-### P2 — Provenance read path
-
-| Gap | Today | Recommendation |
-|-----|--------|----------------|
-| **Graph export / Surreal reads** | **Done for graph exporter paths:** `baml_rt_provenance.read.*` on `export_by_context`, `export_by_task`, `list_contexts`. Other heavy reads can add `operation` values the same way. | — |
-
-### P2 — Binaries without OTLP wiring
-
-| Gap | Today | Recommendation |
-|-----|--------|----------------|
-| **`task-daemon`** | Uses tracing; no workspace `metrics.rs` pattern for OTLP. | If operators run it in production: optional `init_tracing` + shared meter for poll/extract/sink outcomes (same guide). |
-| **Cluster / internal A2A** | No dedicated `baml_rt.cluster.*` metrics found. | If multi-runner routing is operational: request counts and error rates for cluster forwards (separate from stdio A2A). |
-
-### Covered well (no gap)
+### Covered well (baseline)
 
 - **A2A handler** request/error/stream/tool/LLM/onnx (above tables).
 - **Effect bus** (`baml_rt_core.effect_*`, `bus.emit_envelope_*`).
@@ -170,4 +166,4 @@ Structured gaps: **what operators care about**, **what exists today**, **what to
 ## Changelog
 
 - Keep this file in sync when adding or removing instruments in any `metrics.rs` or `effect_metrics.rs`.
-- Event poll (`baml_rt.a2a.event_poll.*`), provenance read (`baml_rt_provenance.read.*`), and API control/dispatch `record_request` routes wired per [Gap review](#operational-gap-review) (deploy, migrate, dispatch; provenance graph export/list).
+- Event poll, event dispatch, cluster forward, task-daemon run-once, provenance `query_ops` reads, config/static/repository HTTP routes, and graph export/list are inventoried above.

@@ -1863,6 +1863,7 @@ version = "0.1.0"
 dependencies = [
  "axum 0.8.8",
  "baml-rt-core",
+ "baml-rt-observability",
  "http-api-problem",
  "reqwest 0.12.26",
  "serde_json",
@@ -2029,6 +2030,7 @@ dependencies = [
  "async-trait",
  "axum 0.8.8",
  "baml-rt-core",
+ "baml-rt-observability",
  "clap",
  "integrations-clickup-client",
  "integrations-github-client",

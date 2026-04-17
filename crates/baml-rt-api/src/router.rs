@@ -10,9 +10,17 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
-use axum::{Router, extract::MatchedPath, http::Request};
+use axum::{
+    Router,
+    body::Body,
+    extract::MatchedPath,
+    http::{Request, StatusCode},
+    middleware::Next,
+    response::Response,
+};
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_config::{ConfigService, SurrealConfigStore};
 use baml_rt_core::DeploymentManager;
@@ -29,7 +37,7 @@ use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
     ContextIndexService, ContextMetricsService, ConversationHistoryService, EpisodeService,
-    MermaidService, PlanningService, ProvenanceOpsService, config_handlers, handlers,
+    MermaidService, PlanningService, ProvenanceOpsService, config_handlers, handlers, metrics,
     repository_publish,
 };
 
@@ -64,21 +72,71 @@ pub struct ApiState {
 async fn serve_openapi_json(
     axum::extract::State(state): axum::extract::State<Arc<ApiState>>,
 ) -> axum::Json<OpenApiSpec> {
-    axum::Json(state.openapi.as_ref().clone())
+    let start = Instant::now();
+    let spec = state.openapi.as_ref().clone();
+    metrics::record_request("get_openapi_json", "success", start.elapsed());
+    axum::Json(spec)
 }
 
-async fn healthz() -> axum::http::StatusCode {
-    axum::http::StatusCode::OK
+async fn healthz() -> StatusCode {
+    let start = Instant::now();
+    metrics::record_request("get_healthz", "success", start.elapsed());
+    StatusCode::OK
 }
 
-async fn readyz(
-    axum::extract::State(state): axum::extract::State<Arc<ApiState>>,
-) -> axum::http::StatusCode {
-    if state.ready.load(Ordering::Acquire) {
-        axum::http::StatusCode::OK
+async fn readyz(axum::extract::State(state): axum::extract::State<Arc<ApiState>>) -> StatusCode {
+    let start = Instant::now();
+    let code = if state.ready.load(Ordering::Acquire) {
+        StatusCode::OK
     } else {
-        axum::http::StatusCode::SERVICE_UNAVAILABLE
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    let result = if code.is_success() {
+        "success"
+    } else {
+        "unavailable"
+    };
+    metrics::record_request("get_readyz", result, start.elapsed());
+    code
+}
+
+fn repository_route_metric_label(matched: &MatchedPath) -> &'static str {
+    match matched.as_str() {
+        "/agents" => "repository_list_agents",
+        "/agents/{name}/versions" => "repository_list_versions",
+        "/entries" => "repository_get_entries",
+        "/entries/{hash}" => "repository_get_by_hash",
+        "/entries/{name}/{version}" => "repository_get_by_version",
+        "/fork" => "repository_fork",
+        "/search" => "repository_search",
+        "/lineage/{hash}" => "repository_get_lineage",
+        "/blobs/{hash}" => "repository_get_blob",
+        "/entries/{hash}/tags" => "repository_tags",
+        "/publish" => "repository_publish",
+        _ => "repository_unknown",
     }
+}
+
+async fn repository_http_metrics(request: Request<Body>, next: Next) -> Response {
+    let start = Instant::now();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(repository_route_metric_label)
+        .unwrap_or("repository_unknown");
+    let response = next.run(request).await;
+    let status = response.status();
+    let result = if status.is_success() {
+        "success"
+    } else if status == StatusCode::NOT_FOUND {
+        "not_found"
+    } else if status.is_client_error() {
+        "client_error"
+    } else {
+        "internal"
+    };
+    metrics::record_request(route, result, start.elapsed());
+    response
 }
 
 /// Build a minimal API router with default config/catalog/resolver (in-memory config, empty catalog, no-op resolver).
@@ -180,7 +238,7 @@ pub fn api_router_with_services_and_deploy(
     cluster_mode: ClusterMode,
     web_dir: Option<&Path>,
 ) -> Router {
-    let http_trace_layer = TraceLayer::new_for_http().make_span_with(|req: &Request<_>| {
+    let http_trace_layer = TraceLayer::new_for_http().make_span_with(|req: &Request<Body>| {
         let route = req
             .extensions()
             .get::<MatchedPath>()
@@ -330,7 +388,8 @@ pub fn api_router_with_services_and_deploy(
             )
             .with_state(repo_service.clone());
         let repo_router = baml_rt_repository::repository_router_without_publish(repo_service)
-            .merge(publish_router);
+            .merge(publish_router)
+            .layer(axum::middleware::from_fn(repository_http_metrics));
         router = router.nest("/repository", repo_router);
     }
 

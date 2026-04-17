@@ -4,6 +4,8 @@
 
 use std::{sync::OnceLock, time::Duration};
 
+use axum::{Json, http::StatusCode as AxumStatus};
+use http_api_problem::HttpApiProblem;
 use opentelemetry::{
     KeyValue, global,
     metrics::{Counter, Histogram},
@@ -62,6 +64,46 @@ fn ch_items_histogram() -> &'static Histogram<f64> {
             .f64_histogram("baml_rt_api.conversation_history.item_count")
             .init()
     })
+}
+
+/// Map RFC 7807 [`HttpApiProblem`] status to a low-cardinality `result` label for `record_request`.
+pub(crate) fn http_problem_result_label(problem: &HttpApiProblem) -> &'static str {
+    match problem.status.as_ref().map(|s| s.as_u16()) {
+        Some(400) => "bad_request",
+        Some(401) => "unauthorized",
+        Some(404) => "not_found",
+        Some(409) => "conflict",
+        Some(501) => "unavailable",
+        Some(502) => "bad_gateway",
+        Some(500) => "internal",
+        Some(503) => "unavailable",
+        _ => "internal",
+    }
+}
+
+/// Record metrics for handlers returning `Result<Json<T>, HttpApiProblem>`.
+pub(crate) fn finish_json_http_metrics<T>(
+    route: &'static str,
+    start: std::time::Instant,
+    result: &Result<Json<T>, HttpApiProblem>,
+) {
+    match result {
+        Ok(_) => record_request(route, "success", start.elapsed()),
+        Err(e) => record_request(route, http_problem_result_label(e), start.elapsed()),
+    }
+}
+
+/// Record metrics for handlers returning `Result<AxumStatus, HttpApiProblem>`.
+pub(crate) fn finish_status_http_metrics(
+    route: &'static str,
+    start: std::time::Instant,
+    result: &Result<AxumStatus, HttpApiProblem>,
+) {
+    match result {
+        Ok(s) if s.is_success() => record_request(route, "success", start.elapsed()),
+        Ok(_) => record_request(route, "client_error", start.elapsed()),
+        Err(e) => record_request(route, http_problem_result_label(e), start.elapsed()),
+    }
 }
 
 /// Record completion of an HTTP API request (route and result for low cardinality).

@@ -60,6 +60,15 @@ impl EventDispatcher {
     ///
     /// Returns a zero-match outcome when no subscribers match.
     pub async fn deliver_event(&self, event: ProducedEvent) -> Result<EventDeliveryOutcome> {
+        self.deliver_event_with_producer_key(event, None).await
+    }
+
+    /// Same as [`Self::deliver_event`], optionally attributing OTLP metrics to a bounded `producer_key`.
+    pub async fn deliver_event_with_producer_key(
+        &self,
+        event: ProducedEvent,
+        producer_key: Option<&str>,
+    ) -> Result<EventDeliveryOutcome> {
         let published = event.as_published_event();
         let entries = self.registry.list_agents();
         let targets = matching_subscribers(&entries, &published);
@@ -71,6 +80,7 @@ impl EventDispatcher {
                 source_key = %published.source_key,
                 "no subscribed agents matched produced event; advancing checkpoint"
             );
+            metrics::record_event_dispatch_no_subscribers(producer_key.unwrap_or("unknown"));
             return Ok(EventDeliveryOutcome {
                 subscribers_matched: 0,
                 subscribers_accepted: 0,
@@ -110,6 +120,23 @@ impl EventDispatcher {
                     outcome.failures.push((target.clone(), err.to_string()));
                 }
             }
+        }
+
+        if let Some(pk) = producer_key {
+            let outcome_label = if outcome.failures.is_empty() {
+                if outcome.subscribers_accepted == outcome.subscribers_matched {
+                    "all_accepted"
+                } else {
+                    "partial_rejection"
+                }
+            } else {
+                "partial_rejection"
+            };
+            metrics::record_event_dispatch_subscriber_batch(
+                pk,
+                outcome.subscribers_matched,
+                outcome_label,
+            );
         }
 
         Ok(outcome)
@@ -203,7 +230,10 @@ impl EventDispatcher {
                     short_circuit = Some((err, "validation_error"));
                     break;
                 }
-                match self.deliver_event(event).await {
+                match self
+                    .deliver_event_with_producer_key(event, Some(key.as_str()))
+                    .await
+                {
                     Ok(outcome) => {
                         aggregate.subscribers_matched += outcome.subscribers_matched;
                         aggregate.subscribers_accepted += outcome.subscribers_accepted;

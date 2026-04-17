@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use baml_rt_observability::metrics;
 use thiserror::Error;
 
 use crate::{
@@ -265,6 +266,22 @@ impl TaskDaemon {
     /// source cursor/task state is persisted only after sink delivery succeeds.
     /// If sink delivery fails, source state is not committed so the poll window can be retried.
     pub async fn run_once(&mut self) -> Result<TaskDispatch> {
+        let cycle_start = std::time::Instant::now();
+        let result = self.run_once_impl().await;
+        match &result {
+            Ok(d) => metrics::record_task_daemon_run_once(
+                d.batch.source.as_str(),
+                "success",
+                cycle_start.elapsed(),
+            ),
+            Err(_) => {
+                metrics::record_task_daemon_run_once("unknown", "error", cycle_start.elapsed())
+            }
+        }
+        result
+    }
+
+    async fn run_once_impl(&mut self) -> Result<TaskDispatch> {
         let mut state = self.state_store.load().context("loading daemon state")?;
         let poll = self
             .source

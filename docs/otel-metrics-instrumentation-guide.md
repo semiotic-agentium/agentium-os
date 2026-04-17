@@ -28,11 +28,14 @@ just otel-summary 15m
 
 High-signal families:
 
-- **A2A host:** `baml_rt.a2a.request_*`, `baml_rt.a2a.error_total`, stream chunk counters/histograms, live-stream and SSE TTFB histograms.
+- **A2A host:** `baml_rt.a2a.request_*`, `baml_rt.a2a.error_total`, stream chunk counters/histograms, live-stream and SSE TTFB histograms; event producer sweep `baml_rt.a2a.event_poll.*` and per-event dispatch `baml_rt.a2a.event_dispatch.*` ([`baml-rt-a2a`](../crates/baml-rt-a2a/src/event_dispatcher.rs)).
+- **Cluster A2A forward:** `baml_rt.cluster.a2a_forward_*` when routing to another runner ([`baml-rt-router`](../crates/baml-rt-router/src/forward.rs)).
 - **Tools:** `baml_rt.tool.invocation_*` — **single canonical** completion signal for host tools (emitted from the QuickJS bridge when a tool run finishes). Registry FSM timings use `baml_rt_tools.tool.session.*` (opens and per-op durations); do **not** duplicate full tool completion in a second `baml_rt_tools` execution counter.
 - **LLM / ONNX:** `baml_rt.llm.*`, `baml_rt.onnx.*` (provenance subscriber + embedding paths).
-- **HTTP API:** `baml_rt_api.http.*` and conversation-history histograms ([`baml-rt-api` metrics module](../crates/baml-rt-api/src/metrics.rs)).
+- **HTTP API:** `baml_rt_api.http.*` and conversation-history histograms ([`baml-rt-api` metrics module](../crates/baml-rt-api/src/metrics.rs)); config and static routes are listed in [metrics-inventory.md](./metrics-inventory.md).
 - **Repository:** `repository.*` ([`baml-rt-repository`](../crates/baml-rt-repository/src/metrics.rs)).
+- **Provenance reads:** `baml_rt_provenance.read.*` for heavy Surreal paths (graph export, ops query).
+- **task-daemon:** `baml_rt_task_daemon.run_once.*` ([`baml-rt-observability`](../crates/baml-rt-observability/src/metrics.rs)).
 
 A starter Grafana dashboard is provisioned at:
 `observability/grafana/dashboards/agent-platform-overview.json`.
