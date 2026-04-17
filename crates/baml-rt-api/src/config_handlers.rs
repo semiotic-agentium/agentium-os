@@ -122,8 +122,10 @@ fn secret_name_from_option_value(v: &str) -> Option<String> {
     get,
     path = "/config/secrets-overview",
     tag = "config",
+    security(("RunnerToken" = [])),
     responses(
         (status = 200, description = "Secrets and their tool/LLM consumers", body = Vec<SecretOverviewEntryDto>),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 503, description = "Tool catalog not available")
     )
 )]
@@ -233,8 +235,10 @@ pub async fn list_secrets_overview(
     get,
     path = "/config/secrets/store-keys",
     tag = "config",
+    security(("RunnerToken" = [])),
     responses(
-        (status = 200, description = "Store key names that can be used as link_from", body = Vec<String>)
+        (status = 200, description = "Store key names that can be used as link_from", body = Vec<String>),
+        (status = 401, description = "Missing or invalid runner token")
     )
 )]
 pub async fn list_store_keys(
@@ -261,11 +265,13 @@ pub async fn list_store_keys(
     put,
     path = "/config/secrets/{name}",
     tag = "config",
+    security(("RunnerToken" = [])),
     params(("name" = String, Path, description = "Secret key to link (e.g. NOTION_API_TOKEN)")),
     request_body = ProvisionSecretDto,
     responses(
         (status = 204, description = "Secret linked"),
         (status = 400, description = "Invalid name or link_from has no value in store"),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 501, description = "Runtime secret store not available (add keys to fnox and restart)")
     )
 )]
@@ -329,10 +335,12 @@ pub async fn put_secret(
     delete,
     path = "/config/secrets/{name}",
     tag = "config",
+    security(("RunnerToken" = [])),
     params(("name" = String, Path, description = "Secret key to unlink (e.g. NOTION_API_TOKEN)")),
     responses(
         (status = 204, description = "Secret unlinked"),
         (status = 400, description = "Invalid name"),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 501, description = "Runtime secret store not available")
     )
 )]
@@ -377,8 +385,10 @@ pub async fn delete_secret(
     get,
     path = "/config",
     tag = "config",
+    security(("RunnerToken" = [])),
     responses(
         (status = 200, description = "List of bundles with config schema", body = Vec<ToolConfigSchemaDto>),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 503, description = "Config service not available")
     )
 )]
@@ -452,9 +462,11 @@ pub async fn list_config(
     get,
     path = "/config/{bundle_name}",
     tag = "config",
+    security(("RunnerToken" = [])),
     params(("bundle_name" = String, Path, description = "Bundle name (e.g. llm or a tool bundle that has config)")),
     responses(
         (status = 200, description = "Config schema and current config", body = ToolConfigDto),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 404, description = "Bundle not found or has no config schema"),
         (status = 503, description = "Config service not available")
     )
@@ -539,11 +551,13 @@ pub async fn get_config(
     put,
     path = "/config/{bundle_name}",
     tag = "config",
+    security(("RunnerToken" = [])),
     params(("bundle_name" = String, Path, description = "Bundle name (e.g. llm or a tool bundle that has config)")),
     request_body(content = Value, description = "Config JSON (must match bundle schema from GET /config/{bundle_name})", content_type = "application/json"),
     responses(
         (status = 200, description = "Config updated", body = ConfigVersionDto),
         (status = 400, description = "Invalid config"),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 404, description = "Bundle not found"),
         (status = 409, description = "Version conflict (stale If-Match)"),
         (status = 503, description = "Config service not available")
@@ -643,9 +657,11 @@ pub async fn put_config(
     delete,
     path = "/config/{bundle_name}",
     tag = "config",
+    security(("RunnerToken" = [])),
     params(("bundle_name" = String, Path, description = "Bundle name (e.g. llm or a tool bundle that has config)")),
     responses(
         (status = 204, description = "Config removed"),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 404, description = "Bundle not found"),
         (status = 503, description = "Config service not available")
     )
@@ -697,9 +713,11 @@ pub async fn delete_config(
     get,
     path = "/config/{bundle_name}/versions",
     tag = "config",
+    security(("RunnerToken" = [])),
     params(("bundle_name" = String, Path, description = "Bundle name (e.g. llm or a tool bundle that has config)")),
     responses(
         (status = 200, description = "Version history", body = Vec<ConfigVersionDto>),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 404, description = "Bundle not found"),
         (status = 503, description = "Config service not available")
     )
@@ -757,12 +775,14 @@ pub async fn list_config_versions(
     get,
     path = "/config/{bundle_name}/versions/{version}",
     tag = "config",
+    security(("RunnerToken" = [])),
     params(
         ("bundle_name" = String, Path, description = "Bundle name (e.g. llm or a tool bundle that has config)"),
         ("version" = u64, Path, description = "Version number")
     ),
     responses(
         (status = 200, description = "Config at version", body = ConfigVersionDto),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 404, description = "Bundle or version not found"),
         (status = 503, description = "Config service not available")
     )
@@ -816,9 +836,11 @@ pub async fn get_config_version(
     get,
     path = "/config/{tool_name}/secret-requests",
     tag = "config",
+    security(("RunnerToken" = [])),
     params(("tool_name" = String, Path, description = "Tool name (bundle/local)")),
     responses(
         (status = 200, description = "Secret requests", body = Vec<SecretRequestDto>),
+        (status = 401, description = "Missing or invalid runner token"),
         (status = 404, description = "Tool not found"),
         (status = 503, description = "Tool catalog not available")
     )

@@ -60,7 +60,10 @@ pub use error::{RepositoryError, Result};
 pub use ids::{AgentName, ContentHash, Generation, Version, VersionRef};
 pub use lineage::{LineageEdge, LineageKind, LineageSubgraph, Parentage};
 pub use package::{PackageExtractError, source_bundle_from_agent_dir, source_bundle_from_tar_gz};
-pub use router::{repository_router, repository_router_without_publish};
+pub use router::{
+    repository_mutation_router, repository_read_router, repository_router,
+    repository_router_without_publish,
+};
 pub use service::RepositoryService;
 pub use storage::{BlobStore, LineageStore, MetadataStore, SearchStore};
 pub use surreal_store::SurrealStore;

@@ -168,6 +168,7 @@ async fn publish_and_deploy_fixture(client: &reqwest::Client, base_url: &str, ta
     let publish_url = format!("{base_url}/repository/publish");
     let resp = client
         .post(&publish_url)
+        .header("X-Runner-Token", TEST_RUNNER_TOKEN)
         .json(&cmd)
         .send()
         .await

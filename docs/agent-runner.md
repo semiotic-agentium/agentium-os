@@ -63,6 +63,64 @@ When `--serve-http` is set, the runner exposes:
 
 For exact request/response DTOs, use `openapi.json`.
 
+## Authentication and Access Tiers
+
+The runner has two operating modes: **standalone** and **cluster**.
+
+### Standalone mode (default)
+
+All routes are accessible without authentication. This is appropriate for local development and single-runner setups.
+
+### Cluster mode
+
+When `RUNNER_TOKEN` is set (via environment variable or K8s secret), the runner enforces an operator authentication boundary using the `X-Runner-Token` header.
+
+Routes are divided into three tiers:
+
+**Public (no auth required):**
+
+| Route | Description |
+|---|---|
+| `GET /agents` | Agent discovery |
+| `POST /agents/{pkg}/{inst}/a2a` | A2A JSON-RPC |
+| `POST /agents/{pkg}/{inst}/a2a/sse` | A2A SSE stream |
+| `POST /agents/{pkg}/{inst}/dispatch` | Event delivery |
+| `GET /healthz` | Health check |
+| `GET /readyz` | Readiness check |
+| `GET /openapi.json` | OpenAPI spec |
+| `GET /repository/agents` | Repository agent listing |
+| `GET /repository/entries` | Repository entry listing |
+| `GET /repository/entries/{hash}` | Entry by hash |
+| `GET /repository/entries/{name}/{version}` | Entry by name/version |
+| `GET /repository/agents/{name}/versions` | Agent version listing |
+| `POST /repository/search` | Repository search |
+| `GET /repository/lineage/{hash}` | Lineage subgraph |
+| `GET /repository/blobs/{hash}` | Artifact download |
+| `GET /contexts/...` | Provenance reads |
+
+**Operator-authenticated (require `X-Runner-Token`):**
+
+| Route | Description |
+|---|---|
+| `GET /config`, `GET /config/*` | Config reads |
+| `PUT /config/{bundle_name}` | Config writes |
+| `DELETE /config/{bundle_name}` | Config deletion |
+| `GET /config/secrets-overview` | Secrets overview |
+| `PUT /config/secrets/{name}` | Secret linking |
+| `DELETE /config/secrets/{name}` | Secret unlinking |
+| `POST /deploy` | Deploy agent by hash |
+| `POST /undeploy` | Undeploy agent |
+| `GET /deployments` | List deployments |
+| `POST /control/migrate` | Agent migration |
+| `POST /repository/publish` | Publish agent |
+| `POST /repository/fork` | Fork entry |
+| `POST /repository/entries/{hash}/tags` | Add tag |
+| `DELETE /repository/entries/{hash}/tags` | Remove tag |
+
+**Cluster-internal (runner-to-runner only):**
+
+Cross-runner A2A forwarding uses the same `/agents/.../a2a` routes but relies on K8s NetworkPolicy for isolation. The forwarding path is unauthenticated at the application layer; network isolation is the boundary.
+
 ## Deploy vs Publish
 
 - Publish sends source bundle to `/repository/publish`; server-side build stores artifact bytes under canonical `content_hash`.
@@ -73,7 +131,9 @@ Typical flow:
 1. Start runner with `--serve-http` and repository flags (see above).
 2. `baml-agent-builder publish --agent-dir ... --repository-url http://127.0.0.1:18080/repository --deploy-url http://127.0.0.1:18080` (or `POST /deploy` with the printed `content_hash`).
 
-## End-to-End Example (Publish -> Deploy -> Prompt)
+## End-to-End Example
+
+### Standalone (local development)
 
 Start runner:
 
@@ -104,10 +164,32 @@ curl -sS -X POST http://127.0.0.1:18080/deploy \
   -d '{"hash":"bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83"}' | jq
 ```
 
-Discover routing key:
+### Cluster mode (K8s)
+
+In cluster mode, operator actions require `X-Runner-Token`. The token is provisioned as a K8s secret (see `deploy/demo/run-demo.sh`).
+
+Publish source (operator action):
 
 ```bash
-curl -sS http://127.0.0.1:18080/agents \
+curl -sS -X POST http://localhost:18080/repository/publish \
+  -H 'X-Runner-Token: <token>' \
+  -H 'content-type: application/json' \
+  -d @publish-payload.json | jq
+```
+
+Deploy by content hash (operator action):
+
+```bash
+curl -sS -X POST http://localhost:18080/deploy \
+  -H 'X-Runner-Token: <token>' \
+  -H 'content-type: application/json' \
+  -d '{"hash":"bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83"}' | jq
+```
+
+Discover routing key (public, no auth):
+
+```bash
+curl -sS http://localhost:18080/agents \
   | jq '.[].agent_card | {agent_package, agent_instance_id, name}'
 ```
 
@@ -121,10 +203,10 @@ Expected shape:
 }
 ```
 
-Send prompt (non-stream endpoint):
+Send prompt (public, no auth):
 
 ```bash
-curl -sS -X POST "http://127.0.0.1:18080/agents/clickup-agent/default/a2a" \
+curl -sS -X POST "http://localhost:18080/agents/clickup-agent/default/a2a" \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc":"2.0",
@@ -158,7 +240,7 @@ Typical error if wrong:
 Stream mode (SSE):
 
 ```bash
-curl -N -X POST "http://127.0.0.1:18080/agents/clickup-agent/default/a2a/sse" \
+curl -N -X POST "http://localhost:18080/agents/clickup-agent/default/a2a/sse" \
   -H 'content-type: application/json' \
   -d '{
     "jsonrpc":"2.0",

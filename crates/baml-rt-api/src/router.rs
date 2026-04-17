@@ -28,6 +28,7 @@ use baml_rt_llm_config::{EmptySecretResolver, RuntimeSecretStore, SecretResolver
 pub use baml_rt_router::auth::ClusterMode;
 use baml_rt_router::auth::{ClusterAuthConfig, ClusterAuthLayer};
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
+use serde_json::json;
 use tower_http::{
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
@@ -253,7 +254,8 @@ pub fn api_router_with_services_and_deploy(
         )
     });
 
-    // Public routes: no auth required.
+    // ── Tier 1: Public routes (no auth) ─────────────────────────
+    // Read-only discovery, A2A, provenance, health.
     let (public_router, mut openapi) = OpenApiRouter::new()
         .routes(utoipa_axum::routes!(handlers::list_agents))
         .routes(utoipa_axum::routes!(handlers::get_context_index))
@@ -277,21 +279,22 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(
             handlers::get_conversation_history_stream
         ))
+        .split_for_parts();
+
+    // ── Tier 2: Operator-authenticated routes (ClusterAuthLayer) ─
+    // Config reads/mutations, secret management, deployment lifecycle, migration.
+    let (operator_router, operator_openapi) = OpenApiRouter::new()
         .routes(utoipa_axum::routes!(config_handlers::list_secrets_overview))
         .routes(utoipa_axum::routes!(config_handlers::list_store_keys))
-        .routes(utoipa_axum::routes!(config_handlers::put_secret))
-        .routes(utoipa_axum::routes!(config_handlers::delete_secret))
         .routes(utoipa_axum::routes!(config_handlers::list_config))
         .routes(utoipa_axum::routes!(config_handlers::get_config))
-        .routes(utoipa_axum::routes!(config_handlers::put_config))
-        .routes(utoipa_axum::routes!(config_handlers::delete_config))
         .routes(utoipa_axum::routes!(config_handlers::list_config_versions))
         .routes(utoipa_axum::routes!(config_handlers::get_config_version))
         .routes(utoipa_axum::routes!(config_handlers::list_secret_requests))
-        .split_for_parts();
-
-    // Control routes: protected by ClusterAuthLayer (deploy, undeploy, deployments, migrate).
-    let (control_router, control_openapi) = OpenApiRouter::new()
+        .routes(utoipa_axum::routes!(config_handlers::put_secret))
+        .routes(utoipa_axum::routes!(config_handlers::delete_secret))
+        .routes(utoipa_axum::routes!(config_handlers::put_config))
+        .routes(utoipa_axum::routes!(config_handlers::delete_config))
         .routes(utoipa_axum::routes!(handlers::post_deploy))
         .routes(utoipa_axum::routes!(handlers::post_undeploy))
         .routes(utoipa_axum::routes!(handlers::get_deployments))
@@ -302,16 +305,40 @@ pub fn api_router_with_services_and_deploy(
         runner_token: runner_token.clone(),
         cluster_mode,
     });
-    // Use `route_layer` so the auth check only runs for the control routes and
+    // Use `route_layer` so the auth check only runs for operator routes and
     // does NOT cover the fallback 404 handler. With `layer` the merged router
     // would 401 every unmatched path (including legitimate typos like
     // `/agents/<pkg>/default/a2a/sse`), masking routing bugs as auth failures.
-    let control_router = control_router.route_layer(auth_layer);
+    let operator_router = operator_router.route_layer(auth_layer.clone());
 
-    openapi.merge(control_openapi);
-    let api_router = public_router.merge(control_router);
+    openapi.merge(operator_openapi);
+    let api_router = public_router.merge(operator_router);
 
     let mut openapi = openapi;
+
+    // ── Repository API paths ────────────────────────────────────────
+    // Only advertise /repository/* in the OpenAPI spec when the repository
+    // service is actually wired, so the spec truthfully reflects the
+    // mounted surface for each router entrypoint.
+    let has_repository = repository_service.is_some();
+    if has_repository {
+        let repo_spec: utoipa::openapi::OpenApi =
+            serde_json::from_value(repository_openapi_fragment())
+                .expect("repository OpenAPI fragment is valid");
+        openapi.merge(repo_spec);
+    }
+
+    // Register the RunnerToken security scheme so operator endpoints show auth
+    // requirements in the OpenAPI spec.
+    {
+        use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.security_schemes.insert(
+            "RunnerToken".to_string(),
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::new("X-Runner-Token"))),
+        );
+    }
+
     let mut tag_agents = utoipa::openapi::Tag::new("agents");
     tag_agents.description =
         Some("Agent discovery, deterministic dispatch, and A2A JSON-RPC".to_string());
@@ -336,14 +363,23 @@ pub fn api_router_with_services_and_deploy(
     let mut tag_control = utoipa::openapi::Tag::new("control");
     tag_control.description =
         Some("Operational control plane: agent migration between runners.".to_string());
-    openapi.tags = Some(vec![
+    let mut tags = vec![
         tag_agents,
         tag_mermaid,
         tag_provenance,
         tag_deployments,
         tag_config,
         tag_control,
-    ]);
+    ];
+    if has_repository {
+        let mut tag_repository = utoipa::openapi::Tag::new("repository");
+        tag_repository.description = Some(
+            "Agent package repository: content-addressable archive with lineage, versioning, and search. Read routes are public; mutation routes (publish, fork, tags) require operator authentication."
+                .to_string(),
+        );
+        tags.push(tag_repository);
+    }
+    openapi.tags = Some(tags);
 
     let state = Arc::new(ApiState {
         registry,
@@ -381,14 +417,22 @@ pub fn api_router_with_services_and_deploy(
         router = router.fallback_service(fallback);
     }
     if let Some(repo_service) = repository_service {
+        // Read-only repository routes: public (agents, entries, lineage, blobs, search).
+        let repo_read = baml_rt_repository::repository_read_router(repo_service.clone());
+
+        // Mutation repository routes: operator-authenticated (fork, tags, publish).
         let publish_router = axum::Router::new()
             .route(
                 "/publish",
                 axum::routing::post(repository_publish::publish_with_build),
             )
             .with_state(repo_service.clone());
-        let repo_router = baml_rt_repository::repository_router_without_publish(repo_service)
+        let repo_mutations = baml_rt_repository::repository_mutation_router(repo_service)
             .merge(publish_router)
+            .route_layer(auth_layer.clone());
+
+        let repo_router = repo_read
+            .merge(repo_mutations)
             .layer(axum::middleware::from_fn(repository_http_metrics));
         router = router.nest("/repository", repo_router);
     }
@@ -527,4 +571,218 @@ pub async fn serve_with_services_and_deploy(
     tracing::info!(%addr, web_dir = ?web_dir, "HTTP API listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Build the OpenAPI spec fragment for all `/repository/*` routes.
+///
+/// Read routes are public; mutation routes carry `RunnerToken` security.
+/// Returned as a `serde_json::Value` so it can be deserialized into
+/// `utoipa::openapi::OpenApi` and merged into the main spec without
+/// requiring `ToSchema` derives on every repository domain type.
+fn repository_openapi_fragment() -> serde_json::Value {
+    let runner_token_security = json!([{"RunnerToken": []}]);
+    json!({
+        "openapi": "3.1.0",
+        "info": { "title": "", "version": "" },
+        "paths": {
+            "/repository/agents": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "List agent names in the repository",
+                    "operationId": "repository_list_agents",
+                    "responses": {
+                        "200": { "description": "List of agent names" }
+                    }
+                }
+            },
+            "/repository/agents/{name}/versions": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "List versions for an agent",
+                    "operationId": "repository_list_versions",
+                    "parameters": [{
+                        "name": "name",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "string" },
+                        "description": "Agent name"
+                    }],
+                    "responses": {
+                        "200": { "description": "Agent versions" },
+                        "400": { "description": "Invalid agent name" }
+                    }
+                }
+            },
+            "/repository/entries": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "List repository entries with optional name/version filter",
+                    "operationId": "repository_get_entries",
+                    "parameters": [
+                        { "name": "name", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Filter by agent name" },
+                        { "name": "version", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Filter by version (requires name)" }
+                    ],
+                    "responses": {
+                        "200": { "description": "Matching entries" },
+                        "400": { "description": "Invalid query" }
+                    }
+                }
+            },
+            "/repository/entries/{hash}": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "Get a repository entry by content hash",
+                    "operationId": "repository_get_by_hash",
+                    "parameters": [{
+                        "name": "hash",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "string" },
+                        "description": "Content hash"
+                    }],
+                    "responses": {
+                        "200": { "description": "Repository entry" },
+                        "400": { "description": "Invalid hash" },
+                        "404": { "description": "Entry not found" }
+                    }
+                }
+            },
+            "/repository/entries/{name}/{version}": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "Get a repository entry by agent name and version",
+                    "operationId": "repository_get_by_version",
+                    "parameters": [
+                        { "name": "name", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Agent name" },
+                        { "name": "version", "in": "path", "required": true, "schema": { "type": "string" }, "description": "Version number" }
+                    ],
+                    "responses": {
+                        "200": { "description": "Repository entry" },
+                        "400": { "description": "Invalid name or version" },
+                        "404": { "description": "Entry not found" }
+                    }
+                }
+            },
+            "/repository/entries/{hash}/tags": {
+                "post": {
+                    "tags": ["repository"],
+                    "summary": "Add a tag to a repository entry (operator-authenticated)",
+                    "operationId": "repository_add_tag",
+                    "parameters": [{
+                        "name": "hash",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "string" },
+                        "description": "Content hash"
+                    }],
+                    "responses": {
+                        "200": { "description": "Tag added" },
+                        "400": { "description": "Invalid hash" },
+                        "401": { "description": "Missing or invalid runner token" },
+                        "404": { "description": "Entry not found" }
+                    },
+                    "security": runner_token_security
+                },
+                "delete": {
+                    "tags": ["repository"],
+                    "summary": "Remove a tag from a repository entry (operator-authenticated)",
+                    "operationId": "repository_remove_tag",
+                    "parameters": [{
+                        "name": "hash",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "string" },
+                        "description": "Content hash"
+                    }],
+                    "responses": {
+                        "200": { "description": "Tag removed" },
+                        "400": { "description": "Invalid hash" },
+                        "401": { "description": "Missing or invalid runner token" },
+                        "404": { "description": "Entry not found" }
+                    },
+                    "security": runner_token_security
+                }
+            },
+            "/repository/search": {
+                "post": {
+                    "tags": ["repository"],
+                    "summary": "Search repository entries by metadata and content",
+                    "operationId": "repository_search",
+                    "responses": {
+                        "200": { "description": "Search results" },
+                        "500": { "description": "Search execution error" }
+                    }
+                }
+            },
+            "/repository/lineage/{hash}": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "Get lineage subgraph for an entry",
+                    "operationId": "repository_get_lineage",
+                    "parameters": [{
+                        "name": "hash",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "string" },
+                        "description": "Content hash"
+                    }],
+                    "responses": {
+                        "200": { "description": "Lineage subgraph" },
+                        "400": { "description": "Invalid hash" },
+                        "404": { "description": "Lineage not found" }
+                    }
+                }
+            },
+            "/repository/blobs/{hash}": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "Download the built artifact blob for an entry",
+                    "operationId": "repository_get_blob",
+                    "parameters": [{
+                        "name": "hash",
+                        "in": "path",
+                        "required": true,
+                        "schema": { "type": "string" },
+                        "description": "Content hash"
+                    }],
+                    "responses": {
+                        "200": {
+                            "description": "Built artifact (application/gzip)",
+                            "content": { "application/gzip": {} }
+                        },
+                        "400": { "description": "Invalid hash" },
+                        "404": { "description": "Blob not found" }
+                    }
+                }
+            },
+            "/repository/publish": {
+                "post": {
+                    "tags": ["repository"],
+                    "summary": "Publish an agent: build from source and store in repository (operator-authenticated)",
+                    "operationId": "repository_publish",
+                    "responses": {
+                        "200": { "description": "Publish result with content hash" },
+                        "400": { "description": "Invalid source bundle or hash mismatch" },
+                        "401": { "description": "Missing or invalid runner token" },
+                        "500": { "description": "Build or storage failure" }
+                    },
+                    "security": runner_token_security
+                }
+            },
+            "/repository/fork": {
+                "post": {
+                    "tags": ["repository"],
+                    "summary": "Fork an existing entry to create a new lineage branch (operator-authenticated)",
+                    "operationId": "repository_fork",
+                    "responses": {
+                        "200": { "description": "Fork result" },
+                        "401": { "description": "Missing or invalid runner token" },
+                        "404": { "description": "Parent entry not found" },
+                        "422": { "description": "Lineage violation" }
+                    },
+                    "security": runner_token_security
+                }
+            }
+        }
+    })
 }
