@@ -8,15 +8,16 @@
 //! - events with no matching subscribers are logged and treated as handled so
 //!   the host does not stall an entire source on permanently unconsumed data
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use baml_rt_core::{
     AgentDiscoveryEntry, AgentInstanceId, AgentPackageName, AgentRouteKey, BamlRtError,
     EventDeliveryOutcome, ProducedEvent, Result,
     event_subscription::{PublishedEvent, subscriptions_match_published_event},
 };
+use baml_rt_observability::metrics;
 use baml_rt_tools::{EventProducer, ProducerCheckpoint, ProducerRegistry};
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::AgentRegistry;
 
@@ -128,6 +129,7 @@ impl EventDispatcher {
         String,
         std::result::Result<EventDeliveryOutcome, BamlRtError>,
     )> {
+        let cycle_start = Instant::now();
         let mut results = Vec::new();
         // Snapshot producer list so we can mutate checkpoints after.
         let producers: Vec<Arc<dyn EventProducer>> = self.producers.producers().to_vec();
@@ -135,11 +137,18 @@ impl EventDispatcher {
         for producer in &producers {
             let key = producer.producer_key().to_string();
             let checkpoint = self.producers.checkpoint(&key);
+            let producer_start = Instant::now();
 
             let poll_result = match producer.poll(&checkpoint).await {
                 Ok(poll) => poll,
                 Err(err) => {
                     warn!(producer_key = %key, error = %err, "producer poll failed");
+                    metrics::record_event_poll_producer(
+                        &key,
+                        "poll_error",
+                        producer_start.elapsed(),
+                        0,
+                    );
                     results.push((key, Err(err)));
                     continue;
                 }
@@ -148,7 +157,8 @@ impl EventDispatcher {
             if poll_result.events.is_empty() {
                 self.producers
                     .advance_checkpoint(&key, poll_result.checkpoint.clone());
-                info!(producer_key = %key, "producer poll returned no events");
+                debug!(producer_key = %key, "producer poll returned no events");
+                metrics::record_event_poll_producer(&key, "empty", producer_start.elapsed(), 0);
                 results.push((
                     key,
                     Ok(EventDeliveryOutcome {
@@ -160,15 +170,21 @@ impl EventDispatcher {
                 continue;
             }
 
+            let batch_len = poll_result.events.len() as u64;
+            let baml_rt_tools::ProducerPoll {
+                events,
+                checkpoint: poll_checkpoint,
+            } = poll_result;
+
             let mut aggregate = EventDeliveryOutcome {
                 subscribers_matched: 0,
                 subscribers_accepted: 0,
                 failures: Vec::new(),
             };
-            let mut short_circuit_err: Option<BamlRtError> = None;
+            let mut short_circuit: Option<(BamlRtError, &'static str)> = None;
 
             let declared_kinds = producer.source_kinds();
-            for event in poll_result.events {
+            for event in events {
                 if !declared_kinds.contains(&event.source_kind) {
                     let err = BamlRtError::InvalidArgument(format!(
                         "producer {key} declared source_kinds {declared:?} but emitted \
@@ -184,7 +200,7 @@ impl EventDispatcher {
                         error = %err,
                         "source kind mismatch"
                     );
-                    short_circuit_err = Some(err);
+                    short_circuit = Some((err, "validation_error"));
                     break;
                 }
                 match self.deliver_event(event).await {
@@ -199,24 +215,38 @@ impl EventDispatcher {
                             error = %err,
                             "event delivery failed"
                         );
-                        short_circuit_err = Some(err);
+                        short_circuit = Some((err, "delivery_error"));
                         break;
                     }
                 }
             }
 
-            if let Some(err) = short_circuit_err {
+            if let Some((err, kind)) = short_circuit {
+                metrics::record_event_poll_producer(&key, kind, producer_start.elapsed(), 0);
                 results.push((key, Err(err)));
             } else {
                 // Only advance cursor if every event was delivered without failures.
                 if aggregate.failures.is_empty() {
-                    self.producers
-                        .advance_checkpoint(&key, poll_result.checkpoint);
+                    self.producers.advance_checkpoint(&key, poll_checkpoint);
+                    metrics::record_event_poll_producer(
+                        &key,
+                        "success",
+                        producer_start.elapsed(),
+                        batch_len,
+                    );
+                } else {
+                    metrics::record_event_poll_producer(
+                        &key,
+                        "partial_rejection",
+                        producer_start.elapsed(),
+                        batch_len,
+                    );
                 }
                 results.push((key, Ok(aggregate)));
             }
         }
 
+        metrics::record_event_poll_cycle(cycle_start.elapsed());
         results
     }
 }

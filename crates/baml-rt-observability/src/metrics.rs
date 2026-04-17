@@ -42,6 +42,15 @@ static ONNX_RUN_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 static ONNX_WAIT_RUN_RATIO_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 static ONNX_WAIT_DOMINANT_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 
+static EVENT_POLL_CYCLE_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static EVENT_POLL_CYCLE_DURATION_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static EVENT_POLL_PRODUCER_OUTCOME_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static EVENT_POLL_PRODUCER_DURATION_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static EVENT_POLL_EVENTS_PROCESSED_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+
+static PROVENANCE_READ_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static PROVENANCE_READ_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+
 fn a2a_request_counter() -> &'static Counter<u64> {
     A2A_REQUEST_COUNTER.get_or_init(|| {
         global::meter(METER_NAME)
@@ -187,6 +196,32 @@ fn provenance_sequence_render_histogram() -> &'static Histogram<f64> {
     })
 }
 
+fn provenance_read_counter() -> &'static Counter<u64> {
+    PROVENANCE_READ_COUNTER.get_or_init(|| {
+        global::meter("baml_rt_provenance")
+            .u64_counter("baml_rt_provenance.read.operation_total")
+            .init()
+    })
+}
+
+fn provenance_read_histogram() -> &'static Histogram<f64> {
+    PROVENANCE_READ_HISTOGRAM.get_or_init(|| {
+        global::meter("baml_rt_provenance")
+            .f64_histogram("baml_rt_provenance.read.duration_ms")
+            .init()
+    })
+}
+
+/// Heavy provenance graph read (export, list contexts). `operation` is low-cardinality.
+pub fn record_provenance_read(operation: &str, result: &str, duration: Duration) {
+    let attributes = &[
+        KeyValue::new("operation", operation.to_string()),
+        KeyValue::new("result", result.to_string()),
+    ];
+    provenance_read_counter().add(1, attributes);
+    provenance_read_histogram().record(duration.as_secs_f64() * 1000.0, attributes);
+}
+
 /// Record sequence diagram render (graph → Mermaid).
 /// Scope: "context" | "task" | "full". Nodes bucket for low cardinality.
 pub fn record_provenance_sequence_render(scope: &str, duration: Duration, nodes_count: usize) {
@@ -251,6 +286,72 @@ pub fn record_task_store_operation(operation: &str, result: &str, duration: Dura
     ];
     task_store_op_counter().add(1, attributes);
     task_store_op_histogram().record(duration.as_millis() as f64, attributes);
+}
+
+fn event_poll_cycle_counter() -> &'static Counter<u64> {
+    EVENT_POLL_CYCLE_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.a2a.event_poll.cycle_total")
+            .init()
+    })
+}
+
+fn event_poll_cycle_duration_histogram() -> &'static Histogram<f64> {
+    EVENT_POLL_CYCLE_DURATION_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.a2a.event_poll.cycle_duration_ms")
+            .init()
+    })
+}
+
+fn event_poll_producer_outcome_counter() -> &'static Counter<u64> {
+    EVENT_POLL_PRODUCER_OUTCOME_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.a2a.event_poll.producer_outcome_total")
+            .init()
+    })
+}
+
+fn event_poll_producer_duration_histogram() -> &'static Histogram<f64> {
+    EVENT_POLL_PRODUCER_DURATION_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.a2a.event_poll.producer_duration_ms")
+            .init()
+    })
+}
+
+fn event_poll_events_processed_counter() -> &'static Counter<u64> {
+    EVENT_POLL_EVENTS_PROCESSED_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.a2a.event_poll.events_processed_total")
+            .init()
+    })
+}
+
+/// One full event-dispatcher poll sweep (all registered producers).
+pub fn record_event_poll_cycle(duration: Duration) {
+    event_poll_cycle_counter().add(1, &[]);
+    event_poll_cycle_duration_histogram().record(duration.as_secs_f64() * 1000.0, &[]);
+}
+
+/// Per-producer poll outcome. `outcome` is low-cardinality (`empty`, `poll_error`, `delivery_error`,
+/// `validation_error`, `partial_rejection`, `success`). `producer_key` must stay a bounded registry key.
+pub fn record_event_poll_producer(
+    producer_key: &str,
+    outcome: &str,
+    duration: Duration,
+    events_processed: u64,
+) {
+    let attrs = &[
+        KeyValue::new("producer_key", producer_key.to_string()),
+        KeyValue::new("outcome", outcome.to_string()),
+    ];
+    event_poll_producer_outcome_counter().add(1, attrs);
+    event_poll_producer_duration_histogram().record(duration.as_secs_f64() * 1000.0, attrs);
+    if events_processed > 0 {
+        let key_only = &[KeyValue::new("producer_key", producer_key.to_string())];
+        event_poll_events_processed_counter().add(events_processed, key_only);
+    }
 }
 
 fn quickjs_invoke_counter() -> &'static Counter<u64> {

@@ -21,6 +21,7 @@ use std::{
     sync::Arc,
 };
 
+use baml_rt_observability::record_provenance_read;
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -109,9 +110,19 @@ impl GraphExporter {
     pub async fn export_by_context(&self, context_id: &str) -> Result<ExportedGraph> {
         let span = spans::graph_export_by_context(context_id);
         let _guard = span.enter();
-        let graph = self.export_context_core(context_id).await?;
-        let allowed: HashSet<String> = std::iter::once(context_id.to_string()).collect();
-        Ok(filter_scope_multi(graph, a2a::CONTEXT_ID, &allowed))
+        let start = std::time::Instant::now();
+        let result = async {
+            let graph = self.export_context_core(context_id).await?;
+            let allowed: HashSet<String> = std::iter::once(context_id.to_string()).collect();
+            Ok(filter_scope_multi(graph, a2a::CONTEXT_ID, &allowed))
+        }
+        .await;
+        let result_label = match &result {
+            Ok(_) => "success",
+            Err(_) => "error",
+        };
+        record_provenance_read("export_by_context", result_label, start.elapsed());
+        result
     }
 
     async fn export_context_core(&self, context_id: &str) -> Result<ExportedGraph> {
@@ -227,61 +238,81 @@ impl GraphExporter {
     pub async fn export_by_task(&self, task_id: &str) -> Result<ExportedGraph> {
         let span = spans::graph_export_by_task(task_id);
         let _guard = span.enter();
-        let context_id = self.task_context_id(task_id).await?;
-        let graph = if let Some(ctx_id) = context_id {
-            let mut g = self.export_context_core(&ctx_id).await?;
-            g.scope = ExportScope::Task(task_id.to_string());
-            g
-        } else {
-            ExportedGraph {
-                nodes: vec![],
-                edges: vec![],
-                scope: ExportScope::Task(task_id.to_string()),
-            }
+        let start = std::time::Instant::now();
+        let result = async {
+            let context_id = self.task_context_id(task_id).await?;
+            let graph = if let Some(ctx_id) = context_id {
+                let mut g = self.export_context_core(&ctx_id).await?;
+                g.scope = ExportScope::Task(task_id.to_string());
+                g
+            } else {
+                ExportedGraph {
+                    nodes: vec![],
+                    edges: vec![],
+                    scope: ExportScope::Task(task_id.to_string()),
+                }
+            };
+            Ok(filter_scope(graph, a2a::TASK_ID, task_id))
+        }
+        .await;
+        let result_label = match &result {
+            Ok(_) => "success",
+            Err(_) => "error",
         };
-        Ok(filter_scope(graph, a2a::TASK_ID, task_id))
+        record_provenance_read("export_by_task", result_label, start.elapsed());
+        result
     }
 
     /// List all distinct context IDs in the provenance graph.
     pub async fn list_contexts(&self) -> Result<Vec<String>> {
-        let ctx_label = context_scope::LABEL;
-        let query = "SELECT node_id OMIT id FROM prov_node WHERE label = $label".to_string();
-        let mut response = self
-            .store
-            .db()
-            .query(&query)
-            .bind(("label", ctx_label))
-            .await
-            .map_err(surreal_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(surreal_err)?;
-        let mut ids: Vec<String> = rows
-            .iter()
-            .filter_map(|r| r.get("node_id").and_then(Value::as_str).map(String::from))
-            .filter(|s| !s.is_empty())
-            .collect();
-        if ids.is_empty() {
-            // Fallback: find distinct SCOPED_TO target nodes with Context label.
-            let scoped = context_scope::SCOPED_TO;
-            let fallback = format!(
-                "SELECT DISTINCT to_id OMIT id FROM prov_edge \
-                 WHERE rel_type = '{scoped}' AND to_label = '{ctx_label}'"
-            );
-            let mut fb_response = self
+        let start = std::time::Instant::now();
+        let result = async {
+            let ctx_label = context_scope::LABEL;
+            let query = "SELECT node_id OMIT id FROM prov_node WHERE label = $label".to_string();
+            let mut response = self
                 .store
                 .db()
-                .query(&fallback)
+                .query(&query)
+                .bind(("label", ctx_label))
                 .await
                 .map_err(surreal_err)?;
-            let fb_rows: Vec<Value> = fb_response.take(0).map_err(surreal_err)?;
-            ids = fb_rows
+            let rows: Vec<Value> = response.take(0).map_err(surreal_err)?;
+            let mut ids: Vec<String> = rows
                 .iter()
-                .filter_map(|r| r.get("to_id").and_then(Value::as_str).map(String::from))
+                .filter_map(|r| r.get("node_id").and_then(Value::as_str).map(String::from))
                 .filter(|s| !s.is_empty())
                 .collect();
+            if ids.is_empty() {
+                // Fallback: find distinct SCOPED_TO target nodes with Context label.
+                let scoped = context_scope::SCOPED_TO;
+                let fallback = format!(
+                    "SELECT DISTINCT to_id OMIT id FROM prov_edge \
+                     WHERE rel_type = '{scoped}' AND to_label = '{ctx_label}'"
+                );
+                let mut fb_response = self
+                    .store
+                    .db()
+                    .query(&fallback)
+                    .await
+                    .map_err(surreal_err)?;
+                let fb_rows: Vec<Value> = fb_response.take(0).map_err(surreal_err)?;
+                ids = fb_rows
+                    .iter()
+                    .filter_map(|r| r.get("to_id").and_then(Value::as_str).map(String::from))
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            ids.sort();
+            ids.dedup();
+            Ok(ids)
         }
-        ids.sort();
-        ids.dedup();
-        Ok(ids)
+        .await;
+        let result_label = match &result {
+            Ok(_) => "success",
+            Err(_) => "error",
+        };
+        record_provenance_read("list_contexts", result_label, start.elapsed());
+        result
     }
 
     /// Resolve the context_id for a task via SCOPED_TO edge traversal.
