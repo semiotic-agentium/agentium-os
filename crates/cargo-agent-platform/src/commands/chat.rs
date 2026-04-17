@@ -10,9 +10,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use baml_rt_core::correlation::generate_correlation_id;
 use console::style;
-use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use reqwest_eventsource::{Event, EventSource};
 use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
@@ -40,6 +38,8 @@ struct SendMessageParams<'a> {
 struct Message<'a> {
     message_id: &'a str,
     context_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<&'a str>,
     role: &'static str,
     parts: Vec<Part<'a>>,
 }
@@ -49,23 +49,34 @@ struct Part<'a> {
     text: &'a str,
 }
 
-/// Parameters for an SSE chat turn, passed as one struct to `send_message_sse`.
+/// Parameters for one chat turn request.
 struct SseRequest<'a> {
     client: &'a reqwest::Client,
     base_url: &'a str,
     agent: &'a str,
     instance: &'a str,
     context_id: &'a str,
+    task_id: Option<&'a str>,
     message_text: &'a str,
     message_id: &'a str,
     correlation_id: &'a str,
     verbose: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AwaitingState {
+    InputRequired,
+    AuthRequired,
+}
+
 #[derive(Debug)]
 struct ChatTurnResult {
     /// Whether any user-facing text was streamed to stdout.
     printed_any: bool,
+    /// Non-terminal boundary where the agent is waiting for user follow-up.
+    awaiting_state: Option<AwaitingState>,
+    /// Latest observed task id from streamed chunks (if provided by server).
+    task_id: Option<String>,
     elapsed_ms: u128,
 }
 
@@ -126,27 +137,69 @@ fn extract_agent_message_snapshot(chunk: &Value) -> Option<(String, String)> {
     Some((message_id, text))
 }
 
-fn extract_input_required_text(chunk: &Value) -> Option<String> {
-    let state = terminal_state_from_chunk(chunk);
-    if matches!(
-        state,
-        Some("TASK_STATE_INPUT_REQUIRED" | "input_required" | "INPUT_REQUIRED")
-    ) {
-        return chunk
-            .get("task")
-            .and_then(|t| t.get("status"))
-            .and_then(|s| s.get("message"))
-            .and_then(parts_text)
-            .or_else(|| {
-                chunk
-                    .get("statusUpdate")
-                    .and_then(|s| s.get("status"))
-                    .and_then(|s| s.get("message"))
-                    .and_then(parts_text)
-            });
+fn waiting_state_from_chunk(chunk: &Value) -> Option<AwaitingState> {
+    match terminal_state_from_chunk(chunk) {
+        Some("TASK_STATE_INPUT_REQUIRED" | "input_required" | "INPUT_REQUIRED") => {
+            Some(AwaitingState::InputRequired)
+        }
+        Some("TASK_STATE_AUTH_REQUIRED" | "auth_required" | "AUTH_REQUIRED") => {
+            Some(AwaitingState::AuthRequired)
+        }
+        _ => None,
     }
+}
 
-    None
+fn extract_waiting_prompt_text(chunk: &Value) -> Option<String> {
+    waiting_state_from_chunk(chunk)?;
+
+    chunk
+        .get("task")
+        .and_then(|t| t.get("status"))
+        .and_then(|s| s.get("message"))
+        .and_then(|m| m.as_str().map(ToOwned::to_owned).or_else(|| parts_text(m)))
+        .or_else(|| {
+            chunk
+                .get("statusUpdate")
+                .and_then(|s| s.get("status"))
+                .and_then(|s| s.get("message"))
+                .and_then(|m| m.as_str().map(ToOwned::to_owned).or_else(|| parts_text(m)))
+        })
+}
+
+fn extract_task_id_from_chunk(chunk: &Value) -> Option<String> {
+    chunk
+        .get("task")
+        .and_then(|t| t.get("id"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            chunk
+                .get("statusUpdate")
+                .and_then(|s| s.get("status"))
+                .and_then(|s| s.get("taskId"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            chunk
+                .get("statusUpdate")
+                .and_then(|s| s.get("taskId"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            chunk
+                .get("message")
+                .and_then(|m| m.get("taskId"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            chunk
+                .get("taskId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
 }
 
 fn extract_rpc_error(value: &Value) -> Option<String> {
@@ -325,12 +378,12 @@ async fn list_agents(client: &reqwest::Client, base_url: &str) -> Result<Vec<Age
         .with_context(|| format!("Invalid /agents response JSON: {body}"))
 }
 
-/// Sends one chat turn over SSE, streaming response text to `stdout` as it arrives.
+/// Sends one chat turn over HTTP JSON-RPC (`/a2a`), then renders collected chunks.
 ///
-/// Text chunks are printed incrementally.  When the server sends cumulative
-/// snapshots (full message so far on every event), only the new suffix is
-/// printed so nothing is duplicated.
-async fn send_message_sse(
+/// The runner collects stream chunks server-side and returns them as a JSON array
+/// of JSON-RPC items. We process them in-order and render text snapshots as deltas
+/// to avoid duplicated cumulative output.
+async fn send_message_http(
     req: &SseRequest<'_>,
     stdout: &mut io::Stdout,
     spinner: Option<&ProgressBar>,
@@ -338,7 +391,7 @@ async fn send_message_sse(
     let started = Instant::now();
     let url = join_url(
         req.base_url,
-        &format!("/agents/{}/{}/a2a/sse", req.agent, req.instance),
+        &format!("/agents/{}/{}/a2a", req.agent, req.instance),
     );
 
     let rpc_req = JsonRpcRequest {
@@ -349,6 +402,7 @@ async fn send_message_sse(
             message: Message {
                 message_id: req.message_id,
                 context_id: req.context_id,
+                task_id: req.task_id,
                 role: "ROLE_USER",
                 parts: vec![Part {
                     text: req.message_text,
@@ -357,140 +411,127 @@ async fn send_message_sse(
         },
     };
 
-    let request = req
+    let response = req
         .client
         .post(&url)
-        .header("accept", "text/event-stream")
         .header("content-type", "application/json")
-        .json(&rpc_req);
+        .json(&rpc_req)
+        .send()
+        .await
+        .with_context(|| format!("Failed to POST chat turn to {url}"))?;
 
-    let mut es = EventSource::new(request)
-        .map_err(|e| tagged_error("SSE", format!("Cannot build SSE request: {e}")))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(tagged_error(
+            "HTTP",
+            format!("Chat request failed ({status}) at {url}: {body}"),
+        ));
+    }
 
-    // Track the last full snapshot per messageId, so we can print only deltas
-    // from chunk.message.parts[*].text without duplicating cumulative snapshots.
+    let parsed = serde_json::from_str::<Value>(&body)
+        .map_err(|e| tagged_error("JSON", format!("Invalid /a2a response JSON: {e}")))?;
+    let events: Vec<Value> = match parsed {
+        Value::Array(items) => items,
+        single => vec![single],
+    };
+
     let mut printed_by_message_id: HashMap<String, String> = HashMap::new();
     let mut active_message_id: Option<String> = None;
     let mut printed_any = false;
+    let mut awaiting_state: Option<AwaitingState> = None;
+    let mut latest_task_id = req.task_id.map(ToOwned::to_owned);
 
-    loop {
-        // Intentionally no idle timeout here.
-        // Agent turns may include multiple downstream network/tool calls and can be silent
-        // for longer periods while still making valid progress.
-        // Keep the stream open until terminal event, transport close, or explicit error.
-        let event_opt = es.next().await;
-
-        let Some(event_result) = event_opt else {
-            // Stream ended without a terminal event.
-            break;
-        };
-
-        match event_result {
-            Ok(Event::Open) => {}
-            Ok(Event::Message(msg)) => {
-                let event = serde_json::from_str::<Value>(&msg.data)
-                    .map_err(|e| tagged_error("JSON", format!("Invalid SSE JSON payload: {e}")))?;
-
-                if req.verbose {
-                    let (_kind, label) = classify_event_label(&event);
-                    let debug_line = format!("{} {} {}", style("[debug]").dim(), label, event);
-                    if let Some(pb) = spinner {
-                        // Print above active spinner to avoid ANSI line-clobbering on stderr.
-                        pb.println(debug_line);
-                    } else {
-                        eprintln!("{debug_line}");
-                    }
-                }
-
-                if let Some(rpc_error) = extract_rpc_error(&event) {
-                    if printed_any {
-                        writeln!(stdout)?;
-                    }
-                    es.close();
-                    return Err(tagged_error("RPC", rpc_error));
-                }
-
-                let chunk_value = extract_chunk_or_result(&event).unwrap_or(&event);
-
-                if let Some((message_id, text)) = extract_agent_message_snapshot(chunk_value)
-                    && !text.trim().is_empty()
-                {
-                    if active_message_id.as_ref() != Some(&message_id) && printed_any {
-                        writeln!(stdout)?;
-                    }
-
-                    let previous = printed_by_message_id
-                        .entry(message_id.clone())
-                        .or_default()
-                        .clone();
-
-                    let delta: &str = if text.starts_with(previous.as_str()) {
-                        &text[previous.len()..]
-                    } else {
-                        // Same message id but non-prefix update; print full snapshot on a new line.
-                        if !previous.is_empty() {
-                            writeln!(stdout)?;
-                        }
-                        &text
-                    };
-
-                    if !delta.is_empty() {
-                        if !printed_any && let Some(pb) = spinner {
-                            pb.finish_and_clear();
-                        }
-                        write!(stdout, "{delta}")?;
-                        stdout.flush()?;
-                        printed_by_message_id.insert(message_id.clone(), text);
-                        active_message_id = Some(message_id);
-                        printed_any = true;
-                    }
-                } else if let Some(text) = extract_input_required_text(chunk_value)
-                    && !text.trim().is_empty()
-                {
-                    if !printed_any && let Some(pb) = spinner {
-                        pb.finish_and_clear();
-                    }
-                    write!(stdout, "{text}")?;
-                    stdout.flush()?;
-                    printed_any = true;
-                }
-
-                if let Some(state) = terminal_state_from_chunk(chunk_value)
-                    && is_failure_state(state)
-                {
-                    let failure_msg =
-                        terminal_message_from_chunk(chunk_value).unwrap_or_else(|| {
-                            format!("Agent ended in terminal failure state: {state}")
-                        });
-                    if printed_any {
-                        writeln!(stdout)?;
-                    }
-                    es.close();
-                    return Err(tagged_error("A2A", failure_msg));
-                }
-
-                if is_terminal(&event) {
-                    if printed_any {
-                        writeln!(stdout)?;
-                    }
-                    es.close();
-                    return Ok(ChatTurnResult {
-                        printed_any,
-                        elapsed_ms: started.elapsed().as_millis(),
-                    });
-                }
+    for event in events {
+        if req.verbose {
+            let (_kind, label) = classify_event_label(&event);
+            let debug_line = format!("{} {} {}", style("[debug]").dim(), label, event);
+            if let Some(pb) = spinner {
+                pb.println(debug_line);
+            } else {
+                eprintln!("{debug_line}");
             }
-            Err(reqwest_eventsource::Error::StreamEnded) => {
-                // The SSE transport closed cleanly; treat as normal end-of-stream.
-                break;
+        }
+
+        if let Some(rpc_error) = extract_rpc_error(&event) {
+            if printed_any {
+                writeln!(stdout)?;
             }
-            Err(e) => {
-                if printed_any {
+            return Err(tagged_error("RPC", rpc_error));
+        }
+
+        let chunk_value = extract_chunk_or_result(&event).unwrap_or(&event);
+
+        if let Some(task_id) = extract_task_id_from_chunk(chunk_value) {
+            latest_task_id = Some(task_id);
+        }
+        if let Some(state) = waiting_state_from_chunk(chunk_value) {
+            awaiting_state = Some(state);
+        }
+
+        if let Some((message_id, text)) = extract_agent_message_snapshot(chunk_value)
+            && !text.trim().is_empty()
+        {
+            if active_message_id.as_ref() != Some(&message_id) && printed_any {
+                writeln!(stdout)?;
+            }
+
+            let previous = printed_by_message_id
+                .entry(message_id.clone())
+                .or_default()
+                .clone();
+
+            let delta: &str = if text.starts_with(previous.as_str()) {
+                &text[previous.len()..]
+            } else {
+                if !previous.is_empty() {
                     writeln!(stdout)?;
                 }
-                es.close();
-                return Err(tagged_error("SSE", e.to_string()));
+                &text
+            };
+
+            if !delta.is_empty() {
+                if !printed_any && let Some(pb) = spinner {
+                    pb.finish_and_clear();
+                }
+                write!(stdout, "{delta}")?;
+                stdout.flush()?;
+                printed_by_message_id.insert(message_id.clone(), text);
+                active_message_id = Some(message_id);
+                printed_any = true;
             }
+        } else if let Some(text) = extract_waiting_prompt_text(chunk_value)
+            && !text.trim().is_empty()
+        {
+            if !printed_any && let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            write!(stdout, "{text}")?;
+            stdout.flush()?;
+            printed_any = true;
+        }
+
+        if let Some(state) = terminal_state_from_chunk(chunk_value)
+            && is_failure_state(state)
+        {
+            let failure_msg = terminal_message_from_chunk(chunk_value)
+                .unwrap_or_else(|| format!("Agent ended in terminal failure state: {state}"));
+            if printed_any {
+                writeln!(stdout)?;
+            }
+            return Err(tagged_error("A2A", failure_msg));
+        }
+
+        if is_terminal(&event) {
+            if printed_any {
+                writeln!(stdout)?;
+            }
+            return Ok(ChatTurnResult {
+                printed_any,
+                awaiting_state,
+                task_id: latest_task_id,
+                elapsed_ms: started.elapsed().as_millis(),
+            });
         }
     }
 
@@ -499,6 +540,8 @@ async fn send_message_sse(
     }
     Ok(ChatTurnResult {
         printed_any,
+        awaiting_state,
+        task_id: latest_task_id,
         elapsed_ms: started.elapsed().as_millis(),
     })
 }
@@ -513,7 +556,7 @@ fn classify_error(e: &anyhow::Error) -> (&'static str, String) {
 pub fn run(agent: &str, base_url: &str, instance: &str, verbose: bool) -> Result<()> {
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
 
-    // One client for discovery + SSE turns.
+    // One client for discovery + chat turns.
     let client = build_http_client(Some(Duration::from_secs(10)))?;
 
     let agents = rt.block_on(list_agents(&client, base_url))?;
@@ -541,6 +584,7 @@ pub fn run(agent: &str, base_url: &str, instance: &str, verbose: bool) -> Result
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let agent_prompt = format!("{agent}>");
+    let mut task_id: Option<String> = None;
 
     loop {
         print!("{} ", style("you>").cyan().bold());
@@ -567,11 +611,12 @@ pub fn run(agent: &str, base_url: &str, instance: &str, verbose: bool) -> Result
 
         if verbose {
             eprintln!(
-                "{} sending correlation_id={} message_id={} context_id={}",
+                "{} sending correlation_id={} message_id={} context_id={} task_id={}",
                 style("[debug]").dim(),
                 correlation_id,
                 message_id,
-                context_id
+                context_id,
+                task_id.as_deref().unwrap_or("(none)"),
             );
         }
 
@@ -584,6 +629,7 @@ pub fn run(agent: &str, base_url: &str, instance: &str, verbose: bool) -> Result
             agent,
             instance,
             context_id: &context_id,
+            task_id: task_id.as_deref(),
             message_text: input,
             message_id: &message_id,
             correlation_id: &correlation_id,
@@ -603,15 +649,42 @@ pub fn run(agent: &str, base_url: &str, instance: &str, verbose: bool) -> Result
         };
 
         let turn_started = Instant::now();
-        match rt.block_on(send_message_sse(&sse_req, &mut stdout, spinner.as_ref())) {
+        match rt.block_on(send_message_http(&sse_req, &mut stdout, spinner.as_ref())) {
             Ok(result) => {
                 if let Some(pb) = &spinner {
                     pb.finish_and_clear();
                 }
-                if !result.printed_any {
-                    println!("{}", style("(no textual response)").dim());
+                let ChatTurnResult {
+                    printed_any,
+                    awaiting_state,
+                    task_id: observed_task_id,
+                    elapsed_ms,
+                } = result;
+
+                if let Some(next_task_id) = observed_task_id {
+                    let task_changed = task_id.as_deref() != Some(next_task_id.as_str());
+                    if verbose && task_changed {
+                        eprintln!(
+                            "{} observed task_id={} (updated)",
+                            style("[debug]").dim(),
+                            next_task_id
+                        );
+                    }
+                    task_id = Some(next_task_id);
                 }
-                if result.elapsed_ms == 0 {
+
+                if !printed_any {
+                    match awaiting_state {
+                        Some(AwaitingState::InputRequired) => {
+                            println!("{}", style("(awaiting input)").cyan().bold())
+                        }
+                        Some(AwaitingState::AuthRequired) => {
+                            println!("{}", style("(authentication required)").yellow().bold())
+                        }
+                        None => println!("{}", style("(no textual response)").dim()),
+                    }
+                }
+                if elapsed_ms == 0 {
                     println!(
                         "{}",
                         style(format_time_line(turn_started.elapsed().as_millis()))
@@ -619,10 +692,7 @@ pub fn run(agent: &str, base_url: &str, instance: &str, verbose: bool) -> Result
                             .bold()
                     );
                 } else {
-                    println!(
-                        "{}",
-                        style(format_time_line(result.elapsed_ms)).yellow().bold()
-                    );
+                    println!("{}", style(format_time_line(elapsed_ms)).yellow().bold());
                 }
             }
             Err(e) => {
