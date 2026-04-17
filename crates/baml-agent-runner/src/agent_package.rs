@@ -21,7 +21,7 @@ use baml_rt_tools::{ManifestToolNames, ToolAccessPolicy, register_manifest_tools
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_system::SystemBundle;
 use serde_json::Value;
-use tracing::{error, info};
+use tracing::{Instrument, error, info};
 
 use crate::config::ProvenanceConfig;
 
@@ -199,21 +199,23 @@ impl AgentPackage {
     async fn initialize_js_phase(&self, built: JsInitialized) -> Result<JsInitialized> {
         let entry_point_path = self.extract_dir.join(&self.manifest.entry_point);
         if entry_point_path.exists() {
-            let eval_span = spans::evaluate_agent_code(&self.manifest.entry_point);
-            let _eval_guard = eval_span.enter();
             let agent_code = std::fs::read_to_string(&entry_point_path).map_err(BamlRtError::Io)?;
             info!(
                 entry_point = self.manifest.entry_point,
                 "Loading agent JavaScript code"
             );
-            let bridge = built.agent.bridge();
-            let mut bridge_guard = bridge.lock().await;
-            match bridge_guard.eval_sync(&agent_code).await {
-                Ok(_) => info!("Agent code executed successfully"),
-                Err(e) => {
-                    tracing::warn!(error = %e, "Agent code execution returned an error (may be expected)");
+            async {
+                let bridge = built.agent.bridge();
+                let mut bridge_guard = bridge.lock().await;
+                match bridge_guard.eval_sync(&agent_code).await {
+                    Ok(_) => info!("Agent code executed successfully"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Agent code execution returned an error (may be expected)");
+                    }
                 }
             }
+            .instrument(spans::evaluate_agent_code(&self.manifest.entry_point))
+            .await;
             info!("Agent JavaScript code loaded and initialized");
         } else {
             info!(
@@ -233,55 +235,61 @@ impl AgentPackage {
         stream_idle_secs: Option<u64>,
         claude_workspaces_base: Option<&std::path::Path>,
     ) -> Result<(A2aAgent, AgentId)> {
-        let span = spans::load_agent_package(&self.extract_dir);
-        let _guard = span.enter();
-        let loaded = self.load_schema_phase(provenance_config).await?;
-        let registered = self
-            .register_tools_phase(
-                loaded,
-                policy,
-                agent_list_catalogue,
-                a2a_handler,
-                provenance_config.store().clone(),
-                claude_workspaces_base,
-            )
-            .await?;
-        let built = self
-            .build_agent_phase(registered, provenance_config, stream_idle_secs)
-            .await?;
-        let initialized = self.initialize_js_phase(built).await?;
-        let agent = initialized.agent;
-        let runtime_manager_arc = initialized.runtime_manager;
+        async {
+            let loaded = self.load_schema_phase(provenance_config).await?;
+            let registered = self
+                .register_tools_phase(
+                    loaded,
+                    policy,
+                    agent_list_catalogue,
+                    a2a_handler,
+                    provenance_config.store().clone(),
+                    claude_workspaces_base,
+                )
+                .await?;
+            let built = self
+                .build_agent_phase(registered, provenance_config, stream_idle_secs)
+                .await?;
+            let initialized = self.initialize_js_phase(built).await?;
+            let agent = initialized.agent;
+            let runtime_manager_arc = initialized.runtime_manager;
 
-        {
-            let manager = runtime_manager_arc.read().await;
-            let tools = manager.export_tool_metadata().await;
-            if let Err(err) = index_tools(provenance_config.store().as_ref(), &tools).await {
-                tracing::warn!(error = %err, "Failed to index tool metadata in provenance store");
-            } else {
-                info!("Tool metadata indexed in provenance store");
+            {
+                let manager = runtime_manager_arc.read().await;
+                let tools = manager.export_tool_metadata().await;
+                if let Err(err) = index_tools(provenance_config.store().as_ref(), &tools).await {
+                    tracing::warn!(
+                        error = %err,
+                        "Failed to index tool metadata in provenance store"
+                    );
+                } else {
+                    info!("Tool metadata indexed in provenance store");
+                }
             }
-        }
 
-        let agent_id = agent.agent_id().clone();
-        let writer = provenance_config.store().clone() as Arc<dyn ProvenanceWriter>;
-        let archive_path = self.manifest.signature.clone();
-        let agent_type_parsed = AgentType::new(self.manifest.name.clone()).ok_or_else(|| {
-            BamlRtError::InvalidArgument("agent_type cannot be empty".to_string())
-        })?;
-        let boot_event = ProvEvent::agent_booted(
-            agent_id.clone(),
-            agent_type_parsed,
-            self.version().to_string(),
-            archive_path,
-        );
-        if let Err(e) = writer.add_event(boot_event).await {
-            error!(error = ?e, agent_id = %agent_id, "Failed to write AgentBooted event");
-        } else {
-            info!(agent_id = %agent_id, "AgentBooted event written to provenance store");
-        }
+            let agent_id = agent.agent_id().clone();
+            let writer = provenance_config.store().clone() as Arc<dyn ProvenanceWriter>;
+            let archive_path = self.manifest.signature.clone();
+            let agent_type_parsed =
+                AgentType::new(self.manifest.name.clone()).ok_or_else(|| {
+                    BamlRtError::InvalidArgument("agent_type cannot be empty".to_string())
+                })?;
+            let boot_event = ProvEvent::agent_booted(
+                agent_id.clone(),
+                agent_type_parsed,
+                self.version().to_string(),
+                archive_path,
+            );
+            if let Err(e) = writer.add_event(boot_event).await {
+                error!(error = ?e, agent_id = %agent_id, "Failed to write AgentBooted event");
+            } else {
+                info!(agent_id = %agent_id, "AgentBooted event written to provenance store");
+            }
 
-        Ok((agent, agent_id))
+            Ok((agent, agent_id))
+        }
+        .instrument(spans::load_agent_package(&self.extract_dir))
+        .await
     }
 
     pub(crate) fn name(&self) -> &str {
