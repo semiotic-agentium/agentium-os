@@ -146,15 +146,23 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
                 .await
                 .context("Failed to create in-memory config store")?,
         ),
-        ProvenanceDb::Remote { .. } => {
-            tracing::warn!(
-                "remote SurrealDB provenance store but config_service is in-memory; \
-                 LLM configurations will not persist across pod restarts"
-            );
+        ProvenanceDb::Remote {
+            endpoint,
+            username,
+            password,
+        } => {
+            let credentials = match (username.as_deref(), password.as_deref()) {
+                (Some(u), Some(p)) => Some((u, p)),
+                (None, None) => None,
+                _ => anyhow::bail!(
+                    "partial SurrealDB credentials for config store: both \
+                     --surreal-username and --surreal-password are required"
+                ),
+            };
             Arc::new(
-                baml_rt_config::SurrealConfigStore::in_memory()
+                baml_rt_config::SurrealConfigStore::remote(endpoint, credentials)
                     .await
-                    .context("Failed to create in-memory config store")?,
+                    .context("Failed to create remote config store")?,
             )
         }
         ProvenanceDb::File(path) => Arc::new(

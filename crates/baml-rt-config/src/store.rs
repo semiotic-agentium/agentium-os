@@ -1,7 +1,7 @@
-//! Config store backed by SurrealDB embedded.
+//! Config store backed by SurrealDB.
 //!
-//! Config is keyed by bundle name. Uses SurrealDB tables for current config,
-//! version history, and internal key-value config.
+//! Keyed by bundle name. Stores current config, version history, and
+//! internal key-value state (e.g. secret link mappings).
 
 use std::sync::Arc;
 
@@ -9,10 +9,7 @@ use async_trait::async_trait;
 use baml_rt_core::Result;
 use baml_rt_tools::{BundleName, ConfigResolver};
 use serde_json::Value;
-use surrealdb::{
-    Surreal,
-    engine::local::{Db, Mem, SurrealKv},
-};
+use surrealdb::{Surreal, engine::any::Any};
 
 use crate::{
     error::ConfigStoreError,
@@ -53,12 +50,14 @@ fn now_ms() -> UnixMs {
 }
 
 pub struct SurrealConfigStore {
-    db: Arc<Surreal<Db>>,
+    db: Arc<Surreal<Any>>,
 }
 
 impl SurrealConfigStore {
+    /// File-backed SurrealKV store at the given directory path.
     pub async fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let db = Surreal::new::<SurrealKv>(path.as_ref().to_string_lossy().as_ref())
+        let endpoint = format!("surrealkv://{}", path.as_ref().to_string_lossy());
+        let db = surrealdb::engine::any::connect(&endpoint)
             .await
             .map_err(map_err)?;
         db.use_ns(NS).use_db(DB_NAME).await.map_err(map_err)?;
@@ -66,15 +65,40 @@ impl SurrealConfigStore {
         Ok(Self { db: Arc::new(db) })
     }
 
+    /// Isolated in-memory store. Each call selects a UUID-scoped namespace
+    /// so callers get independent keyspaces (sufficient for test isolation).
     pub async fn in_memory() -> Result<Self> {
-        let db = Surreal::new::<Mem>(()).await.map_err(map_err)?;
+        let db = surrealdb::engine::any::connect("mem://")
+            .await
+            .map_err(map_err)?;
+        let scope = format!("cfg_{}", uuid::Uuid::new_v4().simple());
+        db.use_ns(&scope).use_db(&scope).await.map_err(map_err)?;
+        init_schema(&db).await?;
+        Ok(Self { db: Arc::new(db) })
+    }
+
+    /// Remote SurrealDB over WebSocket. Uses the fixed namespace `config` /
+    /// database `store` so all runners sharing the same endpoint see the same
+    /// config state.
+    pub async fn remote(endpoint: &str, credentials: Option<(&str, &str)>) -> Result<Self> {
+        let db = surrealdb::engine::any::connect(endpoint)
+            .await
+            .map_err(map_err)?;
+        if let Some((username, password)) = credentials {
+            db.signin(surrealdb::opt::auth::Root {
+                username: username.to_string(),
+                password: password.to_string(),
+            })
+            .await
+            .map_err(map_err)?;
+        }
         db.use_ns(NS).use_db(DB_NAME).await.map_err(map_err)?;
         init_schema(&db).await?;
         Ok(Self { db: Arc::new(db) })
     }
 }
 
-async fn init_schema(db: &Surreal<Db>) -> Result<()> {
+async fn init_schema(db: &Surreal<Any>) -> Result<()> {
     for stmt in SCHEMA_QUERIES {
         db.query(*stmt).await.map_err(map_err)?;
     }

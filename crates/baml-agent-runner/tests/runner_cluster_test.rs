@@ -1163,6 +1163,143 @@ mod cluster {
             resp.status()
         );
     }
+
+    /// Prove the #222 config persistence contract:
+    /// 1. Config written through runner-A is readable through runner-B (cross-runner visibility)
+    /// 2. Config survives runner-B restart (persistence)
+    #[tokio::test]
+    async fn cluster_config_shared_across_runners() {
+        let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+        let ip = match detect_non_loopback_ip() {
+            Some(ip) => ip,
+            None => {
+                eprintln!(
+                    "SKIPPED cluster_config_shared_across_runners: no non-loopback private IP"
+                );
+                return;
+            }
+        };
+        let bind_addr = ip.to_string();
+
+        let surreal = SurrealSubprocess::start();
+
+        let reserved_a = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-A port");
+        let port_a = reserved_a.local_addr().expect("runner-A addr").port();
+        drop(reserved_a);
+        let reserved_b = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-B port");
+        let port_b = reserved_b.local_addr().expect("runner-B addr").port();
+        drop(reserved_b);
+
+        let endpoint_a = format!("http://{bind_addr}:{port_a}");
+        let endpoint_b = format!("http://{bind_addr}:{port_b}");
+
+        let runner_a = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(&endpoint_a)
+                .with_bind_addr(&bind_addr),
+        )
+        .await;
+        let mut runner_b = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(&endpoint_b)
+                .with_bind_addr(&bind_addr),
+        )
+        .await;
+        let client = reqwest::Client::new();
+
+        // --- Write config through runner-A ---
+        let config_body = serde_json::json!({
+            "default": "TestClient",
+            "clients": {
+                "TestClient": {
+                    "name": "TestClient",
+                    "provider": "openrouter",
+                    "options": { "model": "openai/gpt-4o-mini" }
+                }
+            }
+        });
+        let put_resp = client
+            .put(format!("{}/config/llm", runner_a.base_url))
+            .header("X-Runner-Token", DEFAULT_TOKEN)
+            .json(&config_body)
+            .send()
+            .await
+            .expect("PUT /config/llm on runner-A");
+        assert!(
+            put_resp.status().is_success(),
+            "PUT config on runner-A failed: {}",
+            put_resp.status()
+        );
+
+        // --- Read config through runner-B (cross-runner visibility) ---
+        let get_resp = client
+            .get(format!("{}/config/llm", runner_b.base_url))
+            .header("X-Runner-Token", DEFAULT_TOKEN)
+            .send()
+            .await
+            .expect("GET /config/llm on runner-B");
+        assert!(
+            get_resp.status().is_success(),
+            "GET config on runner-B failed: {}",
+            get_resp.status()
+        );
+        let config_from_b: Value = get_resp.json().await.expect("parse config JSON from B");
+        assert_eq!(
+            config_from_b
+                .get("config")
+                .and_then(|c| c.get("default"))
+                .and_then(Value::as_str),
+            Some("TestClient"),
+            "runner-B must see config written by runner-A; got: {config_from_b}"
+        );
+        let version_from_b = config_from_b.get("version").and_then(Value::as_u64);
+        assert!(
+            version_from_b.is_some_and(|v| v >= 1),
+            "config version must be >= 1; got: {version_from_b:?}"
+        );
+
+        // --- Restart runner-B and verify persistence ---
+        let _ = runner_b.child.kill();
+        let _ = runner_b.child.wait();
+
+        // RunnerProcess::start allocates a fresh ephemeral port; the
+        // restarted runner reads config from the shared SurrealDB regardless
+        // of which HTTP port it binds.
+        runner_b = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(&endpoint_b)
+                .with_bind_addr(&bind_addr),
+        )
+        .await;
+
+        let get_resp2 = client
+            .get(format!("{}/config/llm", runner_b.base_url))
+            .header("X-Runner-Token", DEFAULT_TOKEN)
+            .send()
+            .await
+            .expect("GET /config/llm on restarted runner-B");
+        assert!(
+            get_resp2.status().is_success(),
+            "GET config on restarted runner-B failed: {}",
+            get_resp2.status()
+        );
+        let config_after_restart: Value = get_resp2
+            .json()
+            .await
+            .expect("parse config JSON after restart");
+        assert_eq!(
+            config_after_restart
+                .get("config")
+                .and_then(|c| c.get("default"))
+                .and_then(Value::as_str),
+            Some("TestClient"),
+            "config must survive runner-B restart; got: {config_after_restart}"
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

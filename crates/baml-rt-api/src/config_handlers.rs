@@ -7,8 +7,8 @@ use std::sync::Arc;
 use axum::{Json, extract::State, http::StatusCode as AxumStatus};
 use baml_rt_config::{InternalConfigReader, InternalConfigWriter};
 use baml_rt_llm_config::{
-    LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, LlmProvider, SECRET_LINKS_CONFIG_KEY,
-    SecretLinksState, SecretRequestName, SecretValue, StoreKey,
+    FnoxFileSecretResolver, LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, LlmProvider,
+    SECRET_LINKS_CONFIG_KEY, SecretLinksState, SecretRequestName, SecretValue, StoreKey,
 };
 use baml_rt_tools::{BundleName, ToolName};
 use http_api_problem::HttpApiProblem;
@@ -302,6 +302,11 @@ pub async fn put_secret(
     }
     let request_name = SecretRequestName::new(name);
     let store_key = StoreKey::new(link_from);
+    let env_hint = if FnoxFileSecretResolver::is_exclusive() {
+        ""
+    } else {
+        " (or set it as an environment variable)"
+    };
     let value = state
         .secret_resolver
         .resolve_from_store(&store_key)
@@ -310,7 +315,10 @@ pub async fn put_secret(
             problem(
                 400,
                 "Bad Request",
-                format!("Key '{link_from}' has no value in the secret store. Add it to fnox.toml or .env and restart the runner."),
+                format!(
+                    "Key '{link_from}' has no value in the secret store. \
+                     Add it to fnox.toml{env_hint} and restart the runner."
+                ),
             )
         })?
         .into_string();
