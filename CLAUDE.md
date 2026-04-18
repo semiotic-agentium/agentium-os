@@ -188,7 +188,14 @@ helm upgrade --install agentium deploy/helm/agentium-os/ \
   -f deploy/helm/agentium-os/examples/design-partner-values.yaml
 ```
 
-See `deploy/helm/agentium-os/README.md` for prerequisites and verification steps.
+Prerequisites include creating secrets and ConfigMaps before installation:
+- `surrealdb-credentials` secret (username/password)
+- `runner-token` secret (operator authentication)
+- `fnox-config` ConfigMap (LLM configuration)
+
+The chart supports both design partner values (production-like) and k3d values (local development). There is no published runner image — operators must build and push their own.
+
+See `deploy/helm/agentium-os/README.md` for complete installation instructions and verification steps.
 
 ### Demo / Legacy Manifests
 
