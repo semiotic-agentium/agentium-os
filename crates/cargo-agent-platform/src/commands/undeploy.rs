@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use console::style;
 use serde::{Deserialize, Serialize};
 
-use super::utils::{AgentPlatform, HTTP_OP_UNDEPLOY, join_url};
+use super::utils::{AgentPlatform, HTTP_OP_UNDEPLOY, RunnerToken, join_url};
 
 #[derive(Debug, Serialize)]
 struct UndeployRequest<'a> {
@@ -39,13 +39,17 @@ impl AgentPlatform {
     }
 }
 
-pub fn undeploy_hash(hash: &str, base_url: &str) -> Result<UndeployOutput> {
-    let http = AgentPlatform::new()?;
+pub fn undeploy_hash(
+    hash: &str,
+    base_url: &str,
+    runner_token: Option<RunnerToken>,
+) -> Result<UndeployOutput> {
+    let http = AgentPlatform::new(runner_token)?;
     http.undeploy_hash(hash, base_url)
 }
 
-pub fn run(hash: &str, base_url: &str) -> Result<()> {
-    let result = undeploy_hash(hash, base_url)?;
+pub fn run(hash: &str, base_url: &str, runner_token: Option<RunnerToken>) -> Result<()> {
+    let result = undeploy_hash(hash, base_url, runner_token)?;
 
     if result.removed {
         println!("{}", style("Undeploy successful.").green().bold());

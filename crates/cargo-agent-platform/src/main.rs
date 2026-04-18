@@ -35,7 +35,7 @@ mod transaction;
 mod workspace;
 
 use clap::{Parser, Subcommand};
-use commands::publish::PublishOriginArg;
+use commands::{publish::PublishOriginArg, utils::resolve_runner_token};
 
 /// Agent Platform SDK CLI
 ///
@@ -155,6 +155,10 @@ enum Commands {
         /// Publish origin kind: original | iteration
         #[arg(long, value_enum, default_value_t = PublishOriginArg::Iteration)]
         origin: PublishOriginArg,
+
+        /// Runner token for authenticated operator access (falls back to RUNNER_TOKEN env)
+        #[arg(long)]
+        runner_token: Option<String>,
     },
 
     /// Publish and deploy one or more agent source directories sequentially
@@ -182,6 +186,10 @@ enum Commands {
         /// Runner base URL (without /repository)
         #[arg(long, default_value = "http://127.0.0.1:18080")]
         url: String,
+
+        /// Runner token for authenticated operator access (falls back to RUNNER_TOKEN env)
+        #[arg(long)]
+        runner_token: Option<String>,
     },
 
     /// Deploy an agent artifact by content hash into a running runner
@@ -193,6 +201,10 @@ enum Commands {
         /// Runner base URL (without /repository)
         #[arg(long, default_value = "http://127.0.0.1:18080")]
         url: String,
+
+        /// Runner token for authenticated operator access (falls back to RUNNER_TOKEN env)
+        #[arg(long)]
+        runner_token: Option<String>,
     },
 
     /// Undeploy an active agent package by content hash from a running runner
@@ -204,6 +216,10 @@ enum Commands {
         /// Runner base URL (without /repository)
         #[arg(long, default_value = "http://127.0.0.1:18080")]
         url: String,
+
+        /// Runner token for authenticated operator access (falls back to RUNNER_TOKEN env)
+        #[arg(long)]
+        runner_token: Option<String>,
     },
 
     /// List deployed agent instances from a running runner
@@ -413,7 +429,11 @@ fn main() -> anyhow::Result<()> {
             repository_url,
             rationale,
             origin,
-        } => commands::publish::run(&agent_dir, &repository_url, &rationale, origin),
+            runner_token,
+        } => {
+            let token = resolve_runner_token(runner_token.as_deref())?;
+            commands::publish::run(&agent_dir, &repository_url, &rationale, origin, token)
+        }
 
         Commands::Push {
             agents,
@@ -421,11 +441,29 @@ fn main() -> anyhow::Result<()> {
             rationale,
             origin,
             url,
-        } => commands::push::run(&agents, &repository_url, &rationale, origin, &url),
+            runner_token,
+        } => {
+            let token = resolve_runner_token(runner_token.as_deref())?;
+            commands::push::run(&agents, &repository_url, &rationale, origin, &url, token)
+        }
 
-        Commands::Deploy { hash, url } => commands::deploy::run(&hash, &url),
+        Commands::Deploy {
+            hash,
+            url,
+            runner_token,
+        } => {
+            let token = resolve_runner_token(runner_token.as_deref())?;
+            commands::deploy::run(&hash, &url, token)
+        }
 
-        Commands::Undeploy { hash, url } => commands::undeploy::run(&hash, &url),
+        Commands::Undeploy {
+            hash,
+            url,
+            runner_token,
+        } => {
+            let token = resolve_runner_token(runner_token.as_deref())?;
+            commands::undeploy::run(&hash, &url, token)
+        }
 
         Commands::ListDeployedInstances { url } => commands::list_deployed_instances::run(&url),
 

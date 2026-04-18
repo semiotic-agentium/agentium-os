@@ -5,7 +5,10 @@ use std::{collections::HashSet, path::Path};
 use anyhow::{Result, bail};
 use console::style;
 
-use super::{publish::PublishOriginArg, utils::AgentPlatform};
+use super::{
+    publish::PublishOriginArg,
+    utils::{AgentPlatform, RunnerToken},
+};
 
 fn dedupe_agents(agents: &[String]) -> (Vec<String>, Vec<String>) {
     let mut seen = HashSet::new();
@@ -53,6 +56,7 @@ pub fn run(
     rationale: &str,
     origin: PublishOriginArg,
     url: &str,
+    runner_token: Option<RunnerToken>,
 ) -> Result<()> {
     if agents.is_empty() {
         bail!("At least one agent directory is required. Pass --agents <dir1,dir2,...>.");
@@ -81,7 +85,8 @@ pub fn run(
         );
     }
 
-    let http = AgentPlatform::new()?;
+    let authenticated = runner_token.is_some();
+    let http = AgentPlatform::new(runner_token)?;
     let mut success_count = 0usize;
     let mut failures: Vec<String> = Vec::new();
 
@@ -134,8 +139,17 @@ pub fn run(
                 success_count += 1;
             }
             Err(err) => {
+                let retry_cmd = if authenticated {
+                    format!(
+                        "cargo agent-platform deploy --hash {hash} --url {url} --runner-token \"$RUNNER_TOKEN\""
+                    )
+                } else {
+                    format!("cargo agent-platform deploy --hash {hash} --url {url}")
+                };
                 let msg = format!(
-                    "deploy failed after successful publish for {version} (hash: {hash}). Cause: {err}. Published artifact was NOT rolled back. Retry deploy with: cargo agent-platform deploy --hash {hash} --url {url}"
+                    "deploy failed after successful publish for {version} (hash: {hash}). \
+                     Cause: {err}. Published artifact was NOT rolled back. \
+                     Retry deploy with: {retry_cmd}"
                 );
                 println!("  {} {}", style("error:").red().bold(), msg);
                 failures.push(msg);

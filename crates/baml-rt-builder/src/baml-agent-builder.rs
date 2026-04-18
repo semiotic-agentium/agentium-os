@@ -113,6 +113,10 @@ enum Commands {
         /// Publish origin: `original` (new lineage) or `iteration` (next version).
         #[arg(long, default_value = "iteration")]
         origin: String,
+
+        /// Runner token for authenticated operator access (falls back to RUNNER_TOKEN env)
+        #[arg(long)]
+        runner_token: Option<String>,
     },
     /// Bootstrap a new BAML agent package (interactive TUI, or non-interactive with --name/--description)
     Bootstrap {
@@ -165,6 +169,7 @@ async fn main() -> Result<()> {
             deploy_url,
             message,
             origin,
+            runner_token,
         } => {
             let agent_dir = AgentDir::new(agent_dir)?;
             publish_agent(
@@ -173,6 +178,7 @@ async fn main() -> Result<()> {
                 deploy_url.as_deref(),
                 &message,
                 &origin,
+                runner_token.as_deref(),
             )
             .await?;
         }
@@ -325,18 +331,69 @@ async fn package_agent(agent_dir: &AgentDir, output: &std::path::Path) -> Result
     Ok(())
 }
 
+/// Pure token resolution from explicit sources (testable without env mutation).
+fn resolve_builder_token_from_sources(
+    flag: Option<&str>,
+    env_value: Option<String>,
+) -> Result<Option<String>> {
+    let trimmed = match flag {
+        Some(v) => Some(v.trim().to_owned()),
+        None => env_value.map(|v| v.trim().to_owned()),
+    };
+    match trimmed {
+        Some(v) if v.is_empty() => {
+            anyhow::bail!(
+                "Runner token is empty or whitespace-only. \
+                 Provide a valid token via --runner-token or RUNNER_TOKEN."
+            );
+        }
+        Some(v) => Ok(Some(v)),
+        None => Ok(None),
+    }
+}
+
+/// Resolve runner token from CLI flag with `RUNNER_TOKEN` env fallback.
+fn resolve_builder_token(flag: Option<&str>) -> Result<Option<String>> {
+    resolve_builder_token_from_sources(flag, std::env::var("RUNNER_TOKEN").ok())
+}
+
+fn check_response(
+    status: reqwest::StatusCode,
+    body: &str,
+    op_name: &str,
+    authenticated: bool,
+) -> Result<()> {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        let hint = if authenticated {
+            "Hint: the runner token was rejected \
+             — verify it matches the server's RUNNER_TOKEN."
+        } else {
+            "Hint: pass --runner-token <token> or set the \
+             RUNNER_TOKEN environment variable."
+        };
+        anyhow::bail!("{op_name} failed ({status}): {body}. {hint}");
+    }
+    if !status.is_success() {
+        anyhow::bail!("{op_name} failed ({status}): {body}");
+    }
+    Ok(())
+}
+
 async fn publish_agent(
     agent_dir: &AgentDir,
     repository_url: &str,
     deploy_url: Option<&str>,
     message: &str,
     origin_str: &str,
+    runner_token_flag: Option<&str>,
 ) -> Result<()> {
     use baml_rt_repository::{
         commands::{PublishCommand, PublishOrigin, PublishResult},
         entry::ChangeRationale,
         source_bundle_from_agent_dir,
     };
+
+    let token = resolve_builder_token(runner_token_flag)?;
 
     println!("📦 Publishing source bundle...");
 
@@ -361,23 +418,21 @@ async fn publish_agent(
     };
 
     println!("   Publishing entry...");
-    let pub_resp = http
-        .post(format!("{repo_url}/publish"))
-        .json(&cmd)
+    let mut pub_request = http.post(format!("{repo_url}/publish")).json(&cmd);
+    if let Some(ref t) = token {
+        pub_request = pub_request.header("X-Runner-Token", t.as_str());
+    }
+    let pub_resp = pub_request
         .send()
         .await
         .context("Failed to publish entry")?;
 
     let status = pub_resp.status();
-    if !status.is_success() {
-        let body = pub_resp.text().await.unwrap_or_default();
-        anyhow::bail!("Publish failed ({status}): {body}");
-    }
+    let body = pub_resp.text().await.unwrap_or_default();
+    check_response(status, &body, "Publish", token.is_some())?;
 
-    let result: PublishResult = pub_resp
-        .json()
-        .await
-        .context("Failed to parse publish response")?;
+    let result: PublishResult =
+        serde_json::from_str(&body).context("Failed to parse publish response")?;
 
     let content_hash = result.hash.as_str();
     println!(
@@ -390,21 +445,21 @@ async fn publish_agent(
     // Optionally deploy immediately using content_hash (not blob_hash).
     if let Some(runner_url) = deploy_url {
         println!("\n🚀 Deploying {content_hash} to {runner_url}...");
-        let deploy_resp = reqwest::Client::new()
+        let mut deploy_request = http
             .post(format!("{}/deploy", runner_url.trim_end_matches('/')))
-            .json(&serde_json::json!({ "hash": content_hash }))
+            .json(&serde_json::json!({ "hash": content_hash }));
+        if let Some(ref t) = token {
+            deploy_request = deploy_request.header("X-Runner-Token", t.as_str());
+        }
+        let deploy_resp = deploy_request
             .send()
             .await
             .context("Failed to send deploy request")?;
         let deploy_status = deploy_resp.status();
-        if !deploy_status.is_success() {
-            let body = deploy_resp.text().await.unwrap_or_default();
-            anyhow::bail!("Deploy failed ({deploy_status}): {body}");
-        }
-        let body: serde_json::Value = deploy_resp
-            .json()
-            .await
-            .context("Failed to parse deploy response")?;
+        let body = deploy_resp.text().await.unwrap_or_default();
+        check_response(deploy_status, &body, "Deploy", token.is_some())?;
+        let body: serde_json::Value =
+            serde_json::from_str(&body).context("Failed to parse deploy response")?;
         println!("✅ Deployed: {body}");
     }
 
@@ -644,4 +699,41 @@ async fn load_agent_package(
         agent_id: temp_agent_id,
         js_bridge: Arc::new(Mutex::new(js_bridge)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_builder_token_precedence() {
+        // Flag takes precedence over env
+        let result =
+            resolve_builder_token_from_sources(Some("flag"), Some("env".to_string())).unwrap();
+        assert_eq!(result.as_deref(), Some("flag"));
+
+        // Env fallback
+        let result = resolve_builder_token_from_sources(None, Some("env-val".to_string())).unwrap();
+        assert_eq!(result.as_deref(), Some("env-val"));
+
+        // Neither → None
+        let result = resolve_builder_token_from_sources(None, None).unwrap();
+        assert!(result.is_none());
+
+        // Empty flag rejected
+        let err = resolve_builder_token_from_sources(Some(""), None).unwrap_err();
+        assert!(err.to_string().contains("empty or whitespace-only"));
+
+        // Whitespace flag rejected
+        let err = resolve_builder_token_from_sources(Some("   "), None).unwrap_err();
+        assert!(err.to_string().contains("empty or whitespace-only"));
+
+        // Empty env rejected
+        let err = resolve_builder_token_from_sources(None, Some("".to_string())).unwrap_err();
+        assert!(err.to_string().contains("empty or whitespace-only"));
+
+        // Whitespace-padded token is trimmed
+        let result = resolve_builder_token_from_sources(Some("  abc  "), None).unwrap();
+        assert_eq!(result.as_deref(), Some("abc"));
+    }
 }

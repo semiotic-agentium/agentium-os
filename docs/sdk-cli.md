@@ -50,6 +50,31 @@ cargo agent-platform <command> --help
 
 ---
 
+## Operator Authentication
+
+In cluster mode, operator actions (publish, deploy, undeploy, push) require a runner token. The token is configured on the runner via `RUNNER_TOKEN` env or `--runner-token` flag (see `docs/agent-runner.md`).
+
+The CLI resolves the token from two sources, in order of precedence:
+
+1. **`--runner-token <token>`** — CLI flag (highest priority)
+2. **`RUNNER_TOKEN`** — environment variable (fallback)
+
+When neither is set, no authentication header is sent. This preserves backwards-compatible standalone/local operation where the runner has no token configured.
+
+```bash
+# Using the env variable (recommended for scripts)
+export RUNNER_TOKEN="your-runner-token"
+cargo agent-platform push --agents agents/my-agent --url https://runner.example.com
+
+# Using the CLI flag
+cargo agent-platform deploy --hash <sha256> --url https://runner.example.com \
+  --runner-token "$RUNNER_TOKEN"
+```
+
+**Public commands** (`list-deployed-instances`, `chat`) do not accept or require a token — they use public API routes.
+
+---
+
 ## Commands
 
 ### `new-tool`
@@ -169,6 +194,7 @@ cargo agent-platform publish [options]
 | `--repository-url <url>` | `http://127.0.0.1:18080/repository` | Repository base URL |
 | `--rationale <text>` | `published from source directory` | Change rationale in publish metadata |
 | `--origin <kind>` | `iteration` | `original` or `iteration` |
+| `--runner-token <token>` | `RUNNER_TOKEN` env | Operator token for authenticated access |
 
 Tags are read from `manifest.json` — not accepted as a CLI flag.
 
@@ -221,6 +247,7 @@ cargo agent-platform push [options]
 | `--rationale <text>` | `published from source directory` | Change rationale in publish metadata |
 | `--origin <kind>` | `iteration` | `original` or `iteration` |
 | `--url <base-url>` | `http://127.0.0.1:18080` | Runner base URL for deploy |
+| `--runner-token <token>` | `RUNNER_TOKEN` env | Operator token for authenticated access |
 
 ```bash
 # Comma-separated
@@ -246,6 +273,7 @@ cargo agent-platform deploy [options]
 |--------|---------|-------------|
 | `--hash <sha256>` | *(required)* | Content hash returned by `publish` |
 | `--url <base-url>` | `http://127.0.0.1:18080` | Runner base URL |
+| `--runner-token <token>` | `RUNNER_TOKEN` env | Operator token for authenticated access |
 
 ```bash
 cargo agent-platform deploy --hash bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
@@ -265,6 +293,7 @@ cargo agent-platform undeploy [options]
 |--------|---------|-------------|
 | `--hash <sha256>` | *(required)* | Content hash of the deployed package |
 | `--url <base-url>` | `http://127.0.0.1:18080` | Runner base URL |
+| `--runner-token <token>` | `RUNNER_TOKEN` env | Operator token for authenticated access |
 
 ```bash
 cargo agent-platform undeploy --hash bfe72df219673c1a919817b29c37c2b51419e1e81b61eeca5e5549bd7b1b5d83
@@ -425,6 +454,9 @@ cargo agent-platform chat --agent clickup-agent --instance default --verbose
 | `new-agent` fails with "Directory already exists" | Choose a different name/output or delete the existing directory |
 | `regen` fails for an agent | Check for missing/invalid `baml_src/`, BAML syntax errors, or missing `manifest.json` |
 | `chat` fails "Agent target not found" | Run `list-deployed-instances` to see valid agent/instance combinations |
+| "authentication required" on publish/deploy/undeploy | Runner is in cluster mode — pass `--runner-token` or set `RUNNER_TOKEN` |
+| "runner token was rejected" | Token does not match the server's `RUNNER_TOKEN` — verify the value |
+| "Runner token is empty or whitespace-only" | An empty string was passed via `--runner-token` or `RUNNER_TOKEN` |
 
 ---
 

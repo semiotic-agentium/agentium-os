@@ -168,6 +168,27 @@ curl -sS -X POST http://127.0.0.1:18080/deploy \
 
 In cluster mode, operator actions require `X-Runner-Token`. The token is provisioned as a K8s secret (see `deploy/demo/run-demo.sh`).
 
+**Using the CLI (recommended):**
+
+Both `cargo agent-platform` and `baml-agent-builder` accept `--runner-token` (or `RUNNER_TOKEN` env) for authenticated operator access. See `docs/sdk-cli.md` for full flag reference.
+
+```bash
+# Publish and deploy via cargo agent-platform
+cargo agent-platform push \
+  --agents agents/clickup-agent \
+  --url http://localhost:18080 \
+  --runner-token "$RUNNER_TOKEN"
+
+# Publish and deploy via baml-agent-builder
+baml-agent-builder publish \
+  --agent-dir agents/clickup-agent \
+  --repository-url http://localhost:18080/repository \
+  --deploy-url http://localhost:18080 \
+  --runner-token "$RUNNER_TOKEN"
+```
+
+**Using curl:**
+
 Publish source (operator action):
 
 ```bash
