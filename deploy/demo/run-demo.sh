@@ -2,6 +2,9 @@
 # Agentium OS k3d demo — spins up a local k8s cluster with shared SurrealDB
 # and two runner pods for testing multi-runner agent portability.
 #
+# NOTE: This script is for local k3d development and demo purposes only.
+# For the supported Kubernetes install path, see deploy/helm/agentium-os/.
+#
 # Prerequisites:
 #   - Docker Desktop or Podman (rootful mode)
 #   - k3d (https://k3d.io)

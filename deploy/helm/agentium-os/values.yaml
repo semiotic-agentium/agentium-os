@@ -1,0 +1,122 @@
+# Agentium OS Helm chart — pilot values.
+#
+# Required values (the chart will fail at render time without these):
+#   runner.image.repository   — No published runner image exists yet.
+#   runner.image.tag          — Operators must build and push their own.
+#   runner.auth.existingSecret — Cluster mode requires a runner token.
+#   surrealdb.auth.existingSecret — SurrealDB credentials secret.
+
+# -- Global settings.
+global:
+  # -- Environment label applied to all resources as
+  # app.kubernetes.io/environment (e.g., "development", "production").
+  environment: ""
+
+# -- Helm naming overrides.
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Runner configuration.
+runner:
+  # -- Runner container image.
+  # REQUIRED: no default repository or tag. The runner image is not
+  # published to a public registry. Operators must build and push
+  # their own image, then set these values.
+  image:
+    # -- Container image repository (REQUIRED).
+    repository: ""
+    # -- Container image tag (REQUIRED).
+    tag: ""
+    # -- Image pull policy.
+    pullPolicy: IfNotPresent
+
+  # -- Number of runner replicas.
+  replicaCount: 2
+
+  # -- Runner authentication (operator token).
+  # REQUIRED: cluster mode fails closed without a token.
+  auth:
+    # -- Name of an existing Secret containing the runner token.
+    existingSecret: ""
+    # -- Key within the secret containing the token value.
+    secretKey: "token"
+
+  # -- Runner service configuration.
+  service:
+    # -- Headless service for StatefulSet pod DNS and peer discovery.
+    headless:
+      port: 18080
+    # -- ClusterIP service for operator access (kubectl port-forward target).
+    api:
+      type: ClusterIP
+      port: 18080
+
+  # -- Runner persistent storage.
+  persistence:
+    # -- PVC size for runner data (state-dir + repository-dir).
+    size: 1Gi
+    # -- StorageClass name. Leave empty for cluster default.
+    storageClass: ""
+
+  # -- Runner container resources.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# -- SurrealDB configuration (shared provenance store).
+# The pilot packages SurrealDB directly rather than depending on
+# the upstream Helm chart, which is unproven for v3
+# (see surrealdb/helm-charts#32).
+surrealdb:
+  image:
+    # -- SurrealDB image repository.
+    repository: surrealdb/surrealdb
+    # -- SurrealDB image tag (known-good v3 version).
+    tag: v3.0.4
+    # -- Image pull policy.
+    pullPolicy: IfNotPresent
+
+  # -- SurrealDB authentication.
+  # REQUIRED: the chart fails at render time without this.
+  auth:
+    # -- Name of an existing Secret containing SurrealDB credentials.
+    existingSecret: ""
+    # -- Key within the secret for the username.
+    usernameKey: "username"
+    # -- Key within the secret for the password.
+    passwordKey: "password"
+
+  # -- SurrealDB service.
+  service:
+    port: 8000
+
+  # -- SurrealDB persistent storage.
+  persistence:
+    # -- PVC size for SurrealDB data.
+    size: 1Gi
+    # -- StorageClass name. Leave empty for cluster default.
+    storageClass: ""
+
+  # -- SurrealDB container resources.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# -- fnox LLM configuration.
+fnox:
+  config:
+    # -- Name of an existing ConfigMap containing fnox.toml.
+    # When set, mounts fnox.toml at /config/fnox.toml and sets BAML_FNOX_CONFIG.
+    existingConfigMap: ""
+    # -- Key within the ConfigMap that contains the fnox.toml content.
+    key: "fnox.toml"
+  # NOTE: LLM API keys must be supplied via fnox.toml (see above).
+  # The runner does not read LLM credentials from environment variables.

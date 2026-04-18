@@ -1,0 +1,48 @@
+# Design partner / production-like values.
+#
+# Prerequisites: see deploy/helm/agentium-os/README.md
+#
+# Install:
+#   helm upgrade --install agentium deploy/helm/agentium-os/ \
+#     --namespace agentium --create-namespace \
+#     -f deploy/helm/agentium-os/examples/design-partner-values.yaml
+
+global:
+  environment: production
+
+runner:
+  image:
+    # Replace with your registry. There is no published Agentium runner
+    # image yet — you must build and push your own.
+    repository: your-registry.example.com/agentium-runner
+    tag: "0.1.0"
+    pullPolicy: Always
+  replicaCount: 2
+  auth:
+    existingSecret: runner-token
+  persistence:
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+surrealdb:
+  auth:
+    existingSecret: surrealdb-credentials
+  persistence:
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+fnox:
+  config:
+    existingConfigMap: fnox-config

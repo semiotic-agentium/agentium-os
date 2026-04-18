@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use baml_rt_llm_config::FnoxFileSecretResolver;
+
 pub const BASE_URL: &str = "https://slack.com/api";
 
 const MAX_RATE_LIMIT_RETRIES: usize = 3;
@@ -112,19 +114,11 @@ pub struct SlackAuthConfig {
 
 impl SlackAuthConfig {
     pub fn from_env() -> Self {
+        let resolver = FnoxFileSecretResolver::default_path_resolver();
         Self {
-            bot_token: std::env::var("SLACK_BOT_TOKEN")
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty()),
-            user_token: std::env::var("SLACK_USER_TOKEN")
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty()),
-            app_token: std::env::var("SLACK_APP_TOKEN")
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty()),
+            bot_token: resolver.resolve_or_env("SLACK_BOT_TOKEN"),
+            user_token: resolver.resolve_or_env("SLACK_USER_TOKEN"),
+            app_token: resolver.resolve_or_env("SLACK_APP_TOKEN"),
         }
     }
 
@@ -145,7 +139,7 @@ impl SlackAuthConfig {
                 .as_deref()
                 .map(|token| (token, SlackTokenKind::User))
                 .ok_or_else(|| SlackReadError::MissingToken {
-                    message: "SLACK_USER_TOKEN environment variable is required for message search"
+                    message: "SLACK_USER_TOKEN not resolved from fnox (BAML_FNOX_CONFIG / fnox.toml) or process environment"
                         .to_string(),
                 });
         }
@@ -156,7 +150,7 @@ impl SlackAuthConfig {
                 .as_deref()
                 .map(|token| (token, SlackTokenKind::Bot))
                 .ok_or_else(|| SlackReadError::MissingToken {
-                    message: "SLACK_BOT_TOKEN environment variable is required when auth=bot"
+                    message: "SLACK_BOT_TOKEN not resolved from fnox (BAML_FNOX_CONFIG / fnox.toml) or process environment"
                         .to_string(),
                 }),
             SlackAuthPreference::User => self
@@ -164,7 +158,7 @@ impl SlackAuthConfig {
                 .as_deref()
                 .map(|token| (token, SlackTokenKind::User))
                 .ok_or_else(|| SlackReadError::MissingToken {
-                    message: "SLACK_USER_TOKEN environment variable is required when auth=user"
+                    message: "SLACK_USER_TOKEN not resolved from fnox (BAML_FNOX_CONFIG / fnox.toml) or process environment"
                         .to_string(),
                 }),
             SlackAuthPreference::Auto => self
@@ -177,7 +171,7 @@ impl SlackAuthConfig {
                         .map(|token| (token, SlackTokenKind::User))
                 })
                 .ok_or_else(|| SlackReadError::MissingToken {
-                    message: "Set SLACK_BOT_TOKEN (preferred) or SLACK_USER_TOKEN".to_string(),
+                    message: "SLACK_BOT_TOKEN or SLACK_USER_TOKEN not resolved from fnox (BAML_FNOX_CONFIG / fnox.toml) or process environment".to_string(),
                 }),
         }
     }
