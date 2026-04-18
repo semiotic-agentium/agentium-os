@@ -259,6 +259,40 @@ impl FnoxFileSecretResolver {
         Ok(cache)
     }
 
+    /// Whether fnox is the exclusive secret source (`BAML_FNOX_CONFIG` is set).
+    /// When true, integration clients must not fall back to process environment
+    /// variables for credential resolution — all secrets come from fnox.toml.
+    pub fn is_exclusive() -> bool {
+        std::env::var("BAML_FNOX_CONFIG")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Resolve a credential by name from fnox, falling back to the process environment
+    /// only when fnox is not the exclusive source (`BAML_FNOX_CONFIG` not set).
+    /// Tries both `env.{name}` and `{name}` as fnox keys for compatibility with
+    /// BAML placeholder conventions.
+    pub fn resolve_or_env(&self, name: &str) -> Option<String> {
+        let env_prefixed = format!("env.{name}");
+        for key in [env_prefixed.as_str(), name] {
+            if let Some(v) = self.resolve(key) {
+                let t = v.as_str().trim();
+                if !t.is_empty() {
+                    return Some(t.to_string());
+                }
+            }
+        }
+        if !Self::is_exclusive()
+            && let Ok(k) = std::env::var(name)
+        {
+            let t = k.trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+        None
+    }
+
     /// Map placeholder to secret-store key: "vault:KEY" → KEY, "env.VAR" → VAR (for compat), else as-is.
     fn placeholder_to_key(placeholder: &str) -> &str {
         let s = placeholder.trim();

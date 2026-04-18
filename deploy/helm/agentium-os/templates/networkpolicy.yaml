@@ -1,0 +1,68 @@
+# Runner ingress policy — trust boundary documentation.
+#
+# Trust model:
+#   - Operator authentication (X-Runner-Token via ClusterAuthLayer) is the
+#     primary access boundary.  Config, secrets, deploy, undeploy, migrate,
+#     and repository mutation routes all require a valid token in cluster mode.
+#   - NetworkPolicy provides defence-in-depth: the runner-to-runner rule
+#     ensures cross-pod A2A forwarding works even if the external rule is
+#     tightened to a specific ingress controller.
+#   - The external-access rule allows any source on the runner port so that
+#     kubectl port-forward and ingress controllers work.  Narrowing this
+#     to a specific namespace or CIDR is a production-hardening step;
+#     operator auth prevents unauthorised mutations regardless.
+#
+# Cross-runner A2A forwarding is cluster-internal only (runner-to-runner
+# rule) and unauthenticated at the application layer — network isolation
+# is the boundary.  Operator endpoints on the same port are protected by
+# X-Runner-Token and reject requests without a valid token in cluster mode.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentium-os.runner.fullname" . }}-ingress
+  labels:
+    {{- include "agentium-os.runner.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentium-os.runner.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Runner-to-runner: cross-pod A2A forwarding and migration.
+    # This rule is the cluster-internal trust boundary for forwarding.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentium-os.runner.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.runner.service.headless.port }}
+    # External access: kubectl port-forward, ingress controllers, and
+    # operator tooling.  Operator routes require X-Runner-Token; public
+    # routes (discovery, A2A, health) are intentionally open.
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.runner.service.headless.port }}
+---
+# SurrealDB ingress: only runner pods may connect.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentium-os.surrealdb.fullname" . }}-ingress
+  labels:
+    {{- include "agentium-os.surrealdb.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentium-os.surrealdb.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentium-os.runner.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.surrealdb.service.port }}

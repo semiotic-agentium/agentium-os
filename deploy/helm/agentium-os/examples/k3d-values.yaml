@@ -1,0 +1,32 @@
+# Local k3d development values.
+#
+# Prerequisites: see deploy/helm/agentium-os/README.md
+#
+# Install:
+#   helm upgrade --install agentium deploy/helm/agentium-os/ \
+#     --namespace agentium --create-namespace \
+#     -f deploy/helm/agentium-os/examples/k3d-values.yaml
+
+global:
+  environment: development
+
+runner:
+  image:
+    repository: agentium-runner
+    tag: demo
+    pullPolicy: Never
+  replicaCount: 2
+  auth:
+    existingSecret: runner-token
+  persistence:
+    size: 1Gi
+
+surrealdb:
+  auth:
+    existingSecret: surrealdb-credentials
+  persistence:
+    size: 1Gi
+
+fnox:
+  config:
+    existingConfigMap: fnox-config

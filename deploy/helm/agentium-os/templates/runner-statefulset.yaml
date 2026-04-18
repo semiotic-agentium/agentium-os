@@ -1,0 +1,122 @@
+{{- $fullname := include "agentium-os.runner.fullname" . -}}
+{{- $surrealFullname := include "agentium-os.surrealdb.fullname" . -}}
+{{- $surrealSecret := required "surrealdb.auth.existingSecret is required" .Values.surrealdb.auth.existingSecret -}}
+{{- $runnerSecret := required "runner.auth.existingSecret is required — cluster mode requires a runner token" .Values.runner.auth.existingSecret -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "agentium-os.runner.labels" . | nindent 4 }}
+spec:
+  # serviceName must match the headless service metadata.name for pod DNS.
+  serviceName: {{ $fullname }}
+  replicas: {{ .Values.runner.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "agentium-os.runner.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentium-os.runner.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: runner
+          image: "{{ required "runner.image.repository is required — no published runner image exists yet" .Values.runner.image.repository }}:{{ required "runner.image.tag is required" .Values.runner.image.tag }}"
+          imagePullPolicy: {{ .Values.runner.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          args:
+            - --serve-http
+            - "0.0.0.0:{{ .Values.runner.service.headless.port }}"
+            - --surreal-endpoint
+            # Production deployments should use wss:// with TLS termination.
+            - "ws://{{ $surrealFullname }}.{{ .Release.Namespace }}.svc:{{ .Values.surrealdb.service.port }}"
+            - --state-dir
+            - /data/runner-state
+            - --repository-dir
+            - /data/repository
+          ports:
+            - containerPort: {{ .Values.runner.service.headless.port }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Per-pod addressing for cross-runner A2A forwarding.
+            - name: RUNNER_ENDPOINT
+              value: "http://$(POD_NAME).{{ $fullname }}.{{ .Release.Namespace }}.svc:{{ .Values.runner.service.headless.port }}"
+            - name: SURREAL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $surrealSecret }}
+                  key: {{ .Values.surrealdb.auth.usernameKey }}
+                  optional: false
+            - name: SURREAL_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $surrealSecret }}
+                  key: {{ .Values.surrealdb.auth.passwordKey }}
+                  optional: false
+            - name: RUNNER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $runnerSecret }}
+                  key: {{ .Values.runner.auth.secretKey }}
+                  optional: false
+            {{- if .Values.fnox.config.existingConfigMap }}
+            - name: BAML_FNOX_CONFIG
+              value: /config/fnox.toml
+            {{- end }}
+          resources:
+            {{- toYaml .Values.runner.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            - name: npm-cache
+              mountPath: /tmp/npm-cache
+            {{- if .Values.fnox.config.existingConfigMap }}
+            - name: fnox-config
+              mountPath: /config/fnox.toml
+              subPath: {{ .Values.fnox.config.key }}
+              readOnly: true
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.runner.service.headless.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.runner.service.headless.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: npm-cache
+          emptyDir: {}
+        {{- if .Values.fnox.config.existingConfigMap }}
+        - name: fnox-config
+          configMap:
+            name: {{ .Values.fnox.config.existingConfigMap }}
+        {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.runner.persistence.storageClass }}
+        storageClassName: {{ .Values.runner.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.runner.persistence.size }}

@@ -178,21 +178,27 @@ Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 
 ## Deployment
 
-### Demo Environment
+### Supported Install Surface
 
-The `deploy/demo/run-demo.sh` script sets up a local k3d cluster with:
-- SurrealDB for provenance storage
-- Runner pods with operator authentication
-- NetworkPolicy for defense-in-depth
-- Port-forwarding to localhost:18080
+The Helm chart at `deploy/helm/agentium-os/` is the supported Kubernetes install path. It packages the pilot topology (two-runner StatefulSet + shared SurrealDB) as a single `helm upgrade --install` command:
 
-The script generates a runner token automatically if one doesn't exist and displays usage examples for both public and operator routes.
+```bash
+helm upgrade --install agentium deploy/helm/agentium-os/ \
+  --namespace agentium --create-namespace \
+  -f deploy/helm/agentium-os/examples/design-partner-values.yaml
+```
 
-### Kubernetes Manifests
+See `deploy/helm/agentium-os/README.md` for prerequisites and verification steps.
 
-- `deploy/k8s/runner-token.yaml.example` — Template for operator authentication secret
-- `deploy/k8s/networkpolicy.yaml` — Network isolation policies for runner and SurrealDB pods
-- `deploy/k8s/runner.yaml` — Runner deployment with `RUNNER_TOKEN` environment variable
+### Demo / Legacy Manifests
+
+The raw manifests under `deploy/k8s/` and the `deploy/demo/run-demo.sh` script are internal assets used for local k3d development and the e2e test harness. They are not the operator-facing install surface.
+
+- `deploy/k8s/runner.yaml` — Runner StatefulSet (demo image, local-only)
+- `deploy/k8s/surrealdb.yaml` — SurrealDB StatefulSet
+- `deploy/k8s/networkpolicy.yaml` — Network isolation policies
+- `deploy/k8s/runner-token.yaml.example` — Secret template
+- `deploy/demo/run-demo.sh` — Local k3d cluster bootstrap
 
 ## Testing Conventions
 

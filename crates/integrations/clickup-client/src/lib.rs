@@ -1,6 +1,6 @@
 mod spans;
 
-use baml_rt_llm_config::{FnoxFileSecretResolver, SecretResolver};
+use baml_rt_llm_config::FnoxFileSecretResolver;
 use tracing::Instrument;
 
 /// ClickUp v2 REST API base URL.
@@ -24,7 +24,7 @@ pub enum ClickUpClientError {
     Api { status: u16, body: String },
 
     #[error(
-        "CLICKUP_API_KEY not set in environment and not resolved from fnox (BAML_FNOX_CONFIG / fnox.toml)"
+        "CLICKUP_API_KEY not resolved from fnox (BAML_FNOX_CONFIG / fnox.toml) or process environment"
     )]
     MissingApiKey,
 }
@@ -63,25 +63,10 @@ impl ClickUpClient {
         self.base_url.as_str()
     }
 
-    /// Resolves `CLICKUP_API_KEY` from the process environment first, then from the fnox secret
-    /// store (`BAML_FNOX_CONFIG` or `fnox.toml` discovery), matching the LLM key resolution path.
     pub fn api_key() -> std::result::Result<String, ClickUpClientError> {
-        if let Ok(k) = std::env::var("CLICKUP_API_KEY") {
-            let t = k.trim();
-            if !t.is_empty() {
-                return Ok(t.to_string());
-            }
-        }
-        let resolver = FnoxFileSecretResolver::default_path_resolver();
-        for key in ["env.CLICKUP_API_KEY", "CLICKUP_API_KEY"] {
-            if let Some(v) = resolver.resolve(key) {
-                let t = v.as_str().trim();
-                if !t.is_empty() {
-                    return Ok(t.to_string());
-                }
-            }
-        }
-        Err(ClickUpClientError::MissingApiKey)
+        FnoxFileSecretResolver::default_path_resolver()
+            .resolve_or_env("CLICKUP_API_KEY")
+            .ok_or(ClickUpClientError::MissingApiKey)
     }
 
     pub fn get(&self, path: &str, api_key: &str) -> reqwest::RequestBuilder {

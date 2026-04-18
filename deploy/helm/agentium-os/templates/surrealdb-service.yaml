@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentium-os.surrealdb.fullname" . }}
+  labels:
+    {{- include "agentium-os.surrealdb.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "agentium-os.surrealdb.selectorLabels" . | nindent 4 }}
+  ports:
+    - port: {{ .Values.surrealdb.service.port }}
+      targetPort: {{ .Values.surrealdb.service.port }}
+      name: ws
+  clusterIP: None

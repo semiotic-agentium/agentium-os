@@ -1,0 +1,15 @@
+# Stable ClusterIP for operator tooling — the headless service is per-pod only.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentium-os.runner.fullname" . }}-api
+  labels:
+    {{- include "agentium-os.runner.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.runner.service.api.type }}
+  selector:
+    {{- include "agentium-os.runner.selectorLabels" . | nindent 4 }}
+  ports:
+    - port: {{ .Values.runner.service.api.port }}
+      targetPort: {{ .Values.runner.service.headless.port }}
+      name: http

@@ -166,7 +166,7 @@ curl -sS -X POST http://127.0.0.1:18080/deploy \
 
 ### Cluster mode (K8s)
 
-In cluster mode, operator actions require `X-Runner-Token`. The token is provisioned as a K8s secret (see `deploy/demo/run-demo.sh`).
+In cluster mode, operator actions require `X-Runner-Token`. The token is provisioned as a Kubernetes secret referenced by the Helm chart (see `deploy/helm/agentium-os/`). For local demo setup, see `deploy/demo/run-demo.sh`.
 
 **Using the CLI (recommended):**
 

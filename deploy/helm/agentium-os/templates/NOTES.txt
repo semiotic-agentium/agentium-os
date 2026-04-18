@@ -1,0 +1,30 @@
+Agentium OS has been installed.
+
+  Namespace:       {{ .Release.Namespace }}
+  Runner replicas: {{ .Values.runner.replicaCount }}
+
+Operator access (port-forward to the API service):
+
+  kubectl port-forward svc/{{ include "agentium-os.runner.fullname" . }}-api \
+    {{ .Values.runner.service.api.port }}:{{ .Values.runner.service.api.port }} \
+    -n {{ .Release.Namespace }}
+
+Verify readiness:
+
+  curl http://localhost:{{ .Values.runner.service.api.port }}/healthz
+  curl http://localhost:{{ .Values.runner.service.api.port }}/readyz
+
+Peer discovery (headless service for runner-to-runner routing):
+
+  {{ include "agentium-os.runner.fullname" . }}.{{ .Release.Namespace }}.svc
+
+SurrealDB (cluster-internal only):
+
+  {{ include "agentium-os.surrealdb.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.surrealdb.service.port }}
+{{- if .Values.fnox.config.existingConfigMap }}
+
+fnox.toml is mounted from ConfigMap "{{ .Values.fnox.config.existingConfigMap }}".
+NOTE: ConfigMap updates via subPath mount require a pod restart to take effect.
+{{- end }}
+
+See deploy/helm/agentium-os/README.md for known limitations and next steps.

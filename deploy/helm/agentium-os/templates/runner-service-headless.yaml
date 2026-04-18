@@ -1,0 +1,17 @@
+# Headless service for StatefulSet pod DNS and peer discovery.
+# Each runner pod gets a DNS record: <pod-name>.<this-service>.<namespace>.svc
+# which RUNNER_ENDPOINT uses for cluster-internal routing.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentium-os.runner.fullname" . }}
+  labels:
+    {{- include "agentium-os.runner.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "agentium-os.runner.selectorLabels" . | nindent 4 }}
+  ports:
+    - port: {{ .Values.runner.service.headless.port }}
+      targetPort: {{ .Values.runner.service.headless.port }}
+      name: http
+  clusterIP: None

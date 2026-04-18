@@ -1,5 +1,6 @@
 mod spans;
 
+use baml_rt_llm_config::FnoxFileSecretResolver;
 use tracing::Instrument;
 
 /// GitHub REST API v3 base URL.
@@ -25,8 +26,10 @@ pub enum GitHubClientError {
     #[error("GitHub API returned {status}: {body}")]
     Api { status: u16, body: String },
 
-    #[error("GITHUB_TOKEN environment variable not set")]
-    MissingToken(#[source] std::env::VarError),
+    #[error(
+        "GITHUB_TOKEN not resolved from fnox (BAML_FNOX_CONFIG / fnox.toml) or process environment"
+    )]
+    MissingToken,
 }
 
 #[derive(Clone)]
@@ -54,7 +57,9 @@ impl GitHubClient {
     }
 
     pub fn token() -> std::result::Result<String, GitHubClientError> {
-        std::env::var("GITHUB_TOKEN").map_err(GitHubClientError::MissingToken)
+        FnoxFileSecretResolver::default_path_resolver()
+            .resolve_or_env("GITHUB_TOKEN")
+            .ok_or(GitHubClientError::MissingToken)
     }
 
     pub fn get(&self, path: &str, token: &str) -> reqwest::RequestBuilder {

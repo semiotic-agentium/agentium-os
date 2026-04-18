@@ -1,0 +1,83 @@
+{{- $fullname := include "agentium-os.surrealdb.fullname" . -}}
+{{- $secret := required "surrealdb.auth.existingSecret is required" .Values.surrealdb.auth.existingSecret -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "agentium-os.surrealdb.labels" . | nindent 4 }}
+spec:
+  # Single instance — SurrealDB HA is out of scope for the pilot.
+  serviceName: {{ $fullname }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentium-os.surrealdb.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentium-os.surrealdb.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: surrealdb
+          image: "{{ .Values.surrealdb.image.repository }}:{{ .Values.surrealdb.image.tag }}"
+          imagePullPolicy: {{ .Values.surrealdb.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: SURREAL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ .Values.surrealdb.auth.usernameKey }}
+                  optional: false
+            - name: SURREAL_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ .Values.surrealdb.auth.passwordKey }}
+                  optional: false
+          args:
+            - start
+            - --bind
+            - "0.0.0.0:{{ .Values.surrealdb.service.port }}"
+            - surrealkv:///data/provenance.db
+          ports:
+            - containerPort: {{ .Values.surrealdb.service.port }}
+          resources:
+            {{- toYaml .Values.surrealdb.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.surrealdb.service.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.surrealdb.service.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.surrealdb.persistence.storageClass }}
+        storageClassName: {{ .Values.surrealdb.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.surrealdb.persistence.size }}

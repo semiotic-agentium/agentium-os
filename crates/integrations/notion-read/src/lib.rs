@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use baml_rt_llm_config::FnoxFileSecretResolver;
+
 /// Notion REST API base URL.
 pub const BASE_URL: &str = "https://api.notion.com/v1";
 /// Notion API version header value.
@@ -71,7 +73,9 @@ pub enum NotionReadError {
     #[error("Failed to deserialize Notion response")]
     Deserialize(#[source] reqwest::Error),
 
-    #[error("NOTION_API_TOKEN environment variable not set")]
+    #[error(
+        "NOTION_API_TOKEN not resolved from fnox (BAML_FNOX_CONFIG / fnox.toml) or process environment"
+    )]
     MissingApiKey,
 
     #[error("Invalid Notion id '{id}'")]
@@ -99,7 +103,8 @@ impl Default for NotionReadClient {
 
 impl NotionReadClient {
     pub fn new() -> Self {
-        let api_key = std::env::var("NOTION_API_TOKEN").ok();
+        let api_key =
+            FnoxFileSecretResolver::default_path_resolver().resolve_or_env("NOTION_API_TOKEN");
         let base_url = resolve_base_url();
         Self {
             client: reqwest::Client::new(),
