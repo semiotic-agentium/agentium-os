@@ -27,7 +27,8 @@ impl AgentPlatform {
 }
 
 pub fn list_deployed_instances(base_url: &str) -> Result<ListDeployedInstancesOutput> {
-    let http = AgentPlatform::new()?;
+    // Deliberately unauthenticated — GET /agents is a public route.
+    let http = AgentPlatform::new(None)?;
     http.list_deployed_instances(base_url)
 }
 

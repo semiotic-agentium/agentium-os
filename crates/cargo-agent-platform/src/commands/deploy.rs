@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use console::style;
 use serde::{Deserialize, Serialize};
 
-use super::utils::{AgentPlatform, HTTP_OP_DEPLOY, join_url};
+use super::utils::{AgentPlatform, HTTP_OP_DEPLOY, RunnerToken, join_url};
 
 #[derive(Debug, Serialize)]
 struct DeployRequest<'a> {
@@ -41,13 +41,17 @@ impl AgentPlatform {
     }
 }
 
-pub fn deploy_hash(hash: &str, base_url: &str) -> Result<DeployOutput> {
-    let http = AgentPlatform::new()?;
+pub fn deploy_hash(
+    hash: &str,
+    base_url: &str,
+    runner_token: Option<RunnerToken>,
+) -> Result<DeployOutput> {
+    let http = AgentPlatform::new(runner_token)?;
     http.deploy_hash(hash, base_url)
 }
 
-pub fn run(hash: &str, base_url: &str) -> Result<()> {
-    let deployment = deploy_hash(hash, base_url)?;
+pub fn run(hash: &str, base_url: &str, runner_token: Option<RunnerToken>) -> Result<()> {
+    let deployment = deploy_hash(hash, base_url, runner_token)?;
 
     if deployment.already_deployed {
         println!(

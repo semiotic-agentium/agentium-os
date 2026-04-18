@@ -11,7 +11,7 @@ use baml_rt_repository::{
 use clap::ValueEnum;
 use console::style;
 
-use super::utils::{AgentPlatform, HTTP_OP_PUBLISH, join_url};
+use super::utils::{AgentPlatform, HTTP_OP_PUBLISH, RunnerToken, join_url};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum PublishOriginArg {
@@ -76,23 +76,21 @@ pub fn publish_agent(
     repository_url: &str,
     rationale: &str,
     origin: PublishOriginArg,
+    runner_token: Option<RunnerToken>,
 ) -> Result<PublishOutput> {
-    let http = AgentPlatform::new()?;
+    let http = AgentPlatform::new(runner_token)?;
     http.publish_agent(agent_dir, repository_url, rationale, origin)
 }
 
-/// Publish an agent source directory.
-///
-/// Flow:
-/// 1. Read source bundle from `agent_dir`
-/// 2. `POST {repository_url}/publish` with `PublishCommand`
 pub fn run(
     agent_dir: &str,
     repository_url: &str,
     rationale: &str,
     origin: PublishOriginArg,
+    runner_token: Option<RunnerToken>,
 ) -> Result<()> {
-    let published = publish_agent(agent_dir, repository_url, rationale, origin)?;
+    let authenticated = runner_token.is_some();
+    let published = publish_agent(agent_dir, repository_url, rationale, origin, runner_token)?;
     let content_hash = published.result.hash.as_str();
 
     println!("{}", style("Source published successfully.").green().bold());
@@ -109,10 +107,17 @@ pub fn run(
     println!("  hash:      {}", style(content_hash).cyan());
     println!();
     println!("{}", style("To deploy this agent, run:").yellow());
-    println!(
-        "  cargo agent-platform deploy --hash {}",
-        style(content_hash).cyan()
-    );
+    if authenticated {
+        println!(
+            "  cargo agent-platform deploy --hash {} --runner-token \"$RUNNER_TOKEN\"",
+            style(content_hash).cyan()
+        );
+    } else {
+        println!(
+            "  cargo agent-platform deploy --hash {}",
+            style(content_hash).cyan()
+        );
+    }
 
     Ok(())
 }

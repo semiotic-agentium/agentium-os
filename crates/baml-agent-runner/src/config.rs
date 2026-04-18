@@ -172,7 +172,10 @@ impl Cli {
             } else {
                 None
             },
-            runner_token: self.runner_token,
+            runner_token: self
+                .runner_token
+                .map(|t| t.trim().to_owned())
+                .filter(|t| !t.is_empty()),
             runner_endpoint: self.runner_endpoint,
             placement_ttl_ms: self.placement_ttl_ms,
         })
