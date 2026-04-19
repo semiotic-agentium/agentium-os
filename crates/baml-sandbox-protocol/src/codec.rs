@@ -116,6 +116,22 @@ impl TsrpcChannel {
         Ok(())
     }
 
+    /// Explicitly flush and close the write half.
+    ///
+    /// Relying on `Drop` is not sufficient to guarantee a final frame
+    /// reaches the peer — `AsyncWrite::poll_shutdown` is the only
+    /// contracted flush point. Callers that want to finish emitting
+    /// before process exit must `shutdown().await` the channel.
+    pub async fn shutdown(&mut self) -> Result<(), CodecError> {
+        self.writer
+            .shutdown()
+            .await
+            .map_err(|source| CodecError::Io {
+                op: "shutdown",
+                source,
+            })
+    }
+
     /// Receive one JSON value from a length-prefixed frame.
     ///
     /// Returns `Err(CodecError::Io)` on EOF or other I/O failure (the host
@@ -198,6 +214,26 @@ mod tests {
         let (ar, aw) = tokio::io::split(a);
         let mut chan = TsrpcChannel::new(ar, aw);
         let err = chan.recv().await.unwrap_err();
+        assert!(matches!(err, CodecError::Io { op: "read length", .. }));
+    }
+
+    #[tokio::test]
+    async fn shutdown_surfaces_final_frame_before_close() {
+        let (a, b) = duplex(4096);
+        let (ar, aw) = tokio::io::split(a);
+        let (br, bw) = tokio::io::split(b);
+        let mut client = TsrpcChannel::new(ar, aw);
+        let mut server = TsrpcChannel::new(br, bw);
+
+        let sender = tokio::spawn(async move {
+            client.send(&json!({"final": true})).await.unwrap();
+            client.shutdown().await.unwrap();
+        });
+        let got = server.recv().await.unwrap();
+        sender.await.unwrap();
+        assert_eq!(got["final"], true);
+        // Next recv must see EOF (shutdown closed the writer cleanly).
+        let err = server.recv().await.unwrap_err();
         assert!(matches!(err, CodecError::Io { op: "read length", .. }));
     }
 
