@@ -15,9 +15,10 @@ description = "Guest-side SDK for sandbox tool adapters: SandboxTool trait, doma
 baml-sandbox-protocol = { path = "../baml-sandbox-protocol" }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
+libc = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

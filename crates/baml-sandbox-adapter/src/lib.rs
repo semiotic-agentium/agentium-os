@@ -14,6 +14,13 @@
 //! is deliberately thin so it can ship in distroless guest images without
 //! pulling host-side observability or error taxonomy.
 
+#[cfg(not(unix))]
+compile_error!(
+    "baml-sandbox-adapter requires a Unix target (uses dup/dup2 + FD_CLOEXEC to isolate stdout from framed output)"
+);
+
+mod stdout_swap;
+
 use async_trait::async_trait;
 use baml_sandbox_protocol::{
     ERR_INTERNAL, ErrorClass, JsonRpcError, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult,
