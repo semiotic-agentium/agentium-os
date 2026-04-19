@@ -112,9 +112,27 @@ struct RunnerProcess {
 impl RunnerProcess {
     async fn start(config: RunnerProcessConfig) -> Self {
         let bind_host = config.bind_addr.as_deref().unwrap_or("127.0.0.1");
-        let reserved = TcpListener::bind(format!("{bind_host}:0")).expect("bind ephemeral port");
+        // When the caller pre-advertised a runner endpoint, bind that port so
+        // the URL registered with the cluster matches the actual listener.
+        let desired_port = config
+            .runner_endpoint
+            .as_deref()
+            .and_then(|ep| url::Url::parse(ep).ok())
+            .and_then(|u| u.port())
+            .unwrap_or(0);
+        let reserved =
+            TcpListener::bind(format!("{bind_host}:{desired_port}")).expect("bind ephemeral port");
         let addr = reserved.local_addr().expect("local address");
         drop(reserved);
+
+        // In cluster mode, bind 0.0.0.0 so cross-runner traffic routed via the
+        // advertised non-loopback IP still reaches the socket when the host
+        // application firewall refuses inbound on specific-IP binds.
+        let serve_bind = if config.bind_addr.is_some() {
+            format!("0.0.0.0:{}", addr.port())
+        } else {
+            addr.to_string()
+        };
 
         let base_url = format!("http://{addr}");
         let uid = uuid::Uuid::new_v4();
@@ -132,7 +150,7 @@ impl RunnerProcess {
         command
             .current_dir(&state_dir)
             .arg("--serve-http")
-            .arg(addr.to_string())
+            .arg(&serve_bind)
             .arg("--repository-url")
             .arg(&repository_url)
             .arg("--repository-dir")
@@ -1012,13 +1030,20 @@ mod cluster {
         .await;
         let client = reqwest::Client::new();
 
-        // Publish to both runners.
-        publish_fixture(&client, &runner_a.base_url, &package_path, DEFAULT_TOKEN).await;
+        // Publish to both runners. Content-addressable hashing ensures the
+        // first publish on each runner produces the same hash; avoid
+        // publishing twice on runner-A (which would create a new version hash
+        // that runner-B doesn't know about).
+        let hash = publish_fixture(&client, &runner_a.base_url, &package_path, DEFAULT_TOKEN).await;
         publish_fixture(&client, &runner_b.base_url, &package_path, DEFAULT_TOKEN).await;
 
         // Deploy on runner-A.
-        let hash =
-            publish_and_deploy(&client, &runner_a.base_url, &package_path, DEFAULT_TOKEN).await;
+        let deploy_resp = deploy_hash(&client, &runner_a.base_url, &hash, DEFAULT_TOKEN).await;
+        assert!(
+            deploy_resp.status().is_success(),
+            "deploy on runner-A should succeed: {}",
+            deploy_resp.text().await.unwrap_or_default()
+        );
 
         // Migrate to runner-B.
         let resp = client
