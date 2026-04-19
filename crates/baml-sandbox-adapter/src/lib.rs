@@ -230,7 +230,11 @@ enum RecvFate {
 fn classify_recv_error(err: CodecError) -> RecvFate {
     match err {
         CodecError::Io { op, source } => {
-            if source.kind() == std::io::ErrorKind::UnexpectedEof {
+            // Clean EOF is defined narrowly: the peer closed between
+            // frames, so we never started reading a body. Any other
+            // UnexpectedEof — mid-body, mid-shutdown, or on a write —
+            // is a truncation and the wire is irrecoverably desynced.
+            if source.kind() == std::io::ErrorKind::UnexpectedEof && op == "read length" {
                 RecvFate::Eof
             } else {
                 RecvFate::WireDesync(AdapterError::Execution {
