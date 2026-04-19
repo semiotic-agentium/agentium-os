@@ -59,7 +59,7 @@ reqwest = { workspace = true }
 axum = { workspace = true }
 insta = { workspace = true }
 tempfile = { workspace = true }
-testcontainers-modules = { version = "0.15", default-features = false, features = ["surrealdb"] }
+testcontainers-modules = { workspace = true }
 
 [features]
 default = []
