@@ -254,8 +254,20 @@ impl SandboxInvoker {
                 source: Box::new(e),
             })?;
         let call = async {
-            channel.send(&payload).await?;
-            channel.recv().await
+            channel
+                .send(&payload)
+                .await
+                .map_err(|e| BamlRtError::InvalidArgumentWithSource {
+                    message: format!("failed to send TSRPC frame for {method}"),
+                    source: Box::new(e),
+                })?;
+            channel
+                .recv()
+                .await
+                .map_err(|e| BamlRtError::InvalidArgumentWithSource {
+                    message: format!("failed to recv TSRPC frame for {method}"),
+                    source: Box::new(e),
+                })
         };
         let value = tokio::time::timeout(timeout, call).await.map_err(|_| {
             BamlRtError::InvalidArgument(format!(

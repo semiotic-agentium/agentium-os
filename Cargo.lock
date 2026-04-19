@@ -1995,6 +1995,7 @@ dependencies = [
  "baml-rt",
  "baml-rt-citation",
  "baml-rt-core",
+ "baml-sandbox-protocol",
  "baml-tool-derive",
  "baml-tools-calculator",
  "dashmap 6.1.0",
@@ -2133,6 +2134,16 @@ dependencies = [
  "wasmtimer",
  "web-sys",
  "web-time",
+]
+
+[[package]]
+name = "baml-sandbox-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

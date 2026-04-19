@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 baml-rt-citation = { path = "../baml-rt-citation" }
 baml-rt-core = { path = "../baml-rt-core" }
+baml-sandbox-protocol = { path = "../baml-sandbox-protocol" }
 baml-derive-core = { path = "../baml-derive-core" }
 baml-derive = { path = "../baml-derive" }
 baml-tool-derive = { path = "../baml-tool-derive" }
