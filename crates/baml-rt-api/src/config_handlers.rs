@@ -8,7 +8,8 @@ use axum::{Json, extract::State, http::StatusCode as AxumStatus};
 use baml_rt_config::{InternalConfigReader, InternalConfigWriter};
 use baml_rt_llm_config::{
     FnoxFileSecretResolver, LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, LlmProvider,
-    SECRET_LINKS_CONFIG_KEY, SecretLinksState, SecretRequestName, SecretValue, StoreKey,
+    RuntimeSecretStore, SECRET_LINKS_CONFIG_KEY, SecretLinksState, SecretRequestName, SecretValue,
+    StoreKey, apply_secret_links_state,
 };
 use baml_rt_tools::{BundleName, ToolName};
 use http_api_problem::HttpApiProblem;
@@ -109,6 +110,27 @@ async fn save_secret_links_state(
     Ok(())
 }
 
+/// Reload the persisted secret-link state from the shared config store and
+/// apply it to the local overlay. Call before any handler that reads or
+/// mutates secret links so the overlay reflects changes made by other runners.
+async fn sync_secret_links(state: &crate::router::ApiState) {
+    let Some(store) = state.runtime_secret_store.as_ref() else {
+        return;
+    };
+    let link_state = match load_secret_links_state(state.config_service.as_ref()).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = ?e, "sync_secret_links: failed to load shared link state");
+            return;
+        }
+    };
+    apply_secret_links_state(
+        &link_state,
+        store.as_ref() as &dyn RuntimeSecretStore,
+        state.secret_resolver.as_ref(),
+    );
+}
+
 /// Extract secret key from an option value (placeholder prefix stripped; key used for lookup).
 fn secret_name_from_option_value(v: &str) -> Option<String> {
     let v = v.trim();
@@ -133,6 +155,7 @@ pub async fn list_secrets_overview(
     State(state): State<Arc<crate::router::ApiState>>,
 ) -> HttpResult<Vec<SecretOverviewEntryDto>> {
     let start = std::time::Instant::now();
+    sync_secret_links(&state).await;
     let result = async {
     let catalog = &state.tool_catalog;
     // LLM_CONFIG_BUNDLE_NAME is a crate constant guaranteed by baml_rt_llm_config to pass BundleName::new.
@@ -281,6 +304,7 @@ pub async fn put_secret(
     Json(body): Json<ProvisionSecretDto>,
 ) -> Result<AxumStatus, HttpApiProblem> {
     let start = std::time::Instant::now();
+    sync_secret_links(&state).await;
     let result = async {
     let store = state
         .runtime_secret_store
@@ -357,6 +381,7 @@ pub async fn delete_secret(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<AxumStatus, HttpApiProblem> {
     let start = std::time::Instant::now();
+    sync_secret_links(&state).await;
     let result = async {
         let store = state.runtime_secret_store.as_ref().ok_or_else(|| {
             problem(
