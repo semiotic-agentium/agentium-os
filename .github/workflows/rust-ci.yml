@@ -3,8 +3,18 @@ name: Rust CI
 on:
   push:
     branches: [main]
+    # Adapter SDK + echo fixture run in `sandbox-adapter.yml` (§20).
+    # `baml-sandbox-protocol` is intentionally NOT ignored here because
+    # host-side `baml-rt-tools` depends on it — protocol changes must
+    # still exercise the main workspace.
+    paths-ignore:
+      - 'crates/baml-sandbox-adapter/**'
+      - 'crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'crates/baml-sandbox-adapter/**'
+      - 'crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter/**'
   workflow_dispatch:
 
 permissions:
@@ -174,7 +184,10 @@ jobs:
           # LLM tests with full parallelism (no thread limits).
           # Tests gated by #[cfg(feature = "llm-tests")] compile only when feature enabled.
           echo ">>> nextest LLM suite: full parallelism (nproc=$(nproc))"
+          # Adapter SDK + echo fixture are covered by sandbox-adapter.yml (§20);
+          # excluding them here keeps every sandbox test in exactly one CI lane.
           cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast \
+            --exclude baml-sandbox-adapter --exclude sandbox-echo-adapter \
             --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
           RUSTUP_TOOLCHAIN: stable
@@ -194,6 +207,7 @@ jobs:
           # LLM-gated tests don't compile without llm-tests feature.
           echo ">>> nextest non-LLM suite: full parallelism (nproc=$(nproc))"
           cargo nextest run --workspace --locked --profile ci-non-llm --no-fail-fast \
+            --exclude baml-sandbox-adapter --exclude sandbox-echo-adapter \
             --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
         env:
           RUSTUP_TOOLCHAIN: stable
