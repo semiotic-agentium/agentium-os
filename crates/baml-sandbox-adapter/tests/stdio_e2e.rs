@@ -224,6 +224,82 @@ async fn malformed_frame_terminates_with_nonzero_exit() {
 }
 
 #[tokio::test]
+async fn protocol_version_mismatch_per_request_error_keepalive() {
+    let out = timeout(
+        TEST_TIMEOUT,
+        run_echo(frame_stream(&[
+            json!({
+                "jsonrpc": "1.0",
+                "id": 1,
+                "method": METHOD_INVOKE,
+                "params": invoke_params(json!({"message": "bad-version"})),
+            }),
+            request_envelope(
+                METHOD_INVOKE,
+                2,
+                invoke_params(json!({"message": "still-alive"})),
+            ),
+        ])),
+    )
+    .await
+    .expect("protocol_version_mismatch timed out");
+
+    assert!(
+        out.status.success(),
+        "adapter should return per-request error and keep serving; status={:?}; stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let frames = parse_frames(&out.stdout);
+    assert_eq!(frames.len(), 2, "frames={frames:?}");
+
+    let mismatch = &frames[0];
+    assert_eq!(mismatch["id"], 1);
+    assert_eq!(mismatch["error"]["code"], ERR_INTERNAL);
+    assert_eq!(mismatch["error"]["data"]["error_class"], "invalid_argument");
+    assert!(
+        mismatch["error"]["message"]
+            .as_str()
+            .map(|s| s.contains("requires '2.0'"))
+            .unwrap_or(false),
+        "error should explain protocol-version requirement; got {mismatch:?}"
+    );
+
+    let next = &frames[1];
+    assert_eq!(next["id"], 2);
+    assert_eq!(next["result"]["output"]["reply"], "still-alive");
+}
+
+#[tokio::test]
+async fn shutdown_flush_complete_frame() {
+    let out = timeout(
+        TEST_TIMEOUT,
+        run_echo(frame_stream(&[request_envelope(
+            METHOD_INVOKE,
+            1,
+            invoke_params(json!({"message": "flush"})),
+        )])),
+    )
+    .await
+    .expect("shutdown_flush_complete_frame timed out");
+
+    assert!(
+        out.status.success(),
+        "expected clean exit after stdin close; status={:?}; stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // parse_frames would panic on truncated output or trailing garbage,
+    // so this asserts the final response frame was fully flushed.
+    let frames = parse_frames(&out.stdout);
+    assert_eq!(frames.len(), 1, "frames={frames:?}");
+    assert_eq!(frames[0]["id"], 1);
+    assert_eq!(frames[0]["result"]["output"]["reply"], "flush");
+}
+
+#[tokio::test]
 async fn stdout_purity_survives_pollution() {
     let out = timeout(
         TEST_TIMEOUT,
