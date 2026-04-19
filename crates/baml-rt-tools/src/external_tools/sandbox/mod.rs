@@ -14,6 +14,8 @@
 //! (`runtime.kind == "sandbox"` branch).
 
 pub mod channel;
+#[cfg(feature = "sandbox-provider")]
+pub mod exec_adapter;
 pub mod handler;
 pub mod invoker;
 pub mod microsandbox_provider;
