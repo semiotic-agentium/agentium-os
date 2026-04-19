@@ -801,9 +801,10 @@ mod cluster {
 
     use super::*;
 
-    // Image tag matches the pilot Helm chart
-    // (`deploy/helm/agentium-os/values.yaml`) so these tests exercise the
-    // same Surreal version we ship. Requires Docker or Podman.
+    // Keep this in sync with `deploy/helm/agentium-os/values.yaml` so the
+    // tests exercise the same Surreal version the pilot ships.
+    const SURREALDB_IMAGE_TAG: &str = "v3.0.4";
+
     struct SurrealContainer {
         endpoint: String,
         _container: ContainerAsync<SurrealDb>,
@@ -812,7 +813,7 @@ mod cluster {
     impl SurrealContainer {
         async fn start() -> Self {
             let container = SurrealDb::default()
-                .with_tag("v3.0.4")
+                .with_tag(SURREALDB_IMAGE_TAG)
                 .start()
                 .await
                 .expect("start SurrealDB container — cluster-tests require Docker or Podman");
