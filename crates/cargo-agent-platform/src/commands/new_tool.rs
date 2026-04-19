@@ -45,19 +45,37 @@ impl RunMode {
     }
 }
 
-pub fn run(
-    name: &str,
-    bundle: &str,
-    lang: Language,
-    access: Access,
-    runtime: Runtime,
-    sandbox_image: Option<&str>,
-    runtime_digest: Option<&str>,
-    sandbox_entrypoint: &[String],
-    description: &str,
-    output: Option<&str>,
-    mode: RunMode,
-) -> Result<()> {
+/// Inputs for the `new-tool` scaffolder entrypoint.
+#[derive(Debug, Clone)]
+pub struct NewToolRunArgs<'a> {
+    pub name: &'a str,
+    pub bundle: &'a str,
+    pub lang: Language,
+    pub access: Access,
+    pub runtime: Runtime,
+    pub sandbox_image: Option<&'a str>,
+    pub runtime_digest: Option<&'a str>,
+    pub sandbox_entrypoint: &'a [String],
+    pub description: &'a str,
+    pub output: Option<&'a str>,
+    pub mode: RunMode,
+}
+
+pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
+    let NewToolRunArgs {
+        name,
+        bundle,
+        lang,
+        access,
+        runtime,
+        sandbox_image,
+        runtime_digest,
+        sandbox_entrypoint,
+        description,
+        output,
+        mode,
+    } = args;
+
     validate_tool_name(name)?;
     // Reuse the runtime's BundleName rule (non-empty, no '/') so the scaffolder
     // can't produce a tool-metadata.json the runner would later reject.

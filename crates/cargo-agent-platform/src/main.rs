@@ -38,7 +38,9 @@ mod workspace;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use commands::{
-    new_tool::RunMode, publish::PublishOriginArg, utils::resolve_runner_token,
+    new_tool::{NewToolRunArgs, RunMode},
+    publish::PublishOriginArg,
+    utils::resolve_runner_token,
 };
 use templates::external_tool::{Access, DEFAULT_BUNDLE, Language, Runtime};
 
@@ -454,19 +456,19 @@ fn main() -> anyhow::Result<()> {
                 RunMode::Apply
             };
 
-            commands::new_tool::run(
-                &name,
-                &bundle,
+            commands::new_tool::run(NewToolRunArgs {
+                name: &name,
+                bundle: &bundle,
                 lang,
                 access,
                 runtime,
-                sandbox_image.as_deref(),
-                runtime_digest.as_deref(),
-                &sandbox_entrypoint,
-                &description,
-                output.as_deref(),
+                sandbox_image: sandbox_image.as_deref(),
+                runtime_digest: runtime_digest.as_deref(),
+                sandbox_entrypoint: &sandbox_entrypoint,
+                description: &description,
+                output: output.as_deref(),
                 mode,
-            )
+            })
         }
 
         Commands::NewStaticTool {
