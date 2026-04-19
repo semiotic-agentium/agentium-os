@@ -19,10 +19,6 @@
 //! pair is race-free in practice and portable across all Unix.
 
 #![cfg(unix)]
-// Reserved for the slice-3 dispatch loop (`run_adapter` installs the swap
-// at entry and hands the returned writer to `TsrpcChannel`). Kept visible
-// now so the module's public contract is complete before wiring.
-#![allow(dead_code)]
 
 use std::io;
 use std::os::fd::{FromRawFd, OwnedFd};
