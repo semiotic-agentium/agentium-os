@@ -43,6 +43,9 @@ http-tools = []
 # model remains metadata-declaration (§15); this feature is purely a
 # build-safety gate for the microsandbox beta crate.
 sandbox-provider = ["dep:microsandbox"]
+# KVM-gated real microVM E2E lane. Off by default and only enabled in
+# dedicated CI/manual runs.
+sandbox-e2e-kvm = ["sandbox-provider"]
 
 [dev-dependencies]
 test-support = { path = "../test-support" }

@@ -1,0 +1,141 @@
+name: Sandbox E2E KVM
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'
+
+permissions:
+  contents: read
+  actions: write
+  checks: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  IMAGE_NAME: sandbox-echo-adapter
+  IMAGE_TAG: ci-${{ github.sha }}
+
+jobs:
+  prepare-fixture:
+    name: Prepare local sandbox fixture image + metadata artifact
+    runs-on: kvm-enabled
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image locally (no publish)
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            -f crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter/Dockerfile \
+            -t ${IMAGE_NAME}:${IMAGE_TAG} \
+            .
+
+      - name: Resolve local image digest
+        id: image_digest
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        run: |
+          IMAGE_ID=$(docker image inspect "${IMAGE_REF}" --format '{{.Id}}')
+          if [[ -z "${IMAGE_ID}" || "${IMAGE_ID}" != sha256:* ]]; then
+            echo "error: unable to resolve local sha256 image id for ${IMAGE_REF}" >&2
+            exit 1
+          fi
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          echo "image_digest=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
+          echo "Resolved local image digest: ${IMAGE_ID}"
+
+      - name: Materialize CI-local fixture metadata (no publish)
+        env:
+          IMAGE_REF: ${{ steps.image_digest.outputs.image_ref }}
+          IMAGE_DIGEST: ${{ steps.image_digest.outputs.image_digest }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          src = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
+          dst = Path(os.environ["RUNNER_TEMP"]) / "sandbox_echo.tool-metadata.ci.json"
+
+          with src.open("r", encoding="utf-8") as f:
+            doc = json.load(f)
+
+          doc["runtime"]["image"] = os.environ["IMAGE_REF"]
+          doc["runtime"]["entrypoint"] = ["/tool-adapter"]
+          doc["runtime_digest"] = os.environ["IMAGE_DIGEST"]
+
+          with dst.open("w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=2)
+            f.write("\n")
+
+          print(f"wrote {dst}")
+          PY
+
+      - name: Upload CI-local fixture metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-echo-ci-metadata
+          path: ${{ runner.temp }}/sandbox_echo.tool-metadata.ci.json
+
+  kvm-e2e:
+    name: KVM E2E (baml-rt-tools)
+    needs: prepare-fixture
+    runs-on: kvm-enabled
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci-sandbox-kvm-e2e"
+          cache-on-failure: true
+          cache-targets: "true"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update && sudo apt install -y build-essential pkg-config lld libcap-ng-dev
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Download metadata artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sandbox-echo-ci-metadata
+          path: ${{ runner.temp }}/sandbox-echo-ci-metadata
+
+      - name: Build image locally for this runner
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            -f crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter/Dockerfile \
+            -t ${IMAGE_NAME}:${IMAGE_TAG} \
+            .
+
+      - name: Run KVM-gated microsandbox E2E
+        env:
+          BAML_SANDBOX_E2E_METADATA: ${{ runner.temp }}/sandbox-echo-ci-metadata/sandbox_echo.tool-metadata.ci.json
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+        run: |
+          cargo nextest run -p baml-rt-tools --features sandbox-e2e-kvm --locked --profile ci --no-fail-fast
+
+      - name: Publish JUnit report
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: "target/nextest/ci/junit.xml"
+          require_tests: true
+          check_name: Sandbox KVM E2E nextest

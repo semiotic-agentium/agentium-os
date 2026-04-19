@@ -17,4 +17,7 @@ RUN cargo build --release --locked \
 
 FROM gcr.io/distroless/static
 COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/sandbox-echo-adapter /tool-adapter
+# MicrosandboxProvider currently launches `tool-adapter` by command name.
+# Keep an absolute ENTRYPOINT and also place the binary on PATH.
+COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/sandbox-echo-adapter /usr/local/bin/tool-adapter
 ENTRYPOINT ["/tool-adapter"]
