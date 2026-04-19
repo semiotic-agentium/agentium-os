@@ -27,6 +27,7 @@ members = [
   "crates/baml-rt-tools",
   "crates/baml-sandbox-adapter",
   "crates/baml-sandbox-protocol",
+  "crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter",
   "crates/test-support",
   "crates/task-daemon",
   "crates/tools/calculator",

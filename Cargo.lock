@@ -11067,6 +11067,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandbox-echo-adapter"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "baml-sandbox-adapter",
+ "baml-sandbox-protocol",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
