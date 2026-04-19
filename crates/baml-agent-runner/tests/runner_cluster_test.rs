@@ -52,6 +52,7 @@ struct RunnerProcessConfig {
     surreal_endpoint: Option<String>,
     runner_endpoint: Option<String>,
     bind_addr: Option<String>,
+    fnox_config: Option<PathBuf>,
 }
 
 impl RunnerProcessConfig {
@@ -61,6 +62,7 @@ impl RunnerProcessConfig {
             surreal_endpoint: None,
             runner_endpoint: None,
             bind_addr: None,
+            fnox_config: None,
         }
     }
 
@@ -89,6 +91,12 @@ impl RunnerProcessConfig {
     #[cfg(feature = "cluster-tests")]
     fn with_bind_addr(mut self, addr: &str) -> Self {
         self.bind_addr = Some(addr.to_string());
+        self
+    }
+
+    #[cfg(feature = "cluster-tests")]
+    fn with_fnox_config(mut self, path: &Path) -> Self {
+        self.fnox_config = Some(path.to_path_buf());
         self
     }
 }
@@ -154,6 +162,9 @@ impl RunnerProcess {
         }
         if let Some(runner_ep) = &config.runner_endpoint {
             command.arg("--runner-endpoint").arg(runner_ep);
+        }
+        if let Some(fnox_path) = &config.fnox_config {
+            command.env("BAML_FNOX_CONFIG", fnox_path);
         }
 
         let mut child = command.spawn().expect("spawn baml-agent-runner");
@@ -1298,6 +1309,147 @@ mod cluster {
                 .and_then(Value::as_str),
             Some("TestClient"),
             "config must survive runner-B restart; got: {config_after_restart}"
+        );
+    }
+
+    /// Prove the #222 secret-link convergence contract:
+    /// A secret linked on runner-A is visible as satisfied on runner-B
+    /// via secrets-overview (without runner-B restart).
+    #[tokio::test]
+    async fn cluster_secret_link_converges_across_runners() {
+        let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+        let ip = match detect_non_loopback_ip() {
+            Some(ip) => ip,
+            None => {
+                eprintln!(
+                    "SKIPPED cluster_secret_link_converges_across_runners: \
+                     no non-loopback private IP"
+                );
+                return;
+            }
+        };
+        let bind_addr = ip.to_string();
+
+        // Write a temp fnox.toml with a test secret that has a default value.
+        let fnox_dir = tempfile::tempdir().expect("temp dir for fnox");
+        let fnox_path = fnox_dir.path().join("fnox.toml");
+        fs::write(
+            &fnox_path,
+            "[secrets.TEST_SECRET]\n\
+             description = \"cluster test secret\"\n\
+             default = \"test-value-for-linking\"\n",
+        )
+        .expect("write temp fnox.toml");
+
+        let surreal = SurrealSubprocess::start();
+
+        let reserved_a = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-A port");
+        let port_a = reserved_a.local_addr().expect("runner-A addr").port();
+        drop(reserved_a);
+        let reserved_b = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-B port");
+        let port_b = reserved_b.local_addr().expect("runner-B addr").port();
+        drop(reserved_b);
+
+        let endpoint_a = format!("http://{bind_addr}:{port_a}");
+        let endpoint_b = format!("http://{bind_addr}:{port_b}");
+
+        let runner_a = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(&endpoint_a)
+                .with_bind_addr(&bind_addr)
+                .with_fnox_config(&fnox_path),
+        )
+        .await;
+        let runner_b = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(&endpoint_b)
+                .with_bind_addr(&bind_addr)
+                .with_fnox_config(&fnox_path),
+        )
+        .await;
+        let client = reqwest::Client::new();
+
+        // --- Create a secret requirement via LLM config on runner-A ---
+        let config_body = serde_json::json!({
+            "default": "TestClient",
+            "clients": {
+                "TestClient": {
+                    "name": "TestClient",
+                    "provider": "openrouter",
+                    "options": {
+                        "model": "openai/gpt-4o-mini",
+                        "api_key": "vault:TEST_SECRET"
+                    }
+                }
+            }
+        });
+        let put_config = client
+            .put(format!("{}/config/llm", runner_a.base_url))
+            .header("X-Runner-Token", DEFAULT_TOKEN)
+            .json(&config_body)
+            .send()
+            .await
+            .expect("PUT /config/llm on runner-A");
+        assert!(
+            put_config.status().is_success(),
+            "PUT config on runner-A failed: {}",
+            put_config.status()
+        );
+
+        // --- Link the secret on runner-A ---
+        let put_secret = client
+            .put(format!("{}/config/secrets/TEST_SECRET", runner_a.base_url))
+            .header("X-Runner-Token", DEFAULT_TOKEN)
+            .json(&serde_json::json!({ "link_from": "TEST_SECRET" }))
+            .send()
+            .await
+            .expect("PUT /config/secrets/TEST_SECRET on runner-A");
+        assert!(
+            put_secret.status().is_success(),
+            "PUT secret link on runner-A failed: {} — {}",
+            put_secret.status(),
+            put_secret
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".into())
+        );
+
+        // --- Verify runner-B sees the link as satisfied ---
+        let overview_resp = client
+            .get(format!("{}/config/secrets-overview", runner_b.base_url))
+            .header("X-Runner-Token", DEFAULT_TOKEN)
+            .send()
+            .await
+            .expect("GET /config/secrets-overview on runner-B");
+        assert!(
+            overview_resp.status().is_success(),
+            "secrets-overview on runner-B failed: {}",
+            overview_resp.status()
+        );
+        let overview: Vec<Value> = overview_resp
+            .json()
+            .await
+            .expect("parse secrets-overview JSON");
+        let test_entry = overview
+            .iter()
+            .find(|e| e.get("name").and_then(Value::as_str) == Some("TEST_SECRET"));
+        assert!(
+            test_entry.is_some(),
+            "TEST_SECRET must appear in runner-B's secrets-overview; got: {overview:?}"
+        );
+        let entry = test_entry.unwrap();
+        assert_eq!(
+            entry.get("satisfied").and_then(Value::as_bool),
+            Some(true),
+            "TEST_SECRET must be satisfied on runner-B after link on runner-A; got: {entry}"
+        );
+        assert_eq!(
+            entry.get("linked_to").and_then(Value::as_str),
+            Some("TEST_SECRET"),
+            "TEST_SECRET must show linked_to on runner-B; got: {entry}"
         );
     }
 }
