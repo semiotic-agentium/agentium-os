@@ -263,9 +263,7 @@ impl FnoxFileSecretResolver {
     /// When true, integration clients must not fall back to process environment
     /// variables for credential resolution — all secrets come from fnox.toml.
     pub fn is_exclusive() -> bool {
-        std::env::var("BAML_FNOX_CONFIG")
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
+        is_exclusive_value(std::env::var("BAML_FNOX_CONFIG").ok().as_deref())
     }
 
     /// Resolve a credential by name from fnox, falling back to the process environment
@@ -273,6 +271,17 @@ impl FnoxFileSecretResolver {
     /// Tries both `env.{name}` and `{name}` as fnox keys for compatibility with
     /// BAML placeholder conventions.
     pub fn resolve_or_env(&self, name: &str) -> Option<String> {
+        self.resolve_or_env_with(name, Self::is_exclusive(), |n| std::env::var(n).ok())
+    }
+
+    /// Core resolution logic with injectable exclusivity flag and env lookup.
+    /// Exposed for testing without process-environment side effects.
+    pub fn resolve_or_env_with(
+        &self,
+        name: &str,
+        exclusive: bool,
+        env_lookup: impl Fn(&str) -> Option<String>,
+    ) -> Option<String> {
         let env_prefixed = format!("env.{name}");
         for key in [env_prefixed.as_str(), name] {
             if let Some(v) = self.resolve(key) {
@@ -282,9 +291,7 @@ impl FnoxFileSecretResolver {
                 }
             }
         }
-        if !Self::is_exclusive()
-            && let Ok(k) = std::env::var(name)
-        {
+        if !exclusive && let Some(k) = env_lookup(name) {
             let t = k.trim();
             if !t.is_empty() {
                 return Some(t.to_string());
@@ -451,5 +458,79 @@ pub fn apply_secret_links_state(
     }
     for request in &state.unlinked {
         overlay.remove(request);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers for testability
+// ---------------------------------------------------------------------------
+
+/// Whether the given `BAML_FNOX_CONFIG` value indicates exclusive mode (fnox is
+/// the sole secret source; env-var fallback is disabled). Exposed as a free
+/// function so tests can verify the rule without touching the process environment.
+pub fn is_exclusive_value(baml_fnox_config: Option<&str>) -> bool {
+    baml_fnox_config
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_exclusive_value ───────────────────────────────────────────────
+
+    #[test]
+    fn exclusive_when_set_nonempty() {
+        assert!(is_exclusive_value(Some("/config/fnox.toml")));
+    }
+
+    #[test]
+    fn not_exclusive_when_empty() {
+        assert!(!is_exclusive_value(Some("")));
+    }
+
+    #[test]
+    fn not_exclusive_when_whitespace() {
+        assert!(!is_exclusive_value(Some("  ")));
+    }
+
+    #[test]
+    fn not_exclusive_when_absent() {
+        assert!(!is_exclusive_value(None));
+    }
+
+    // ── resolve_or_env_with ──────────────────────────────────────────────
+
+    #[test]
+    fn exclusive_blocks_env_fallback() {
+        let resolver = FnoxFileSecretResolver::from_path(None::<&Path>);
+        let result = resolver.resolve_or_env_with(
+            "SOME_KEY",
+            true, // exclusive
+            |_| Some("env-value".to_string()),
+        );
+        assert!(result.is_none(), "exclusive mode must block env fallback");
+    }
+
+    #[test]
+    fn nonexclusive_allows_env_fallback() {
+        let resolver = FnoxFileSecretResolver::from_path(None::<&Path>);
+        let result = resolver.resolve_or_env_with(
+            "SOME_KEY",
+            false, // not exclusive
+            |_| Some("env-value".to_string()),
+        );
+        assert_eq!(result.as_deref(), Some("env-value"));
+    }
+
+    #[test]
+    fn nonexclusive_skips_empty_env() {
+        let resolver = FnoxFileSecretResolver::from_path(None::<&Path>);
+        let result = resolver.resolve_or_env_with("SOME_KEY", false, |_| Some("  ".to_string()));
+        assert!(
+            result.is_none(),
+            "whitespace-only env value should be skipped"
+        );
     }
 }

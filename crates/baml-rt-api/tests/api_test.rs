@@ -203,6 +203,10 @@ const SPAN_REDACT_KEYS: &[&str] = &[
     "key",
     "val",
     "rng",
+    // In-memory config store uses UUID-scoped ns/db for test isolation; redact so
+    // snapshots are stable across runs.
+    "ns",
+    "db",
 ];
 
 #[allow(dead_code)]

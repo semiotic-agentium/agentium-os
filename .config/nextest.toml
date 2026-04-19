@@ -100,6 +100,10 @@ retries = { backoff = "fixed", count = 2, delay = "3s" }
 filter = 'package(baml-agent-runner) and binary(runner_callback_test)'
 test-group = "runner-subprocess"
 
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_cluster_test)'
+test-group = "runner-subprocess"
+
 # A2A provenance-using test binaries: route to provenance group.
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a) and (binary(run_handle_a2a_property_test) or binary(a2a_malformed_and_error_paths_test))'
@@ -135,6 +139,10 @@ store-failure-output = true
 # Full runner subprocess tests need real cross-process serialization under nextest.
 [[profile.ci-llm.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_callback_test)'
+test-group = "runner-subprocess"
+
+[[profile.ci-llm.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_cluster_test)'
 test-group = "runner-subprocess"
 
 [[profile.ci-llm.overrides]]

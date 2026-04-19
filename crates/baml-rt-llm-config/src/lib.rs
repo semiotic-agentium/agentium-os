@@ -25,5 +25,5 @@ pub use resolver::{LlmClientResolver, StaticResolver};
 pub use secret_resolver::{
     EmptySecretResolver, FnoxFileSecretResolver, OverlaySecretResolver, RuntimeSecretStore,
     SECRET_LINKS_CONFIG_KEY, SecretLinksState, SecretName, SecretRequestName, SecretResolver,
-    SecretValue, StoreKey, apply_secret_links_state,
+    SecretValue, StoreKey, apply_secret_links_state, is_exclusive_value,
 };
