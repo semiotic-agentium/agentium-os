@@ -772,65 +772,40 @@ async fn migrate_rejects_ssrf_targets() {
     );
 }
 
-// ── Cluster tests requiring SurrealDB subprocess ────────────────────────
+// ── Cluster tests requiring a SurrealDB container ───────────────────────
 
 #[cfg(feature = "cluster-tests")]
 mod cluster {
+    use testcontainers_modules::{
+        surrealdb::{SURREALDB_PORT, SurrealDb},
+        testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner},
+    };
+
     use super::*;
 
-    struct SurrealSubprocess {
-        child: Child,
+    // Image tag matches the pilot Helm chart
+    // (`deploy/helm/agentium-os/values.yaml`) so these tests exercise the
+    // same Surreal version we ship. Requires Docker or Podman.
+    struct SurrealContainer {
         endpoint: String,
+        _container: ContainerAsync<SurrealDb>,
     }
 
-    impl SurrealSubprocess {
-        fn start() -> Self {
-            let reserved = TcpListener::bind("127.0.0.1:0").expect("bind surreal port");
-            let port = reserved.local_addr().expect("surreal addr").port();
-            drop(reserved);
-
-            let child = Command::new("surreal")
-                .arg("start")
-                .arg("--user")
-                .arg("root")
-                .arg("--pass")
-                .arg("root")
-                .arg("--bind")
-                .arg(format!("127.0.0.1:{port}"))
-                .arg("memory")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect(
-                    "spawn surreal subprocess — cluster-tests require `surreal` on PATH. \
-                     Install: https://surrealdb.com/install",
-                );
-
-            let endpoint = format!("ws://127.0.0.1:{port}");
-
-            // Wait for SurrealDB to accept connections.
-            let deadline = Instant::now() + Duration::from_secs(15);
-            loop {
-                if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
-                    // Give SurrealDB a moment to fully initialize after TCP accept.
-                    std::thread::sleep(Duration::from_millis(500));
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "SurrealDB did not start within 15s"
-                );
-                std::thread::sleep(Duration::from_millis(100));
+    impl SurrealContainer {
+        async fn start() -> Self {
+            let container = SurrealDb::default()
+                .with_tag("v3.0.4")
+                .start()
+                .await
+                .expect("start SurrealDB container — cluster-tests require Docker or Podman");
+            let port = container
+                .get_host_port_ipv4(SURREALDB_PORT)
+                .await
+                .expect("get SurrealDB mapped port");
+            Self {
+                endpoint: format!("ws://127.0.0.1:{port}"),
+                _container: container,
             }
-
-            Self { child, endpoint }
-        }
-    }
-
-    impl Drop for SurrealSubprocess {
-        fn drop(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
         }
     }
 
@@ -850,7 +825,7 @@ mod cluster {
     async fn cluster_mode_rejects_unauthenticated_deploy() {
         let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
-        let surreal = SurrealSubprocess::start();
+        let surreal = SurrealContainer::start().await;
 
         // Start runner in cluster mode WITHOUT a runner-token.
         // Use a fake runner endpoint that passes validation (10.x is RFC1918).
@@ -884,7 +859,7 @@ mod cluster {
         let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
         ensure_fixture_runtime_types();
 
-        let surreal = SurrealSubprocess::start();
+        let surreal = SurrealContainer::start().await;
 
         // Cluster mode without a token → control endpoints fail-closed.
         let runner = RunnerProcess::start(
@@ -929,7 +904,7 @@ mod cluster {
                 .await;
         let _cleanup = TempFileCleanup::new(package_path.clone());
 
-        let surreal = SurrealSubprocess::start();
+        let surreal = SurrealContainer::start().await;
 
         // Allocate ports for both runners.
         let reserved_a = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-A port");
@@ -1009,7 +984,7 @@ mod cluster {
                 .await;
         let _cleanup = TempFileCleanup::new(package_path.clone());
 
-        let surreal = SurrealSubprocess::start();
+        let surreal = SurrealContainer::start().await;
 
         let reserved_a = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-A port");
         let port_a = reserved_a.local_addr().expect("runner-A addr").port();
@@ -1115,7 +1090,7 @@ mod cluster {
                 .await;
         let _cleanup = TempFileCleanup::new(package_path.clone());
 
-        let surreal = SurrealSubprocess::start();
+        let surreal = SurrealContainer::start().await;
 
         let reserved_a = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-A port");
         let port_a = reserved_a.local_addr().expect("runner-A addr").port();
@@ -1193,7 +1168,7 @@ mod cluster {
         };
         let bind_addr = ip.to_string();
 
-        let surreal = SurrealSubprocess::start();
+        let surreal = SurrealContainer::start().await;
 
         let reserved_a = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-A port");
         let port_a = reserved_a.local_addr().expect("runner-A addr").port();
@@ -1230,7 +1205,9 @@ mod cluster {
                     "provider": "openrouter",
                     "options": { "model": "openai/gpt-4o-mini" }
                 }
-            }
+            },
+            "overrides": {},
+            "retry_policies": {}
         });
         let put_resp = client
             .put(format!("{}/config/llm", runner_a.base_url))
@@ -1342,7 +1319,7 @@ mod cluster {
         )
         .expect("write temp fnox.toml");
 
-        let surreal = SurrealSubprocess::start();
+        let surreal = SurrealContainer::start().await;
 
         let reserved_a = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-A port");
         let port_a = reserved_a.local_addr().expect("runner-A addr").port();
@@ -1384,7 +1361,9 @@ mod cluster {
                         "api_key": "vault:TEST_SECRET"
                     }
                 }
-            }
+            },
+            "overrides": {},
+            "retry_policies": {}
         });
         let put_config = client
             .put(format!("{}/config/llm", runner_a.base_url))
