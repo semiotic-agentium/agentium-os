@@ -1,0 +1,24 @@
+[package]
+name = "baml-sandbox-adapter"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Guest-side SDK for sandbox tool adapters: SandboxTool trait, domain error type, and stdio entry point layered over the TSRPC wire format."
+
+# This crate is the author-facing application layer on top of `baml-sandbox-protocol`.
+# It ships inside distroless guest images, so the dep surface stays narrow: no
+# `baml-rt-core`, no observability, no host-only helpers. Everything heavier
+# lives on the host side and converts to/from the types defined here.
+
+[dependencies]
+baml-sandbox-protocol = { path = "../baml-sandbox-protocol" }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros"] }

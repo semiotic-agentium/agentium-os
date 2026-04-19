@@ -2137,6 +2137,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "baml-sandbox-adapter"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "baml-sandbox-protocol",
+ "futures-util",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "baml-sandbox-protocol"
 version = "0.1.0"
 dependencies = [

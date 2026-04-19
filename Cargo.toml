@@ -25,6 +25,7 @@ members = [
   "crates/baml-rt-repository",
   "crates/baml-rt-router",
   "crates/baml-rt-tools",
+  "crates/baml-sandbox-adapter",
   "crates/baml-sandbox-protocol",
   "crates/test-support",
   "crates/task-daemon",
