@@ -47,6 +47,45 @@ jobs:
             -t ${IMAGE_NAME}:${IMAGE_TAG} \
             .
 
+      - name: Enforce image size budget (<20 MiB)
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        run: |
+          SIZE_BYTES=$(docker image inspect "${IMAGE_REF}" --format '{{.Size}}')
+          LIMIT_BYTES=$((20 * 1024 * 1024))
+
+          if [[ -z "${SIZE_BYTES}" ]]; then
+            echo "error: failed to read image size for ${IMAGE_REF}" >&2
+            exit 1
+          fi
+
+          echo "image_size_bytes=${SIZE_BYTES}"
+          if (( SIZE_BYTES > LIMIT_BYTES )); then
+            echo "error: image ${IMAGE_REF} exceeds 20 MiB budget (${SIZE_BYTES} bytes > ${LIMIT_BYTES})" >&2
+            exit 1
+          fi
+
+          echo "image size within budget (<20 MiB)"
+
+      - name: Guard fixture metadata stays template (placeholder digest)
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
+          doc = json.loads(path.read_text(encoding="utf-8"))
+          digest = doc.get("runtime_digest", "")
+          expected = "sha256:" + "0" * 64
+          if digest != expected:
+              raise SystemExit(
+                  "fixture metadata runtime_digest is no longer placeholder; "
+                  "no-publish lane expects committed metadata to stay template-only"
+              )
+
+          print("fixture template digest guard passed")
+          PY
+
       - name: Smoke test framed tool/describe roundtrip
         env:
           IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
