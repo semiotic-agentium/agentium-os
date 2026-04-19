@@ -100,6 +100,10 @@ retries = { backoff = "fixed", count = 2, delay = "3s" }
 filter = 'package(baml-agent-runner) and binary(runner_callback_test)'
 test-group = "runner-subprocess"
 
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_cluster_test)'
+test-group = "runner-subprocess"
+
 # A2A provenance-using test binaries: route to provenance group.
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a) and (binary(run_handle_a2a_property_test) or binary(a2a_malformed_and_error_paths_test))'
@@ -138,6 +142,10 @@ filter = 'package(baml-agent-runner) and binary(runner_callback_test)'
 test-group = "runner-subprocess"
 
 [[profile.ci-llm.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_cluster_test)'
+test-group = "runner-subprocess"
+
+[[profile.ci-llm.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_workflow_intake_test)'
 test-group = "workflow-intake-e2e"
 slow-timeout = { period = "120s", terminate-after = 2 }
@@ -154,13 +162,11 @@ retries = { backoff = "fixed", count = 2, delay = "3s" }
 filter = 'package(baml-agent-runner) and binary(drift_integration_test)'
 test-group = "llm-heavy"
 
-# Default timeouts and retries for LLM tests. count=2 (3 attempts) absorbs
-# provider-side drift where stochastic LLM output occasionally emits malformed
-# archive_ref / PageRead steps across tests that share the same model.
+# Default timeouts and retries for LLM tests
 [[profile.ci-llm.overrides]]
 filter = 'all()'
 slow-timeout = { period = "120s", terminate-after = 2 }
-retries = { backoff = "fixed", count = 2, delay = "5s" }
+retries = { backoff = "fixed", count = 1, delay = "5s" }
 
 # Notion direct-id e2e: extra retries (LLM plan extraction occasionally skips tool path)
 [[profile.ci-llm.overrides]]
