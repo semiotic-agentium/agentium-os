@@ -59,6 +59,7 @@ reqwest = { workspace = true }
 axum = { workspace = true }
 insta = { workspace = true }
 tempfile = { workspace = true }
+testcontainers-modules = { workspace = true }
 
 [features]
 default = []
