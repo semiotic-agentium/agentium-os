@@ -2,14 +2,12 @@
 
 use std::fmt::Write as _;
 
-use baml_rt_tools::citations::ParsedCitation;
+use baml_rt_tools::{archive_read::DEFAULT_TOOL_RESULT_INLINE_LINES, citations::ParsedCitation};
 
 use super::{
     ArtifactSummary, Episode, EpisodeContent, EpisodeEntry, EpisodeRefPrefix, StepType,
     TerminalStatus,
 };
-
-const TOOL_OUTPUT_INLINE_LINES: usize = 20;
 
 /// Render a full episode document (seven headed sections, namespaced refs).
 #[must_use]
@@ -284,7 +282,7 @@ fn render_entry_line(ep: &Episode, e: &EpisodeEntry, out: &mut String) {
                 out,
                 "tool_result {tool_name}: {summary} [{line_count} lines, {byte_count} bytes]"
             );
-            let show = lines.len().min(TOOL_OUTPUT_INLINE_LINES);
+            let show = lines.len().min(DEFAULT_TOOL_RESULT_INLINE_LINES);
             for line in lines.iter().take(show) {
                 let _ = writeln!(out, "  | {line}");
             }
@@ -295,6 +293,12 @@ fn render_entry_line(ep: &Episode, e: &EpisodeEntry, out: &mut String) {
                     lines.len() - show,
                     p,
                     e.seq
+                );
+                let _ = writeln!(
+                    out,
+                    "  # lines 1-{show} of {} ({} more — offset={show} for next page)",
+                    lines.len(),
+                    lines.len().saturating_sub(show),
                 );
             }
         }
@@ -553,5 +557,75 @@ mod tests {
         assert!(txt.contains("## transcript"));
         assert!(txt.contains("## outcome"));
         assert!(txt.contains("do the thing"));
+    }
+
+    #[test]
+    fn tool_output_overflow_adds_offset_hint() {
+        use baml_rt_tools::archive_read::DEFAULT_TOOL_RESULT_INLINE_LINES;
+        let task_id = TaskId::from_external(ExternalId::new("task-c"));
+        let line_strings: Vec<String> = (0..DEFAULT_TOOL_RESULT_INLINE_LINES + 12)
+            .map(|i| format!("content line {i}"))
+            .collect();
+        let n_lines = line_strings.len();
+        let ep = Episode {
+            task_id: task_id.clone(),
+            context_id: ContextId::new(1, 1),
+            agent_id: AgentId::from_uuid(UuidId::new(Uuid::nil())),
+            ref_prefix: EpisodeRefPrefix::from_task_id(&task_id),
+            status: TerminalStatus::Completed,
+            started_timestamp_ms: 100,
+            duration: EpisodeDuration {
+                active_ms: 10,
+                wait_ms: 2,
+                wall_clock_ms: 12,
+            },
+            token_summary: TokenSummary::default(),
+            prior_context: vec![],
+            goal: EpisodeEntry {
+                seq: 1,
+                step_type: StepType::Message,
+                role: "user".into(),
+                elapsed_ms: 0,
+                content: EpisodeContent::Text("go".into()),
+                activity_anchor: "a0".into(),
+                citation_strings: vec![],
+            },
+            transcript: vec![EpisodeEntry {
+                seq: 2,
+                step_type: StepType::ToolResult,
+                role: "tool".into(),
+                elapsed_ms: 1,
+                content: EpisodeContent::ToolOutput {
+                    tool_name: "big/tool".into(),
+                    summary: "s".into(),
+                    line_count: n_lines,
+                    byte_count: 999,
+                    lines: line_strings,
+                },
+                activity_anchor: "a2".into(),
+                citation_strings: vec![],
+            }],
+            session_history: vec![],
+            drift_summary: None,
+            drift_calls: vec![],
+            intents: vec![],
+            plans: vec![],
+            outcome: EpisodeOutcome {
+                final_message: Some("done".into()),
+                artifacts: vec![],
+                citation_strings: vec![],
+                token_summary: TokenSummary::default(),
+                duration: EpisodeDuration::default(),
+            },
+        };
+        let txt = render_episode(&ep);
+        assert!(
+            txt.contains("more — offset="),
+            "expected numeric offset footer in:\n{txt}"
+        );
+        assert!(
+            txt.contains("for next page"),
+            "expected paging hint in:\n{txt}"
+        );
     }
 }

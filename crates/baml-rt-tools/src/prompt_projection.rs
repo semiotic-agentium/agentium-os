@@ -5,7 +5,7 @@
 //!
 //! - `Message`     → `{HistoryRef} {text}` (e.g. `#1 …`) via [`RefTable::insert_history`]
 //! - `ToolCall`    → `{HistoryRef} {describe_invocation_with_hint(...)}`
-//! - `ToolResult`  → archive_read render of result value (first 40 lines)
+//! - `ToolResult`  → archive_read render of result value (first `DEFAULT_TOOL_RESULT_INLINE_LINES` lines)
 //! - `ToolError`   → archive_read render of error value
 //! - `SessionStep` → same rendering as above; items use role **`tool`** in `conversation_history`
 //!   (not `assistant`). `Open` / `SendDone` (header ± archive body) / `Read` as the **grep(1)/cat(1)
@@ -19,7 +19,7 @@ use std::collections::HashSet;
 use serde_json::{Value, json};
 
 use crate::{
-    archive_read::{PageLimit, session_read_command_line},
+    archive_read::{DEFAULT_TOOL_RESULT_INLINE_LINES, PageLimit, session_read_command_line},
     archive_refs::{HistoryEntry, RefTable},
     tools::ToolRegistry,
 };
@@ -117,7 +117,7 @@ pub struct ProjectionRenderOptions {
 impl Default for ProjectionRenderOptions {
     fn default() -> Self {
         Self {
-            tool_result: PageLimit::new(40),
+            tool_result: PageLimit::new(DEFAULT_TOOL_RESULT_INLINE_LINES),
             tool_error: PageLimit::new(10),
             send_done: PageLimit::default(),
             tool_call_fallback_json: false,
@@ -275,7 +275,13 @@ fn render_projection_content_with_state(
             if formatted.trim().is_empty() {
                 RenderedEntry::Filtered
             } else {
-                RenderedEntry::One(format!("{tool_name}:\n{formatted}"))
+                let range_comment = page.session_range_comment();
+                let text = if range_comment.is_empty() {
+                    format!("{tool_name}:\n{formatted}")
+                } else {
+                    format!("{tool_name}:{range_comment}\n{formatted}")
+                };
+                RenderedEntry::One(text)
             }
         }
 
@@ -291,7 +297,13 @@ fn render_projection_content_with_state(
             if formatted.trim().is_empty() {
                 RenderedEntry::Filtered
             } else {
-                RenderedEntry::One(format!("{tool_name} [error]:\n{formatted}"))
+                let range_comment = page.session_range_comment();
+                let text = if range_comment.is_empty() {
+                    format!("{tool_name} [error]:\n{formatted}")
+                } else {
+                    format!("{tool_name} [error]:{range_comment}\n{formatted}")
+                };
+                RenderedEntry::One(text)
             }
         }
 
@@ -570,6 +582,33 @@ mod tests {
         assert_eq!(
             payload_occurrences, 1,
             "default Read view should be compacted when SendDone already inlined the same page"
+        );
+    }
+
+    #[test]
+    fn tool_result_includes_pagination_hint_when_truncated() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let rows: Vec<Value> = (0..100).map(|i| json!(format!("line{i}"))).collect();
+        let items = vec![PromptProjectionItem {
+            timestamp_ms: 1,
+            activity_anchor: "evt-tr".into(),
+            role: "tool".into(),
+            content: PromptProjectionContent::ToolResult {
+                tool_name: "demo/tool".into(),
+                result: Value::Array(rows),
+            },
+        }];
+        let history = project_prompt_context(items, &registry, &ref_table, None);
+        let arr = history.as_array().expect("array");
+        let content = arr[0]["content"].as_str().expect("content");
+        assert!(
+            content.contains("more — offset="),
+            "expected pagination footer in: {content}"
+        );
+        assert!(
+            content.contains(&format!("offset={DEFAULT_TOOL_RESULT_INLINE_LINES}")),
+            "expected default cap offset in: {content}"
         );
     }
 }

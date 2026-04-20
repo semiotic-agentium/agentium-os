@@ -372,7 +372,8 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
                 let ctx = context_id_str.clone();
                 let boxed: Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>> =
                     Box::new(move |archive_ref_str, grep_str, offset, limit| {
-                        let short_ref = baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
+                        let short_ref =
+                            baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
                         let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
                         let entry = ref_table.get(short_ref)?;
                         let grep = grep_str
@@ -389,25 +390,12 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
                         // separate history entry that carries this as content.
                         let cmd = match grep_str.filter(|s| !s.is_empty()) {
                             Some(pat) => format!("grep -n '{pat}' {archive_ref_str}"),
-                            None      => format!("cat -n {archive_ref_str}"),
+                            None => format!("cat -n {archive_ref_str}"),
                         };
                         if page.lines.is_empty() {
                             return Some(format!("{cmd}\n# no matches"));
                         }
-                        let first = page.lines.first().map(|l| l.original_line_number).unwrap_or(1);
-                        let last  = page.lines.last().map(|l| l.original_line_number).unwrap_or(1);
-                        let range_comment = if page.has_more {
-                            format!(
-                                "  # lines {first}-{last} of {} ({} more — offset={} for next page)",
-                                page.total_matched,
-                                page.total_matched - page.next_offset,
-                                page.next_offset,
-                            )
-                        } else if first == 1 && last == page.total_matched {
-                            String::new()
-                        } else {
-                            format!("  # lines {first}-{last} of {}", page.total_matched)
-                        };
+                        let range_comment = page.session_range_comment();
                         Some(format!("{cmd}{range_comment}\n{formatted}"))
                     });
                 boxed
