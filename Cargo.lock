@@ -1565,6 +1565,8 @@ dependencies = [
  "futures-util",
  "insta",
  "inventory",
+ "opentelemetry 0.26.0",
+ "opentelemetry_sdk",
  "proptest",
  "serde",
  "serde_json",

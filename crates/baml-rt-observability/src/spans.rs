@@ -199,13 +199,22 @@ pub fn invoke_baml_function(function_name: &str) -> Span {
 
 /// Create span for handling an A2A request.
 ///
-/// Root span - includes runtime scope attributes for context propagation.
+/// Root span - includes runtime scope attributes for context propagation and the agent
+/// identity carried by the serving runner (package + instance).
 #[inline]
-pub fn a2a_request(scope: Option<&RuntimeScope>, method: &str, correlation_id: &str) -> Span {
+pub fn a2a_request(
+    scope: Option<&RuntimeScope>,
+    method: &str,
+    agent_package: &str,
+    agent_instance_id: &str,
+    correlation_id: &str,
+) -> Span {
     let (context_id, message_id, task_id) = scope_attributes(scope);
     tracing::info_span!(
         "baml_rt.a2a_request",
         method = method,
+        agent_package = agent_package,
+        agent_instance_id = agent_instance_id,
         correlation_id = correlation_id,
         context_id = %context_id.as_deref().unwrap_or("none"),
         message_id = %message_id.as_deref().unwrap_or("none"),
@@ -215,13 +224,22 @@ pub fn a2a_request(scope: Option<&RuntimeScope>, method: &str, correlation_id: &
 
 /// Create span for handling an A2A stream request.
 ///
-/// Root span - includes runtime scope attributes for context propagation.
+/// Root span - includes runtime scope attributes for context propagation and the agent
+/// identity carried by the serving runner (package + instance).
 #[inline]
-pub fn a2a_stream(scope: Option<&RuntimeScope>, method: &str, correlation_id: &str) -> Span {
+pub fn a2a_stream(
+    scope: Option<&RuntimeScope>,
+    method: &str,
+    agent_package: &str,
+    agent_instance_id: &str,
+    correlation_id: &str,
+) -> Span {
     let (context_id, message_id, task_id) = scope_attributes(scope);
     tracing::info_span!(
         "baml_rt.a2a_stream",
         method = method,
+        agent_package = agent_package,
+        agent_instance_id = agent_instance_id,
         correlation_id = correlation_id,
         context_id = %context_id.as_deref().unwrap_or("none"),
         message_id = %message_id.as_deref().unwrap_or("none"),
@@ -231,13 +249,22 @@ pub fn a2a_stream(scope: Option<&RuntimeScope>, method: &str, correlation_id: &s
 
 /// Create span for handling an A2A cancel request.
 ///
-/// Root span - includes runtime scope attributes for context propagation.
+/// Root span - includes runtime scope attributes for context propagation and the agent
+/// identity carried by the serving runner (package + instance).
 #[inline]
-pub fn a2a_cancel(scope: Option<&RuntimeScope>, task_id: &str, correlation_id: &str) -> Span {
+pub fn a2a_cancel(
+    scope: Option<&RuntimeScope>,
+    task_id: &str,
+    agent_package: &str,
+    agent_instance_id: &str,
+    correlation_id: &str,
+) -> Span {
     let (context_id, message_id, _) = scope_attributes(scope);
     tracing::info_span!(
         "baml_rt.a2a_cancel",
         task_id = task_id,
+        agent_package = agent_package,
+        agent_instance_id = agent_instance_id,
         correlation_id = correlation_id,
         context_id = %context_id.as_deref().unwrap_or("none"),
         message_id = %message_id.as_deref().unwrap_or("none"),

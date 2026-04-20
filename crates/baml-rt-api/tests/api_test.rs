@@ -333,8 +333,7 @@ impl OtelTestFixture {
     }
 }
 
-/// Helper to find a span by name; reserved for future span assertions.
-#[allow(dead_code)]
+/// Helper to find a span by name.
 fn find_span<'a>(
     spans: &'a [opentelemetry_sdk::export::trace::SpanData],
     name: &str,
@@ -1383,6 +1382,110 @@ async fn post_dispatch_returns_buffered_ack() {
         .unwrap();
     let snapshot = response_snapshot(status, &body);
     insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn post_a2a_span_records_agent_identity_and_service_instance_fields() {
+    let fixture = OtelTestFixture::new();
+    let registry: Arc<dyn AgentRegistry> = Arc::new(
+        MockRegistry::with_entries(vec![discovery_entry("pkg", "default", "pkg", "1.0.0")])
+            .with_handle_ok(vec![serde_json::json!({
+                "jsonrpc": "2.0",
+                "result": { "tasks": [], "totalSize": 0, "pageSize": 50 },
+                "id": null
+            })]),
+    );
+    let app = api_router(registry, None, None).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/agents/pkg/default/a2a")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","method":"tasks.list","params":{},"id":null}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let spans = fixture.spans();
+    let span = find_span(&spans, "baml_rt_api.post_a2a")
+        .expect("baml_rt_api.post_a2a span emitted for POST /agents/.../a2a");
+    assert_eq!(
+        attr_value(span, "agent_package").as_deref(),
+        Some("pkg"),
+        "post_a2a span must carry agent_package attribute"
+    );
+    assert_eq!(
+        attr_value(span, "agent_instance_id").as_deref(),
+        Some("default"),
+        "post_a2a span must carry agent_instance_id attribute"
+    );
+    assert_eq!(
+        attr_value(span, "forwarded").as_deref(),
+        Some("false"),
+        "post_a2a span must mark forwarded=false in the single-runner path"
+    );
+    let ingress = attr_value(span, "ingress_service_instance_id")
+        .expect("post_a2a span must carry ingress_service_instance_id");
+    let serving = attr_value(span, "serving_service_instance_id")
+        .expect("post_a2a span must carry serving_service_instance_id");
+    assert!(!ingress.is_empty(), "ingress_service_instance_id is empty");
+    assert_eq!(
+        ingress, serving,
+        "single-runner path must set ingress == serving service_instance_id"
+    );
+}
+
+#[tokio::test]
+async fn post_dispatch_span_records_agent_identity_and_service_instance_fields() {
+    let fixture = OtelTestFixture::new();
+    let registry: Arc<dyn AgentRegistry> = Arc::new(
+        MockRegistry::with_entries(vec![discovery_entry("pkg", "default", "pkg", "1.0.0")])
+            .with_dispatch_ok(AgentDispatchAck {
+                accepted: true,
+                detail: Some("workflow intake accepted delivery".to_string()),
+            }),
+    );
+    let app = api_router(registry, None, None).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/agents/pkg/default/dispatch")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "routing_key":"slack:intake",
+                        "message_type":"task-daemon.interpretation.v1",
+                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let spans = fixture.spans();
+    let span = find_span(&spans, "baml_rt_api.post_dispatch")
+        .expect("baml_rt_api.post_dispatch span emitted for POST /agents/.../dispatch");
+    assert_eq!(attr_value(span, "agent_package").as_deref(), Some("pkg"));
+    assert_eq!(
+        attr_value(span, "agent_instance_id").as_deref(),
+        Some("default")
+    );
+    assert_eq!(attr_value(span, "forwarded").as_deref(), Some("false"));
+    let ingress = attr_value(span, "ingress_service_instance_id")
+        .expect("post_dispatch span must carry ingress_service_instance_id");
+    let serving = attr_value(span, "serving_service_instance_id")
+        .expect("post_dispatch span must carry serving_service_instance_id");
+    assert_eq!(ingress, serving);
 }
 
 #[tokio::test]

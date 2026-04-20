@@ -34,6 +34,8 @@ baml-rt = { path = "../baml-rt" }
 baml-derive = { path = "../baml-derive" }
 baml-derive-core = { path = "../baml-derive-core" }
 insta = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 proptest = { workspace = true }
 
 [features]

@@ -156,11 +156,23 @@ fn prop_a2a_spans_map_runtime_scope_fields() {
     let (layer, seen) = CaptureLayer::new();
     let subscriber = tracing_subscriber::registry().with(layer);
     tracing::subscriber::with_default(subscriber, || {
-        let request = spans::a2a_request(Some(&scope), "message/send", "corr-1");
+        let request = spans::a2a_request(
+            Some(&scope),
+            "message/send",
+            "demo-agent",
+            "default",
+            "corr-1",
+        );
         let _request_guard = request.enter();
-        let stream = spans::a2a_stream(Some(&scope), "message/stream", "corr-2");
+        let stream = spans::a2a_stream(
+            Some(&scope),
+            "message/stream",
+            "demo-agent",
+            "default",
+            "corr-2",
+        );
         let _stream_guard = stream.enter();
-        let cancel = spans::a2a_cancel(Some(&scope), "task-a2a", "corr-3");
+        let cancel = spans::a2a_cancel(Some(&scope), "task-a2a", "demo-agent", "default", "corr-3");
         let _cancel_guard = cancel.enter();
     });
 
@@ -185,6 +197,16 @@ fn prop_a2a_spans_map_runtime_scope_fields() {
         assert_eq!(
             normalize(entry.get("task_id")),
             scope.task_id_opt().map(|id| id.as_str().to_string())
+        );
+        assert_eq!(
+            normalize(entry.get("agent_package")),
+            Some("demo-agent".to_string()),
+            "{span_name} must record agent_package"
+        );
+        assert_eq!(
+            normalize(entry.get("agent_instance_id")),
+            Some("default".to_string()),
+            "{span_name} must record agent_instance_id"
         );
     }
 }
