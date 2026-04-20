@@ -9,6 +9,25 @@ receivers:
 processors:
   batch: {}
 
+  # Promote pilot-contract runner identity from resource attributes to datapoint
+  # attributes on every metric, so Prometheus / Grafana can filter and group by
+  # the runner pod without target_info joins.
+  #
+  # We deliberately do NOT emit `instance` — Prometheus' scrape job adds its own
+  # `instance` label (the scrape target host:port), and without `honor_labels:
+  # true` on the scrape config the sample's version gets renamed to
+  # `exported_instance`. Use `service_instance_id`, which matches the
+  # Prometheus-normalized form of the `service.instance.id` resource attribute
+  # exposed via `target_info`, so operators see the same label name in every
+  # view.
+  # See docs/otel-metrics-instrumentation-guide.md.
+  transform/runner_identity:
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["service_instance_id"], resource.attributes["service.instance.id"]) where resource.attributes["service.instance.id"] != nil
+          - set(attributes["k8s_namespace_name"], resource.attributes["k8s.namespace.name"]) where resource.attributes["k8s.namespace.name"] != nil
+
 exporters:
   prometheus:
     endpoint: 0.0.0.0:8889
@@ -23,7 +42,7 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [batch]
+      processors: [transform/runner_identity, batch]
       exporters: [prometheus]
     traces:
       receivers: [otlp]

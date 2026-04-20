@@ -4,6 +4,11 @@
 //! level targets so operators may run verbose local logs (`RUST_LOG` / `RUST_LOG_FMT`) without
 //! forwarding every `debug` span to the collector (`RUST_LOG_OTEL`).
 
+use opentelemetry::{global, propagation::TextMapCompositePropagator};
+use opentelemetry_sdk::{
+    Resource,
+    propagation::{BaggagePropagator, TraceContextPropagator},
+};
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Env var for **console** (`fmt`) output only. When unset, [`EnvFilter::from_default_env`]
@@ -53,6 +58,19 @@ fn console_env_filter() -> EnvFilter {
     )
 }
 
+/// Install a composite W3C trace-context + baggage propagator as the process-global
+/// text map propagator. This is what makes `opentelemetry_http::{HeaderInjector,
+/// HeaderExtractor}` carry trace context and baggage across HTTP hops so a forwarded
+/// A2A request appears as a single distributed trace. Safe to call multiple times — the
+/// last call wins.
+fn install_global_propagator() {
+    let propagator = TextMapCompositePropagator::new(vec![
+        Box::new(TraceContextPropagator::new()),
+        Box::new(BaggagePropagator::new()),
+    ]);
+    global::set_text_map_propagator(propagator);
+}
+
 fn otel_trace_env_filter() -> EnvFilter {
     if let Ok(spec) = std::env::var(RUST_LOG_OTEL_ENV)
         && !spec.trim().is_empty()
@@ -84,10 +102,24 @@ fn otel_trace_env_filter() -> EnvFilter {
 ///   and the same QuickJS `warn` defaults—so local `RUST_LOG=debug` does not imply exporting every
 ///   debug span unless `RUST_LOG_OTEL` is widened.
 pub fn init_tracing() {
+    init_tracing_with_resource(Resource::default());
+}
+
+/// Initialize tracing/logging and optionally OTLP export, tagging all emitted telemetry
+/// with the supplied [`Resource`].
+///
+/// The runner calls this with [`crate::otel_env::build_runner_resource()`] so its spans
+/// and metrics adopt the pilot identity contract (`service.name=agentium-runner`,
+/// `service.instance.id=$POD_NAME`, etc.). Other binaries (builder CLI, task-daemon,
+/// tests) should stay on [`init_tracing`] to inherit `Resource::default()` and avoid
+/// being mislabeled as runner telemetry.
+pub fn init_tracing_with_resource(resource: Resource) {
+    install_global_propagator();
+
     let console_filter = console_env_filter();
     let fmt_layer = tracing_subscriber::fmt::layer().with_filter(console_filter);
 
-    if let Some(tracer) = crate::otel_env::install_otel_collectors_from_env() {
+    if let Some(tracer) = crate::otel_env::install_otel_collectors_from_env(resource) {
         let otel_filter = otel_trace_env_filter();
         let otel_layer = tracing_opentelemetry::layer()
             .with_tracer(tracer)
