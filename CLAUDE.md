@@ -69,7 +69,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 **Runtime**
 - **baml-rt-tools** — Tool trait, registry/executor, session FSM (`ToolSessionPlan` with Open/Send/Read/Finish/Abort ops)
 - **baml-rt-interceptor** — Interceptor trait + pipeline (pre/post execution hooks)
-- **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics; `init_tracing()` uses per-layer filters (`RUST_LOG_FMT`, `RUST_LOG_OTEL`); central `spans.rs` keeps A2A ingress at `info` and agent execution spans at `debug` (see `docs/otel-trace-instrumentation-guide.md`); exported OTLP metric names: `docs/metrics-inventory.md`
+- **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics; `init_tracing()` uses per-layer filters (`RUST_LOG_FMT`, `RUST_LOG_OTEL`); central `spans.rs` keeps A2A ingress at `info` and agent execution spans at `debug` (see `docs/otel-trace-instrumentation-guide.md`); exported OTLP metric names: `docs/metrics-inventory.md`; runner identity foundation for K8s pilot with service.instance.id and deployment.environment resource attributes
 - **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations
 - **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling
 - **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence
@@ -194,6 +194,8 @@ Prerequisites include creating secrets and ConfigMaps before installation:
 - `fnox-config` ConfigMap (LLM configuration)
 
 The chart supports both design partner values (production-like) and k3d values (local development). There is no published runner image — operators must build and push their own.
+
+The chart includes observability configuration for OpenTelemetry pilot deployments. When `observability.enabled` is true, the runner pods receive OTEL_* environment variables with the pilot identity contract: `service.name=agentium-runner`, `service.instance.id=$POD_NAME`, `k8s.namespace.name=$POD_NAMESPACE`, and `deployment.environment` (defaults to `global.environment`). The `observability.otlpEndpoint` setting configures the OTLP gRPC collector endpoint; when empty, OTLP export remains disabled.
 
 See `deploy/helm/agentium-os/README.md` for complete installation instructions and verification steps.
 
