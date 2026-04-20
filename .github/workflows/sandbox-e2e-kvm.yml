@@ -36,6 +36,66 @@ jobs:
             -t ${IMAGE_NAME}:${IMAGE_TAG} \
             .
 
+      - name: Smoke test framed tool/describe roundtrip
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        run: |
+          python - <<'PY'
+          import json
+          import struct
+          import subprocess
+
+          import os
+
+          image_ref = os.environ["IMAGE_REF"]
+
+          request = {
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "tool/describe",
+              "params": {},
+          }
+          body = json.dumps(request, separators=(",", ":")).encode("utf-8")
+          framed = struct.pack(">I", len(body)) + body
+
+          proc = subprocess.run(
+              ["docker", "run", "--rm", "-i", image_ref],
+              input=framed,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+              check=False,
+          )
+
+          if proc.returncode != 0:
+              raise SystemExit(
+                  f"adapter container exited non-zero: {proc.returncode}\n"
+                  f"stderr:\n{proc.stderr.decode('utf-8', errors='replace')}"
+              )
+
+          out = proc.stdout
+          if len(out) < 4:
+              raise SystemExit(f"stdout too short for frame header: {out!r}")
+
+          n = struct.unpack(">I", out[:4])[0]
+          payload = out[4:4+n]
+          tail = out[4+n:]
+
+          if len(payload) != n:
+              raise SystemExit(f"truncated response payload: want {n}, got {len(payload)}")
+          if tail:
+              raise SystemExit(f"unexpected trailing bytes after frame: {tail!r}")
+
+          response = json.loads(payload)
+          assert response.get("jsonrpc") == "2.0", response
+          assert response.get("id") == 1, response
+          result = response.get("result")
+          assert isinstance(result, dict), response
+          assert result.get("tool_name") == "sandbox-echo", response
+          assert result.get("protocol_version") == "1", response
+
+          print("smoke test passed")
+          PY
+
       - name: Resolve local image digest
         id: image_digest
         env:
@@ -83,6 +143,18 @@ jobs:
           name: sandbox-echo-ci-metadata
           path: ${{ runner.temp }}/sandbox_echo.tool-metadata.ci.json
 
+      - name: Save local image as artifact
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        run: |
+          docker save "${IMAGE_REF}" -o "${RUNNER_TEMP}/sandbox-echo-image.tar"
+
+      - name: Upload local image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-echo-ci-image
+          path: ${{ runner.temp }}/sandbox-echo-image.tar
+
   kvm-e2e:
     name: KVM E2E (baml-rt-tools)
     needs: prepare-fixture
@@ -116,14 +188,15 @@ jobs:
           name: sandbox-echo-ci-metadata
           path: ${{ runner.temp }}/sandbox-echo-ci-metadata
 
-      - name: Build image locally for this runner
+      - name: Download local image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sandbox-echo-ci-image
+          path: ${{ runner.temp }}/sandbox-echo-ci-image
+
+      - name: Load local image from artifact
         run: |
-          docker buildx build \
-            --platform linux/amd64 \
-            --load \
-            -f crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter/Dockerfile \
-            -t ${IMAGE_NAME}:${IMAGE_TAG} \
-            .
+          docker load -i "${RUNNER_TEMP}/sandbox-echo-ci-image/sandbox-echo-image.tar"
 
       - name: Run KVM-gated microsandbox E2E
         env:
