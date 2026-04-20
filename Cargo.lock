@@ -1770,12 +1770,14 @@ version = "0.1.0"
 dependencies = [
  "baml-rt-core",
  "opentelemetry 0.26.0",
+ "opentelemetry-http",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

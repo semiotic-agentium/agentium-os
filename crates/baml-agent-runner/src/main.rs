@@ -32,7 +32,7 @@ use baml_rt_llm_config::{
     FnoxFileSecretResolver, OverlaySecretResolver, SECRET_LINKS_CONFIG_KEY, SecretLinksState,
     apply_secret_links_state,
 };
-use baml_rt_observability::tracing_setup;
+use baml_rt_observability::{otel_env, tracing_setup};
 use baml_rt_repository::{
     BlobStore, LineageStore, MetadataStore, RepositoryService, SearchStore, SurrealStore,
 };
@@ -113,7 +113,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
     // Load dotenv before tracing/OTEL bootstrap so OTEL_* from .env are visible
     // to `init_tracing()` and exporter wiring.
     let dotenv_result = dotenvy::dotenv();
-    tracing_setup::init_tracing();
+    tracing_setup::init_tracing_with_resource(otel_env::build_runner_resource());
     match dotenv_result {
         Ok(path) => tracing::debug!(path = ?path, "Loaded .env"),
         Err(err) => tracing::debug!(error = ?err, "No .env loaded"),

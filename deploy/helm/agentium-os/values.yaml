@@ -110,6 +110,28 @@ surrealdb:
       cpu: 500m
       memory: 512Mi
 
+# -- Observability / OpenTelemetry configuration.
+#
+# When enabled, the runner emits OTLP traces and metrics with the pilot identity
+# contract: service.name=agentium-runner, service.instance.id=$POD_NAME,
+# k8s.namespace.name=$POD_NAMESPACE, deployment.environment=<environment>.
+# See docs/otel-trace-instrumentation-guide.md and
+# docs/otel-metrics-instrumentation-guide.md.
+observability:
+  # -- Toggle injection of OTEL_* env vars on the runner container.
+  enabled: true
+  # -- deployment.environment resource attribute value. When empty, falls back to
+  # global.environment so the Kubernetes labels and the OTEL resource identity stay
+  # in sync. Set explicitly only when the operator needs to distinguish multiple
+  # runner deployments that share a cluster environment (e.g. two pilot releases
+  # labelled global.environment=production but observability.environment=pilot-a
+  # vs pilot-b).
+  environment: ""
+  # -- OTLP gRPC endpoint for traces and metrics. When empty, OTLP export stays
+  # off (the runtime skips installing exporters without a configured endpoint).
+  # Example: "http://otel-collector.observability.svc.cluster.local:4317"
+  otlpEndpoint: ""
+
 # -- fnox LLM configuration.
 fnox:
   config:

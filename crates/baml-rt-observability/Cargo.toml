@@ -9,8 +9,10 @@ publish = false
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
 tracing-opentelemetry = { workspace = true }
 opentelemetry-otlp = { version = "0.26", features = ["grpc-tonic", "http-proto", "trace", "metrics"] }
+opentelemetry-http = { workspace = true }
 baml-rt-core = { path = "../baml-rt-core" }
 opentelemetry = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true }
+uuid = { workspace = true }

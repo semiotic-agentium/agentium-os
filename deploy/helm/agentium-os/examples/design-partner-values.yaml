@@ -46,3 +46,12 @@ surrealdb:
 fnox:
   config:
     existingConfigMap: fnox-config
+
+# Observability / OpenTelemetry — operators point this at their own OTLP collector.
+# Leaving otlpEndpoint empty (the default) keeps the runner silent on OTLP; fill it in
+# when the collector is reachable from the runner pods. `deployment.environment`
+# resolves to `global.environment` above (i.e. "production" here) unless
+# `observability.environment` is set explicitly.
+observability:
+  enabled: true
+  # otlpEndpoint: "http://otel-collector.observability.svc.cluster.local:4317"

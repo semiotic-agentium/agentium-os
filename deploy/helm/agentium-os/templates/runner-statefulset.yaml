@@ -47,6 +47,10 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             # Per-pod addressing for cross-runner A2A forwarding.
             - name: RUNNER_ENDPOINT
               value: "http://$(POD_NAME).{{ $fullname }}.{{ .Release.Namespace }}.svc:{{ .Values.runner.service.headless.port }}"
@@ -71,6 +75,22 @@ spec:
             {{- if .Values.fnox.config.existingConfigMap }}
             - name: BAML_FNOX_CONFIG
               value: /config/fnox.toml
+            {{- end }}
+            {{- if .Values.observability.enabled }}
+            # OTEL pilot contract — see docs/otel-metrics-instrumentation-guide.md and
+            # docs/otel-trace-instrumentation-guide.md. Resource attrs compose with the
+            # in-process helper so `service.instance.id` on resources, spans, and metrics
+            # cannot drift.
+            - name: OTEL_SERVICE_NAME
+              value: "agentium-runner"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=agentium,deployment.environment={{ coalesce .Values.observability.environment .Values.global.environment "pilot" }},service.instance.id=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE)"
+            {{- if .Values.observability.otlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.observability.otlpEndpoint | quote }}
+            {{- end }}
             {{- end }}
           resources:
             {{- toYaml .Values.runner.resources | nindent 12 }}
