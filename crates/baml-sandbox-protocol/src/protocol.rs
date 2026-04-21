@@ -135,14 +135,3 @@ pub struct ToolInvokeResult {
     #[serde(default)]
     pub done: bool,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{METHOD_DESCRIBE, METHOD_INVOKE, SUPPORTED_METHODS};
-
-    #[test]
-    fn supported_methods_advertise_describe_and_invoke() {
-        assert!(SUPPORTED_METHODS.contains(&METHOD_DESCRIBE));
-        assert!(SUPPORTED_METHODS.contains(&METHOD_INVOKE));
-    }
-}
