@@ -5,6 +5,7 @@
 use std::{sync::OnceLock, time::Duration};
 
 use axum::{Json, http::StatusCode as AxumStatus};
+use baml_rt_core::{AgentInstanceId, AgentPackageName};
 use http_api_problem::HttpApiProblem;
 use opentelemetry::{
     KeyValue, global,
@@ -44,16 +45,16 @@ fn request_attributes(route: &str, result: &str) -> [KeyValue; 2] {
 
 fn agent_request_attributes(
     route: &str,
-    agent_package: &str,
-    agent_instance_id: &str,
+    agent_package: &AgentPackageName,
+    agent_instance_id: &AgentInstanceId,
     forwarded: bool,
     ingress_service_instance_id: &str,
     result: &str,
 ) -> [KeyValue; 6] {
     [
         KeyValue::new("route", route.to_string()),
-        KeyValue::new("agent_package", agent_package.to_string()),
-        KeyValue::new("agent_instance_id", agent_instance_id.to_string()),
+        KeyValue::new("agent_package", agent_package.as_str().to_string()),
+        KeyValue::new("agent_instance_id", agent_instance_id.as_str().to_string()),
         KeyValue::new("forwarded", forwarded.to_string()),
         KeyValue::new(
             "ingress_service_instance_id",
@@ -141,10 +142,14 @@ pub(crate) fn record_request(route: &str, result: &str, duration: Duration) {
 /// operators can slice agent traffic on Grafana without joining on `target_info`.
 /// Non-agent routes keep using [`record_request`] so those series don't get agent
 /// labels sprayed into them.
+///
+/// Takes typed identifiers so raw request input cannot become an explicit metric
+/// label — the handler must parse first and fall back to [`record_request`] on
+/// parse failure.
 pub(crate) fn record_agent_http_request(
     route: &str,
-    agent_package: &str,
-    agent_instance_id: &str,
+    agent_package: &AgentPackageName,
+    agent_instance_id: &AgentInstanceId,
     forwarded: bool,
     ingress_service_instance_id: &str,
     result: &str,
@@ -179,7 +184,16 @@ pub(crate) fn record_conversation_history_payload(
 
 #[cfg(test)]
 mod tests {
+    use baml_rt_core::{AgentInstanceId, AgentPackageName};
+
     use super::{agent_request_attributes, request_attributes};
+
+    fn demo_identity() -> (AgentPackageName, AgentInstanceId) {
+        (
+            AgentPackageName::parse("demo-agent").expect("valid package identifier"),
+            AgentInstanceId::parse("default").expect("valid instance identifier"),
+        )
+    }
 
     #[test]
     fn request_attributes_use_consistent_schema() {
@@ -200,13 +214,9 @@ mod tests {
 
     #[test]
     fn agent_request_attributes_carry_identity_and_ingress_pod() {
+        let (package, instance) = demo_identity();
         let attrs = agent_request_attributes(
-            "post_a2a",
-            "demo-agent",
-            "default",
-            false,
-            "runner-0",
-            "success",
+            "post_a2a", &package, &instance, false, "runner-0", "success",
         );
         let mut got = attrs
             .iter()
@@ -231,14 +241,9 @@ mod tests {
 
     #[test]
     fn agent_request_attributes_mark_forwarded_true() {
-        let attrs = agent_request_attributes(
-            "post_a2a",
-            "demo-agent",
-            "default",
-            true,
-            "runner-1",
-            "success",
-        );
+        let (package, instance) = demo_identity();
+        let attrs =
+            agent_request_attributes("post_a2a", &package, &instance, true, "runner-1", "success");
         let forwarded = attrs
             .iter()
             .find(|kv| kv.key.as_str() == "forwarded")
