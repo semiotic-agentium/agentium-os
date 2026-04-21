@@ -23,7 +23,6 @@ surrealdb = { workspace = true }
 axum = { workspace = true }
 http-api-problem = { workspace = true }
 utoipa = { workspace = true }
-opentelemetry = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

@@ -1862,7 +1862,6 @@ dependencies = [
  "flate2",
  "http-api-problem",
  "insta",
- "opentelemetry 0.26.0",
  "proptest",
  "serde",
  "serde_json",

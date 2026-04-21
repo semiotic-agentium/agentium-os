@@ -48,9 +48,6 @@ pub mod http;
 pub mod router;
 
 // --- Observability (orthogonal) ---
-#[allow(dead_code)]
-mod metrics;
-#[allow(dead_code)]
 mod spans;
 
 // --- Re-exports for public API ---

@@ -162,6 +162,52 @@ fn bfs_reachable(
     seen
 }
 
+/// Decode a SurrealDB record-id string back to the UUID stored at CREATE time.
+///
+/// Rows come back as `lineage_edges:\`<uuid>\``; the backticks are SurrealDB's
+/// escaping for record ids whose local part contains hyphens. Accept a bare
+/// UUID too, so historical / in-memory rows still parse.
+fn parse_edge_id(raw: &str) -> Option<uuid::Uuid> {
+    let after_prefix = raw.strip_prefix(&format!("{TBL_EDGES}:")).unwrap_or(raw);
+    let trimmed = after_prefix.trim_matches('`');
+    uuid::Uuid::parse_str(trimmed).ok()
+}
+
+fn parent_hashes_from(hash: &ContentHash, edges: &[LineageEdge]) -> Vec<ContentHash> {
+    edges
+        .iter()
+        .filter(|e| &e.target == hash)
+        .map(|e| e.source.clone())
+        .collect()
+}
+
+fn child_hashes_from(hash: &ContentHash, edges: &[LineageEdge]) -> Vec<ContentHash> {
+    edges
+        .iter()
+        .filter(|e| &e.source == hash)
+        .map(|e| e.target.clone())
+        .collect()
+}
+
+fn influence_target_hashes_from(hash: &ContentHash, edges: &[LineageEdge]) -> Vec<ContentHash> {
+    edges
+        .iter()
+        .filter(|e| &e.source == hash && matches!(e.kind, LineageKind::Influence))
+        .map(|e| e.target.clone())
+        .collect()
+}
+
+fn ancestor_hashes_from(
+    hash: &ContentHash,
+    edges: &[LineageEdge],
+    max_depth: u32,
+) -> Vec<ContentHash> {
+    let (_, ancestors_map) = build_lineage_adjacency(edges);
+    bfs_reachable(hash, &ancestors_map, None, Some(max_depth))
+        .into_iter()
+        .collect()
+}
+
 fn encode_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -227,12 +273,14 @@ fn row_contains_text(row: &Value, needle: &str) -> bool {
         .get("manifest_text")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if manifest_text.to_ascii_lowercase().contains(needle) {
+        return true;
+    }
     let source_text = row
         .get("source_text")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let haystack = format!("{manifest_text}\n{source_text}").to_ascii_lowercase();
-    haystack.contains(needle)
+    source_text.to_ascii_lowercase().contains(needle)
 }
 
 pub struct SurrealStore {
@@ -324,8 +372,7 @@ impl SurrealStore {
         let name: AgentName = agent_name_str
             .parse()
             .map_err(|e| decode_err(format!("invalid agent_name: {e}")))?;
-        let version_num = get_required_u32(row, "version");
-        let version_num = version_num?;
+        let version_num = get_required_u32(row, "version")?;
         let version =
             Version::new(version_num).map_err(|e| decode_err(format!("invalid version: {e}")))?;
         let generation = Generation::new(get_required_u32(row, "generation")?);
@@ -345,8 +392,10 @@ impl SurrealStore {
             .get("manifest_capabilities_json")
             .and_then(Value::as_str)
             .unwrap_or("[]");
-        let tools: Vec<String> = serde_json::from_str(tools_json).unwrap_or_default();
-        let capabilities: Vec<String> = serde_json::from_str(capabilities_json).unwrap_or_default();
+        let tools: Vec<String> = serde_json::from_str(tools_json)
+            .map_err(|e| decode_err(format!("invalid manifest_tools_json: {e}")))?;
+        let capabilities: Vec<String> = serde_json::from_str(capabilities_json)
+            .map_err(|e| decode_err(format!("invalid manifest_capabilities_json: {e}")))?;
 
         Ok(RepositoryEntryHeader {
             hash: hash.clone(),
@@ -403,23 +452,55 @@ impl SurrealStore {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let Ok(source_hash) = source.parse::<ContentHash>() else {
+                tracing::warn!(
+                    row_id = id,
+                    source_hash = source,
+                    event = "lineage_edge_row_skipped",
+                    reason = "invalid source_hash"
+                );
                 continue;
             };
             let Ok(target_hash) = target.parse::<ContentHash>() else {
+                tracing::warn!(
+                    row_id = id,
+                    target_hash = target,
+                    event = "lineage_edge_row_skipped",
+                    reason = "invalid target_hash"
+                );
                 continue;
             };
             let kind = match kind {
                 "fork" => LineageKind::Fork,
                 "influence" => LineageKind::Influence,
-                _ => continue,
+                other => {
+                    tracing::warn!(
+                        row_id = id,
+                        kind = other,
+                        event = "lineage_edge_row_skipped",
+                        reason = "unknown kind"
+                    );
+                    continue;
+                }
             };
             let Ok(description) = EdgeDescription::new(desc.to_string()) else {
+                tracing::warn!(
+                    row_id = id,
+                    event = "lineage_edge_row_skipped",
+                    reason = "empty description"
+                );
                 continue;
             };
+            // A malformed edge id destroys edge identity — idempotent writes
+            // and client-side caches cannot reconcile — so surface corruption
+            // rather than fabricating a fresh UUID.
+            //
+            // SurrealDB returns the record id as `lineage_edges:`<uuid>``; the
+            // CREATE path writes the UUID into the record-id slot, so strip
+            // the table prefix and any id-escape backticks before parsing.
+            let edge_uuid = parse_edge_id(id)
+                .ok_or_else(|| decode_err(format!("invalid lineage_edges.id {id:?}")))?;
             out.push(LineageEdge {
-                id: LineageEdgeId::from_uuid(
-                    uuid::Uuid::parse_str(id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
-                ),
+                id: LineageEdgeId::from_uuid(edge_uuid),
                 source: source_hash,
                 target: target_hash,
                 kind,
@@ -429,16 +510,41 @@ impl SurrealStore {
         Ok(out)
     }
 
-    async fn node_for_hash(&self, hash: &ContentHash) -> Result<Option<AncestryNode>> {
-        let Some(row) = self.row_by_hash(hash).await? else {
-            return Ok(None);
-        };
-        let header = self.header_from_row(&row).await?;
-        Ok(Some(AncestryNode {
-            hash: header.hash,
-            generation: header.generation,
-            parentage: header.parentage,
-        }))
+    /// Hydrate a batch of ancestry nodes in a single query.
+    ///
+    /// Unlike [`header_from_row`], this only projects the columns an
+    /// [`AncestryNode`] actually needs, avoiding per-node tag lookups — lineage
+    /// traversals can be large, so the N+1 matters.
+    async fn ancestry_nodes_for_hashes(&self, hashes: &[ContentHash]) -> Result<Vec<AncestryNode>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let hash_strings: Vec<String> = hashes.iter().map(|h| h.as_str().to_string()).collect();
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT hash, generation, parentage_json FROM {TBL_ENTRIES} WHERE hash IN $hashes"
+            ))
+            .bind(("hashes", hash_strings))
+            .await
+            .map_err(map_surreal_read)?;
+        let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
+        let mut nodes = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let hash: ContentHash = get_required_str(row, "hash")?
+                .parse()
+                .map_err(|e| decode_err(format!("invalid hash: {e}")))?;
+            let generation = Generation::new(get_required_u32(row, "generation")?);
+            let parentage: Parentage =
+                serde_json::from_str(get_required_str(row, "parentage_json")?)
+                    .map_err(|e| decode_err(format!("invalid parentage_json: {e}")))?;
+            nodes.push(AncestryNode {
+                hash,
+                generation,
+                parentage,
+            });
+        }
+        Ok(nodes)
     }
 
     fn filter_by_name(&self, headers: &mut Vec<RepositoryEntryHeader>, query: &SearchQuery) {
@@ -701,14 +807,14 @@ impl MetadataStore for SurrealStore {
             .map_err(map_surreal_write)?;
 
         for tag in &entry.tags {
-            let _ = self
-                .db
+            self.db
                 .query(format!(
                     "CREATE {TBL_TAGS} SET entry_hash = $hash, tag = $tag"
                 ))
                 .bind(("hash", hash.as_str().to_string()))
                 .bind(("tag", tag.as_str().to_string()))
-                .await;
+                .await
+                .map_err(map_surreal_write)?;
         }
 
         Ok(RepositoryEntry {
@@ -901,66 +1007,67 @@ impl LineageStore for SurrealStore {
 
     async fn parents(&self, hash: &ContentHash) -> Result<Vec<AncestryNode>> {
         let edges = self.all_edges().await?;
-        let mut out = Vec::new();
-        for edge in edges.iter().filter(|e| &e.target == hash) {
-            if let Some(node) = self.node_for_hash(&edge.source).await? {
-                out.push(node);
-            }
-        }
-        Ok(out)
+        self.ancestry_nodes_for_hashes(&parent_hashes_from(hash, &edges))
+            .await
     }
 
     async fn children(&self, hash: &ContentHash) -> Result<Vec<AncestryNode>> {
         let edges = self.all_edges().await?;
-        let mut out = Vec::new();
-        for edge in edges.iter().filter(|e| &e.source == hash) {
-            if let Some(node) = self.node_for_hash(&edge.target).await? {
-                out.push(node);
-            }
-        }
-        Ok(out)
+        self.ancestry_nodes_for_hashes(&child_hashes_from(hash, &edges))
+            .await
     }
 
     async fn ancestors(&self, hash: &ContentHash, max_depth: u32) -> Result<Vec<AncestryNode>> {
         let edges = self.all_edges().await?;
-        let (_, ancestors_map) = build_lineage_adjacency(&edges);
-        let visited = bfs_reachable(hash, &ancestors_map, None, Some(max_depth));
-        let mut out = Vec::new();
-        for ancestor_hash in visited {
-            if let Some(node) = self.node_for_hash(&ancestor_hash).await? {
-                out.push(node);
-            }
-        }
-        out.sort_by_key(|a| a.generation.as_u32());
-        Ok(out)
+        let mut nodes = self
+            .ancestry_nodes_for_hashes(&ancestor_hashes_from(hash, &edges, max_depth))
+            .await?;
+        nodes.sort_by_key(|a| a.generation.as_u32());
+        Ok(nodes)
     }
 
     async fn influenced_by(&self, hash: &ContentHash) -> Result<Vec<AncestryNode>> {
         let edges = self.all_edges().await?;
-        let mut out = Vec::new();
-        for edge in edges
-            .iter()
-            .filter(|e| &e.source == hash && matches!(e.kind, LineageKind::Influence))
-        {
-            if let Some(node) = self.node_for_hash(&edge.target).await? {
-                out.push(node);
-            }
-        }
-        Ok(out)
+        self.ancestry_nodes_for_hashes(&influence_target_hashes_from(hash, &edges))
+            .await
     }
 
     async fn subgraph(&self, hash: &ContentHash, ancestor_depth: u32) -> Result<LineageSubgraph> {
-        let ancestors = self.ancestors(hash, ancestor_depth).await?;
-        let descendants = self.children(hash).await?;
+        // Fetch edges once; derive ancestor + descendant sets in memory, then
+        // hydrate both with a single batched node query.
+        let edges = self.all_edges().await?;
+        let ancestor_hashes = ancestor_hashes_from(hash, &edges, ancestor_depth);
+        let descendant_hashes = child_hashes_from(hash, &edges);
+
+        let union: Vec<ContentHash> = ancestor_hashes
+            .iter()
+            .chain(descendant_hashes.iter())
+            .cloned()
+            .collect();
+        let node_by_hash: HashMap<ContentHash, AncestryNode> = self
+            .ancestry_nodes_for_hashes(&union)
+            .await?
+            .into_iter()
+            .map(|n| (n.hash.clone(), n))
+            .collect();
+
+        let mut ancestors: Vec<AncestryNode> = ancestor_hashes
+            .iter()
+            .filter_map(|h| node_by_hash.get(h).cloned())
+            .collect();
+        ancestors.sort_by_key(|a| a.generation.as_u32());
+        let descendants: Vec<AncestryNode> = descendant_hashes
+            .iter()
+            .filter_map(|h| node_by_hash.get(h).cloned())
+            .collect();
+
         let node_hashes: HashSet<ContentHash> = ancestors
             .iter()
             .map(|n| n.hash.clone())
             .chain(descendants.iter().map(|n| n.hash.clone()))
             .chain(std::iter::once(hash.clone()))
             .collect();
-        let edges = self
-            .all_edges()
-            .await?
+        let edges = edges
             .into_iter()
             .filter(|e| node_hashes.contains(&e.source) && node_hashes.contains(&e.target))
             .collect();

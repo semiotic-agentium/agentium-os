@@ -68,7 +68,7 @@ impl RepositoryService {
                             "Iteration from {ver}",
                             ver = prev.version_ref
                         ))
-                        .expect("non-empty");
+                        .expect("'Iteration from <ver>' is always non-empty");
                         (
                             Parentage::Forked {
                                 parent: prev.hash.clone(),

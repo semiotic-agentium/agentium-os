@@ -58,22 +58,16 @@ fn repository_router_with_publish(
     service: Arc<RepositoryService>,
     include_publish: bool,
 ) -> Router {
-    let mut router = Router::new()
-        .route("/agents", get(handlers::list_agents))
-        .route("/agents/{name}/versions", get(handlers::list_versions))
-        .route("/entries", get(handlers::get_entries))
-        .route("/entries/{hash}", get(handlers::get_by_hash))
-        .route("/entries/{name}/{version}", get(handlers::get_by_version))
-        .route("/fork", post(handlers::fork))
-        .route("/search", post(handlers::search))
-        .route("/lineage/{hash}", get(handlers::get_lineage))
-        .route("/blobs/{hash}", get(handlers::get_blob))
-        .route("/entries/{hash}/tags", post(handlers::add_tag))
-        .route("/entries/{hash}/tags", delete(handlers::remove_tag));
+    let mut router =
+        repository_read_router(service.clone()).merge(repository_mutation_router(service.clone()));
 
     if include_publish {
-        router = router.route("/publish", post(handlers::publish));
+        router = router.merge(
+            Router::new()
+                .route("/publish", post(handlers::publish))
+                .with_state(service),
+        );
     }
 
-    router.with_state(service)
+    router
 }
