@@ -42,7 +42,7 @@ use commands::{
     publish::PublishOriginArg,
     utils::resolve_runner_token,
 };
-use templates::external_tool::{Access, DEFAULT_BUNDLE, Language, Runtime};
+use templates::external_tool::{Access, DEFAULT_BUNDLE, Language, Runtime, SandboxSource};
 
 /// Agent Platform SDK CLI
 ///
@@ -87,11 +87,19 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = Runtime::Process)]
         runtime: Runtime,
 
-        /// Sandbox image reference (`...@sha256:...`) when --runtime sandbox
+        /// Sandbox source kind when --runtime sandbox
+        #[arg(long, value_enum, default_value_t = SandboxSource::Oci)]
+        sandbox_source: SandboxSource,
+
+        /// Sandbox OCI image reference (`...@sha256:...`) when --sandbox-source oci
         #[arg(long)]
         sandbox_image: Option<String>,
 
-        /// Runtime identity digest (`sha256:...`) when --runtime sandbox
+        /// Sandbox bind rootfs path when --sandbox-source bind
+        #[arg(long)]
+        sandbox_bind_path: Option<String>,
+
+        /// Runtime identity digest (`sha256:...`) when --runtime sandbox (optional for oci/bind; auto-computed)
         #[arg(long)]
         runtime_digest: Option<String>,
 
@@ -372,7 +380,9 @@ fn main() -> anyhow::Result<()> {
             lang,
             access,
             runtime,
+            sandbox_source,
             sandbox_image,
+            sandbox_bind_path,
             runtime_digest,
             sandbox_entrypoint,
             description,
@@ -426,24 +436,33 @@ fn main() -> anyhow::Result<()> {
                 runtime
             };
 
-            let (sandbox_image, runtime_digest, sandbox_entrypoint) = if runtime == Runtime::Sandbox
+            let (sandbox_image, sandbox_bind_path, runtime_digest, sandbox_entrypoint) = if runtime
+                == Runtime::Sandbox
             {
-                let image = match sandbox_image {
-                    Some(v) if !interactive => v,
-                    _ => interactive::prompt_external_tool_sandbox_image()?,
-                };
-                let digest = match runtime_digest {
-                    Some(v) if !interactive => v,
-                    _ => interactive::prompt_external_tool_runtime_digest()?,
-                };
                 let entrypoint = if interactive {
                     interactive::prompt_external_tool_sandbox_entrypoint()?
                 } else {
                     sandbox_entrypoint
                 };
-                (Some(image), Some(digest), entrypoint)
+                match sandbox_source {
+                    SandboxSource::Oci => {
+                        let image = match sandbox_image {
+                            Some(v) if !interactive => v,
+                            _ => interactive::prompt_external_tool_sandbox_image()?,
+                        };
+                        (Some(image), None, runtime_digest, entrypoint)
+                    }
+                    SandboxSource::Bind => {
+                        if interactive {
+                            anyhow::bail!(
+                                "interactive bind source is not implemented yet; pass --sandbox-source bind --sandbox-bind-path <dir>"
+                            );
+                        }
+                        (None, sandbox_bind_path, runtime_digest, entrypoint)
+                    }
+                }
             } else {
-                (None, None, Vec::new())
+                (None, None, None, Vec::new())
             };
 
             // Interactive flow always gets a confirm prompt so a mistyped
@@ -462,7 +481,9 @@ fn main() -> anyhow::Result<()> {
                 lang,
                 access,
                 runtime,
+                sandbox_source,
                 sandbox_image: sandbox_image.as_deref(),
+                sandbox_bind_path: sandbox_bind_path.as_deref(),
                 runtime_digest: runtime_digest.as_deref(),
                 sandbox_entrypoint: &sandbox_entrypoint,
                 description: &description,

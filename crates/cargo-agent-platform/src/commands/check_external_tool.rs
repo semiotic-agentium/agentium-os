@@ -7,7 +7,9 @@
 use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
-use baml_rt_tools::external_tools::{ToolRuntime, read_external_metadata};
+use baml_rt_tools::external_tools::{
+    SandboxImageRef, ToolRuntime, canonical_bind_digest, read_external_metadata,
+};
 use console::style;
 use jsonschema::JSONSchema;
 use serde_json::Value;
@@ -46,17 +48,63 @@ pub fn run(path: &str) -> Result<()> {
 
     let typed = read_external_metadata(tool_dir)?;
     if let Some(ToolRuntime::Sandbox(runtime)) = &typed.runtime {
-        if typed.runtime_digest.is_none() {
-            bail!(
+        let runtime_digest = typed.runtime_digest.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
                 "sandbox runtime requires runtime_digest in tool-metadata.json (tool: {})",
                 typed.name
-            );
-        }
-        if !runtime.image.contains("@sha256:") {
-            bail!(
-                "sandbox runtime image must be digest-pinned (missing @sha256:): {}",
-                runtime.image
-            );
+            )
+        })?;
+
+        match &runtime.image {
+            SandboxImageRef::Oci { r#ref } => {
+                let Some((_, digest)) = r#ref.split_once("@") else {
+                    bail!("sandbox oci image must be digest-pinned (missing @sha256:): {ref}", ref = r#ref);
+                };
+                if !digest.starts_with("sha256:") {
+                    bail!("sandbox oci image must include @sha256:<64-hex>: {ref}", ref = r#ref);
+                }
+                if digest != runtime_digest {
+                    bail!(
+                        "runtime_digest mismatch for oci source: metadata runtime_digest={} but image digest={}",
+                        runtime_digest,
+                        digest
+                    );
+                }
+            }
+            SandboxImageRef::Bind { path } => {
+                let canonical = std::fs::canonicalize(path)
+                    .with_context(|| format!("bind path does not resolve: {}", path.display()))?;
+                if !canonical.is_dir() {
+                    bail!("bind path is not a directory: {}", canonical.display());
+                }
+                let computed = canonical_bind_digest(&canonical).with_context(|| {
+                    format!("failed to compute bind digest for {}", canonical.display())
+                })?;
+                if computed != runtime_digest {
+                    bail!(
+                        "runtime_digest mismatch for bind source: metadata runtime_digest={} but computed={}",
+                        runtime_digest,
+                        computed
+                    );
+                }
+
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    let mode = std::fs::metadata(&canonical)?.mode() & 0o7777;
+                    if mode & 0o002 != 0 {
+                        println!(
+                            "{} bind rootfs is world-writable (mode {:o}): {}",
+                            style("!").yellow(),
+                            mode,
+                            canonical.display()
+                        );
+                    }
+                }
+            }
+            _ => {
+                bail!("unsupported sandbox image kind in metadata for tool {}", typed.name);
+            }
         }
     }
 
@@ -84,7 +132,7 @@ mod tests {
     use super::*;
     use crate::{
         commands::new_tool::build_file_set,
-        templates::external_tool::{Access, Language, Runtime, ScaffoldContext},
+        templates::external_tool::{Access, Language, Runtime, SandboxSource, ScaffoldContext},
     };
 
     #[test]
@@ -96,6 +144,7 @@ mod tests {
             language: Language::Bash,
             description: "Echo external tool",
             runtime: Runtime::Process,
+            sandbox_source: Some(SandboxSource::Oci),
             sandbox_image: None,
             runtime_digest: None,
             sandbox_entrypoint: Vec::new(),

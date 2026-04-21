@@ -9,22 +9,23 @@
 //! - Secrets default to empty — resolver integration is a D concern.
 //! - Resource limits default to the §10.3 suggested values.
 
-use std::{sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use baml_rt_core::{BamlRtError, Result};
 use uuid::Uuid;
 
 use super::{
     invoker::{SandboxCache, SandboxCacheKey, SandboxSpecBuilder},
+    path_guard::canonicalize_bind_path,
     provider::SandboxProvider,
-    spec::{ImageDigest, PullPolicy, SandboxSpec},
+    spec::{PullPolicy, SandboxImageSource, SandboxSpec},
 };
 use crate::{
     ToolName,
     external_tools::{
         metadata::ExternalToolMetadata,
         resolver::{SandboxRuntimeWiring, SandboxSpecFactory},
-        runtime::ToolRuntime,
+        runtime::{SandboxImageRef, ToolRuntime},
     },
 };
 
@@ -54,8 +55,15 @@ pub fn fresh_runner_id() -> String {
 /// Workstream D plugs policy compilation + secret resolution behind the
 /// same `SandboxSpecFactory` surface — the resolver doesn't change.
 pub fn default_spec_factory(cache: Arc<SandboxCache>) -> SandboxSpecFactory {
+    default_spec_factory_with_bind_roots(cache, Vec::new())
+}
+
+pub fn default_spec_factory_with_bind_roots(
+    cache: Arc<SandboxCache>,
+    bind_roots: Vec<PathBuf>,
+) -> SandboxSpecFactory {
     Arc::new(move |tool_name, meta| {
-        build_default_spec_builder(cache.clone(), tool_name, meta)
+        build_default_spec_builder(cache.clone(), tool_name, meta, &bind_roots)
     })
 }
 
@@ -63,6 +71,7 @@ fn build_default_spec_builder(
     cache: Arc<SandboxCache>,
     tool_name: &ToolName,
     meta: &ExternalToolMetadata,
+    bind_roots: &[PathBuf],
 ) -> Result<SandboxSpecBuilder> {
     let Some(ToolRuntime::Sandbox(sandbox_spec)) = meta.runtime.as_ref() else {
         return Err(BamlRtError::InvalidArgument(format!(
@@ -70,7 +79,12 @@ fn build_default_spec_builder(
         )));
     };
 
-    let image = sandbox_spec.image.clone();
+    let image = match &sandbox_spec.image {
+        SandboxImageRef::Oci { r#ref } => SandboxImageSource::Oci(r#ref.clone()),
+        SandboxImageRef::Bind { path } => {
+            SandboxImageSource::Bind(canonicalize_bind_path(path, bind_roots)?)
+        }
+    };
     let entrypoint = sandbox_spec.entrypoint.clone();
     let runtime_digest = meta.runtime_digest.clone();
 
@@ -86,13 +100,13 @@ fn build_default_spec_builder(
 
 fn build_stock_spec(
     name: String,
-    image: &str,
+    image: &SandboxImageSource,
     entrypoint: &[String],
     runtime_digest: Option<String>,
 ) -> SandboxSpec {
     SandboxSpec {
         name,
-        image: ImageDigest::new(image.to_string()),
+        image: image.clone(),
         cpus: 1,
         memory_mib: 512,
         env: Default::default(),
@@ -119,8 +133,16 @@ pub fn stock_wiring(
     provider: Arc<dyn SandboxProvider>,
     runner_id: impl Into<String>,
 ) -> SandboxRuntimeWiring {
+    stock_wiring_with_bind_roots(provider, runner_id, Vec::new())
+}
+
+pub fn stock_wiring_with_bind_roots(
+    provider: Arc<dyn SandboxProvider>,
+    runner_id: impl Into<String>,
+    bind_roots: Vec<PathBuf>,
+) -> SandboxRuntimeWiring {
     let cache = Arc::new(SandboxCache::new(runner_id));
-    let spec_factory = default_spec_factory(cache.clone());
+    let spec_factory = default_spec_factory_with_bind_roots(cache.clone(), bind_roots);
     SandboxRuntimeWiring {
         provider,
         cache,

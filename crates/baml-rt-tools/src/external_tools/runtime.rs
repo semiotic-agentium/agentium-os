@@ -12,7 +12,10 @@
 //! 3. Relative paths resolve against the metadata directory (handled by the
 //!    resolver, not this module).
 
-use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+use serde::{Deserialize, Deserializer, Serialize};
+use tracing::warn;
 
 /// Default command used when a `process` runtime omits `command`. Matches the
 /// wrapper shipped by the CLI scaffolder (§4.2 "wrapper kept as default").
@@ -79,22 +82,53 @@ fn default_process_command() -> Vec<String> {
     vec![DEFAULT_PROCESS_COMMAND.to_string()]
 }
 
-/// Sandbox runtime: digest-pinned OCI image executed inside a microVM.
-///
-/// Digest-pinning is required (§8.4) and is enforced by a schema `if/then`
-/// rule landing in Workstream C. Workstream A accepts any string so the type
-/// compiles without depending on the schema changes.
+/// Sandbox rootfs source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SandboxImageRef {
+    /// Digest-pinned OCI reference (`...@sha256:...`).
+    Oci { r#ref: String },
+    /// Host directory used directly as guest rootfs.
+    Bind { path: PathBuf },
+}
+
+/// Sandbox runtime: OCI or bind rootfs executed inside a microVM.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxRuntimeSpec {
-    /// OCI reference, e.g. `ghcr.io/org/dev-echo@sha256:...`. Tag-only refs
-    /// will be rejected at validation time (Workstream C).
-    pub image: String,
+    /// Rootfs source. Back-compat accepts the legacy string form and maps it
+    /// to `{"kind":"oci","ref":...}` with a deprecation warning.
+    #[serde(deserialize_with = "deserialize_sandbox_image_ref")]
+    pub image: SandboxImageRef,
 
     /// Guest-side entrypoint argv. Empty => use the image's default
     /// entrypoint. The runner launches the `tool-adapter` via
     /// `microsandbox::Sandbox::exec_stream` with this argv (§5.2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entrypoint: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum SandboxImageRefCompat {
+    LegacyOciString(String),
+    Tagged(SandboxImageRef),
+}
+
+fn deserialize_sandbox_image_ref<'de, D>(deserializer: D) -> Result<SandboxImageRef, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let compat = SandboxImageRefCompat::deserialize(deserializer)?;
+    Ok(match compat {
+        SandboxImageRefCompat::LegacyOciString(s) => {
+            warn!(
+                "deprecated sandbox runtime.image string form used; prefer image={{kind:'oci',ref:'...'}}"
+            );
+            SandboxImageRef::Oci { r#ref: s }
+        }
+        SandboxImageRefCompat::Tagged(image) => image,
+    })
 }
 
 #[cfg(test)]
@@ -124,9 +158,35 @@ mod tests {
 
     #[test]
     fn sandbox_runtime_roundtrips() {
-        let json = r#"{"kind":"sandbox","image":"ghcr.io/org/tool@sha256:abc","entrypoint":["/app/tool-adapter"]}"#;
+        let json = r#"{"kind":"sandbox","image":{"kind":"oci","ref":"ghcr.io/org/tool@sha256:abc"},"entrypoint":["/app/tool-adapter"]}"#;
         let rt: ToolRuntime = serde_json::from_str(json).unwrap();
         assert_eq!(rt.kind(), ToolRuntimeKind::Sandbox);
+    }
+
+    #[test]
+    fn sandbox_runtime_accepts_legacy_oci_image_string() {
+        let json = r#"{"kind":"sandbox","image":"ghcr.io/org/tool@sha256:abc"}"#;
+        let rt: ToolRuntime = serde_json::from_str(json).unwrap();
+        match rt {
+            ToolRuntime::Sandbox(SandboxRuntimeSpec {
+                image: SandboxImageRef::Oci { r#ref },
+                ..
+            }) => assert!(r#ref.contains("@sha256:")),
+            other => panic!("expected sandbox oci image, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sandbox_runtime_bind_roundtrips() {
+        let json = r#"{"kind":"sandbox","image":{"kind":"bind","path":"./rootfs"}}"#;
+        let rt: ToolRuntime = serde_json::from_str(json).unwrap();
+        match rt {
+            ToolRuntime::Sandbox(SandboxRuntimeSpec {
+                image: SandboxImageRef::Bind { path },
+                ..
+            }) => assert_eq!(path, PathBuf::from("./rootfs")),
+            other => panic!("expected bind image, got {other:?}"),
+        }
     }
 
     #[test]

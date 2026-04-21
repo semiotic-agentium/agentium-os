@@ -6,33 +6,23 @@
 
 use std::{
     collections::BTreeMap,
-    fmt,
+    path::PathBuf,
     time::{Duration, SystemTime},
 };
 
 use serde::{Deserialize, Serialize};
 
-/// Digest-pinned OCI image reference.
-///
-/// Stored as-is; digest-format validation is the caller's responsibility
-/// (the metadata-schema `if/then` in Workstream C rejects tag-only refs
-/// at parse time — §8.4).
+/// Sandbox rootfs source used by providers.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ImageDigest(pub String);
-
-impl ImageDigest {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+#[non_exhaustive]
+pub enum SandboxImageSource {
+    Oci(String),
+    Bind(PathBuf),
 }
 
-impl fmt::Display for ImageDigest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+impl SandboxImageSource {
+    pub fn is_oci(&self) -> bool {
+        matches!(self, Self::Oci(_))
     }
 }
 
@@ -144,7 +134,7 @@ pub struct SandboxSpec {
     /// Encoded sandbox name: `baml:<runner_id>:<agent_instance>:<ctx>:<tool>`
     /// (§9.2). Provider uses this for list/reattach.
     pub name: String,
-    pub image: ImageDigest,
+    pub image: SandboxImageSource,
     pub cpus: u32,
     pub memory_mib: u32,
     pub env: BTreeMap<String, String>,
@@ -179,7 +169,7 @@ impl SandboxSpec {
     pub fn for_test(name: impl Into<String>, image: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            image: ImageDigest::new(image),
+            image: SandboxImageSource::Oci(image.into()),
             cpus: 1,
             memory_mib: 512,
             env: BTreeMap::new(),

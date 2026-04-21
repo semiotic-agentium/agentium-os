@@ -27,7 +27,9 @@ use baml_rt_tools::{
         ExternalLifecycleEvent, ExternalLifecycleRecorder, ExternalLockfileMode,
         ExternalToolsLockfile,
         resolver::SandboxRuntimeWiring,
-        sandbox::{MockSandboxProvider, SandboxProvider, fresh_runner_id, stock_wiring},
+        sandbox::{
+            MockSandboxProvider, SandboxProvider, fresh_runner_id, stock_wiring_with_bind_roots,
+        },
     },
     register_manifest_tools_with_fallback,
 };
@@ -557,22 +559,41 @@ fn build_external_lifecycle_recorder(
 /// - `microsandbox`       → real microsandbox backend; requires the
 ///   `sandbox-provider` cargo feature to be built in.
 pub const SANDBOX_PROVIDER_ENV: &str = "BAML_SANDBOX_PROVIDER";
+pub const SANDBOX_BIND_ROOTS_ENV: &str = "BAML_SANDBOX_BIND_ROOTS";
 
 fn build_sandbox_wiring() -> Result<Option<SandboxRuntimeWiring>> {
     let raw = std::env::var(SANDBOX_PROVIDER_ENV).unwrap_or_default();
     let kind = raw.trim().to_ascii_lowercase();
+    let bind_roots: Vec<std::path::PathBuf> = std::env::var(SANDBOX_BIND_ROOTS_ENV)
+        .ok()
+        .map(|v| {
+            v.split(':')
+                .filter(|s| !s.trim().is_empty())
+                .map(std::path::PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default();
+
     match kind.as_str() {
         "" | "off" => Ok(None),
         "mock" => {
             let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::echo());
-            Ok(Some(stock_wiring(provider, fresh_runner_id())))
+            Ok(Some(stock_wiring_with_bind_roots(
+                provider,
+                fresh_runner_id(),
+                bind_roots,
+            )))
         }
         "microsandbox" => {
             #[cfg(feature = "sandbox-provider")]
             {
                 use baml_rt_tools::external_tools::sandbox::MicrosandboxProvider;
                 let provider: Arc<dyn SandboxProvider> = Arc::new(MicrosandboxProvider::new()?);
-                Ok(Some(stock_wiring(provider, fresh_runner_id())))
+                Ok(Some(stock_wiring_with_bind_roots(
+                    provider,
+                    fresh_runner_id(),
+                    bind_roots,
+                )))
             }
             #[cfg(not(feature = "sandbox-provider"))]
             Err(BamlRtError::InvalidArgument(
@@ -868,13 +889,9 @@ mod tests {
         );
 
         let missing_lockfile = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
-        let result = build_dev_mode_resolver(
-            None,
-            &missing_lockfile,
-            ExternalLockfileMode::Enforce,
-            None,
-        )
-        .await;
+        let result =
+            build_dev_mode_resolver(None, &missing_lockfile, ExternalLockfileMode::Enforce, None)
+                .await;
 
         remove_env(BUILDER_EXTERNAL_TOOLS_ENV);
 
@@ -947,14 +964,10 @@ mod tests {
         let bad_lockfile = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
         fs::write(&bad_lockfile, b"{not-json").expect("write malformed lockfile");
 
-        let resolver = build_dev_mode_resolver(
-            None,
-            &bad_lockfile,
-            ExternalLockfileMode::Permissive,
-            None,
-        )
-        .await
-        .expect("permissive mode should continue with malformed lockfile");
+        let resolver =
+            build_dev_mode_resolver(None, &bad_lockfile, ExternalLockfileMode::Permissive, None)
+                .await
+                .expect("permissive mode should continue with malformed lockfile");
         remove_env(BUILDER_EXTERNAL_TOOLS_ENV);
 
         assert!(resolver.is_some(), "resolver should still be constructed");

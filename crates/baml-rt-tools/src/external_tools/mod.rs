@@ -47,8 +47,10 @@ pub use protocol::{
 };
 pub use resolver::DevModeResolver;
 pub use runtime::{
-    DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxRuntimeSpec, ToolRuntime, ToolRuntimeKind,
+    DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxImageRef, SandboxRuntimeSpec, ToolRuntime,
+    ToolRuntimeKind,
 };
+pub use sandbox::canonical_bind_digest;
 use serde_json::Value;
 pub use stdio::StdioSubprocessInvoker;
 

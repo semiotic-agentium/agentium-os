@@ -8,7 +8,7 @@ pub mod lang;
 pub mod metadata_json;
 pub mod readme_md;
 
-use baml_rt_tools::ToolAccess;
+use baml_rt_tools::{ToolAccess, external_tools::SandboxImageRef};
 use clap::ValueEnum;
 
 /// File emitted by an external-tool language template.
@@ -100,6 +100,13 @@ pub enum Runtime {
     Sandbox,
 }
 
+/// Sandbox source type when `runtime=sandbox`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SandboxSource {
+    Oci,
+    Bind,
+}
+
 impl Runtime {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -164,8 +171,10 @@ pub struct ScaffoldContext<'a> {
     pub description: &'a str,
     /// Runtime metadata block to emit in `tool-metadata.json`.
     pub runtime: Runtime,
-    /// Sandbox image reference (`image@sha256:...`) when runtime is sandbox.
-    pub sandbox_image: Option<String>,
+    /// Sandbox source when runtime is sandbox.
+    pub sandbox_source: Option<SandboxSource>,
+    /// Sandbox image reference/path when runtime is sandbox.
+    pub sandbox_image: Option<SandboxImageRef>,
     /// Runtime identity digest (`sha256:...`) when runtime is sandbox.
     pub runtime_digest: Option<String>,
     /// Optional sandbox entrypoint argv.

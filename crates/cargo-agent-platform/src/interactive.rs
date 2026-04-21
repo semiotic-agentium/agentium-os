@@ -253,18 +253,6 @@ pub fn prompt_external_tool_sandbox_image() -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-/// Prompt for runtime identity digest (`sha256:<64hex>`).
-pub fn prompt_external_tool_runtime_digest() -> Result<String> {
-    let digest = Text::new("Runtime digest:")
-        .with_help_message("Runtime identity digest, e.g. sha256:<64hex>")
-        .prompt()?;
-    let trimmed = digest.trim();
-    if trimmed.is_empty() {
-        bail!("Runtime digest cannot be empty when runtime is sandbox");
-    }
-    Ok(trimmed.to_string())
-}
-
 /// Prompt for optional sandbox entrypoint argv as comma-separated values.
 pub fn prompt_external_tool_sandbox_entrypoint() -> Result<Vec<String>> {
     let raw = Text::new("Sandbox entrypoint (optional, comma-separated):")

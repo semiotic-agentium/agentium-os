@@ -368,7 +368,7 @@ pub(crate) fn sort_json_keys(value: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::external_tools::SandboxRuntimeSpec;
+    use crate::external_tools::{SandboxImageRef, SandboxRuntimeSpec};
 
     #[test]
     fn metadata_deserializes_without_runtime_fields_for_back_compat() {
@@ -412,7 +412,10 @@ mod tests {
             "capabilities": {},
             "runtime": {
                 "kind": "sandbox",
-                "image": "ghcr.io/org/tool@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "image": {
+                    "kind": "oci",
+                    "ref": "ghcr.io/org/tool@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                },
                 "entrypoint": ["/app/tool-adapter"]
             },
             "runtime_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
@@ -422,8 +425,11 @@ mod tests {
             serde_json::from_value(raw).expect("sandbox metadata should parse");
 
         match parsed.runtime {
-            Some(ToolRuntime::Sandbox(SandboxRuntimeSpec { image, entrypoint })) => {
-                assert!(image.starts_with("ghcr.io/"));
+            Some(ToolRuntime::Sandbox(SandboxRuntimeSpec {
+                image: SandboxImageRef::Oci { r#ref },
+                entrypoint,
+            })) => {
+                assert!(r#ref.starts_with("ghcr.io/"));
                 assert_eq!(entrypoint, vec!["/app/tool-adapter".to_string()]);
             }
             other => panic!("expected sandbox runtime, got {other:?}"),

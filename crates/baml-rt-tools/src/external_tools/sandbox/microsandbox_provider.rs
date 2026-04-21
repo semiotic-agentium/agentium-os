@@ -35,15 +35,16 @@
 //! On reattach, the provider does a lightweight `exec` into the guest to
 //! read them back. This is cheap and avoids adding a new sidecar protocol.
 
+#[cfg(feature = "sandbox-provider")]
+use std::sync::Arc;
+#[cfg(feature = "sandbox-provider")]
+use std::time::{Duration, SystemTime};
+
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, Result};
 #[cfg(feature = "sandbox-provider")]
 use dashmap::DashMap;
 use futures_util::stream::{self, BoxStream};
-#[cfg(feature = "sandbox-provider")]
-use std::sync::Arc;
-#[cfg(feature = "sandbox-provider")]
-use std::time::{Duration, SystemTime};
 #[cfg(feature = "sandbox-provider")]
 use tracing::{debug, warn};
 
@@ -52,9 +53,11 @@ use super::{
     provider::SandboxProvider,
     spec::{SandboxEvent, SandboxHandle, SandboxSpec},
 };
-
 #[cfg(feature = "sandbox-provider")]
-use super::{exec_adapter::exec_handle_into_channel, spec::SecretBindingMode};
+use super::{
+    exec_adapter::exec_handle_into_channel,
+    spec::{PullPolicy, SandboxImageSource, SecretBindingMode},
+};
 
 /// Env-var names used to stash reattach metadata inside the guest. Chosen
 /// under the `BAML_` prefix so they don't collide with tool-author vars.
@@ -109,7 +112,11 @@ fn clamp_cpus(cpus: u32) -> u8 {
         warn!(requested = cpus, "cpus=0 requested; clamping to 1");
         1
     } else if cpus > u8::MAX as u32 {
-        warn!(requested = cpus, max = u8::MAX, "cpus above u8::MAX; clamping");
+        warn!(
+            requested = cpus,
+            max = u8::MAX,
+            "cpus above u8::MAX; clamping"
+        );
         u8::MAX
     } else {
         cpus as u8
@@ -131,13 +138,27 @@ impl SandboxProvider for MicrosandboxProvider {
         let runtime_digest = spec.runtime_digest.clone();
         let policy_hash = spec.policy_hash.clone();
 
+        if matches!(
+            (&spec.image, spec.pull_policy),
+            (SandboxImageSource::Bind(_), PullPolicy::Always)
+        ) {
+            return Err(BamlRtError::InvalidArgument(
+                "pull_policy=always is invalid for bind sandbox images".to_string(),
+            ));
+        }
+
         let mut builder = microsandbox::Sandbox::builder(&name)
-            .image(spec.image.as_str())
             .cpus(clamp_cpus(spec.cpus))
             .memory(spec.memory_mib)
             .idle_timeout(spec.idle_timeout.as_secs())
             .max_duration(spec.max_duration.as_secs())
             .replace(); // idempotent by name-replace per trait contract
+
+        builder = match &spec.image {
+            SandboxImageSource::Oci(image) => builder.image(image.as_str()),
+            SandboxImageSource::Bind(path) => builder.image(path.clone()),
+        };
+
         let _ = spec.pull_policy; // see comment above map_pull_policy
 
         for (k, v) in &spec.env {
@@ -296,9 +317,9 @@ impl SandboxProvider for MicrosandboxProvider {
 
     async fn list_owned(&self, runner_id: &str) -> Result<Vec<SandboxHandle>> {
         let prefix = format!("baml:{runner_id}:");
-        let all = microsandbox::Sandbox::list().await.map_err(|e| {
-            to_rt_err("microsandbox Sandbox::list() failed", e)
-        })?;
+        let all = microsandbox::Sandbox::list()
+            .await
+            .map_err(|e| to_rt_err("microsandbox Sandbox::list() failed", e))?;
         Ok(all
             .into_iter()
             .filter(|h| h.name().starts_with(&prefix))
@@ -306,7 +327,9 @@ impl SandboxProvider for MicrosandboxProvider {
                 name: h.name().to_string(),
                 created_at: h
                     .created_at()
-                    .map(|dt| SystemTime::UNIX_EPOCH + Duration::from_secs(dt.timestamp().max(0) as u64))
+                    .map(|dt| {
+                        SystemTime::UNIX_EPOCH + Duration::from_secs(dt.timestamp().max(0) as u64)
+                    })
                     .unwrap_or_else(SystemTime::now),
                 // Metadata stash recovery is done lazily on reattach(); list
                 // returns name-only handles.
@@ -321,14 +344,15 @@ impl SandboxProvider for MicrosandboxProvider {
         // `Sandbox::start(name)` reconnects to a detached sandbox. If it was
         // never detached or is gone, this errors — caller treats as a
         // reattach miss and cold-creates.
-        let sandbox = microsandbox::Sandbox::start(name).await.map_err(|e| {
-            to_rt_err(&format!("microsandbox Sandbox::start('{name}') failed"), e)
-        })?;
+        let sandbox = microsandbox::Sandbox::start(name)
+            .await
+            .map_err(|e| to_rt_err(&format!("microsandbox Sandbox::start('{name}') failed"), e))?;
 
         // Recover stashed metadata by running `printenv` on the guest. One
         // exec, parse the block, bail gracefully if anything is missing.
-        let (runtime_digest, policy_hash, max_duration) =
-            recover_reattach_metadata(&sandbox).await.unwrap_or_else(|e| {
+        let (runtime_digest, policy_hash, max_duration) = recover_reattach_metadata(&sandbox)
+            .await
+            .unwrap_or_else(|e| {
                 debug!(?e, sandbox = %name, "reattach metadata recovery failed; using defaults");
                 (None, None, Duration::from_secs(0))
             });

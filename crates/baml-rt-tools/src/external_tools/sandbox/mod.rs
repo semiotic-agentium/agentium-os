@@ -14,12 +14,14 @@
 //! (`runtime.kind == "sandbox"` branch).
 
 pub mod channel;
+pub mod digest;
 #[cfg(feature = "sandbox-provider")]
 pub mod exec_adapter;
 pub mod handler;
 pub mod invoker;
 pub mod microsandbox_provider;
 pub mod mock;
+pub mod path_guard;
 pub mod provider;
 pub mod spec;
 pub mod wiring;
@@ -28,17 +30,19 @@ pub mod wiring;
 mod tests;
 
 pub use channel::{MAX_FRAME_BYTES, TsrpcChannel};
+pub use digest::{canonical_bind_digest, file_sha256};
 pub use handler::{SandboxToolHandler, SandboxToolSession};
 pub use invoker::{SandboxCache, SandboxCacheKey, SandboxInvoker, SandboxSpecBuilder};
 pub use microsandbox_provider::MicrosandboxProvider;
 pub use mock::{MockSandboxProvider, ScriptedAdapter, test_durations};
 pub use provider::SandboxProvider;
 pub use spec::{
-    Destination, DestinationGroup, ImageDigest, NetworkPolicy, NetworkRule, PortMapping, Protocol,
-    PullPolicy, SandboxEvent, SandboxHandle, SandboxSpec, SecretBinding, SecretBindingMode,
+    Destination, DestinationGroup, NetworkPolicy, NetworkRule, PortMapping, Protocol, PullPolicy,
+    SandboxEvent, SandboxHandle, SandboxImageSource, SandboxSpec, SecretBinding, SecretBindingMode,
     VolumeMount,
 };
 pub use wiring::{
-    DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MAX_DURATION_SECS, default_spec_factory, fresh_runner_id,
-    stock_wiring,
+    DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MAX_DURATION_SECS, default_spec_factory,
+    default_spec_factory_with_bind_roots, fresh_runner_id, stock_wiring,
+    stock_wiring_with_bind_roots,
 };

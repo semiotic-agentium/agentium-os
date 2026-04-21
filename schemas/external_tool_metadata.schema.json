@@ -169,9 +169,34 @@
           "properties": {
             "kind": { "const": "sandbox" },
             "image": {
-              "type": "string",
-              "pattern": "^.+@sha256:[A-Fa-f0-9]{64}$",
-              "description": "digest-pinned OCI image reference"
+              "oneOf": [
+                {
+                  "type": "string",
+                  "pattern": "^.+@sha256:[A-Fa-f0-9]{64}$",
+                  "description": "legacy OCI image string form (deprecated)"
+                },
+                {
+                  "type": "object",
+                  "required": ["kind", "ref"],
+                  "properties": {
+                    "kind": { "const": "oci" },
+                    "ref": {
+                      "type": "string",
+                      "pattern": "^.+@sha256:[A-Fa-f0-9]{64}$"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": ["kind", "path"],
+                  "properties": {
+                    "kind": { "const": "bind" },
+                    "path": { "type": "string", "pattern": "^(/|\\./|\\../).+" }
+                  },
+                  "additionalProperties": false
+                }
+              ]
             },
             "entrypoint": {
               "type": "array",

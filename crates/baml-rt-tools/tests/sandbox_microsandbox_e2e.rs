@@ -3,8 +3,8 @@
 use std::{env, fs, path::Path, time::Duration};
 
 use baml_rt_tools::external_tools::{
-    ERR_INTERNAL, JsonRpcRequest, JsonRpcResponse, METHOD_INVOKE, SandboxRuntimeSpec,
-    ToolInvokeParams, ToolRuntime,
+    ERR_INTERNAL, JsonRpcRequest, JsonRpcResponse, METHOD_INVOKE, SandboxImageRef,
+    SandboxRuntimeSpec, ToolInvokeParams, ToolRuntime,
     metadata::ExternalToolMetadata,
     sandbox::{MicrosandboxProvider, SandboxProvider, SandboxSpec},
 };
@@ -33,12 +33,12 @@ async fn run_required_scenarios() -> Result<(), Box<dyn std::error::Error>> {
 
     let metadata = load_sandbox_metadata()?;
     let (image, entrypoint) = match metadata.runtime {
-        Some(ToolRuntime::Sandbox(SandboxRuntimeSpec { image, entrypoint })) => (image, entrypoint),
+        Some(ToolRuntime::Sandbox(SandboxRuntimeSpec {
+            image: SandboxImageRef::Oci { r#ref },
+            entrypoint,
+        })) => (r#ref, entrypoint),
         other => {
-            return Err(format!(
-                "expected runtime.kind=sandbox in metadata, got {other:?}"
-            )
-            .into());
+            return Err(format!("expected runtime.kind=sandbox in metadata, got {other:?}").into());
         }
     };
 
@@ -136,9 +136,7 @@ async fn invoke_echo(
         .into());
     }
 
-    let result = response
-        .result
-        .ok_or("invoke response missing result")?;
+    let result = response.result.ok_or("invoke response missing result")?;
     if result.get("done").and_then(Value::as_bool) != Some(true) {
         return Err("invoke response missing done=true".into());
     }

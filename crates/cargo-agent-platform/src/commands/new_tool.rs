@@ -17,12 +17,16 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use baml_rt_tools::BundleName;
+use baml_rt_tools::{
+    BundleName,
+    external_tools::{SandboxImageRef, canonical_bind_digest},
+};
 use console::style;
 
 use crate::{
     templates::external_tool::{
-        Access, GeneratedFile, Language, Runtime, ScaffoldContext, metadata_json, readme_md,
+        Access, GeneratedFile, Language, Runtime, SandboxSource, ScaffoldContext, metadata_json,
+        readme_md,
     },
     transaction::TransactionalWriter,
 };
@@ -53,7 +57,9 @@ pub struct NewToolRunArgs<'a> {
     pub lang: Language,
     pub access: Access,
     pub runtime: Runtime,
+    pub sandbox_source: SandboxSource,
     pub sandbox_image: Option<&'a str>,
+    pub sandbox_bind_path: Option<&'a str>,
     pub runtime_digest: Option<&'a str>,
     pub sandbox_entrypoint: &'a [String],
     pub description: &'a str,
@@ -68,7 +74,9 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         lang,
         access,
         runtime,
+        sandbox_source,
         sandbox_image,
+        sandbox_bind_path,
         runtime_digest,
         sandbox_entrypoint,
         description,
@@ -95,7 +103,14 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         description.trim()
     };
 
-    validate_runtime_options(runtime, sandbox_image, runtime_digest, sandbox_entrypoint)?;
+    let (sandbox_image, runtime_digest) = validate_runtime_options(
+        runtime,
+        sandbox_source,
+        sandbox_image,
+        sandbox_bind_path,
+        runtime_digest,
+        sandbox_entrypoint,
+    )?;
 
     let ctx = ScaffoldContext {
         name,
@@ -104,8 +119,9 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         language: lang,
         description,
         runtime,
-        sandbox_image: sandbox_image.map(ToOwned::to_owned),
-        runtime_digest: runtime_digest.map(ToOwned::to_owned),
+        sandbox_source: Some(sandbox_source),
+        sandbox_image,
+        runtime_digest,
         sandbox_entrypoint: sandbox_entrypoint.to_vec(),
     };
 
@@ -121,8 +137,16 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         println!("  Runtime:   {}", style(runtime.as_str()).cyan());
         if runtime == Runtime::Sandbox {
             println!(
+                "  Source:    {}",
+                style(match ctx.sandbox_source.unwrap_or(SandboxSource::Oci) {
+                    SandboxSource::Oci => "oci",
+                    SandboxSource::Bind => "bind",
+                })
+                .cyan()
+            );
+            println!(
                 "  Image:     {}",
-                style(ctx.sandbox_image.as_deref().unwrap_or("(missing)")).cyan()
+                style(format!("{:?}", ctx.sandbox_image)).cyan()
             );
             println!(
                 "  Digest:    {}",
@@ -269,39 +293,85 @@ fn validate_tool_name(name: &str) -> Result<()> {
 
 fn validate_runtime_options(
     runtime: Runtime,
+    sandbox_source: SandboxSource,
     sandbox_image: Option<&str>,
+    sandbox_bind_path: Option<&str>,
     runtime_digest: Option<&str>,
     sandbox_entrypoint: &[String],
-) -> Result<()> {
+) -> Result<(Option<SandboxImageRef>, Option<String>)> {
     match runtime {
         Runtime::Process => {
-            if sandbox_image.is_some() || runtime_digest.is_some() || !sandbox_entrypoint.is_empty()
+            if sandbox_image.is_some()
+                || sandbox_bind_path.is_some()
+                || runtime_digest.is_some()
+                || !sandbox_entrypoint.is_empty()
             {
                 bail!(
-                    "Error: sandbox-only options were supplied with --runtime process.\nHint: remove --sandbox-image/--runtime-digest/--sandbox-entrypoint or use --runtime sandbox."
+                    "Error: sandbox-only options were supplied with --runtime process.\nHint: remove --sandbox-* options or use --runtime sandbox."
                 );
             }
+            Ok((None, None))
         }
-        Runtime::Sandbox => {
-            let image = sandbox_image.ok_or_else(|| {
-                anyhow!("Error: --runtime sandbox requires --sandbox-image <ref@sha256:...>.")
-            })?;
-            if !image.contains("@sha256:") {
-                bail!("Error: --sandbox-image must be digest-pinned (missing @sha256:): {image}");
+        Runtime::Sandbox => match sandbox_source {
+            SandboxSource::Oci => {
+                let image = sandbox_image.ok_or_else(|| {
+                    anyhow!("Error: --runtime sandbox --sandbox-source oci requires --sandbox-image <ref@sha256:...>.")
+                })?;
+                let Some((_, digest_from_image)) = image.split_once("@") else {
+                    bail!(
+                        "Error: --sandbox-image must be digest-pinned (missing @sha256:): {image}"
+                    );
+                };
+                if !digest_from_image.starts_with("sha256:") {
+                    bail!("Error: --sandbox-image must include @sha256:<64-hex>: {image}");
+                }
+                let digest = runtime_digest.unwrap_or(digest_from_image);
+                validate_runtime_digest(digest)?;
+                Ok((
+                    Some(SandboxImageRef::Oci {
+                        r#ref: image.to_string(),
+                    }),
+                    Some(digest.to_string()),
+                ))
             }
-
-            let digest = runtime_digest.ok_or_else(|| {
-                anyhow!("Error: --runtime sandbox requires --runtime-digest sha256:<64-hex>.")
-            })?;
-            let digest_ok = digest.starts_with("sha256:")
-                && digest.len() == 71
-                && digest[7..].chars().all(|c| c.is_ascii_hexdigit());
-            if !digest_ok {
-                bail!("Error: --runtime-digest must match sha256:<64-hex>; got '{digest}'.");
+            SandboxSource::Bind => {
+                if sandbox_bind_path.is_none() {
+                    eprintln!(
+                        "{} --sandbox-source=bind was selected, but --sandbox-bind-path was not provided.",
+                        style("Warning:").yellow()
+                    );
+                }
+                let path = sandbox_bind_path.ok_or_else(|| {
+                    anyhow!("Error: --runtime sandbox --sandbox-source bind requires --sandbox-bind-path <dir>.")
+                })?;
+                let canonical = std::fs::canonicalize(path).map_err(|e| {
+                    anyhow!("Error: failed to resolve --sandbox-bind-path '{path}': {e}")
+                })?;
+                if !canonical.is_dir() {
+                    bail!(
+                        "Error: --sandbox-bind-path must point to a directory: {}",
+                        canonical.display()
+                    );
+                }
+                let computed = canonical_bind_digest(&canonical)?;
+                let digest = runtime_digest.unwrap_or(&computed);
+                validate_runtime_digest(digest)?;
+                Ok((
+                    Some(SandboxImageRef::Bind { path: canonical }),
+                    Some(digest.to_string()),
+                ))
             }
-        }
+        },
     }
+}
 
+fn validate_runtime_digest(digest: &str) -> Result<()> {
+    let digest_ok = digest.starts_with("sha256:")
+        && digest.len() == 71
+        && digest[7..].chars().all(|c| c.is_ascii_hexdigit());
+    if !digest_ok {
+        bail!("Error: --runtime-digest must match sha256:<64-hex>; got '{digest}'.");
+    }
     Ok(())
 }
 
@@ -333,7 +403,9 @@ fn set_executable_bits(output_dir: &Path, files: &[GeneratedFile]) -> Result<()>
 
 #[cfg(test)]
 mod tests {
-    use baml_rt_tools::external_tools::{ToolRuntime, metadata_catalog::ExternalMetadataCatalog};
+    use baml_rt_tools::external_tools::{
+        SandboxImageRef, ToolRuntime, metadata_catalog::ExternalMetadataCatalog,
+    };
 
     use super::*;
 
@@ -345,6 +417,7 @@ mod tests {
             language: lang,
             description: "Echo external tool",
             runtime: Runtime::Process,
+            sandbox_source: Some(SandboxSource::Oci),
             sandbox_image: None,
             runtime_digest: None,
             sandbox_entrypoint: Vec::new(),
@@ -436,6 +509,7 @@ mod tests {
             language: Language::Bash,
             description: &desc_with_specials,
             runtime: Runtime::Process,
+            sandbox_source: Some(SandboxSource::Oci),
             sandbox_image: None,
             runtime_digest: None,
             sandbox_entrypoint: Vec::new(),
@@ -466,8 +540,11 @@ mod tests {
     fn scaffolded_metadata_emits_sandbox_runtime_block_when_requested() {
         let mut ctx = ctx(Language::Rust);
         ctx.runtime = Runtime::Sandbox;
-        ctx.sandbox_image =
-            Some("ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111".to_string());
+        ctx.sandbox_source = Some(SandboxSource::Oci);
+        ctx.sandbox_image = Some(SandboxImageRef::Oci {
+            r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+        });
         ctx.runtime_digest = Some(
             "sha256:2222222222222222222222222222222222222222222222222222222222222222".to_string(),
         );
@@ -479,7 +556,10 @@ mod tests {
 
         match parsed.runtime {
             Some(ToolRuntime::Sandbox(spec)) => {
-                assert!(spec.image.contains("@sha256:"));
+                match spec.image {
+                    SandboxImageRef::Oci { r#ref } => assert!(r#ref.contains("@sha256:")),
+                    _ => panic!("expected oci image"),
+                }
                 assert_eq!(spec.entrypoint, vec!["/app/tool-adapter".to_string()]);
             }
             other => panic!("expected sandbox runtime, got {other:?}"),

@@ -112,9 +112,9 @@ impl SandboxCache {
             )));
         }
 
-        if reattach_ok
-            && let Ok(existing) = provider.reattach(&name).await
-        {
+        let reattach_ok = reattach_ok && spec.image.is_oci();
+
+        if reattach_ok && let Ok(existing) = provider.reattach(&name).await {
             if validate_reattach(&existing, &spec) {
                 debug!(sandbox = %name, "reattached to existing sandbox");
                 self.entries
