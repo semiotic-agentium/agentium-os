@@ -12,9 +12,9 @@ Core runtime: A2A, tools (via QuickJS), LLM, QuickJS bridge, live stream, ONNX, 
 
 | Metric name | Type | Purpose |
 |-------------|------|---------|
-| `baml_rt.a2a.request_total` | Counter | A2A JSON-RPC handler completions by `method`, `result`, `stream`. |
-| `baml_rt.a2a.request_duration_ms` | Histogram | End-to-end A2A handler latency for those labels. |
-| `baml_rt.a2a.error_total` | Counter | Classified A2A failures by `method`, `error_type`, `stream`. |
+| `baml_rt.a2a.request_total` | Counter | A2A JSON-RPC handler completions. Labels: `method`, `agent_package`, `agent_instance_id`, `result`, `stream`, `serving_service_instance_id`. |
+| `baml_rt.a2a.request_duration_ms` | Histogram | End-to-end A2A handler latency (same labels as `baml_rt.a2a.request_total`). |
+| `baml_rt.a2a.error_total` | Counter | Classified A2A failures. Labels: `method`, `agent_package`, `agent_instance_id`, `error_type`, `stream`, `serving_service_instance_id`. |
 | `baml_rt.a2a.stream.chunk_total` | Counter | Total SSE/stream chunks emitted (weighted by chunk count per flush). |
 | `baml_rt.a2a.stream.chunk_count` | Histogram | Distribution of chunk counts per stream completion (`method`). |
 | `baml_rt.tool.invocation_total` | Counter | **Canonical** host tool completion by `tool`, `result` (QuickJS bridge). |
@@ -30,8 +30,8 @@ Core runtime: A2A, tools (via QuickJS), LLM, QuickJS bridge, live stream, ONNX, 
 | `baml_rt.a2a.event_poll.events_processed_total` | Counter | Events in a non-empty batch (`producer_key` only; adds batch size per outcome). |
 | `baml_rt.a2a.event_dispatch.no_subscribers_total` | Counter | Published event had no matching subscriptions (`producer_key`). |
 | `baml_rt.a2a.event_dispatch.subscriber_delivery_total` | Counter | After attempting delivery to matching subscribers: `subscribers_bucket` (`0` / `1` / `many`), `outcome` (`all_accepted`, `partial_rejection`, `all_rejected`). |
-| `baml_rt.cluster.a2a_forward_total` | Counter | Cross-runner HTTP A2A forward completions (`result`). |
-| `baml_rt.cluster.a2a_forward_duration_ms` | Histogram | Latency for those forwards. |
+| `baml_rt.cluster.a2a_forward_total` | Counter | Cross-runner HTTP A2A forward completions (ingress side). Labels: `agent_package`, `agent_instance_id`, `result`, `ingress_service_instance_id`, `target_service_instance_id`. `target_service_instance_id` may be the literal `unknown` when the cluster resolver fallback fires. |
+| `baml_rt.cluster.a2a_forward_duration_ms` | Histogram | Forward latency (same labels as `baml_rt.cluster.a2a_forward_total`). |
 | `baml_rt.quickjs.invoke_total` | Counter | QuickJS invoke path by `mode`, `result` (stream vs sync). |
 | `baml_rt.quickjs.invoke_duration_ms` | Histogram | Latency of QuickJS invoke. |
 | `baml_rt.a2a.live_stream.event_total` | Counter | Low-cardinality milestones on HTTP `message.sendStream` (`event`). |
@@ -96,8 +96,8 @@ HTTP API surface (embedded in runner or standalone).
 
 | Metric name | Type | Purpose |
 |-------------|------|---------|
-| `baml_rt_api.http.request_total` | Counter | API requests by low-cardinality `route`, `result`. |
-| `baml_rt_api.http.request_duration_ms` | Histogram | Request latency. |
+| `baml_rt_api.http.request_total` | Counter | API requests. Non-agent routes label set: `route`, `result`. Agent routes (`/agents/{package}/{instance}/...`) label set: `route`, `result`, `agent_package`, `agent_instance_id`, `forwarded`, `ingress_service_instance_id`. See [Runner identity labels](#runner-identity-labels) and [forwarded advisory](./otel-trace-instrumentation-guide.md#cross-runner-a2a-forwarding). |
+| `baml_rt_api.http.request_duration_ms` | Histogram | Request latency (same per-route label split as `baml_rt_api.http.request_total`). |
 | `baml_rt_api.conversation_history.phase_duration_ms` | Histogram | Snapshot/delta build phases (`phase`). |
 | `baml_rt_api.conversation_history.payload_bytes` | Histogram | Response body size by `event` kind. |
 | `baml_rt_api.conversation_history.item_count` | Histogram | Items per page/snapshot by `event`. |
@@ -132,6 +132,30 @@ Registry lifecycle and session FSM timings. **Tool run completion** totals use `
 | `baml_rt_tools.tool.registration.total` | Counter | Tool registered into registry (`tool`). |
 | `baml_rt_tools.tool.session.open.total` | Counter | Session opens (`tool`). |
 | `baml_rt_tools.tool.session.operation.duration_ms` | Histogram | FSM ops: `open`, `send`, `read`, `finish`, `abort` (`operation`). |
+
+---
+
+## Runner identity labels
+
+The runner emits these OpenTelemetry **resource attributes** on every signal (see [`runner_identity.rs`](../crates/baml-rt-observability/src/runner_identity.rs) and [`otel_env.rs`](../crates/baml-rt-observability/src/otel_env.rs)):
+
+| Resource attr | Value / source |
+|---|---|
+| `service.name` | `agentium-runner` (override via `OTEL_SERVICE_NAME`). |
+| `service.namespace` | `agentium` (override via `OTEL_RESOURCE_ATTRIBUTES`). |
+| `service.instance.id` | Per-runner identity. Resolution order: `OTEL_RESOURCE_ATTRIBUTES` override → `POD_NAME` (K8s downward API) → `HOSTNAME` → stable UUID fallback. The Helm chart sets this from `$(POD_NAME)`. |
+| `deployment.environment` | Helm: `coalesce(observability.environment, global.environment, "pilot")`. Non-Helm: `OTEL_DEPLOYMENT_ENVIRONMENT` or default `pilot`. |
+| `k8s.namespace.name` | `$(POD_NAMESPACE)` when present. |
+
+**Resource attributes are not automatically Prometheus labels.** The local OTel Collector at [`observability/otel-collector-config.yaml`](../observability/otel-collector-config.yaml) runs a `transform/runner_identity` processor that promotes `service.instance.id` → datapoint attr `service_instance_id` and `k8s.namespace.name` → `k8s_namespace_name`. Operators running a different collector must replicate that transform or rely on the **explicit per-metric identity labels** below, which do not depend on any processor:
+
+| Explicit identity label | Present on | Meaning |
+|---|---|---|
+| `ingress_service_instance_id` | `baml_rt_api_http_request_*` (agent routes), `baml_rt_cluster_a2a_forward_*` | Identity of the runner that first received the public HTTP request. On agent routes, derived from W3C baggage when `forwarded=true`, otherwise the local runner. |
+| `serving_service_instance_id` | `baml_rt_a2a_request_*`, `baml_rt_a2a_error_total` | Identity of the runner that actually executed the A2A handler (local runner from the serving side's point of view). |
+| `target_service_instance_id` | `baml_rt_cluster_a2a_forward_*` | Identity of the peer runner an ingress forward was routed to. The literal `unknown` is emitted when the cluster resolver fallback fires. |
+
+The `forwarded` label on `baml_rt_api_http_request_*` is **advisory** (derived from W3C baggage on public `/agents/...` routes) — see the trace guide's [cross-runner A2A forwarding](./otel-trace-instrumentation-guide.md#cross-runner-a2a-forwarding) section.
 
 ---
 
