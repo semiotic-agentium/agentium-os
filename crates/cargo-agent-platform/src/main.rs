@@ -24,6 +24,7 @@
 //! - `doctor` — Validate workspace integrity
 //! - `chat` — Interactive terminal chat with a deployed agent
 //! - `check-external-tool` — Validate tool metadata schema/runtime compatibility
+//! - `sandbox-digest` — Compute sandbox runtime digests (bind rootfs)
 
 mod commands;
 mod event_schemas;
@@ -40,6 +41,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use commands::{
     new_tool::{NewToolRunArgs, RunMode},
     publish::PublishOriginArg,
+    sandbox_digest::SandboxDigestSourceArg,
     utils::resolve_runner_token,
 };
 use templates::external_tool::{Access, DEFAULT_BUNDLE, Language, Runtime, SandboxSource};
@@ -307,6 +309,16 @@ enum Commands {
     CheckExternalTool {
         /// Path to external tool directory (contains tool-metadata.json)
         #[arg(long, default_value = ".")]
+        path: String,
+    },
+
+    /// Compute sandbox runtime digest for a source path
+    SandboxDigest {
+        /// Sandbox source kind (currently: bind)
+        #[arg(long, value_enum, default_value_t = SandboxDigestSourceArg::Bind)]
+        source: SandboxDigestSourceArg,
+
+        /// Path to source input (for bind: rootfs directory)
         path: String,
     },
 
@@ -688,6 +700,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Regen { names } => commands::regen::run(&names),
 
         Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
+
+        Commands::SandboxDigest { source, path } => commands::sandbox_digest::run(source, &path),
 
         Commands::Doctor {
             ci,

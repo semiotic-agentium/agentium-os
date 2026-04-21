@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # What it does:
 #  1) exports Docker image rootfs into a bind directory
-#  2) computes bind runtime_digest via `cargo agent-platform new-tool`
+#  2) computes bind runtime_digest via `cargo agent-platform sandbox-digest`
 #  3) patches dev_echo_sandbox/tool-metadata.json to bind mode
 #  4) validates metadata with check-external-tool
 #  5) prints env vars to run the runner
@@ -49,7 +49,6 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 EXAMPLE_DIR="$REPO_ROOT/examples/external-tools/dev_echo_sandbox"
 ROOTFS_DIR="$REPO_ROOT/.tmp/dev-echo-rootfs"
 TOOL_METADATA="$EXAMPLE_DIR/tool-metadata.json"
-TMP_TOOL_DIR="/tmp/tmp-bind-digest"
 
 mkdir -p "$REPO_ROOT/.tmp"
 
@@ -59,16 +58,8 @@ else
   echo "Reusing existing rootfs: $ROOTFS_DIR"
 fi
 
-rm -rf "$TMP_TOOL_DIR"
-cargo run -q -p cargo-agent-platform -- new-tool tmp-bind-digest \
-  --runtime sandbox \
-  --sandbox-source bind \
-  --sandbox-bind-path "$ROOTFS_DIR" \
-  --lang bash \
-  --output "$TMP_TOOL_DIR"
-
-DIGEST="$(jq -r '.runtime_digest' "$TMP_TOOL_DIR/tool-metadata.json")"
-if [[ -z "$DIGEST" || "$DIGEST" == "null" ]]; then
+DIGEST="$(cargo run -q -p cargo-agent-platform -- sandbox-digest --source bind "$ROOTFS_DIR")"
+if [[ -z "$DIGEST" ]]; then
   echo "Failed to compute runtime_digest" >&2
   exit 1
 fi

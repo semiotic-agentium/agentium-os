@@ -20,6 +20,7 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `regen [names]...` | Regenerate type declarations for agents (all if omitted) |
 | `doctor` | Validate workspace integrity |
 | `check-external-tool --path <dir>` | Validate external tool metadata against schema + runtime parser |
+| `sandbox-digest --source bind <path>` | Compute sandbox runtime digest for bind rootfs content |
 | `chat --agent <name>` | Interactive terminal chat with a deployed agent |
 
 ## Installation
@@ -89,13 +90,15 @@ cargo agent-platform new-tool [name] [options]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `name` | *(interactive)* | Tool local name in kebab-case (e.g. `echo`) |
+| `name` | *(interactive)* | Tool local name in lowercase (`a-z0-9_-`), e.g. `echo`, `clickup_sync`, `clickup-sync` |
 | `--bundle <bundle>` | `support` | Bundle namespace. Free-form (e.g. `support`, `travel`, `acme`). Must be non-empty and contain no `/`. Validated against `baml_rt_tools::BundleName` at scaffold and runtime. |
 | `--lang <lang>` | `rust` | Scaffold language: `rust`, `bash`, `python`, `typescript` |
 | `--access <level>` | `read` | `read` (query-only), `write` (create/update), or `delete` (strictest level) |
 | `--runtime <kind>` | `process` | Metadata runtime: `process` or `sandbox` |
-| `--sandbox-image <ref@sha256:...>` | — | Required when `--runtime sandbox` |
-| `--runtime-digest <sha256:...>` | — | Required when `--runtime sandbox` |
+| `--sandbox-source <kind>` | `oci` | Sandbox image source: `oci` or `bind` |
+| `--sandbox-image <ref@sha256:...>` | — | Required when `--runtime sandbox --sandbox-source oci` |
+| `--sandbox-bind-path <dir>` | — | Required when `--runtime sandbox --sandbox-source bind` |
+| `--runtime-digest <sha256:...>` | auto | Optional for sandbox. Defaults to OCI digest suffix for `oci`; computed from canonical bind rootfs for `bind` |
 | `--sandbox-entrypoint <argv,...>` | — | Optional comma-separated entrypoint argv for sandbox runtime |
 | `--description <text>` | `""` | Human-readable description written into metadata |
 | `--output <dir>` | `./<name>` | Output directory for standalone tool project |
@@ -109,9 +112,15 @@ cargo agent-platform new-tool weather --lang typescript --access write
 cargo agent-platform new-tool flight-search --lang rust --bundle travel
 cargo agent-platform new-tool secure-devtool \
   --runtime sandbox \
+  --sandbox-source oci \
   --sandbox-image ghcr.io/acme/secure-devtool@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-  --runtime-digest sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 \
   --sandbox-entrypoint /app/tool-adapter
+
+cargo agent-platform new-tool dev_echo \
+  --runtime sandbox \
+  --sandbox-source bind \
+  --sandbox-bind-path ./.tmp/dev-echo-rootfs \
+  --sandbox-entrypoint /tool-adapter
 ```
 
 ---
@@ -426,6 +435,9 @@ Validates a standalone external tool's `tool-metadata.json` against:
 
 1. `schemas/external_tool_metadata.schema.json`
 2. The runtime typed parser (`ExternalToolMetadata`)
+3. Sandbox source consistency checks:
+   - `oci`: image must be digest-pinned and match `runtime_digest`
+   - `bind`: path must resolve to a directory and recomputed bind digest must match `runtime_digest`
 
 ```bash
 cargo agent-platform check-external-tool --path ./echo-tool
@@ -434,6 +446,24 @@ cargo agent-platform check-external-tool --path ./echo-tool
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--path <dir>` | `.` | Tool directory containing `tool-metadata.json` |
+
+---
+
+### `sandbox-digest`
+
+Computes a sandbox runtime digest for source inputs. In v1 this supports bind rootfs directories.
+
+```bash
+cargo agent-platform sandbox-digest --source bind ./.tmp/dev-echo-rootfs
+# sha256:...
+```
+
+| Option / Arg | Default | Description |
+|-------------|---------|-------------|
+| `--source <kind>` | `bind` | Source kind (currently only `bind`) |
+| `<path>` | *(required)* | Bind rootfs directory path |
+
+This command is the canonical way to generate `runtime_digest` for bind-mode tool metadata and scripts.
 
 ---
 
