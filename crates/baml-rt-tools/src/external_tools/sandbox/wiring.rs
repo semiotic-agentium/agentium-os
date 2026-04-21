@@ -12,6 +12,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use baml_rt_core::{BamlRtError, Result};
+use tracing::info;
 use uuid::Uuid;
 
 use super::{
@@ -80,9 +81,20 @@ fn build_default_spec_builder(
     };
 
     let image = match &sandbox_spec.image {
-        SandboxImageRef::Oci { r#ref } => SandboxImageSource::Oci(r#ref.clone()),
+        SandboxImageRef::Oci { r#ref } => {
+            info!(tool = %tool_name, image_source = "oci", image_ref = %r#ref, "external tool sandbox image source selected");
+            SandboxImageSource::Oci(r#ref.clone())
+        }
         SandboxImageRef::Bind { path } => {
-            SandboxImageSource::Bind(canonicalize_bind_path(path, bind_roots)?)
+            let canonical = canonicalize_bind_path(path, bind_roots)?;
+            info!(
+                tool = %tool_name,
+                image_source = "bind",
+                bind_path_raw = %path.display(),
+                bind_path_canonical = %canonical.display(),
+                "external tool sandbox image source selected"
+            );
+            SandboxImageSource::Bind(canonical)
         }
     };
     let entrypoint = sandbox_spec.entrypoint.clone();

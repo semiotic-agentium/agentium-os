@@ -46,7 +46,7 @@ use baml_rt_core::{BamlRtError, Result};
 use dashmap::DashMap;
 use futures_util::stream::{self, BoxStream};
 #[cfg(feature = "sandbox-provider")]
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::{
     channel::TsrpcChannel,
@@ -155,8 +155,14 @@ impl SandboxProvider for MicrosandboxProvider {
             .replace(); // idempotent by name-replace per trait contract
 
         builder = match &spec.image {
-            SandboxImageSource::Oci(image) => builder.image(image.as_str()),
-            SandboxImageSource::Bind(path) => builder.image(path.clone()),
+            SandboxImageSource::Oci(image) => {
+                info!(sandbox = %name, image_source = "oci", image_ref = %image, "creating sandbox with OCI image");
+                builder.image(image.as_str())
+            }
+            SandboxImageSource::Bind(path) => {
+                info!(sandbox = %name, image_source = "bind", bind_path = %path.display(), "creating sandbox with bind rootfs");
+                builder.image(path.clone())
+            }
         };
 
         let _ = spec.pull_policy; // see comment above map_pull_policy
@@ -241,30 +247,37 @@ impl SandboxProvider for MicrosandboxProvider {
             ))
         })?;
 
-        // TSRPC transport contract: exec_stream on the image default
-        // entrypoint (the tool-adapter) with stdin_pipe enabled so the
-        // adapter can write responses back (§5.2).
+        // TSRPC transport contract: run the tool adapter with stdin_pipe
+        // enabled so it can stream JSON-RPC responses back.
         //
-        // The image's ENTRYPOINT is expected to be the `tool-adapter`
-        // binary. For images where it's not, `spec.entrypoint` in
-        // create() already set it on the SandboxConfig; `exec_stream` here
-        // inherits via the VM's init process.
-        //
-        // We use an intentionally-short, simple command: the guest runs a
-        // `/bin/sh -c 'tool-adapter'` so busybox-style images work, and
-        // images with a direct `tool-adapter` in PATH also work.
-        let exec_handle = sandbox
-            .exec_stream_with("tool-adapter", |opts| opts.stdin_pipe())
+        // Bind-rootfs images often place the binary at `/tool-adapter`
+        // (distroless style) without PATH entries; prefer absolute path and
+        // fall back to PATH lookup for compatibility.
+        let exec_handle = match sandbox
+            .exec_stream_with("/tool-adapter", |opts| opts.stdin_pipe())
             .await
-            .map_err(|e| {
-                to_rt_err(
-                    &format!(
-                        "microsandbox exec_stream for sandbox '{}' failed",
-                        handle.name
-                    ),
-                    e,
-                )
-            })?;
+        {
+            Ok(h) => h,
+            Err(abs_err) => {
+                warn!(
+                    sandbox = %handle.name,
+                    error = ?abs_err,
+                    "exec '/tool-adapter' failed; retrying with PATH lookup 'tool-adapter'"
+                );
+                sandbox
+                    .exec_stream_with("tool-adapter", |opts| opts.stdin_pipe())
+                    .await
+                    .map_err(|e| {
+                        to_rt_err(
+                            &format!(
+                                "microsandbox exec_stream for sandbox '{}' failed",
+                                handle.name
+                            ),
+                            e,
+                        )
+                    })?
+            }
+        };
 
         exec_handle_into_channel(exec_handle).map_err(|msg| {
             BamlRtError::InvalidArgument(format!(
@@ -316,13 +329,17 @@ impl SandboxProvider for MicrosandboxProvider {
     }
 
     async fn list_owned(&self, runner_id: &str) -> Result<Vec<SandboxHandle>> {
-        let prefix = format!("baml:{runner_id}:");
+        let long_prefix = format!("baml:{runner_id}:");
+        let short_prefix = format!("baml:{}:", runner_id.chars().take(8).collect::<String>());
         let all = microsandbox::Sandbox::list()
             .await
             .map_err(|e| to_rt_err("microsandbox Sandbox::list() failed", e))?;
         Ok(all
             .into_iter()
-            .filter(|h| h.name().starts_with(&prefix))
+            .filter(|h| {
+                let n = h.name();
+                n.starts_with(&long_prefix) || n.starts_with(&short_prefix)
+            })
             .map(|h| SandboxHandle {
                 name: h.name().to_string(),
                 created_at: h

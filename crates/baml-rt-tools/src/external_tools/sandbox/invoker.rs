@@ -20,6 +20,7 @@ use std::{
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, ContextId, Result, ids::AgentId};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
 use super::{
@@ -73,16 +74,17 @@ impl SandboxCache {
         &self.runner_id
     }
 
-    /// Encode the sandbox name per §9.2: `baml:<runner>:<agent>:<ctx>:<tool>`.
+    /// Encode a microsandbox-safe name for the cache key.
     ///
-    /// Uses `Display` of each ID so the caller doesn't need to care about
-    /// their internal encoding. Length bounds (microsandbox name caps) are a
-    /// Phase C concern — ignored here.
+    /// Name must remain short enough for underlying UNIX socket path limits
+    /// (`SUN_LEN`). We keep a small runner-scoped prefix + stable hash.
     pub fn encode_name(&self, key: &SandboxCacheKey) -> String {
-        format!(
-            "baml:{}:{}:{}:{}",
+        let runner = sanitize_component(&self.runner_id, 8);
+        let hash = short_hash(&format!(
+            "{}|{}|{}|{}",
             self.runner_id, key.agent_id, key.context_id, key.tool_name
-        )
+        ));
+        format!("baml:{runner}:{hash}")
     }
 
     /// Look up or lazily create a handle. `reattach_ok` toggles whether to
@@ -292,6 +294,34 @@ impl SandboxInvoker {
             BamlRtError::InvalidArgument("JSON-RPC response missing result".to_string())
         })
     }
+}
+
+fn sanitize_component(input: &str, max_len: usize) -> String {
+    let mut out = String::with_capacity(max_len);
+    for ch in input.chars() {
+        let mapped = if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            ch
+        } else {
+            '_'
+        };
+        out.push(mapped);
+        if out.len() >= max_len {
+            break;
+        }
+    }
+    if out.is_empty() {
+        "x".to_string()
+    } else {
+        out
+    }
+}
+
+fn short_hash(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let digest = hasher.finalize();
+    let hex = format!("{:x}", digest);
+    hex[..10].to_string()
 }
 
 fn rand_id() -> u64 {
