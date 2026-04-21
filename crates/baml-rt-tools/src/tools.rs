@@ -435,7 +435,7 @@ pub struct ToolProjectionSemantics {
     pub detail: String,
 }
 
-fn is_valid_tool_identifier_component(s: &str) -> bool {
+fn is_valid_bundle_identifier_component(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
         Some(c) if c.is_ascii_lowercase() => {}
@@ -444,13 +444,22 @@ fn is_valid_tool_identifier_component(s: &str) -> bool {
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
+fn is_valid_local_tool_identifier_component(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BundleName(String);
 
 impl BundleName {
     pub fn new(name: impl Into<String>) -> Result<Self> {
         let name = name.into();
-        if !is_valid_tool_identifier_component(&name) {
+        if !is_valid_bundle_identifier_component(&name) {
             return Err(BamlRtError::InvalidArgument(format!(
                 "Bundle name '{}' must match ^[a-z][a-z0-9_-]*$ (ASCII lowercase letters, digits, '_' or '-')",
                 name
@@ -509,9 +518,9 @@ pub struct LocalToolName(String);
 impl LocalToolName {
     pub fn new(name: impl Into<String>) -> Result<Self> {
         let name = name.into();
-        if !is_valid_tool_identifier_component(&name) {
+        if !is_valid_local_tool_identifier_component(&name) {
             return Err(BamlRtError::InvalidArgument(format!(
-                "Tool name '{}' must match ^[a-z][a-z0-9_-]*$ (ASCII lowercase letters, digits, '_' or '-')",
+                "Tool name '{}' must match ^[a-z][A-Za-z0-9_-]*$ (ASCII letters, digits, '_' or '-', starting with lowercase)",
                 name
             )));
         }
