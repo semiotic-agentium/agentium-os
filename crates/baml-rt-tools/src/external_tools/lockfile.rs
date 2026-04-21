@@ -141,3 +141,90 @@ pub struct ExternalToolLockEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<serde_json::Value>,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::PathBuf};
+
+    use super::ExternalToolsLockfile;
+
+    #[test]
+    fn lockfile_allows_sandbox_tool_without_tool_server() {
+        let dir = unique_temp_dir("lockfile-sandbox-no-bin");
+        fs::create_dir_all(&dir).expect("create temp tool dir");
+        let metadata = serde_json::json!({
+            "tool_abi_version": "1",
+            "name": "support/sbox_no_bin",
+            "description": "sandbox",
+            "bundle": "support",
+            "local_name": "sbox_no_bin",
+            "access_level": "read",
+            "invocation_mode": "single_shot",
+            "schemas": {
+                "input": {"type": "object"},
+                "output": {"type": "object"}
+            },
+            "secrets": [],
+            "capabilities": {},
+            "runtime": {
+                "kind": "sandbox",
+                "image": {"kind": "bind", "path": "/tmp/sbox-rootfs"},
+                "entrypoint": ["/tool-adapter"]
+            },
+            "runtime_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        });
+        fs::write(
+            dir.join("tool-metadata.json"),
+            serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+        )
+        .expect("write metadata");
+
+        let lockfile = ExternalToolsLockfile::from_tool_dirs(std::slice::from_ref(&dir))
+            .expect("sandbox lockfile should succeed without tool-server");
+        assert_eq!(lockfile.tools.len(), 1);
+        assert_eq!(lockfile.tools[0].name, "support/sbox_no_bin");
+        assert!(lockfile.tools[0].digest.starts_with("sha256:"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lockfile_process_tool_without_tool_server_fails() {
+        let dir = unique_temp_dir("lockfile-process-missing-bin");
+        fs::create_dir_all(&dir).expect("create temp tool dir");
+        let metadata = serde_json::json!({
+            "tool_abi_version": "1",
+            "name": "support/proc_missing_bin",
+            "description": "process",
+            "bundle": "support",
+            "local_name": "proc_missing_bin",
+            "access_level": "read",
+            "invocation_mode": "single_shot",
+            "schemas": {
+                "input": {"type": "object"},
+                "output": {"type": "object"}
+            },
+            "secrets": [],
+            "capabilities": {}
+        });
+        fs::write(
+            dir.join("tool-metadata.json"),
+            serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+        )
+        .expect("write metadata");
+
+        let err = ExternalToolsLockfile::from_tool_dirs(std::slice::from_ref(&dir))
+            .expect_err("process lockfile should fail when tool-server missing");
+        assert!(
+            err.to_string()
+                .contains("failed to read external tool binary"),
+            "unexpected error: {err}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()))
+    }
+}

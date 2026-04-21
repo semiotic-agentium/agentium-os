@@ -281,20 +281,21 @@ pub(crate) fn metadata_schema_hash(meta: &ExternalToolMetadata) -> String {
 
 /// Compute deterministic digest for a local external tool package directory.
 ///
-/// Digest input (in order):
+/// Process runtime input (in order):
 /// - magic/version marker: `baml-ext-tool-v1\0`
 /// - tool binary bytes prefixed by u64 little-endian length
 /// - canonicalized metadata bytes prefixed by u64 little-endian length
 /// - filesystem mode bits (`stat().mode() & 0o7777`) as u32 little-endian
+///
+/// Sandbox runtime input (in order):
+/// - magic/version marker: `baml-ext-tool-sandbox-v1\0`
+/// - canonicalized metadata bytes prefixed by u64 little-endian length
+///
+/// Sandbox tools intentionally do not require a local `tool-server` binary:
+/// runtime identity is declared by sandbox metadata (`runtime.image`,
+/// `runtime_digest`) rather than host executable bytes.
 pub fn compute_tool_digest(dir: &Path) -> Result<String> {
-    let bin_path = dir.join("tool-server");
     let metadata_path = dir.join("tool-metadata.json");
-
-    let bin_bytes = fs::read(&bin_path).map_err(|e| BamlRtError::InvalidArgumentWithSource {
-        message: format!("failed to read external tool binary {}", bin_path.display()),
-        source: Box::new(e),
-    })?;
-
     let metadata_raw =
         fs::read_to_string(&metadata_path).map_err(|e| BamlRtError::InvalidArgumentWithSource {
             message: format!(
@@ -312,6 +313,15 @@ pub fn compute_tool_digest(dir: &Path) -> Result<String> {
             source: Box::new(e),
         }
     })?;
+    let metadata: ExternalToolMetadata = serde_json::from_str(&metadata_raw).map_err(|e| {
+        BamlRtError::InvalidArgumentWithSource {
+            message: format!(
+                "failed to decode typed external tool metadata {}",
+                metadata_path.display()
+            ),
+            source: Box::new(e),
+        }
+    })?;
     let canonical_metadata =
         serde_json::to_string(&sort_json_keys(&metadata_json)).map_err(|e| {
             BamlRtError::InvalidArgumentWithSource {
@@ -320,6 +330,19 @@ pub fn compute_tool_digest(dir: &Path) -> Result<String> {
             }
         })?;
 
+    if matches!(metadata.runtime, Some(ToolRuntime::Sandbox(_))) {
+        let mut hasher = Sha256::new();
+        hasher.update(b"baml-ext-tool-sandbox-v1\0");
+        hasher.update((canonical_metadata.len() as u64).to_le_bytes());
+        hasher.update(canonical_metadata.as_bytes());
+        return Ok(format!("sha256:{:x}", hasher.finalize()));
+    }
+
+    let bin_path = dir.join("tool-server");
+    let bin_bytes = fs::read(&bin_path).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+        message: format!("failed to read external tool binary {}", bin_path.display()),
+        source: Box::new(e),
+    })?;
     let mode_bits = file_mode_bits(&bin_path)?;
 
     let mut hasher = Sha256::new();
@@ -367,6 +390,10 @@ pub(crate) fn sort_json_keys(value: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::{fs, path::PathBuf};
+
     use super::*;
     use crate::external_tools::{SandboxImageRef, SandboxRuntimeSpec};
 
@@ -439,5 +466,142 @@ mod tests {
             parsed.runtime_digest.as_deref(),
             Some("sha256:2222222222222222222222222222222222222222222222222222222222222222")
         );
+    }
+
+    #[test]
+    fn compute_tool_digest_allows_sandbox_without_tool_server() {
+        let dir = unique_temp_dir("sandbox-digest-no-bin");
+        fs::create_dir_all(&dir).expect("create temp tool dir");
+
+        let metadata = serde_json::json!({
+            "tool_abi_version": "1",
+            "name": "support/sandbox_only",
+            "description": "sandbox only",
+            "bundle": "support",
+            "local_name": "sandbox_only",
+            "access_level": "read",
+            "invocation_mode": "single_shot",
+            "schemas": {
+                "input": {"type": "object"},
+                "output": {"type": "object"}
+            },
+            "secrets": [],
+            "capabilities": {},
+            "runtime": {
+                "kind": "sandbox",
+                "image": {
+                    "kind": "bind",
+                    "path": "/tmp/sandbox-rootfs"
+                },
+                "entrypoint": ["/tool-adapter"]
+            },
+            "runtime_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        });
+
+        fs::write(
+            dir.join("tool-metadata.json"),
+            serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+        )
+        .expect("write metadata");
+
+        let digest =
+            compute_tool_digest(&dir).expect("sandbox digest should succeed without binary");
+        assert!(digest.starts_with("sha256:"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compute_tool_digest_requires_tool_server_for_process_runtime() {
+        let dir = unique_temp_dir("process-digest-missing-bin");
+        fs::create_dir_all(&dir).expect("create temp tool dir");
+
+        let metadata = serde_json::json!({
+            "tool_abi_version": "1",
+            "name": "support/process_only",
+            "description": "process only",
+            "bundle": "support",
+            "local_name": "process_only",
+            "access_level": "read",
+            "invocation_mode": "single_shot",
+            "schemas": {
+                "input": {"type": "object"},
+                "output": {"type": "object"}
+            },
+            "secrets": [],
+            "capabilities": {}
+        });
+
+        fs::write(
+            dir.join("tool-metadata.json"),
+            serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+        )
+        .expect("write metadata");
+
+        let err = compute_tool_digest(&dir).expect_err("process digest should fail without binary");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to read external tool binary"),
+            "unexpected error: {msg}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compute_tool_digest_for_process_changes_with_binary_mode() {
+        let dir = unique_temp_dir("process-digest-mode");
+        fs::create_dir_all(&dir).expect("create temp tool dir");
+
+        let metadata = serde_json::json!({
+            "tool_abi_version": "1",
+            "name": "support/process_mode",
+            "description": "process mode",
+            "bundle": "support",
+            "local_name": "process_mode",
+            "access_level": "read",
+            "invocation_mode": "single_shot",
+            "schemas": {
+                "input": {"type": "object"},
+                "output": {"type": "object"}
+            },
+            "secrets": [],
+            "capabilities": {}
+        });
+
+        fs::write(
+            dir.join("tool-metadata.json"),
+            serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+        )
+        .expect("write metadata");
+
+        let bin_path = dir.join("tool-server");
+        fs::write(&bin_path, b"#!/bin/sh\necho hi\n").expect("write tool-server");
+
+        let mut perms = fs::metadata(&bin_path)
+            .expect("stat tool-server")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&bin_path, perms).expect("chmod 755");
+        let digest_755 = compute_tool_digest(&dir).expect("digest 755");
+
+        let mut perms = fs::metadata(&bin_path)
+            .expect("stat tool-server")
+            .permissions();
+        perms.set_mode(0o700);
+        fs::set_permissions(&bin_path, perms).expect("chmod 700");
+        let digest_700 = compute_tool_digest(&dir).expect("digest 700");
+
+        assert_ne!(
+            digest_755, digest_700,
+            "mode bits should affect process digest"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()))
     }
 }

@@ -21,7 +21,11 @@ use crate::{
 /// Env var that points builder/runner at local external tool directories.
 ///
 /// Value: colon-separated list of tool package directories. Each directory
-/// must contain `tool-metadata.json` (and, at runtime, a `tool-server` binary).
+/// must contain `tool-metadata.json`.
+///
+/// Runtime artifact requirements depend on `runtime.kind`:
+/// - `process` (default): local `tool-server` binary
+/// - `sandbox`: sandbox adapter image/rootfs (`tool-server` not required)
 pub const BUILDER_EXTERNAL_TOOLS_ENV: &str = "BAML_EXTERNAL_TOOLS_DIR";
 
 /// Build a [`CompositeCatalog`] for the builder: inventory first, plus an
