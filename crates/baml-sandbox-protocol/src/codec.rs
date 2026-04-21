@@ -106,13 +106,10 @@ impl TsrpcChannel {
                 op: "write body",
                 source,
             })?;
-        self.writer
-            .flush()
-            .await
-            .map_err(|source| CodecError::Io {
-                op: "flush",
-                source,
-            })?;
+        self.writer.flush().await.map_err(|source| CodecError::Io {
+            op: "flush",
+            source,
+        })?;
         Ok(())
     }
 
@@ -214,7 +211,13 @@ mod tests {
         let (ar, aw) = tokio::io::split(a);
         let mut chan = TsrpcChannel::new(ar, aw);
         let err = chan.recv().await.unwrap_err();
-        assert!(matches!(err, CodecError::Io { op: "read length", .. }));
+        assert!(matches!(
+            err,
+            CodecError::Io {
+                op: "read length",
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -234,7 +237,13 @@ mod tests {
         assert_eq!(got["final"], true);
         // Next recv must see EOF (shutdown closed the writer cleanly).
         let err = server.recv().await.unwrap_err();
-        assert!(matches!(err, CodecError::Io { op: "read length", .. }));
+        assert!(matches!(
+            err,
+            CodecError::Io {
+                op: "read length",
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

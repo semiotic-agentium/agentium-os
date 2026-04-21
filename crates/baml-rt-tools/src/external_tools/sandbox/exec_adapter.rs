@@ -64,7 +64,10 @@ pub fn exec_handle_into_channel(mut handle: ExecHandle) -> Result<TsrpcChannel, 
             match event {
                 ExecEvent::Stdout(bytes) => {
                     if let Err(err) = vm_w.write_all(&bytes).await {
-                        debug!(?err, "sandbox exec adapter stdout write failed; stopping pump");
+                        debug!(
+                            ?err,
+                            "sandbox exec adapter stdout write failed; stopping pump"
+                        );
                         break;
                     }
                 }
@@ -96,7 +99,10 @@ pub fn exec_handle_into_channel(mut handle: ExecHandle) -> Result<TsrpcChannel, 
                 Ok(0) => break, // host side closed
                 Ok(n) => {
                     if let Err(err) = stdin.write(&buf[..n]).await {
-                        warn!(?err, "sandbox exec adapter stdin write failed; stopping pump");
+                        warn!(
+                            ?err,
+                            "sandbox exec adapter stdin write failed; stopping pump"
+                        );
                         break;
                     }
                 }

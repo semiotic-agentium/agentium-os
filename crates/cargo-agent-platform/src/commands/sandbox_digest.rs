@@ -18,8 +18,9 @@ pub fn run(source: SandboxDigestSourceArg, path: &str) -> Result<()> {
 
     match source {
         SandboxDigestSourceArg::Bind => {
-            let canonical = std::fs::canonicalize(path)
-                .map_err(|e| anyhow::anyhow!("bind path does not resolve: {}: {e}", path.display()))?;
+            let canonical = std::fs::canonicalize(path).map_err(|e| {
+                anyhow::anyhow!("bind path does not resolve: {}: {e}", path.display())
+            })?;
             if !canonical.is_dir() {
                 bail!("bind path is not a directory: {}", canonical.display());
             }

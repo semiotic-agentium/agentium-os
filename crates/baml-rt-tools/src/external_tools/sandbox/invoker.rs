@@ -309,11 +309,7 @@ fn sanitize_component(input: &str, max_len: usize) -> String {
             break;
         }
     }
-    if out.is_empty() {
-        "x".to_string()
-    } else {
-        out
-    }
+    if out.is_empty() { "x".to_string() } else { out }
 }
 
 fn short_hash(input: &str) -> String {

@@ -18,17 +18,11 @@
 //! response stream and panics if it finds trailing unframed bytes —
 //! that panic is the stdout-purity oracle used by the pollution test.
 
-use std::path::PathBuf;
-use std::process::Stdio;
-use std::time::Duration;
+use std::{path::PathBuf, process::Stdio, time::Duration};
 
-use baml_sandbox_protocol::{
-    ERR_INTERNAL, JsonRpcRequest, METHOD_DESCRIBE, METHOD_INVOKE,
-};
+use baml_sandbox_protocol::{ERR_INTERNAL, JsonRpcRequest, METHOD_DESCRIBE, METHOD_INVOKE};
 use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
-use tokio::time::timeout;
+use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -126,11 +120,7 @@ async fn happy_path_describe_invoke() {
         TEST_TIMEOUT,
         run_echo(frame_stream(&[
             request_envelope(METHOD_DESCRIBE, 1, json!({})),
-            request_envelope(
-                METHOD_INVOKE,
-                2,
-                invoke_params(json!({"message": "ping"})),
-            ),
+            request_envelope(METHOD_INVOKE, 2, invoke_params(json!({"message": "ping"}))),
         ])),
     )
     .await
@@ -161,16 +151,8 @@ async fn panic_keepalive_next_invoke_succeeds() {
     let out = timeout(
         TEST_TIMEOUT,
         run_echo(frame_stream(&[
-            request_envelope(
-                METHOD_INVOKE,
-                1,
-                invoke_params(json!({"panic": true})),
-            ),
-            request_envelope(
-                METHOD_INVOKE,
-                2,
-                invoke_params(json!({"message": "alive"})),
-            ),
+            request_envelope(METHOD_INVOKE, 1, invoke_params(json!({"panic": true}))),
+            request_envelope(METHOD_INVOKE, 2, invoke_params(json!({"message": "alive"}))),
         ])),
     )
     .await

@@ -103,7 +103,10 @@ pub fn run(path: &str) -> Result<()> {
                 }
             }
             _ => {
-                bail!("unsupported sandbox image kind in metadata for tool {}", typed.name);
+                bail!(
+                    "unsupported sandbox image kind in metadata for tool {}",
+                    typed.name
+                );
             }
         }
     }

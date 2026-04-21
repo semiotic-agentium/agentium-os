@@ -19,7 +19,8 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::{
-    SandboxCache, SandboxCacheKey, SandboxInvoker, SandboxProvider, SandboxSpec, SandboxSpecBuilder,
+    SandboxCache, SandboxCacheKey, SandboxInvoker, SandboxProvider, SandboxSpec,
+    SandboxSpecBuilder,
     mock::{MockSandboxProvider, ScriptedAdapter},
 };
 use crate::{
@@ -55,7 +56,10 @@ async fn sandbox_invoker_happy_path_round_trips_through_mock_provider() {
                     "result": { "output": { "echoed": req["params"] }, "done": true }
                 });
                 let out = serde_json::to_vec(&reply).unwrap();
-                if w.write_all(&(out.len() as u32).to_be_bytes()).await.is_err() {
+                if w.write_all(&(out.len() as u32).to_be_bytes())
+                    .await
+                    .is_err()
+                {
                     break;
                 }
                 if w.write_all(&out).await.is_err() {

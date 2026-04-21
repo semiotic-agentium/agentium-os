@@ -20,8 +20,10 @@
 
 #![cfg(unix)]
 
-use std::io;
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::{
+    io,
+    os::fd::{FromRawFd, OwnedFd},
+};
 
 use tokio::fs::File as TokioFile;
 
