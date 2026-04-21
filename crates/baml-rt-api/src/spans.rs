@@ -3,6 +3,7 @@
 //! Instrumentation is kept orthogonal to handlers per the trace guide.
 //! All span names use the `baml_rt_api.` namespace for low cardinality.
 
+use baml_rt_core::{AgentInstanceId, AgentPackageName};
 use tracing::Span;
 
 /// Create span for GET /agents (list running agents).
@@ -22,10 +23,13 @@ pub(crate) fn list_agents() -> Span {
 /// runner sees a peer-runner baggage marker. `ingress_service_instance_id` and
 /// `serving_service_instance_id` carry the runner pod names that accepted and served the
 /// request (they match for non-forwarded traffic).
+///
+/// Takes typed identifiers so raw path input cannot reach this info-level span —
+/// callers must parse first.
 #[inline]
 pub(crate) fn post_a2a(
-    agent_package: &str,
-    agent_instance_id: &str,
+    agent_package: &AgentPackageName,
+    agent_instance_id: &AgentInstanceId,
     forwarded: bool,
     ingress_service_instance_id: &str,
     serving_service_instance_id: &str,
@@ -42,11 +46,12 @@ pub(crate) fn post_a2a(
 
 /// Create span for POST /agents/.../dispatch (deterministic buffered delivery).
 ///
-/// Parent: HTTP request span. Ingress milestone — see [`post_a2a`] for field semantics.
+/// Parent: HTTP request span. Ingress milestone — see [`post_a2a`] for field semantics
+/// and the typed-identifier requirement.
 #[inline]
 pub(crate) fn post_dispatch(
-    agent_package: &str,
-    agent_instance_id: &str,
+    agent_package: &AgentPackageName,
+    agent_instance_id: &AgentInstanceId,
     forwarded: bool,
     ingress_service_instance_id: &str,
     serving_service_instance_id: &str,

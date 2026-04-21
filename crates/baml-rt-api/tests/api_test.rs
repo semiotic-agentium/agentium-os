@@ -21,8 +21,9 @@ use baml_rt_api::{
 };
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
-    AgentDispatchRequest, AgentLister, AgentRouteKey, BamlRtError, BusStream, EventSchemaVersion,
-    EventSourceKind, EventSubscription, Outcome, Result,
+    AgentDispatchRequest, AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey,
+    BamlRtError, BusStream, EventSchemaVersion, EventSourceKind, EventSubscription, Outcome,
+    Result,
     event_subscription::{EventSourceKey, EventSourceKeyPrefix},
     ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, UuidId},
 };
@@ -1486,6 +1487,174 @@ async fn post_dispatch_span_records_agent_identity_and_service_instance_fields()
     let serving = attr_value(span, "serving_service_instance_id")
         .expect("post_dispatch span must carry serving_service_instance_id");
     assert_eq!(ingress, serving);
+}
+
+#[tokio::test]
+async fn post_a2a_bad_package_does_not_leak_raw_into_identity_span() {
+    let fixture = OtelTestFixture::new();
+    let registry: Arc<dyn AgentRegistry> =
+        Arc::new(MockRegistry::with_entries(vec![discovery_entry(
+            "pkg", "default", "pkg", "1.0.0",
+        )]));
+    let app = api_router(registry, None, None).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/agents/bad.pkg/default/a2a")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","method":"tasks.list","params":{},"id":null}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let spans = fixture.spans();
+    for span in &spans {
+        assert_ne!(
+            span.name.as_ref(),
+            "baml_rt_api.post_a2a",
+            "post_a2a info span must not be emitted for bad identifiers — raw path would poison telemetry cardinality"
+        );
+        if let Some(package) = attr_value(span, "agent_package") {
+            assert!(
+                AgentPackageName::parse(&package).is_some(),
+                "no span may carry raw public input as agent_package: got {package}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn post_a2a_bad_instance_does_not_leak_raw_into_identity_span() {
+    let fixture = OtelTestFixture::new();
+    let registry: Arc<dyn AgentRegistry> =
+        Arc::new(MockRegistry::with_entries(vec![discovery_entry(
+            "pkg", "default", "pkg", "1.0.0",
+        )]));
+    let app = api_router(registry, None, None).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/agents/pkg/bad.instance/a2a")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","method":"tasks.list","params":{},"id":null}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let spans = fixture.spans();
+    for span in &spans {
+        assert_ne!(
+            span.name.as_ref(),
+            "baml_rt_api.post_a2a",
+            "post_a2a info span must not be emitted for bad identifiers — raw path would poison telemetry cardinality"
+        );
+        if let Some(instance) = attr_value(span, "agent_instance_id") {
+            assert!(
+                AgentInstanceId::parse(&instance).is_some(),
+                "no span may carry raw public input as agent_instance_id: got {instance}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn post_dispatch_bad_package_does_not_leak_raw_into_identity_span() {
+    let fixture = OtelTestFixture::new();
+    let registry: Arc<dyn AgentRegistry> =
+        Arc::new(MockRegistry::with_entries(vec![discovery_entry(
+            "pkg", "default", "pkg", "1.0.0",
+        )]));
+    let app = api_router(registry, None, None).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/agents/bad.pkg/default/dispatch")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "routing_key":"slack:intake",
+                        "message_type":"task-daemon.interpretation.v1",
+                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let spans = fixture.spans();
+    for span in &spans {
+        assert_ne!(
+            span.name.as_ref(),
+            "baml_rt_api.post_dispatch",
+            "post_dispatch info span must not be emitted for bad identifiers — raw path would poison telemetry cardinality"
+        );
+        if let Some(package) = attr_value(span, "agent_package") {
+            assert!(
+                AgentPackageName::parse(&package).is_some(),
+                "no span may carry raw public input as agent_package: got {package}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn post_dispatch_bad_instance_does_not_leak_raw_into_identity_span() {
+    let fixture = OtelTestFixture::new();
+    let registry: Arc<dyn AgentRegistry> =
+        Arc::new(MockRegistry::with_entries(vec![discovery_entry(
+            "pkg", "default", "pkg", "1.0.0",
+        )]));
+    let app = api_router(registry, None, None).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/agents/pkg/bad.instance/dispatch")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "routing_key":"slack:intake",
+                        "message_type":"task-daemon.interpretation.v1",
+                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let spans = fixture.spans();
+    for span in &spans {
+        assert_ne!(
+            span.name.as_ref(),
+            "baml_rt_api.post_dispatch",
+            "post_dispatch info span must not be emitted for bad identifiers — raw path would poison telemetry cardinality"
+        );
+        if let Some(instance) = attr_value(span, "agent_instance_id") {
+            assert!(
+                AgentInstanceId::parse(&instance).is_some(),
+                "no span may carry raw public input as agent_instance_id: got {instance}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

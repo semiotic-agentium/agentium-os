@@ -578,40 +578,18 @@ pub async fn post_a2a(
     axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> HttpResult<Json<Vec<Value>>> {
-    let service_instance_id = baml_rt_observability::service_instance_id();
-    // `forwarded` stays `false` here; PR 2 wires the Axum middleware that flips it when
-    // a peer runner forwards the call. Until then the local ingress both accepts and
-    // serves the request so `ingress == serving`.
-    let forwarded = false;
-    let ingress_service_instance_id = service_instance_id;
-    let serving_service_instance_id = service_instance_id;
-    let span = spans::post_a2a(
-        &agent_package,
-        &agent_instance_id,
-        forwarded,
-        ingress_service_instance_id,
-        serving_service_instance_id,
-    );
-    let _guard = span.enter();
     let start = Instant::now();
-    let record_metric = |result: &str| {
-        metrics::record_agent_http_request(
-            "post_a2a",
-            &agent_package,
-            &agent_instance_id,
-            forwarded,
-            ingress_service_instance_id,
-            result,
-            start.elapsed(),
-        );
-    };
 
+    // Low-cardinality rule: parse must succeed before raw path input is allowed
+    // to reach the info-level identity span or the agent-scoped metric recorder.
+    // Parse failures fall back to the route-only `record_request` helper so
+    // `/agents/...` public traffic cannot spray unbounded labels.
     let package_name = AgentPackageName::parse(&agent_package).ok_or_else(|| {
-        record_metric("bad_request");
+        metrics::record_request("post_a2a", "bad_request", start.elapsed());
         problem(400, "Bad Request", "agent_package must match [A-Za-z0-9_-]")
     })?;
     let instance_id = AgentInstanceId::parse(&agent_instance_id).ok_or_else(|| {
-        record_metric("bad_request");
+        metrics::record_request("post_a2a", "bad_request", start.elapsed());
         problem(
             400,
             "Bad Request",
@@ -619,6 +597,31 @@ pub async fn post_a2a(
         )
     })?;
     let key = AgentRouteKey::new(package_name, instance_id);
+
+    // `forwarded` stays `false` here; PR 2 wires the Axum middleware that flips it when
+    // a peer runner forwards the call. Until then the local ingress both accepts and
+    // serves the request so `ingress == serving`.
+    let forwarded = false;
+    let service_instance_id = baml_rt_observability::service_instance_id();
+    let span = spans::post_a2a(
+        &key.agent_package,
+        &key.agent_instance_id,
+        forwarded,
+        service_instance_id,
+        service_instance_id,
+    );
+    let _guard = span.enter();
+    let record_metric = |result: &str| {
+        metrics::record_agent_http_request(
+            "post_a2a",
+            &key.agent_package,
+            &key.agent_instance_id,
+            forwarded,
+            service_instance_id,
+            result,
+            start.elapsed(),
+        );
+    };
 
     if !body.is_object() {
         record_metric("bad_request");
@@ -1203,40 +1206,17 @@ pub async fn post_dispatch(
     axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
     Json(body): Json<crate::openapi::AgentDispatchRequestDto>,
 ) -> impl IntoResponse {
-    let service_instance_id = baml_rt_observability::service_instance_id();
-    // See `post_a2a` — `forwarded` stays `false` until PR 2 lands the baggage-aware
-    // middleware; `ingress == serving` for the single-runner path.
-    let forwarded = false;
-    let ingress_service_instance_id = service_instance_id;
-    let serving_service_instance_id = service_instance_id;
-    let span = spans::post_dispatch(
-        &agent_package,
-        &agent_instance_id,
-        forwarded,
-        ingress_service_instance_id,
-        serving_service_instance_id,
-    );
-    let _guard = span.enter();
     let start = Instant::now();
-    let record_metric = |result: &str| {
-        metrics::record_agent_http_request(
-            "post_dispatch",
-            &agent_package,
-            &agent_instance_id,
-            forwarded,
-            ingress_service_instance_id,
-            result,
-            start.elapsed(),
-        );
-    };
 
+    // Low-cardinality rule: see `post_a2a`. Parse failures must not reach the
+    // identity span or the agent-scoped recorder.
     let package_name = match AgentPackageName::parse(&agent_package) {
         Some(n) => n,
         None => {
-            record_metric("bad_request");
+            metrics::record_request("post_dispatch", "bad_request", start.elapsed());
             return (
                 AxumStatus::BAD_REQUEST,
-                format!("invalid agent_package: {agent_package}"),
+                "agent_package must match [A-Za-z0-9_-]",
             )
                 .into_response();
         }
@@ -1244,15 +1224,40 @@ pub async fn post_dispatch(
     let instance_id = match AgentInstanceId::parse(&agent_instance_id) {
         Some(i) => i,
         None => {
-            record_metric("bad_request");
+            metrics::record_request("post_dispatch", "bad_request", start.elapsed());
             return (
                 AxumStatus::BAD_REQUEST,
-                format!("invalid agent_instance_id: {agent_instance_id}"),
+                "agent_instance_id must match [A-Za-z0-9_-]",
             )
                 .into_response();
         }
     };
     let key = AgentRouteKey::new(package_name, instance_id);
+
+    // See `post_a2a` — `forwarded` stays `false` until PR 2 lands the baggage-aware
+    // middleware; `ingress == serving` for the single-runner path.
+    let forwarded = false;
+    let service_instance_id = baml_rt_observability::service_instance_id();
+    let span = spans::post_dispatch(
+        &key.agent_package,
+        &key.agent_instance_id,
+        forwarded,
+        service_instance_id,
+        service_instance_id,
+    );
+    let _guard = span.enter();
+    let record_metric = |result: &str| {
+        metrics::record_agent_http_request(
+            "post_dispatch",
+            &key.agent_package,
+            &key.agent_instance_id,
+            forwarded,
+            service_instance_id,
+            result,
+            start.elapsed(),
+        );
+    };
+
     let request: AgentDispatchRequest = match body.try_into() {
         Ok(r) => r,
         Err(e) => {
