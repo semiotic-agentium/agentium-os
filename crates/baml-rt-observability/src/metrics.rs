@@ -116,31 +116,99 @@ fn tool_invocation_histogram() -> &'static Histogram<f64> {
     })
 }
 
-/// Record completion of an A2A request.
-pub fn record_a2a_request(
+/// Build the attribute set emitted by [`record_a2a_request`]. Extracted so tests can
+/// assert identity labels without touching the global meter.
+pub fn a2a_request_attributes(
     method: &str,
+    agent_package: &str,
+    agent_instance_id: &str,
     result: &str,
     invocation: InvocationKind,
-    duration: Duration,
-) {
-    let attributes = &[
+    serving_service_instance_id: &str,
+) -> [KeyValue; 6] {
+    [
         KeyValue::new("method", method.to_string()),
+        KeyValue::new("agent_package", agent_package.to_string()),
+        KeyValue::new("agent_instance_id", agent_instance_id.to_string()),
         KeyValue::new("result", result.to_string()),
         KeyValue::new("stream", invocation.is_stream().to_string()),
-    ];
+        KeyValue::new(
+            "serving_service_instance_id",
+            serving_service_instance_id.to_string(),
+        ),
+    ]
+}
 
-    a2a_request_counter().add(1, attributes);
-    a2a_request_histogram().record(duration.as_millis() as f64, attributes);
+/// Build the attribute set emitted by [`record_a2a_error`]. Extracted so tests can
+/// assert identity labels without touching the global meter.
+pub fn a2a_error_attributes(
+    method: &str,
+    agent_package: &str,
+    agent_instance_id: &str,
+    error_type: &str,
+    invocation: InvocationKind,
+    serving_service_instance_id: &str,
+) -> [KeyValue; 6] {
+    [
+        KeyValue::new("method", method.to_string()),
+        KeyValue::new("agent_package", agent_package.to_string()),
+        KeyValue::new("agent_instance_id", agent_instance_id.to_string()),
+        KeyValue::new("error_type", error_type.to_string()),
+        KeyValue::new("stream", invocation.is_stream().to_string()),
+        KeyValue::new(
+            "serving_service_instance_id",
+            serving_service_instance_id.to_string(),
+        ),
+    ]
+}
+
+/// Record completion of an A2A request.
+///
+/// `serving_service_instance_id` is the pod-name (OTEL `service.instance.id`) of the
+/// runner that served the request, emitted as an explicit label so Grafana can filter
+/// without joining on `target_info`.
+pub fn record_a2a_request(
+    method: &str,
+    agent_package: &str,
+    agent_instance_id: &str,
+    result: &str,
+    invocation: InvocationKind,
+    serving_service_instance_id: &str,
+    duration: Duration,
+) {
+    let attributes = a2a_request_attributes(
+        method,
+        agent_package,
+        agent_instance_id,
+        result,
+        invocation,
+        serving_service_instance_id,
+    );
+    a2a_request_counter().add(1, &attributes);
+    a2a_request_histogram().record(duration.as_millis() as f64, &attributes);
 }
 
 /// Record an A2A error by type.
-pub fn record_a2a_error(method: &str, error_type: &str, invocation: InvocationKind) {
-    let attributes = &[
-        KeyValue::new("method", method.to_string()),
-        KeyValue::new("error_type", error_type.to_string()),
-        KeyValue::new("stream", invocation.is_stream().to_string()),
-    ];
-    a2a_error_counter().add(1, attributes);
+///
+/// `serving_service_instance_id` is the pod-name of the runner that hit the error,
+/// matching the label on [`record_a2a_request`].
+pub fn record_a2a_error(
+    method: &str,
+    agent_package: &str,
+    agent_instance_id: &str,
+    error_type: &str,
+    invocation: InvocationKind,
+    serving_service_instance_id: &str,
+) {
+    let attributes = a2a_error_attributes(
+        method,
+        agent_package,
+        agent_instance_id,
+        error_type,
+        invocation,
+        serving_service_instance_id,
+    );
+    a2a_error_counter().add(1, &attributes);
 }
 
 /// Record the number of chunks produced by a stream.
@@ -665,5 +733,92 @@ pub fn record_onnx_inference(operation: &'static str, wait: Duration, run: Durat
     onnx_wait_run_ratio_histogram().record(ratio, attributes);
     if wait_dominant {
         onnx_wait_dominant_counter().add(1, attributes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attr_value(attrs: &[KeyValue], key: &str) -> Option<String> {
+        attrs
+            .iter()
+            .find(|kv| kv.key.as_str() == key)
+            .map(|kv| kv.value.to_string())
+    }
+
+    #[test]
+    fn a2a_request_attributes_carry_agent_identity_and_serving_pod() {
+        let attrs = a2a_request_attributes(
+            "message/send",
+            "demo-agent",
+            "default",
+            "success",
+            InvocationKind::Invoke,
+            "runner-0",
+        );
+        assert_eq!(
+            attr_value(&attrs, "agent_package").as_deref(),
+            Some("demo-agent"),
+        );
+        assert_eq!(
+            attr_value(&attrs, "agent_instance_id").as_deref(),
+            Some("default"),
+        );
+        assert_eq!(
+            attr_value(&attrs, "serving_service_instance_id").as_deref(),
+            Some("runner-0"),
+        );
+        assert_eq!(
+            attr_value(&attrs, "method").as_deref(),
+            Some("message/send")
+        );
+        assert_eq!(attr_value(&attrs, "result").as_deref(), Some("success"));
+        assert_eq!(attr_value(&attrs, "stream").as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn a2a_request_attributes_carry_stream_flag() {
+        let attrs = a2a_request_attributes(
+            "message/stream",
+            "demo-agent",
+            "staging",
+            "success",
+            InvocationKind::Stream,
+            "runner-1",
+        );
+        assert_eq!(attr_value(&attrs, "stream").as_deref(), Some("true"));
+        assert_eq!(
+            attr_value(&attrs, "agent_instance_id").as_deref(),
+            Some("staging"),
+        );
+    }
+
+    #[test]
+    fn a2a_error_attributes_carry_agent_identity_and_serving_pod() {
+        let attrs = a2a_error_attributes(
+            "message/send",
+            "demo-agent",
+            "default",
+            "agent_not_found",
+            InvocationKind::Invoke,
+            "runner-0",
+        );
+        assert_eq!(
+            attr_value(&attrs, "agent_package").as_deref(),
+            Some("demo-agent"),
+        );
+        assert_eq!(
+            attr_value(&attrs, "agent_instance_id").as_deref(),
+            Some("default"),
+        );
+        assert_eq!(
+            attr_value(&attrs, "error_type").as_deref(),
+            Some("agent_not_found"),
+        );
+        assert_eq!(
+            attr_value(&attrs, "serving_service_instance_id").as_deref(),
+            Some("runner-0"),
+        );
     }
 }

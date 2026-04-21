@@ -11,8 +11,9 @@ use std::{
 
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::{
-    A2aStreamChunk, A2aWireRequest, AgentDiscoveryEntry, AgentLister, AgentManifest, BamlRtError,
-    DeploymentContentHash, Result, bus::BusStream, context::InvocationScope, ids::AgentId,
+    A2aStreamChunk, A2aWireRequest, AgentDiscoveryEntry, AgentInstanceId, AgentLister,
+    AgentManifest, AgentPackageName, BamlRtError, DeploymentContentHash, Result, bus::BusStream,
+    context::InvocationScope, ids::AgentId,
 };
 use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
@@ -183,10 +184,18 @@ impl AgentPackage {
 
         let runtime_manager_arc = Arc::new(tokio::sync::RwLock::new(runtime_manager));
         let quickjs_config = QuickJSConfig::new().with_stream_collector_idle_secs(stream_idle_secs);
+        let agent_package = AgentPackageName::parse(&self.manifest.name).ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!(
+                "manifest agent name '{name}' is not a valid agent_package identifier",
+                name = self.manifest.name
+            ))
+        })?;
+        let agent_instance_id = AgentInstanceId::default_id();
         let mut agent_builder = A2aAgent::builder()
             .with_runtime_handle(runtime_manager_arc.clone())
             .with_quickjs_config(quickjs_config)
             .with_baml_helpers(true)
+            .with_agent_identity(agent_package, agent_instance_id)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
         agent_builder = agent_builder.with_surreal_store(provenance_config.store().clone());
         let agent = agent_builder.build().await?;

@@ -15,25 +15,49 @@ pub(crate) fn list_agents() -> Span {
 
 /// Create span for POST /agents/.../a2a (JSON-RPC forward).
 ///
-/// Parent: HTTP request span.
+/// Parent: HTTP request span. Ingress milestone — promoted to `info` so the K8s pilot's
+/// default OTLP export carries agent identity and the forwarding bit.
+///
+/// `forwarded` is `false` in the single-runner path; PR 2 flips it when the serving
+/// runner sees a peer-runner baggage marker. `ingress_service_instance_id` and
+/// `serving_service_instance_id` carry the runner pod names that accepted and served the
+/// request (they match for non-forwarded traffic).
 #[inline]
-pub(crate) fn post_a2a(agent_package: &str, agent_instance_id: &str) -> Span {
-    tracing::debug_span!(
+pub(crate) fn post_a2a(
+    agent_package: &str,
+    agent_instance_id: &str,
+    forwarded: bool,
+    ingress_service_instance_id: &str,
+    serving_service_instance_id: &str,
+) -> Span {
+    tracing::info_span!(
         "baml_rt_api.post_a2a",
         agent_package = %agent_package,
         agent_instance_id = %agent_instance_id,
+        forwarded = forwarded,
+        ingress_service_instance_id = %ingress_service_instance_id,
+        serving_service_instance_id = %serving_service_instance_id,
     )
 }
 
 /// Create span for POST /agents/.../dispatch (deterministic buffered delivery).
 ///
-/// Parent: HTTP request span.
+/// Parent: HTTP request span. Ingress milestone — see [`post_a2a`] for field semantics.
 #[inline]
-pub(crate) fn post_dispatch(agent_package: &str, agent_instance_id: &str) -> Span {
-    tracing::debug_span!(
+pub(crate) fn post_dispatch(
+    agent_package: &str,
+    agent_instance_id: &str,
+    forwarded: bool,
+    ingress_service_instance_id: &str,
+    serving_service_instance_id: &str,
+) -> Span {
+    tracing::info_span!(
         "baml_rt_api.post_dispatch",
         agent_package = %agent_package,
         agent_instance_id = %agent_instance_id,
+        forwarded = forwarded,
+        ingress_service_instance_id = %ingress_service_instance_id,
+        serving_service_instance_id = %serving_service_instance_id,
     )
 }
 

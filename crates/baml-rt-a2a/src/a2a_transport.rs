@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 use async_trait::async_trait;
 use baml_rt_core::{
     A2aJsChatHost, A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDispatchAck,
-    AgentDispatchRequest, BamlRtError, Citation, Result,
+    AgentDispatchRequest, AgentInstanceId, AgentPackageName, BamlRtError, Citation, Result,
     bus::{BusStream, EffectEmitter},
     context::{self, InvocationScope, OutcomeInvocationContext, RequestScope},
     correlation,
@@ -552,6 +552,13 @@ async fn wire_provenance_subsystems(
 #[derive(Clone)]
 pub struct A2aAgent {
     agent_id: baml_rt_core::ids::AgentId,
+    /// Package name of the agent hosted by this `A2aAgent`. Emitted as the
+    /// `agent_package` attribute on A2A spans and metrics on the serving side so
+    /// operators can slice telemetry by deployed package.
+    agent_package: AgentPackageName,
+    /// Instance id of the agent hosted by this `A2aAgent`. Emitted as the
+    /// `agent_instance_id` attribute alongside `agent_package`.
+    agent_instance_id: AgentInstanceId,
     runtime: Arc<RwLock<BamlRuntimeManager>>,
     bridge_handle: Arc<BridgeHandle>,
     task_store: Arc<dyn TaskStoreBackend>,
@@ -792,6 +799,7 @@ pub struct A2aAgentBuilder {
     task_store: TaskStoreConfig,
     provenance_writer: ProvenanceWriterConfig,
     agent_id: AgentIdConfig,
+    agent_identity: AgentIdentityConfig,
     register_a2a_session_tool: RegistrationMode,
     a2a_session_route_mode: A2aSessionRouteMode,
 }
@@ -805,6 +813,7 @@ pub struct A2aAgentBuilderWithEffectEmitter {
     task_store: TaskStoreConfig,
     provenance_writer: ProvenanceWriterConfig,
     agent_id: AgentIdConfig,
+    agent_identity: AgentIdentityConfig,
     register_a2a_session_tool: RegistrationMode,
     a2a_session_route_mode: A2aSessionRouteMode,
     effect_emitter: Arc<dyn EffectEmitter>, // REQUIRED - enforced by typestate
@@ -841,6 +850,18 @@ enum ProvenanceWriterConfig {
 enum AgentIdConfig {
     Provided(baml_rt_core::ids::AgentId),
     AutoGenerate,
+}
+
+/// Agent identity (package + instance) configuration: either provided or filled with
+/// placeholder values suitable for test fixtures. Production hosts always set this via
+/// [`A2aAgentBuilder::with_agent_identity`] so A2A spans/metrics carry the deployed
+/// agent's package and instance.
+enum AgentIdentityConfig {
+    Provided {
+        agent_package: AgentPackageName,
+        agent_instance_id: AgentInstanceId,
+    },
+    Default,
 }
 
 enum A2aSessionRouteMode {
@@ -896,6 +917,7 @@ impl A2aAgentBuilder {
             task_store: TaskStoreConfig::Default,
             provenance_writer: ProvenanceWriterConfig::Default,
             agent_id: AgentIdConfig::AutoGenerate,
+            agent_identity: AgentIdentityConfig::Default,
             register_a2a_session_tool: RegistrationMode::Skip,
             a2a_session_route_mode: A2aSessionRouteMode::SelfAgent,
         }
@@ -980,6 +1002,24 @@ impl A2aAgentBuilder {
         self
     }
 
+    /// Provide the agent's package/instance identity for telemetry.
+    ///
+    /// These values are emitted as `agent_package` and `agent_instance_id` on A2A spans
+    /// and metrics on the serving side. Production hosts resolve them from the deployed
+    /// agent's route key; tests that do not care about dashboard identity can skip this
+    /// call and pick up the placeholder defaults applied during `build()`.
+    pub fn with_agent_identity(
+        mut self,
+        agent_package: AgentPackageName,
+        agent_instance_id: AgentInstanceId,
+    ) -> Self {
+        self.agent_identity = AgentIdentityConfig::Provided {
+            agent_package,
+            agent_instance_id,
+        };
+        self
+    }
+
     /// Provide an effect emitter for A2A effect tracking (host-inbound).
     ///
     /// **REQUIRED**: This must be called before `build()`.
@@ -997,6 +1037,7 @@ impl A2aAgentBuilder {
             task_store: self.task_store,
             provenance_writer: self.provenance_writer,
             agent_id: self.agent_id,
+            agent_identity: self.agent_identity,
             register_a2a_session_tool: self.register_a2a_session_tool,
             a2a_session_route_mode: self.a2a_session_route_mode,
             effect_emitter: emitter,
@@ -1078,6 +1119,20 @@ impl A2aAgentBuilderWithEffectEmitter {
         self
     }
 
+    /// Provide the agent's package/instance identity for telemetry. See
+    /// [`A2aAgentBuilder::with_agent_identity`] for semantics.
+    pub fn with_agent_identity(
+        mut self,
+        agent_package: AgentPackageName,
+        agent_instance_id: AgentInstanceId,
+    ) -> Self {
+        self.agent_identity = AgentIdentityConfig::Provided {
+            agent_package,
+            agent_instance_id,
+        };
+        self
+    }
+
     /// Build the agent with the configured subcomponents.
     ///
     /// This method is only available after `with_effect_emitter()` has been called.
@@ -1113,6 +1168,21 @@ impl A2aAgentBuilderWithEffectEmitter {
                     baml_rt_core::ids::UuidId::new(Uuid::new_v4()),
                 )
             }
+        };
+
+        // Resolve agent_package / agent_instance_id for telemetry. Production hosts call
+        // `with_agent_identity` explicitly; tests fall back to placeholder labels so they
+        // still exercise the same emission path.
+        let (agent_package, agent_instance_id) = match self.agent_identity {
+            AgentIdentityConfig::Provided {
+                agent_package,
+                agent_instance_id,
+            } => (agent_package, agent_instance_id),
+            AgentIdentityConfig::Default => (
+                AgentPackageName::parse("unknown")
+                    .expect("literal 'unknown' is a valid package identifier"),
+                AgentInstanceId::default_id(),
+            ),
         };
 
         // Resolve bridge: provided or auto-created
@@ -1319,6 +1389,8 @@ impl A2aAgentBuilderWithEffectEmitter {
         // live_result_pipeline uses the same task_store as repository (inner_pipeline wraps task_store).
         let agent = A2aAgent {
             agent_id,
+            agent_package,
+            agent_instance_id,
             runtime,
             bridge_handle,
             task_store,
@@ -2155,22 +2227,29 @@ impl A2aAgent {
         let scope =
             context::RuntimeScope::from_request_scope(&resolved_scope, self.agent_id.clone());
 
+        let agent_package_str = self.agent_package.as_str();
+        let agent_instance_id_str = self.agent_instance_id.as_str();
         let span = if parsed_request.is_stream() {
             spans::a2a_stream(
                 Some(&scope),
                 parsed_request.method().as_str(),
+                agent_package_str,
+                agent_instance_id_str,
                 correlation_id.as_str(),
             )
         } else {
             spans::a2a_request(
                 Some(&scope),
                 parsed_request.method().as_str(),
+                agent_package_str,
+                agent_instance_id_str,
                 correlation_id.as_str(),
             )
         };
         let start = std::time::Instant::now();
         let method = parsed_request.method();
         let invocation = parsed_request.invocation;
+        let serving_service_instance_id = baml_rt_observability::service_instance_id();
 
         let outcome = correlation::with_correlation_id(
             correlation_id,
@@ -2219,7 +2298,15 @@ impl A2aAgent {
 
         match &outcome {
             Ok(_) => {
-                metrics::record_a2a_request(method.as_str(), "success", invocation, duration);
+                metrics::record_a2a_request(
+                    method.as_str(),
+                    agent_package_str,
+                    agent_instance_id_str,
+                    "success",
+                    invocation,
+                    serving_service_instance_id,
+                    duration,
+                );
                 tracing::info!(
                     event = "turn_attribution",
                     method = ?method,
@@ -2231,11 +2318,22 @@ impl A2aAgent {
             }
             Err(err) => {
                 tracing::warn!(error = ?err, "handle_a2a: routing error");
-                metrics::record_a2a_request(method.as_str(), "error", invocation, duration);
+                metrics::record_a2a_request(
+                    method.as_str(),
+                    agent_package_str,
+                    agent_instance_id_str,
+                    "error",
+                    invocation,
+                    serving_service_instance_id,
+                    duration,
+                );
                 metrics::record_a2a_error(
                     method.as_str(),
+                    agent_package_str,
+                    agent_instance_id_str,
                     self.error_classifier.classify(err),
                     invocation,
+                    serving_service_instance_id,
                 );
                 tracing::info!(
                     event = "turn_attribution",
