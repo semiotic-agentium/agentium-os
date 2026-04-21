@@ -29,7 +29,7 @@ async fn external_tool_dev_mode_happy_path_registers_and_invokes() {
         "#!/bin/sh\n\
 IFS= read -r req\n\
 if printf '%s' \"$req\" | grep -q '\"method\":\"tool/describe\"'; then\n\
-  printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocol_version\":\"1\",\"tool_name\":\"support/e2e_echo\",\"supported_methods\":[\"tool/invoke\"]}}'\n\
+  printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocol_version\":\"1\",\"tool_name\":\"support/e2e_echo\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"]}}'\n\
 else\n\
   printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"output\":{\"reply\":\"pong-from-external\"},\"done\":true}}'\n\
 fi\n",

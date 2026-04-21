@@ -24,9 +24,10 @@ pub const METHOD_INVOKE: &str = "tool/invoke";
 /// response under `supported_methods`. Scaffolders render this list into the
 /// generated handler so CLI output and runtime contract stay aligned.
 ///
-/// `tool/describe` itself is not in this list — it is the handshake that
-/// produces the list, not a member of it.
-pub const SUPPORTED_METHODS: &[&str] = &[METHOD_INVOKE];
+/// Even though `tool/describe` is the handshake method, it is also a callable
+/// protocol method and should be explicitly advertised alongside
+/// `tool/invoke`.
+pub const SUPPORTED_METHODS: &[&str] = &[METHOD_DESCRIBE, METHOD_INVOKE];
 
 /// JSON-RPC 2.0 "Method not found" error code. Mirrors the spec constant.
 pub const ERR_METHOD_NOT_FOUND: i32 = -32601;
@@ -133,4 +134,15 @@ pub struct ToolInvokeResult {
     pub output: Value,
     #[serde(default)]
     pub done: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{METHOD_DESCRIBE, METHOD_INVOKE, SUPPORTED_METHODS};
+
+    #[test]
+    fn supported_methods_advertise_describe_and_invoke() {
+        assert!(SUPPORTED_METHODS.contains(&METHOD_DESCRIBE));
+        assert!(SUPPORTED_METHODS.contains(&METHOD_INVOKE));
+    }
 }

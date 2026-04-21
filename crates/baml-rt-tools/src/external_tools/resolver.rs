@@ -647,7 +647,7 @@ mod tests {
         let schema_hash = metadata_schema_hash(&serde_json::from_value(metadata).unwrap());
         let counter_path = tool_dir.join("describe-count");
         let response = format!(
-            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/invoke\"],\"schema_hash\":\"{schema_hash}\"}}}}"
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"],\"schema_hash\":\"{schema_hash}\"}}}}"
         );
         write_tool_server(
             &tool_dir.join("tool-server"),
@@ -715,7 +715,7 @@ printf '%s\\n' '{response}'\n",
 
         write_tool_server(
             &tool_dir.join("tool-server"),
-            "#!/bin/sh\nwhile IFS= read -r _; do :; done\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocol_version\":\"1\",\"tool_name\":\"support/not_the_same\",\"supported_methods\":[\"tool/invoke\"]}}'\n",
+            "#!/bin/sh\nwhile IFS= read -r _; do :; done\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocol_version\":\"1\",\"tool_name\":\"support/not_the_same\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"]}}'\n",
         );
 
         let err = match DevModeResolver::from_dirs(std::slice::from_ref(&tool_dir)).await {
@@ -765,7 +765,7 @@ printf '%s\\n' '{response}'\n",
         write_tool_server(
             &tool_dir.join("tool-server"),
             &format!(
-                "#!/bin/sh\nwhile IFS= read -r _; do :; done\nprintf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/invoke\"]}}}}'\n"
+                "#!/bin/sh\nwhile IFS= read -r _; do :; done\nprintf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"]}}}}'\n"
             ),
         );
 
@@ -817,7 +817,7 @@ printf '%s\\n' '{response}'\n",
         write_tool_server(
             &tool_dir.join("tool-server"),
             &format!(
-                "#!/bin/sh\nwhile IFS= read -r _; do :; done\nprintf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/invoke\"]}}}}'\n"
+                "#!/bin/sh\nwhile IFS= read -r _; do :; done\nprintf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"]}}}}'\n"
             ),
         );
 

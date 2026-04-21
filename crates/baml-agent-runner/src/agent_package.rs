@@ -865,7 +865,7 @@ mod tests {
         .expect("write metadata");
 
         let describe = format!(
-            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/invoke\"]}}}}"
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"]}}}}"
         );
         let script =
             format!("#!/bin/sh\nwhile IFS= read -r _; do :; done\nprintf '%s\\n' '{describe}'\n");
