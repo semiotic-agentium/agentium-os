@@ -2,8 +2,11 @@
 
 use std::{net::SocketAddr, time::Instant};
 
-use baml_rt_core::BamlRtError;
-use baml_rt_observability::metrics;
+use baml_rt_core::{AgentInstanceId, AgentPackageName, BamlRtError};
+use baml_rt_observability::{INGRESS_SERVICE_INSTANCE_ID_BAGGAGE_KEY, metrics, spans};
+use opentelemetry::{KeyValue, baggage::BaggageExt};
+use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::ssrf;
 
@@ -100,18 +103,50 @@ fn build_a2a_forward_url(
 ///
 /// The caller is responsible for building the `ForwardTarget` via
 /// [`resolve_forward_target`] so the DNS-pinned addresses are used.
+///
+/// Typed `agent_package` / `agent_instance_id` refs keep raw public path input
+/// out of the identity-bearing cluster-forward span and metric; the caller
+/// must parse before invoking this function.
+///
+/// `ingress_service_instance_id` is the local runner's `service.instance.id`.
+/// It is injected into outbound `baggage` so the serving runner can surface it
+/// on forwarded telemetry. The resulting classification is advisory because
+/// `/agents/...` is a public route — any caller can spoof the marker.
 pub async fn forward_request(
     target: &ForwardTarget,
     body: &serde_json::Value,
+    agent_package: &AgentPackageName,
+    agent_instance_id: &AgentInstanceId,
+    ingress_service_instance_id: &str,
+    target_service_instance_id: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, BamlRtError> {
-    let start = Instant::now();
-    let out = forward_request_inner(target, body).await;
-    let label = match &out {
-        Ok(_) => "success",
-        Err(e) => cluster_forward_error_label(e),
-    };
-    metrics::record_cluster_a2a_forward(label, start.elapsed());
-    out
+    let span = spans::cluster_a2a_forward(
+        agent_package,
+        agent_instance_id,
+        &target.url,
+        ingress_service_instance_id,
+        target_service_instance_id,
+    );
+
+    async move {
+        let start = Instant::now();
+        let out = forward_request_inner(target, body, ingress_service_instance_id).await;
+        let label = match &out {
+            Ok(_) => "success",
+            Err(e) => cluster_forward_error_label(e),
+        };
+        metrics::record_cluster_a2a_forward(
+            agent_package,
+            agent_instance_id,
+            label,
+            ingress_service_instance_id,
+            target_service_instance_id,
+            start.elapsed(),
+        );
+        out
+    }
+    .instrument(span)
+    .await
 }
 
 fn cluster_forward_error_label(e: &BamlRtError) -> &'static str {
@@ -134,6 +169,7 @@ fn cluster_forward_error_label(e: &BamlRtError) -> &'static str {
 async fn forward_request_inner(
     target: &ForwardTarget,
     body: &serde_json::Value,
+    ingress_service_instance_id: &str,
 ) -> Result<Vec<serde_json::Value>, BamlRtError> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
@@ -155,16 +191,30 @@ async fn forward_request_inner(
         )))
     })?;
 
-    let resp = client
-        .post(&target.url)
-        .json(body)
-        .send()
-        .await
-        .map_err(|e| {
-            BamlRtError::Io(std::io::Error::other(format!(
-                "cluster A2A forward failed: {e}"
-            )))
-        })?;
+    // Build the request ahead of `.send()` so we can mutate headers to inject
+    // W3C trace context + the `ingress_service_instance_id` baggage marker.
+    let mut request = client.post(&target.url).json(body).build().map_err(|e| {
+        BamlRtError::Io(std::io::Error::other(format!(
+            "cluster A2A request build: {e}"
+        )))
+    })?;
+
+    let ctx = tracing::Span::current()
+        .context()
+        .with_baggage(vec![KeyValue::new(
+            INGRESS_SERVICE_INSTANCE_ID_BAGGAGE_KEY,
+            ingress_service_instance_id.to_string(),
+        )]);
+    opentelemetry::global::get_text_map_propagator(|propagator| {
+        let mut injector = opentelemetry_http::HeaderInjector(request.headers_mut());
+        propagator.inject_context(&ctx, &mut injector);
+    });
+
+    let resp = client.execute(request).await.map_err(|e| {
+        BamlRtError::Io(std::io::Error::other(format!(
+            "cluster A2A forward failed: {e}"
+        )))
+    })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -244,14 +294,38 @@ async fn read_body_lossy(mut resp: reqwest::Response, max_bytes: usize) -> Strin
 
 #[cfg(test)]
 mod tests {
-    use std::net::IpAddr;
+    use std::{net::IpAddr, sync::OnceLock};
 
+    use opentelemetry::{global, propagation::TextMapCompositePropagator, trace::TracerProvider};
+    use opentelemetry_sdk::{
+        propagation::{BaggagePropagator, TraceContextPropagator},
+        trace::TracerProvider as SdkTracerProvider,
+    };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+    use tracing_subscriber::{Registry, layer::SubscriberExt};
 
     use super::*;
+
+    fn test_pkg() -> AgentPackageName {
+        AgentPackageName::parse("pkg").expect("valid package name")
+    }
+
+    fn test_inst() -> AgentInstanceId {
+        AgentInstanceId::parse("inst").expect("valid instance id")
+    }
+
+    fn install_propagator_once() {
+        static GATE: OnceLock<()> = OnceLock::new();
+        GATE.get_or_init(|| {
+            global::set_text_map_propagator(TextMapCompositePropagator::new(vec![
+                Box::new(TraceContextPropagator::new()),
+                Box::new(BaggagePropagator::new()),
+            ]));
+        });
+    }
 
     #[tokio::test]
     async fn resolve_forward_target_rejects_ssrf() {
@@ -424,7 +498,15 @@ mod tests {
             resolved_addrs: vec![SocketAddr::from(([127, 0, 0, 1], port))],
         };
 
-        let result = forward_request(&target, &serde_json::json!({})).await;
+        let result = forward_request(
+            &target,
+            &serde_json::json!({}),
+            &test_pkg(),
+            &test_inst(),
+            "runner-0",
+            None,
+        )
+        .await;
         let _ = server.await;
 
         assert!(
@@ -477,12 +559,109 @@ mod tests {
             resolved_addrs: vec![SocketAddr::from(([127, 0, 0, 1], port))],
         };
 
-        let items = forward_request(&target, &serde_json::json!({}))
-            .await
-            .expect("complete body should parse");
+        let items = forward_request(
+            &target,
+            &serde_json::json!({}),
+            &test_pkg(),
+            &test_inst(),
+            "runner-0",
+            Some("runner-1"),
+        )
+        .await
+        .expect("complete body should parse");
         let _ = server.await;
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["id"], 1);
+    }
+
+    /// Forwarded requests must carry W3C trace context and the
+    /// `ingress_service_instance_id` baggage marker so the serving runner can
+    /// (a) join the trace via `OpenTelemetrySpanExt::set_parent` and
+    /// (b) flip `forwarded=true` on its `post_a2a` span.
+    #[tokio::test]
+    async fn forward_request_injects_traceparent_and_ingress_baggage() {
+        install_propagator_once();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let (header_tx, header_rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let mut acc: Vec<u8> = Vec::new();
+            loop {
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                acc.extend_from_slice(&buf[..n]);
+                if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = header_tx.send(acc);
+
+            let body = b"[{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}]";
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
+                len = body.len()
+            );
+            let _ = socket.write_all(headers.as_bytes()).await;
+            let _ = socket.write_all(body).await;
+            let _ = socket.shutdown().await;
+        });
+
+        let target = ForwardTarget {
+            url: format!("http://127.0.0.1:{port}/agents/pkg/inst/a2a"),
+            host: "127.0.0.1".to_string(),
+            resolved_addrs: vec![SocketAddr::from(([127, 0, 0, 1], port))],
+        };
+
+        // Install a per-test tracing-opentelemetry subscriber so
+        // `Span::current().context()` returns a non-empty OTEL context with a
+        // real TraceId. Global subscriber state is untouched — `set_default`
+        // only affects this thread's dispatch.
+        let provider = SdkTracerProvider::builder().build();
+        let tracer = provider.tracer("forward_test");
+        let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+        let subscriber = Registry::default().with(otel_layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let outer = tracing::info_span!("test_outer");
+        let result = async {
+            forward_request(
+                &target,
+                &serde_json::json!({}),
+                &test_pkg(),
+                &test_inst(),
+                "runner-ingress",
+                Some("runner-serving"),
+            )
+            .await
+        }
+        .instrument(outer)
+        .await;
+        result.expect("happy path should still succeed");
+
+        let raw = header_rx.await.expect("server captured headers");
+        let _ = server.await;
+        let hdrs = String::from_utf8_lossy(&raw).to_string();
+
+        assert!(
+            hdrs.to_lowercase().contains("\ntraceparent:")
+                || hdrs.to_lowercase().starts_with("traceparent:"),
+            "expected traceparent injected; saw:\n{hdrs}"
+        );
+        assert!(
+            hdrs.to_lowercase().contains("\nbaggage:")
+                || hdrs.to_lowercase().starts_with("baggage:"),
+            "expected baggage injected; saw:\n{hdrs}"
+        );
+        assert!(
+            hdrs.contains("ingress_service_instance_id=runner-ingress"),
+            "baggage must carry ingress pod name; saw:\n{hdrs}"
+        );
     }
 }

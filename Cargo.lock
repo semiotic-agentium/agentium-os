@@ -1602,6 +1602,7 @@ dependencies = [
  "insta",
  "jsonschema",
  "opentelemetry 0.26.0",
+ "opentelemetry-http",
  "opentelemetry_sdk",
  "reqwest 0.12.26",
  "serde",
@@ -1886,6 +1887,9 @@ dependencies = [
  "baml-rt-core",
  "baml-rt-observability",
  "http-api-problem",
+ "opentelemetry 0.26.0",
+ "opentelemetry-http",
+ "opentelemetry_sdk",
  "reqwest 0.12.26",
  "serde_json",
  "sha2",
@@ -1893,6 +1897,8 @@ dependencies = [
  "tokio",
  "tower 0.5.3",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "url",
 ]
 

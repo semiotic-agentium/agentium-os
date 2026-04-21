@@ -320,7 +320,10 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             .clone()
             .unwrap_or_else(|| format!("http://{serve_addr}"));
         validate_cluster_endpoint(&runner_http_endpoint)?;
-        let identity = cluster::RunnerIdentity::new(runner_http_endpoint);
+        let identity = cluster::RunnerIdentity::new(
+            runner_http_endpoint,
+            baml_rt_observability::service_instance_id().to_string(),
+        );
         let cluster_db = std::sync::Arc::new(cluster_db);
         let mgr = Arc::new(
             cluster::ClusterManager::new(cluster_db.clone(), identity, config.placement_ttl_ms)
@@ -1056,14 +1059,14 @@ globalThis.onChatMessage = async function(_message) {
     // ── cluster resolver fallback ────────────────────────────────────────────
 
     /// Mock resolver: returns a fixed result for any key.
-    struct MockResolver(baml_rt_core::Result<Option<String>>);
+    struct MockResolver(baml_rt_core::Result<Option<crate::routing::Placement>>);
 
     #[async_trait::async_trait]
     impl crate::routing::ClusterEndpointResolver for MockResolver {
         async fn resolve(
             &self,
             _key: &baml_rt_core::AgentRouteKey,
-        ) -> baml_rt_core::Result<Option<String>> {
+        ) -> baml_rt_core::Result<Option<crate::routing::Placement>> {
             match &self.0 {
                 Ok(v) => Ok(v.clone()),
                 Err(e) => Err(baml_rt_core::BamlRtError::Io(std::io::Error::other(

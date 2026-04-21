@@ -39,7 +39,7 @@ use utoipa_axum::router::OpenApiRouter;
 use crate::{
     ContextIndexService, ContextMetricsService, ConversationHistoryService, EpisodeService,
     MermaidService, PlanningService, ProvenanceOpsService, config_handlers, handlers, metrics,
-    repository_publish,
+    otel_middleware, repository_publish,
 };
 
 /// Shared state for API handlers: registry, OpenAPI spec, and **injected** config/catalog/resolver.
@@ -239,28 +239,25 @@ pub fn api_router_with_services_and_deploy(
     cluster_mode: ClusterMode,
     web_dir: Option<&Path>,
 ) -> Router {
-    let http_trace_layer = TraceLayer::new_for_http().make_span_with(|req: &Request<Body>| {
-        let route = req
-            .extensions()
-            .get::<MatchedPath>()
-            .map(MatchedPath::as_str)
-            .unwrap_or("<unmatched>");
-        tracing::info_span!(
-            "baml_rt_api.http.request",
-            http.request.method = %req.method(),
-            http.route = %route,
-            url.path = %req.uri().path(),
-            span.kind = %"server",
-        )
-    });
+    let http_trace_layer =
+        TraceLayer::new_for_http().make_span_with(otel_middleware::http_request_span);
 
-    // ── Tier 1: Public routes (no auth) ─────────────────────────
-    // Read-only discovery, A2A, provenance, health.
-    let (public_router, mut openapi) = OpenApiRouter::new()
-        .routes(utoipa_axum::routes!(handlers::list_agents))
-        .routes(utoipa_axum::routes!(handlers::get_context_index))
+    // ── Tier 1a: Public agent routes (no auth; OTEL context-extracting
+    // middleware applied so forwarded A2A requests join the ingress trace).
+    let (agent_router, agent_openapi) = OpenApiRouter::new()
         .routes(utoipa_axum::routes!(handlers::post_a2a))
         .routes(utoipa_axum::routes!(handlers::post_dispatch))
+        .split_for_parts();
+    let agent_router = agent_router.route_layer(axum::middleware::from_fn(
+        otel_middleware::extract_parent_trace_context,
+    ));
+
+    // ── Tier 1b: Other public routes (no auth) — discovery, mermaid, episode,
+    // conversation history, provenance. These handlers do not consume the
+    // OTEL parent-context extension so they skip the middleware.
+    let (other_public_router, other_openapi) = OpenApiRouter::new()
+        .routes(utoipa_axum::routes!(handlers::list_agents))
+        .routes(utoipa_axum::routes!(handlers::get_context_index))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_context))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_task))
         .routes(utoipa_axum::routes!(handlers::get_context_metrics))
@@ -280,6 +277,10 @@ pub fn api_router_with_services_and_deploy(
             handlers::get_conversation_history_stream
         ))
         .split_for_parts();
+
+    let public_router = agent_router.merge(other_public_router);
+    let mut openapi = agent_openapi;
+    openapi.merge(other_openapi);
 
     // ── Tier 2: Operator-authenticated routes (ClusterAuthLayer) ─
     // Config reads/mutations, secret management, deployment lifecycle, migration.

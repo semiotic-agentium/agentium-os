@@ -4,6 +4,7 @@
 //! All span names use the `baml_rt_api.` namespace for low cardinality.
 
 use baml_rt_core::{AgentInstanceId, AgentPackageName};
+use baml_rt_observability::UNKNOWN_SERVICE_INSTANCE_ID;
 use tracing::Span;
 
 /// Create span for GET /agents (list running agents).
@@ -16,13 +17,19 @@ pub(crate) fn list_agents() -> Span {
 
 /// Create span for POST /agents/.../a2a (JSON-RPC forward).
 ///
-/// Parent: HTTP request span. Ingress milestone — promoted to `info` so the K8s pilot's
-/// default OTLP export carries agent identity and the forwarding bit.
+/// Parent: when the inbound request carries W3C `traceparent`, the caller
+/// attaches that context via `OpenTelemetrySpanExt::set_parent(..)` before
+/// entering the span so forwarded A2A requests appear as one distributed
+/// trace across ingress + serving runners. `otel.kind = "server"` pairs with
+/// the ingress `baml_rt.cluster_a2a_forward` client span.
 ///
-/// `forwarded` is `false` in the single-runner path; PR 2 flips it when the serving
-/// runner sees a peer-runner baggage marker. `ingress_service_instance_id` and
-/// `serving_service_instance_id` carry the runner pod names that accepted and served the
-/// request (they match for non-forwarded traffic).
+/// `forwarded` is derived from inbound `baggage: ingress_service_instance_id=…`
+/// (advisory on public routes — see `otel_middleware` module doc for the
+/// spoofability disclosure). `ingress_service_instance_id` tracks the runner
+/// that accepted the request (local pod when absent from baggage);
+/// `serving_service_instance_id` is always the local runner.
+/// `target_service_instance_id` stays `None` at this layer; the ingress-side
+/// `cluster_a2a_forward` span carries the resolved target identity.
 ///
 /// Takes typed identifiers so raw path input cannot reach this info-level span —
 /// callers must parse first.
@@ -33,14 +40,17 @@ pub(crate) fn post_a2a(
     forwarded: bool,
     ingress_service_instance_id: &str,
     serving_service_instance_id: &str,
+    target_service_instance_id: Option<&str>,
 ) -> Span {
     tracing::info_span!(
         "baml_rt_api.post_a2a",
+        otel.kind = "server",
         agent_package = %agent_package,
         agent_instance_id = %agent_instance_id,
         forwarded = forwarded,
         ingress_service_instance_id = %ingress_service_instance_id,
         serving_service_instance_id = %serving_service_instance_id,
+        target_service_instance_id = target_service_instance_id.unwrap_or(UNKNOWN_SERVICE_INSTANCE_ID),
     )
 }
 
@@ -55,14 +65,17 @@ pub(crate) fn post_dispatch(
     forwarded: bool,
     ingress_service_instance_id: &str,
     serving_service_instance_id: &str,
+    target_service_instance_id: Option<&str>,
 ) -> Span {
     tracing::info_span!(
         "baml_rt_api.post_dispatch",
+        otel.kind = "server",
         agent_package = %agent_package,
         agent_instance_id = %agent_instance_id,
         forwarded = forwarded,
         ingress_service_instance_id = %ingress_service_instance_id,
         serving_service_instance_id = %serving_service_instance_id,
+        target_service_instance_id = target_service_instance_id.unwrap_or(UNKNOWN_SERVICE_INSTANCE_ID),
     )
 }
 

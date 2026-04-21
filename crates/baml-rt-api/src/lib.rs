@@ -12,6 +12,7 @@ mod handlers;
 mod mermaid;
 mod metrics;
 mod openapi;
+mod otel_middleware;
 mod planning;
 mod provenance_ops;
 mod repository_publish;

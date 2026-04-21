@@ -91,11 +91,23 @@ impl A2aRequestHandler for RunnerRegistry {
     }
 }
 
-/// Resolves an agent route key to the HTTP endpoint of the runner hosting it.
+/// Placement of an agent on a remote runner: the routable HTTP endpoint plus
+/// the canonical OTEL `service.instance.id` of the serving runner — what the
+/// ingress side stamps as `target_service_instance_id` on forwarded spans and
+/// metrics. Not `RunnerId` (internal cluster UUID) and not
+/// `cluster_runners.pod_name` (HOSTNAME-derived; may diverge from the OTEL
+/// identity when an operator sets `OTEL_RESOURCE_ATTRIBUTES`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Placement {
+    pub(crate) endpoint: String,
+    pub(crate) service_instance_id: String,
+}
+
+/// Resolves an agent route key to the placement of the runner hosting it.
 /// Returns `Ok(None)` if the agent is unknown to the cluster, or `Err` on transient failures.
 #[async_trait]
 pub(crate) trait ClusterEndpointResolver: Send + Sync {
-    async fn resolve(&self, key: &AgentRouteKey) -> Result<Option<String>>;
+    async fn resolve(&self, key: &AgentRouteKey) -> Result<Option<Placement>>;
 }
 
 /// Routes A2A requests: local agents first, then cluster fallback via HTTP.
@@ -200,13 +212,14 @@ impl InternalA2aRouter {
         // Cluster fallback: forward to the remote runner hosting this agent.
         if let Some(resolver) = self.cluster.get() {
             match resolver.resolve(&key).await {
-                Ok(Some(endpoint)) => {
+                Ok(Some(placement)) => {
                     tracing::info!(
                         agent = %key.agent_package.as_str(),
-                        endpoint = %endpoint,
+                        endpoint = %placement.endpoint,
+                        target_service_instance_id = %placement.service_instance_id,
                         "routing A2A request to remote runner"
                     );
-                    return self.forward_to_runner(&endpoint, &key, request).await;
+                    return self.forward_to_runner(&placement, &key, request).await;
                 }
                 Err(e) => {
                     let pkg = key.agent_package.as_str();
@@ -228,17 +241,31 @@ impl InternalA2aRouter {
 
     /// Forward an A2A request to a remote runner via HTTP POST and bridge the
     /// JSON response back as a stream of individual JSON-RPC chunks.
+    ///
+    /// The ingress runner's `service.instance.id` rides along so the serving
+    /// runner can stamp `ingress_service_instance_id` on its spans / metrics
+    /// via propagated OTEL baggage.
     pub(crate) async fn forward_to_runner(
         &self,
-        endpoint: &str,
+        placement: &Placement,
         key: &AgentRouteKey,
         request: A2aWireRequest,
     ) -> Result<BusStream<A2aStreamChunk>> {
         let pkg = key.agent_package.as_str();
         let inst = key.agent_instance_id.as_str();
-        let target = baml_rt_router::forward::resolve_forward_target(endpoint, pkg, inst).await?;
+        let target =
+            baml_rt_router::forward::resolve_forward_target(&placement.endpoint, pkg, inst).await?;
         let body = request.into_inner();
-        let items = baml_rt_router::forward::forward_request(&target, &body).await?;
+        let ingress_service_instance_id = baml_rt_observability::service_instance_id();
+        let items = baml_rt_router::forward::forward_request(
+            &target,
+            &body,
+            &key.agent_package,
+            &key.agent_instance_id,
+            ingress_service_instance_id,
+            Some(placement.service_instance_id.as_str()),
+        )
+        .await?;
         let chunks = response_body_to_chunks(items);
         Ok(Box::pin(futures_util::stream::iter(chunks)))
     }
