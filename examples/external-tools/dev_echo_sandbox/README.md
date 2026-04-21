@@ -44,6 +44,8 @@ docker build -t dev-echo-sandbox:local \
 export BAML_SANDBOX_PROVIDER=mock
 ```
 
+Skip §2.1–2.3 entirely for Option A; `BAML_SANDBOX_BIND_ROOTS` is not needed either. Continue at §3, §4, §5.
+
 ## Option B — Real microVM with Bind rootfs (recommended)
 
 ### 2.1 Export rootfs from image
@@ -57,19 +59,20 @@ export BAML_SANDBOX_PROVIDER=mock
 
 ### 2.2 Compute bind digest + patch metadata
 
+> **Do not change the tool `name` field (`dev/echo`).** `echo-agent` references this tool by that exact name; rename it and the agent allowlist breaks silently.
+
 ```bash
 BIND_ROOTFS="$(pwd)/.tmp/dev-echo-rootfs"
-TOOL_METADATA="examples/external-tools/dev_echo_sandbox/tool-metadata.json"
+TOOL_METADATA="$(git rev-parse --show-toplevel)/examples/external-tools/dev_echo_sandbox/tool-metadata.json"
 
 DIGEST="$(cargo run -q -p cargo-agent-platform -- sandbox-digest --source bind "$BIND_ROOTFS")"
 
+TMP_META="$(mktemp)"
 jq --arg path "$BIND_ROOTFS" --arg digest "$DIGEST" '
   .runtime.image = {"kind":"bind","path":$path}
   | .runtime.entrypoint = ["/tool-adapter"]
   | .runtime_digest = $digest
-' "$TOOL_METADATA" > /tmp/dev-echo-tool-metadata.json
-
-mv /tmp/dev-echo-tool-metadata.json "$TOOL_METADATA"
+' "$TOOL_METADATA" > "$TMP_META" && mv "$TMP_META" "$TOOL_METADATA"
 ```
 
 ### 2.3 Validate metadata
@@ -96,27 +99,28 @@ Shortcut script for 2.1–2.3:
 
 ## 3) Start runner
 
-Set env:
+Set env (use absolute paths — don't paste `$(pwd)`-based values into your shell rc, they'd capture whatever directory you were in at source time):
 
 ```bash
-export BAML_EXTERNAL_TOOLS_DIR="$(pwd)/examples/external-tools/dev_echo_sandbox"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+export BAML_EXTERNAL_TOOLS_DIR="$REPO_ROOT/examples/external-tools/dev_echo_sandbox"
 export BAML_SANDBOX_PROVIDER=microsandbox
-export BAML_SANDBOX_BIND_ROOTS="$(pwd)/.tmp"
+export BAML_SANDBOX_BIND_ROOTS="$REPO_ROOT/.tmp"
 ```
 
 > `BAML_SANDBOX_BIND_ROOTS` is colon-separated (`/path1:/path2`) and should be narrow.
 
-Start runner with sandbox feature:
+Start the runner with the full feature set (we recommend `--all-features` so sandbox, memory, http-tools, etc. are all available in one process):
 
 ```bash
-cargo run -p baml-agent-runner --features sandbox-provider
+cargo run -p baml-agent-runner --all-features
 ```
 
 ---
 
 ## 4) Publish + deploy echo agent
 
-Example agent dir (adjust if your repo layout differs):
+Example agent dir (invoke from repo root, or prefix with `"$(git rev-parse --show-toplevel)"/`):
 
 ```bash
 cargo run -p cargo-agent-platform -- publish --agent-dir examples/agents/echo-agent
@@ -143,11 +147,13 @@ Type:
 hello-echo!
 ```
 
-Expected reply shape:
+The agent should reply with a line that contains `echo returned:` followed by your input and adapter metadata (timestamp, pid, invocation id). Exact shape in the reference adapter:
 
 ```text
 echo returned: hello-echo! [at=<timestamp> pid=<pid> invocation_id=<uuid>]
 ```
+
+Any line starting with `echo returned:` is a pass.
 
 ---
 
@@ -179,7 +185,38 @@ Use protocol inspector to test adapter directly (outside microVM):
   --message "hello-echo?"
 ```
 
-This is useful to isolate protocol issues from sandbox boot/runtime issues.
+Healthy `describe` output looks like:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocol_version": "1",
+    "tool_name": "dev/echo",
+    ...
+  }
+}
+```
+
+Healthy `invoke` output contains a `result.output` with the echoed message. If either hangs or returns an error frame, the adapter is the problem — not microsandbox.
+
+---
+
+## 8) Cleanup
+
+When finished with the demo:
+
+```bash
+# tear down deployed agent
+cargo run -p cargo-agent-platform -- undeploy --hash <HASH_FROM_PUBLISH>
+
+# revert portable metadata (optional — only needed if you want to commit nothing)
+git checkout -- examples/external-tools/dev_echo_sandbox/tool-metadata.json
+
+# remove local rootfs scratch
+rm -rf "$(git rev-parse --show-toplevel)/.tmp/dev-echo-rootfs"
+```
 
 ---
 
@@ -187,5 +224,5 @@ This is useful to isolate protocol issues from sandbox boot/runtime issues.
 
 - Tool name in metadata must remain `dev/echo` to match `echo-agent` references.
 - Bind mode is denied unless bind path is under `BAML_SANDBOX_BIND_ROOTS`.
-- Bind reattach is disabled in v1 (cold-create behavior) because bind rootfs is mutable.
-- Bind v1 security depends on path allowlist + operator discipline on directory ownership/permissions.
+- Bind reattach is disabled in v1 (cold-create behavior) because bind rootfs is mutable — the runner always cold-boots a fresh guest per scope after a restart. Within a running process the sandbox cache still serves per `(agent, ctx, tool)` scope.
+- Bind v1 security depends on path allowlist + operator discipline on directory ownership/permissions. For a full threat-model summary, see `docs/host-tool-guide.md` §10.

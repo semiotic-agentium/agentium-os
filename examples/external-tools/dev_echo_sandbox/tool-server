@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# Sandbox runtime uses /tool-adapter inside the sandbox image/rootfs.
-# This wrapper is intentionally unused in normal sandbox runs.
-echo "dev/echo is sandbox runtime; use setup_bind_demo.sh + microsandbox flow" >&2
-exit 1

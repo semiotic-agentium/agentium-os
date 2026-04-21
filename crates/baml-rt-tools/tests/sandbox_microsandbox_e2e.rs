@@ -116,11 +116,15 @@ fn load_sandbox_metadata() -> Result<ExternalToolMetadata, Box<dyn std::error::E
     Ok(parsed)
 }
 
-fn image_ref_to_source(image: SandboxImageRef) -> Result<SandboxImageSource, Box<dyn std::error::Error>> {
+fn image_ref_to_source(
+    image: SandboxImageRef,
+) -> Result<SandboxImageSource, Box<dyn std::error::Error>> {
     match image {
         SandboxImageRef::Oci { r#ref } => Ok(SandboxImageSource::Oci(r#ref)),
-        SandboxImageRef::Bind { path } => Ok(SandboxImageSource::Bind(path.into())),
-        other => Err(format!("unsupported sandbox image source in KVM E2E metadata: {other:?}").into()),
+        SandboxImageRef::Bind { path } => Ok(SandboxImageSource::Bind(path)),
+        other => {
+            Err(format!("unsupported sandbox image source in KVM E2E metadata: {other:?}").into())
+        }
     }
 }
 
