@@ -9,9 +9,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use baml_rt_core::{AgentRouteKey, BamlRtError, DeploymentContentHash};
+use baml_rt_observability::UNKNOWN_SERVICE_INSTANCE_ID;
 use surrealdb::{Surreal, engine::any::Any};
 
-use crate::routing::ClusterEndpointResolver;
+use crate::routing::{ClusterEndpointResolver, Placement};
 
 // ---------------------------------------------------------------------------
 // Runner identity
@@ -39,17 +40,31 @@ impl std::fmt::Display for RunnerId {
 }
 
 /// Identity of this runner instance within the cluster.
+///
+/// `runner_id` is an internal cluster UUID used for same-runner detection
+/// during placement lookup. `service_instance_id` is the canonical OTEL
+/// `service.instance.id` value emitted on the runner's resource attributes
+/// and on spans/metrics; it is persisted in `cluster_runners.service_instance_id`
+/// so peer runners can surface it as `target_service_instance_id` in
+/// forwarding telemetry.
+///
+/// The two are deliberately separate: `runner_id` is an opaque UUID internal
+/// to the registry; `service_instance_id` is a pilot-facing identity that
+/// resolves to pod name in K8s and can be overridden via
+/// `OTEL_RESOURCE_ATTRIBUTES` in other deployments.
 #[derive(Debug, Clone)]
 pub(crate) struct RunnerIdentity {
     pub(crate) runner_id: RunnerId,
     pub(crate) endpoint: String,
+    pub(crate) service_instance_id: String,
 }
 
 impl RunnerIdentity {
-    pub(crate) fn new(endpoint: String) -> Self {
+    pub(crate) fn new(endpoint: String, service_instance_id: String) -> Self {
         Self {
             runner_id: RunnerId::new_random(),
             endpoint,
+            service_instance_id,
         }
     }
 }
@@ -81,10 +96,14 @@ impl PlacementResolver {
 
 #[async_trait]
 impl ClusterEndpointResolver for PlacementResolver {
-    async fn resolve(&self, key: &AgentRouteKey) -> baml_rt_core::Result<Option<String>> {
+    async fn resolve(&self, key: &AgentRouteKey) -> baml_rt_core::Result<Option<Placement>> {
         let pkg = key.agent_package.as_str();
         let inst = key.agent_instance_id.as_str();
         let ttl = self.placement_ttl_ms as i64;
+        // Two-stage lookup: fetch the placement, then the serving runner's
+        // `service_instance_id`. Attempts at a correlated sub-select on
+        // `cluster_runners` inside the SELECT projection of the first query
+        // did not resolve `runner_id` from the outer row in SurrealDB v3.
         let result: Result<Vec<serde_json::Value>, _> = self
             .db
             .query(
@@ -104,27 +123,8 @@ impl ClusterEndpointResolver for PlacementResolver {
             .await
             .and_then(|mut r| r.take(0));
 
-        match result {
-            Ok(rows) => {
-                let Some(row) = rows.into_iter().next() else {
-                    return Ok(None);
-                };
-                let Some(runner_id) = row.get("runner_id").and_then(|v| v.as_str()) else {
-                    return Ok(None);
-                };
-                if runner_id == self.local_runner_id.as_str() {
-                    return Ok(None);
-                }
-                let endpoint = row
-                    .get("runner_endpoint")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        BamlRtError::Io(std::io::Error::other(format!(
-                            "placement for {pkg}/{inst} on runner {runner_id} missing runner_endpoint (data corruption)"
-                        )))
-                    })?;
-                Ok(Some(endpoint.to_string()))
-            }
+        let row = match result {
+            Ok(rows) => rows.into_iter().next(),
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -132,11 +132,72 @@ impl ClusterEndpointResolver for PlacementResolver {
                     instance = %inst,
                     "cluster placement lookup failed"
                 );
-                Err(BamlRtError::Io(std::io::Error::other(format!(
+                return Err(BamlRtError::Io(std::io::Error::other(format!(
                     "cluster placement lookup: {e}"
-                ))))
+                ))));
             }
+        };
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let Some(runner_id) = row.get("runner_id").and_then(|v| v.as_str()) else {
+            return Ok(None);
+        };
+        if runner_id == self.local_runner_id.as_str() {
+            return Ok(None);
         }
+        let endpoint = row
+            .get("runner_endpoint")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                BamlRtError::Io(std::io::Error::other(format!(
+                    "placement for {pkg}/{inst} on runner {runner_id} missing runner_endpoint (data corruption)"
+                )))
+            })?;
+
+        let runner_row: Option<serde_json::Value> = self
+            .db
+            .query(
+                "SELECT service_instance_id, pod_name \
+                 FROM ONLY type::record('cluster_runners', $rid)",
+            )
+            .bind(("rid", runner_id.to_string()))
+            .await
+            .and_then(|mut r| r.take(0))
+            .map_err(|e| {
+                BamlRtError::Io(std::io::Error::other(format!(
+                    "cluster runner identity lookup for {runner_id}: {e}"
+                )))
+            })?;
+        // Rollout-safe degradation. Post-PR runners write `service_instance_id`
+        // directly. Pre-PR runners only wrote `pod_name`, so mid-rollout peers
+        // still resolve — the observability label is imprecise until the old
+        // runner restarts, but forwarding never fails purely because a peer
+        // hasn't been redeployed yet.
+        let field = |key: &str| -> Option<&str> {
+            runner_row
+                .as_ref()
+                .and_then(|v| v.get(key))
+                .and_then(|v| v.as_str())
+        };
+        let service_instance_id = match field("service_instance_id") {
+            Some(sid) => sid.to_string(),
+            None => {
+                let fallback = field("pod_name").unwrap_or(UNKNOWN_SERVICE_INSTANCE_ID);
+                tracing::warn!(
+                    runner_id = runner_id,
+                    fallback = fallback,
+                    "cluster_runners row missing service_instance_id; falling back \
+                     (likely a peer running a pre-rollout build — re-register on restart)"
+                );
+                fallback.to_string()
+            }
+        };
+
+        Ok(Some(Placement {
+            endpoint: endpoint.to_string(),
+            service_instance_id,
+        }))
     }
 }
 
@@ -191,6 +252,11 @@ impl ClusterManager {
     }
 
     async fn register_runner(&self) -> Result<(), BamlRtError> {
+        // `pod_name` is a best-effort HOSTNAME snapshot for consumers that
+        // want the container hostname specifically. Peer observability reads
+        // `service_instance_id`, the canonical OTEL `service.instance.id`,
+        // which may diverge from `pod_name` when an operator sets
+        // `OTEL_RESOURCE_ATTRIBUTES=service.instance.id=…`.
         let pod_name = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
         let mut resp = self
             .db
@@ -199,11 +265,16 @@ impl ClusterManager {
                  runner_id = $runner_id, \
                  endpoint = $endpoint, \
                  pod_name = $pod_name, \
+                 service_instance_id = $service_instance_id, \
                  last_heartbeat_ms = time::millis(time::now())",
             )
             .bind(("runner_id", self.identity.runner_id.to_string()))
             .bind(("endpoint", self.identity.endpoint.clone()))
             .bind(("pod_name", pod_name))
+            .bind((
+                "service_instance_id",
+                self.identity.service_instance_id.clone(),
+            ))
             .await
             .map_err(|e| {
                 BamlRtError::Io(std::io::Error::other(format!(
@@ -369,11 +440,18 @@ mod tests {
         "a".repeat(64).parse::<DeploymentContentHash>().unwrap()
     }
 
+    fn identity(n: u8) -> RunnerIdentity {
+        RunnerIdentity::new(
+            format!("http://runner-{n}:18080"),
+            format!("runner-{n}-sid"),
+        )
+    }
+
     #[tokio::test]
     async fn two_runners_register_independently() {
         let db = test_db().await;
-        let id1 = RunnerIdentity::new("http://runner-1:18080".into());
-        let id2 = RunnerIdentity::new("http://runner-2:18080".into());
+        let id1 = identity(1);
+        let id2 = identity(2);
 
         let _mgr1 = ClusterManager::new(db.clone(), id1, TEST_TTL_MS)
             .await
@@ -392,9 +470,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn placement_resolver_returns_remote_endpoint() {
+    async fn placement_resolver_returns_placement_with_service_instance_id() {
         let db = test_db().await;
-        let identity = RunnerIdentity::new("http://runner-1:18080".into());
+        let identity = identity(1);
         let mgr = ClusterManager::new(db.clone(), identity, TEST_TTL_MS)
             .await
             .unwrap();
@@ -405,14 +483,42 @@ mod tests {
 
         let other_runner = RunnerId::new_random();
         let resolver = PlacementResolver::new(db.clone(), other_runner, TEST_TTL_MS);
-        let endpoint = resolver.resolve(&key).await.unwrap();
-        assert_eq!(endpoint, Some("http://runner-1:18080".to_string()));
+        let placement = resolver
+            .resolve(&key)
+            .await
+            .unwrap()
+            .expect("remote placement should resolve");
+        assert_eq!(placement.endpoint, "http://runner-1:18080");
+        assert_eq!(
+            placement.service_instance_id, "runner-1-sid",
+            "service_instance_id must come from RunnerIdentity, not from HOSTNAME"
+        );
+
+        // `pod_name` (HOSTNAME snapshot) and `service_instance_id` (canonical
+        // OTEL identity) are independent fields on `cluster_runners`; a future
+        // OTEL override path must not silently overwrite `pod_name`.
+        let rows: Vec<serde_json::Value> = db
+            .query("SELECT pod_name, service_instance_id FROM cluster_runners")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("service_instance_id").and_then(|v| v.as_str()),
+            Some("runner-1-sid"),
+            "registry must persist the canonical service.instance.id"
+        );
+        assert!(
+            rows[0].get("pod_name").and_then(|v| v.as_str()).is_some(),
+            "pod_name field must still be present (HOSTNAME-sourced best-effort)"
+        );
     }
 
     #[tokio::test]
     async fn placement_resolver_returns_none_for_local() {
         let db = test_db().await;
-        let identity = RunnerIdentity::new("http://runner-1:18080".into());
+        let identity = identity(1);
         let mgr = ClusterManager::new(db.clone(), identity, TEST_TTL_MS)
             .await
             .unwrap();
@@ -422,14 +528,14 @@ mod tests {
         mgr.record_placement(&key, &hash).await.unwrap();
 
         let resolver = mgr.resolver();
-        let endpoint = resolver.resolve(&key).await.unwrap();
-        assert_eq!(endpoint, None);
+        let placement = resolver.resolve(&key).await.unwrap();
+        assert_eq!(placement, None);
     }
 
     #[tokio::test]
     async fn remove_placement_clears_record() {
         let db = test_db().await;
-        let identity = RunnerIdentity::new("http://runner-1:18080".into());
+        let identity = identity(1);
         let mgr = ClusterManager::new(db.clone(), identity, TEST_TTL_MS)
             .await
             .unwrap();
@@ -447,8 +553,8 @@ mod tests {
     #[tokio::test]
     async fn placement_overwrite_last_writer_wins() {
         let db = test_db().await;
-        let id1 = RunnerIdentity::new("http://runner-1:18080".into());
-        let id2 = RunnerIdentity::new("http://runner-2:18080".into());
+        let id1 = identity(1);
+        let id2 = identity(2);
         let mgr1 = ClusterManager::new(db.clone(), id1, TEST_TTL_MS)
             .await
             .unwrap();
@@ -463,19 +569,22 @@ mod tests {
         mgr1.record_placement(&key, &hash).await.unwrap();
         mgr2.record_placement(&key, &hash).await.unwrap();
 
-        // Observer sees runner 2's endpoint (last writer wins via UPSERT).
+        // Observer sees runner 2's placement (last writer wins via UPSERT).
         let observer = RunnerId::new_random();
         let resolver = PlacementResolver::new(db.clone(), observer, TEST_TTL_MS);
-        assert_eq!(
-            resolver.resolve(&key).await.unwrap(),
-            Some("http://runner-2:18080".to_string()),
-        );
+        let placement = resolver
+            .resolve(&key)
+            .await
+            .unwrap()
+            .expect("placement should resolve");
+        assert_eq!(placement.endpoint, "http://runner-2:18080");
+        assert_eq!(placement.service_instance_id, "runner-2-sid");
     }
 
     #[tokio::test]
     async fn resolve_excludes_stale_runner() {
         let db = test_db().await;
-        let identity = RunnerIdentity::new("http://runner-1:18080".into());
+        let identity = identity(1);
         let mgr = ClusterManager::new(db.clone(), identity, TEST_TTL_MS)
             .await
             .unwrap();
@@ -501,5 +610,83 @@ mod tests {
             None,
             "stale runner should be excluded from placement resolution",
         );
+    }
+
+    /// During a rolling deploy, a new ingress runner may forward to a peer
+    /// that registered before this PR added `cluster_runners.service_instance_id`.
+    /// Forwarding must not break purely because the peer hasn't restarted yet;
+    /// the resolver should degrade to `pod_name` and log a warning.
+    #[tokio::test]
+    async fn placement_resolver_falls_back_to_pod_name_for_pre_rollout_row() {
+        let db = test_db().await;
+        let identity = identity(1);
+        let mgr = ClusterManager::new(db.clone(), identity.clone(), TEST_TTL_MS)
+            .await
+            .unwrap();
+
+        let key = test_route_key();
+        let hash = test_hash();
+        mgr.record_placement(&key, &hash).await.unwrap();
+
+        // Simulate a pre-rollout registration: strip the new field from the
+        // row so the shape matches what an older runner would have written.
+        db.query("UPDATE cluster_runners SET service_instance_id = NONE WHERE runner_id = $rid")
+            .bind(("rid", identity.runner_id.to_string()))
+            .await
+            .unwrap();
+
+        let other_runner = RunnerId::new_random();
+        let resolver = PlacementResolver::new(db.clone(), other_runner, TEST_TTL_MS);
+        let placement = resolver
+            .resolve(&key)
+            .await
+            .expect("resolve must succeed despite missing service_instance_id")
+            .expect("remote placement should resolve");
+        assert_eq!(placement.endpoint, "http://runner-1:18080");
+        // Test-only env: `pod_name` defaults to `HOSTNAME` or `unknown`. Either
+        // way it must come from `pod_name`, not surface as an Err.
+        assert!(
+            !placement.service_instance_id.is_empty(),
+            "fallback produced an empty service_instance_id"
+        );
+        assert_ne!(
+            placement.service_instance_id, "runner-1-sid",
+            "the canonical field was stripped; resolver must not have found it"
+        );
+    }
+
+    /// Last-resort degradation: when neither `service_instance_id` nor
+    /// `pod_name` is present on the peer's row, the resolver falls back to
+    /// the shared `UNKNOWN_SERVICE_INSTANCE_ID` sentinel so telemetry stays
+    /// bounded and routing still succeeds.
+    #[tokio::test]
+    async fn placement_resolver_falls_back_to_unknown_when_all_identity_fields_missing() {
+        let db = test_db().await;
+        let identity = identity(1);
+        let mgr = ClusterManager::new(db.clone(), identity.clone(), TEST_TTL_MS)
+            .await
+            .unwrap();
+
+        let key = test_route_key();
+        let hash = test_hash();
+        mgr.record_placement(&key, &hash).await.unwrap();
+
+        db.query(
+            "UPDATE cluster_runners SET service_instance_id = NONE, pod_name = NONE \
+             WHERE runner_id = $rid",
+        )
+        .bind(("rid", identity.runner_id.to_string()))
+        .await
+        .unwrap();
+
+        let other_runner = RunnerId::new_random();
+        let resolver = PlacementResolver::new(db.clone(), other_runner, TEST_TTL_MS);
+        let placement = resolver
+            .resolve(&key)
+            .await
+            .expect("resolve must succeed despite missing identity fields")
+            .expect("remote placement should resolve");
+        assert_eq!(placement.endpoint, "http://runner-1:18080");
+        assert_eq!(placement.service_instance_id, UNKNOWN_SERVICE_INSTANCE_ID);
     }
 }

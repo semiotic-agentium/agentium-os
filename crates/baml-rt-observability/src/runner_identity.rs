@@ -19,6 +19,14 @@ use std::sync::OnceLock;
 const OTEL_RESOURCE_ATTRIBUTES_ENV: &str = "OTEL_RESOURCE_ATTRIBUTES";
 /// Resource attribute key this helper resolves.
 pub const SERVICE_INSTANCE_ID_KEY: &str = "service.instance.id";
+/// Baggage key marking a forwarded A2A request with the ingress runner's
+/// `service.instance.id`. Shared between the router's `forward_request` (which
+/// injects it) and the API layer's middleware (which extracts it); any drift
+/// silently breaks forwarded classification, so the key lives in one place.
+pub const INGRESS_SERVICE_INSTANCE_ID_BAGGAGE_KEY: &str = "ingress_service_instance_id";
+/// Sentinel rendered in place of an absent `target_service_instance_id` on
+/// spans and metrics. Bounded string — keeps the label set low-cardinality.
+pub const UNKNOWN_SERVICE_INSTANCE_ID: &str = "unknown";
 
 /// Pure derivation of the canonical `service.instance.id` for the runner.
 ///

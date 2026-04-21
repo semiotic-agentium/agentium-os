@@ -4,11 +4,13 @@
 
 use std::{sync::OnceLock, time::Duration};
 
-use baml_rt_core::InvocationKind;
+use baml_rt_core::{AgentInstanceId, AgentPackageName, InvocationKind};
 use opentelemetry::{
     KeyValue, global,
     metrics::{Counter, Histogram},
 };
+
+use crate::runner_identity::UNKNOWN_SERVICE_INSTANCE_ID;
 
 const METER_NAME: &str = "baml_rt";
 
@@ -447,11 +449,58 @@ fn cluster_a2a_forward_histogram() -> &'static Histogram<f64> {
     })
 }
 
-/// Cross-runner HTTP A2A forward (cluster placement). `result`: `success`, `http_error`, `transport_error`, `parse_error`, etc.
-pub fn record_cluster_a2a_forward(result: &str, duration: Duration) {
-    let attrs = &[KeyValue::new("result", result.to_string())];
-    cluster_a2a_forward_counter().add(1, attrs);
-    cluster_a2a_forward_histogram().record(duration.as_secs_f64() * 1000.0, attrs);
+/// Build the attribute set emitted by [`record_cluster_a2a_forward`]. Extracted so
+/// tests can assert identity labels without touching the global meter.
+pub fn cluster_a2a_forward_attributes(
+    agent_package: &str,
+    agent_instance_id: &str,
+    result: &str,
+    ingress_service_instance_id: &str,
+    target_service_instance_id: Option<&str>,
+) -> [KeyValue; 5] {
+    [
+        KeyValue::new("agent_package", agent_package.to_string()),
+        KeyValue::new("agent_instance_id", agent_instance_id.to_string()),
+        KeyValue::new("result", result.to_string()),
+        KeyValue::new(
+            "ingress_service_instance_id",
+            ingress_service_instance_id.to_string(),
+        ),
+        KeyValue::new(
+            "target_service_instance_id",
+            target_service_instance_id
+                .unwrap_or(UNKNOWN_SERVICE_INSTANCE_ID)
+                .to_string(),
+        ),
+    ]
+}
+
+/// Cross-runner HTTP A2A forward (cluster placement).
+///
+/// Identity labels follow the same low-cardinality contract as the ingress HTTP
+/// and A2A serving families: agent identity is typed (parsed before the ingress
+/// handler reaches this call site); `ingress_service_instance_id` and
+/// `target_service_instance_id` carry the pod-shaped `service.instance.id`s of
+/// the originating and destination runners respectively. `result` is drawn from
+/// the bounded set `success` / `http_error` / `transport_error` / `parse_error`
+/// / `invalid_argument` / `error` (see `cluster_forward_error_label`).
+pub fn record_cluster_a2a_forward(
+    agent_package: &AgentPackageName,
+    agent_instance_id: &AgentInstanceId,
+    result: &str,
+    ingress_service_instance_id: &str,
+    target_service_instance_id: Option<&str>,
+    duration: Duration,
+) {
+    let attrs = cluster_a2a_forward_attributes(
+        agent_package.as_str(),
+        agent_instance_id.as_str(),
+        result,
+        ingress_service_instance_id,
+        target_service_instance_id,
+    );
+    cluster_a2a_forward_counter().add(1, &attrs);
+    cluster_a2a_forward_histogram().record(duration.as_secs_f64() * 1000.0, &attrs);
 }
 
 fn event_dispatch_no_subscribers_counter() -> &'static Counter<u64> {

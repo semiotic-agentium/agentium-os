@@ -7,7 +7,7 @@ use std::{
 };
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Query, State},
     http::StatusCode as AxumStatus,
     response::{
@@ -47,6 +47,7 @@ use crate::{
         AgentDiscoveryEntryDto, DeployRequestDto, DeployResponseDto, DeploymentRecordDto,
         MigrateRequestDto, MigrateResponseDto, UndeployRequestDto, UndeployResponseDto,
     },
+    otel_middleware::IngressServiceInstanceId,
     planning::{ContextPlanningResponse, PlanningError},
     provenance_ops::ProvenanceOpsError,
     service_error::service_result_to_http,
@@ -575,6 +576,7 @@ pub async fn post_migrate(
 )]
 pub async fn post_a2a(
     State(state): State<Arc<ApiState>>,
+    ingress_ext: Option<Extension<IngressServiceInstanceId>>,
     axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> HttpResult<Json<Vec<Value>>> {
@@ -598,17 +600,23 @@ pub async fn post_a2a(
     })?;
     let key = AgentRouteKey::new(package_name, instance_id);
 
-    // `forwarded` stays `false` here; PR 2 wires the Axum middleware that flips it when
-    // a peer runner forwards the call. Until then the local ingress both accepts and
-    // serves the request so `ingress == serving`.
-    let forwarded = false;
-    let service_instance_id = baml_rt_observability::service_instance_id();
+    let local_service_instance_id = baml_rt_observability::service_instance_id();
+    // `forwarded` is advisory — see `otel_middleware` module doc for the
+    // spoofability disclosure on public `/agents/...`.
+    let forwarded = ingress_ext.is_some();
+    let ingress_service_instance_id = ingress_ext
+        .as_ref()
+        .map(|e| e.as_str())
+        .unwrap_or(local_service_instance_id);
+    let serving_service_instance_id = local_service_instance_id;
+
     let span = spans::post_a2a(
         &key.agent_package,
         &key.agent_instance_id,
         forwarded,
-        service_instance_id,
-        service_instance_id,
+        ingress_service_instance_id,
+        serving_service_instance_id,
+        None,
     );
     let _guard = span.enter();
     let record_metric = |result: &str| {
@@ -617,7 +625,7 @@ pub async fn post_a2a(
             &key.agent_package,
             &key.agent_instance_id,
             forwarded,
-            service_instance_id,
+            ingress_service_instance_id,
             result,
             start.elapsed(),
         );
@@ -1203,6 +1211,7 @@ fn domain_to_problem(
 )]
 pub async fn post_dispatch(
     State(state): State<Arc<crate::router::ApiState>>,
+    ingress_ext: Option<Extension<IngressServiceInstanceId>>,
     axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
     Json(body): Json<crate::openapi::AgentDispatchRequestDto>,
 ) -> impl IntoResponse {
@@ -1234,16 +1243,22 @@ pub async fn post_dispatch(
     };
     let key = AgentRouteKey::new(package_name, instance_id);
 
-    // See `post_a2a` — `forwarded` stays `false` until PR 2 lands the baggage-aware
-    // middleware; `ingress == serving` for the single-runner path.
-    let forwarded = false;
-    let service_instance_id = baml_rt_observability::service_instance_id();
+    let local_service_instance_id = baml_rt_observability::service_instance_id();
+    // `forwarded` is advisory — see `otel_middleware` module doc.
+    let forwarded = ingress_ext.is_some();
+    let ingress_service_instance_id = ingress_ext
+        .as_ref()
+        .map(|e| e.as_str())
+        .unwrap_or(local_service_instance_id);
+    let serving_service_instance_id = local_service_instance_id;
+
     let span = spans::post_dispatch(
         &key.agent_package,
         &key.agent_instance_id,
         forwarded,
-        service_instance_id,
-        service_instance_id,
+        ingress_service_instance_id,
+        serving_service_instance_id,
+        None,
     );
     let _guard = span.enter();
     let record_metric = |result: &str| {
@@ -1252,7 +1267,7 @@ pub async fn post_dispatch(
             &key.agent_package,
             &key.agent_instance_id,
             forwarded,
-            service_instance_id,
+            ingress_service_instance_id,
             result,
             start.elapsed(),
         );

@@ -8,10 +8,13 @@
 
 use std::path::Path;
 
-use baml_rt_core::{InvocationKind, context::RuntimeScope, correlation::current_correlation_id};
+use baml_rt_core::{
+    AgentInstanceId, AgentPackageName, InvocationKind, context::RuntimeScope,
+    correlation::current_correlation_id,
+};
 use tracing::Span;
 
-use crate::scope::scope_attributes;
+use crate::{runner_identity::UNKNOWN_SERVICE_INSTANCE_ID, scope::scope_attributes};
 
 // Builder operations
 
@@ -268,6 +271,35 @@ pub fn a2a_cancel(
         correlation_id = correlation_id,
         context_id = %context_id.as_deref().unwrap_or("none"),
         message_id = %message_id.as_deref().unwrap_or("none"),
+    )
+}
+
+/// Create span for a cross-pod A2A forward.
+///
+/// Parent: ingress `baml_rt_api.post_a2a` / `post_dispatch`. Client span —
+/// the serving runner's `baml_rt_api.post_a2a` server span attaches to this
+/// one via propagated W3C trace context, giving one distributed trace.
+///
+/// `target_service_instance_id` is the canonical `service.instance.id` of the
+/// serving runner (from the cluster registry), or `None` when the ingress
+/// side hasn't resolved it yet; rendered as `"unknown"` in the attribute
+/// list so the low-cardinality guarantee holds.
+#[inline]
+pub fn cluster_a2a_forward(
+    agent_package: &AgentPackageName,
+    agent_instance_id: &AgentInstanceId,
+    destination_endpoint: &str,
+    ingress_service_instance_id: &str,
+    target_service_instance_id: Option<&str>,
+) -> Span {
+    tracing::info_span!(
+        "baml_rt.cluster_a2a_forward",
+        otel.kind = "client",
+        agent_package = %agent_package,
+        agent_instance_id = %agent_instance_id,
+        destination_endpoint = destination_endpoint,
+        ingress_service_instance_id = ingress_service_instance_id,
+        target_service_instance_id = target_service_instance_id.unwrap_or(UNKNOWN_SERVICE_INSTANCE_ID),
     )
 }
 

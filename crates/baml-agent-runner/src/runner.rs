@@ -471,15 +471,16 @@ impl AgentRunner {
         // Cluster fallback: forward to the remote runner hosting this agent.
         if let Some(resolver) = self.internal_a2a_router.cluster_resolver() {
             match resolver.resolve(key).await {
-                Ok(Some(endpoint)) => {
+                Ok(Some(placement)) => {
                     tracing::info!(
                         agent = %key.agent_package.as_str(),
-                        endpoint = %endpoint,
+                        endpoint = %placement.endpoint,
+                        target_service_instance_id = %placement.service_instance_id,
                         "forwarding external A2A request to remote runner"
                     );
                     return self
                         .internal_a2a_router
-                        .forward_to_runner(&endpoint, key, request)
+                        .forward_to_runner(&placement, key, request)
                         .await;
                 }
                 Err(e) => {
