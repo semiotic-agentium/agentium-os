@@ -49,11 +49,11 @@
     "kind": "sandbox",
     "image": {
       "kind": "bind",
-      "path": "/home/neithanmo/Documents/Work/Semiotic/agent-platform-notify/.tmp/dev-echo-rootfs"
+      "path": "/__SET_BY_SETUP_BIND_DEMO_SH__/dev-echo-rootfs"
     },
     "entrypoint": [
       "/tool-adapter"
     ]
   },
-  "runtime_digest": "sha256:6810500e0094559e66f40e42bf834ea99f4f7e4dd0921ef351d6dd89339839bd"
+  "runtime_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 }

@@ -74,6 +74,10 @@ mv /tmp/dev-echo-tool-metadata.json "$TOOL_METADATA"
 echo "Patched metadata: $TOOL_METADATA"
 echo "  bind path:      $ROOTFS_DIR"
 echo "  runtime_digest: $DIGEST"
+echo ""
+echo "NOTE: this script updates tracked example metadata for local execution."
+echo "      Reset before committing with:"
+echo "      git checkout -- examples/external-tools/dev_echo_sandbox/tool-metadata.json"
 
 cargo run -q -p cargo-agent-platform -- check-external-tool --path "$EXAMPLE_DIR"
 

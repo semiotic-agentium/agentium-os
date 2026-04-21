@@ -84,6 +84,14 @@ Shortcut script for 2.1–2.3:
 ./examples/external-tools/dev_echo_sandbox/setup_bind_demo.sh --image dev-echo-sandbox:local --force
 ```
 
+> Note: committed `tool-metadata.json` is intentionally portable (placeholder bind path + digest).
+> The setup flow patches it with your local absolute bind rootfs path and computed digest.
+> After demo runs, you can reset it with:
+>
+> ```bash
+> git checkout -- examples/external-tools/dev_echo_sandbox/tool-metadata.json
+> ```
+
 ---
 
 ## 3) Start runner
