@@ -435,15 +435,24 @@ pub struct ToolProjectionSemantics {
     pub detail: String,
 }
 
+fn is_valid_tool_identifier_component(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BundleName(String);
 
 impl BundleName {
     pub fn new(name: impl Into<String>) -> Result<Self> {
         let name = name.into();
-        if name.is_empty() || name.contains('/') {
+        if !is_valid_tool_identifier_component(&name) {
             return Err(BamlRtError::InvalidArgument(format!(
-                "Bundle name '{}' must be non-empty and must not contain '/'",
+                "Bundle name '{}' must match ^[a-z][a-z0-9_-]*$ (ASCII lowercase letters, digits, '_' or '-')",
                 name
             )));
         }
@@ -500,9 +509,9 @@ pub struct LocalToolName(String);
 impl LocalToolName {
     pub fn new(name: impl Into<String>) -> Result<Self> {
         let name = name.into();
-        if name.is_empty() || name.contains('/') {
+        if !is_valid_tool_identifier_component(&name) {
             return Err(BamlRtError::InvalidArgument(format!(
-                "Tool name '{}' must be non-empty and must not contain '/'",
+                "Tool name '{}' must match ^[a-z][a-z0-9_-]*$ (ASCII lowercase letters, digits, '_' or '-')",
                 name
             )));
         }
@@ -3136,5 +3145,26 @@ mod session_type_names_alignment_tests {
             let id = BamlFunctionId::parse(&name);
             assert_eq!(id.full_name(), name, "parse round-trip for {name}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tool_name_identifier_tests {
+    use super::{BundleName, LocalToolName, ToolName};
+
+    #[test]
+    fn accepts_ascii_lowercase_identifier_components() {
+        assert!(BundleName::new("internal-dev").is_ok());
+        assert!(BundleName::new("internal_dev").is_ok());
+        assert!(LocalToolName::new("get_weather2").is_ok());
+        assert!(ToolName::parse("internal-dev/get_weather2").is_ok());
+        assert!(ToolName::parse("internal_dev/get_weather2").is_ok());
+    }
+
+    #[test]
+    fn rejects_non_ascii_or_uppercase_identifier_components() {
+        assert!(BundleName::new("Support").is_err());
+        assert!(LocalToolName::new("echo🙂").is_err());
+        assert!(ToolName::parse("support/echo🙂").is_err());
     }
 }

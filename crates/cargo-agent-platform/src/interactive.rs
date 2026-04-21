@@ -99,8 +99,8 @@ impl std::fmt::Display for ToolOption {
 
 /// Prompt for tool name.
 pub fn prompt_tool_name() -> Result<String> {
-    let name = Text::new("Tool name (kebab-case):")
-        .with_help_message("e.g., github, jira, linear")
+    let name = Text::new("Tool name (lowercase, '_'/'-'):")
+        .with_help_message("e.g., github, jira_sync, jira-sync")
         .prompt()?;
 
     if name.trim().is_empty() {

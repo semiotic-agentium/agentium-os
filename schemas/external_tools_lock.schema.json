@@ -21,7 +21,7 @@
           "name": {
             "type": "string",
             "description": "Fully qualified tool name (bundle/local_name).",
-            "pattern": "^[a-z][a-z0-9_]*/[a-z][a-z0-9_]*$"
+            "pattern": "^[a-z][a-z0-9_-]*/[a-z][a-z0-9_-]*$"
           },
           "oci_ref": {
             "type": "string",

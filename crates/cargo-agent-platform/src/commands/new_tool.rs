@@ -267,23 +267,29 @@ fn validate_output_dir(output_dir: &Path) -> Result<()> {
 fn validate_tool_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!(
-            "Error: tool name cannot be empty.\nHint: use kebab-case like `echo` or `clickup-sync`."
+            "Error: tool name cannot be empty.\nHint: use lowercase like `echo`, `clickup_sync`, or `clickup-sync`."
         );
     }
 
     if !name
         .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
     {
         bail!(
-            "Error: invalid tool name '{}'.\nHint: use kebab-case with lowercase letters, numbers, and hyphens only.",
+            "Error: invalid tool name '{}'.\nHint: use lowercase letters, numbers, underscores, or hyphens only.",
             name
         );
     }
 
-    if name.starts_with('-') || name.ends_with('-') || name.contains("--") {
+    if name.starts_with('_')
+        || name.ends_with('_')
+        || name.starts_with('-')
+        || name.ends_with('-')
+        || name.contains("__")
+        || name.contains("--")
+    {
         bail!(
-            "Error: invalid tool name '{}'.\nHint: avoid leading/trailing/consecutive hyphens.",
+            "Error: invalid tool name '{}'.\nHint: avoid leading/trailing separators and consecutive '_' or '-'.",
             name
         );
     }

@@ -67,7 +67,7 @@ enum Commands {
     /// directory the runner picks up via `BAML_EXTERNAL_TOOLS_DIR` without
     /// touching the platform workspace.
     NewTool {
-        /// Tool name in kebab-case (e.g., echo, clickup-sync). Omit for interactive mode.
+        /// Tool name in lowercase (e.g., echo, clickup_sync, clickup-sync). Omit for interactive mode.
         name: Option<String>,
 
         /// Bundle namespace. Free-form string (e.g. `support`, `travel`, `acme`).

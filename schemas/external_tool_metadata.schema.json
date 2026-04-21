@@ -25,7 +25,7 @@
     "name": {
       "type": "string",
       "description": "Fully qualified tool name (bundle/local_name).",
-      "pattern": "^[a-z][a-z0-9_]*/[a-z][a-z0-9_]*$"
+      "pattern": "^[a-z][a-z0-9_-]*/[a-z][a-z0-9_-]*$"
     },
     "description": {
       "type": "string",
@@ -33,11 +33,13 @@
     },
     "bundle": {
       "type": "string",
-      "description": "Bundle namespace (e.g. 'support')."
+      "description": "Bundle namespace (e.g. 'support').",
+      "pattern": "^[a-z][a-z0-9_-]*$"
     },
     "local_name": {
       "type": "string",
-      "description": "Tool name within its bundle (e.g. 'clickup')."
+      "description": "Tool name within its bundle (e.g. 'clickup').",
+      "pattern": "^[a-z][a-z0-9_-]*$"
     },
     "access_level": {
       "type": "string",
