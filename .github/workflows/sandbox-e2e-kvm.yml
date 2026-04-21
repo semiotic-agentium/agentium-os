@@ -15,10 +15,11 @@ env:
   RUST_BACKTRACE: 1
   IMAGE_NAME: sandbox-echo-adapter
   IMAGE_TAG: ci-${{ github.sha }}
+  ROOTFS_TAR: sandbox-echo-rootfs.tar
 
 jobs:
   prepare-fixture:
-    name: Prepare local sandbox fixture image + metadata artifact
+    name: Prepare local sandbox fixture bind rootfs artifact
     runs-on: kvm-enabled
 
     steps:
@@ -96,64 +97,27 @@ jobs:
           print("smoke test passed")
           PY
 
-      - name: Resolve local image digest
-        id: image_digest
+      - name: Export bind rootfs from local image
         env:
           IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
         run: |
-          IMAGE_ID=$(docker image inspect "${IMAGE_REF}" --format '{{.Id}}')
-          if [[ -z "${IMAGE_ID}" || "${IMAGE_ID}" != sha256:* ]]; then
-            echo "error: unable to resolve local sha256 image id for ${IMAGE_REF}" >&2
-            exit 1
-          fi
-          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
-          echo "image_digest=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
-          echo "Resolved local image digest: ${IMAGE_ID}"
+          ROOTFS_DIR="${RUNNER_TEMP}/sandbox-echo-rootfs"
+          mkdir -p "${ROOTFS_DIR}"
 
-      - name: Materialize CI-local fixture metadata (no publish)
-        env:
-          IMAGE_REF: ${{ steps.image_digest.outputs.image_ref }}
-          IMAGE_DIGEST: ${{ steps.image_digest.outputs.image_digest }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
+          CID=$(docker create "${IMAGE_REF}")
+          cleanup() {
+            docker rm -f "${CID}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
 
-          src = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
-          dst = Path(os.environ["RUNNER_TEMP"]) / "sandbox_echo.tool-metadata.ci.json"
+          docker export "${CID}" | tar -C "${ROOTFS_DIR}" -xf -
+          tar -C "${RUNNER_TEMP}" -cf "${RUNNER_TEMP}/${ROOTFS_TAR}" sandbox-echo-rootfs
 
-          with src.open("r", encoding="utf-8") as f:
-            doc = json.load(f)
-
-          doc["runtime"]["image"] = os.environ["IMAGE_REF"]
-          doc["runtime"]["entrypoint"] = ["/tool-adapter"]
-          doc["runtime_digest"] = os.environ["IMAGE_DIGEST"]
-
-          with dst.open("w", encoding="utf-8") as f:
-            json.dump(doc, f, indent=2)
-            f.write("\n")
-
-          print(f"wrote {dst}")
-          PY
-
-      - name: Upload CI-local fixture metadata artifact
+      - name: Upload bind rootfs artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sandbox-echo-ci-metadata
-          path: ${{ runner.temp }}/sandbox_echo.tool-metadata.ci.json
-
-      - name: Save local image as artifact
-        env:
-          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-        run: |
-          docker save "${IMAGE_REF}" -o "${RUNNER_TEMP}/sandbox-echo-image.tar"
-
-      - name: Upload local image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sandbox-echo-ci-image
-          path: ${{ runner.temp }}/sandbox-echo-image.tar
+          name: sandbox-echo-ci-rootfs
+          path: ${{ runner.temp }}/${{ env.ROOTFS_TAR }}
 
   kvm-e2e:
     name: KVM E2E (baml-rt-tools)
@@ -182,25 +146,54 @@ jobs:
         with:
           tool: cargo-nextest
 
-      - name: Download metadata artifact
+      - name: Download bind rootfs artifact
         uses: actions/download-artifact@v4
         with:
-          name: sandbox-echo-ci-metadata
-          path: ${{ runner.temp }}/sandbox-echo-ci-metadata
+          name: sandbox-echo-ci-rootfs
+          path: ${{ runner.temp }}/sandbox-echo-ci-rootfs
 
-      - name: Download local image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: sandbox-echo-ci-image
-          path: ${{ runner.temp }}/sandbox-echo-ci-image
-
-      - name: Load local image from artifact
+      - name: Extract bind rootfs artifact
         run: |
-          docker load -i "${RUNNER_TEMP}/sandbox-echo-ci-image/sandbox-echo-image.tar"
+          mkdir -p "${RUNNER_TEMP}/sandbox-echo-rootfs-extract"
+          tar -C "${RUNNER_TEMP}/sandbox-echo-rootfs-extract" -xf "${RUNNER_TEMP}/sandbox-echo-ci-rootfs/${ROOTFS_TAR}"
+
+      - name: Materialize CI-local bind metadata
+        run: |
+          ROOTFS_DIR="${RUNNER_TEMP}/sandbox-echo-rootfs-extract/sandbox-echo-rootfs"
+          DIGEST=$(cargo run -q -p cargo-agent-platform -- sandbox-digest --source bind "${ROOTFS_DIR}")
+          if [[ -z "${DIGEST}" ]]; then
+            echo "error: failed to compute bind digest" >&2
+            exit 1
+          fi
+          export ROOTFS_DIR DIGEST
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          src = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
+          dst = Path(os.environ["RUNNER_TEMP"]) / "sandbox_echo.tool-metadata.ci.json"
+          rootfs_dir = Path(os.environ["ROOTFS_DIR"]).resolve()
+          digest = os.environ["DIGEST"]
+
+          with src.open("r", encoding="utf-8") as f:
+            doc = json.load(f)
+
+          doc["runtime"]["image"] = {"kind": "bind", "path": str(rootfs_dir)}
+          doc["runtime"]["entrypoint"] = ["/tool-adapter"]
+          doc["runtime_digest"] = digest
+
+          with dst.open("w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=2)
+            f.write("\n")
+
+          print(f"wrote {dst}")
+          PY
 
       - name: Run KVM-gated microsandbox E2E
         env:
-          BAML_SANDBOX_E2E_METADATA: ${{ runner.temp }}/sandbox-echo-ci-metadata/sandbox_echo.tool-metadata.ci.json
+          BAML_SANDBOX_E2E_METADATA: ${{ runner.temp }}/sandbox_echo.tool-metadata.ci.json
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
         run: |
           cargo nextest run -p baml-rt-tools --features sandbox-e2e-kvm --locked --profile ci --no-fail-fast

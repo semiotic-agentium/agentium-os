@@ -6,7 +6,7 @@ use baml_rt_tools::external_tools::{
     ERR_INTERNAL, JsonRpcRequest, JsonRpcResponse, METHOD_INVOKE, SandboxImageRef,
     SandboxRuntimeSpec, ToolInvokeParams, ToolRuntime,
     metadata::ExternalToolMetadata,
-    sandbox::{MicrosandboxProvider, SandboxProvider, SandboxSpec},
+    sandbox::{MicrosandboxProvider, SandboxImageSource, SandboxProvider, SandboxSpec},
 };
 use serde_json::{Value, json};
 use tokio::time::timeout;
@@ -33,10 +33,9 @@ async fn run_required_scenarios() -> Result<(), Box<dyn std::error::Error>> {
 
     let metadata = load_sandbox_metadata()?;
     let (image, entrypoint) = match metadata.runtime {
-        Some(ToolRuntime::Sandbox(SandboxRuntimeSpec {
-            image: SandboxImageRef::Oci { r#ref },
-            entrypoint,
-        })) => (r#ref, entrypoint),
+        Some(ToolRuntime::Sandbox(SandboxRuntimeSpec { image, entrypoint })) => {
+            (image_ref_to_source(image)?, entrypoint)
+        }
         other => {
             return Err(format!("expected runtime.kind=sandbox in metadata, got {other:?}").into());
         }
@@ -47,17 +46,24 @@ async fn run_required_scenarios() -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .ok_or("metadata missing runtime_digest")?;
     if runtime_digest == PLACEHOLDER_DIGEST {
-        return Err(
-            "metadata resolves to placeholder digest; point BAML_SANDBOX_E2E_METADATA at CI-generated artifact"
-                .into(),
+        if env::var("BAML_SANDBOX_E2E_METADATA").is_ok() {
+            return Err(
+                "metadata resolves to placeholder digest; point BAML_SANDBOX_E2E_METADATA at CI-generated artifact"
+                    .into(),
+            );
+        }
+        eprintln!(
+            "skipping sandbox_microsandbox_e2e: fixture metadata uses placeholder digest; set BAML_SANDBOX_E2E_METADATA to a materialized bind/oci metadata artifact"
         );
+        return Ok(());
     }
 
     let provider = MicrosandboxProvider::new()?;
 
     // Required scenario 1: happy path describe/invoke through a real microVM.
     let happy_name = format!("baml:kvm-e2e:{}:happy", uuid::Uuid::new_v4());
-    let mut happy_spec = SandboxSpec::for_test(happy_name, image.clone());
+    let mut happy_spec = SandboxSpec::for_test(happy_name, "unused:test-image");
+    happy_spec.image = image.clone();
     happy_spec.entrypoint = entrypoint.clone();
     happy_spec.runtime_digest = Some(runtime_digest.to_string());
     happy_spec.max_duration = Duration::from_secs(300);
@@ -77,7 +83,8 @@ async fn run_required_scenarios() -> Result<(), Box<dyn std::error::Error>> {
 
     // Required scenario 3: reattach works and can invoke again.
     let reattach_name = format!("baml:kvm-e2e:{}:reattach", uuid::Uuid::new_v4());
-    let mut reattach_spec = SandboxSpec::for_test(reattach_name.clone(), image);
+    let mut reattach_spec = SandboxSpec::for_test(reattach_name.clone(), "unused:test-image");
+    reattach_spec.image = image;
     reattach_spec.entrypoint = entrypoint;
     reattach_spec.runtime_digest = Some(runtime_digest.to_string());
     reattach_spec.max_duration = Duration::from_secs(300);
@@ -98,12 +105,23 @@ async fn run_required_scenarios() -> Result<(), Box<dyn std::error::Error>> {
 
 fn load_sandbox_metadata() -> Result<ExternalToolMetadata, Box<dyn std::error::Error>> {
     let path = env::var("BAML_SANDBOX_E2E_METADATA").unwrap_or_else(|_| {
-        "crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json"
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        Path::new(manifest_dir)
+            .join("tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
+            .display()
             .to_string()
     });
     let raw = fs::read_to_string(&path)?;
     let parsed: ExternalToolMetadata = serde_json::from_str(&raw)?;
     Ok(parsed)
+}
+
+fn image_ref_to_source(image: SandboxImageRef) -> Result<SandboxImageSource, Box<dyn std::error::Error>> {
+    match image {
+        SandboxImageRef::Oci { r#ref } => Ok(SandboxImageSource::Oci(r#ref)),
+        SandboxImageRef::Bind { path } => Ok(SandboxImageSource::Bind(path.into())),
+        other => Err(format!("unsupported sandbox image source in KVM E2E metadata: {other:?}").into()),
+    }
 }
 
 async fn invoke_echo(
