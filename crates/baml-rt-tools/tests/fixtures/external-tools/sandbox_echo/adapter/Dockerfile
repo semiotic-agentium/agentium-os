@@ -6,9 +6,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends musl-tools pkg-config ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN rustup target add x86_64-unknown-linux-musl
-
 WORKDIR /build
+
+COPY rust-toolchain.toml ./rust-toolchain.toml
+RUN rustup show active-toolchain \
+    && rustup target add x86_64-unknown-linux-musl
+
 COPY . .
 
 RUN cargo build --release --locked \
