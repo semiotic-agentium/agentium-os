@@ -18,7 +18,7 @@ pub mod runtime;
 pub mod sandbox;
 pub mod stdio;
 
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 pub use handler::{ProcessToolHandler, ProcessToolSession};
 pub use invoker::{
@@ -51,6 +51,11 @@ pub use runtime::{
     ToolRuntimeKind,
 };
 pub use sandbox::canonical_bind_digest;
+
+/// Compute runtime digest for a bind rootfs path using canonical bind hashing.
+pub fn sandbox_runtime_digest_for_bind(path: &Path) -> baml_rt_core::Result<String> {
+    canonical_bind_digest(path)
+}
 use serde_json::Value;
 pub use stdio::StdioSubprocessInvoker;
 
