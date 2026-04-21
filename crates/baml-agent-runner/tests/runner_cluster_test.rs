@@ -1641,7 +1641,12 @@ async fn undeploy_emits_agent_stopped_event() {
     // Poll lifecycle events endpoint for the AgentStopped event.
     let lifecycle_url = format!("{}/provenance/lifecycle-events", runner.base_url);
     let deadline = Instant::now() + Duration::from_secs(10);
+    // Seeded with placeholders so the panic-diagnostic below always has
+    // well-typed values even if the loop never reaches an assignment;
+    // the allow silences clippy about the placeholder being overwritten.
+    #[allow(unused_assignments)]
     let mut last_body = Value::Null;
+    #[allow(unused_assignments)]
     let mut last_status = StatusCode::OK;
     loop {
         let resp = client

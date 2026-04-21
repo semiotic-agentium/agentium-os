@@ -85,11 +85,13 @@ use baml_rt_tools::BundleName;
 use common::try_load_dotenv_for_tests;
 use common::{e2e_secs_ci_or_local, e2e_serial_gate};
 #[cfg(feature = "llm-tests")]
+use test_support::common::message_visible_content_from_chunks;
+#[cfg(feature = "llm-tests")]
 use test_support::common::workspace_fnox_path;
 use test_support::common::{
     CalculatorTool, chunks_from_responses, ensure_baml_src_exists, ensure_fixture_runtime_types,
-    first_task_id_from_stream, message_texts_from_chunks, message_visible_content_from_chunks,
-    test_surreal_store, user_message, user_message_with_task, workspace_root,
+    first_task_id_from_stream, message_texts_from_chunks, test_surreal_store, user_message,
+    user_message_with_task, workspace_root,
 };
 
 async fn build_fixture_to_temp_async(fixture_name: &str) -> std::path::PathBuf {
