@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Placeholder required by current regen lockfile digest path.
+# Sandbox runtime uses the adapter image, not this binary.
+echo "dev/echo is sandbox runtime; tool-server placeholder only for regen lockfile hashing" >&2
+exit 1

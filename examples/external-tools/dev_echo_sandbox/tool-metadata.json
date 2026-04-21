@@ -1,0 +1,59 @@
+{
+  "tool_abi_version": "1",
+  "name": "dev/echo",
+  "description": "Sandboxed echo demo tool for the example echo agent",
+  "bundle": "dev",
+  "local_name": "echo",
+  "access_level": "read",
+  "tags": [
+    "sandbox",
+    "example",
+    "echo"
+  ],
+  "invocation_mode": "single_shot",
+  "schemas": {
+    "input": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "panic": {
+          "type": "boolean"
+        },
+        "pollute": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "reply": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reply"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "secrets": [],
+  "capabilities": {},
+  "runtime": {
+    "kind": "sandbox",
+    "image": {
+      "kind": "bind",
+      "path": "/home/neithanmo/Documents/Work/Semiotic/agent-platform-notify/.tmp/dev-echo-rootfs"
+    },
+    "entrypoint": [
+      "/tool-adapter"
+    ]
+  },
+  "runtime_digest": "sha256:6810500e0094559e66f40e42bf834ea99f4f7e4dd0921ef351d6dd89339839bd"
+}

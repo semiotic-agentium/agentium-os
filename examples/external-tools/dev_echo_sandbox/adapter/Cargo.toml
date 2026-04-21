@@ -1,0 +1,18 @@
+[package]
+name = "dev-echo-sandbox-adapter"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "dev-echo-sandbox-adapter"
+path = "src/main.rs"
+
+[dependencies]
+baml-sandbox-adapter = { path = "../../../../crates/baml-sandbox-adapter" }
+baml-sandbox-protocol = { path = "../../../../crates/baml-sandbox-protocol" }
+async-trait = "0.1"
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros", "io-std"] }
+
+[workspace]
