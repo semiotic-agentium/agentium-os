@@ -34,7 +34,7 @@
   "runtime": {
     "kind": "sandbox",
     "image": "ghcr.io/agentium/sandbox-echo@sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "entrypoint": ["/app/tool-adapter"]
+    "entrypoint": ["/tool-adapter"]
   },
   "runtime_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 }

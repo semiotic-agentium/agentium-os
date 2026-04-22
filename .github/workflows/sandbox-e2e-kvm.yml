@@ -25,6 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -127,6 +132,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
@@ -160,9 +170,9 @@ jobs:
       - name: Materialize CI-local bind metadata
         run: |
           ROOTFS_DIR="${RUNNER_TEMP}/sandbox-echo-rootfs-extract/sandbox-echo-rootfs"
-          DIGEST=$(cargo run -q -p cargo-agent-platform -- sandbox-digest --source bind "${ROOTFS_DIR}")
-          if [[ -z "${DIGEST}" ]]; then
-            echo "error: failed to compute bind digest" >&2
+          DIGEST=$(cargo run -q -p cargo-agent-platform -- sandbox-digest --source bind "${ROOTFS_DIR}" | tail -n1)
+          if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "error: sandbox-digest did not emit canonical sha256:<64-hex>; got: '${DIGEST}'" >&2
             exit 1
           fi
           export ROOTFS_DIR DIGEST
@@ -181,7 +191,6 @@ jobs:
             doc = json.load(f)
 
           doc["runtime"]["image"] = {"kind": "bind", "path": str(rootfs_dir)}
-          doc["runtime"]["entrypoint"] = ["/tool-adapter"]
           doc["runtime_digest"] = digest
 
           with dst.open("w", encoding="utf-8") as f:

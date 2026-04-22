@@ -319,6 +319,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -461,7 +466,6 @@ jobs:
             doc = json.load(f)
 
           doc["runtime"]["image"] = os.environ["IMAGE_REF"]
-          doc["runtime"]["entrypoint"] = ["/tool-adapter"]
           doc["runtime_digest"] = os.environ["IMAGE_DIGEST"]
 
           with dst.open("w", encoding="utf-8") as f:
@@ -506,18 +510,26 @@ jobs:
     needs: [changes, nextest, sandbox-adapter-image]
     if: needs.changes.outputs.sandbox_changed == 'true'
     steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - uses: actions/download-artifact@v4
         with:
           name: sandbox-echo-ci-metadata
           path: ${{ runner.temp }}/sandbox-echo-ci-metadata
 
       - name: Validate downloaded metadata artifact
+        env:
+          METADATA_DIR: ${{ runner.temp }}/sandbox-echo-ci-metadata
         run: |
           python - <<'PY'
           import json
+          import os
           from pathlib import Path
 
-          path = Path("${{ runner.temp }}/sandbox-echo-ci-metadata/sandbox_echo.tool-metadata.ci.json")
+          path = Path(os.environ["METADATA_DIR"]) / "sandbox_echo.tool-metadata.ci.json"
           if not path.exists():
               raise SystemExit(f"artifact missing: {path}")
 
