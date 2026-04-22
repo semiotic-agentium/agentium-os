@@ -87,7 +87,7 @@ Tool naming rules:
 Runtime-specific emissions:
 
 - **`--runtime process`** (default): a host-side `tool-server` launcher executable is scaffolded. The runner invokes it directly over stdio.
-- **`--runtime sandbox`**: no host-side launcher. The adapter binary (usually `tool-adapter`) must be built by you and placed inside the OCI image or bind rootfs at `/tool-adapter` (see §2–§3). Metadata references the image/rootfs; the runner spawns the adapter inside the guest.
+- **`--runtime sandbox`**: runner execution goes through the guest adapter at `/tool-adapter`. Some scaffolds may still include a host `tool-server` helper for local probing, but it is not the runtime invoke path. The adapter binary/script (usually `tool-adapter`) must be built by you and placed inside the OCI image or bind rootfs at `/tool-adapter` (see §2–§3). Metadata references the image/rootfs; the runner spawns the adapter inside the guest.
 
 For sandbox tools, metadata points to a sandbox image source, but you still need to build/provide the adapter artifact (next section).
 
@@ -179,7 +179,7 @@ Reference runnable example:
 - `new-tool --runtime sandbox --sandbox-source oci --sandbox-image <...@sha256:...>`: digest derives from image ref suffix.
 - `new-tool --runtime sandbox --sandbox-source bind`: scaffold emits placeholder bind path (`"<rootfs-path>"`) and placeholder digest; set real path + recompute digest after rootfs materialization.
   - default mode emits metadata only (no setup script)
-  - adding `--generate-docker` emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh` + `inspect_tsrpc.py` for Docker build/export + patch/validate/probe flow
+  - adding `--generate-docker` emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh` for Docker build/export + patch/validate flow
 
 `setup_bind_sandbox.sh` resolves the SDK CLI command in this order:
 1. `AGENT_PLATFORM_CMD` (if set)

@@ -41,8 +41,7 @@ This creates:
 
 If you want scaffolded Docker artifacts too, add `--generate-docker`.
 That also emits `adapter/Dockerfile` + `adapter/tool-adapter` +
-`setup_bind_sandbox.sh` (Docker build/export + digest + patch + validate)
-+ `inspect_tsrpc.py` (framed sandbox transport probe).
+`setup_bind_sandbox.sh` (Docker build/export + digest + patch + validate).
 
 ---
 
@@ -208,11 +207,16 @@ Fix:
 ### E) Agent seems to wait forever
 Usually happens if tool never writes JSON-RPC response.
 
-Use the scaffolded TSRPC probe when available:
+Use a TSRPC probe (for example `examples/external-tools/dev_echo_sandbox/inspect_tsrpc.py`)
+when your adapter uses compatible input keys:
 
 ```bash
-./inspect_tsrpc.py --adapter ./.tmp/dev-meteo-rootfs/tool-adapter describe
-./inspect_tsrpc.py --adapter ./.tmp/dev-meteo-rootfs/tool-adapter invoke --message "Athens, Greece"
+./examples/external-tools/dev_echo_sandbox/inspect_tsrpc.py \
+  --adapter ./.tmp/dev-echo-rootfs/tool-adapter describe
+./examples/external-tools/dev_echo_sandbox/inspect_tsrpc.py \
+  --adapter ./.tmp/dev-echo-rootfs/tool-adapter invoke \
+  --tool-name dev/echo \
+  --message "hello"
 ```
 
 Checklist:

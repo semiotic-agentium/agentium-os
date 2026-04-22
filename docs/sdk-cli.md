@@ -104,11 +104,11 @@ cargo agent-platform new-tool [name] [options]
 | `--output <dir>` | `./<name>` | Output directory for standalone tool project |
 | `--dry-run` | off | Preview changes without writing files (non-interactive only) |
 
-Generated scaffold always includes `tool-metadata.json`, `tool-server`, and `README.md`, plus language-specific files. `tool-metadata.json` always emits an explicit `runtime` block (`process` by default, or `sandbox` when selected). For `sandbox + bind`, scaffolding now emits placeholders (`runtime.image.path = "<rootfs-path>"` and zero `runtime_digest`) so creation is decoupled from rootfs materialization.
+Generated scaffold always includes `tool-metadata.json`, `README.md`, and language-specific files. Most language templates also include `tool-server` for local probing. For `runtime=sandbox`, runner invocation still goes through `/tool-adapter` inside the sandbox (not host `tool-server`). `tool-metadata.json` always emits an explicit `runtime` block (`process` by default, or `sandbox` when selected). For `sandbox + bind`, scaffolding now emits placeholders (`runtime.image.path = "<rootfs-path>"` and zero `runtime_digest`) so creation is decoupled from rootfs materialization.
 
 Bind scaffold modes:
 - default (no `--generate-docker`): metadata-only bind scaffold (placeholder path + zero digest); materialize rootfs externally, then run `sandbox-digest` + metadata patch + `check-external-tool`.
-- with `--generate-docker`: additionally emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh` + `inspect_tsrpc.py`; script builds image, exports rootfs, computes digest, patches metadata, and validates.
+- with `--generate-docker`: additionally emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh`; script builds image, exports rootfs, computes digest, patches metadata, and validates.
 
 For `setup_bind_sandbox.sh`, command resolution is:
 1. `AGENT_PLATFORM_CMD` (if set),

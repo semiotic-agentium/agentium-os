@@ -3,8 +3,7 @@
 //! Docker-assisted artifacts are optional and only emitted when
 //! `new-tool --runtime sandbox --sandbox-source bind --generate-docker`.
 
-use super::{GeneratedFile, STARTER_INPUT_KEY, ScaffoldContext};
-
+use super::{GeneratedFile, Language, ScaffoldContext};
 pub fn files(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
     if !ctx.generate_docker {
         return Vec::new();
@@ -14,7 +13,6 @@ pub fn files(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
         GeneratedFile::new("setup_bind_sandbox.sh", setup_script_with_docker(ctx)).executable(),
         GeneratedFile::new("adapter/Dockerfile", dockerfile(ctx)),
         GeneratedFile::new("adapter/tool-adapter", adapter_script(ctx)).executable(),
-        GeneratedFile::new("inspect_tsrpc.py", inspect_tsrpc(ctx)).executable(),
     ]
 }
 
@@ -170,173 +168,198 @@ echo "  runtime_digest: $DIGEST"
 }
 
 fn dockerfile(ctx: &ScaffoldContext<'_>) -> String {
-    format!(
-        r#"# syntax=docker/dockerfile:1.7
+    let tool_id = ctx.tool_id();
+    let tool_cmd = tool_cmd(ctx);
 
-# Starter adapter image scaffold for {tool_id}.
-#
-# Replace adapter/tool-adapter with your production sandbox adapter binary/script.
-# The setup_bind_sandbox.sh helper will build this image and export the rootfs
-# for bind-mode metadata patching.
+    match ctx.language {
+        Language::Python => format!(
+            r#"# syntax=docker/dockerfile:1.7
+
+# Sandbox adapter image scaffold for {tool_id} (python source as tool logic).
+
+FROM python:3.12-slim
+
+WORKDIR /opt/tool
+COPY main.py /opt/tool/main.py
+COPY adapter/tool-adapter /tool-adapter
+
+RUN chmod +x /tool-adapter /opt/tool/main.py
+
+ENV TOOL_CMD={tool_cmd}
+ENTRYPOINT ["/tool-adapter"]
+"#,
+        ),
+        Language::Bash => format!(
+            r#"# syntax=docker/dockerfile:1.7
+
+# Sandbox adapter image scaffold for {tool_id} (bash source as tool logic).
 
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates \
+    && apt-get install -y --no-install-recommends bash ca-certificates jq python3 \
     && rm -rf /var/lib/apt/lists/*
 
+WORKDIR /opt/tool
+COPY tool-server /opt/tool/tool-server
 COPY adapter/tool-adapter /tool-adapter
-RUN chmod +x /tool-adapter
 
+RUN chmod +x /tool-adapter /opt/tool/tool-server
+
+ENV TOOL_CMD={tool_cmd}
 ENTRYPOINT ["/tool-adapter"]
 "#,
-        tool_id = ctx.tool_id(),
-    )
+        ),
+        Language::Rust => format!(
+            r#"# syntax=docker/dockerfile:1.7
+
+# Sandbox adapter image scaffold for {tool_id} (rust source as tool logic).
+
+FROM rust:slim AS builder
+WORKDIR /build
+COPY Cargo.toml /build/Cargo.toml
+COPY src /build/src
+RUN cargo build --release --manifest-path /build/Cargo.toml
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/tool
+COPY --from=builder /build/target/release/external-tool /opt/tool/external-tool
+COPY adapter/tool-adapter /tool-adapter
+
+RUN chmod +x /tool-adapter /opt/tool/external-tool
+
+ENV TOOL_CMD={tool_cmd}
+ENTRYPOINT ["/tool-adapter"]
+"#,
+        ),
+        Language::Typescript => format!(
+            r#"# syntax=docker/dockerfile:1.7
+
+# Sandbox adapter image scaffold for {tool_id} (typescript source as tool logic).
+
+FROM node:22-slim AS builder
+WORKDIR /build
+COPY package.json /build/package.json
+COPY tsconfig.json /build/tsconfig.json
+COPY src /build/src
+RUN npm install && npm run build
+
+FROM node:22-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/tool
+COPY --from=builder /build/dist /opt/tool/dist
+COPY adapter/tool-adapter /tool-adapter
+
+RUN chmod +x /tool-adapter
+
+ENV TOOL_CMD={tool_cmd}
+ENTRYPOINT ["/tool-adapter"]
+"#,
+        ),
+    }
 }
 
 fn adapter_script(ctx: &ScaffoldContext<'_>) -> String {
     format!(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-
-# TODO: replace this starter adapter with your sandbox implementation.
-# This placeholder intentionally fails so unfinished images are obvious.
-
-echo "{tool_id}: adapter placeholder reached; implement adapter/tool-adapter" >&2
-exit 1
-"#,
-        tool_id = ctx.tool_id(),
-    )
-}
-
-fn inspect_tsrpc(ctx: &ScaffoldContext<'_>) -> String {
-    format!(
         r#"#!/usr/bin/env python3
-"""Quick TSRPC inspector for sandbox adapter binaries.
+"""Generic TSRPC adapter shim.
 
-Examples:
-  # describe
-  ./inspect_tsrpc.py --adapter ./.tmp/{rootfs_dir}/tool-adapter describe
+Reads one framed JSON-RPC request from stdin, delegates to TOOL_CMD using raw
+JSON-RPC over stdio, then returns one framed response.
 
-  # invoke
-  ./inspect_tsrpc.py --adapter ./.tmp/{rootfs_dir}/tool-adapter invoke --message "hello"
+This keeps scaffolded language sources simple while still matching sandbox
+transport requirements.
 """
 
-from __future__ import annotations
-
-import argparse
 import json
+import os
 import struct
 import subprocess
 import sys
-from pathlib import Path
+
+TOOL_ID = {tool_id:?}
 
 
-def send_frame(proc: subprocess.Popen[bytes], payload: dict) -> None:
-    body = json.dumps(payload).encode("utf-8")
-    proc.stdin.write(struct.pack(">I", len(body)))
-    proc.stdin.write(body)
-    proc.stdin.flush()
+def fail(msg: str) -> None:
+    print(f"{{TOOL_ID}} adapter error: {{msg}}", file=sys.stderr)
+    raise SystemExit(1)
 
 
-def recv_frame(proc: subprocess.Popen[bytes]) -> dict:
-    hdr = proc.stdout.read(4)
-    if len(hdr) < 4:
-        raise RuntimeError("no frame header received from adapter")
-    (size,) = struct.unpack(">I", hdr)
-    data = proc.stdout.read(size)
-    if len(data) < size:
-        raise RuntimeError(f"short frame body: got {{len(data)}} expected {{size}}")
-    return json.loads(data.decode("utf-8"))
-
-
-def run(adapter: Path, request: dict, timeout_s: float) -> int:
-    if not adapter.exists():
-        print(f"adapter not found: {{adapter}}", file=sys.stderr)
-        return 2
-
-    proc = subprocess.Popen(
-        [str(adapter)],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-    try:
-        assert proc.stdin and proc.stdout and proc.stderr
-        send_frame(proc, request)
-        response = recv_frame(proc)
-        print(json.dumps(response, indent=2))
-        return 0
-    except Exception as exc:
-        print(f"request failed: {{exc}}", file=sys.stderr)
-        try:
-            err = proc.stderr.read().decode("utf-8", errors="replace")
-            if err:
-                print("--- adapter stderr ---", file=sys.stderr)
-                print(err, file=sys.stderr)
-        except Exception:
-            pass
-        return 1
-    finally:
-        try:
-            proc.terminate()
-            proc.wait(timeout=timeout_s)
-        except Exception:
-            proc.kill()
-
-
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser()
-    p.add_argument(
-        "--adapter",
-        default="./.tmp/{rootfs_dir}/tool-adapter",
-        help="path to adapter binary",
-    )
-    p.add_argument("--timeout", type=float, default=3.0, help="process shutdown timeout")
-
-    sub = p.add_subparsers(dest="cmd", required=True)
-
-    sub.add_parser("describe")
-
-    inv = sub.add_parser("invoke")
-    inv.add_argument("--message", default="hello", help="input.{input_key}")
-    inv.add_argument("--tool-name", default="{tool_id}", help="params.tool_name")
-    inv.add_argument("--invocation-id", default="manual-1", help="params.invocation_id")
-
-    return p
+def read_exact(n: int) -> bytes:
+    chunk = sys.stdin.buffer.read(n)
+    if len(chunk) != n:
+        fail(f"short read: expected {{n}} bytes, got {{len(chunk)}}")
+    return chunk
 
 
 def main() -> int:
-    args = build_parser().parse_args()
-    adapter = Path(args.adapter)
+    tool_cmd = os.environ.get("TOOL_CMD", "").strip()
+    if not tool_cmd:
+        fail("TOOL_CMD env var is required")
 
-    if args.cmd == "describe":
-        req = {{"jsonrpc": "2.0", "id": 1, "method": "tool/describe", "params": {{}}}}
-    else:
-        req = {{
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tool/invoke",
-            "params": {{
-                "invocation_id": args.invocation_id,
-                "tool_name": args.tool_name,
-                "input": {{"{input_key}": args.message}},
-                "secrets": {{}},
-                "capabilities": None,
-            }},
-        }}
+    hdr = sys.stdin.buffer.read(4)
+    if len(hdr) != 4:
+        fail("missing 4-byte frame header")
 
-    return run(adapter, req, args.timeout)
+    (size,) = struct.unpack(">I", hdr)
+    body = read_exact(size)
+
+    try:
+        req = json.loads(body.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        fail(f"invalid framed JSON request: {{exc}}")
+
+    raw_req = (json.dumps(req, separators=(",", ":")) + "\n").encode("utf-8")
+
+    proc = subprocess.run(
+        tool_cmd,
+        input=raw_req,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=True,
+        check=False,
+    )
+
+    if proc.stderr:
+        sys.stderr.write(proc.stderr.decode("utf-8", errors="replace"))
+
+    raw_out = proc.stdout.decode("utf-8", errors="replace").strip()
+    if not raw_out:
+        fail("tool process returned empty stdout")
+
+    try:
+        response = json.loads(raw_out)
+    except Exception as exc:  # noqa: BLE001
+        fail(f"tool process returned invalid JSON: {{exc}}")
+
+    response_body = json.dumps(response, separators=(",", ":")).encode("utf-8")
+    sys.stdout.buffer.write(struct.pack(">I", len(response_body)))
+    sys.stdout.buffer.write(response_body)
+    sys.stdout.buffer.flush()
+    return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
 "#,
-        rootfs_dir = default_rootfs_dir(ctx),
         tool_id = ctx.tool_id(),
-        input_key = STARTER_INPUT_KEY,
     )
+}
+
+fn tool_cmd(ctx: &ScaffoldContext<'_>) -> &'static str {
+    match ctx.language {
+        Language::Rust => "\"/opt/tool/external-tool\"",
+        Language::Bash => "\"/opt/tool/tool-server\"",
+        Language::Python => "\"python3 /opt/tool/main.py\"",
+        Language::Typescript => "\"node /opt/tool/dist/main.js\"",
+    }
 }
 
 fn default_image_tag(ctx: &ScaffoldContext<'_>) -> String {

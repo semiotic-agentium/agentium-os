@@ -649,7 +649,6 @@ mod tests {
         assert_scaffold_has(&files, "setup_bind_sandbox.sh");
         assert_scaffold_has(&files, "adapter/Dockerfile");
         assert_scaffold_has(&files, "adapter/tool-adapter");
-        assert_scaffold_has(&files, "inspect_tsrpc.py");
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub fn generate(ctx: &ScaffoldContext<'_>) -> String {
         .collect::<Vec<_>>()
         .join("\n");
 
+    let manual_probe_section = manual_probe_section(ctx, &tool_id);
     let bind_setup_section = bind_setup_section(ctx);
 
     format!(
@@ -44,12 +45,7 @@ Supported methods in the scaffold:
 {setup}
 ```
 
-## Manual probe
-
-```bash
-printf '{{"jsonrpc":"2.0","id":1,"method":"{method_describe}","params":{{"tool_name":"{tool_id}"}}}}\n' | ./tool-server
-printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocation_id":"demo","tool_name":"{tool_id}","input":{{"{input_key}":"hello"}}}}}}\n' | ./tool-server
-```
+{manual_probe_section}
 
 ## Using with runner dev mode
 
@@ -70,11 +66,45 @@ Then reference this tool in an agent manifest as:
         tool_id = tool_id,
         setup = setup,
         method_describe = METHOD_DESCRIBE,
-        method_invoke = METHOD_INVOKE,
-        input_key = STARTER_INPUT_KEY,
         supported_bullets = supported_bullets,
+        manual_probe_section = manual_probe_section,
         bind_setup_section = bind_setup_section,
     )
+}
+
+fn manual_probe_section(ctx: &ScaffoldContext<'_>, tool_id: &str) -> String {
+    if ctx.runtime == Runtime::Sandbox {
+        format!(
+            r#"## Local probe (developer convenience)
+
+For sandbox runtime tools, the runner invokes `/tool-adapter` inside the sandbox.
+`tool-server` is **not** the runtime invoke path; it's only a local debugging helper.
+
+```bash
+printf '{{"jsonrpc":"2.0","id":1,"method":"{method_describe}","params":{{"tool_name":"{tool_id}"}}}}\n' | ./tool-server
+printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocation_id":"demo","tool_name":"{tool_id}","input":{{"{input_key}":"hello"}}}}}}\n' | ./tool-server
+```
+"#,
+            method_describe = METHOD_DESCRIBE,
+            method_invoke = METHOD_INVOKE,
+            tool_id = tool_id,
+            input_key = STARTER_INPUT_KEY,
+        )
+    } else {
+        format!(
+            r#"## Manual probe
+
+```bash
+printf '{{"jsonrpc":"2.0","id":1,"method":"{method_describe}","params":{{"tool_name":"{tool_id}"}}}}\n' | ./tool-server
+printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocation_id":"demo","tool_name":"{tool_id}","input":{{"{input_key}":"hello"}}}}}}\n' | ./tool-server
+```
+"#,
+            method_describe = METHOD_DESCRIBE,
+            method_invoke = METHOD_INVOKE,
+            tool_id = tool_id,
+            input_key = STARTER_INPUT_KEY,
+        )
+    }
 }
 
 fn bind_setup_section(ctx: &ScaffoldContext<'_>) -> String {
@@ -102,10 +132,8 @@ These notes apply to both bind modes:
     format!("{shared}{mode_specific}")
 }
 
-fn bind_setup_docker_mode(ctx: &ScaffoldContext<'_>) -> String {
-    let rootfs_dir = format!("{}-{}-rootfs", ctx.bundle, ctx.name.replace('_', "-"));
-    format!(
-        r#"## Bind setup (Docker-assisted)
+fn bind_setup_docker_mode(_ctx: &ScaffoldContext<'_>) -> String {
+    r#"## Bind setup (Docker-assisted)
 
 A helper script is scaffolded at `./setup_bind_sandbox.sh`.
 
@@ -116,15 +144,10 @@ A helper script is scaffolded at `./setup_bind_sandbox.sh`.
 This script builds `adapter/Dockerfile`, exports bind rootfs, computes digest,
 patches metadata, and runs `check-external-tool`.
 
-A TSRPC inspector is also generated:
-
-```bash
-./inspect_tsrpc.py --adapter ./.tmp/{rootfs_dir}/tool-adapter describe
-./inspect_tsrpc.py --adapter ./.tmp/{rootfs_dir}/tool-adapter invoke --message "hello"
-```
-"#,
-        rootfs_dir = rootfs_dir,
-    )
+`adapter/tool-adapter` is a generated transport shim (TSRPC <-> raw stdio).
+You usually only edit the scaffolded language source (`main.py`, `src/main.rs`, etc.).
+"#
+    .to_string()
 }
 
 fn bind_setup_manual_mode() -> String {
