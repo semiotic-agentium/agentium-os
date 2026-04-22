@@ -68,7 +68,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics; `init_tracing()` uses per-layer filters (`RUST_LOG_FMT`, `RUST_LOG_OTEL`); central `spans.rs` keeps A2A ingress at `info` and agent execution spans at `debug` (see `docs/otel-trace-instrumentation-guide.md`); exported OTLP metric names: `docs/metrics-inventory.md`
 - **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations
 - **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling
-- **baml-rt-conversation** — Agent-visible history rows, episode types, and pure `conversation_history` / `session_history` projection (no I/O); `docs/agent-conversation-crate.md`
+- **baml-rt-conversation** — Agent-visible history rows, episode types, and pure `conversation_history` / `session_history` projection (no I/O); `docs/agent-conversation-crate.md` / normative `docs/baml-rt-conversation-spec.md`
 - **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence
 - **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search
 - **baml-rt-router** — Cluster routing, SSRF validation, token auth, and cross-pod A2A forwarding

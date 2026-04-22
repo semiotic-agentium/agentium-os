@@ -10,6 +10,8 @@
 //! - **Isomorphism** with live [`baml_rt_tools::prompt_projection`] is policy: use the same
 //!   [`baml_rt_tools::prompt_projection::ProjectionRenderOptions`] (e.g. [`episode_session_history_projection_options`](baml_rt_tools::prompt_projection::episode_session_history_projection_options))
 //!   when materializing [`SessionHistoryLine`](episode::SessionHistoryLine) for episode replay.
+//! - **Normative spec** (requirements, ecosystem comparison, gap analysis, traceability):
+//!   [`docs/baml-rt-conversation-spec.md`](../../docs/baml-rt-conversation-spec.md).
 //!
 //! # Heuristics
 //!

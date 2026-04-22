@@ -23,7 +23,7 @@ use std::{collections::HashSet, marker::PhantomData};
 use baml_rt_conversation::view::{
     ConversationItemContent, ProvenanceConversationContextItem, SessionStepOp,
 };
-use baml_rt_tools::archive_read::SESSION_HISTORY_READ_REPLAY_MAX_LINES;
+use baml_rt_tools::archive_read::PageLimit;
 
 use super::SurrealProvenanceStore;
 use crate::error::Result;
@@ -137,7 +137,9 @@ fn hydrate_session_step_read_replays(items: &mut [ProvenanceConversationContextI
         let Some(val) = base else {
             continue;
         };
-        let page_limit = limit.clamp(1, SESSION_HISTORY_READ_REPLAY_MAX_LINES);
+        // Use the step's recorded `limit` (capped at `PageLimit::MAX` only) — same paging semantics
+        // as `format_session_read_body` / prompt projection, not a separate 20-line replay cap.
+        let page_limit = PageLimit::new(limit.max(1)).get();
         let Some(body) = baml_rt_tools::archive_read::format_session_read_body_from_json_value(
             &val,
             archive_ref.as_str(),

@@ -292,11 +292,6 @@ pub const DEFAULT_TOOL_RESULT_INLINE_LINES: usize = 40;
 /// Full archive content is reached via `Read` (`PageRead` / `SearchRead`), not by inflating this inline window.
 pub const SEND_DONE_HISTORY_INLINE_LINES: usize = 20;
 
-/// Max lines materialized for `SearchRead` / `PageRead` replay rows in conversation context assembly
-/// (history API and prompt isomorphism). The graph may record a larger `limit`; we only hydrate a
-/// bounded teaser here so history stays aligned with cat/grep paging.
-pub const SESSION_HISTORY_READ_REPLAY_MAX_LINES: usize = 20;
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -328,12 +328,23 @@ fn render_projection_content_with_state(
 
                 match archive_reader.and_then(|r| r(archive_ref, None, 0, opts.send_done.get())) {
                     Some(content) => {
+                        // Teaser window (send_done cap) for exact duplicate Read views.
                         inlined_read_pages.insert(read_view_key(
                             "page",
                             archive_ref,
                             None,
                             0,
                             opts.send_done.get(),
+                        ));
+                        // Default first-page view (offset 0, limit PageLimit::DEFAULT) so a follow-on
+                        // `PageRead { offset: 0, limit: 200 }` dedupes to command-only — same logical
+                        // view as the standard session read, not a second key with a different limit.
+                        inlined_read_pages.insert(read_view_key(
+                            "page",
+                            archive_ref,
+                            None,
+                            0,
+                            crate::archive_read::PageLimit::DEFAULT,
                         ));
                         RenderedEntry::Two(header.clone(), content)
                     }
