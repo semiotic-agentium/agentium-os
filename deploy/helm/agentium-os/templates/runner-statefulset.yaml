@@ -92,6 +92,10 @@ spec:
               value: {{ .Values.observability.otlpEndpoint | quote }}
             {{- end }}
             {{- end }}
+            {{- with .Values.runner.logging.rustLog }}
+            - name: RUST_LOG
+              value: {{ . | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.runner.resources | nindent 12 }}
           volumeMounts:

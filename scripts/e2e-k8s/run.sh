@@ -56,7 +56,7 @@ trap cleanup EXIT INT TERM
 preflight() {
   log_step "Preflight checks"
   local missing=()
-  for cmd in docker k3d kubectl jq curl; do
+  for cmd in docker k3d kubectl helm jq curl; do
     if ! command -v "$cmd" &>/dev/null; then
       missing+=("$cmd")
     fi
@@ -108,6 +108,17 @@ build_phase() {
 
 # ============================================================================
 # Cluster setup
+#
+# The harness installs the supported Helm chart via the shared bringup
+# helpers in lib.sh (ensure_runner_image_available, create_pilot_objects,
+# install_pilot_chart, resolve_chart_names, wait_for_runner_readyz), not
+# raw manifests under deploy/k8s/. Scenarios exercise the Helm-installed
+# topology so a chart-level regression (wrong env name, wrong mount path,
+# wrong secret key) surfaces here rather than being masked by kubectl
+# patches.
+#
+# RUST_LOG for scenario 3 (router DNS pinning) goes through the chart's
+# runner.logging.rustLog seam — no `kubectl set env`.
 # ============================================================================
 setup_cluster() {
   log_step "Creating k3d cluster"
@@ -117,88 +128,16 @@ setup_cluster() {
   fi
   k3d cluster create --config "${REPO_ROOT}/deploy/k3d/cluster.yaml"
 
-  log_step "Importing image into k3d"
-  local import_tar
-  import_tar="$(mktemp -t agentium-image-XXXXXX).tar"
-  docker tag "${IMAGE_NAME}:${IMAGE_TAG}" "docker.io/library/${IMAGE_NAME}:${IMAGE_TAG}" 2>/dev/null || true
-  docker save -o "$import_tar" "docker.io/library/${IMAGE_NAME}:${IMAGE_TAG}"
-  k3d image import "$import_tar" -c "$CLUSTER_NAME"
-  rm -f "$import_tar"
-
-  log_step "Applying k8s manifests"
-  kubectl apply -f "${REPO_ROOT}/deploy/k8s/namespace.yaml"
-
-  # Create secrets inline (no committed secret files needed for E2E)
-  kubectl -n "$NAMESPACE" create secret generic surrealdb-credentials \
-    --from-literal=username="$SURREAL_USER" \
-    --from-literal=password="$SURREAL_PASS" \
-    --dry-run=client -o yaml | kubectl apply -f -
-
-  if [[ -f "${REPO_ROOT}/.env" ]]; then
-    local tmp_env
-    tmp_env="$(mktemp)"
-    # Keep only secret-like vars (KEY/TOKEN/SECRET) and strip surrounding double quotes
-    grep -E '^[A-Za-z_]*(KEY|TOKEN|SECRET)=' "${REPO_ROOT}/.env" \
-      | sed -E 's/^([^=]*)="(.*)"$/\1=\2/' > "${tmp_env}"
-    kubectl -n "$NAMESPACE" create secret generic fnox-secrets \
-      --from-env-file="${tmp_env}" \
-      --dry-run=client -o yaml | kubectl apply -f -
-    rm -f "${tmp_env}"
-    log_info ".env secrets injected into fnox-secrets (LLM fixtures enabled)"
-  else
-    kubectl -n "$NAMESPACE" create secret generic fnox-secrets \
-      --from-literal=PLACEHOLDER="unused" \
-      --dry-run=client -o yaml | kubectl apply -f -
-    log_warn "No .env file found — LLM-dependent fixtures will use fallback behavior"
-  fi
-
-  # Mount local fnox.toml as ConfigMap so BAML functions can resolve API keys
-  if [[ -f "${REPO_ROOT}/fnox.toml" ]]; then
-    kubectl -n "$NAMESPACE" create configmap fnox-config \
-      --from-file=fnox.toml="${REPO_ROOT}/fnox.toml" \
-      --dry-run=client -o yaml | kubectl apply -f -
-    log_info "fnox.toml mounted as ConfigMap (LLM fixtures enabled)"
-  else
-    kubectl -n "$NAMESPACE" create configmap fnox-config \
-      --from-literal=placeholder=true \
-      --dry-run=client -o yaml | kubectl apply -f -
-    log_warn "No local fnox.toml found — LLM-dependent fixtures will fail gracefully"
-  fi
-
-  kubectl apply -f "${REPO_ROOT}/deploy/k8s/surrealdb.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/k8s/runner.yaml"
-
-  log_info "Patching runner image to ${IMAGE_NAME}:${IMAGE_TAG}"
-  kubectl -n "$NAMESPACE" set image statefulset/runner "runner=${IMAGE_NAME}:${IMAGE_TAG}"
-
-  log_info "Injecting RUNNER_TOKEN into runner StatefulSet"
-  kubectl -n "$NAMESPACE" set env statefulset/runner "RUNNER_TOKEN=${E2E_TOKEN}"
-
-  # Enable baml_rt_router debug logging so scenario 3 can verify DNS pinning.
-  kubectl -n "$NAMESPACE" set env statefulset/runner "RUST_LOG=info,baml_rt_router=debug"
-
-  log_info "Mounting fnox.toml ConfigMap into runner StatefulSet"
-  kubectl -n "$NAMESPACE" patch statefulset runner --type=json -p='[
-    {"op":"add","path":"/spec/template/spec/volumes/-","value":{"name":"fnox-config","configMap":{"name":"fnox-config","optional":true}}},
-    {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-","value":{"name":"fnox-config","mountPath":"/config/fnox.toml","subPath":"fnox.toml","readOnly":true}},
-    {"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"BAML_FNOX_CONFIG","value":"/config/fnox.toml"}}
-  ]'
-
-  log_step "Waiting for SurrealDB"
-  kubectl -n "$NAMESPACE" wait --for=condition=ready pod -l app=surrealdb --timeout=180s
-
-  log_info "Deleting stale runner pods so they recreate with patched spec"
-  kubectl -n "$NAMESPACE" delete pods -l app=runner --force --grace-period=0 2>/dev/null || true
-
-  log_step "Waiting for runner pods"
-  kubectl -n "$NAMESPACE" wait --for=condition=ready pod/runner-0 --timeout=180s
-  kubectl -n "$NAMESPACE" wait --for=condition=ready pod/runner-1 --timeout=180s
-  kubectl -n "$NAMESPACE" get pods -o wide
+  ensure_runner_image_available
+  create_pilot_objects
+  install_pilot_chart $(rustlog_override "info,baml_rt_router=debug")
+  resolve_chart_names
+  wait_for_runner_readyz
 
   log_step "Starting port-forwards"
-  start_port_forward runner-0 "$RUNNER0_PORT" "$REMOTE_PORT"
-  start_port_forward runner-1 "$RUNNER1_PORT" "$REMOTE_PORT"
-  log_info "runner-0 → localhost:${RUNNER0_PORT}, runner-1 → localhost:${RUNNER1_PORT}"
+  start_port_forward "$RUNNER_POD_0" "$RUNNER0_PORT" "$REMOTE_PORT"
+  start_port_forward "$RUNNER_POD_1" "$RUNNER1_PORT" "$REMOTE_PORT"
+  log_info "${RUNNER_POD_0} → localhost:${RUNNER0_PORT}, ${RUNNER_POD_1} → localhost:${RUNNER1_PORT}"
 }
 
 # ============================================================================
@@ -223,8 +162,8 @@ scenario_01_cluster_boot() {
 
   local endpoints
   endpoints=$(echo "$result" | jq -r '[.[] | .result | .[].endpoint] | sort | join(",")')
-  assert_contains "$endpoints" "runner-0.runner.agentium.svc:18080" "runner-0 endpoint in cluster_runners" || return 1
-  assert_contains "$endpoints" "runner-1.runner.agentium.svc:18080" "runner-1 endpoint in cluster_runners" || return 1
+  assert_contains "$endpoints" "${RUNNER_POD_0}.${RUNNER_HEADLESS_DNS}:${RUNNER_CONTAINER_PORT}" "runner-0 endpoint in cluster_runners" || return 1
+  assert_contains "$endpoints" "${RUNNER_POD_1}.${RUNNER_HEADLESS_DNS}:${RUNNER_CONTAINER_PORT}" "runner-1 endpoint in cluster_runners" || return 1
 
   local ids
   ids=$(echo "$result" | jq -r '[.[] | .result | .[].runner_id] | unique | length')
@@ -247,10 +186,10 @@ scenario_02_pvc_persistence() {
   log_info "Undeployed dispatch-echo, repository data should persist on PVC"
 
   # Delete the pod
-  kubectl delete pod runner-0 -n "$NAMESPACE" --timeout=60s
+  kubectl delete pod "$RUNNER_POD_0" -n "$NAMESPACE" --timeout=60s
   log_info "Deleted runner-0, waiting for replacement..."
 
-  restart_port_forward runner-0 "$RUNNER0_PORT" "$REMOTE_PORT"
+  restart_port_forward "$RUNNER_POD_0" "$RUNNER0_PORT" "$REMOTE_PORT"
   log_info "Port-forward restored to new runner-0"
 
   # Re-deploy the same hash — if the PVC preserved the repository, deploy succeeds
@@ -298,11 +237,11 @@ scenario_03_cross_pod_a2a() {
   placement=$(surreal_query "SELECT * FROM cluster_agent_placements WHERE agent_package = 'dispatch-echo'")
   local placement_endpoint
   placement_endpoint=$(echo "$placement" | jq -r '[.[] | .result | .[].runner_endpoint] | .[0]')
-  assert_contains "$placement_endpoint" "runner-1.runner.agentium.svc" "placement endpoint points to runner-1" || return 1
+  assert_contains "$placement_endpoint" "${RUNNER_POD_1}.${RUNNER_HEADLESS_DNS}" "placement endpoint points to runner-1" || return 1
 
   # Check runner-0 logs for forwarding evidence
   local logs
-  logs=$(kubectl logs runner-0 -n "$NAMESPACE" --tail=200 2>/dev/null || true)
+  logs=$(kubectl logs "$RUNNER_POD_0" -n "$NAMESPACE" --tail=200 2>/dev/null || true)
   if echo "$logs" | grep -qi "runner-1\|forward\|placement"; then
     log_info "runner-0 logs show forwarding evidence"
   else
@@ -336,7 +275,7 @@ scenario_04_migration() {
   migrate_resp=$(curl -sf -X POST \
     -H "Content-Type: application/json" \
     -H "X-Runner-Token: ${E2E_TOKEN}" \
-    -d "{\"hash\":\"${hash}\",\"target_runner_endpoint\":\"http://runner-1.runner.agentium.svc:18080\"}" \
+    -d "{\"hash\":\"${hash}\",\"target_runner_endpoint\":\"http://${RUNNER_POD_1}.${RUNNER_HEADLESS_DNS}:${RUNNER_CONTAINER_PORT}\"}" \
     "http://localhost:${RUNNER0_PORT}/control/migrate") || {
     log_fail "migrate request failed"
     return 1
@@ -370,7 +309,7 @@ scenario_04_migration() {
   placement=$(surreal_query "SELECT * FROM cluster_agent_placements WHERE agent_package = 'dispatch-echo'")
   local placement_endpoint
   placement_endpoint=$(echo "$placement" | jq -r '[.[] | .result | .[].runner_endpoint] | .[0]')
-  assert_contains "$placement_endpoint" "runner-1.runner.agentium.svc" "placement after migration" || return 1
+  assert_contains "$placement_endpoint" "${RUNNER_POD_1}.${RUNNER_HEADLESS_DNS}" "placement after migration" || return 1
 
   # Clean up
   undeploy_hash "$hash" "$RUNNER1_PORT" "$E2E_TOKEN"
@@ -455,7 +394,8 @@ scenario_06_token_enforcement() {
   log_info "Correct token → 200"
 
   # Verify the auth middleware also covers /control/migrate (same layer, other route).
-  local migrate_body='{"hash":"deadbeef","target_runner_endpoint":"http://runner-1.runner.agentium.svc:18080"}'
+  local migrate_body
+  migrate_body="{\"hash\":\"deadbeef\",\"target_runner_endpoint\":\"$(runner_endpoint 1)\"}"
   local code_mig_none
   code_mig_none=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     -H "Content-Type: application/json" -d "$migrate_body" \
@@ -508,7 +448,7 @@ scenario_07_graceful_drain() {
   log_info "In-flight A2A request started (PID=${curl_pid})"
 
   # Delete the pod
-  kubectl delete pod runner-0 -n "$NAMESPACE" --grace-period=30 &
+  kubectl delete pod "$RUNNER_POD_0" -n "$NAMESPACE" --grace-period=30 &
   local delete_pid=$!
   log_info "kubectl delete pod runner-0 issued"
 
@@ -531,7 +471,7 @@ scenario_07_graceful_drain() {
   rm -f "$tmpfile"
 
   # Wait for new runner-0 and restore port-forward
-  restart_port_forward runner-0 "$RUNNER0_PORT" "$REMOTE_PORT"
+  restart_port_forward "$RUNNER_POD_0" "$RUNNER0_PORT" "$REMOTE_PORT"
   log_info "New runner-0 is ready"
 
   # Verify heartbeat updated (proves new runner-0 re-registered)
@@ -594,15 +534,15 @@ scenario_08_heartbeat() {
 
 # ---------- 9. Readyz 503 window during startup ----------
 scenario_09_readyz_503() {
-  stop_port_forward runner-0
-  kubectl delete pod runner-0 -n "$NAMESPACE" --timeout=60s
+  stop_port_forward "$RUNNER_POD_0"
+  kubectl delete pod "$RUNNER_POD_0" -n "$NAMESPACE" --timeout=60s
   log_info "Deleted runner-0, watching for readyz 503 window"
 
   # Wait for the new pod to exist and be scheduled
   local deadline=$((SECONDS + 60))
   while (( SECONDS < deadline )); do
     local phase
-    phase=$(kubectl get pod runner-0 -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    phase=$(kubectl get pod "$RUNNER_POD_0" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
     if [[ "$phase" == "Running" ]]; then
       break
     fi
@@ -611,10 +551,10 @@ scenario_09_readyz_503() {
 
   # Start port-forward — uses wait_port_ready internally but we want to
   # poll readyz ourselves, so start the forward manually first then poll.
-  kubectl -n "$NAMESPACE" port-forward runner-0 "${RUNNER0_PORT}:${REMOTE_PORT}" >/dev/null 2>&1 &
+  kubectl -n "$NAMESPACE" port-forward "$RUNNER_POD_0" "${RUNNER0_PORT}:${REMOTE_PORT}" >/dev/null 2>&1 &
   local pf_pid=$!
   PF_PIDS+=("$pf_pid")
-  echo "$pf_pid" > "/tmp/e2e-k8s-pf-runner-0.pid"
+  echo "$pf_pid" > "/tmp/e2e-k8s-pf-${RUNNER_POD_0}.pid"
 
   # Poll readyz in a tight loop — we want to catch the 503 window
   local saw_503=false
@@ -710,7 +650,7 @@ scenario_10_distributed_multi_agent() {
 
     # Check runner-0 logs for cross-pod forwarding evidence
     local logs
-    logs=$(kubectl logs runner-0 -n "$NAMESPACE" --tail=200 2>/dev/null || true)
+    logs=$(kubectl logs "$RUNNER_POD_0" -n "$NAMESPACE" --tail=200 2>/dev/null || true)
     if echo "$logs" | grep -qi "runner-1\|forward\|placement\|argument-chapman"; then
       log_info "runner-0 logs show cross-pod forwarding to runner-1"
     else
@@ -772,7 +712,7 @@ scenario_11_full_lifecycle() {
   migrate_resp=$(curl -sf -X POST \
     -H "Content-Type: application/json" \
     -H "X-Runner-Token: ${E2E_TOKEN}" \
-    -d "{\"hash\":\"${hash}\",\"target_runner_endpoint\":\"http://runner-1.runner.agentium.svc:18080\"}" \
+    -d "{\"hash\":\"${hash}\",\"target_runner_endpoint\":\"http://${RUNNER_POD_1}.${RUNNER_HEADLESS_DNS}:${RUNNER_CONTAINER_PORT}\"}" \
     "http://localhost:${RUNNER0_PORT}/control/migrate") || {
     log_fail "Phase 3: migration failed"
     return 1
@@ -853,7 +793,7 @@ scenario_12_provenance_survives_migration() {
   curl -sf -X POST \
     -H "Content-Type: application/json" \
     -H "X-Runner-Token: ${E2E_TOKEN}" \
-    -d "{\"hash\":\"${hash}\",\"target_runner_endpoint\":\"http://runner-1.runner.agentium.svc:18080\"}" \
+    -d "{\"hash\":\"${hash}\",\"target_runner_endpoint\":\"http://${RUNNER_POD_1}.${RUNNER_HEADLESS_DNS}:${RUNNER_CONTAINER_PORT}\"}" \
     "http://localhost:${RUNNER0_PORT}/control/migrate" >/dev/null || {
     log_fail "Migration failed"
     return 1
@@ -914,14 +854,14 @@ scenario_13_stale_runner_exclusion() {
   log_info "Cross-pod routing verified before partition"
 
   # Force-kill runner-0 (simulates crash — no graceful drain)
-  stop_port_forward runner-0
-  kubectl delete pod runner-0 -n "$NAMESPACE" --grace-period=0 --force 2>/dev/null
+  stop_port_forward "$RUNNER_POD_0"
+  kubectl delete pod "$RUNNER_POD_0" -n "$NAMESPACE" --grace-period=0 --force 2>/dev/null
   log_info "Force-killed runner-0 (simulating crash)"
 
   # Backdate runner-0's heartbeat to make it immediately stale.
   # This simulates what happens after the placement TTL (default 90s) expires
   # without waiting the full duration.
-  surreal_query "UPDATE cluster_runners SET last_heartbeat_ms = 0 WHERE endpoint = 'http://runner-0.runner.agentium.svc:18080'" >/dev/null
+  surreal_query "UPDATE cluster_runners SET last_heartbeat_ms = 0 WHERE endpoint = 'http://${RUNNER_POD_0}.${RUNNER_HEADLESS_DNS}:${RUNNER_CONTAINER_PORT}'" >/dev/null
   log_info "Backdated runner-0 heartbeat to epoch 0 (simulating TTL expiry)"
 
   # Verify the TTL-filtered placement query excludes stale runner-0.
@@ -951,12 +891,12 @@ scenario_13_stale_runner_exclusion() {
 
   # Wait for runner-0 to be recreated by the StatefulSet and become ready.
   # The new pod restores deployments from PVC and re-registers with a fresh heartbeat.
-  restart_port_forward runner-0 "$RUNNER0_PORT" "$REMOTE_PORT"
+  restart_port_forward "$RUNNER_POD_0" "$RUNNER0_PORT" "$REMOTE_PORT"
   log_info "runner-0 recreated and ready"
 
   # Verify runner-0 re-registered with a fresh heartbeat
   local hb_after
-  hb_after=$(surreal_query "SELECT last_heartbeat_ms FROM cluster_runners WHERE endpoint = 'http://runner-0.runner.agentium.svc:18080'")
+  hb_after=$(surreal_query "SELECT last_heartbeat_ms FROM cluster_runners WHERE endpoint = 'http://${RUNNER_POD_0}.${RUNNER_HEADLESS_DNS}:${RUNNER_CONTAINER_PORT}'")
   local hb_ms_after
   hb_ms_after=$(echo "$hb_after" | jq '[.[] | .result | .[].last_heartbeat_ms] | max')
   assert_ge "$hb_ms_after" 1 "runner-0 re-registered with fresh heartbeat" || return 1
@@ -1090,7 +1030,7 @@ scenario_15_task_lifecycle_across_pods() {
   curl -sf -X POST \
     -H "Content-Type: application/json" \
     -H "X-Runner-Token: ${E2E_TOKEN}" \
-    -d "{\"hash\":\"${hash}\",\"target_runner_endpoint\":\"http://runner-1.runner.agentium.svc:18080\"}" \
+    -d "{\"hash\":\"${hash}\",\"target_runner_endpoint\":\"http://${RUNNER_POD_1}.${RUNNER_HEADLESS_DNS}:${RUNNER_CONTAINER_PORT}\"}" \
     "http://localhost:${RUNNER0_PORT}/control/migrate" >/dev/null || {
     log_fail "Migration during INPUT_REQUIRED failed"
     return 1
