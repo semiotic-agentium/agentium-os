@@ -843,6 +843,58 @@ async fn test_full_flow() {
 
 ---
 
+## Cross-runner A2A forwarding
+
+When the pilot topology has more than one runner, public A2A requests can land on any runner and be forwarded to the runner that owns the target agent instance. The runtime stitches ingress and serving into **one distributed trace** and exposes enough explicit identity labels on metrics and spans to answer the operator questions "which runner received this?" and "which runner executed this?" without joining on resource attributes.
+
+### The forwarded classification
+
+On public `/agents/{package}/{instance}/...` routes, the HTTP middleware inspects W3C baggage for the key `ingress_service_instance_id`. When that baggage is present, the A2A ingress spans (`baml_rt_api.post_a2a`, `baml_rt_api.post_dispatch`) and the agent-route ingress HTTP metric (`baml_rt_api.http.request_total` / `_duration_ms` with `agent_package` / `agent_instance_id` labels) are labelled `forwarded=true`; otherwise `forwarded=false`. The outer `baml_rt_api.http.request` span adopts the inbound W3C trace context but does not itself carry `forwarded` — the classification is emitted one layer in, on the A2A ingress handler span.
+
+**This classification is advisory. It is not an authorization boundary.** The baggage value is set by the cluster forward router when a peer runner forwards to this runner, but any HTTP client can set the same header on the public route. Use `forwarded` for telemetry slicing; do not use it for trust or access decisions.
+
+### Span roles and attributes
+
+| Span | Scope / kind | Identity attributes |
+|---|---|---|
+| `baml_rt_api.http.request` | HTTP middleware, server | Generic ingress span; adopts the inbound W3C `traceparent` when present. |
+| `baml_rt_api.post_a2a`, `baml_rt_api.post_dispatch` | A2A ingress, server | `agent_package`, `agent_instance_id`, `forwarded`, `ingress_service_instance_id`, `serving_service_instance_id`, `target_service_instance_id`. |
+| `baml_rt.cluster_a2a_forward` | cluster forward router, client | `agent_package`, `agent_instance_id`, `destination_endpoint`, `ingress_service_instance_id`, `target_service_instance_id`. Parented by the ingress span on the forwarding runner. |
+| `baml_rt.a2a_request`, `baml_rt.a2a_stream` | serving runtime, internal | `method`, `agent_package`, `agent_instance_id`, plus correlation/context/message/task ids. |
+
+`target_service_instance_id` is rendered as the literal string `unknown` when the cluster resolver fallback is used; operator dashboards and queries should expect that value explicitly.
+
+### What propagates
+
+- **Trace context:** the cluster forward router injects the current span's W3C `traceparent` into the outbound forwarded request. The serving runner's middleware adopts it, so the serving handler runs under the ingress trace. The result is a single trace spanning ingress + serving.
+- **Baggage:** the forward router adds `ingress_service_instance_id=<local runner id>` to outbound baggage. The serving middleware reads that key to label its own metrics/spans with the right ingress identity and to set `forwarded=true`.
+
+### TraceQL recipes
+
+Use the same `span:<attribute>` / `resource:<attribute>` form shown in [TraceQL Query Syntax](#traceql-query-syntax) above. Verify each query against your Tempo instance before saving it into a dashboard or runbook — attribute serialisation details (e.g. booleans) can vary across Tempo versions.
+
+```traceql
+{ span:forwarded = true }
+```
+Traces that crossed a runner boundary on ingress.
+
+```traceql
+{ span:serving_service_instance_id = "runner-0" }
+```
+Traces executed by a specific runner.
+
+```traceql
+{ span:target_service_instance_id = "unknown" }
+```
+Forwards where the cluster resolver fallback fired (operator signal).
+
+```traceql
+{ span:agent_package = "clickup-agent" && span:agent_instance_id = "inst-1" }
+```
+Full distributed trace (ingress + serving, or direct-serving) for one agent instance.
+
+---
+
 ## Per-layer env filters (baml-rt binaries)
 
 [`baml_rt_observability::init_tracing`](crates/baml-rt-observability/src/tracing_setup.rs) wires **separate** [`EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/struct.EnvFilter.html) instances for the console (`fmt`) layer and the OpenTelemetry trace layer:

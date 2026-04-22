@@ -29,7 +29,7 @@ just otel-summary 15m
 High-signal families:
 
 - **A2A host:** `baml_rt.a2a.request_*`, `baml_rt.a2a.error_total`, stream chunk counters/histograms, live-stream and SSE TTFB histograms; event producer sweep `baml_rt.a2a.event_poll.*` and per-event dispatch `baml_rt.a2a.event_dispatch.*` ([`baml-rt-a2a`](../crates/baml-rt-a2a/src/event_dispatcher.rs)).
-- **Cluster A2A forward:** `baml_rt.cluster.a2a_forward_*` when routing to another runner ([`baml-rt-router`](../crates/baml-rt-router/src/forward.rs)).
+- **Cluster A2A forward:** `baml_rt.cluster.a2a_forward_*` when an ingress runner routes to a peer ([`baml-rt-router`](../crates/baml-rt-router/src/forward.rs)). Ingress, serving, and target runner identity are explicit per-metric labels — no `target_info` join needed; see [metrics-inventory.md § Runner identity labels](./metrics-inventory.md#runner-identity-labels). The `forwarded` label on `baml_rt_api.http.request_*` (agent routes) is advisory; see the trace guide's [cross-runner A2A forwarding](./otel-trace-instrumentation-guide.md#cross-runner-a2a-forwarding) section.
 - **Tools:** `baml_rt.tool.invocation_*` — **single canonical** completion signal for host tools (emitted from the QuickJS bridge when a tool run finishes). Registry FSM timings use `baml_rt_tools.tool.session.*` (opens and per-op durations); do **not** duplicate full tool completion in a second `baml_rt_tools` execution counter.
 - **LLM / ONNX:** `baml_rt.llm.*`, `baml_rt.onnx.*` (provenance subscriber + embedding paths).
 - **HTTP API:** `baml_rt_api.http.*` and conversation-history histograms ([`baml-rt-api` metrics module](../crates/baml-rt-api/src/metrics.rs)); config and static routes are listed in [metrics-inventory.md](./metrics-inventory.md).
