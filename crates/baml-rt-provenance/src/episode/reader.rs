@@ -1,13 +1,24 @@
 //! Assemble [`super::Episode`] from Surreal-backed provenance.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
+use baml_rt_conversation::{
+    assemble_session_history,
+    projection::projection_pairs_for_conv_item,
+    render::{prefix_wire_citation, prefix_wire_citations_in_text},
+    timeline::{ArtifactRow, StatusRow, TimelineKind},
+    view::{
+        ConversationItemContent, ProvenanceConversationContextItem, SessionStepOp, ToolOutcome,
+    },
+};
 use baml_rt_core::ids::{AgentId, ContextId, TaskId, UuidId};
 use baml_rt_tools::{
-    archive_read::{
-        format_session_read_body_from_json_value, format_session_read_body_from_rendered,
-    },
-    prompt_projection::ProjectionRenderOptions,
+    archive_read::{PageLimit, ShortRef, format_session_read_body_from_rendered},
+    archive_refs::RefTable,
+    prompt_projection::{ArchiveReader, ProjectionRenderOptions},
     tools::ToolRegistry,
 };
 use futures_util::future::try_join_all;
@@ -16,19 +27,15 @@ use uuid::Uuid;
 
 use super::{
     ArtifactSummary, Episode, EpisodeContent, EpisodeEntry, EpisodeOutcome, EpisodeRefPrefix,
-    IntentRevision, PlanRevision, PlanStepEntry, SessionHistoryLine, StepType, TerminalStatus,
-    from_graph::{ArtifactRow, StatusRow, episode_metadata_from_task_graph},
-    renderer::{prefix_wire_citation, prefix_wire_citations_in_text},
-    timeline::TimelineKind,
+    IntentRevision, PlanRevision, PlanStepEntry, StepType, TerminalStatus,
+    archive::{absorb_episode_entry_into_ref_table, seed_replay_payload_slots_from_merged},
+    from_graph::episode_metadata_from_task_graph,
 };
 use crate::{
     citation_queries::query_plan_citations,
     error::{ProvenanceError, Result},
     graph_export::export_graph_for_task,
-    store::{
-        ConversationItemContent, ProvenanceConversationContextItem, ProvenancePlanningQuery,
-        ProvenanceQueryApi, SessionStepOp, ToolOutcome,
-    },
+    store::{ProvenancePlanningQuery, ProvenanceQueryApi},
     surreal_store::SurrealProvenanceStore,
 };
 
@@ -323,6 +330,26 @@ impl EpisodeReader {
         let projection_opts =
             baml_rt_tools::prompt_projection::episode_session_history_projection_options();
 
+        let replay_table = RefTable::new();
+        let mut wire_filled = HashSet::new();
+        seed_replay_payload_slots_from_merged(&replay_table, &merged, &mut wire_filled);
+
+        let archive_reader = |archive_ref_str: &str,
+                              grep_str: Option<&str>,
+                              offset: usize,
+                              limit: usize|
+         -> Option<String> {
+            let short_ref = ShortRef::parse_loose(archive_ref_str)?;
+            let entry = replay_table.get(short_ref)?;
+            Some(format_session_read_body_from_rendered(
+                &entry.content,
+                archive_ref_str,
+                grep_str,
+                offset,
+                PageLimit::new(limit),
+            ))
+        };
+
         let mut seq: u32 = 0;
         let mut prior_context: Vec<EpisodeEntry> = Vec::new();
         let mut transcript: Vec<EpisodeEntry> = Vec::new();
@@ -345,7 +372,12 @@ impl EpisodeReader {
                         &mut seq,
                         &ref_prefix,
                         &projection_opts,
+                        self.tool_registry.as_ref(),
+                        Some(&archive_reader),
                     )?;
+                    for e in &entries {
+                        absorb_episode_entry_into_ref_table(&replay_table, &mut wire_filled, e);
+                    }
                     if *is_prior {
                         prior_context.extend(entries);
                     } else {
@@ -355,12 +387,16 @@ impl EpisodeReader {
                 TimelineKind::Status(s) => {
                     task_line += 1;
                     let tick_ms = task_line * EPISODE_LINE_TICK_MS;
-                    transcript.push(status_to_entry(s, tick_ms, &mut seq)?);
+                    let entry = status_to_entry(s, tick_ms, &mut seq)?;
+                    absorb_episode_entry_into_ref_table(&replay_table, &mut wire_filled, &entry);
+                    transcript.push(entry);
                 }
                 TimelineKind::Artifact(a) => {
                     task_line += 1;
                     let tick_ms = task_line * EPISODE_LINE_TICK_MS;
-                    transcript.push(artifact_to_entry(a, tick_ms, &mut seq)?);
+                    let entry = artifact_to_entry(a, tick_ms, &mut seq)?;
+                    absorb_episode_entry_into_ref_table(&replay_table, &mut wire_filled, &entry);
+                    transcript.push(entry);
                 }
             }
         }
@@ -470,124 +506,16 @@ impl EpisodeReader {
             drift_summary,
             drift_calls,
         };
+        let vtable = super::archive::episode_ref_table_with_merged(&episode, &merged);
         episode.session_history = assemble_session_history(
             &merged,
-            &episode,
             &episode.ref_prefix,
             self.tool_registry.as_ref(),
             &projection_opts,
+            &vtable,
         );
         Ok((episode, merged))
     }
-}
-
-/// `SendDone` session line: render `cat -n` / range footer from graph-hydrated replay JSON (not the
-/// episode ref table), so BAML session history matches the tool result backing `@N` even when wire
-/// slots and episode `seq` diverge.
-fn session_history_body_from_send_done_replay(
-    payload: &serde_json::Value,
-    archive_ref: &str,
-    limit: usize,
-) -> Option<String> {
-    use baml_rt_tools::archive_read::PageLimit;
-    format_session_read_body_from_json_value(payload, archive_ref, None, 0, PageLimit::new(limit))
-}
-
-fn assemble_session_history(
-    merged: &[TimelineKind],
-    episode: &Episode,
-    ref_prefix: &EpisodeRefPrefix,
-    tool_registry: &ToolRegistry,
-    opts: &ProjectionRenderOptions,
-) -> Vec<SessionHistoryLine> {
-    use baml_rt_tools::{
-        archive_read::{PageLimit, ShortRef},
-        archive_refs::RefTable,
-        prompt_projection::projection_history_pairs,
-    };
-
-    let vtable = super::archive::episode_ref_table_with_merged(episode, merged);
-    let scratch = RefTable::new();
-
-    let archive_reader = move |archive_ref_str: &str,
-                               grep_str: Option<&str>,
-                               offset: usize,
-                               limit: usize|
-          -> Option<String> {
-        let short_ref = ShortRef::parse_loose(archive_ref_str)?;
-        let entry = vtable.get(short_ref)?;
-        Some(format_session_read_body_from_rendered(
-            &entry.content,
-            archive_ref_str,
-            grep_str,
-            offset,
-            PageLimit::new(limit),
-        ))
-    };
-
-    let mut out = Vec::new();
-    for m in merged {
-        match m {
-            TimelineKind::Conv(item, _) => {
-                // SendDone: when `send_done_replay_payload` is present, the read body is derived from
-                // that JSON (same source the graph hydrated). Otherwise [`projection_history_pairs`]
-                // resolves the archive via `archive_reader` over the episode ref table.
-                if let ConversationItemContent::SessionStep(ss) = &item.content
-                    && let SessionStepOp::SendDone {
-                        archive_ref,
-                        header,
-                        ..
-                    } = &ss.op
-                    && let Some(payload) = ss.send_done_replay_payload.as_ref()
-                    && let Some(body) = session_history_body_from_send_done_replay(
-                        payload,
-                        archive_ref.as_str(),
-                        opts.send_done.get(),
-                    )
-                {
-                    out.push(SessionHistoryLine {
-                        role: item.role.clone(),
-                        content: prefix_wire_citations_in_text(header, ref_prefix),
-                    });
-                    out.push(SessionHistoryLine {
-                        role: "read".into(),
-                        content: prefix_wire_citations_in_text(&body, ref_prefix),
-                    });
-                    continue;
-                }
-                if let Some(proj) = crate::provenance_item_to_projection_item(item.clone()) {
-                    for (role, content) in projection_history_pairs(
-                        &proj,
-                        tool_registry,
-                        &scratch,
-                        Some(&archive_reader),
-                        *opts,
-                    ) {
-                        out.push(SessionHistoryLine {
-                            role,
-                            content: prefix_wire_citations_in_text(&content, ref_prefix),
-                        });
-                    }
-                }
-            }
-            TimelineKind::Status(s) => {
-                let content = format!("{} → {}", s.old_status, s.new_status);
-                out.push(SessionHistoryLine {
-                    role: "system".into(),
-                    content: prefix_wire_citations_in_text(&content, ref_prefix),
-                });
-            }
-            TimelineKind::Artifact(a) => {
-                let mt = a.media_type.as_deref().unwrap_or("?");
-                let content = format!("artifact {} ({})", a.name, mt);
-                out.push(SessionHistoryLine {
-                    role: "agent".into(),
-                    content: prefix_wire_citations_in_text(&content, ref_prefix),
-                });
-            }
-        }
-    }
-    out
 }
 
 fn role_is_user(role: &str) -> bool {
@@ -789,6 +717,8 @@ fn conv_item_to_entries(
     seq: &mut u32,
     ref_prefix: &EpisodeRefPrefix,
     projection_opts: &ProjectionRenderOptions,
+    tool_registry: &ToolRegistry,
+    archive_reader: Option<ArchiveReader<'_>>,
 ) -> Result<Vec<EpisodeEntry>> {
     if !item.content.is_meaningful() {
         return Ok(Vec::new());
@@ -860,58 +790,59 @@ fn conv_item_to_entries(
                 archive_ref,
                 ..
             } => {
-                let header_prefixed = prefix_wire_citations_in_text(header, ref_prefix);
-                if let Some(payload) = &ss.send_done_replay_payload {
-                    let send_limit = projection_opts.send_done.get();
-                    if let Some(raw_body) = session_history_body_from_send_done_replay(
-                        payload,
-                        archive_ref.as_str(),
-                        send_limit,
-                    ) {
-                        let body = prefix_wire_citations_in_text(&raw_body, ref_prefix);
-                        let lines: Vec<String> = body.lines().map(str::to_string).collect();
-                        let line_count = lines.len();
-                        let byte_count: usize =
-                            lines.iter().map(|s| s.len().saturating_add(1)).sum();
-                        let summary = lines
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| format!("cat -n {}", archive_ref.as_str()));
-                        *seq += 1;
-                        let header_entry = EpisodeEntry {
-                            seq: *seq,
-                            step_type: StepType::ToolResult,
-                            role: item.role.clone(),
-                            elapsed_ms,
-                            content: EpisodeContent::ToolOutput {
-                                tool_name: ss.tool_name.clone(),
-                                summary: header_prefixed.clone(),
-                                line_count: 1,
-                                byte_count: header_prefixed.len(),
-                                lines: vec![header_prefixed.clone()],
-                            },
-                            activity_anchor: anchor.clone(),
-                            citation_strings: Vec::new(),
-                        };
-                        *seq += 1;
-                        let body_entry = EpisodeEntry {
-                            seq: *seq,
-                            step_type: StepType::ToolRead,
-                            role: "read".into(),
-                            elapsed_ms,
-                            content: EpisodeContent::ToolOutput {
-                                tool_name: ss.tool_name.clone(),
-                                summary,
-                                line_count,
-                                byte_count,
-                                lines,
-                            },
-                            activity_anchor: anchor,
-                            citation_strings: Vec::new(),
-                        };
-                        return Ok(vec![header_entry, body_entry]);
-                    }
+                use baml_rt_tools::archive_refs::RefTable;
+                if let Some(pairs) = projection_pairs_for_conv_item(
+                    item,
+                    tool_registry,
+                    &RefTable::new(),
+                    archive_reader,
+                    *projection_opts,
+                ) && pairs.len() == 2
+                {
+                    let header_prefixed = prefix_wire_citations_in_text(&pairs[0].1, ref_prefix);
+                    let body = prefix_wire_citations_in_text(&pairs[1].1, ref_prefix);
+                    let lines: Vec<String> = body.lines().map(str::to_string).collect();
+                    let line_count = lines.len();
+                    let byte_count: usize = lines.iter().map(|s| s.len().saturating_add(1)).sum();
+                    let summary = lines
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| format!("cat -n {}", archive_ref.as_str()));
+                    *seq += 1;
+                    let header_entry = EpisodeEntry {
+                        seq: *seq,
+                        step_type: StepType::ToolResult,
+                        role: item.role.clone(),
+                        elapsed_ms,
+                        content: EpisodeContent::ToolOutput {
+                            tool_name: ss.tool_name.clone(),
+                            summary: header_prefixed.clone(),
+                            line_count: 1,
+                            byte_count: header_prefixed.len(),
+                            lines: vec![header_prefixed.clone()],
+                        },
+                        activity_anchor: anchor.clone(),
+                        citation_strings: Vec::new(),
+                    };
+                    *seq += 1;
+                    let body_entry = EpisodeEntry {
+                        seq: *seq,
+                        step_type: StepType::ToolRead,
+                        role: "read".into(),
+                        elapsed_ms,
+                        content: EpisodeContent::ToolOutput {
+                            tool_name: ss.tool_name.clone(),
+                            summary,
+                            line_count,
+                            byte_count,
+                            lines,
+                        },
+                        activity_anchor: anchor,
+                        citation_strings: Vec::new(),
+                    };
+                    return Ok(vec![header_entry, body_entry]);
                 }
+                let header_prefixed = prefix_wire_citations_in_text(header, ref_prefix);
                 (
                     StepType::ToolResult,
                     EpisodeContent::ToolOutput {

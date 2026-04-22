@@ -5,14 +5,15 @@ mod common;
 use std::{fs, path::PathBuf, sync::Arc};
 
 use baml_rt::baml::BamlRuntimeManager;
+use baml_rt_conversation::view::{
+    ConversationItemContent, ProvenanceConversationContextItem, SessionStepOp, ToolOutcome,
+};
 use baml_rt_core::{
     bus::BusWithEffects,
     ids::{AgentId, ContextId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, ProvEvent, ProvenanceContextReader, ProvenanceConversationContextItem,
-    ProvenanceWriter, SurrealProvenanceStore,
-    store::{ConversationItemContent, SessionStepOp, ToolOutcome},
+    AgentType, ProvEvent, ProvenanceContextReader, ProvenanceWriter, SurrealProvenanceStore,
 };
 use baml_tools_notion::NotionTool;
 use common::{

@@ -2,6 +2,9 @@
 
 use std::collections::HashMap;
 
+use baml_rt_conversation::view::{
+    ConversationItemContent, ProvenanceConversationContextItem, SessionStepOp,
+};
 use serde_json::Value;
 
 use super::{
@@ -16,10 +19,7 @@ use crate::{
     payload_id::payload_row_id,
     payload_record::{PayloadRecord, StorageKind},
     payload_storage,
-    store::{
-        ActivityRef, ConversationItemContent, PayloadRef, ProvenanceArchivePayload,
-        ProvenanceConversationContextItem, SessionStepOp,
-    },
+    store::{ActivityRef, PayloadRef, ProvenanceArchivePayload},
     surreal_tables::{
         FTS_PAYLOAD_ACTIVITY_WHERE, PAYLOAD_ROW_SELECT, TBL_NODE, TBL_PAYLOAD, TBL_PAYLOAD_BLOB,
     },
@@ -367,7 +367,7 @@ impl SurrealProvenanceStore {
                 if informed_by.is_empty() {
                     return None;
                 }
-                Some((idx, payload_id_for(informed_by, "tool_result")))
+                Some((idx, payload_id_for(informed_by.as_str(), "tool_result")))
             })
             .collect();
 

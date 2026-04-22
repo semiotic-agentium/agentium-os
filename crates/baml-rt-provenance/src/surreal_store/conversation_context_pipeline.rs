@@ -20,11 +20,13 @@
 
 use std::{collections::HashSet, marker::PhantomData};
 
-use super::SurrealProvenanceStore;
-use crate::{
-    error::Result,
-    store::{ConversationItemContent, ProvenanceConversationContextItem, SessionStepOp},
+use baml_rt_conversation::view::{
+    ConversationItemContent, ProvenanceConversationContextItem, SessionStepOp,
 };
+use baml_rt_tools::archive_read::SESSION_HISTORY_READ_REPLAY_MAX_LINES;
+
+use super::SurrealProvenanceStore;
+use crate::error::Result;
 
 mod sealed {
     pub trait Sealed {}
@@ -135,12 +137,13 @@ fn hydrate_session_step_read_replays(items: &mut [ProvenanceConversationContextI
         let Some(val) = base else {
             continue;
         };
+        let page_limit = limit.clamp(1, SESSION_HISTORY_READ_REPLAY_MAX_LINES);
         let Some(body) = baml_rt_tools::archive_read::format_session_read_body_from_json_value(
             &val,
             archive_ref.as_str(),
             grep_opt.as_deref(),
             offset,
-            baml_rt_tools::archive_read::PageLimit::new(limit.max(1)),
+            baml_rt_tools::archive_read::PageLimit::new(page_limit),
         ) else {
             continue;
         };
@@ -188,14 +191,14 @@ fn suppress_tool_rows_covered_by_session_send_done(
 
 #[cfg(test)]
 mod tests {
+    use baml_rt_conversation::view::{
+        ConversationItemContent, ProvenanceConversationContextItem, SessionStepContent,
+        SessionStepOp, ToolCallContent, ToolOutcome, ToolResultContent, ToolSessionPhase,
+    };
     use baml_rt_core::ids::ActivityAnchorId;
     use serde_json::json;
 
     use super::suppress_tool_rows_covered_by_session_send_done;
-    use crate::store::{
-        ConversationItemContent, ProvenanceConversationContextItem, SessionStepContent,
-        SessionStepOp, ToolCallContent, ToolOutcome, ToolResultContent, ToolSessionPhase,
-    };
 
     #[test]
     fn canonical_removes_tool_rows_when_send_done_informs() {

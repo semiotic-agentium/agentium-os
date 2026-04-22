@@ -10,7 +10,8 @@ publish = false
  path = "src/lib.rs"
 
  [dependencies]
- baml-rt-core = { path = "../baml-rt-core" }
+ baml-rt-conversation = { path = "../baml-rt-conversation" }
+baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-embedding = { path = "../baml-rt-embedding" }
 baml-rt-id = { path = "../baml-rt-id" }
  baml-rt-interceptor = { path = "../baml-rt-interceptor" }

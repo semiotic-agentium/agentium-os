@@ -3,6 +3,7 @@
 use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
+use baml_rt_conversation::view::{ConversationItemContent, ProvenanceConversationContextItem};
 use baml_rt_core::{
     bus::{EffectEvent, EffectSubscriber},
     ids::{ActivityAnchorId, ContextId, ExternalId, MessageId, TaskId},
@@ -24,13 +25,13 @@ use serde_json::Value;
 use tokio::sync::{RwLock, Semaphore};
 
 use crate::{
-    conversation_projection::provenance_item_to_projection_item,
     events::{
         BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR, CallScope, LlmCitationDriftInfo,
         LlmCitationSimilarity, LlmDriftInfo, LlmPlanDriftInfo, LlmUsage, PlanStepSpec, ProvEvent,
         ResolvedCitationTarget,
     },
     id_semantics::{SessionStepEntityId, SessionStepEntityInput},
+    provenance_item_to_projection_item,
     store::ProvenanceWriter,
     types::ProvEntityId,
 };
@@ -939,7 +940,7 @@ impl ProvenanceEffectSubscriber {
         task_id: Option<&TaskId>,
         context_id: &ContextId,
         citation_strings: &[String],
-        conversation_items_for_citations: &[crate::store::ProvenanceConversationContextItem],
+        conversation_items_for_citations: &[ProvenanceConversationContextItem],
     ) -> Option<LlmDriftInfo> {
         if !bool::from(outcome) || !self.drift_config.should_monitor(function_name) {
             return None;
@@ -1117,7 +1118,7 @@ impl ProvenanceEffectSubscriber {
         decision_text: &str,
         citation_strings: &[String],
         embed_provider: Arc<dyn EmbeddingProvider>,
-        conversation_items: &[crate::store::ProvenanceConversationContextItem],
+        conversation_items: &[ProvenanceConversationContextItem],
     ) -> Option<LlmCitationDriftInfo> {
         if citation_strings.is_empty() || decision_text.is_empty() {
             return None;
@@ -1423,7 +1424,7 @@ impl ProvenanceEffectSubscriber {
     ///   SessionStep node IDs are `"session-step:{event_anchor}"` by normalizer convention.
     fn extract_resolved_citations(
         drift: &Option<Box<LlmDriftInfo>>,
-        conversation_items: &[crate::store::ProvenanceConversationContextItem],
+        conversation_items: &[ProvenanceConversationContextItem],
     ) -> Vec<ResolvedCitationTarget> {
         let Some(drift) = drift.as_ref() else {
             return vec![];
@@ -1439,14 +1440,14 @@ impl ProvenanceEffectSubscriber {
         for item in conversation_items {
             let anchor = item.activity_anchor.as_str();
             match &item.content {
-                crate::store::ConversationItemContent::Message { .. } => {
+                ConversationItemContent::Message { .. } => {
                     // Message node IDs are not trivially reconstructible from activity_anchor
                     // alone (they need message_id from the MessageReceived event). Store the
                     // activity_anchor itself — the normalizer already creates Message entities
                     // and inserts them into entity maps, so the CITED edge will find them
                     // by scanning the document. For now, skip Messages that can't be mapped.
                 }
-                crate::store::ConversationItemContent::SessionStep(_) => {
+                ConversationItemContent::SessionStep(_) => {
                     let node_id =
                         ProvEntityId::derived::<SessionStepEntityId>(SessionStepEntityInput {
                             event_anchor: anchor,
@@ -1784,7 +1785,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     Some(event) => event,
                     None => return Ok(()), // Skip on missing message_id
                 };
-                tracing::info!(
+                tracing::debug!(
                     event = "provenance_emit",
                     source = "effect_subscriber.tool_completion",
                     prov_event_id = %event.id(),
@@ -1964,7 +1965,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     .get("model_alias")
                     .and_then(Value::as_str)
                     .unwrap_or("-");
-                tracing::info!(
+                tracing::debug!(
                     event = "provenance_emit",
                     source = "effect_subscriber.llm_completion",
                     prov_event_id = %completed_event.id(),
@@ -2199,6 +2200,7 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
+    use baml_rt_conversation::view::{ProvenanceContextMessage, ProvenanceConversationContextItem};
     use baml_rt_core::{
         Citation, Outcome,
         bus::{EffectEvent, LlmEffectMetadata},
@@ -2209,10 +2211,7 @@ mod tests {
     use super::*;
     use crate::{
         events::ProvEventData,
-        store::{
-            ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
-            ProvenanceWriter,
-        },
+        store::{ProvenanceContextReader, ProvenanceWriter},
     };
 
     struct MockProvider {

@@ -46,6 +46,7 @@ tempfile = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+baml-rt-conversation = { path = "../baml-rt-conversation" }
 baml-rt-repository = { path = "../baml-rt-repository" }
 test-support = { path = "../test-support", features = ["slack"] }
 baml-rt = { path = "../baml-rt" }

@@ -13,14 +13,13 @@ use std::{
 };
 
 use async_trait::async_trait;
+use baml_rt_conversation::view::{
+    ConversationItemContent, ProvenanceConversationContextItem, ToolOutcome, ToolSessionPhase,
+};
 use baml_rt_core::{
     Citation,
     bus::SessionStepOp,
     ids::{ContextId, ExternalId, TaskId},
-};
-use baml_rt_provenance::{
-    ProvenanceConversationContextItem,
-    store::{ConversationItemContent, ToolOutcome, ToolSessionPhase},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -19,7 +19,10 @@ use std::collections::HashSet;
 use serde_json::{Value, json};
 
 use crate::{
-    archive_read::{DEFAULT_TOOL_RESULT_INLINE_LINES, PageLimit, session_read_command_line},
+    archive_read::{
+        DEFAULT_TOOL_RESULT_INLINE_LINES, PageLimit, SEND_DONE_HISTORY_INLINE_LINES,
+        session_read_command_line,
+    },
     archive_refs::{HistoryEntry, RefTable},
     tools::ToolRegistry,
 };
@@ -119,19 +122,20 @@ impl Default for ProjectionRenderOptions {
         Self {
             tool_result: PageLimit::new(DEFAULT_TOOL_RESULT_INLINE_LINES),
             tool_error: PageLimit::new(10),
-            send_done: PageLimit::default(),
+            send_done: PageLimit::new(SEND_DONE_HISTORY_INLINE_LINES),
             tool_call_fallback_json: false,
         }
     }
 }
 
-/// Wider caps for episode replay / UI session-history mirroring (still bounded by [`PageLimit::MAX`]).
+/// Projection options for episode session-history and any surface that mirrors user-visible history.
+/// Inline windows stay teaser-sized; archive breadth is via session `Read` steps, not giant `SendDone` dumps.
 #[must_use]
 pub fn episode_session_history_projection_options() -> ProjectionRenderOptions {
     ProjectionRenderOptions {
-        tool_result: PageLimit::new(PageLimit::MAX),
-        tool_error: PageLimit::new(PageLimit::MAX),
-        send_done: PageLimit::default(),
+        tool_result: PageLimit::new(DEFAULT_TOOL_RESULT_INLINE_LINES),
+        tool_error: PageLimit::new(DEFAULT_TOOL_RESULT_INLINE_LINES),
+        send_done: PageLimit::new(SEND_DONE_HISTORY_INLINE_LINES),
         tool_call_fallback_json: true,
     }
 }
@@ -166,7 +170,7 @@ pub fn project_prompt_context(
             }
             RenderedEntry::Two(first, second) => {
                 history.push(json!({ "role": item.role, "content": first }));
-                history.push(json!({ "role": item.role, "content": second }));
+                history.push(json!({ "role": "read", "content": second }));
             }
         }
     }
@@ -384,6 +388,33 @@ fn render_projection_content_with_state(
 mod tests {
     use super::*;
     use crate::{archive_refs::RefTable, tools::ToolRegistry};
+
+    #[test]
+    fn send_done_two_emits_read_role_on_second_history_row() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![PromptProjectionItem {
+            timestamp_ms: 1,
+            activity_anchor: "evt-sd".to_string(),
+            role: "assistant".to_string(),
+            content: PromptProjectionContent::SessionStep {
+                tool_name: "demo/tool".to_string(),
+                op: SessionStepProjection::SendDone {
+                    archive_ref: "@3".to_string(),
+                    header: "@3 demo/tool 'ok' [1 lines]".to_string(),
+                },
+            },
+        }];
+        let archive_reader =
+            |archive_ref: &str, _grep: Option<&str>, _offset: usize, _limit: usize| {
+                Some(format!("cat -n {archive_ref}\nBODY"))
+            };
+        let history = project_prompt_context(items, &registry, &ref_table, Some(&archive_reader));
+        let arr = history.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["role"].as_str(), Some("assistant"));
+        assert_eq!(arr[1]["role"].as_str(), Some("read"));
+    }
 
     #[test]
     fn message_history_line_includes_history_ref_prefix() {

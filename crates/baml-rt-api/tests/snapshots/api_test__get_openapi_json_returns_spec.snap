@@ -2131,7 +2131,7 @@ expression: snapshot
         },
         "EpisodeDriftCallDto": {
           "type": "object",
-          "description": "Per-LLM-call drift detail anchored to transcript for episodic evaluation.\n\n# Structural note\nThis type is field-for-field identical to [`baml_rt_provenance::EpisodeDriftCall`].\nThey are kept separate so the domain crate remains free of API (`utoipa`) dependencies.\nIf you add a field to either type, you **must** add it to both and update the\n`from_field_copy!` invocation below.",
+          "description": "Per-LLM-call drift detail anchored to transcript for episodic evaluation.\n\n# Structural note\nThis type is field-for-field identical to [`baml_rt_conversation::episode::EpisodeDriftCall`].\nThey are kept separate so the domain crate remains free of API (`utoipa`) dependencies.\nIf you add a field to either type, you **must** add it to both and update the\n`from_field_copy!` invocation below.",
           "required": [
             "activity_anchor",
             "function_name",
@@ -2196,7 +2196,7 @@ expression: snapshot
         },
         "EpisodeDriftSummaryDto": {
           "type": "object",
-          "description": "Task-level drift summary for episodic evaluation and memory formation.\n\n# Structural note\nThis type is field-for-field identical to [`baml_rt_provenance::EpisodeDriftSummary`].\nThey are kept separate so the domain crate remains free of API (`utoipa`) dependencies.\nIf you add a field to either type, you **must** add it to both and update the\n`from_field_copy!` invocation below.",
+          "description": "Task-level drift summary for episodic evaluation and memory formation.\n\n# Structural note\nThis type is field-for-field identical to [`baml_rt_conversation::episode::EpisodeDriftSummary`].\nThey are kept separate so the domain crate remains free of API (`utoipa`) dependencies.\nIf you add a field to either type, you **must** add it to both and update the\n`from_field_copy!` invocation below.",
           "required": [
             "composite_severity",
             "intent_alignment",

@@ -30,6 +30,18 @@ pub enum ProvenanceError {
     MissingLabel { node_id: String, kind: String },
     #[error("corrupt provenance_payload row: {reason}")]
     CorruptPayloadRow { reason: String },
+    /// Another `Message` graph node already owns this activity anchor in the scoped context.
+    /// Emission must be idempotent (same `node_id`); conflicting rows indicate a host/emitter bug.
+    #[error(
+        "message activity anchor {activity_anchor} already bound to graph node {existing_node_id} \
+         in context {context_id}; this write expects entity {expected_entity_id}"
+    )]
+    MessageActivityAnchorConflict {
+        activity_anchor: String,
+        context_id: String,
+        existing_node_id: String,
+        expected_entity_id: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, ProvenanceError>;

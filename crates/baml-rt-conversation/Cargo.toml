@@ -1,0 +1,21 @@
+[package]
+name = "baml-rt-conversation"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+
+[lib]
+name = "baml_rt_conversation"
+path = "src/lib.rs"
+
+[dependencies]
+baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-embedding = { path = "../baml-rt-embedding" }
+baml-rt-tools = { path = "../baml-rt-tools" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }

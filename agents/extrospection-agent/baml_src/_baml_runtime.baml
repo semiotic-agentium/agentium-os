@@ -514,7 +514,9 @@ function GetDiscoverAgentsPlan__act__system_discover_agents(
 ) -> SystemDiscover_agentsSendStep | SystemDiscover_agentsSearchReadStep | SystemDiscover_agentsPageReadStep {
 
   client DefaultClient
-  prompt #"[ACT] A system/discover_agents session is open. Emit Send with your query, or Read @N if a prior Send for this tool is already archived in history.\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+  prompt #"[ACT] A system/discover_agents session is open. Emit Send for a new query, or Read an existing @N archive from history (grep/limit/offset) when listing output is already fetched — do not re-Send the same discover_agents listing without trying Read/pagination first.\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+
+PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agents listing at @N, prefer Read on that @N (grep/limit/offset) to page or narrow — do not re-Send discover_agents with the same broad query as a substitute for pagination.
 
 Discover available agents relevant to the user's request.
 For Send: use empty input {} to list all agents.
@@ -543,6 +545,8 @@ function GetDiscoverAgentsPlan__continue__system_discover_agents(
 
   client DefaultClient
   prompt #"[CONTINUE] system/discover_agents result is archived.\nCheck session history:\n- See \"@N system/discover_agents\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_agents\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_agents\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+
+PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agents listing at @N, prefer Read on that @N (grep/limit/offset) to page or narrow — do not re-Send discover_agents with the same broad query as a substitute for pagination.
 
 Discover available agents relevant to the user's request.
 For Send: use empty input {} to list all agents.

@@ -1,10 +1,10 @@
-//! Render [`super::Episode`] as grep-friendly plain text with episode-local refs.
+//! Render [`crate::episode::Episode`] as grep-friendly plain text with episode-local refs.
 
 use std::fmt::Write as _;
 
 use baml_rt_tools::{archive_read::DEFAULT_TOOL_RESULT_INLINE_LINES, citations::ParsedCitation};
 
-use super::{
+use crate::episode::{
     ArtifactSummary, Episode, EpisodeContent, EpisodeEntry, EpisodeRefPrefix, StepType,
     TerminalStatus,
 };

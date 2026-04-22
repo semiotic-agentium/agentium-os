@@ -3,6 +3,7 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
+use baml_rt_conversation::view::{ProvenanceContextMessage, ProvenanceConversationContextItem};
 use baml_rt_core::{
     A2aJsChatHost, A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDispatchAck,
     AgentDispatchRequest, BamlRtError, Citation, Result,
@@ -15,9 +16,8 @@ use baml_rt_core::{
 };
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{
-    A2aGraphStore, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
-    ProvenanceConversationContextItem, ProvenanceEffectSubscriber, ProvenanceInterceptor,
-    ProvenanceWriter,
+    A2aGraphStore, ProvEvent, ProvenanceContextReader, ProvenanceEffectSubscriber,
+    ProvenanceInterceptor, ProvenanceWriter,
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, BridgeHandle, QuickJSBridge, QuickJSConfig,
@@ -422,7 +422,7 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
 pub(crate) fn to_projection_item(
     item: ProvenanceConversationContextItem,
 ) -> Option<PromptProjectionItem> {
-    baml_rt_provenance::provenance_item_to_projection_item(item)
+    baml_rt_conversation::provenance_item_to_projection_item(item)
 }
 
 // ---------------------------------------------------------------------------
@@ -2519,10 +2519,10 @@ mod tests {
     /// prompts: the same call sequence as `ProjectingConversationContextProvider::conversation_history_json`.
     #[tokio::test]
     async fn session_history_renders_correctly_through_full_pipeline() {
+        use baml_rt_conversation::view::SessionStepOp;
         use baml_rt_core::ids::{AgentId, ExternalId, MessageId, UuidId};
         use baml_rt_provenance::{
             CallScope, ProvEvent, ProvenanceContextReader, ProvenanceWriter, SurrealStoreBuilder,
-            store::SessionStepOp,
         };
         use baml_rt_tools::{
             ToolRegistry,

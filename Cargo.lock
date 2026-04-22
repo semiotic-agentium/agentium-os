@@ -1336,6 +1336,7 @@ dependencies = [
  "baml-rt-a2a",
  "baml-rt-api",
  "baml-rt-config",
+ "baml-rt-conversation",
  "baml-rt-core",
  "baml-rt-embedding",
  "baml-rt-llm-config",
@@ -1539,6 +1540,7 @@ dependencies = [
  "baml-derive 0.1.0",
  "baml-derive-core",
  "baml-rt",
+ "baml-rt-conversation",
  "baml-rt-core",
  "baml-rt-observability",
  "baml-rt-provenance",
@@ -1571,6 +1573,7 @@ dependencies = [
  "baml-rt-a2a",
  "baml-rt-builder",
  "baml-rt-config",
+ "baml-rt-conversation",
  "baml-rt-core",
  "baml-rt-embedding",
  "baml-rt-llm-config",
@@ -1662,6 +1665,19 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "baml-rt-conversation"
+version = "0.1.0"
+dependencies = [
+ "baml-rt-core",
+ "baml-rt-embedding",
+ "baml-rt-tools",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
 ]
 
 [[package]]
@@ -1767,6 +1783,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "baml-rt-conversation",
  "baml-rt-core",
  "baml-rt-embedding",
  "baml-rt-id",

@@ -29,6 +29,7 @@ pub use session_read_body::{
 };
 pub use types::{
     DEFAULT_TOOL_RESULT_INLINE_LINES, GrepPage, GrepPattern, HistoryRef, LineOffset,
-    LineWithPosition, PageLimit, ShortRef,
+    LineWithPosition, PageLimit, SEND_DONE_HISTORY_INLINE_LINES,
+    SESSION_HISTORY_READ_REPLAY_MAX_LINES, ShortRef,
 };
 pub use virtual_source::{VirtualArchiveRow, VirtualArchiveSource, VirtualHistoryRow};

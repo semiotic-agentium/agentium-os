@@ -1,15 +1,13 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
+use baml_rt_conversation::view::ProvenanceConversationContextItem;
 use baml_rt_core::{
     BamlRtError, Citation, Result,
     ids::{AgentId, ContextId, TaskId},
 };
 use baml_rt_observability::metrics;
-use baml_rt_provenance::{
-    ProvEvent, ProvenanceConversationContextItem, ProvenanceError, ProvenanceWriter,
-    events::ReservedAnchor,
-};
+use baml_rt_provenance::{ProvEvent, ProvenanceError, ProvenanceWriter, events::ReservedAnchor};
 use serde_json::Value;
 use tokio::sync::Mutex;
 

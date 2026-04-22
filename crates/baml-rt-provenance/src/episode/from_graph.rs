@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use baml_rt_conversation::timeline::{ArtifactRow, StatusRow};
 use serde_json::Value;
 
 use crate::{
@@ -13,24 +14,6 @@ use crate::{
     graph_model::GraphNodeLabel,
     vocabulary::{a2a, prov},
 };
-
-#[derive(Clone, Debug)]
-pub(crate) struct StatusRow {
-    pub timestamp_ms: u64,
-    pub event_order: u64,
-    pub activity_anchor: String,
-    pub old_status: String,
-    pub new_status: String,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ArtifactRow {
-    pub timestamp_ms: u64,
-    pub event_order: u64,
-    pub activity_anchor: String,
-    pub name: String,
-    pub media_type: Option<String>,
-}
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct EpisodeTaskGraphMeta {

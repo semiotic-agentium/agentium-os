@@ -5,18 +5,18 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use baml_rt_conversation::{
+    timeline::TimelineKind,
+    view::{ConversationItemContent, SessionStepOp},
+};
 use baml_rt_core::ids::{ContextId, TaskId};
 use baml_rt_tools::{
     archive_read::{RenderedContent, ShortRef, render_to_lines},
     archive_refs::{ArchiveEntry, HistoryEntry, RefTable},
 };
 
-use super::{Episode, EpisodeContent, reader::EpisodeReader, timeline::TimelineKind};
-use crate::{
-    error::Result,
-    store::{ConversationItemContent, SessionStepOp},
-    surreal_store::SurrealProvenanceStore,
-};
+use super::{Episode, reader::EpisodeReader};
+use crate::{error::Result, surreal_store::SurrealProvenanceStore};
 
 const CACHE_CAP: usize = 64;
 
@@ -119,6 +119,143 @@ fn wire_archive_slot_from_ref(archive_ref: &str) -> Option<u32> {
     })
 }
 
+fn insert_virtual_for_wire(
+    t: &RefTable,
+    wire_filled: &mut HashSet<u32>,
+    wire_n: u32,
+    tool_name: &str,
+    v: &serde_json::Value,
+    activity_anchor: &str,
+) {
+    let rendered = render_to_lines(v);
+    let summary = format!("{tool_name} result");
+    let entry = ArchiveEntry::new(
+        rendered,
+        tool_name.to_string(),
+        summary,
+        activity_anchor.to_string(),
+        "tool_result".into(),
+    );
+    t.insert_virtual_archive(wire_n, entry);
+    wire_filled.insert(wire_n);
+}
+
+/// Graph-backed `SendDone` replay payloads (`send_done_replay_payload`) — same slots as
+/// [`episode_ref_table_with_merged`] pass one.
+pub(crate) fn seed_replay_payload_slots_from_merged(
+    t: &RefTable,
+    merged: &[TimelineKind],
+    wire_filled: &mut HashSet<u32>,
+) {
+    if merged.is_empty() {
+        return;
+    }
+    for m in merged {
+        let TimelineKind::Conv(item, _) = m else {
+            continue;
+        };
+        if let ConversationItemContent::SessionStep(ss) = &item.content
+            && let SessionStepOp::SendDone { archive_ref, .. } = &ss.op
+            && let Some(n) = wire_archive_slot_from_ref(archive_ref)
+            && let Some(ref payload) = ss.send_done_replay_payload
+        {
+            insert_virtual_for_wire(
+                t,
+                wire_filled,
+                n,
+                ss.tool_name.as_str(),
+                payload,
+                item.activity_anchor.as_str(),
+            );
+        }
+    }
+}
+
+/// One row of [`episode_ref_table_with_merged`] pass two — keeps transcript assembly and
+/// session-history [`ArchiveReader`] aligned when the table is built incrementally.
+pub(crate) fn absorb_episode_entry_into_ref_table(
+    t: &RefTable,
+    wire_filled: &mut HashSet<u32>,
+    e: &super::EpisodeEntry,
+) {
+    use super::EpisodeContent;
+
+    let n = e.seq;
+    if n == 0 {
+        return;
+    }
+    match &e.content {
+        EpisodeContent::Text(body) => {
+            t.insert_virtual_history(
+                n,
+                HistoryEntry::new(e.activity_anchor.clone(), "message".into()),
+                body.as_str(),
+            );
+        }
+        EpisodeContent::ToolInvocation {
+            tool_name: _,
+            description,
+        } => {
+            t.insert_virtual_history(
+                n,
+                HistoryEntry::new(e.activity_anchor.clone(), "tool_call".into()),
+                description.as_str(),
+            );
+        }
+        EpisodeContent::ToolOutput {
+            tool_name,
+            summary,
+            lines,
+            ..
+        } => {
+            if wire_filled.contains(&n) {
+                return;
+            }
+            let rc = RenderedContent::from_lines(lines.iter().cloned());
+            let entry = ArchiveEntry::new(
+                rc,
+                tool_name.clone(),
+                summary.clone(),
+                e.activity_anchor.clone(),
+                "tool_result".into(),
+            );
+            t.insert_virtual_archive(n, entry);
+        }
+        EpisodeContent::StatusChange { old, new, message } => {
+            let text = if let Some(m) = message {
+                format!("{old} -> {new}: {m}")
+            } else {
+                format!("{old} -> {new}")
+            };
+            t.insert_virtual_history(
+                n,
+                HistoryEntry::new(e.activity_anchor.clone(), "status".into()),
+                text,
+            );
+        }
+        EpisodeContent::Artifact {
+            name, media_type, ..
+        } => {
+            let text = match media_type {
+                Some(mt) => format!("artifact {name} ({mt})"),
+                None => format!("artifact {name}"),
+            };
+            t.insert_virtual_history(
+                n,
+                HistoryEntry::new(e.activity_anchor.clone(), "artifact".into()),
+                text,
+            );
+        }
+        EpisodeContent::PlanRevisionRef { summary } => {
+            t.insert_virtual_history(
+                n,
+                HistoryEntry::new(e.activity_anchor.clone(), "plan".into()),
+                summary.as_str(),
+            );
+        }
+    }
+}
+
 /// Build a [`RefTable`] for `#N` / `@N` resolution when the merged timeline is unavailable.
 /// Prefer [`episode_ref_table_with_merged`] from episode assembly so `@N` matches **wire** indices.
 #[must_use]
@@ -143,49 +280,7 @@ pub fn episode_ref_table(ep: &Episode) -> RefTable {
 pub(crate) fn episode_ref_table_with_merged(ep: &Episode, merged: &[TimelineKind]) -> RefTable {
     let t = RefTable::new();
     let mut wire_filled: HashSet<u32> = HashSet::new();
-
-    if !merged.is_empty() {
-        fn insert_virtual_for_wire(
-            t: &RefTable,
-            wire_filled: &mut HashSet<u32>,
-            wire_n: u32,
-            tool_name: &str,
-            v: &serde_json::Value,
-            activity_anchor: &str,
-        ) {
-            let rendered = render_to_lines(v);
-            let summary = format!("{tool_name} result");
-            let entry = ArchiveEntry::new(
-                rendered,
-                tool_name.to_string(),
-                summary,
-                activity_anchor.to_string(),
-                "tool_result".into(),
-            );
-            t.insert_virtual_archive(wire_n, entry);
-            wire_filled.insert(wire_n);
-        }
-
-        for m in merged {
-            let TimelineKind::Conv(item, _) = m else {
-                continue;
-            };
-            if let ConversationItemContent::SessionStep(ss) = &item.content
-                && let SessionStepOp::SendDone { archive_ref, .. } = &ss.op
-                && let Some(n) = wire_archive_slot_from_ref(archive_ref)
-                && let Some(ref payload) = ss.send_done_replay_payload
-            {
-                insert_virtual_for_wire(
-                    &t,
-                    &mut wire_filled,
-                    n,
-                    ss.tool_name.as_str(),
-                    payload,
-                    item.activity_anchor.as_str(),
-                );
-            }
-        }
-    }
+    seed_replay_payload_slots_from_merged(&t, merged, &mut wire_filled);
 
     let mut rows: Vec<_> = ep
         .prior_context
@@ -194,101 +289,37 @@ pub(crate) fn episode_ref_table_with_merged(ep: &Episode, merged: &[TimelineKind
         .collect();
     rows.sort_by_key(|e| e.seq);
     for e in rows {
-        let n = e.seq;
-        if n == 0 {
-            continue;
-        }
-        match &e.content {
-            EpisodeContent::Text(body) => {
-                t.insert_virtual_history(
-                    n,
-                    HistoryEntry::new(e.activity_anchor.clone(), "message".into()),
-                    body.as_str(),
-                );
-            }
-            EpisodeContent::ToolInvocation {
-                tool_name: _,
-                description,
-            } => {
-                t.insert_virtual_history(
-                    n,
-                    HistoryEntry::new(e.activity_anchor.clone(), "tool_call".into()),
-                    description.as_str(),
-                );
-            }
-            EpisodeContent::ToolOutput {
-                tool_name,
-                summary,
-                lines,
-                ..
-            } => {
-                if wire_filled.contains(&n) {
-                    continue;
-                }
-                let rc = RenderedContent::from_lines(lines.iter().cloned());
-                let entry = ArchiveEntry::new(
-                    rc,
-                    tool_name.clone(),
-                    summary.clone(),
-                    e.activity_anchor.clone(),
-                    "tool_result".into(),
-                );
-                t.insert_virtual_archive(n, entry);
-            }
-            EpisodeContent::StatusChange { old, new, message } => {
-                let text = if let Some(m) = message {
-                    format!("{old} -> {new}: {m}")
-                } else {
-                    format!("{old} -> {new}")
-                };
-                t.insert_virtual_history(
-                    n,
-                    HistoryEntry::new(e.activity_anchor.clone(), "status".into()),
-                    text,
-                );
-            }
-            EpisodeContent::Artifact {
-                name, media_type, ..
-            } => {
-                let text = match media_type {
-                    Some(mt) => format!("artifact {name} ({mt})"),
-                    None => format!("artifact {name}"),
-                };
-                t.insert_virtual_history(
-                    n,
-                    HistoryEntry::new(e.activity_anchor.clone(), "artifact".into()),
-                    text,
-                );
-            }
-            EpisodeContent::PlanRevisionRef { summary } => {
-                t.insert_virtual_history(
-                    n,
-                    HistoryEntry::new(e.activity_anchor.clone(), "plan".into()),
-                    summary.as_str(),
-                );
-            }
-        }
+        absorb_episode_entry_into_ref_table(&t, &mut wire_filled, e);
     }
     t
 }
 
 #[cfg(test)]
 mod tests {
-    use baml_rt_core::ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, TaskId, UuidId};
-    use baml_rt_tools::archive_read::VirtualArchiveSource;
-    use serde_json::json;
-    use uuid::Uuid;
+    use std::collections::HashSet;
 
-    use super::{episode_ref_table, episode_ref_table_with_merged};
-    use crate::{
-        episode::{
-            Episode, EpisodeContent, EpisodeDuration, EpisodeEntry, EpisodeOutcome,
-            EpisodeRefPrefix, StepType, TerminalStatus, TokenSummary, timeline::TimelineKind,
-        },
-        store::{
+    use baml_rt_conversation::{
+        timeline::TimelineKind,
+        view::{
             ConversationItemContent, ProvenanceConversationContextItem, SessionStepContent,
             SessionStepOp, ToolOutcome, ToolResultContent, ToolSessionPhase,
         },
+    };
+    use baml_rt_core::ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, TaskId, UuidId};
+    use baml_rt_tools::{
+        archive_read::{ShortRef, VirtualArchiveSource},
+        archive_refs::RefTable,
+    };
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::{
+        absorb_episode_entry_into_ref_table, episode_ref_table, episode_ref_table_with_merged,
+        seed_replay_payload_slots_from_merged,
+    };
+    use crate::episode::{
+        Episode, EpisodeContent, EpisodeDuration, EpisodeEntry, EpisodeOutcome, EpisodeRefPrefix,
+        StepType, TerminalStatus, TokenSummary,
     };
 
     #[test]
@@ -441,5 +472,102 @@ mod tests {
         assert!(rt.history_row(1).is_some());
         assert!(rt.archive_row(2).is_some());
         assert!(rt.archive_row(1).is_none());
+    }
+
+    #[test]
+    fn incremental_ref_table_matches_batch_for_replay_seed_and_rows() {
+        let task_id = TaskId::from_external(ExternalId::new("t-incr"));
+        let ep = Episode {
+            task_id: task_id.clone(),
+            context_id: ContextId::new(1, 1),
+            agent_id: AgentId::from_uuid(UuidId::new(Uuid::nil())),
+            ref_prefix: EpisodeRefPrefix::from_task_id(&task_id),
+            status: TerminalStatus::Completed,
+            started_timestamp_ms: 0,
+            duration: EpisodeDuration::default(),
+            token_summary: TokenSummary::default(),
+            prior_context: vec![],
+            goal: EpisodeEntry {
+                seq: 1,
+                step_type: StepType::Message,
+                role: "user".into(),
+                elapsed_ms: 0,
+                content: EpisodeContent::Text("x".into()),
+                activity_anchor: "g".into(),
+                citation_strings: vec![],
+            },
+            transcript: vec![],
+            intents: vec![],
+            plans: vec![],
+            outcome: EpisodeOutcome {
+                final_message: None,
+                artifacts: vec![],
+                citation_strings: vec![],
+                token_summary: TokenSummary::default(),
+                duration: EpisodeDuration::default(),
+            },
+            session_history: vec![],
+            drift_summary: None,
+            drift_calls: vec![],
+        };
+
+        let merged = vec![
+            TimelineKind::Conv(
+                ProvenanceConversationContextItem {
+                    timestamp_ms: 1,
+                    activity_anchor: ActivityAnchorId::from("sd1"),
+                    role: "tool".into(),
+                    content: ConversationItemContent::SessionStep(SessionStepContent {
+                        tool_name: "system/discover_agents".into(),
+                        op: SessionStepOp::SendDone {
+                            archive_ref: "@8".into(),
+                            header: "@8 system/discover_agents \"…\" [2 lines, 1B]".into(),
+                            informed_by: "test-anchor".into(),
+                        },
+                        send_done_replay_payload: Some(json!([
+                            {"name": "alpha", "description": "big"},
+                            {"name": "beta", "description": "payload"},
+                        ])),
+                        read_replay_lines: None,
+                    }),
+                },
+                false,
+            ),
+            TimelineKind::Conv(
+                ProvenanceConversationContextItem {
+                    timestamp_ms: 2,
+                    activity_anchor: ActivityAnchorId::from("tr-other"),
+                    role: "tool".into(),
+                    content: ConversationItemContent::ToolResult(ToolResultContent {
+                        tool_name: "a2a/execution_session_step".into(),
+                        fsm_phase: ToolSessionPhase::Execute,
+                        outcome: ToolOutcome::Result(json!({"citations": []})),
+                    }),
+                },
+                false,
+            ),
+        ];
+
+        let batch = episode_ref_table_with_merged(&ep, &merged);
+
+        let incr = RefTable::new();
+        let mut wire_filled = HashSet::new();
+        seed_replay_payload_slots_from_merged(&incr, &merged, &mut wire_filled);
+        let mut rows: Vec<_> = ep
+            .prior_context
+            .iter()
+            .chain(ep.transcript.iter())
+            .collect();
+        rows.sort_by_key(|e| e.seq);
+        for e in rows {
+            absorb_episode_entry_into_ref_table(&incr, &mut wire_filled, e);
+        }
+
+        let at8 = ShortRef::new(8);
+        assert_eq!(
+            batch.get(at8).map(|r| r.content.line_count()),
+            incr.get(at8).map(|r| r.content.line_count()),
+            "incremental replay ref table must match monolithic episode_ref_table_with_merged"
+        );
     }
 }

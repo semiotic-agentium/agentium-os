@@ -3,6 +3,11 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use baml_rt_conversation::view::{
+    ConversationItemContent, ProvenanceContextMessage, ProvenanceConversationContextItem,
+    SessionStepContent, SessionStepOp, ToolCallContent, ToolOutcome, ToolResultContent,
+    ToolSessionPhase, conversation_history_role_for_message,
+};
 use baml_rt_core::{
     Citation,
     ids::{ActivityAnchorId, ContextId, MessageId, TaskId},
@@ -26,12 +31,7 @@ use crate::{
     },
     payload_id::DEFAULT_SESSION_READ_LINE_LIMIT,
     payload_record::PayloadRecord,
-    store::{
-        ConversationItemContent, ProvenanceContextMessage, ProvenanceContextReader,
-        ProvenanceConversationContextItem, ProvenanceQueryApi, SessionStepContent, SessionStepOp,
-        ToolCallContent, ToolOutcome, ToolResultContent, ToolSessionPhase,
-        conversation_history_role_for_message,
-    },
+    store::{ProvenanceContextReader, ProvenanceQueryApi},
     surreal_tables::{PAYLOAD_ROW_SELECT, TBL_EDGE, TBL_NODE, TBL_PAYLOAD},
     vocabulary::{a2a_relations, context_scope, semantic_labels},
 };

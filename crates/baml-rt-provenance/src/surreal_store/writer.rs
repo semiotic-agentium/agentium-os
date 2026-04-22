@@ -17,6 +17,8 @@ use crate::{
 impl ProvenanceWriter for SurrealProvenanceStore {
     async fn add_event(&self, event: crate::events::ProvEvent) -> Result<()> {
         validate_event(&event)?;
+        self.enforce_message_activity_anchor_invariant(&event)
+            .await?;
         self.enforce_step_completion_gate(&event).await?;
         let mut payload_records = payload_records_from_event(&event)?;
         let context = match event.task_id() {
