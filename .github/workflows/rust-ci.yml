@@ -199,10 +199,10 @@ jobs:
           # `sandbox-e2e-kvm` must only compile in .github/workflows/sandbox-e2e-kvm.yml
           # on KVM-capable runners.
           echo ">>> nextest LLM suite: full parallelism (nproc=$(nproc))"
-          # Adapter SDK + echo fixture are covered by downstream sandbox jobs
+          # Sandbox protocol/adapter coverage is owned by downstream sandbox jobs
           # in this workflow; excluding them here keeps each test in one lane.
           cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast \
-            --exclude baml-sandbox-adapter --exclude sandbox-echo-adapter \
+            --exclude baml-sandbox-adapter --exclude baml-sandbox-protocol --exclude sandbox-echo-adapter \
             --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
           RUSTUP_TOOLCHAIN: stable
@@ -225,7 +225,7 @@ jobs:
           # on KVM-capable runners.
           echo ">>> nextest non-LLM suite: full parallelism (nproc=$(nproc))"
           cargo nextest run --workspace --locked --profile ci-non-llm --no-fail-fast \
-            --exclude baml-sandbox-adapter --exclude sandbox-echo-adapter \
+            --exclude baml-sandbox-adapter --exclude baml-sandbox-protocol --exclude sandbox-echo-adapter \
             --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
         env:
           RUSTUP_TOOLCHAIN: stable
