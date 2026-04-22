@@ -1,6 +1,9 @@
 //! `regen` subcommand — regenerate runtime BAML prelude and baml-runtime.d.ts for agents.
 
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use console::style;
@@ -9,9 +12,18 @@ use crate::{generated_baml::sync_generated_baml_files, workspace::find_workspace
 
 /// Run the `regen` command.
 ///
-/// If `names` is empty, regenerates all agents.
-/// If `names` is provided, only regenerates the specified agents.
-pub fn run(names: &[String]) -> Result<()> {
+/// If `paths` is provided, regenerates exactly those agent directories.
+/// Otherwise, if `names` is provided, regenerates matching agents under workspace roots.
+/// With neither `paths` nor `names`, regenerates all discovered agents.
+pub fn run(names: &[String], paths: &[String]) -> Result<()> {
+    if !paths.is_empty() && !names.is_empty() {
+        bail!("--path cannot be combined with agent names");
+    }
+
+    if !paths.is_empty() {
+        return run_explicit_paths(paths);
+    }
+
     let workspace_root = find_workspace_root()?;
 
     let filter: HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
@@ -124,6 +136,86 @@ pub fn run(names: &[String]) -> Result<()> {
         bail!("Regen failed for {failed_count} agent(s). Fix reported errors and retry.");
     }
 
+    Ok(())
+}
+
+fn run_explicit_paths(paths: &[String]) -> Result<()> {
+    let mut unique_paths = HashSet::new();
+    for raw in paths {
+        let canonical = PathBuf::from(raw)
+            .canonicalize()
+            .with_context(|| format!("Failed to canonicalize path: {}", raw))?;
+        validate_agent_dir(&canonical)?;
+        unique_paths.insert(canonical);
+    }
+
+    let mut sorted_paths: Vec<PathBuf> = unique_paths.into_iter().collect();
+    sorted_paths.sort();
+
+    let mut failed_count = 0;
+    let mut total_count = 0;
+
+    println!(
+        "{} Regenerating {} explicit path(s)...",
+        style("[regen]").bold().dim(),
+        sorted_paths.len()
+    );
+
+    for path in &sorted_paths {
+        let display_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+
+        print!(
+            "  {} {} ({})... ",
+            style("->").dim(),
+            display_name,
+            style(path.display()).dim()
+        );
+        let mut stdout = std::io::stdout();
+        let _ = std::io::Write::flush(&mut stdout);
+
+        match regen_agent(path) {
+            Ok(()) => {
+                println!("{}", style("ok").green());
+                total_count += 1;
+            }
+            Err(e) => {
+                println!("{}", style("failed").red());
+                eprintln!("     Error: {}", e);
+                failed_count += 1;
+            }
+        }
+    }
+
+    println!();
+    println!(
+        "{} Regenerated {} agent(s)",
+        style("Done!").green().bold(),
+        total_count
+    );
+
+    if failed_count > 0 {
+        bail!("Regen failed for {failed_count} agent(s). Fix reported errors and retry.");
+    }
+
+    Ok(())
+}
+
+fn validate_agent_dir(path: &Path) -> Result<()> {
+    if !path.exists() {
+        bail!("Agent path does not exist: {}", path.display());
+    }
+    if !path.is_dir() {
+        bail!("Agent path is not a directory: {}", path.display());
+    }
+    if !path.join("baml_src").is_dir() {
+        bail!(
+            "Not an agent directory (missing baml_src/): {}",
+            path.display()
+        );
+    }
     Ok(())
 }
 

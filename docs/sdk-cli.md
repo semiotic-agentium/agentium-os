@@ -17,7 +17,7 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `list-tools` | List all registered tools from the inventory |
 | `list-agents` | List all agent packages |
 | `list-event-sources` | List event source kinds and known schema versions |
-| `regen [names]...` | Regenerate type declarations for agents (all if omitted) |
+| `regen [names]... [--path <agent-dir>]` | Regenerate type declarations for agents (all if omitted) |
 | `doctor` | Validate workspace integrity |
 | `check-external-tool --path <dir>` | Validate external tool metadata against schema + runtime parser |
 | `sandbox-digest --source bind <path>` | Compute sandbox runtime digest for bind rootfs content |
@@ -410,21 +410,27 @@ Current built-in schema surfaces include:
 
 ### `regen`
 
-Regenerates `generated_tools.baml` and `baml-runtime.d.ts` for agents. Omit names to regenerate all.
+Regenerates `_baml_runtime.baml` and `baml-runtime.d.ts` for agents.
 
 ```bash
-cargo agent-platform regen [names]...
+cargo agent-platform regen [names]... [--path <agent-dir>]
 ```
 
-| Argument | Description |
-|----------|-------------|
+| Argument / Option | Description |
+|-------------------|-------------|
 | `[names]...` | Agent names to regenerate (omit for all in `agents/` + `tests/fixtures/agents/`) |
+| `--path <agent-dir>` | Explicit agent directory path (repeat flag for multiple paths) |
+
+Notes:
+- `--path` cannot be combined with agent names.
+- If the agent uses external tools, set `BAML_EXTERNAL_TOOLS_DIR` to one or more tool directories containing `tool-metadata.json` (colon-separated).
 
 Run after adding/modifying tools or BAML schemas, and before committing.
 
 ```bash
 cargo agent-platform regen
 cargo agent-platform regen clickup-agent notion-agent
+cargo agent-platform regen --path examples/agents/echo-agent
 ```
 
 ---

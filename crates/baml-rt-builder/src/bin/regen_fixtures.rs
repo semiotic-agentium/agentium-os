@@ -16,6 +16,7 @@ use baml_tools_security_eval as _; // Force link so security-eval tool metadata 
 #[cfg(feature = "slack")]
 use baml_tools_slack as _; // Force link so slack tool metadata is in inventory
 use baml_tools_system as _; // Force link so system tool metadata is in inventory
+use clap::Parser;
 
 fn fixture_agents_dir() -> Result<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -45,6 +46,19 @@ fn production_agents_dir() -> Result<PathBuf> {
         })?;
 
     Ok(workspace_root.join("agents"))
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "regen_fixtures",
+    about = "Regenerate baml-runtime.d.ts and _baml_runtime.baml for agent directories"
+)]
+struct Args {
+    /// Explicit agent directory path. Repeat to target multiple agents.
+    ///
+    /// When omitted, scans tests/fixtures/agents and agents.
+    #[arg(long = "path", value_name = "AGENT_DIR")]
+    paths: Vec<PathBuf>,
 }
 
 /// Strip trailing CR/LF and append exactly one `\n` so pre-commit `end-of-file-fixer` agrees with regen.
@@ -120,10 +134,53 @@ async fn regen_fixture(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn validate_explicit_agent_dir(path: &Path) -> Result<()> {
+    if !path.exists() {
+        bail!("Agent path does not exist: {}", path.display());
+    }
+    if !path.is_dir() {
+        bail!("Agent path is not a directory: {}", path.display());
+    }
+    if !path.join("baml_src").is_dir() {
+        bail!(
+            "Not an agent directory (missing baml_src/): {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Scan agent roots for directories containing `baml_src/`
 /// and regenerate `src/baml-runtime.d.ts` for each.
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+
+    if !args.paths.is_empty() {
+        let mut unique_paths = HashSet::new();
+        for raw_path in &args.paths {
+            let canonical = raw_path.canonicalize().with_context(|| {
+                format!(
+                    "Failed to canonicalize agent path '{}'; check that it exists and is readable",
+                    raw_path.display()
+                )
+            })?;
+            validate_explicit_agent_dir(&canonical)?;
+            unique_paths.insert(canonical);
+        }
+
+        let mut paths: Vec<PathBuf> = unique_paths.into_iter().collect();
+        paths.sort();
+
+        for path in &paths {
+            eprintln!("regen_fixtures: {}", path.display());
+            regen_fixture(path)
+                .await
+                .with_context(|| format!("Failed to regen {}", path.display()))?;
+        }
+        return Ok(());
+    }
+
     let roots = vec![
         ("regen_fixtures", fixture_agents_dir()?),
         ("regen_agents", production_agents_dir()?),

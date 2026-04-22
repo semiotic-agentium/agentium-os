@@ -298,11 +298,15 @@ enum Commands {
         url: String,
     },
 
-    /// Regenerate generated_tools.baml and baml-runtime.d.ts for all agents
+    /// Regenerate generated_tools.baml and baml-runtime.d.ts for agents
     Regen {
         /// Agent names to regenerate (omit for all agents)
         #[arg()]
         names: Vec<String>,
+
+        /// Explicit agent directory path (repeat for multiple paths)
+        #[arg(long = "path", value_name = "AGENT_DIR")]
+        paths: Vec<String>,
     },
 
     /// Validate standalone external tool metadata against schema + runtime parser
@@ -697,7 +701,7 @@ fn main() -> anyhow::Result<()> {
 
         Commands::ListDeployedInstances { url } => commands::list_deployed_instances::run(&url),
 
-        Commands::Regen { names } => commands::regen::run(&names),
+        Commands::Regen { names, paths } => commands::regen::run(&names, &paths),
 
         Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
 
