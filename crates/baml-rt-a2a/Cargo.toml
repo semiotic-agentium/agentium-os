@@ -9,6 +9,7 @@ publish = false
 ignored = ["futures-util", "inventory"]
 
 [dependencies]
+baml-rt-conversation = { path = "../baml-rt-conversation" }
 baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 baml-tools-system = { path = "../tools/system" }

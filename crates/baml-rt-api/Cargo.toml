@@ -11,6 +11,7 @@ async-trait = { workspace = true }
 axum = { workspace = true }
 baml-rt-a2a = { path = "../baml-rt-a2a" }
 baml-rt-config = { path = "../baml-rt-config" }
+baml-rt-conversation = { path = "../baml-rt-conversation" }
 baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-router = { path = "../baml-rt-router" }
 baml-rt-observability = { path = "../baml-rt-observability" }

@@ -56,12 +56,10 @@
 //! corruption that manifests as missing data on the read path, far from the source.
 
 use async_trait::async_trait;
-/// Canonical session-step discriminant for conversation history and effects (from `baml-rt-core`).
-pub type SessionStepOp = baml_rt_core::bus::SessionStepOp;
+use baml_rt_conversation::view::{ProvenanceContextMessage, ProvenanceConversationContextItem};
 use baml_rt_core::{
-    Citation,
     bus::PlanningSupersessionKind,
-    ids::{ActivityAnchorId, AgentId, ContextId, MessageId, TaskId},
+    ids::{ActivityAnchorId, AgentId, ContextId, TaskId},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -107,129 +105,6 @@ pub trait ProvenanceWriter: ProvenanceContextReader + Send + Sync {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ProvenanceContextMessage {
-    pub message_id: MessageId,
-    pub timestamp_ms: u64,
-    pub role: String,
-    pub content: Vec<String>,
-}
-
-/// Tool invocation content — the step args the LLM produced.
-/// `args` is the BAML step payload: `{"op":"Send","input":{...}}` forwarded
-/// directly to `ToolHandler::describe_invocation`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ToolCallContent {
-    pub tool_name: String,
-    pub args: Value,
-    pub fsm_phase: ToolSessionPhase,
-}
-
-/// Whether the tool result carries meaningful data or is a status-only FSM event.
-/// `StatusOnly` items are discarded at the conversion boundary; they never reach rendering.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum ToolOutcome {
-    Result(Value),
-    Error(Value),
-    /// FSM bookkeeping (Open/Finish/Abort/sent) — no data to project.
-    StatusOnly,
-}
-
-/// Tool result content.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ToolResultContent {
-    pub tool_name: String,
-    pub fsm_phase: ToolSessionPhase,
-    pub outcome: ToolOutcome,
-}
-
-/// Step content for a ToolSessionStep provenance event.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SessionStepContent {
-    pub tool_name: String,
-    pub op: SessionStepOp,
-    /// `SendDone` only: `tool_result` JSON from the linked `ToolCall` (via `WAS_INFORMED_BY` graph edge).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub send_done_replay_payload: Option<serde_json::Value>,
-    /// SearchRead/PageRead only: replayed lines after resolving `archive_ref` against a prior hydrated SendDone in the same context batch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub read_replay_lines: Option<Vec<String>>,
-}
-
-/// Typed discriminated content for a conversation history item.
-/// Replaces `content: Value` + `source: String` — the source IS the variant.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum ConversationItemContent {
-    Message {
-        text: String,
-        /// Validated citation refs (`#N`, `@N`, …) produced by the model in this message.
-        /// Populated from CITED graph edges on the Message entity; empty for user messages.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        citations: Vec<Citation>,
-    },
-    ToolCall(ToolCallContent),
-    ToolResult(ToolResultContent),
-    /// An individual session step — Open/SendDone/SearchRead/PageRead within an in-progress session.
-    SessionStep(SessionStepContent),
-}
-
-impl ConversationItemContent {
-    /// Whether this item carries meaningful content worth projecting into a prompt.
-    /// `StatusOnly` tool results return false.
-    pub fn is_meaningful(&self) -> bool {
-        match self {
-            Self::Message { text, .. } => !text.trim().is_empty(),
-            Self::ToolCall(_) => true,
-            Self::ToolResult(tr) => !matches!(tr.outcome, ToolOutcome::StatusOnly),
-            Self::SessionStep(_) => true,
-        }
-    }
-}
-
-/// Maps a graph Message `a2a_role` into the `role` field exposed on BAML `ctx.tags['conversation_history']`.
-///
-/// Canonical chat labels: **`user`**, **`assistant`**. (Graph may store `ROLE_USER` / `ROLE_AGENT`.)
-/// Tool/session rows use **`tool`**; duplicate SendDone bodies may use **`read`** (see `prompt_projection`).
-#[must_use]
-pub fn conversation_history_role_for_message(a2a_role: &str) -> String {
-    let r = a2a_role.trim();
-    if r.is_empty() {
-        return String::new();
-    }
-    if r.eq_ignore_ascii_case("ROLE_USER") || r.eq_ignore_ascii_case("user") {
-        return "user".to_string();
-    }
-    if r.eq_ignore_ascii_case("ROLE_AGENT")
-        || r.eq_ignore_ascii_case("assistant")
-        || r.eq_ignore_ascii_case("agent")
-    {
-        return "assistant".to_string();
-    }
-    a2a_role.to_string()
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ProvenanceConversationContextItem {
-    pub timestamp_ms: u64,
-    /// Correlates this history line with graph `a2a_activity_anchor` / provenance emission ([`ActivityAnchorId`]).
-    pub activity_anchor: ActivityAnchorId,
-    /// `user` / `assistant` for chat turns; `tool` for host tool calls and session FSM steps; `read` for inlined read bodies.
-    pub role: String,
-    pub content: ConversationItemContent,
-}
-
-impl ProvenanceConversationContextItem {
-    /// Returns a string label for the content variant — used in tests and diagnostics.
-    pub fn source_name(&self) -> &'static str {
-        match &self.content {
-            ConversationItemContent::Message { .. } => "message",
-            ConversationItemContent::ToolCall(_) => "tool_call",
-            ConversationItemContent::ToolResult(_) => "tool_result",
-            ConversationItemContent::SessionStep(_) => "session_step",
-        }
-    }
-}
-
 /// Intent for a provenance read: enforces which guarantee the caller gets.
 ///
 /// - **AgentContext:** No-stale-read required. Use via [ProvenanceContextReader]; implementations
@@ -241,66 +116,6 @@ pub enum ProvenanceReadIntent {
     AgentContext,
     /// API or analytics: no guarantee of no-stale-read.
     Api,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ToolSessionPhase {
-    /// Non-session tool invocation.
-    Execute,
-    /// FSM phase: session opened.
-    Open,
-    /// FSM phase: input sent to session; result archived.
-    Send,
-    /// FSM phase: archived result fetched by archive ref.
-    Read,
-    /// FSM phase: session continued (legacy analytics label; treat like Send for session semantics).
-    Next,
-    /// FSM phase: session closed gracefully.
-    Finish,
-    /// FSM phase: session closed with error.
-    Abort,
-    Unknown(String),
-}
-
-impl ToolSessionPhase {
-    /// True for any FSM session phase (Open/Send/Read/Next/Finish/Abort), where `Read` is the
-    /// analytics bucket for archive inspection metadata (`search_read` / `page_read`).
-    /// These tool calls are represented in history by `SessionStep` events — the
-    /// raw ToolCall/ToolResult entries are suppressed to enforce the universal Read interface.
-    pub fn is_session_phase(&self) -> bool {
-        !matches!(self, Self::Execute | Self::Unknown(_))
-    }
-
-    pub fn from_metadata(metadata: &Value) -> Self {
-        let phase = metadata
-            .get("phase")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        match phase {
-            "execute" => Self::Execute,
-            "open" => Self::Open,
-            "send" => Self::Send,
-            // Archive paging / search share the same session phase bucket for analytics.
-            "read" | "search_read" | "page_read" => Self::Read,
-            "next" => Self::Next,
-            "finish" => Self::Finish,
-            "abort" => Self::Abort,
-            other => Self::Unknown(other.to_string()),
-        }
-    }
-
-    pub fn label(&self) -> String {
-        match self {
-            Self::Execute => "execute".to_string(),
-            Self::Open => "open".to_string(),
-            Self::Send => "send".to_string(),
-            Self::Read => "read".to_string(),
-            Self::Next => "next".to_string(),
-            Self::Finish => "finish".to_string(),
-            Self::Abort => "abort".to_string(),
-            Self::Unknown(value) => value.clone(),
-        }
-    }
 }
 
 /// Reader for task and conversation context used by agents to build prompts.

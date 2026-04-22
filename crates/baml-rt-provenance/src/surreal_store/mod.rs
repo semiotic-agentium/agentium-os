@@ -73,7 +73,7 @@ use std::{
 
 use baml_rt_core::{
     backoff::backoff_delay,
-    ids::{AgentId, TaskId},
+    ids::{AgentId, ContextId, TaskId},
 };
 pub use builder::{RemoteConfig, RemoteCredentials, SurrealBackend, SurrealStoreBuilder};
 use dashmap::DashMap;
@@ -83,8 +83,12 @@ use surrealdb::{Surreal, engine::any::Any};
 use self::helpers::{map_surreal_error, query_take_zero};
 use crate::{
     error::{ProvenanceError, Result},
+    id_semantics::{MessageEntityId, MessageEntityInput},
     mermaid_cache::MermaidCache,
     normalizer::ProvNormalizer,
+    surreal_tables::{TBL_EDGE, TBL_NODE},
+    types::ProvEntityId,
+    vocabulary::context_scope,
 };
 
 /// Maximum number of attempts (including the first) for a write that hits
@@ -158,6 +162,73 @@ impl SurrealProvenanceStore {
 
     pub(super) async fn query_sql_rows(&self, sql: &str) -> Result<Vec<Value>> {
         self.query_sql_rows_mapped(sql, map_surreal_error).await
+    }
+
+    /// Message nodes scoped to a context with this `a2a_activity_anchor`, if any.
+    pub(super) async fn existing_message_node_id_for_activity_anchor(
+        &self,
+        context_id: &ContextId,
+        activity_anchor: &str,
+    ) -> Result<Option<String>> {
+        let ctx_node = crate::id_semantics::context_entity_id_string(context_id.as_str());
+        let q = format!(
+            "SELECT node_id FROM {TBL_NODE} WHERE node_id IN (\
+               SELECT VALUE from_id FROM {TBL_EDGE} \
+               WHERE to_id = $ctx_node AND rel_type = $scoped_rel AND from_label = 'Message'\
+             ) AND props.a2a_activity_anchor = $anchor LIMIT 1"
+        );
+        let mut response = self
+            .db
+            .query(&q)
+            .bind(("ctx_node", ctx_node))
+            .bind(("scoped_rel", context_scope::SCOPED_TO))
+            .bind(("anchor", activity_anchor.to_string()))
+            .await
+            .map_err(map_surreal_error)?;
+        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        Ok(rows.first().and_then(|r| {
+            r.get("node_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        }))
+    }
+
+    /// Fails the write if another Message node already owns this activity anchor under the context
+    /// scope with a different `node_id` than the event-derived message entity id.
+    pub(super) async fn enforce_message_activity_anchor_invariant(
+        &self,
+        event: &crate::events::ProvEvent,
+    ) -> Result<()> {
+        let (ctx, msg_id) = match event.data() {
+            crate::events::ProvEventData::MessageReceived { id, .. }
+            | crate::events::ProvEventData::MessageSent { id, .. } => {
+                let Some(ctx) = event.context_id_opt() else {
+                    return Ok(());
+                };
+                (ctx, id)
+            }
+            _ => return Ok(()),
+        };
+        let anchor = event.id().as_str();
+        let expected = ProvEntityId::derived::<MessageEntityId>(MessageEntityInput {
+            context_id: ctx,
+            message_id: msg_id,
+        });
+        let Some(existing) = self
+            .existing_message_node_id_for_activity_anchor(ctx, anchor)
+            .await?
+        else {
+            return Ok(());
+        };
+        if existing != expected.as_str() {
+            return Err(ProvenanceError::MessageActivityAnchorConflict {
+                activity_anchor: anchor.to_string(),
+                context_id: ctx.as_str().to_string(),
+                existing_node_id: existing,
+                expected_entity_id: expected.as_str().to_string(),
+            });
+        }
+        Ok(())
     }
 
     pub(super) async fn run_event_write_plan(

@@ -249,9 +249,9 @@ struct NormalizedContextItem {
 }
 
 fn normalize_context_item(
-    item: &baml_rt_provenance::store::ProvenanceConversationContextItem,
+    item: &baml_rt_conversation::view::ProvenanceConversationContextItem,
 ) -> NormalizedContextItem {
-    use baml_rt_provenance::store::{ConversationItemContent, ToolOutcome};
+    use baml_rt_conversation::view::{ConversationItemContent, ToolOutcome};
 
     let (content_keys, tool_name, tool_phase, has_result, has_error) = match &item.content {
         ConversationItemContent::Message { .. } => {
@@ -306,7 +306,7 @@ struct NormalizedConversationContext {
 }
 
 fn normalize_conversation_context(
-    items: &[baml_rt_provenance::store::ProvenanceConversationContextItem],
+    items: &[baml_rt_conversation::view::ProvenanceConversationContextItem],
 ) -> NormalizedConversationContext {
     let normalized: Vec<NormalizedContextItem> = items.iter().map(normalize_context_item).collect();
     // Don't sort — preserve insertion order from the store read.

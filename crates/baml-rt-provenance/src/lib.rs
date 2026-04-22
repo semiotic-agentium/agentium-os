@@ -8,13 +8,16 @@
 //! **Heuristics, backfills, and fallbacks must never be used to project graphs.**
 //! If a projection (export, query, render) is impossible given the stored graph,
 //! the graph construction (write path) is incorrect. Fix the write path.
+//!
+//! Agent-visible **conversation row types** (`ProvenanceConversationContextItem`, tool shells,
+//! etc.) and pure projection live in [`baml_rt_conversation`]; this crate re-exports only
+//! storage traits and I/O. Import view types from `baml_rt_conversation::view`, not from here.
 
 pub mod a2a_graph_event_recorder;
 pub mod builders;
 pub mod bus_subscriber;
 pub mod citation_queries;
 pub mod context_metrics_queries;
-pub mod conversation_projection;
 pub mod document;
 pub mod effect_subscriber;
 pub mod episode;
@@ -45,12 +48,12 @@ pub use a2a_graph_event_recorder::{
     A2aGraphEventRecorder, ArtifactUpdateContext, StatusUpdateContext, record_artifact_update,
     record_status_update,
 };
+pub use baml_rt_conversation::provenance_item_to_projection_item;
 pub use baml_rt_vocabulary::{
     A2aGraphStore, A2aGraphStoreError, A2aGraphStoreResult, TaskSubgraphNode,
     TaskSubgraphUpdateNode,
 };
 pub use bus_subscriber::ProvenanceBusSubscriber;
-pub use conversation_projection::provenance_item_to_projection_item;
 pub use effect_subscriber::ProvenanceEffectSubscriber;
 pub use episode::{
     ArtifactSummary, CachedEpisode, Episode, EpisodeArchiveSource, EpisodeContent,
@@ -83,11 +86,10 @@ pub use normalizer::{
 pub use store::{
     ActivityRef, ArchiveRef, PayloadRef, PlanningIntentRecord, PlanningPlanRecord,
     PlanningPlanStepRecord, ProvenanceArchivePayload, ProvenanceArchiveRecord,
-    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
-    ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest,
+    ProvenanceContextReader, ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest,
     ProvenanceOpsQueryResponse, ProvenanceOpsResource, ProvenanceOutcomeSegment,
     ProvenancePlanningQuery, ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceResponseProfile,
-    ProvenanceWriter, SessionStepOp, ToolSessionPhase, conversation_history_role_for_message,
+    ProvenanceWriter,
 };
 pub use surreal_config::SurrealStoreConfig;
 pub use surreal_store::{

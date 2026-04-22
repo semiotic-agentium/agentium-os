@@ -5,7 +5,7 @@
 //!
 //! - `Message`     → `{HistoryRef} {text}` (e.g. `#1 …`) via [`RefTable::insert_history`]
 //! - `ToolCall`    → `{HistoryRef} {describe_invocation_with_hint(...)}`
-//! - `ToolResult`  → archive_read render of result value (first 40 lines)
+//! - `ToolResult`  → archive_read render of result value (first `DEFAULT_TOOL_RESULT_INLINE_LINES` lines)
 //! - `ToolError`   → archive_read render of error value
 //! - `SessionStep` → same rendering as above; items use role **`tool`** in `conversation_history`
 //!   (not `assistant`). `Open` / `SendDone` (header ± archive body) / `Read` as the **grep(1)/cat(1)
@@ -19,7 +19,10 @@ use std::collections::HashSet;
 use serde_json::{Value, json};
 
 use crate::{
-    archive_read::{PageLimit, session_read_command_line},
+    archive_read::{
+        DEFAULT_TOOL_RESULT_INLINE_LINES, PageLimit, SEND_DONE_HISTORY_INLINE_LINES,
+        session_read_command_line,
+    },
     archive_refs::{HistoryEntry, RefTable},
     tools::ToolRegistry,
 };
@@ -117,21 +120,22 @@ pub struct ProjectionRenderOptions {
 impl Default for ProjectionRenderOptions {
     fn default() -> Self {
         Self {
-            tool_result: PageLimit::new(40),
+            tool_result: PageLimit::new(DEFAULT_TOOL_RESULT_INLINE_LINES),
             tool_error: PageLimit::new(10),
-            send_done: PageLimit::default(),
+            send_done: PageLimit::new(SEND_DONE_HISTORY_INLINE_LINES),
             tool_call_fallback_json: false,
         }
     }
 }
 
-/// Wider caps for episode replay / UI session-history mirroring (still bounded by [`PageLimit::MAX`]).
+/// Projection options for episode session-history and any surface that mirrors user-visible history.
+/// Inline windows stay teaser-sized; archive breadth is via session `Read` steps, not giant `SendDone` dumps.
 #[must_use]
 pub fn episode_session_history_projection_options() -> ProjectionRenderOptions {
     ProjectionRenderOptions {
-        tool_result: PageLimit::new(PageLimit::MAX),
-        tool_error: PageLimit::new(PageLimit::MAX),
-        send_done: PageLimit::default(),
+        tool_result: PageLimit::new(DEFAULT_TOOL_RESULT_INLINE_LINES),
+        tool_error: PageLimit::new(DEFAULT_TOOL_RESULT_INLINE_LINES),
+        send_done: PageLimit::new(SEND_DONE_HISTORY_INLINE_LINES),
         tool_call_fallback_json: true,
     }
 }
@@ -166,7 +170,7 @@ pub fn project_prompt_context(
             }
             RenderedEntry::Two(first, second) => {
                 history.push(json!({ "role": item.role, "content": first }));
-                history.push(json!({ "role": item.role, "content": second }));
+                history.push(json!({ "role": "read", "content": second }));
             }
         }
     }
@@ -275,7 +279,13 @@ fn render_projection_content_with_state(
             if formatted.trim().is_empty() {
                 RenderedEntry::Filtered
             } else {
-                RenderedEntry::One(format!("{tool_name}:\n{formatted}"))
+                let range_comment = page.session_range_comment();
+                let text = if range_comment.is_empty() {
+                    format!("{tool_name}:\n{formatted}")
+                } else {
+                    format!("{tool_name}:{range_comment}\n{formatted}")
+                };
+                RenderedEntry::One(text)
             }
         }
 
@@ -291,7 +301,13 @@ fn render_projection_content_with_state(
             if formatted.trim().is_empty() {
                 RenderedEntry::Filtered
             } else {
-                RenderedEntry::One(format!("{tool_name} [error]:\n{formatted}"))
+                let range_comment = page.session_range_comment();
+                let text = if range_comment.is_empty() {
+                    format!("{tool_name} [error]:\n{formatted}")
+                } else {
+                    format!("{tool_name} [error]:{range_comment}\n{formatted}")
+                };
+                RenderedEntry::One(text)
             }
         }
 
@@ -312,12 +328,23 @@ fn render_projection_content_with_state(
 
                 match archive_reader.and_then(|r| r(archive_ref, None, 0, opts.send_done.get())) {
                     Some(content) => {
+                        // Teaser window (send_done cap) for exact duplicate Read views.
                         inlined_read_pages.insert(read_view_key(
                             "page",
                             archive_ref,
                             None,
                             0,
                             opts.send_done.get(),
+                        ));
+                        // Default first-page view (offset 0, limit PageLimit::DEFAULT) so a follow-on
+                        // `PageRead { offset: 0, limit: 200 }` dedupes to command-only — same logical
+                        // view as the standard session read, not a second key with a different limit.
+                        inlined_read_pages.insert(read_view_key(
+                            "page",
+                            archive_ref,
+                            None,
+                            0,
+                            crate::archive_read::PageLimit::DEFAULT,
                         ));
                         RenderedEntry::Two(header.clone(), content)
                     }
@@ -372,6 +399,33 @@ fn render_projection_content_with_state(
 mod tests {
     use super::*;
     use crate::{archive_refs::RefTable, tools::ToolRegistry};
+
+    #[test]
+    fn send_done_two_emits_read_role_on_second_history_row() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![PromptProjectionItem {
+            timestamp_ms: 1,
+            activity_anchor: "evt-sd".to_string(),
+            role: "assistant".to_string(),
+            content: PromptProjectionContent::SessionStep {
+                tool_name: "demo/tool".to_string(),
+                op: SessionStepProjection::SendDone {
+                    archive_ref: "@3".to_string(),
+                    header: "@3 demo/tool 'ok' [1 lines]".to_string(),
+                },
+            },
+        }];
+        let archive_reader =
+            |archive_ref: &str, _grep: Option<&str>, _offset: usize, _limit: usize| {
+                Some(format!("cat -n {archive_ref}\nBODY"))
+            };
+        let history = project_prompt_context(items, &registry, &ref_table, Some(&archive_reader));
+        let arr = history.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["role"].as_str(), Some("assistant"));
+        assert_eq!(arr[1]["role"].as_str(), Some("read"));
+    }
 
     #[test]
     fn message_history_line_includes_history_ref_prefix() {
@@ -570,6 +624,33 @@ mod tests {
         assert_eq!(
             payload_occurrences, 1,
             "default Read view should be compacted when SendDone already inlined the same page"
+        );
+    }
+
+    #[test]
+    fn tool_result_includes_pagination_hint_when_truncated() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let rows: Vec<Value> = (0..100).map(|i| json!(format!("line{i}"))).collect();
+        let items = vec![PromptProjectionItem {
+            timestamp_ms: 1,
+            activity_anchor: "evt-tr".into(),
+            role: "tool".into(),
+            content: PromptProjectionContent::ToolResult {
+                tool_name: "demo/tool".into(),
+                result: Value::Array(rows),
+            },
+        }];
+        let history = project_prompt_context(items, &registry, &ref_table, None);
+        let arr = history.as_array().expect("array");
+        let content = arr[0]["content"].as_str().expect("content");
+        assert!(
+            content.contains("more — offset="),
+            "expected pagination footer in: {content}"
+        );
+        assert!(
+            content.contains(&format!("offset={DEFAULT_TOOL_RESULT_INLINE_LINES}")),
+            "expected default cap offset in: {content}"
         );
     }
 }

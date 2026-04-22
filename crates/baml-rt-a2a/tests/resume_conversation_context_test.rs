@@ -13,6 +13,7 @@ use baml_rt_a2a::{
     a2a_store::{ProvenanceTaskStore, TaskRepository},
     a2a_types::{Message, MessageRole, Part},
 };
+use baml_rt_conversation::view::ProvenanceContextMessage;
 use baml_rt_core::ids::{AgentId, ContextId, ExternalId, TaskId, UuidId};
 use baml_rt_provenance::{ProvenanceContextReader, ProvenanceWriter, SurrealStoreBuilder};
 use uuid::Uuid;
@@ -39,10 +40,7 @@ fn make_message(
     }
 }
 
-fn assert_context_messages_contain(
-    messages: &[baml_rt_provenance::ProvenanceContextMessage],
-    needle: &str,
-) {
+fn assert_context_messages_contain(messages: &[ProvenanceContextMessage], needle: &str) {
     let flat: String = messages
         .iter()
         .flat_map(|m| m.content.iter().map(String::as_str))

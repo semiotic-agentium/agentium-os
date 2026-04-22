@@ -1,4 +1,5 @@
 // Discover which agents are available to handle the user's request.
+// If a prior Send already archived a listing at @N, page with Read before re-Sending the same broad query.
 // FSM phase instructions are injected by codegen — this prompt carries goal context only.
 function GetDiscoverAgentsPlan(
   inferred_intent: string,

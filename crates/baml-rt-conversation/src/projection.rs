@@ -1,13 +1,17 @@
-//! Convert provenance conversation rows into [`baml_rt_tools::prompt_projection`] items.
-//!
-//! Shared with the A2A transport path so citation resolution rebuilds the same
-//! `#N` / `@N` [`baml_rt_tools::archive_refs::RefTable`] the LLM saw in `ctx.tags['conversation_history']`.
+//! Convert conversation view rows into [`baml_rt_tools::prompt_projection`] items for BAML
+//! `ctx.tags['conversation_history']`.
 
-use baml_rt_tools::prompt_projection::{
-    PromptProjectionContent, PromptProjectionItem, SessionStepProjection,
+use baml_rt_tools::{
+    archive_read::{PageLimit, format_session_read_body_from_json_value},
+    archive_refs::RefTable,
+    prompt_projection::{
+        ArchiveReader, ProjectionRenderOptions, PromptProjectionContent, PromptProjectionItem,
+        SessionStepProjection, projection_history_pairs,
+    },
+    tools::ToolRegistry,
 };
 
-use crate::store::{
+use crate::view::{
     ConversationItemContent, ProvenanceConversationContextItem, SessionStepOp, ToolOutcome,
 };
 
@@ -79,4 +83,56 @@ pub fn provenance_item_to_projection_item(
         role: item.role,
         content,
     })
+}
+
+/// `SendDone` session line: JSON replay → cat-n body (same cap as prompt projection `send_done`).
+pub fn session_history_body_from_send_done_replay(
+    payload: &serde_json::Value,
+    archive_ref: &str,
+    limit: usize,
+) -> Option<String> {
+    format_session_read_body_from_json_value(payload, archive_ref, None, 0, PageLimit::new(limit))
+}
+
+/// Line pairs `(role, content)` before wire citation prefixing, matching
+/// [`projection_history_pairs`] / SendDone replay split used for BAML `conversation_history`.
+#[must_use]
+pub fn projection_pairs_for_conv_item(
+    item: &ProvenanceConversationContextItem,
+    tool_registry: &ToolRegistry,
+    ref_table: &RefTable,
+    archive_reader: Option<ArchiveReader<'_>>,
+    opts: ProjectionRenderOptions,
+) -> Option<Vec<(String, String)>> {
+    if !item.content.is_meaningful() {
+        return None;
+    }
+
+    if let ConversationItemContent::SessionStep(ss) = &item.content
+        && let SessionStepOp::SendDone {
+            archive_ref,
+            header,
+            ..
+        } = &ss.op
+        && let Some(payload) = ss.send_done_replay_payload.as_ref()
+        && let Some(body) = session_history_body_from_send_done_replay(
+            payload,
+            archive_ref.as_str(),
+            opts.send_done.get(),
+        )
+    {
+        return Some(vec![
+            (item.role.clone(), header.clone()),
+            ("read".to_string(), body),
+        ]);
+    }
+
+    let proj = provenance_item_to_projection_item(item.clone())?;
+    Some(projection_history_pairs(
+        &proj,
+        tool_registry,
+        ref_table,
+        archive_reader,
+        opts,
+    ))
 }

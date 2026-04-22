@@ -3,6 +3,7 @@
 use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
+use baml_rt_conversation::view::{ProvenanceContextMessage, ProvenanceConversationContextItem};
 use baml_rt_core::{
     A2aJsChatHost, A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDispatchAck,
     AgentDispatchRequest, AgentInstanceId, AgentPackageName, BamlRtError, Citation, Result,
@@ -15,9 +16,8 @@ use baml_rt_core::{
 };
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{
-    A2aGraphStore, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
-    ProvenanceConversationContextItem, ProvenanceEffectSubscriber, ProvenanceInterceptor,
-    ProvenanceWriter,
+    A2aGraphStore, ProvEvent, ProvenanceContextReader, ProvenanceEffectSubscriber,
+    ProvenanceInterceptor, ProvenanceWriter,
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, BridgeHandle, QuickJSBridge, QuickJSConfig,
@@ -372,7 +372,8 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
                 let ctx = context_id_str.clone();
                 let boxed: Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>> =
                     Box::new(move |archive_ref_str, grep_str, offset, limit| {
-                        let short_ref = baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
+                        let short_ref =
+                            baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
                         let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
                         let entry = ref_table.get(short_ref)?;
                         let grep = grep_str
@@ -389,25 +390,12 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
                         // separate history entry that carries this as content.
                         let cmd = match grep_str.filter(|s| !s.is_empty()) {
                             Some(pat) => format!("grep -n '{pat}' {archive_ref_str}"),
-                            None      => format!("cat -n {archive_ref_str}"),
+                            None => format!("cat -n {archive_ref_str}"),
                         };
                         if page.lines.is_empty() {
                             return Some(format!("{cmd}\n# no matches"));
                         }
-                        let first = page.lines.first().map(|l| l.original_line_number).unwrap_or(1);
-                        let last  = page.lines.last().map(|l| l.original_line_number).unwrap_or(1);
-                        let range_comment = if page.has_more {
-                            format!(
-                                "  # lines {first}-{last} of {} ({} more — offset={} for next page)",
-                                page.total_matched,
-                                page.total_matched - page.next_offset,
-                                page.next_offset,
-                            )
-                        } else if first == 1 && last == page.total_matched {
-                            String::new()
-                        } else {
-                            format!("  # lines {first}-{last} of {}", page.total_matched)
-                        };
+                        let range_comment = page.session_range_comment();
                         Some(format!("{cmd}{range_comment}\n{formatted}"))
                     });
                 boxed
@@ -434,7 +422,7 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
 pub(crate) fn to_projection_item(
     item: ProvenanceConversationContextItem,
 ) -> Option<PromptProjectionItem> {
-    baml_rt_provenance::provenance_item_to_projection_item(item)
+    baml_rt_conversation::provenance_item_to_projection_item(item)
 }
 
 // ---------------------------------------------------------------------------
@@ -2652,10 +2640,10 @@ mod tests {
     /// prompts: the same call sequence as `ProjectingConversationContextProvider::conversation_history_json`.
     #[tokio::test]
     async fn session_history_renders_correctly_through_full_pipeline() {
+        use baml_rt_conversation::view::SessionStepOp;
         use baml_rt_core::ids::{AgentId, ExternalId, MessageId, UuidId};
         use baml_rt_provenance::{
             CallScope, ProvEvent, ProvenanceContextReader, ProvenanceWriter, SurrealStoreBuilder,
-            store::SessionStepOp,
         };
         use baml_rt_tools::{
             ToolRegistry,

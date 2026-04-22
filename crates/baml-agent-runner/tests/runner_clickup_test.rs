@@ -5,15 +5,16 @@ mod common;
 use std::{fs, path::PathBuf, sync::Arc};
 
 use baml_rt::baml::BamlRuntimeManager;
+use baml_rt_conversation::view::{
+    ConversationItemContent, ProvenanceConversationContextItem, ToolOutcome,
+};
 use baml_rt_core::{
     bus::BusWithEffects,
     ids::{AgentId, ContextId, ExternalId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
     AgentType, PlanningPlanRecord, PlanningPlanStepRecord, ProvEvent, ProvenanceContextReader,
-    ProvenanceConversationContextItem, ProvenancePlanningQuery, ProvenanceWriter,
-    SurrealProvenanceStore,
-    store::{ConversationItemContent, ToolOutcome},
+    ProvenancePlanningQuery, ProvenanceWriter, SurrealProvenanceStore,
 };
 use baml_tools_clickup::ClickUpTool;
 use common::{

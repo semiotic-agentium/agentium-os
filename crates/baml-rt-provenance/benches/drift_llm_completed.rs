@@ -8,6 +8,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use baml_rt_conversation::view::{ProvenanceContextMessage, ProvenanceConversationContextItem};
 use baml_rt_core::{
     Outcome,
     bus::{EffectEvent, EffectSubscriber, LlmEffectMetadata},
@@ -15,8 +16,7 @@ use baml_rt_core::{
 };
 use baml_rt_embedding::{DriftConfig, EmbeddingProvider, provider::EmbeddingError};
 use baml_rt_provenance::{
-    ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
-    ProvenanceConversationContextItem, ProvenanceEffectSubscriber, ProvenanceWriter,
+    ProvEvent, ProvenanceContextReader, ProvenanceEffectSubscriber, ProvenanceWriter,
 };
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use serde_json::json;

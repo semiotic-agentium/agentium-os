@@ -9,14 +9,15 @@ use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt::{InterceptorDecision, LLMCallContext, LLMInterceptor, baml::BamlRuntimeManager};
+use baml_rt_conversation::view::{
+    ConversationItemContent, ProvenanceConversationContextItem, SessionStepOp, ToolOutcome,
+};
 use baml_rt_core::{
     bus::BusWithEffects,
     ids::{AgentId, ContextId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, ProvEvent, ProvenanceContextReader, ProvenanceConversationContextItem,
-    ProvenanceWriter, SurrealProvenanceStore,
-    store::{ConversationItemContent, SessionStepOp, ToolOutcome},
+    AgentType, ProvEvent, ProvenanceContextReader, ProvenanceWriter, SurrealProvenanceStore,
 };
 use baml_tools_slack::SlackTool;
 use common::{

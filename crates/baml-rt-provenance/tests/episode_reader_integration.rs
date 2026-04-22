@@ -7,13 +7,14 @@
 
 use std::{sync::Arc, time::Duration};
 
+use baml_rt_conversation::view::SessionStepOp;
 use baml_rt_core::{
     Outcome,
     ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
     AgentType, CallScope, Episode, EpisodeContent, LlmUsage, ProvEvent, ProvenanceWriter, StepType,
-    SurrealStoreBuilder, episode::EpisodeReader, store::SessionStepOp,
+    SurrealStoreBuilder, episode::EpisodeReader,
 };
 
 /// `ToolRead` rows with rendered archive/grep bodies (SendDone inline read + explicit Read), in timeline order.

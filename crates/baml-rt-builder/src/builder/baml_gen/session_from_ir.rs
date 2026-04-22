@@ -44,6 +44,8 @@ PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Fi
 /// fallback and looks like no agents exist.
 const DISCOVER_AGENTS_SEND_DISCIPLINE: &str = r#"DISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
 
+PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agents listing at @N, prefer Read on that @N (grep/limit/offset) to page or narrow — do not re-Send discover_agents with the same broad query as a substitute for pagination.
+
 "#;
 
 /// Bundle emitted from IR: polymorphic Open/plan classes and per-phase executor functions.
@@ -239,7 +241,7 @@ pub fn render_generated_session_baml_from_ir(
 
             let act_preamble = if tool_name_str == "system/discover_agents" {
                 format!(
-                    "[ACT] A {tool_name_str} session is open. Emit Send with your query, or Read @N if a prior Send for this tool is already archived in history.\\n\\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
+                    "[ACT] A {tool_name_str} session is open. Emit Send for a new query, or Read an existing @N archive from history (grep/limit/offset) when listing output is already fetched — do not re-Send the same discover_agents listing without trying Read/pagination first.\\n\\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
                 )
             } else {
                 format!(
@@ -429,4 +431,30 @@ fn generate_polymorphic_session_baml_for_function(
     write_line(output, "}")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn discover_agents_send_discipline_requires_paging_before_resend() {
+    assert!(
+        DISCOVER_AGENTS_SEND_DISCIPLINE.contains("PAGING BEFORE RE-SEND"),
+        "expected page-before-resend rule in discover_agents discipline"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn discover_agents_act_preamble_aligns_with_generic_archive_discipline() {
+    let tool = "system/discover_agents";
+    let act = format!(
+        "[ACT] A {tool} session is open. Emit Send for a new query, or Read an existing @N archive from history (grep/limit/offset) when listing output is already fetched — do not re-Send the same discover_agents listing without trying Read/pagination first.\\n\\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
+    );
+    assert!(
+        act.contains("do not re-Send the same discover_agents listing"),
+        "expected explicit anti-resend for duplicate listing: {act}"
+    );
+    assert!(
+        act.contains("Read/pagination"),
+        "expected Read/pagination coupling: {act}"
+    );
 }
