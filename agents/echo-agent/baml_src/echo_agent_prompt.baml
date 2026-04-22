@@ -6,6 +6,7 @@ function ChooseEchoAgentAction(user_message: string) -> DevEchoSessionPlan {
     HARD DEMO INVARIANT:
     - Exactly ONE Send per user turn, then Finish.
     - Never call dev/echo twice for the same user turn.
+    - Return EXACTLY ONE JSON object per call (never two objects).
 
     Behavior rules (follow strictly):
     1. If no dev/echo session is open: emit Open { op: "Open", tool_name: "dev/echo" }.
@@ -24,6 +25,7 @@ function ChooseEchoAgentAction(user_message: string) -> DevEchoSessionPlan {
       hop 2: { "op": "Finish" }
 
     Return one valid session step per hop.
+    Respect the PHASE CONSTRAINT at the bottom strictly (for example, in select/open phase, output only Open).
 
     {{ ctx.output_format }}
 
@@ -43,24 +45,23 @@ function PresentEchoAgentReply(user_message: string) -> StructuredReply {
   prompt #"
     Write the user-facing answer for the echo agent.
 
-    The dev/echo tool mirrors the user's input. For each @N archive entry
-    you see, the `echoed:` field contains the user's text followed by a
-    bracketed stamp: `[at=<timestamp> pid=<pid> invocation_id=<uuid>]`.
+    The dev/echo tool output appears in the latest @N archive as a line like:
+      `reply: <text>`
 
-    Your job: render the LATEST @N archive's `echoed` value verbatim,
-    including the bracketed stamp. If there are multiple @N entries,
-    quote only the highest-numbered one (most recent invoke).
+    Your job: render the LATEST @N archive's reply text verbatim.
+    If there are multiple @N entries, use only the highest-numbered one
+    (most recent invoke).
 
     Format:
       {
         "parts": [
-          { "type": "text", "text": "echo returned: <full echoed string>" }
+          { "type": "text", "text": "echo returned: <reply text>" }
         ],
         "citations": ["@<latest-N>"]
       }
 
     Do NOT answer the user's greeting or add commentary.
-    Do NOT omit the stamp -- it proves the tool actually ran.
+    Do NOT fabricate fields (no timestamp/pid/invocation_id unless present in the archive text).
 
     {{ ctx.output_format }}
 
