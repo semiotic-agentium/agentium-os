@@ -18,11 +18,11 @@ kubectl create namespace agentium
 # SurrealDB credentials
 kubectl create secret generic surrealdb-credentials -n agentium \
   --from-literal=username=agentium \
-  --from-literal=password=$(openssl rand -hex 32)
+  --from-literal=password="$(openssl rand -hex 32)"
 
 # Runner operator token
 kubectl create secret generic runner-token -n agentium \
-  --from-literal=token=$(openssl rand -hex 32)
+  --from-literal=token="$(openssl rand -hex 32)"
 
 # fnox.toml (LLM configuration)
 kubectl create configmap fnox-config -n agentium \
@@ -75,9 +75,12 @@ docker build -t your-registry.example.com/agentium-runner:0.1.0 .
 docker push your-registry.example.com/agentium-runner:0.1.0
 ```
 
+## Next step
+
+For the full first-run operator flow (including building the runner image, creating the required objects, authenticated publish/deploy, and the packaged smoke script), see [`docs/k8s-pilot-operator-guide.md`](../../../docs/k8s-pilot-operator-guide.md).
+
 ## What this chart does not cover
 
 - **Ingress / TLS**: operator access is via `kubectl port-forward` to the API ClusterIP service. Ingress and TLS termination are out of scope for the pilot.
-- **Remote config persistence**: config changes do not yet survive pod restarts in remote SurrealDB mode. Tracked in #222.
-- **Full operator runbook**: a complete first-run guide is tracked in #224.
 - **E2E harness convergence**: the test harness still uses raw manifests. Tracked in #225.
+- **Load-test baseline**: performance SLOs for the pilot topology. Tracked in #226.

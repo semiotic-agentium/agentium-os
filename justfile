@@ -616,3 +616,9 @@ list-agents:
 # First run builds the Docker image (~5 min) and agent builder binary.
 e2e-k8s:
     ./scripts/e2e-k8s/run.sh
+
+# Run the Kubernetes pilot first-run smoke against an installed Helm release.
+# Prerequisites: a running chart install (see docs/k8s-pilot-operator-guide.md)
+# and an open port-forward, or pass `--port-forward` to have the script manage it.
+k8s-pilot-smoke *args='':
+    ./scripts/k8s-pilot-smoke.sh {{args}}
