@@ -1,6 +1,34 @@
-# E2E K8s Test Harness
+# Kubernetes Package Validation
 
-End-to-end tests that exercise the Kubernetes deployment feature on a real k3d cluster. These tests cover the kubernetes surface that the Rust-level cluster tests (`runner_cluster_test.rs`) cannot reach: pod DNS resolution, PVC persistence across restarts, kubelet probe behaviour, StatefulSet lifecycle, and kubectl-driven operations.
+The repo has two in-repo validation paths for the Kubernetes pilot:
+
+1. **Authoritative package-validation flow** — `scripts/verify-k8s-pilot-package.sh`.
+   Brings up a k3d cluster, makes the runner image reachable via the
+   selected image strategy, creates the three package-required objects,
+   installs the supported Helm chart
+   (`deploy/helm/agentium-os/`, values from `examples/k3d-values.yaml`),
+   runs `scripts/k8s-pilot-smoke.sh --port-forward` against the running
+   release, and verifies both runner pods register in SurrealDB
+   `cluster_runners`. This is the in-repo mirror of the operator flow
+   documented in `docs/k8s-pilot-operator-guide.md`. No raw manifests, no
+   post-install `kubectl set env` / `kubectl patch`.
+2. **Richer scenario coverage** — `scripts/e2e-k8s/run.sh`. 15 scenarios
+   on top of the same Helm-installed topology: pod DNS resolution, PVC
+   persistence across restarts, kubelet probe behaviour, StatefulSet
+   lifecycle, cross-pod A2A, migration, heartbeat TTL, SSRF, token
+   enforcement, and full agent lifecycle.
+
+Both paths now install via `helm upgrade --install` using the shared
+bringup helpers in `scripts/e2e-k8s/lib.sh`
+(`ensure_runner_image_available`, `create_pilot_objects`,
+`install_pilot_chart`, `resolve_chart_names`, `wait_for_runner_readyz`).
+A chart regression that breaks package wiring (wrong env name, wrong
+ConfigMap mount, wrong secret key) now surfaces here rather than being
+masked by post-install `kubectl` mutations.
+
+The raw manifests under `deploy/k8s/` and `deploy/demo/run-demo.sh`
+remain as demo/legacy assets (see `CLAUDE.md`) and are **not** the
+supported install surface.
 
 ## Prerequisites
 
@@ -9,12 +37,30 @@ End-to-end tests that exercise the Kubernetes deployment feature on a real k3d c
 | Docker **or** Podman | recent | Podman requires rootful mode (see below) |
 | k3d | >= 5.x | [k3d.io](https://k3d.io) |
 | kubectl | >= 1.28 | Must be able to reach k3d clusters |
+| helm | >= 3.x | Installs the supported chart |
 | jq | any | JSON processing for assertions |
 | curl | any | HTTP requests to pod surfaces |
 | Rust toolchain | nightly (pinned via `rust-toolchain.toml`) | Builds the agent builder binary |
 | Node.js | >= 22 | Required by the builder for TypeScript compilation |
 
 ## Running
+
+### Authoritative package validation
+
+```bash
+just verify-k8s-pilot-package
+```
+
+Or directly:
+
+```bash
+./scripts/verify-k8s-pilot-package.sh
+```
+
+Flags: `--no-build`, `--keep-cluster`, `--image-strategy`,
+`--image-repository`, `--image-tag`, `--local-port`. See `--help`.
+
+### Richer scenario suite
 
 ```bash
 just e2e-k8s
@@ -25,6 +71,9 @@ Or directly:
 ```bash
 ./scripts/e2e-k8s/run.sh
 ```
+
+This is the same Helm topology the authoritative flow installs, plus 15
+scenario assertions (listed below).
 
 ### Options
 
@@ -83,22 +132,30 @@ On any scenario failure, the harness dumps diagnostic data before tearing down:
 
 ```
 ./e2e-k8s-logs/<timestamp>/
-├── runner-0.log              # Current pod logs
-├── runner-0-previous.log     # Previous container logs (if pod restarted)
-├── runner-1.log
-├── runner-1-previous.log
-├── surrealdb-0.log
-├── surrealdb-0-previous.log
-├── cluster_runners.json      # SurrealDB cluster registry dump
+├── agentium-agentium-os-runner-0.log            # Current pod logs
+├── agentium-agentium-os-runner-0-previous.log   # Previous container logs (if pod restarted)
+├── agentium-agentium-os-runner-1.log
+├── agentium-agentium-os-runner-1-previous.log
+├── agentium-agentium-os-surrealdb-0.log
+├── agentium-agentium-os-surrealdb-0-previous.log
+├── cluster_runners.json                         # SurrealDB cluster registry dump
 └── cluster_agent_placements.json
 ```
 
+File names reflect the chart-rendered StatefulSet names
+(`<release>-agentium-os-runner`, `<release>-agentium-os-surrealdb`). The
+default release is `agentium`.
+
 ### SurrealDB introspection
 
-To query the cluster registry manually while the cluster is running (with `--keep-cluster`):
+To query the cluster registry manually while the cluster is running (with `--keep-cluster`), use the chart-rendered SurrealDB pod name:
 
 ```bash
-kubectl exec -n agentium surrealdb-0 -c surrealdb -- \
+SURREAL_POD=$(kubectl -n agentium get statefulset \
+  -l app.kubernetes.io/instance=agentium,app.kubernetes.io/component=surrealdb \
+  -o jsonpath='{.items[0].metadata.name}')-0
+
+kubectl exec -n agentium "$SURREAL_POD" -c surrealdb -- \
   /surreal sql \
   --endpoint http://localhost:8000 \
   --username e2e --password e2e-test-pass \

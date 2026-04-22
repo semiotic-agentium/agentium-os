@@ -67,6 +67,15 @@ runner:
       cpu: "1"
       memory: 1Gi
 
+  # -- Runner logging.
+  logging:
+    # -- Value for the runner container's RUST_LOG env var. When empty, no
+    # RUST_LOG is set and the runner uses its compiled default. Targeted
+    # single-key seam for validation and debugging (e.g.
+    # "info,baml_rt_router=debug"); prefer this over post-install
+    # `kubectl set env`.
+    rustLog: ""
+
 # -- SurrealDB configuration (shared provenance store).
 # The pilot packages SurrealDB directly rather than depending on
 # the upstream Helm chart, which is unproven for v3

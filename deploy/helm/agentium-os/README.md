@@ -66,6 +66,8 @@ curl http://localhost:18080/readyz
 curl http://localhost:18080/agents
 ```
 
+For a scripted, end-to-end local validation of this same install path (cluster → three required objects → `helm upgrade --install` → smoke → cluster_runners verify), run `just verify-k8s-pilot-package` (see [`docs/testing/e2e-k8s.md`](../../../docs/testing/e2e-k8s.md)).
+
 ## Runner image
 
 There is no published Agentium runner image. `runner.image.repository` and `runner.image.tag` are required values with no defaults. You must build and push the runner image to your own registry:
@@ -84,5 +86,4 @@ For the full first-run operator flow (including building the runner image, creat
 ## What this chart does not cover
 
 - **Ingress / TLS**: operator access is via `kubectl port-forward` to the API ClusterIP service. Ingress and TLS termination are out of scope for the pilot.
-- **E2E harness convergence**: the test harness still uses raw manifests. Tracked in #225.
 - **Load-test baseline**: performance SLOs for the pilot topology. Tracked in #226.

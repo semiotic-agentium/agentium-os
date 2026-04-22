@@ -662,3 +662,11 @@ e2e-k8s:
 # and an open port-forward, or pass `--port-forward` to have the script manage it.
 k8s-pilot-smoke *args='':
     ./scripts/k8s-pilot-smoke.sh {{args}}
+
+# Authoritative Kubernetes pilot package-validation flow.
+# Mirrors docs/k8s-pilot-operator-guide.md end-to-end on a local k3d cluster:
+# builds the runner image, creates the three required objects, installs the
+# Helm chart, runs scripts/k8s-pilot-smoke.sh, and verifies runners register
+# in cluster_runners. No post-install kubectl patches.
+verify-k8s-pilot-package *args='':
+    ./scripts/verify-k8s-pilot-package.sh {{args}}

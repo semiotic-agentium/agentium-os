@@ -2,8 +2,20 @@
 # Agentium OS k3d demo — spins up a local k8s cluster with shared SurrealDB
 # and two runner pods for testing multi-runner agent portability.
 #
-# NOTE: This script is for local k3d development and demo purposes only.
-# For the supported Kubernetes install path, see deploy/helm/agentium-os/.
+# ===========================================================================
+# DEMO-ONLY LOCAL BOOTSTRAP. NOT the supported install contract.
+#
+# This script applies raw manifests under deploy/k8s/ and injects keys from
+# a .env file — it predates the Helm chart and exists only for ad-hoc local
+# exploration.
+#
+# For the supported install path see:
+#   - docs/k8s-pilot-operator-guide.md     — operator first-run flow
+#   - deploy/helm/agentium-os/README.md    — chart contract
+#   - scripts/verify-k8s-pilot-package.sh  — in-repo mirror of the
+#                                             operator flow (`just
+#                                             verify-k8s-pilot-package`)
+# ===========================================================================
 #
 # Prerequisites:
 #   - Docker Desktop or Podman (rootful mode)
