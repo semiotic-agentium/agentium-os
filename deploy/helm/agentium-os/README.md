@@ -75,6 +75,8 @@ docker build -t your-registry.example.com/agentium-runner:0.1.0 .
 docker push your-registry.example.com/agentium-runner:0.1.0
 ```
 
+For any real design-partner or shared-cluster install, that means supplying a cluster-reachable OCI image reference, typically via a private registry. The `k3d image import` flow above is a local-development exception only.
+
 ## Next step
 
 For the full first-run operator flow (including building the runner image, creating the required objects, authenticated publish/deploy, and the packaged smoke script), see [`docs/k8s-pilot-operator-guide.md`](../../../docs/k8s-pilot-operator-guide.md).

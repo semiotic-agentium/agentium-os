@@ -26,6 +26,8 @@ The supported install surface is the Helm chart at [`deploy/helm/agentium-os/`](
 
 The Agentium runner image is not published to a public registry. Operators build and push their own image.
 
+For any real design-partner or shared-cluster install, that means supplying a cluster-reachable OCI image reference, typically via a private registry. The `k3d image import` path below is a local-development exception only; it is not the long-term pilot install contract.
+
 ## Step 1 — Build and push the runner image
 
 ```bash
@@ -255,7 +257,7 @@ Deferred to follow-on pilot issues:
 
 - Authoritative package validation on top of this smoke flow — [#225](https://github.com/semiotic-agentium/agent-platform/issues/225).
 - Load-test baseline and performance SLOs — [#226](https://github.com/semiotic-agentium/agent-platform/issues/226).
-- Published runner image. Until then, operators build and push their own.
+- Published runner image. Until then, operators build and push their own cluster-reachable image, typically via a private registry. `k3d image import` is a local-development exception only.
 - Ingress / TLS termination. Operators front the API service with their own ingress controller if needed.
 - Multi-node SurrealDB HA. The pilot ships a single SurrealDB replica.
 - Conversational smoke coverage on the pilot path. The chat and A2A surfaces are exercised by the E2E harness ([`scripts/e2e-k8s/run.sh`](../scripts/e2e-k8s/run.sh)) and in-repo tests, but the operator-facing smoke uses the deterministic dispatch endpoint only so that success does not depend on an LLM call.
