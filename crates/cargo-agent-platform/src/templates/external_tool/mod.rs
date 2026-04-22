@@ -4,6 +4,7 @@
 //! [`Language`] enum; everything stringly-typed has been lifted into proper
 //! Rust types so the compiler can enforce exhaustive handling.
 
+pub mod bind_sandbox;
 pub mod lang;
 pub mod metadata_json;
 pub mod readme_md;
@@ -179,6 +180,10 @@ pub struct ScaffoldContext<'a> {
     pub runtime_digest: Option<String>,
     /// Optional sandbox entrypoint argv.
     pub sandbox_entrypoint: Vec<String>,
+    /// Whether to scaffold Docker-oriented bind helper artifacts.
+    ///
+    /// Only meaningful for `runtime=sandbox` + `sandbox_source=bind`.
+    pub generate_docker: bool,
 }
 
 impl<'a> ScaffoldContext<'a> {

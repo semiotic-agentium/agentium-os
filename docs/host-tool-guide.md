@@ -67,9 +67,9 @@ Useful sandbox flags:
 - `--runtime sandbox`
 - `--sandbox-source oci|bind`
 - `--sandbox-image <ref@sha256:...>` (OCI)
-- `--sandbox-bind-path <dir>` (Bind)
 - `--sandbox-entrypoint <argv,...>`
 - `--runtime-digest <sha256:...>` (optional; auto in common paths)
+- `--generate-docker` (bind-only scaffold helper: emits `adapter/Dockerfile` + Docker-assisted setup script)
 
 Tool naming rules:
 
@@ -109,8 +109,12 @@ Skip §2 (sandbox adapter model), §3 (build adapter artifact), §4 (runtime_dig
 
 Sandbox tool invocation uses a small adapter binary (commonly `tool-adapter`) inside the guest rootfs/image.
 
-- The adapter speaks the sandbox protocol over stdin/stdout.
-- Framing is length-prefixed JSON (4-byte big-endian length + JSON payload).
+**Protocol invariant (all sandbox image sources, including Bind):**
+- sandbox adapter transport is TSRPC-framed JSON-RPC over stdin/stdout,
+- framing is length-prefixed JSON (4-byte big-endian length + JSON payload),
+- newline-delimited/raw stdio JSON-RPC is **not** sufficient for sandbox adapter mode.
+
+Additional notes:
 - Max frame size is capped at `MAX_FRAME_BYTES` — don't ship multi-MiB payloads without chunking.
 - Source of truth for framing + constants: `crates/baml-sandbox-protocol/src/codec.rs`.
 
@@ -173,7 +177,16 @@ Reference runnable example:
 ### When digest is automatic
 
 - `new-tool --runtime sandbox --sandbox-source oci --sandbox-image <...@sha256:...>`: digest derives from image ref suffix.
-- `new-tool --runtime sandbox --sandbox-source bind --sandbox-bind-path <dir>`: digest is computed from bind rootfs content.
+- `new-tool --runtime sandbox --sandbox-source bind`: scaffold emits placeholder bind path (`"<rootfs-path>"`) and placeholder digest; set real path + recompute digest after rootfs materialization.
+  - default mode emits metadata only (no setup script)
+  - adding `--generate-docker` emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh` + `inspect_tsrpc.py` for Docker build/export + patch/validate/probe flow
+
+`setup_bind_sandbox.sh` resolves the SDK CLI command in this order:
+1. `AGENT_PLATFORM_CMD` (if set)
+2. `cargo agent-platform <subcommand>` (validated per subcommand)
+3. `cargo run -q -p cargo-agent-platform -- <subcommand>` (workspace fallback)
+
+This avoids stale installed-plugin mismatches (e.g. older plugins missing `sandbox-digest`).
 
 ### When to run `sandbox-digest`
 
@@ -221,6 +234,14 @@ Sandbox provider:
 - `BAML_SANDBOX_PROVIDER=off` (no sandbox; process-runtime tools only)
 - `BAML_SANDBOX_PROVIDER=mock` (fast wiring/dev checks, no VM)
 - `BAML_SANDBOX_PROVIDER=microsandbox` (real microVM)
+
+Current network default (microsandbox path):
+
+- sandbox egress policy defaults to `public_only`
+- allows public internet egress
+- blocks loopback, private RFC1918 ranges, link-local, and cloud metadata endpoints
+
+This default is runtime-level behavior (not currently per-tool configurable in metadata for v1).
 
 Bind allowlist (colon-separated roots):
 

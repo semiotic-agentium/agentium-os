@@ -97,17 +97,19 @@ enum Commands {
         #[arg(long)]
         sandbox_image: Option<String>,
 
-        /// Sandbox bind rootfs path when --sandbox-source bind
-        #[arg(long)]
-        sandbox_bind_path: Option<String>,
-
-        /// Runtime identity digest (`sha256:...`) when --runtime sandbox (optional for oci/bind; auto-computed)
+        /// Runtime identity digest (`sha256:...`) when --runtime sandbox.
+        /// Optional for oci (defaults to image digest) and bind (defaults to scaffold placeholder digest).
         #[arg(long)]
         runtime_digest: Option<String>,
 
         /// Optional sandbox entrypoint argv, comma-separated
         #[arg(long, value_delimiter = ',')]
         sandbox_entrypoint: Vec<String>,
+
+        /// For bind sandbox scaffolds, also generate Docker adapter artifacts
+        /// and a Docker-assisted setup script (`setup_bind_sandbox.sh`).
+        #[arg(long)]
+        generate_docker: bool,
 
         /// Human-readable description for this tool
         #[arg(long)]
@@ -398,9 +400,9 @@ fn main() -> anyhow::Result<()> {
             runtime,
             sandbox_source,
             sandbox_image,
-            sandbox_bind_path,
             runtime_digest,
             sandbox_entrypoint,
+            generate_docker,
             description,
             output,
             dry_run,
@@ -452,8 +454,7 @@ fn main() -> anyhow::Result<()> {
                 runtime
             };
 
-            let (sandbox_image, sandbox_bind_path, runtime_digest, sandbox_entrypoint) = if runtime
-                == Runtime::Sandbox
+            let (sandbox_image, runtime_digest, sandbox_entrypoint) = if runtime == Runtime::Sandbox
             {
                 let entrypoint = if interactive {
                     interactive::prompt_external_tool_sandbox_entrypoint()?
@@ -466,19 +467,12 @@ fn main() -> anyhow::Result<()> {
                             Some(v) if !interactive => v,
                             _ => interactive::prompt_external_tool_sandbox_image()?,
                         };
-                        (Some(image), None, runtime_digest, entrypoint)
+                        (Some(image), runtime_digest, entrypoint)
                     }
-                    SandboxSource::Bind => {
-                        if interactive {
-                            anyhow::bail!(
-                                "interactive bind source is not implemented yet; pass --sandbox-source bind --sandbox-bind-path <dir>"
-                            );
-                        }
-                        (None, sandbox_bind_path, runtime_digest, entrypoint)
-                    }
+                    SandboxSource::Bind => (None, runtime_digest, entrypoint),
                 }
             } else {
-                (None, None, None, Vec::new())
+                (None, None, Vec::new())
             };
 
             // Interactive flow always gets a confirm prompt so a mistyped
@@ -499,9 +493,9 @@ fn main() -> anyhow::Result<()> {
                 runtime,
                 sandbox_source,
                 sandbox_image: sandbox_image.as_deref(),
-                sandbox_bind_path: sandbox_bind_path.as_deref(),
                 runtime_digest: runtime_digest.as_deref(),
                 sandbox_entrypoint: &sandbox_entrypoint,
+                generate_docker,
                 description: &description,
                 output: output.as_deref(),
                 mode,

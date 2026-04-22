@@ -97,14 +97,29 @@ cargo agent-platform new-tool [name] [options]
 | `--runtime <kind>` | `process` | Metadata runtime: `process` or `sandbox` |
 | `--sandbox-source <kind>` | `oci` | Sandbox image source: `oci` or `bind` |
 | `--sandbox-image <ref@sha256:...>` | — | Required when `--runtime sandbox --sandbox-source oci` |
-| `--sandbox-bind-path <dir>` | — | Required when `--runtime sandbox --sandbox-source bind` |
-| `--runtime-digest <sha256:...>` | auto | Optional for sandbox. Defaults to OCI digest suffix for `oci`; computed from canonical bind rootfs for `bind` |
+| `--runtime-digest <sha256:...>` | auto | Optional for sandbox. Defaults to OCI digest suffix for `oci`; for `bind` scaffolds, defaults to placeholder `sha256:00..` until you materialize rootfs + recompute |
 | `--sandbox-entrypoint <argv,...>` | — | Optional comma-separated entrypoint argv for sandbox runtime |
+| `--generate-docker` | off | For `--runtime sandbox --sandbox-source bind`, also scaffold `adapter/Dockerfile` + Docker-assisted `setup_bind_sandbox.sh` |
 | `--description <text>` | `""` | Human-readable description written into metadata |
 | `--output <dir>` | `./<name>` | Output directory for standalone tool project |
 | `--dry-run` | off | Preview changes without writing files (non-interactive only) |
 
-Generated scaffold always includes `tool-metadata.json`, `tool-server`, and `README.md`, plus language-specific files. `tool-metadata.json` always emits an explicit `runtime` block (`process` by default, or `sandbox` when selected).
+Generated scaffold always includes `tool-metadata.json`, `tool-server`, and `README.md`, plus language-specific files. `tool-metadata.json` always emits an explicit `runtime` block (`process` by default, or `sandbox` when selected). For `sandbox + bind`, scaffolding now emits placeholders (`runtime.image.path = "<rootfs-path>"` and zero `runtime_digest`) so creation is decoupled from rootfs materialization.
+
+Bind scaffold modes:
+- default (no `--generate-docker`): metadata-only bind scaffold (placeholder path + zero digest); materialize rootfs externally, then run `sandbox-digest` + metadata patch + `check-external-tool`.
+- with `--generate-docker`: additionally emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh` + `inspect_tsrpc.py`; script builds image, exports rootfs, computes digest, patches metadata, and validates.
+
+For `setup_bind_sandbox.sh`, command resolution is:
+1. `AGENT_PLATFORM_CMD` (if set),
+2. `cargo agent-platform <subcommand>` (only if that subcommand exists),
+3. `cargo run -q -p cargo-agent-platform -- <subcommand>` (workspace fallback).
+
+Use `AGENT_PLATFORM_CMD` to avoid stale plugin mismatches outside this workspace, e.g.:
+
+```bash
+export AGENT_PLATFORM_CMD='cargo run -q -p cargo-agent-platform --'
+```
 
 ```bash
 cargo agent-platform new-tool echo --lang bash --output ./echo-tool
@@ -119,8 +134,12 @@ cargo agent-platform new-tool secure-devtool \
 cargo agent-platform new-tool dev_echo \
   --runtime sandbox \
   --sandbox-source bind \
-  --sandbox-bind-path ./.tmp/dev-echo-rootfs \
   --sandbox-entrypoint /tool-adapter
+
+cargo agent-platform new-tool dev_echo_docker \
+  --runtime sandbox \
+  --sandbox-source bind \
+  --generate-docker
 ```
 
 ---
