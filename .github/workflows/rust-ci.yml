@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read  # required for dorny/paths-filter to list PR changed files
   actions: write  # rust-cache needs write to save cache entries
   packages: read
   checks: write   # required for JUnit report action to create check runs
@@ -30,9 +31,27 @@ env:
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
 
 jobs:
+  changes:
+    name: Detect sandbox lane changes
+    runs-on: arc-runner-set
+    outputs:
+      sandbox_changed: ${{ steps.filter.outputs.sandbox }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            sandbox:
+              - 'crates/baml-sandbox-adapter/**'
+              - 'crates/baml-sandbox-protocol/**'
+              - 'crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter/**'
+              - '.github/workflows/rust-ci.yml'
+
   nextest:
     name: Nextest (workspace)
     runs-on: arc-runner-set
+    needs: changes
     steps:
       - uses: actions/checkout@v4
 
@@ -119,7 +138,10 @@ jobs:
           RUSTUP_TOOLCHAIN: stable
 
       - name: Workspace integrity check
-        run: cargo run -p cargo-agent-platform -- doctor --ci
+        # `--warn-missing-catalog` downgrades unknown tool names to warnings so that agents
+        # referencing external/sandbox tools (declared via tool-metadata.json, not Rust inventory)
+        # do not fail CI. Doctor discovery of external tool catalogs is tracked separately.
+        run: cargo run -p cargo-agent-platform -- doctor --ci --warn-missing-catalog
 
       - name: System info
         run: |
@@ -173,8 +195,14 @@ jobs:
         run: |
           # LLM tests with full parallelism (no thread limits).
           # Tests gated by #[cfg(feature = "llm-tests")] compile only when feature enabled.
+          # IMPORTANT: keep explicit feature list here (do NOT switch to --all-features).
+          # `sandbox-e2e-kvm` must only compile in .github/workflows/sandbox-e2e-kvm.yml
+          # on KVM-capable runners.
           echo ">>> nextest LLM suite: full parallelism (nproc=$(nproc))"
+          # Adapter SDK + echo fixture are covered by downstream sandbox jobs
+          # in this workflow; excluding them here keeps each test in one lane.
           cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast \
+            --exclude baml-sandbox-adapter --exclude sandbox-echo-adapter \
             --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
           RUSTUP_TOOLCHAIN: stable
@@ -192,8 +220,12 @@ jobs:
         run: |
           # Non-LLM tests with full parallelism.
           # LLM-gated tests don't compile without llm-tests feature.
+          # IMPORTANT: keep explicit feature list here (do NOT switch to --all-features).
+          # `sandbox-e2e-kvm` must only compile in .github/workflows/sandbox-e2e-kvm.yml
+          # on KVM-capable runners.
           echo ">>> nextest non-LLM suite: full parallelism (nproc=$(nproc))"
           cargo nextest run --workspace --locked --profile ci-non-llm --no-fail-fast \
+            --exclude baml-sandbox-adapter --exclude sandbox-echo-adapter \
             --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
         env:
           RUSTUP_TOOLCHAIN: stable
@@ -222,3 +254,298 @@ jobs:
           report_paths: "target/nextest/ci-non-llm/junit-non-llm.xml"
           require_tests: false
           check_name: Nextest results (non-LLM)
+
+  sandbox-adapter:
+    name: Sandbox adapter (stdio E2E + protocol)
+    runs-on: arc-runner-set
+    needs: [changes, nextest]
+    if: needs.changes.outputs.sandbox_changed == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci-sandbox-adapter"
+          cache-on-failure: true
+          cache-targets: "true"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update && sudo apt install -y build-essential pkg-config lld
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Build echo adapter fixture
+        run: cargo build -p sandbox-echo-adapter --locked
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+      - name: Clippy
+        run: |
+          cargo clippy \
+            -p baml-sandbox-adapter \
+            -p baml-sandbox-protocol \
+            --all-targets --locked -- -D warnings
+
+      - name: Nextest
+        run: |
+          cargo nextest run \
+            -p baml-sandbox-adapter \
+            -p baml-sandbox-protocol \
+            --locked --profile ci --no-fail-fast
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+      - name: Publish JUnit report
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: "target/nextest/ci/junit.xml"
+          require_tests: true
+          check_name: Sandbox adapter nextest
+
+  sandbox-adapter-image:
+    name: Sandbox adapter image (no-publish)
+    runs-on: arc-runner-set
+    needs: [changes, nextest]
+    if: needs.changes.outputs.sandbox_changed == 'true'
+    env:
+      IMAGE_NAME: sandbox-echo-adapter
+      IMAGE_TAG: ci-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image locally (no push)
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            -f crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter/Dockerfile \
+            -t ${IMAGE_NAME}:${IMAGE_TAG} \
+            .
+
+      - name: Enforce image size budget (<20 MiB)
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        run: |
+          SIZE_BYTES=$(docker image inspect "${IMAGE_REF}" --format '{{.Size}}')
+          LIMIT_BYTES=$((20 * 1024 * 1024))
+
+          if [[ -z "${SIZE_BYTES}" ]]; then
+            echo "error: failed to read image size for ${IMAGE_REF}" >&2
+            exit 1
+          fi
+
+          echo "image_size_bytes=${SIZE_BYTES}"
+          if (( SIZE_BYTES > LIMIT_BYTES )); then
+            echo "error: image ${IMAGE_REF} exceeds 20 MiB budget (${SIZE_BYTES} bytes > ${LIMIT_BYTES})" >&2
+            exit 1
+          fi
+
+          echo "image size within budget (<20 MiB)"
+
+      - name: Guard fixture metadata stays template (placeholder digest)
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
+          doc = json.loads(path.read_text(encoding="utf-8"))
+          digest = doc.get("runtime_digest", "")
+          expected = "sha256:" + "0" * 64
+          if digest != expected:
+              raise SystemExit(
+                  "fixture metadata runtime_digest is no longer placeholder; "
+                  "no-publish lane expects committed metadata to stay template-only"
+              )
+
+          print("fixture template digest guard passed")
+          PY
+
+      - name: Smoke test framed tool/describe roundtrip
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        run: |
+          python - <<'PY'
+          import json
+          import struct
+          import subprocess
+
+          import os
+
+          image_ref = os.environ["IMAGE_REF"]
+
+          request = {
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "tool/describe",
+              "params": {},
+          }
+          body = json.dumps(request, separators=(",", ":")).encode("utf-8")
+          framed = struct.pack(">I", len(body)) + body
+
+          proc = subprocess.run(
+              ["docker", "run", "--rm", "-i", image_ref],
+              input=framed,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+              check=False,
+          )
+
+          if proc.returncode != 0:
+              raise SystemExit(
+                  f"adapter container exited non-zero: {proc.returncode}\n"
+                  f"stderr:\n{proc.stderr.decode('utf-8', errors='replace')}"
+              )
+
+          out = proc.stdout
+          if len(out) < 4:
+              raise SystemExit(f"stdout too short for frame header: {out!r}")
+
+          n = struct.unpack(">I", out[:4])[0]
+          payload = out[4:4+n]
+          tail = out[4+n:]
+
+          if len(payload) != n:
+              raise SystemExit(f"truncated response payload: want {n}, got {len(payload)}")
+          if tail:
+              raise SystemExit(f"unexpected trailing bytes after frame: {tail!r}")
+
+          response = json.loads(payload)
+          assert response.get("jsonrpc") == "2.0", response
+          assert response.get("id") == 1, response
+          result = response.get("result")
+          assert isinstance(result, dict), response
+          assert result.get("tool_name") == "sandbox-echo", response
+          assert result.get("protocol_version") == "1", response
+
+          print("smoke test passed")
+          PY
+
+      - name: Resolve local image digest
+        id: image_digest
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        run: |
+          IMAGE_ID=$(docker image inspect "${IMAGE_REF}" --format '{{.Id}}')
+          if [[ -z "${IMAGE_ID}" || "${IMAGE_ID}" != sha256:* ]]; then
+            echo "error: unable to resolve local sha256 image id for ${IMAGE_REF}" >&2
+            exit 1
+          fi
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          echo "image_digest=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
+          echo "Resolved local image digest: ${IMAGE_ID}"
+
+      - name: Materialize CI-local fixture metadata (no publish)
+        env:
+          IMAGE_REF: ${{ steps.image_digest.outputs.image_ref }}
+          IMAGE_DIGEST: ${{ steps.image_digest.outputs.image_digest }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          src = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
+          dst = Path(os.environ["RUNNER_TEMP"]) / "sandbox_echo.tool-metadata.ci.json"
+
+          with src.open("r", encoding="utf-8") as f:
+            doc = json.load(f)
+
+          doc["runtime"]["image"] = os.environ["IMAGE_REF"]
+          doc["runtime_digest"] = os.environ["IMAGE_DIGEST"]
+
+          with dst.open("w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=2)
+            f.write("\n")
+
+          print(f"wrote {dst}")
+          PY
+
+      - name: Validate CI-local fixture metadata has non-placeholder digest
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          path = os.path.join(os.environ["RUNNER_TEMP"], "sandbox_echo.tool-metadata.ci.json")
+          with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+
+          digest = doc.get("runtime_digest", "")
+          if not isinstance(digest, str) or not digest.startswith("sha256:"):
+            raise SystemExit(f"invalid runtime_digest: {digest!r}")
+          if digest == "sha256:" + "0" * 64:
+            raise SystemExit("runtime_digest is still placeholder sha256:00..")
+
+          image = doc.get("runtime", {}).get("image", "")
+          if not image.startswith("sandbox-echo-adapter:ci-"):
+            raise SystemExit(f"unexpected runtime.image for no-publish lane: {image!r}")
+
+          print("metadata validation passed")
+          PY
+
+      - name: Upload CI-local fixture metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-echo-ci-metadata
+          path: ${{ runner.temp }}/sandbox_echo.tool-metadata.ci.json
+
+  sandbox-adapter-image-handoff:
+    name: Sandbox image metadata handoff validation
+    runs-on: arc-runner-set
+    needs: [changes, nextest, sandbox-adapter-image]
+    if: needs.changes.outputs.sandbox_changed == 'true'
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sandbox-echo-ci-metadata
+          path: ${{ runner.temp }}/sandbox-echo-ci-metadata
+
+      - name: Validate downloaded metadata artifact
+        env:
+          METADATA_DIR: ${{ runner.temp }}/sandbox-echo-ci-metadata
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["METADATA_DIR"]) / "sandbox_echo.tool-metadata.ci.json"
+          if not path.exists():
+              raise SystemExit(f"artifact missing: {path}")
+
+          doc = json.loads(path.read_text(encoding="utf-8"))
+          digest = doc.get("runtime_digest", "")
+          image = doc.get("runtime", {}).get("image", "")
+
+          if not isinstance(digest, str) or not digest.startswith("sha256:"):
+              raise SystemExit(f"invalid runtime_digest: {digest!r}")
+          if digest == "sha256:" + "0" * 64:
+              raise SystemExit("runtime_digest is placeholder sha256:00..")
+          if not isinstance(image, str) or not image.startswith("sandbox-echo-adapter:ci-"):
+              raise SystemExit(f"unexpected runtime.image for no-publish lane: {image!r}")
+
+          print("downloaded metadata artifact is valid for downstream KVM E2E")
+          PY

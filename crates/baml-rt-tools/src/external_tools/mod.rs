@@ -1,0 +1,94 @@
+//! External tool protocol + execution backend.
+//!
+//! This module defines the wire contract (JSON-RPC `tool/describe` + `tool/invoke`)
+//! and the abstractions needed to run tools out-of-process over stdio/UDS.
+//!
+//! Phase 1 scope: stateless, single-shot subprocess invocation. Later phases
+//! extend the same protocol to Wasm or keep-alive transports.
+
+pub mod handler;
+pub mod invoker;
+pub mod lockfile;
+pub mod metadata;
+pub mod metadata_catalog;
+pub mod policy;
+pub mod protocol;
+pub mod resolver;
+pub mod runtime;
+pub mod sandbox;
+pub mod stdio;
+
+use std::{path::Path, sync::Arc};
+
+pub use handler::{ProcessToolHandler, ProcessToolSession};
+pub use invoker::{
+    ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, ToolInvoker, map_jsonrpc_error,
+};
+pub use lockfile::{
+    EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode, ExternalToolLockEntry,
+    ExternalToolsLockfile,
+};
+pub use metadata::{
+    ExternalSessionPolicy, ExternalToolMetadata, InvocationMode, MetadataSchemas,
+    compute_tool_digest, read_external_metadata,
+};
+pub use metadata_catalog::{
+    BUILDER_EXTERNAL_TOOLS_ENV, ExternalMetadataCatalog, build_builder_catalog,
+    external_dirs_from_env,
+};
+pub use policy::{
+    BACKOFF_SCHEDULE_MS, DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT, DEFAULT_MAX_CONCURRENT,
+    DEFAULT_QUARANTINE_THRESHOLD, InvocationPolicy, PolicyError, QuarantineState, ToolQuota,
+};
+pub use protocol::{
+    ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR, ErrorClass, JsonRpcError, JsonRpcRequest,
+    JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, PROTOCOL_VERSION, SUPPORTED_METHODS,
+    ToolDescribeResult, ToolInvokeParams, ToolInvokeResult,
+};
+pub use resolver::DevModeResolver;
+pub use runtime::{
+    DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxImageRef, SandboxRuntimeSpec, ToolRuntime,
+    ToolRuntimeKind,
+};
+pub use sandbox::canonical_bind_digest;
+
+/// Compute runtime digest for a bind rootfs path using canonical bind hashing.
+pub fn sandbox_runtime_digest_for_bind(path: &Path) -> baml_rt_core::Result<String> {
+    canonical_bind_digest(path)
+}
+use serde_json::Value;
+pub use stdio::StdioSubprocessInvoker;
+
+#[derive(Debug, Clone)]
+pub enum ExternalLifecycleEvent {
+    Describe {
+        tool_name: String,
+        identity: Option<String>,
+        protocol_version: Option<String>,
+        latency_ms: u64,
+        result: String,
+        details: Value,
+    },
+    Artifact {
+        tool_name: String,
+        artifact_ref: String,
+        digest: Option<String>,
+        signer: Option<String>,
+        verification_result: String,
+        pull_latency_ms: Option<u64>,
+        details: Value,
+    },
+    Quarantine {
+        tool_name: String,
+        reason: String,
+        consecutive_failures: u32,
+        started_at_ms: u64,
+    },
+    QuarantineLifted {
+        tool_name: String,
+        lifted_by: String,
+        lifted_at_ms: u64,
+    },
+}
+
+pub type ExternalLifecycleRecorder = Arc<dyn Fn(ExternalLifecycleEvent) + Send + Sync>;

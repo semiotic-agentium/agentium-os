@@ -1,0 +1,18 @@
+[package]
+name = "sandbox-echo-adapter"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Reference echo adapter fixture — exercises the baml-sandbox-adapter SDK end-to-end with deliberate panic and stdout-pollution branches for the X4.2 stdio E2E suite."
+
+[[bin]]
+name = "sandbox-echo-adapter"
+path = "src/main.rs"
+
+[dependencies]
+baml-sandbox-adapter = { path = "../../../../../../baml-sandbox-adapter" }
+baml-sandbox-protocol = { path = "../../../../../../baml-sandbox-protocol" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "io-std"] }

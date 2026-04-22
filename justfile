@@ -520,6 +520,46 @@ persona-claude-extrospection-provenance: build-release
 
 
 
+# Bootstraps and runs the sandbox echo example in foreground-runner mode:
+# - exports env vars for external tools + bind allowlist
+# - runs setup_bind_demo.sh (export rootfs + digest + metadata patch + validation)
+# - prints push/chat commands for a second shell
+# - starts runner with sandbox features enabled (foreground so logs are visible)
+# Stop with Ctrl-C.
+echo-sandbox-demo:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
+
+    export BAML_EXTERNAL_TOOLS_DIR="$PWD/examples/external-tools/dev_echo_sandbox"
+    export BAML_SANDBOX_PROVIDER=microsandbox
+    export BAML_SANDBOX_BIND_ROOTS="$PWD/.tmp"
+
+    ./examples/external-tools/dev_echo_sandbox/setup_bind_demo.sh --image dev-echo-sandbox:local --force
+
+    echo
+    echo "Runner will start in foreground; auto-push will run after HTTP is ready."
+    echo "Then in another shell, run chat:"
+    echo "  cargo run -p cargo-agent-platform -- chat --agent echo-agent --url {{runner_base_url}}"
+    echo
+
+    (
+      for _ in $(seq 1 120); do
+        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then
+          break
+        fi
+        sleep 0.5
+      done
+      echo "[echo-sandbox-demo] pushing agents/echo-agent..."
+      cargo run -p cargo-agent-platform -- push --agents agents/echo-agent --url {{runner_base_url}}
+      echo "[echo-sandbox-demo] push completed."
+    ) &
+
+    exec cargo run -p baml-agent-runner --all-features -- --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
+
 # Runs the HTTP Notion demo script (starts runner if needed and streams one request).
 notion-demo:
     ./scripts/run-notion-demo.sh

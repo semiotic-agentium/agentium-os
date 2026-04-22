@@ -219,6 +219,8 @@ impl PlanningEmitEnv<'_> {
                 }),
                 metadata: Value::Object(metadata_map),
                 delegation_target: None,
+                tool_backend: None,
+                tool_digest: None,
             };
             let token = emitter.start_tool(context_id, tool_meta).await?;
             token

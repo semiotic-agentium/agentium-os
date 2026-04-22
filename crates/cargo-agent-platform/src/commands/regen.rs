@@ -147,7 +147,20 @@ fn regen_agent(root: &Path) -> Result<()> {
         generator
             .generate(&agent_dir, &build_dir)
             .await
-            .map_err(|e| anyhow::anyhow!("Type generation failed: {}", e))?;
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("Tool metadata missing for:") {
+                    let external_dir = std::env::var("BAML_EXTERNAL_TOOLS_DIR")
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                        .unwrap_or_else(|| "(not set)".to_string());
+                    anyhow::anyhow!(
+                        "Type generation failed: {msg}\nHint: if the agent uses external tools, set BAML_EXTERNAL_TOOLS_DIR to the external tool directory (current: {external_dir}).\nHint: run the workspace binary to avoid stale installed subcommands: cargo run -p cargo-agent-platform -- regen <agent>."
+                    )
+                } else {
+                    anyhow::anyhow!("Type generation failed: {msg}")
+                }
+            })?;
 
         // Sync generated BAML artifacts (including _baml_runtime.baml) back into agent baml_src
         sync_generated_baml_files(&build_dir, &agent_dir.baml_src())

@@ -369,12 +369,20 @@ impl ToolSessionExecutionHandle {
             // Emit ToolStarted so relay can send TASK_STATE_WORKING (session path does not use execute_tool).
             if is_new_send {
                 if let Some(emitter) = self.ctx.effect_emitter.as_ref() {
+                    let (tool_backend, tool_digest) = self
+                        .ctx
+                        .tool_registry
+                        .get_metadata(&session_scope.tool_name)
+                        .map(|m| (Some(format!("{:?}", m.backend)), m.digest))
+                        .unwrap_or((None, None));
                     let mut effect_metadata = ToolEffectMetadata {
                         tool_name: session_scope.tool_name.clone(),
                         function_name: None,
                         args: input.clone(),
                         metadata: context.metadata.clone(),
                         delegation_target: None,
+                        tool_backend,
+                        tool_digest,
                     };
                     if let Some(ref target) = context.delegation_target {
                         effect_metadata.delegation_target = Some(target.clone());
@@ -515,12 +523,20 @@ impl ToolSessionExecutionHandle {
                     }
                     self.read_completion_tool_anchors
                         .insert(session_id.clone(), reserved_anchor_id.clone());
+                    let (read_tool_backend, read_tool_digest) = self
+                        .ctx
+                        .tool_registry
+                        .get_metadata(&scope_entry.tool_name)
+                        .map(|m| (Some(format!("{:?}", m.backend)), m.digest))
+                        .unwrap_or((None, None));
                     let mut read_metadata = ToolEffectMetadata {
                         tool_name: scope_entry.tool_name.clone(),
                         function_name: None,
                         args: input.clone(),
                         metadata: read_meta_val,
                         delegation_target: None,
+                        tool_backend: read_tool_backend,
+                        tool_digest: read_tool_digest,
                     };
                     if let Some(target) = extract_delegation_target_from_open_input(
                         &scope_entry.tool_name,

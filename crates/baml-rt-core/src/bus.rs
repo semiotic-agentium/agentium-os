@@ -76,6 +76,12 @@ pub struct ToolEffectMetadata {
     pub metadata: serde_json::Value,
     /// For system/internal_a2a: the delegated-to agent package (write-time provenance).
     pub delegation_target: Option<String>,
+    /// Execution backend that serviced this invocation (e.g. "InProcess", "ExternalProcess").
+    /// `None` when emitter did not populate it — provenance records None in that case.
+    pub tool_backend: Option<String>,
+    /// Content-addressed digest of the tool artifact (external tools only).
+    /// Always `None` in dev mode; Phase 2 OCI-pinned path populates this.
+    pub tool_digest: Option<String>,
 }
 
 /// How the tool_name was resolved for an LLM effect.

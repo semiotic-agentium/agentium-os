@@ -3,6 +3,7 @@
 use std::{fs, path::Path};
 
 use baml_rt_core::AgentManifest;
+use baml_rt_tools::external_tools::EXTERNAL_TOOLS_LOCKFILE_NAME;
 use flate2::{Compression, write::GzEncoder};
 use tar::{Builder, Header};
 use uuid::Uuid;
@@ -103,6 +104,20 @@ impl<FS: FileSystem> Packager for StdPackager<FS> {
             let mut header = Header::new_gnu();
             header
                 .set_path("session_plan_functions.json")
+                .map_err(BamlBuilderError::TarHeaderPath)?;
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append(&header, content.as_bytes())?;
+        }
+
+        // Add external_tools.lock.json (always written by type generation).
+        let external_lockfile = build_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
+        if external_lockfile.exists() {
+            let content = fs::read_to_string(&external_lockfile)?;
+            let mut header = Header::new_gnu();
+            header
+                .set_path(EXTERNAL_TOOLS_LOCKFILE_NAME)
                 .map_err(BamlBuilderError::TarHeaderPath)?;
             header.set_size(content.len() as u64);
             header.set_mode(0o644);

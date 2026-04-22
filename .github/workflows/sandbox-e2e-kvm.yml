@@ -1,0 +1,216 @@
+name: Sandbox E2E KVM
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'
+
+permissions:
+  contents: read
+  actions: write
+  checks: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  IMAGE_NAME: sandbox-echo-adapter
+  IMAGE_TAG: ci-${{ github.sha }}
+  ROOTFS_TAR: sandbox-echo-rootfs.tar
+
+jobs:
+  prepare-fixture:
+    name: Prepare local sandbox fixture bind rootfs artifact
+    runs-on: kvm-enabled
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image locally (no publish)
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            -f crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter/Dockerfile \
+            -t ${IMAGE_NAME}:${IMAGE_TAG} \
+            .
+
+      - name: Smoke test framed tool/describe roundtrip
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        run: |
+          python - <<'PY'
+          import json
+          import struct
+          import subprocess
+
+          import os
+
+          image_ref = os.environ["IMAGE_REF"]
+
+          request = {
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "tool/describe",
+              "params": {},
+          }
+          body = json.dumps(request, separators=(",", ":")).encode("utf-8")
+          framed = struct.pack(">I", len(body)) + body
+
+          proc = subprocess.run(
+              ["docker", "run", "--rm", "-i", image_ref],
+              input=framed,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+              check=False,
+          )
+
+          if proc.returncode != 0:
+              raise SystemExit(
+                  f"adapter container exited non-zero: {proc.returncode}\n"
+                  f"stderr:\n{proc.stderr.decode('utf-8', errors='replace')}"
+              )
+
+          out = proc.stdout
+          if len(out) < 4:
+              raise SystemExit(f"stdout too short for frame header: {out!r}")
+
+          n = struct.unpack(">I", out[:4])[0]
+          payload = out[4:4+n]
+          tail = out[4+n:]
+
+          if len(payload) != n:
+              raise SystemExit(f"truncated response payload: want {n}, got {len(payload)}")
+          if tail:
+              raise SystemExit(f"unexpected trailing bytes after frame: {tail!r}")
+
+          response = json.loads(payload)
+          assert response.get("jsonrpc") == "2.0", response
+          assert response.get("id") == 1, response
+          result = response.get("result")
+          assert isinstance(result, dict), response
+          assert result.get("tool_name") == "sandbox-echo", response
+          assert result.get("protocol_version") == "1", response
+
+          print("smoke test passed")
+          PY
+
+      - name: Export bind rootfs from local image
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        run: |
+          ROOTFS_DIR="${RUNNER_TEMP}/sandbox-echo-rootfs"
+          mkdir -p "${ROOTFS_DIR}"
+
+          CID=$(docker create "${IMAGE_REF}")
+          cleanup() {
+            docker rm -f "${CID}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker export "${CID}" | tar -C "${ROOTFS_DIR}" -xf -
+          tar -C "${RUNNER_TEMP}" -cf "${RUNNER_TEMP}/${ROOTFS_TAR}" sandbox-echo-rootfs
+
+      - name: Upload bind rootfs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-echo-ci-rootfs
+          path: ${{ runner.temp }}/${{ env.ROOTFS_TAR }}
+
+  kvm-e2e:
+    name: KVM E2E (baml-rt-tools)
+    needs: prepare-fixture
+    runs-on: kvm-enabled
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci-sandbox-kvm-e2e"
+          cache-on-failure: true
+          cache-targets: "true"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update && sudo apt install -y build-essential pkg-config lld libcap-ng-dev
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Download bind rootfs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sandbox-echo-ci-rootfs
+          path: ${{ runner.temp }}/sandbox-echo-ci-rootfs
+
+      - name: Extract bind rootfs artifact
+        run: |
+          mkdir -p "${RUNNER_TEMP}/sandbox-echo-rootfs-extract"
+          tar -C "${RUNNER_TEMP}/sandbox-echo-rootfs-extract" -xf "${RUNNER_TEMP}/sandbox-echo-ci-rootfs/${ROOTFS_TAR}"
+
+      - name: Materialize CI-local bind metadata
+        run: |
+          ROOTFS_DIR="${RUNNER_TEMP}/sandbox-echo-rootfs-extract/sandbox-echo-rootfs"
+          DIGEST=$(cargo run -q -p cargo-agent-platform -- sandbox-digest --source bind "${ROOTFS_DIR}" | tail -n1)
+          if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "error: sandbox-digest did not emit canonical sha256:<64-hex>; got: '${DIGEST}'" >&2
+            exit 1
+          fi
+          export ROOTFS_DIR DIGEST
+
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          src = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
+          dst = Path(os.environ["RUNNER_TEMP"]) / "sandbox_echo.tool-metadata.ci.json"
+          rootfs_dir = Path(os.environ["ROOTFS_DIR"]).resolve()
+          digest = os.environ["DIGEST"]
+
+          with src.open("r", encoding="utf-8") as f:
+            doc = json.load(f)
+
+          doc["runtime"]["image"] = {"kind": "bind", "path": str(rootfs_dir)}
+          doc["runtime_digest"] = digest
+
+          with dst.open("w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=2)
+            f.write("\n")
+
+          print(f"wrote {dst}")
+          PY
+
+      - name: Run KVM-gated microsandbox E2E
+        env:
+          BAML_SANDBOX_E2E_METADATA: ${{ runner.temp }}/sandbox_echo.tool-metadata.ci.json
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+        run: |
+          cargo nextest run -p baml-rt-tools --features sandbox-e2e-kvm --locked --profile ci --no-fail-fast
+
+      - name: Publish JUnit report
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: "target/nextest/ci/junit.xml"
+          require_tests: true
+          check_name: Sandbox KVM E2E nextest

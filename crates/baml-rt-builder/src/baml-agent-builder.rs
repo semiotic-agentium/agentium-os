@@ -25,8 +25,8 @@ use baml_rt_core::ids::AgentId;
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge};
 use baml_rt_tools::{
-    ManifestToolNames, ToolAccessPolicy, parse_access_allowlist, register_manifest_tools,
-    tool_catalog::all_tool_metadata,
+    ManifestToolNames, ToolAccessPolicy, external_tools::build_builder_catalog,
+    parse_access_allowlist, register_manifest_tools, tool_catalog::ToolCatalog,
 };
 use baml_rt_tools_claude as _;
 use baml_tools_calculator as _;
@@ -226,8 +226,9 @@ async fn bootstrap_agent(
             .prompt()
             .context("Prompt cancelled or failed")?;
 
-        let tool_options: Vec<(String, String)> = all_tool_metadata()
-            .into_iter()
+        let catalog = build_builder_catalog()?;
+        let tool_options: Vec<(String, String)> = catalog
+            .iter()
             .map(|m| {
                 let id = m.name.to_string();
                 let label = format!("{} — {}", id, m.description);

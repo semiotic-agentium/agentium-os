@@ -148,12 +148,20 @@ impl ToolExecutionContext {
             delegation_target: None,
         };
 
+        let (tool_backend, tool_digest) = self
+            .tool_registry
+            .get_metadata(name)
+            .map(|m| (format!("{:?}", m.backend), m.digest))
+            .map(|(backend, digest)| (Some(backend), digest))
+            .unwrap_or((None, None));
         let effect_metadata = ToolEffectMetadata {
             tool_name: name.to_string(),
             function_name: None,
             args: args.clone(),
             metadata: metadata.clone(),
             delegation_target: None,
+            tool_backend,
+            tool_digest,
         };
         let effect_token = if let Some(emitter) = self.effect_emitter.as_ref() {
             match emitter

@@ -1,0 +1,34 @@
+{
+  "tool_abi_version": "1",
+  "name": "support/e2e_echo",
+  "description": "Echo-style external tool fixture for dev-mode e2e tests",
+  "bundle": "support",
+  "local_name": "e2e_echo",
+  "access_level": "read",
+  "tags": ["e2e", "external-tools"],
+  "invocation_mode": "single_shot",
+  "schemas": {
+    "input": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": ["message"],
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "reply": {
+          "type": "string"
+        }
+      },
+      "required": ["reply"],
+      "additionalProperties": false
+    }
+  },
+  "secrets": [],
+  "capabilities": {}
+}

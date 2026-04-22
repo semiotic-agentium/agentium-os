@@ -121,7 +121,7 @@ impl fmt::LowerHex for HexBytes {
 }
 
 fn decode_hex(input: &str) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-    if input.len() % 2 != 0 {
+    if !input.len().is_multiple_of(2) {
         return Err("hex payload must have even length".into());
     }
     let mut out = Vec::with_capacity(input.len() / 2);

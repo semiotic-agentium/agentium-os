@@ -8,7 +8,8 @@
 //!
 //! # Subcommands
 //!
-//! - `new-tool <name>` — Create a new tool crate with all necessary patches
+//! - `new-tool <name>` — Create a standalone external tool scaffold (Rust/Bash/Python/TypeScript). **Default path for most users.**
+//! - `new-static-tool <name>` — Create a compiled-in static tool crate + workspace patches. Platform-internal use only.
 //! - `new-agent <name>` — Create a new agent package (manifest subscriptions available; coordinator subscriptions rejected)
 //! - `build [name]` — Package an agent into a distributable tar.gz
 //! - `publish --agent-dir <path>` — Publish source bundle to repository
@@ -22,6 +23,8 @@
 //! - `regen` — Regenerate type declarations for all agents
 //! - `doctor` — Validate workspace integrity
 //! - `chat` — Interactive terminal chat with a deployed agent
+//! - `check-external-tool` — Validate tool metadata schema/runtime compatibility
+//! - `sandbox-digest` — Compute sandbox runtime digests (bind rootfs)
 
 mod commands;
 mod event_schemas;
@@ -34,8 +37,14 @@ mod tool_catalog;
 mod transaction;
 mod workspace;
 
-use clap::{Parser, Subcommand};
-use commands::{publish::PublishOriginArg, utils::resolve_runner_token};
+use clap::{Parser, Subcommand, ValueEnum};
+use commands::{
+    new_tool::{NewToolRunArgs, RunMode},
+    publish::PublishOriginArg,
+    sandbox_digest::SandboxDigestSourceArg,
+    utils::resolve_runner_token,
+};
+use templates::external_tool::{Access, DEFAULT_BUNDLE, Language, Runtime, SandboxSource};
 
 /// Agent Platform SDK CLI
 ///
@@ -55,8 +64,68 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Create a new tool crate with all necessary patches
+    /// Create a standalone external tool scaffold (Rust/Bash/Python/TypeScript).
+    /// This is the default for most users — it produces a self-contained
+    /// directory the runner picks up via `BAML_EXTERNAL_TOOLS_DIR` without
+    /// touching the platform workspace.
     NewTool {
+        /// Tool name in lowercase (e.g., echo, clickup_sync, clickup-sync). Omit for interactive mode.
+        name: Option<String>,
+
+        /// Bundle namespace. Free-form string (e.g. `support`, `travel`, `acme`).
+        /// Defaults to `support`. Must be non-empty and not contain `/`.
+        #[arg(long)]
+        bundle: Option<String>,
+
+        /// Scaffold language
+        #[arg(long, value_enum, default_value_t = Language::Rust)]
+        lang: Language,
+
+        /// Access level: read (default), write, or delete
+        #[arg(long, value_enum)]
+        access: Option<Access>,
+
+        /// Runtime declaration to scaffold into tool-metadata.json
+        #[arg(long, value_enum, default_value_t = Runtime::Process)]
+        runtime: Runtime,
+
+        /// Sandbox source kind when --runtime sandbox
+        #[arg(long, value_enum, default_value_t = SandboxSource::Oci)]
+        sandbox_source: SandboxSource,
+
+        /// Sandbox OCI image reference (`...@sha256:...`) when --sandbox-source oci
+        #[arg(long)]
+        sandbox_image: Option<String>,
+
+        /// Sandbox bind rootfs path when --sandbox-source bind
+        #[arg(long)]
+        sandbox_bind_path: Option<String>,
+
+        /// Runtime identity digest (`sha256:...`) when --runtime sandbox (optional for oci/bind; auto-computed)
+        #[arg(long)]
+        runtime_digest: Option<String>,
+
+        /// Optional sandbox entrypoint argv, comma-separated
+        #[arg(long, value_delimiter = ',')]
+        sandbox_entrypoint: Vec<String>,
+
+        /// Human-readable description for this tool
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Output directory (default: ./<name>)
+        #[arg(long)]
+        output: Option<String>,
+
+        /// Validate and print planned changes without writing files; exits non-zero on validation failures (non-interactive only)
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Create a new *static* tool crate — compiled into the platform workspace.
+    /// Use this only when extending the platform itself (e.g., adding a
+    /// system-level bundle). For every other case, prefer `new-tool`.
+    NewStaticTool {
         /// Tool name in kebab-case (e.g., github, jira, linear). Omit for interactive mode.
         name: Option<String>,
 
@@ -236,6 +305,23 @@ enum Commands {
         names: Vec<String>,
     },
 
+    /// Validate standalone external tool metadata against schema + runtime parser
+    CheckExternalTool {
+        /// Path to external tool directory (contains tool-metadata.json)
+        #[arg(long, default_value = ".")]
+        path: String,
+    },
+
+    /// Compute sandbox runtime digest for a source path
+    SandboxDigest {
+        /// Sandbox source kind (currently: bind)
+        #[arg(long, value_enum, default_value_t = SandboxDigestSourceArg::Bind)]
+        source: SandboxDigestSourceArg,
+
+        /// Path to source input (for bind: rootfs directory)
+        path: String,
+    },
+
     /// Validate workspace integrity
     Doctor {
         /// Exit non-zero on any issue (for CI)
@@ -267,6 +353,24 @@ enum Commands {
     },
 }
 
+/// Parse an interactive-prompt string into an [`Access`]; fall back to `Read`
+/// when the user typed something unexpected.
+fn parse_access_or_default(raw: &str) -> Access {
+    Access::from_str(raw.trim(), true).unwrap_or(Access::Read)
+}
+
+/// Parse an interactive-prompt string into a [`Language`]; fall back to Rust
+/// when the user typed something unexpected.
+fn parse_language_or_default(raw: &str) -> Language {
+    Language::from_str(raw.trim(), true).unwrap_or(Language::Rust)
+}
+
+/// Parse an interactive-prompt string into a [`Runtime`]; fall back to Process
+/// when the user typed something unexpected.
+fn parse_runtime_or_default(raw: &str) -> Runtime {
+    Runtime::from_str(raw.trim(), true).unwrap_or(Runtime::Process)
+}
+
 fn main() -> anyhow::Result<()> {
     // Force-link all tools so the inventory is complete
     baml_tool_links::force_link_all_tools!();
@@ -285,11 +389,130 @@ fn main() -> anyhow::Result<()> {
         Commands::NewTool {
             name,
             bundle,
+            lang,
+            access,
+            runtime,
+            sandbox_source,
+            sandbox_image,
+            sandbox_bind_path,
+            runtime_digest,
+            sandbox_entrypoint,
+            description,
+            output,
+            dry_run,
+        } => {
+            let interactive = name.is_none();
+
+            let name = match name {
+                Some(n) => n,
+                None => interactive::prompt_tool_name()?,
+            };
+
+            // Bundle is free-form; interactive prompt provides a text entry with
+            // `support` pre-filled. Validation happens in `run()` via BundleName.
+            let bundle = match bundle {
+                Some(b) => b,
+                None if interactive => interactive::prompt_external_tool_bundle()?,
+                None => DEFAULT_BUNDLE.to_string(),
+            };
+
+            let access = match access {
+                Some(a) => a,
+                None if interactive => {
+                    parse_access_or_default(&interactive::prompt_external_tool_access()?)
+                }
+                None => Access::Read,
+            };
+
+            let description = match description {
+                Some(d) => d,
+                None if interactive => interactive::prompt_tool_description()?,
+                None => String::new(),
+            };
+
+            let output = match output {
+                Some(o) => Some(o),
+                None if interactive => Some(interactive::prompt_external_tool_output(&name)?),
+                None => None,
+            };
+
+            let lang = if interactive {
+                parse_language_or_default(&interactive::prompt_external_tool_language()?)
+            } else {
+                lang
+            };
+
+            let runtime = if interactive {
+                parse_runtime_or_default(&interactive::prompt_external_tool_runtime()?)
+            } else {
+                runtime
+            };
+
+            let (sandbox_image, sandbox_bind_path, runtime_digest, sandbox_entrypoint) = if runtime
+                == Runtime::Sandbox
+            {
+                let entrypoint = if interactive {
+                    interactive::prompt_external_tool_sandbox_entrypoint()?
+                } else {
+                    sandbox_entrypoint
+                };
+                match sandbox_source {
+                    SandboxSource::Oci => {
+                        let image = match sandbox_image {
+                            Some(v) if !interactive => v,
+                            _ => interactive::prompt_external_tool_sandbox_image()?,
+                        };
+                        (Some(image), None, runtime_digest, entrypoint)
+                    }
+                    SandboxSource::Bind => {
+                        if interactive {
+                            anyhow::bail!(
+                                "interactive bind source is not implemented yet; pass --sandbox-source bind --sandbox-bind-path <dir>"
+                            );
+                        }
+                        (None, sandbox_bind_path, runtime_digest, entrypoint)
+                    }
+                }
+            } else {
+                (None, None, None, Vec::new())
+            };
+
+            // Interactive flow always gets a confirm prompt so a mistyped
+            // choice is still recoverable; non-interactive honours --dry-run.
+            let mode = if interactive {
+                RunMode::Confirm
+            } else if dry_run {
+                RunMode::DryRun
+            } else {
+                RunMode::Apply
+            };
+
+            commands::new_tool::run(NewToolRunArgs {
+                name: &name,
+                bundle: &bundle,
+                lang,
+                access,
+                runtime,
+                sandbox_source,
+                sandbox_image: sandbox_image.as_deref(),
+                sandbox_bind_path: sandbox_bind_path.as_deref(),
+                runtime_digest: runtime_digest.as_deref(),
+                sandbox_entrypoint: &sandbox_entrypoint,
+                description: &description,
+                output: output.as_deref(),
+                mode,
+            })
+        }
+
+        Commands::NewStaticTool {
+            name,
+            bundle,
             access,
             description,
             dry_run,
         } => {
-            // Interactive mode when name is not provided
+            // Platform-internal path — scaffolds a compiled-in tool crate and
+            // patches the workspace. Unchanged from its previous life as `new-tool`.
             let interactive = name.is_none();
 
             let name = match name {
@@ -318,7 +541,14 @@ fn main() -> anyhow::Result<()> {
             // In interactive mode, ignore --dry-run (confirmation prompt replaces it)
             let dry_run = if interactive { false } else { dry_run };
 
-            commands::new_tool::run(&name, &bundle, &access, &description, dry_run, interactive)
+            commands::new_static_tool::run(
+                &name,
+                &bundle,
+                &access,
+                &description,
+                dry_run,
+                interactive,
+            )
         }
 
         Commands::NewAgent {
@@ -468,6 +698,10 @@ fn main() -> anyhow::Result<()> {
         Commands::ListDeployedInstances { url } => commands::list_deployed_instances::run(&url),
 
         Commands::Regen { names } => commands::regen::run(&names),
+
+        Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
+
+        Commands::SandboxDigest { source, path } => commands::sandbox_digest::run(source, &path),
 
         Commands::Doctor {
             ci,

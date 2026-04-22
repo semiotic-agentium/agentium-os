@@ -1,0 +1,22 @@
+[package]
+name = "baml-sandbox-protocol"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Shared TSRPC wire types and length-prefixed JSON codec for the sandbox tool protocol (host and guest)."
+
+# This crate is the single source of truth for the sandbox tool wire contract.
+# It is depended on by `baml-rt-tools` (host) and by guest-side adapters that
+# ship inside distroless images. Keep the dep surface minimal — no
+# `baml-rt-core`, no `tracing`, no observability. Anything heavier belongs in
+# a host-only crate that converts from the types defined here.
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros"] }

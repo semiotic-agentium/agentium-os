@@ -6,7 +6,8 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 
 | Command | Description |
 |---------|-------------|
-| `new-tool [name]` | Create a new tool crate with all necessary patches |
+| `new-tool [name]` | Create a standalone external tool scaffold (Rust/Bash/Python/TypeScript) — default path for most users |
+| `new-static-tool [name]` | Create a compiled-in static tool crate with workspace patches — platform-internal use |
 | `new-agent [name]` | Create a new agent package with templates |
 | `build [names]...` | Package agents into distributable tar.gz files |
 | `publish --agent-dir <path>` | Publish agent source bundle to repository |
@@ -18,6 +19,8 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `list-event-sources` | List event source kinds and known schema versions |
 | `regen [names]...` | Regenerate type declarations for agents (all if omitted) |
 | `doctor` | Validate workspace integrity |
+| `check-external-tool --path <dir>` | Validate external tool metadata against schema + runtime parser |
+| `sandbox-digest --source bind <path>` | Compute sandbox runtime digest for bind rootfs content |
 | `chat --agent <name>` | Interactive terminal chat with a deployed agent |
 
 ## Installation
@@ -79,10 +82,58 @@ cargo agent-platform deploy --hash <sha256> --url https://runner.example.com \
 
 ### `new-tool`
 
-Creates a new tool crate with all necessary file patches. Omit `name` for interactive mode.
+Creates a standalone external tool scaffold that speaks the V1 tool protocol over stdio. This is the default path for most users — the tool lives in its own directory and the runner picks it up at deploy time via `BAML_EXTERNAL_TOOLS_DIR`. Omit `name` for interactive mode (the prompt now includes runtime selection: `process` or `sandbox`).
 
 ```bash
 cargo agent-platform new-tool [name] [options]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `name` | *(interactive)* | Tool local name in lowercase (`a-z0-9_-`), e.g. `echo`, `clickup_sync`, `clickup-sync` |
+| `--bundle <bundle>` | `support` | Bundle namespace. Free-form (e.g. `support`, `travel`, `acme`). Must be non-empty and contain no `/`. Validated against `baml_rt_tools::BundleName` at scaffold and runtime. |
+| `--lang <lang>` | `rust` | Scaffold language: `rust`, `bash`, `python`, `typescript` |
+| `--access <level>` | `read` | `read` (query-only), `write` (create/update), or `delete` (strictest level) |
+| `--runtime <kind>` | `process` | Metadata runtime: `process` or `sandbox` |
+| `--sandbox-source <kind>` | `oci` | Sandbox image source: `oci` or `bind` |
+| `--sandbox-image <ref@sha256:...>` | — | Required when `--runtime sandbox --sandbox-source oci` |
+| `--sandbox-bind-path <dir>` | — | Required when `--runtime sandbox --sandbox-source bind` |
+| `--runtime-digest <sha256:...>` | auto | Optional for sandbox. Defaults to OCI digest suffix for `oci`; computed from canonical bind rootfs for `bind` |
+| `--sandbox-entrypoint <argv,...>` | — | Optional comma-separated entrypoint argv for sandbox runtime |
+| `--description <text>` | `""` | Human-readable description written into metadata |
+| `--output <dir>` | `./<name>` | Output directory for standalone tool project |
+| `--dry-run` | off | Preview changes without writing files (non-interactive only) |
+
+Generated scaffold always includes `tool-metadata.json`, `tool-server`, and `README.md`, plus language-specific files. `tool-metadata.json` always emits an explicit `runtime` block (`process` by default, or `sandbox` when selected).
+
+```bash
+cargo agent-platform new-tool echo --lang bash --output ./echo-tool
+cargo agent-platform new-tool weather --lang typescript --access write
+cargo agent-platform new-tool flight-search --lang rust --bundle travel
+cargo agent-platform new-tool secure-devtool \
+  --runtime sandbox \
+  --sandbox-source oci \
+  --sandbox-image ghcr.io/acme/secure-devtool@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --sandbox-entrypoint /app/tool-adapter
+
+cargo agent-platform new-tool dev_echo \
+  --runtime sandbox \
+  --sandbox-source bind \
+  --sandbox-bind-path ./.tmp/dev-echo-rootfs \
+  --sandbox-entrypoint /tool-adapter
+```
+
+---
+
+### `new-static-tool`
+
+Creates a *static* tool crate — compiled into the platform workspace and linked
+at build time. Use this only when extending the platform itself (e.g. adding
+a system bundle); every other case should prefer `new-tool`, which produces a
+standalone external scaffold. Omit `name` for interactive mode.
+
+```bash
+cargo agent-platform new-static-tool [name] [options]
 ```
 
 | Option | Default | Description |
@@ -100,8 +151,8 @@ cargo agent-platform new-tool [name] [options]
 > If your tool needs runtime context (agent name, manifest data), also manually edit `optional_tool_bundles.rs` in runner and builder. See the `memory` tool for an example.
 
 ```bash
-cargo agent-platform new-tool github --dry-run
-cargo agent-platform new-tool github --access write --description "GitHub REST API"
+cargo agent-platform new-static-tool github --dry-run
+cargo agent-platform new-static-tool github --access write --description "GitHub REST API"
 ```
 
 ---
@@ -375,6 +426,44 @@ Run after adding/modifying tools or BAML schemas, and before committing.
 cargo agent-platform regen
 cargo agent-platform regen clickup-agent notion-agent
 ```
+
+---
+
+### `check-external-tool`
+
+Validates a standalone external tool's `tool-metadata.json` against:
+
+1. `schemas/external_tool_metadata.schema.json`
+2. The runtime typed parser (`ExternalToolMetadata`)
+3. Sandbox source consistency checks:
+   - `oci`: image must be digest-pinned and match `runtime_digest`
+   - `bind`: path must resolve to a directory and recomputed bind digest must match `runtime_digest`
+
+```bash
+cargo agent-platform check-external-tool --path ./echo-tool
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--path <dir>` | `.` | Tool directory containing `tool-metadata.json` |
+
+---
+
+### `sandbox-digest`
+
+Computes a sandbox runtime digest for source inputs. In v1 this supports bind rootfs directories.
+
+```bash
+cargo agent-platform sandbox-digest --source bind ./.tmp/dev-echo-rootfs
+# sha256:...
+```
+
+| Option / Arg | Default | Description |
+|-------------|---------|-------------|
+| `--source <kind>` | `bind` | Source kind (currently only `bind`) |
+| `<path>` | *(required)* | Bind rootfs directory path |
+
+This command is the canonical way to generate `runtime_digest` for bind-mode tool metadata and scripts.
 
 ---
 

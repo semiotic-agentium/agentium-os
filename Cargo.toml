@@ -26,6 +26,9 @@ members = [
   "crates/baml-rt-repository",
   "crates/baml-rt-router",
   "crates/baml-rt-tools",
+  "crates/baml-sandbox-adapter",
+  "crates/baml-sandbox-protocol",
+  "crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter",
   "crates/test-support",
   "crates/task-daemon",
   "crates/tools/calculator",
@@ -76,6 +79,7 @@ tokio = { version = "1", features = [
   "io-std",
   "io-util",
   "net",
+  "process",
 ] }
 async-trait = "0.1"
 tracing = "0.1"
@@ -86,6 +90,7 @@ opentelemetry-http = "0.26"
 tracing-opentelemetry = "0.27"
 tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3.31"
+libc = "0.2"
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.15", default-features = false, features = ["surrealdb"] }
 insta = { version = "1.46.3", features = ["json"] }

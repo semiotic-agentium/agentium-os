@@ -41,23 +41,23 @@ pub fn check_control_auth(
     runner_token: Option<&str>,
     cluster_mode: ClusterMode,
     provided: &str,
-) -> Result<(), HttpApiProblem> {
+) -> Result<(), Box<HttpApiProblem>> {
     match runner_token {
         Some(expected) => {
             if !tokens_match(provided.as_bytes(), expected.as_bytes()) {
-                return Err(problem(
+                return Err(Box::new(problem(
                     401,
                     "Unauthorized",
                     "missing or invalid X-Runner-Token",
-                ));
+                )));
             }
             Ok(())
         }
-        None if cluster_mode == ClusterMode::Cluster => Err(problem(
+        None if cluster_mode == ClusterMode::Cluster => Err(Box::new(problem(
             401,
             "Unauthorized",
             "runner_token is not configured; control endpoints require authentication in cluster mode",
-        )),
+        ))),
         None => Ok(()),
     }
 }
@@ -154,7 +154,7 @@ where
         Box::pin(async move {
             match auth_result {
                 Ok(()) => inner.call(req).await,
-                Err(problem) => Ok(problem.into_response()),
+                Err(problem) => Ok((*problem).into_response()),
             }
         })
     }

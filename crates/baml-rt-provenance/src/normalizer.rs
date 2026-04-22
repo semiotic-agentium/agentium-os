@@ -1061,6 +1061,7 @@ fn normalize_event_with_registry(
             args,
             metadata,
             delegation_target,
+            ..
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
             let ordinal =
@@ -1174,6 +1175,7 @@ fn normalize_event_with_registry(
             duration_ms,
             outcome,
             delegation_target,
+            ..
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
             let ordinal =
@@ -2218,6 +2220,10 @@ fn normalize_event_with_registry(
                     );
                 }
             }
+        }
+        ProvEventData::ExternalToolLifecycle { .. } => {
+            // Lifecycle events are currently query-first (event stream / ops queries).
+            // They intentionally do not participate in graph entity construction yet.
         }
         ProvEventData::CallbackDispatchContextsLinked {
             scheduling_context_id,

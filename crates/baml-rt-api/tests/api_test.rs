@@ -463,7 +463,7 @@ impl ContextIndexService for MockContextIndex {
         &self,
         request: &ContextIndexRequest,
     ) -> std::result::Result<ContextPickerPageDto, ContextIndexError> {
-        let all = vec![
+        let all = [
             baml_rt_api::ContextPickerItemDto {
                 context_id: "ctx-1".to_string(),
                 latest_timestamp_ms: 20,

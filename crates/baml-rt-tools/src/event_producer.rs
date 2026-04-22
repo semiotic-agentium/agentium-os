@@ -395,6 +395,8 @@ mod tests {
             )),
             config_bundle: Some(BundleName::new("support_test").expect("valid bundle")),
             origin: ToolOrigin::Host,
+            backend: crate::tools::ToolBackend::default(),
+            digest: None,
             projection_semantics: None,
             session_policy: SessionPolicy::Strict,
             event_sources: vec![],

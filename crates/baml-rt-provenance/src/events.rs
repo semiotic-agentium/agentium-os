@@ -507,6 +507,12 @@ pub enum ProvEventData {
         /// For system/internal_a2a: the delegated-to agent package (write-time provenance).
         /// Emitted on start so WAS_DELEGATED_TO exists during delegation (before completion).
         delegation_target: Option<String>,
+        /// Content-addressed digest of the tool artifact (external tools only).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_digest: Option<String>,
+        /// Execution backend that served this invocation (e.g. "Static", "External").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_backend: Option<String>,
     },
     ToolCallCompleted {
         scope: CallScope,
@@ -518,6 +524,12 @@ pub enum ProvEventData {
         outcome: Outcome,
         /// For system/internal_a2a: the delegated-to agent package (write-time provenance).
         delegation_target: Option<String>,
+        /// Content-addressed digest of the tool artifact (external tools only).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_digest: Option<String>,
+        /// Execution backend that served this invocation (e.g. "Static", "External").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_backend: Option<String>,
     },
     /// A single step within a tool session (Open / SendDone / SearchRead / PageRead).
     /// Written synchronously so conversation_context sees session state mid-execution.
@@ -540,6 +552,14 @@ pub enum ProvEventData {
         /// For SendDone: [`ActivityAnchorId`] of the `ToolCallCompleted` whose `tool_result` backs this `@N` row.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         informed_by_tool_activity_anchor: Option<String>,
+    },
+    /// Operational lifecycle events for external tools (describe/artifact/quarantine transitions).
+    /// Stored as first-class provenance events for query/audit without log forensics.
+    ExternalToolLifecycle {
+        tool_name: String,
+        phase: String,
+        result: String,
+        details: JsonValue,
     },
     AgentBooted {
         agent_id: AgentId,
@@ -1035,6 +1055,8 @@ impl ProvEvent {
                 args,
                 metadata,
                 delegation_target,
+                tool_digest: None,
+                tool_backend: None,
             },
         })
     }
@@ -1060,6 +1082,8 @@ impl ProvEvent {
                 args,
                 metadata,
                 delegation_target,
+                tool_digest: None,
+                tool_backend: None,
             },
         })
     }
@@ -1116,6 +1140,8 @@ impl ProvEvent {
                 duration_ms,
                 outcome,
                 delegation_target,
+                tool_digest: None,
+                tool_backend: None,
             },
         })
     }
@@ -1173,6 +1199,8 @@ impl ProvEvent {
                 duration_ms,
                 outcome,
                 delegation_target,
+                tool_digest: None,
+                tool_backend: None,
             },
         })
     }
@@ -1243,6 +1271,59 @@ impl ProvEvent {
                 offset,
                 limit,
                 informed_by_tool_activity_anchor: informed_by,
+            },
+        })
+    }
+
+    /// Annotate a `ToolCallStarted` / `ToolCallCompleted` event with execution
+    /// backend + content digest. No-op for other event kinds. Use at emission
+    /// time to populate provenance audit fields without bloating constructor
+    /// signatures.
+    pub fn with_tool_backend_digest(
+        mut self,
+        backend: Option<String>,
+        digest: Option<String>,
+    ) -> Self {
+        let data = match &mut self {
+            ProvEvent::Task(event) => &mut event.data,
+            ProvEvent::Global(event) => &mut event.data,
+            ProvEvent::AgentBooted(_) | ProvEvent::AgentStopped(_) => return self,
+        };
+        match data {
+            ProvEventData::ToolCallStarted {
+                tool_backend,
+                tool_digest,
+                ..
+            }
+            | ProvEventData::ToolCallCompleted {
+                tool_backend,
+                tool_digest,
+                ..
+            } => {
+                *tool_backend = backend;
+                *tool_digest = digest;
+            }
+            _ => {}
+        }
+        self
+    }
+
+    pub fn external_tool_lifecycle(
+        context_id: ContextId,
+        tool_name: String,
+        phase: String,
+        result: String,
+        details: JsonValue,
+    ) -> Self {
+        ProvEvent::Global(GlobalEvent {
+            id: next_activity_anchor_id(),
+            context_id,
+            timestamp_ms: now_millis(),
+            data: ProvEventData::ExternalToolLifecycle {
+                tool_name,
+                phase,
+                result,
+                details,
             },
         })
     }

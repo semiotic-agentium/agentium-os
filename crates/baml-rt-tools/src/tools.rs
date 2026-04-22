@@ -38,21 +38,33 @@ use crate::{
     ts_gen::render_tool_typescript,
 };
 
+/// Access level a tool declares it needs. Serialized as lowercase
+/// (`"read"` / `"write"` / `"delete"`) so `tool-metadata.json` stays
+/// human-readable and matches the canonical spelling used by the runtime,
+/// builder, and CLI scaffolder.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolAccess {
     Read,
     Write,
     Delete,
 }
 
-impl std::fmt::Display for ToolAccess {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
+impl ToolAccess {
+    /// Canonical lowercase spelling used in `tool-metadata.json` and
+    /// everywhere the access level is serialized as a string.
+    pub fn as_str(self) -> &'static str {
+        match self {
             ToolAccess::Read => "read",
             ToolAccess::Write => "write",
             ToolAccess::Delete => "delete",
-        };
-        write!(f, "{}", value)
+        }
+    }
+}
+
+impl std::fmt::Display for ToolAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -423,15 +435,33 @@ pub struct ToolProjectionSemantics {
     pub detail: String,
 }
 
+fn is_valid_bundle_identifier_component(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
+fn is_valid_local_tool_identifier_component(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BundleName(String);
 
 impl BundleName {
     pub fn new(name: impl Into<String>) -> Result<Self> {
         let name = name.into();
-        if name.is_empty() || name.contains('/') {
+        if !is_valid_bundle_identifier_component(&name) {
             return Err(BamlRtError::InvalidArgument(format!(
-                "Bundle name '{}' must be non-empty and must not contain '/'",
+                "Bundle name '{}' must match ^[a-z][a-z0-9_-]*$ (ASCII lowercase letters, digits, '_' or '-')",
                 name
             )));
         }
@@ -488,9 +518,9 @@ pub struct LocalToolName(String);
 impl LocalToolName {
     pub fn new(name: impl Into<String>) -> Result<Self> {
         let name = name.into();
-        if name.is_empty() || name.contains('/') {
+        if !is_valid_local_tool_identifier_component(&name) {
             return Err(BamlRtError::InvalidArgument(format!(
-                "Tool name '{}' must be non-empty and must not contain '/'",
+                "Tool name '{}' must match ^[a-z][A-Za-z0-9_-]*$ (ASCII letters, digits, '_' or '-', starting with lowercase)",
                 name
             )));
         }
@@ -849,6 +879,11 @@ pub struct ToolFunctionMetadata {
     pub config_bundle: Option<BundleName>,
     /// Origin of this tool (host vs guest)
     pub origin: ToolOrigin,
+    /// Execution backend (Static, External, or Wasm). Defaults to `Static`.
+    pub backend: ToolBackend,
+    /// Content-addressed digest for external tool artifact / package bytes.
+    /// `None` for static tools and for external tools when verification is disabled.
+    pub digest: Option<String>,
     /// Optional tool-specific semantics for projection modes used during SearchRead/PageRead steps.
     pub projection_semantics: Option<ToolProjectionSemantics>,
     /// FSM scheduling policy for the step executor. Controls which ops are
@@ -930,6 +965,8 @@ impl ToolFunctionMetadata {
             config: None,
             config_bundle: None,
             origin,
+            backend: ToolBackend::default(),
+            digest: None,
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
             event_sources: Vec::new(),
@@ -948,6 +985,8 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     config: Option<ToolConfigMetadata>,
     config_bundle: Option<BundleName>,
     origin: ToolOrigin,
+    backend: ToolBackend,
+    digest: Option<String>,
     projection_semantics: Option<ToolProjectionSemantics>,
     extra_ts_decls: Vec<String>,
     access: Option<ToolAccess>,
@@ -976,6 +1015,8 @@ where
             config: None,
             config_bundle: None,
             origin: ToolOrigin::Host,
+            backend: ToolBackend::default(),
+            digest: None,
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
             event_sources: Vec::new(),
@@ -1022,6 +1063,12 @@ where
         self
     }
 
+    /// Set explicit digest for external tool artifact/package bytes.
+    pub fn with_digest(mut self, digest: String) -> Self {
+        self.digest = Some(digest);
+        self
+    }
+
     /// Set explicit semantics for identity/summary/detail read projections.
     pub fn with_projection_semantics(
         mut self,
@@ -1060,6 +1107,12 @@ where
         self.event_sources = event_sources;
         self
     }
+
+    /// Set the execution backend for this tool.
+    pub fn with_backend(mut self, backend: ToolBackend) -> Self {
+        self.backend = backend;
+        self
+    }
 }
 
 impl<OpenInput, Input, Output> ToolMetadataBuilder
@@ -1083,6 +1136,8 @@ where
         metadata.baml_decl = self.baml_decl;
         metadata.config = self.config;
         metadata.config_bundle = self.config_bundle;
+        metadata.backend = self.backend;
+        metadata.digest = self.digest;
         metadata.projection_semantics = self.projection_semantics;
         metadata.session_policy = self.session_policy;
         metadata.event_sources = self.event_sources;
@@ -1108,6 +1163,10 @@ pub struct ToolFunctionMetadataExport {
     pub secret_requests: Vec<SecretRequest>,
     pub config: Option<ToolConfigMetadata>,
     pub origin: ToolOrigin,
+    #[serde(default)]
+    pub backend: ToolBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
     pub projection_semantics: Option<ToolProjectionSemantics>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_sources: Vec<EventSourceKind>,
@@ -1132,6 +1191,8 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             secret_requests: metadata.secret_requests.clone(),
             config: metadata.config.clone(),
             origin: metadata.origin,
+            backend: metadata.backend,
+            digest: metadata.digest.clone(),
             projection_semantics: metadata.projection_semantics.clone(),
             event_sources: metadata.event_sources.clone(),
         }
@@ -1148,6 +1209,10 @@ pub struct ToolDiscoveryRecord {
     pub tags: Vec<String>,
     pub access: Option<ToolAccess>,
     pub origin: ToolOrigin,
+    #[serde(default)]
+    pub backend: ToolBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_sources: Vec<EventSourceKind>,
 }
@@ -1161,6 +1226,8 @@ impl ToolDiscoveryRecord {
             tags: metadata.tags.clone(),
             access: metadata.access,
             origin: metadata.origin,
+            backend: metadata.backend,
+            digest: metadata.digest.clone(),
             event_sources: metadata.event_sources.clone(),
         }
     }
@@ -1200,6 +1267,25 @@ pub enum ToolOrigin {
     Host,
     /// Tool is a guest tool (no allowlist restriction)
     Guest,
+}
+
+/// Execution backend for a tool. Orthogonal to [`ToolOrigin`] (ownership).
+///
+/// - `Static`: compiled into the runner at build time and linked via inventory.
+/// - `External`: resolved at deploy time and spawned as a subprocess per invocation.
+/// - `Sandbox`: runs inside a microsandbox-backed microVM; dispatch lands in Workstream B.
+/// - `Wasm`: loaded per invocation into a Wasm sandbox (future).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolBackend {
+    /// Compiled into the runner via inventory (current default).
+    #[default]
+    Static,
+    /// Runs as a standalone process speaking the tool protocol over stdio/UDS.
+    External,
+    /// Runs inside a microsandbox-backed microVM (Workstream B).
+    Sandbox,
+    /// Runs inside a Wasm sandbox (future).
+    Wasm,
 }
 
 /// Context passed to a tool when a session is opened. context_id and agent_id (from invocation
@@ -3068,5 +3154,26 @@ mod session_type_names_alignment_tests {
             let id = BamlFunctionId::parse(&name);
             assert_eq!(id.full_name(), name, "parse round-trip for {name}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tool_name_identifier_tests {
+    use super::{BundleName, LocalToolName, ToolName};
+
+    #[test]
+    fn accepts_ascii_lowercase_identifier_components() {
+        assert!(BundleName::new("internal-dev").is_ok());
+        assert!(BundleName::new("internal_dev").is_ok());
+        assert!(LocalToolName::new("get_weather2").is_ok());
+        assert!(ToolName::parse("internal-dev/get_weather2").is_ok());
+        assert!(ToolName::parse("internal_dev/get_weather2").is_ok());
+    }
+
+    #[test]
+    fn rejects_non_ascii_or_uppercase_identifier_components() {
+        assert!(BundleName::new("Support").is_err());
+        assert!(LocalToolName::new("echo🙂").is_err());
+        assert!(ToolName::parse("support/echo🙂").is_err());
     }
 }

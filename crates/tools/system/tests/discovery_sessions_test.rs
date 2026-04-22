@@ -277,6 +277,8 @@ async fn seeded_store_for_context(
                 duration_ms: 500,
                 outcome: Outcome::Failure,
                 delegation_target: None,
+                tool_digest: None,
+                tool_backend: None,
             },
         }))
         .await
@@ -313,6 +315,8 @@ async fn seeded_store_for_context(
                 duration_ms: 330,
                 outcome: Outcome::Failure,
                 delegation_target: None,
+                tool_digest: None,
+                tool_backend: None,
             },
         }))
         .await
