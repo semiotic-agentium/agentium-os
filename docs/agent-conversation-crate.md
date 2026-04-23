@@ -1,6 +1,6 @@
 # `baml-rt-conversation`: agent-visible history and episodes
 
-The `baml-rt-conversation` workspace crate holds **typed view models** for what agents and BAML see as conversation history, plus **pure** projection into `conversation_history` / `session_history` and episode-shaped JSON. It intentionally contains **no** SurrealDB, graph I/O, or `SurrealProvenanceStore`.
+The `baml-rt-conversation` workspace crate holds **typed view models** for what agents and BAML see as conversation history, plus **pure** projection into `conversation_history` / `session_history` and episode-shaped JSON. It intentionally contains **no** SurrealDB, graph I/O, or `SurrealProvenanceStore`. By design, the default path is **append-only** (prefix-stable) before any explicit **compaction** or windowing—so the **prefix** of projected history can stay valid for LLM prefix caching (see **R9** in the normative spec).
 
 **Normative spec (requirements, ecosystem review, gap analysis, traceability):** [baml-rt-conversation-spec.md](baml-rt-conversation-spec.md).
 

@@ -3,7 +3,8 @@
 //! Produces a flat `conversation_history` array for `ctx.tags`.
 //! Each item has `{role, content}` — rendered by the trait system:
 //!
-//! - `Message`     → `{HistoryRef} {text}` (e.g. `#1 …`) via [`RefTable::insert_history`]
+//! - `Message`     → `{HistoryRef} {text}` (e.g. `#1 …`) via [`RefTable::insert_history`], plus
+//!   optional `citations: string[]` in the tag JSON when the row is message-sourced and refs are non-empty
 //! - `ToolCall`    → `{HistoryRef} {describe_invocation_with_hint(...)}`
 //! - `ToolResult`  → archive_read render of result value (first `DEFAULT_TOOL_RESULT_INLINE_LINES` lines)
 //! - `ToolError`   → archive_read render of error value
@@ -14,14 +15,15 @@
 //!   production — never raw JSON dumps). Matches `remotes/semiotic-agentium/pud-squashed`.
 //! - `StatusOnly` items are discarded at the conversion boundary before reaching here.
 
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet, fmt};
 
 use serde_json::{Value, json};
 
 use crate::{
     archive_read::{
-        DEFAULT_TOOL_RESULT_INLINE_LINES, PageLimit, SEND_DONE_HISTORY_INLINE_LINES,
-        session_read_command_line,
+        DEFAULT_TOOL_RESULT_INLINE_LINES, PageLimit, RenderedContent,
+        SEND_DONE_HISTORY_INLINE_LINES, format_send_done_replay_from_json,
+        format_session_read_body_from_rendered, session_read_command_line,
     },
     archive_refs::{HistoryEntry, RefTable},
     tools::ToolRegistry,
@@ -53,30 +55,36 @@ pub enum SessionStepProjection {
 /// The `source` string discriminant is replaced by the variant itself.
 /// `StatusOnly` results are never present here — they are discarded at the
 /// `baml-rt-a2a` conversion boundary before `PromptProjectionItem` is constructed.
+/// Session FSM step for projection, plus optional graph-replay fields that must match
+/// [`baml_rt_conversation::view::SessionStepContent`].
+#[derive(Debug, Clone)]
+pub struct SessionStepPayload {
+    pub tool_name: String,
+    pub op: SessionStepProjection,
+    /// `SendDone` only: when set, build the read body from this JSON (Graph `WAS_INFORMED_BY` replay)
+    /// with the same `send_done` cap as `archive_reader`, instead of (or before falling back to) archive read.
+    pub send_done_replay_payload: Option<Value>,
+    /// `SearchRead` / `PageRead` only: pre-hydrated window; wins over `archive_reader` when non-empty.
+    pub read_replay_lines: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone)]
 pub enum PromptProjectionContent {
-    Message(String),
+    /// User/assistant text with optional ref-table citation strings (same vocabulary as `Citation` on graph edges).
+    Message {
+        text: String,
+        /// Wire refs (`#N`, `@K`, …); may be empty.
+        citations: Vec<String>,
+    },
     /// Tool invocation. `args` is the BAML step payload `{"op":"Send","input":{...}}`
     /// forwarded directly to `ToolHandler::describe_invocation`.
-    ToolCall {
-        tool_name: String,
-        args: Value,
-    },
+    ToolCall { tool_name: String, args: Value },
     /// Tool result with actual data.
-    ToolResult {
-        tool_name: String,
-        result: Value,
-    },
+    ToolResult { tool_name: String, result: Value },
     /// Tool returned an error.
-    ToolError {
-        tool_name: String,
-        error: Value,
-    },
+    ToolError { tool_name: String, error: Value },
     /// An individual step within an in-progress session.
-    SessionStep {
-        tool_name: String,
-        op: SessionStepProjection,
-    },
+    SessionStep(SessionStepPayload),
 }
 
 #[derive(Debug, Clone)]
@@ -97,17 +105,69 @@ pub enum RenderedEntry {
     /// Item is filtered — contributes nothing to conversation history.
     Filtered,
     /// Single attributed entry.
-    One(String),
+    One {
+        content: String,
+        /// `Some` only for [`PromptProjectionContent::Message`] with non-empty graph citations.
+        message_citations: Option<Vec<String>>,
+    },
     /// Two attributed entries, first then second (e.g. send_done header + inline content; second line
     /// uses role `read`, not `tool`).
     Two(String, String),
+}
+
+/// Cross-item state for `SendDone` and session `Read` view deduplication (historical name: **inline
+/// dedup**). Must be shared when projecting a sequence of [`PromptProjectionItem`] (live
+/// `conversation_history` and episode `session_history`).
+#[derive(Debug, Default)]
+pub struct InlineProjectionState {
+    pub inlined_archive_refs: HashSet<String>,
+    pub inlined_read_pages: HashSet<String>,
+}
+
+/// Wire `role` string in `conversation_history` / `session_history` JSON. Use
+/// [`Self::read_line`] for the second line of a two-line item (e.g. `SendDone` body) so the
+/// `read` literal is not duplicated.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProjectedLineRole(Cow<'static, str>); // `Clone` is cheap for the read-line `Borrowed` case
+
+impl ProjectedLineRole {
+    /// Second history row for `SendDone` (header + archive body) and other two-line projections.
+    #[must_use]
+    pub fn read_line() -> Self {
+        Self(Cow::Borrowed("read"))
+    }
+
+    #[must_use]
+    pub fn from_primary(s: String) -> Self {
+        Self(Cow::Owned(s))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ProjectedLineRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One flattened `conversation_history` line after rendering (before any episode ref-prefixing).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedHistoryRow {
+    pub role: ProjectedLineRole,
+    pub content: String,
+    /// Non-`None` only for message-sourced rows with at least one citation; omitted from JSON when `None`.
+    pub message_citations: Option<Vec<String>>,
 }
 
 /// Callback that re-derives cat-n output from an archive entry.
 /// Arguments: `(archive_ref, grep_pattern, offset, limit)`.
 pub type ArchiveReader<'a> = &'a dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>;
 
-/// Line caps and tool-call behaviour for [`render_projection_content`].
+/// Line caps and tool-call behaviour for a single item (see [`project_projection_item_to_rows`]).
 #[derive(Debug, Clone, Copy)]
 pub struct ProjectionRenderOptions {
     pub tool_result: PageLimit,
@@ -140,6 +200,63 @@ pub fn episode_session_history_projection_options() -> ProjectionRenderOptions {
     }
 }
 
+#[must_use]
+fn projected_history_row_to_json(row: &ProjectedHistoryRow) -> Value {
+    match &row.message_citations {
+        Some(c) if !c.is_empty() => json!({
+            "role": row.role.as_str(),
+            "content": row.content,
+            "citations": c
+        }),
+        _ => json!({ "role": row.role.as_str(), "content": row.content }),
+    }
+}
+
+/// Turn one [`PromptProjectionItem`] into zero or more [`ProjectedHistoryRow`]s using shared
+/// [`InlineProjectionState`]. This is the primitive used by both [`project_prompt_context`] and
+/// episode `session_history` so inline dedup matches live BAML tags.
+pub fn project_projection_item_to_rows(
+    item: &PromptProjectionItem,
+    state: &mut InlineProjectionState,
+    registry: &ToolRegistry,
+    ref_table: &RefTable,
+    archive_reader: Option<ArchiveReader<'_>>,
+    opts: ProjectionRenderOptions,
+) -> Vec<ProjectedHistoryRow> {
+    let role_main = ProjectedLineRole::from_primary(item.role.clone());
+    match render_projection_content_with_state(
+        item,
+        registry,
+        ref_table,
+        archive_reader,
+        opts,
+        &mut state.inlined_archive_refs,
+        &mut state.inlined_read_pages,
+    ) {
+        RenderedEntry::Filtered => Vec::new(),
+        RenderedEntry::One {
+            content,
+            message_citations,
+        } => vec![ProjectedHistoryRow {
+            role: role_main,
+            content,
+            message_citations,
+        }],
+        RenderedEntry::Two(first, second) => vec![
+            ProjectedHistoryRow {
+                role: role_main.clone(),
+                content: first,
+                message_citations: None,
+            },
+            ProjectedHistoryRow {
+                role: ProjectedLineRole::read_line(),
+                content: second,
+                message_citations: None,
+            },
+        ],
+    }
+}
+
 /// Produce the `conversation_history` array for `ctx.tags`.
 ///
 /// `ref_table`: receives `#N` allocations for messages and tool-call descriptions.
@@ -150,35 +267,27 @@ pub fn project_prompt_context(
     ref_table: &RefTable,
     archive_reader: Option<ArchiveReader<'_>>,
 ) -> Value {
-    let mut history = Vec::with_capacity(items.len());
-    let mut inlined_archive_refs: HashSet<String> = HashSet::new();
-    let mut inlined_read_pages: HashSet<String> = HashSet::new();
-
+    let mut state = InlineProjectionState::default();
+    let mut history: Vec<Value> = Vec::with_capacity(items.len());
+    let opts = ProjectionRenderOptions::default();
     for item in items {
-        match render_projection_content_with_state(
+        for row in project_projection_item_to_rows(
             &item,
+            &mut state,
             registry,
             ref_table,
             archive_reader,
-            ProjectionRenderOptions::default(),
-            &mut inlined_archive_refs,
-            &mut inlined_read_pages,
+            opts,
         ) {
-            RenderedEntry::Filtered => {}
-            RenderedEntry::One(c) => {
-                history.push(json!({ "role": item.role, "content": c }));
-            }
-            RenderedEntry::Two(first, second) => {
-                history.push(json!({ "role": item.role, "content": first }));
-                history.push(json!({ "role": "read", "content": second }));
-            }
+            history.push(projected_history_row_to_json(&row));
         }
     }
-
     Value::Array(history)
 }
 
-/// Same rules as [`project_prompt_context`], as `(role, content)` pairs for one item.
+/// Same rules as [`project_prompt_context`], as `(role, content)` pairs for one item
+/// (per-item **fresh** [`InlineProjectionState`]). Message citation metadata is dropped; use
+/// [`project_projection_item_to_rows`] when `citations` are required.
 #[must_use]
 pub fn projection_history_pairs(
     item: &PromptProjectionItem,
@@ -187,35 +296,47 @@ pub fn projection_history_pairs(
     archive_reader: Option<ArchiveReader<'_>>,
     opts: ProjectionRenderOptions,
 ) -> Vec<(String, String)> {
-    let role = item.role.clone();
-    match render_projection_content(item, registry, ref_table, archive_reader, opts) {
-        RenderedEntry::Filtered => Vec::new(),
-        RenderedEntry::One(c) => vec![(role, c)],
-        // SendDone only: header stays on the step role; archive body is a Read analogue for UI.
-        RenderedEntry::Two(a, b) => vec![(role.clone(), a), ("read".to_string(), b)],
-    }
+    let mut state = InlineProjectionState::default();
+    project_projection_item_to_rows(item, &mut state, registry, ref_table, archive_reader, opts)
+        .into_iter()
+        .map(|r| (r.role.to_string(), r.content))
+        .collect()
 }
 
-/// Render one projection item using the same rules as prompt injection, with explicit caps.
-#[must_use]
-pub fn render_projection_content(
-    item: &PromptProjectionItem,
-    registry: &ToolRegistry,
-    ref_table: &RefTable,
-    archive_reader: Option<ArchiveReader<'_>>,
-    opts: ProjectionRenderOptions,
+/// Paginated `cat -n` block for tool result / error values (shared caps via [`PageLimit`]).
+fn tool_value_to_rendered_entry(
+    value: &Value,
+    tool_name: &str,
+    is_error: bool,
+    page_limit: PageLimit,
 ) -> RenderedEntry {
-    let mut inlined_archive_refs = HashSet::new();
-    let mut inlined_read_pages = HashSet::new();
-    render_projection_content_with_state(
-        item,
-        registry,
-        ref_table,
-        archive_reader,
-        opts,
-        &mut inlined_archive_refs,
-        &mut inlined_read_pages,
-    )
+    let rendered = crate::archive_read::render_to_lines(value);
+    let page = crate::archive_read::grep_paginate(
+        &rendered,
+        None,
+        crate::archive_read::LineOffset::default(),
+        page_limit,
+    );
+    let formatted = crate::archive_read::format_cat_n(&page.lines);
+    if formatted.trim().is_empty() {
+        RenderedEntry::Filtered
+    } else {
+        let range_comment = page.session_range_comment();
+        let base = if is_error {
+            format!("{tool_name} [error]")
+        } else {
+            tool_name.to_string()
+        };
+        let text = if range_comment.is_empty() {
+            format!("{base}:\n{formatted}")
+        } else {
+            format!("{base}:{range_comment}\n{formatted}")
+        };
+        RenderedEntry::One {
+            content: text,
+            message_citations: None,
+        }
+    }
 }
 
 fn read_view_key(
@@ -241,7 +362,7 @@ fn render_projection_content_with_state(
     inlined_read_pages: &mut HashSet<String>,
 ) -> RenderedEntry {
     match &item.content {
-        PromptProjectionContent::Message(text) => {
+        PromptProjectionContent::Message { text, citations } => {
             if text.trim().is_empty() {
                 return RenderedEntry::Filtered;
             }
@@ -249,7 +370,15 @@ fn render_projection_content_with_state(
                 HistoryEntry::new(item.activity_anchor.clone(), "message".to_string()),
                 text.as_str(),
             );
-            RenderedEntry::One(format!("{h} {text}"))
+            let message_citations = if citations.is_empty() {
+                None
+            } else {
+                Some(citations.clone())
+            };
+            RenderedEntry::One {
+                content: format!("{h} {text}"),
+                message_citations,
+            }
         }
 
         PromptProjectionContent::ToolCall { tool_name, args } => {
@@ -264,71 +393,45 @@ fn render_projection_content_with_state(
                 HistoryEntry::new(item.activity_anchor.clone(), "tool_call".to_string()),
                 desc.as_str(),
             );
-            RenderedEntry::One(format!("{h} {desc}"))
+            RenderedEntry::One {
+                content: format!("{h} {desc}"),
+                message_citations: None,
+            }
         }
 
         PromptProjectionContent::ToolResult { tool_name, result } => {
-            let rendered = crate::archive_read::render_to_lines(result);
-            let page = crate::archive_read::grep_paginate(
-                &rendered,
-                None,
-                crate::archive_read::LineOffset::default(),
-                opts.tool_result,
-            );
-            let formatted = crate::archive_read::format_cat_n(&page.lines);
-            if formatted.trim().is_empty() {
-                RenderedEntry::Filtered
-            } else {
-                let range_comment = page.session_range_comment();
-                let text = if range_comment.is_empty() {
-                    format!("{tool_name}:\n{formatted}")
-                } else {
-                    format!("{tool_name}:{range_comment}\n{formatted}")
-                };
-                RenderedEntry::One(text)
-            }
+            tool_value_to_rendered_entry(result, tool_name, false, opts.tool_result)
         }
 
         PromptProjectionContent::ToolError { tool_name, error } => {
-            let rendered = crate::archive_read::render_to_lines(error);
-            let page = crate::archive_read::grep_paginate(
-                &rendered,
-                None,
-                crate::archive_read::LineOffset::default(),
-                opts.tool_error,
-            );
-            let formatted = crate::archive_read::format_cat_n(&page.lines);
-            if formatted.trim().is_empty() {
-                RenderedEntry::Filtered
-            } else {
-                let range_comment = page.session_range_comment();
-                let text = if range_comment.is_empty() {
-                    format!("{tool_name} [error]:\n{formatted}")
-                } else {
-                    format!("{tool_name} [error]:{range_comment}\n{formatted}")
-                };
-                RenderedEntry::One(text)
-            }
+            tool_value_to_rendered_entry(error, tool_name, true, opts.tool_error)
         }
 
-        PromptProjectionContent::SessionStep { tool_name, op } => match op {
-            SessionStepProjection::Open => RenderedEntry::One(
-                registry
-                    .describe_open_for(tool_name)
-                    .unwrap_or_else(|| format!("{tool_name} session opened")),
-            ),
-            SessionStepProjection::SendDone {
-                archive_ref,
-                header,
-            } => {
-                if inlined_archive_refs.contains(archive_ref) {
-                    return RenderedEntry::Two(header.clone(), format!("cat -n {archive_ref}"));
-                }
-                inlined_archive_refs.insert(archive_ref.clone());
+        PromptProjectionContent::SessionStep(s) => {
+            let tool_name = s.tool_name.as_str();
+            match &s.op {
+                SessionStepProjection::Open => RenderedEntry::One {
+                    content: registry
+                        .describe_open_for(tool_name)
+                        .unwrap_or_else(|| format!("{tool_name} session opened")),
+                    message_citations: None,
+                },
+                SessionStepProjection::SendDone {
+                    archive_ref,
+                    header,
+                } => {
+                    if inlined_archive_refs.contains(archive_ref) {
+                        return RenderedEntry::Two(header.clone(), format!("cat -n {archive_ref}"));
+                    }
+                    inlined_archive_refs.insert(archive_ref.clone());
 
-                match archive_reader.and_then(|r| r(archive_ref, None, 0, opts.send_done.get())) {
-                    Some(content) => {
-                        // Teaser window (send_done cap) for exact duplicate Read views.
+                    if let Some(ref payload) = s.send_done_replay_payload
+                        && let Some(body) = format_send_done_replay_from_json(
+                            payload,
+                            archive_ref,
+                            PageLimit::new(opts.send_done.get()),
+                        )
+                    {
                         inlined_read_pages.insert(read_view_key(
                             "page",
                             archive_ref,
@@ -336,69 +439,169 @@ fn render_projection_content_with_state(
                             0,
                             opts.send_done.get(),
                         ));
-                        // Default first-page view (offset 0, limit PageLimit::DEFAULT) so a follow-on
-                        // `PageRead { offset: 0, limit: 200 }` dedupes to command-only — same logical
-                        // view as the standard session read, not a second key with a different limit.
                         inlined_read_pages.insert(read_view_key(
                             "page",
                             archive_ref,
                             None,
                             0,
-                            crate::archive_read::PageLimit::DEFAULT,
+                            PageLimit::DEFAULT,
                         ));
-                        RenderedEntry::Two(header.clone(), content)
+                        return RenderedEntry::Two(header.clone(), body);
                     }
-                    None => RenderedEntry::One(header.clone()),
+
+                    match archive_reader.and_then(|r| r(archive_ref, None, 0, opts.send_done.get()))
+                    {
+                        Some(content) => {
+                            inlined_read_pages.insert(read_view_key(
+                                "page",
+                                archive_ref,
+                                None,
+                                0,
+                                opts.send_done.get(),
+                            ));
+                            inlined_read_pages.insert(read_view_key(
+                                "page",
+                                archive_ref,
+                                None,
+                                0,
+                                PageLimit::DEFAULT,
+                            ));
+                            RenderedEntry::Two(header.clone(), content)
+                        }
+                        None => RenderedEntry::One {
+                            content: header.clone(),
+                            message_citations: None,
+                        },
+                    }
                 }
-            }
-            SessionStepProjection::SearchRead {
-                archive_ref,
-                grep,
-                offset,
-                limit,
-            } => {
-                let cmd = session_read_command_line(archive_ref, Some(grep.as_str()));
-                let read_key =
-                    read_view_key("search", archive_ref, Some(grep.as_str()), *offset, *limit);
-                if inlined_read_pages.contains(&read_key) {
-                    return RenderedEntry::One(cmd);
-                }
-                match archive_reader
-                    .and_then(|r| r(archive_ref, Some(grep.as_str()), *offset, *limit))
-                {
-                    Some(output) => {
+                SessionStepProjection::SearchRead {
+                    archive_ref,
+                    grep,
+                    offset,
+                    limit,
+                } => {
+                    let cmd = session_read_command_line(archive_ref, Some(grep.as_str()));
+                    let read_key =
+                        read_view_key("search", archive_ref, Some(grep.as_str()), *offset, *limit);
+                    if let Some(ref lines) = s.read_replay_lines
+                        && !lines.is_empty()
+                    {
+                        if inlined_read_pages.contains(&read_key) {
+                            return RenderedEntry::One {
+                                content: cmd,
+                                message_citations: None,
+                            };
+                        }
+                        let rendered = RenderedContent::from_lines(
+                            lines.iter().filter(|l| !l.is_empty()).cloned(),
+                        );
+                        let out = format_session_read_body_from_rendered(
+                            &rendered,
+                            archive_ref,
+                            Some(grep.as_str()),
+                            *offset,
+                            PageLimit::new(*limit),
+                        );
                         inlined_read_pages.insert(read_key);
-                        RenderedEntry::One(output)
+                        return RenderedEntry::One {
+                            content: out,
+                            message_citations: None,
+                        };
                     }
-                    None => RenderedEntry::One(cmd),
+                    if inlined_read_pages.contains(&read_key) {
+                        return RenderedEntry::One {
+                            content: cmd,
+                            message_citations: None,
+                        };
+                    }
+                    match archive_reader
+                        .and_then(|r| r(archive_ref, Some(grep.as_str()), *offset, *limit))
+                    {
+                        Some(output) => {
+                            inlined_read_pages.insert(read_key);
+                            RenderedEntry::One {
+                                content: output,
+                                message_citations: None,
+                            }
+                        }
+                        None => RenderedEntry::One {
+                            content: cmd,
+                            message_citations: None,
+                        },
+                    }
                 }
-            }
-            SessionStepProjection::PageRead {
-                archive_ref,
-                offset,
-                limit,
-            } => {
-                let cmd = session_read_command_line(archive_ref, None);
-                let read_key = read_view_key("page", archive_ref, None, *offset, *limit);
-                if inlined_read_pages.contains(&read_key) {
-                    return RenderedEntry::One(cmd);
-                }
-                match archive_reader.and_then(|r| r(archive_ref, None, *offset, *limit)) {
-                    Some(output) => {
+                SessionStepProjection::PageRead {
+                    archive_ref,
+                    offset,
+                    limit,
+                } => {
+                    let cmd = session_read_command_line(archive_ref, None);
+                    let read_key = read_view_key("page", archive_ref, None, *offset, *limit);
+                    if let Some(ref lines) = s.read_replay_lines
+                        && !lines.is_empty()
+                    {
+                        if inlined_read_pages.contains(&read_key) {
+                            return RenderedEntry::One {
+                                content: cmd,
+                                message_citations: None,
+                            };
+                        }
+                        let rendered = RenderedContent::from_lines(
+                            lines.iter().filter(|l| !l.is_empty()).cloned(),
+                        );
+                        let out = format_session_read_body_from_rendered(
+                            &rendered,
+                            archive_ref,
+                            None,
+                            *offset,
+                            PageLimit::new(*limit),
+                        );
                         inlined_read_pages.insert(read_key);
-                        RenderedEntry::One(output)
+                        return RenderedEntry::One {
+                            content: out,
+                            message_citations: None,
+                        };
                     }
-                    None => RenderedEntry::One(cmd),
+                    if inlined_read_pages.contains(&read_key) {
+                        return RenderedEntry::One {
+                            content: cmd,
+                            message_citations: None,
+                        };
+                    }
+                    match archive_reader.and_then(|r| r(archive_ref, None, *offset, *limit)) {
+                        Some(output) => {
+                            inlined_read_pages.insert(read_key);
+                            RenderedEntry::One {
+                                content: output,
+                                message_citations: None,
+                            }
+                        }
+                        None => RenderedEntry::One {
+                            content: cmd,
+                            message_citations: None,
+                        },
+                    }
                 }
             }
-        },
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::{archive_refs::RefTable, tools::ToolRegistry};
+
+    fn session_step(tool_name: &str, op: SessionStepProjection) -> PromptProjectionContent {
+        PromptProjectionContent::SessionStep(SessionStepPayload {
+            tool_name: tool_name.to_string(),
+            op,
+            send_done_replay_payload: None,
+            read_replay_lines: None,
+        })
+    }
 
     #[test]
     fn send_done_two_emits_read_role_on_second_history_row() {
@@ -408,13 +611,13 @@ mod tests {
             timestamp_ms: 1,
             activity_anchor: "evt-sd".to_string(),
             role: "assistant".to_string(),
-            content: PromptProjectionContent::SessionStep {
-                tool_name: "demo/tool".to_string(),
-                op: SessionStepProjection::SendDone {
+            content: session_step(
+                "demo/tool",
+                SessionStepProjection::SendDone {
                     archive_ref: "@3".to_string(),
                     header: "@3 demo/tool 'ok' [1 lines]".to_string(),
                 },
-            },
+            ),
         }];
         let archive_reader =
             |archive_ref: &str, _grep: Option<&str>, _offset: usize, _limit: usize| {
@@ -435,7 +638,10 @@ mod tests {
             timestamp_ms: 0,
             activity_anchor: "evt-1".to_string(),
             role: "user".to_string(),
-            content: PromptProjectionContent::Message("what can you do".to_string()),
+            content: PromptProjectionContent::Message {
+                text: "what can you do".to_string(),
+                citations: vec![],
+            },
         }];
         let history = project_prompt_context(items, &registry, &ref_table, None);
         let arr = history.as_array().expect("array");
@@ -448,6 +654,24 @@ mod tests {
     }
 
     #[test]
+    fn message_with_citations_includes_them_in_json() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![PromptProjectionItem {
+            timestamp_ms: 0,
+            activity_anchor: "evt-1".to_string(),
+            role: "assistant".to_string(),
+            content: PromptProjectionContent::Message {
+                text: "see prior".to_string(),
+                citations: vec!["#1".to_string(), "@1".to_string()],
+            },
+        }];
+        let history = project_prompt_context(items, &registry, &ref_table, None);
+        let arr = history.as_array().expect("array");
+        assert_eq!(arr[0]["citations"], json!(["#1", "@1"]));
+    }
+
+    #[test]
     fn repeated_send_done_for_same_archive_ref_should_not_reinline_payload() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
@@ -456,40 +680,40 @@ mod tests {
                 timestamp_ms: 1,
                 activity_anchor: "evt-1".to_string(),
                 role: "assistant".to_string(),
-                content: PromptProjectionContent::SessionStep {
-                    tool_name: "clickup/get_tasks".to_string(),
-                    op: SessionStepProjection::SendDone {
+                content: session_step(
+                    "clickup/get_tasks",
+                    SessionStepProjection::SendDone {
                         archive_ref: "@15".to_string(),
                         header: "@15 clickup/get_tasks 'found tasks' [209 lines, 6.3KB]"
                             .to_string(),
                     },
-                },
+                ),
             },
             PromptProjectionItem {
                 timestamp_ms: 2,
                 activity_anchor: "evt-2".to_string(),
                 role: "assistant".to_string(),
-                content: PromptProjectionContent::SessionStep {
-                    tool_name: "clickup/get_tasks".to_string(),
-                    op: SessionStepProjection::SendDone {
+                content: session_step(
+                    "clickup/get_tasks",
+                    SessionStepProjection::SendDone {
                         archive_ref: "@15".to_string(),
                         header: "@15 clickup/get_tasks 'found tasks' [209 lines, 6.3KB]"
                             .to_string(),
                     },
-                },
+                ),
             },
             PromptProjectionItem {
                 timestamp_ms: 3,
                 activity_anchor: "evt-3".to_string(),
                 role: "assistant".to_string(),
-                content: PromptProjectionContent::SessionStep {
-                    tool_name: "clickup/get_tasks".to_string(),
-                    op: SessionStepProjection::SendDone {
+                content: session_step(
+                    "clickup/get_tasks",
+                    SessionStepProjection::SendDone {
                         archive_ref: "@15".to_string(),
                         header: "@15 clickup/get_tasks 'found tasks' [209 lines, 6.3KB]"
                             .to_string(),
                     },
-                },
+                ),
             },
         ];
 
@@ -522,27 +746,27 @@ mod tests {
                 timestamp_ms: 1,
                 activity_anchor: "evt-r1".to_string(),
                 role: "assistant".to_string(),
-                content: PromptProjectionContent::SessionStep {
-                    tool_name: "clickup/get_tasks".to_string(),
-                    op: SessionStepProjection::PageRead {
+                content: session_step(
+                    "clickup/get_tasks",
+                    SessionStepProjection::PageRead {
                         archive_ref: "@15".to_string(),
                         offset: 0,
                         limit: 200,
                     },
-                },
+                ),
             },
             PromptProjectionItem {
                 timestamp_ms: 2,
                 activity_anchor: "evt-r2".to_string(),
                 role: "assistant".to_string(),
-                content: PromptProjectionContent::SessionStep {
-                    tool_name: "clickup/get_tasks".to_string(),
-                    op: SessionStepProjection::PageRead {
+                content: session_step(
+                    "clickup/get_tasks",
+                    SessionStepProjection::PageRead {
                         archive_ref: "@15".to_string(),
                         offset: 0,
                         limit: 200,
                     },
-                },
+                ),
             },
         ];
 
@@ -579,27 +803,27 @@ mod tests {
                 timestamp_ms: 1,
                 activity_anchor: "evt-s1".to_string(),
                 role: "assistant".to_string(),
-                content: PromptProjectionContent::SessionStep {
-                    tool_name: "clickup/get_tasks".to_string(),
-                    op: SessionStepProjection::SendDone {
+                content: session_step(
+                    "clickup/get_tasks",
+                    SessionStepProjection::SendDone {
                         archive_ref: "@15".to_string(),
                         header: "@15 clickup/get_tasks 'found tasks' [209 lines, 6.3KB]"
                             .to_string(),
                     },
-                },
+                ),
             },
             PromptProjectionItem {
                 timestamp_ms: 2,
                 activity_anchor: "evt-r1".to_string(),
                 role: "assistant".to_string(),
-                content: PromptProjectionContent::SessionStep {
-                    tool_name: "clickup/get_tasks".to_string(),
-                    op: SessionStepProjection::PageRead {
+                content: session_step(
+                    "clickup/get_tasks",
+                    SessionStepProjection::PageRead {
                         archive_ref: "@15".to_string(),
                         offset: 0,
                         limit: 200,
                     },
-                },
+                ),
             },
         ];
 
@@ -652,5 +876,19 @@ mod tests {
             content.contains(&format!("offset={DEFAULT_TOOL_RESULT_INLINE_LINES}")),
             "expected default cap offset in: {content}"
         );
+    }
+
+    #[test]
+    fn live_default_options_differ_from_episode_session_history_options() {
+        use crate::archive_read::DEFAULT_TOOL_RESULT_INLINE_LINES;
+
+        let d = ProjectionRenderOptions::default();
+        let e = episode_session_history_projection_options();
+        assert!(!d.tool_call_fallback_json);
+        assert!(e.tool_call_fallback_json);
+        assert_eq!(d.tool_error.get(), 10);
+        assert_eq!(e.tool_error.get(), DEFAULT_TOOL_RESULT_INLINE_LINES);
+        assert_eq!(d.tool_result.get(), e.tool_result.get());
+        assert_eq!(d.send_done.get(), e.send_done.get());
     }
 }

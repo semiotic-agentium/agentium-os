@@ -40,7 +40,8 @@ pub(crate) const ARCHIVE_READ_LIMIT: &str = "Max lines in this window. Use a sma
 // --- Conversation history (ctx.tags) — must match runtime projection ---
 
 /// Canonical Jinja for `ctx.tags['conversation_history']`: rows are `{ role, content }` from
-/// [`baml_rt_tools::prompt_projection`]; `content` lines already carry `#N` / tool-call refs.
+/// [`baml_rt_tools::prompt_projection`], with optional `citations: string[]` on **message**-sourced
+/// rows (wire ref-table strings); `content` lines already carry `#N` / tool-call refs in the text.
 /// Same shape as `PersonaChat` in `tests/fixtures/agents/conversational-persona-demo`: `_.role` +
 /// `content` on separate lines, loop variable `message`, no section header — do **not** use
 /// `{{ msg.role }}: {{ msg.content }}` on one line.

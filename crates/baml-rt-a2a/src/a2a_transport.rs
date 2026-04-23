@@ -313,6 +313,13 @@ impl ProvenanceWriter for SurrealRuntimeStore {
 
 /// Projects [`ProvenanceConversationContextItem`] rows into BAML `conversation_history` JSON.
 ///
+/// This is the **runtime** home for the tag pipeline: `ConversationContextSource::conversation_context`
+/// → [`to_projection_item`] ([`baml_rt_conversation::provenance_item_to_projection_item`]) →
+/// [`baml_rt_tools::prompt_projection::project_prompt_context`]. Episode assembly and
+/// `assemble_session_history` in `baml-rt-conversation` use the same `project_*` and
+/// [`baml_rt_tools::prompt_projection::ProjectedLineRole`] row rules; they are not a parallel
+/// codepath.
+///
 /// The `source` is always [`ProvenanceWriterConversationSource`] (graph-backed).
 struct ProjectingConversationContextProvider {
     source: Arc<dyn ConversationContextSource>,

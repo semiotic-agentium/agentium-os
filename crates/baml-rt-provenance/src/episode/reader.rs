@@ -16,7 +16,7 @@ use baml_rt_conversation::{
 };
 use baml_rt_core::ids::{AgentId, ContextId, TaskId, UuidId};
 use baml_rt_tools::{
-    archive_read::{PageLimit, ShortRef, format_session_read_body_from_rendered},
+    archive_read::format_session_read_from_vtable,
     archive_refs::RefTable,
     prompt_projection::{ArchiveReader, ProjectionRenderOptions},
     tools::ToolRegistry,
@@ -321,10 +321,17 @@ impl EpisodeReader {
             merged.push(TimelineKind::Artifact(a));
         }
 
-        merged.sort_by_key(|k| match k {
-            TimelineKind::Conv(i, _) => (i.timestamp_ms, 0u8),
-            TimelineKind::Status(s) => (s.event_order, 1u8),
-            TimelineKind::Artifact(a) => (a.event_order, 2u8),
+        // Total order: same `timestamp_ms` / `event_order` must not rely on unstable sort; within
+        // conversation rows, prior context (`is_prior`) then `activity_anchor` disambiguate.
+        merged.sort_by_cached_key(|k| match k {
+            TimelineKind::Conv(i, is_prior) => (
+                i.timestamp_ms,
+                0u8,
+                if *is_prior { 0u8 } else { 1u8 },
+                i.activity_anchor.as_str().to_string(),
+            ),
+            TimelineKind::Status(s) => (s.event_order, 1u8, 0u8, s.activity_anchor.clone()),
+            TimelineKind::Artifact(a) => (a.event_order, 2u8, 0u8, a.activity_anchor.clone()),
         });
 
         let projection_opts =
@@ -339,15 +346,7 @@ impl EpisodeReader {
                               offset: usize,
                               limit: usize|
          -> Option<String> {
-            let short_ref = ShortRef::parse_loose(archive_ref_str)?;
-            let entry = replay_table.get(short_ref)?;
-            Some(format_session_read_body_from_rendered(
-                &entry.content,
-                archive_ref_str,
-                grep_str,
-                offset,
-                PageLimit::new(limit),
-            ))
+            format_session_read_from_vtable(&replay_table, archive_ref_str, grep_str, offset, limit)
         };
 
         let mut seq: u32 = 0;

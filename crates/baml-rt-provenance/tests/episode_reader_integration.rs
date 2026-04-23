@@ -7,7 +7,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use baml_rt_conversation::view::SessionStepOp;
+use baml_rt_conversation::{render::prefix_wire_citations_in_text, view::SessionStepOp};
 use baml_rt_core::{
     Outcome,
     ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
@@ -16,6 +16,7 @@ use baml_rt_provenance::{
     AgentType, CallScope, Episode, EpisodeContent, LlmUsage, ProvEvent, ProvenanceWriter, StepType,
     SurrealStoreBuilder, episode::EpisodeReader,
 };
+use baml_rt_tools::archive_read::session_read_command_line;
 
 /// `ToolRead` rows with rendered archive/grep bodies (SendDone inline read + explicit Read), in timeline order.
 fn transcript_tool_read_bodies(ep: &Episode) -> Vec<String> {
@@ -365,18 +366,19 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
         "read line must contain rendered content"
     );
 
-    // --- Hard alignment: transcript ToolRead bodies ↔ session_history (projection roles) ---
-    // `projection_history_pairs` emits SendDone archive as role "read", but a standalone Read step
-    // reuses the session step role (tool) — same formatted string must still appear verbatim.
+    // --- Hard alignment: transcript ToolRead bodies vs session_history (live projection) ---
+    // `assembly_session_history` now shares the same `InlineProjectionState` as
+    // `project_prompt_context`: a PageRead of the same default @1 view after SendDone inlines
+    // that view must **not** re-paste the full archive (command-only, see prompt_projection tests).
     let tool_read_bodies = transcript_tool_read_bodies(&ep);
     assert_eq!(
         tool_read_bodies.len(),
         2,
-        "fixture expects SendDone hydrated body + explicit Read replay"
+        "fixture expects SendDone hydrated body + explicit Read replay in transcript"
     );
     assert_eq!(
         tool_read_bodies[0], tool_read_bodies[1],
-        "same @1 slice → identical cat-n/grep formatting for both steps"
+        "same @1 slice → identical cat-n/grep formatting for both transcript steps"
     );
     let body = &tool_read_bodies[0];
     let read_role_lines: Vec<&str> = ep
@@ -388,13 +390,19 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
     assert_eq!(
         read_role_lines,
         vec![body.as_str()],
-        "exactly one session_history line with role read (SendDone body); must equal first ToolRead body"
+        "SendDone’s second line is role `read` with the inlined @1 body"
     );
+    let page_read_cmd =
+        prefix_wire_citations_in_text(&session_read_command_line("@1", None), &ep.ref_prefix);
     assert!(
         ep.session_history
             .iter()
-            .any(|l| l.role == "tool" && l.content == *body),
-        "explicit Read must surface the same body on a tool session_history line"
+            .any(|l| l.role == "tool" && l.content == page_read_cmd),
+        "PageRead of the same default view is deduped to the session read command, not the body again: expected tool line {page_read_cmd:?} in history, got: {:?}",
+        ep.session_history
+            .iter()
+            .map(|l| (l.role.as_str(), l.content.as_str()))
+            .collect::<Vec<_>>()
     );
 
     // --- Rendered text format assertions ---

@@ -2801,6 +2801,13 @@ expression: snapshot
             "content"
           ],
           "properties": {
+            "citations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Ref-table strings on message-sourced rows; empty for tool/system lines."
+            },
             "content": {
               "type": "string"
             },

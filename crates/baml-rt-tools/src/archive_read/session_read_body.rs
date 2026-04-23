@@ -9,8 +9,9 @@ use super::{
     grep::grep_paginate,
     render::render_to_lines,
     rendered::RenderedContent,
-    types::{GrepPage, GrepPattern, LineOffset, PageLimit},
+    types::{GrepPage, GrepPattern, LineOffset, PageLimit, ShortRef},
 };
+use crate::archive_refs::RefTable;
 
 /// CLI analogue for a session `Read` when showing the command line only (no resolved archive).
 #[must_use]
@@ -78,6 +79,41 @@ pub fn format_session_read_body_from_json_value(
         grep_raw,
         offset,
         page_limit,
+    ))
+}
+
+/// `SendDone` graph JSON replay: same as [`format_session_read_body_from_json_value`] with
+/// `grep = None`, `offset = 0`, and the caller’s `send_done` cap (live projection and episode
+/// assembly both use this).
+#[must_use]
+pub fn format_send_done_replay_from_json(
+    payload: &Value,
+    archive_ref: &str,
+    send_done_limit: PageLimit,
+) -> Option<String> {
+    format_session_read_body_from_json_value(payload, archive_ref, None, 0, send_done_limit)
+}
+
+/// Look up `archive_ref_str` in a graph [`RefTable`], then format the session read body the same
+/// way as a prompt [`ArchiveReader`](crate::prompt_projection::ArchiveReader) closure. Shared by
+/// `baml-rt-conversation`’s `assemble_session_history` and the episode reader in
+/// `baml-rt-provenance`.
+#[must_use]
+pub fn format_session_read_from_vtable(
+    vtable: &RefTable,
+    archive_ref_str: &str,
+    grep_str: Option<&str>,
+    offset: usize,
+    limit: usize,
+) -> Option<String> {
+    let short_ref = ShortRef::parse_loose(archive_ref_str)?;
+    let entry = vtable.get(short_ref)?;
+    Some(format_session_read_body_from_rendered(
+        &entry.content,
+        archive_ref_str,
+        grep_str,
+        offset,
+        PageLimit::new(limit),
     ))
 }
 

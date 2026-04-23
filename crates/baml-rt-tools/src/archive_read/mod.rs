@@ -24,8 +24,9 @@ pub use read_resolve::{ResolvedArchiveRead, resolve_archive_for_read};
 pub use render::render_to_lines;
 pub use rendered::RenderedContent;
 pub use session_read_body::{
-    format_grep_page_as_session_read_body, format_session_read_body_from_json_value,
-    format_session_read_body_from_rendered, session_read_command_line,
+    format_grep_page_as_session_read_body, format_send_done_replay_from_json,
+    format_session_read_body_from_json_value, format_session_read_body_from_rendered,
+    format_session_read_from_vtable, session_read_command_line,
 };
 pub use types::{
     DEFAULT_TOOL_RESULT_INLINE_LINES, GrepPage, GrepPattern, HistoryRef, LineOffset,
