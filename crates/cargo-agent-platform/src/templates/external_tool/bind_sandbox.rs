@@ -23,12 +23,12 @@ set -euo pipefail
 
 # Bind sandbox setup helper (Docker-assisted mode).
 #
-# This script:
+# This script delegates to `sandbox-bind-sync`, which:
 #   1) builds adapter image from adapter/Dockerfile
 #   2) exports image filesystem into a bind rootfs directory
-#   3) computes runtime_digest via `sandbox-digest`
+#   3) computes runtime_digest from rootfs contents
 #   4) patches tool-metadata.json with bind path + digest
-#   5) validates metadata via `check-external-tool`
+#   5) validates metadata via `check-external-tool` (with --check)
 
 run_agent_platform() {{
   local subcmd="${{1:-}}"
@@ -60,26 +60,27 @@ Tried:
 
 You can override command resolution with:
   export AGENT_PLATFORM_CMD='cargo run -q -p cargo-agent-platform --'
-(or another explicit command that supports sandbox-digest/check-external-tool)
+(or another explicit command that supports sandbox-bind-sync)
 EOF
   exit 1
 }}
 
 IMAGE="{default_image}"
-ROOTFS="$(pwd)/.tmp/{rootfs_dir}"
+ROOTFS=""
 FORCE=0
 
 usage() {{
-  cat <<'EOF'
+  cat <<EOF
 setup_bind_sandbox.sh
 
 Usage:
-  ./setup_bind_sandbox.sh [--image name:tag] [--rootfs /abs/path] [--force]
+  ./setup_bind_sandbox.sh [--image name:tag] [--rootfs /abs/path|rel/path] [--force]
 
 Options:
   --image <name:tag>   Docker image tag to build/export (default: {default_image})
-  --rootfs <dir>       Bind rootfs output directory (default: $(pwd)/.tmp/{rootfs_dir})
-  --force              Remove rootfs output directory before export
+  --rootfs <dir>       Bind rootfs output directory
+                       (default: <tool-dir>/.tmp/{rootfs_dir})
+  --force              Recreate rootfs output directory before export
   -h, --help           Show this help
 EOF
 }}
@@ -111,7 +112,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 TOOL_DIR="$(cd "$(dirname "$0")" && pwd)"
-TOOL_METADATA="$TOOL_DIR/tool-metadata.json"
 DOCKERFILE="$TOOL_DIR/adapter/Dockerfile"
 
 if [[ ! -f "$DOCKERFILE" ]]; then
@@ -119,47 +119,28 @@ if [[ ! -f "$DOCKERFILE" ]]; then
   exit 1
 fi
 
-mkdir -p "$(dirname "$ROOTFS")"
-
-echo "Building Docker image: $IMAGE"
-docker build -t "$IMAGE" -f "$DOCKERFILE" "$TOOL_DIR"
-
-if [[ -e "$ROOTFS" && $FORCE -eq 1 ]]; then
-  rm -rf "$ROOTFS"
+if [[ -z "$ROOTFS" ]]; then
+  ROOTFS="$TOOL_DIR/.tmp/{rootfs_dir}"
 fi
-mkdir -p "$ROOTFS"
 
-CID=""
-cleanup() {{
-  if [[ -n "$CID" ]]; then
-    docker rm "$CID" >/dev/null 2>&1 || true
+for bin in docker tar; do
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    echo "Missing required dependency: $bin" >&2
+    exit 1
   fi
-}}
-trap cleanup EXIT
+done
 
-CID=$(docker create "$IMAGE")
-docker export "$CID" | tar -x -C "$ROOTFS"
-
-DIGEST="$(run_agent_platform sandbox-digest --source bind "$ROOTFS")"
-if [[ -z "$DIGEST" ]]; then
-  echo "Failed to compute runtime_digest" >&2
-  exit 1
+args=(sandbox-bind-sync --tool-dir "$TOOL_DIR" --rootfs "$ROOTFS" --dockerfile "$DOCKERFILE" --image "$IMAGE" --check)
+if [[ $FORCE -eq 1 ]]; then
+  args+=(--force)
 fi
 
-TMP_META="$(mktemp)"
-jq --arg path "$ROOTFS" --arg digest "$DIGEST" '
-  .runtime.image = {{"kind":"bind","path":$path}}
-  | .runtime_digest = $digest
-' "$TOOL_METADATA" > "$TMP_META"
-mv "$TMP_META" "$TOOL_METADATA"
-
-run_agent_platform check-external-tool --path "$TOOL_DIR"
+run_agent_platform "${{args[@]}}"
 
 echo "Bind metadata patched and validated."
 echo "  tool:           {tool_id}"
 echo "  image:          $IMAGE"
 echo "  bind path:      $ROOTFS"
-echo "  runtime_digest: $DIGEST"
 "#,
         default_image = default_image_tag(ctx),
         rootfs_dir = default_rootfs_dir(ctx),

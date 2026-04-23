@@ -16,6 +16,7 @@ pub mod new_tool;
 pub mod publish;
 pub mod push;
 pub mod regen;
+pub mod sandbox_bind_sync;
 pub mod sandbox_digest;
 pub mod undeploy;
 pub(crate) mod utils;

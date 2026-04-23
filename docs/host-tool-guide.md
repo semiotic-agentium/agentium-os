@@ -14,7 +14,7 @@ For agent authoring (BAML prompts, planner loops, `StructuredReply`), see [How t
 For external tools in general:
 
 - Rust toolchain + Cargo (nightly pinned via `rust-toolchain.toml`)
-- `jq` (used by the bind metadata-patch flow)
+- `jq` (optional; only needed for manual JSON patching outside CLI helpers)
 
 Additional for sandboxed tools (especially `microsandbox`):
 
@@ -69,7 +69,7 @@ Useful sandbox flags:
 - `--sandbox-image <ref@sha256:...>` (OCI)
 - `--sandbox-entrypoint <argv,...>`
 - `--runtime-digest <sha256:...>` (optional; auto in common paths)
-- `--generate-docker` (bind-only scaffold helper: emits `adapter/Dockerfile` + Docker-assisted setup script)
+- `--generate-docker` (bind-only scaffold helper: emits `adapter/Dockerfile` + `setup_bind_sandbox.sh` wrapper)
 
 Tool naming rules:
 
@@ -179,22 +179,42 @@ Reference runnable example:
 - `new-tool --runtime sandbox --sandbox-source oci --sandbox-image <...@sha256:...>`: digest derives from image ref suffix.
 - `new-tool --runtime sandbox --sandbox-source bind`: scaffold emits placeholder bind path (`"<rootfs-path>"`) and placeholder digest; set real path + recompute digest after rootfs materialization.
   - default mode emits metadata only (no setup script)
-  - adding `--generate-docker` emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh` for Docker build/export + patch/validate flow
+  - adding `--generate-docker` emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh` wrapper for Docker build/export + metadata sync/validation
 
 `setup_bind_sandbox.sh` resolves the SDK CLI command in this order:
 1. `AGENT_PLATFORM_CMD` (if set)
 2. `cargo agent-platform <subcommand>` (validated per subcommand)
 3. `cargo run -q -p cargo-agent-platform -- <subcommand>` (workspace fallback)
 
-This avoids stale installed-plugin mismatches (e.g. older plugins missing `sandbox-digest`).
+This avoids stale installed-plugin mismatches.
+
+### Preferred bind sync command
+
+Use `sandbox-bind-sync` to refresh bind path + digest and optionally validate metadata.
+Relative `--rootfs` and `--dockerfile` paths resolve against `--tool-dir`:
+
+```bash
+cargo agent-platform sandbox-bind-sync \
+  --tool-dir ./examples/external-tools/my_tool \
+  --rootfs /abs/path/to/rootfs \
+  --check
+```
+
+Docker-assisted mode (build + export + sync + validate):
+
+```bash
+cargo agent-platform sandbox-bind-sync \
+  --tool-dir ./examples/external-tools/my_tool \
+  --rootfs ./.tmp/my-tool-rootfs \
+  --dockerfile adapter/Dockerfile \
+  --image support-my-tool-sandbox:local \
+  --force \
+  --check
+```
 
 ### When to run `sandbox-digest`
 
-Use `sandbox-digest` when:
-
-- you patch metadata manually,
-- rootfs content changed after scaffold,
-- CI/script needs deterministic recompute.
+Use `sandbox-digest` for low-level digest-only checks (without metadata patching):
 
 ```bash
 cargo agent-platform sandbox-digest --source bind /abs/path/to/rootfs
@@ -291,23 +311,17 @@ cargo agent-platform chat --agent my-agent
 
 After adapter/rootfs changes in bind mode, run:
 
-1. rebuild adapter image
-2. re-export rootfs (`--force` on your export script)
-3. recompute digest (`sandbox-digest`)
-4. update metadata — typical jq patch:
+1. rebuild/export rootfs (or materialize it via your own pipeline)
+2. sync metadata + digest:
 
    ```bash
-   TOOL_METADATA=/path/to/tool-metadata.json
-   TMP="$(mktemp)"
-   jq --arg path "$BIND_ROOTFS" --arg digest "$DIGEST" '
-     .runtime.image = {"kind":"bind","path":$path}
-     | .runtime.entrypoint = ["/tool-adapter"]
-     | .runtime_digest = $digest
-   ' "$TOOL_METADATA" > "$TMP" && mv "$TMP" "$TOOL_METADATA"
+   cargo agent-platform sandbox-bind-sync \
+     --tool-dir /path/to/tool \
+     --rootfs /path/to/rootfs \
+     --check
    ```
 
-5. re-run `check-external-tool`
-6. restart runner (no hot reload) and re-publish + re-deploy agent
+3. restart runner (no hot reload) and re-publish + re-deploy agent
 
 If you skip digest refresh after rootfs mutation, metadata identity is stale and the running agent boots from drifted content.
 

@@ -25,6 +25,7 @@
 //! - `chat` — Interactive terminal chat with a deployed agent
 //! - `check-external-tool` — Validate tool metadata schema/runtime compatibility
 //! - `sandbox-digest` — Compute sandbox runtime digests (bind rootfs)
+//! - `sandbox-bind-sync` — Sync bind rootfs path/digest into tool metadata (optionally Docker-assisted)
 
 mod commands;
 mod event_schemas;
@@ -326,6 +327,46 @@ enum Commands {
 
         /// Path to source input (for bind: rootfs directory)
         path: String,
+    },
+
+    /// Sync bind sandbox metadata with a concrete rootfs directory.
+    ///
+    /// Optional Docker-assisted mode can build/export rootfs first.
+    SandboxBindSync {
+        /// Path to external tool directory (contains tool-metadata.json)
+        #[arg(long)]
+        tool_dir: String,
+
+        /// Bind rootfs path. Relative paths resolve against --tool-dir.
+        #[arg(long)]
+        rootfs: String,
+
+        /// Optional Dockerfile path for Docker-assisted build/export mode.
+        /// Relative paths resolve against --tool-dir.
+        /// Must be provided together with --image.
+        #[arg(long)]
+        dockerfile: Option<String>,
+
+        /// Optional Docker image tag/name for Docker-assisted build/export mode.
+        /// Must be provided together with --dockerfile.
+        #[arg(long)]
+        image: Option<String>,
+
+        /// Recreate rootfs directory when it already exists.
+        #[arg(long)]
+        force: bool,
+
+        /// Run check-external-tool after patching metadata.
+        #[arg(long)]
+        check: bool,
+
+        /// Validate and print planned values without writing metadata.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Emit machine-readable JSON summary.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Validate workspace integrity
@@ -700,6 +741,28 @@ fn main() -> anyhow::Result<()> {
         Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
 
         Commands::SandboxDigest { source, path } => commands::sandbox_digest::run(source, &path),
+
+        Commands::SandboxBindSync {
+            tool_dir,
+            rootfs,
+            dockerfile,
+            image,
+            force,
+            check,
+            dry_run,
+            json,
+        } => {
+            commands::sandbox_bind_sync::run(commands::sandbox_bind_sync::SandboxBindSyncRunArgs {
+                tool_dir: &tool_dir,
+                rootfs: &rootfs,
+                dockerfile: dockerfile.as_deref(),
+                image: image.as_deref(),
+                force,
+                check,
+                dry_run,
+                as_json: json,
+            })
+        }
 
         Commands::Doctor {
             ci,

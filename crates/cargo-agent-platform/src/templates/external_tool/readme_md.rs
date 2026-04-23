@@ -36,7 +36,6 @@ This scaffold implements the Agent Platform external tool protocol (JSON-RPC ove
 
 Supported methods in the scaffold:
 
-- `{method_describe}`
 {supported_bullets}
 
 ## Local setup
@@ -65,7 +64,6 @@ Then reference this tool in an agent manifest as:
 "#,
         tool_id = tool_id,
         setup = setup,
-        method_describe = METHOD_DESCRIBE,
         supported_bullets = supported_bullets,
         manual_probe_section = manual_probe_section,
         bind_setup_section = bind_setup_section,
@@ -141,8 +139,20 @@ A helper script is scaffolded at `./setup_bind_sandbox.sh`.
 ./setup_bind_sandbox.sh --force
 ```
 
-This script builds `adapter/Dockerfile`, exports bind rootfs, computes digest,
-patches metadata, and runs `check-external-tool`.
+This script wraps `sandbox-bind-sync` to build `adapter/Dockerfile`, export bind
+rootfs, patch metadata, and run `check-external-tool`.
+
+You can also call the command directly:
+
+```bash
+cargo run -q -p cargo-agent-platform -- sandbox-bind-sync \
+  --tool-dir . \
+  --rootfs ./.tmp/bind-rootfs \
+  --dockerfile adapter/Dockerfile \
+  --image local-sandbox:latest \
+  --force \
+  --check
+```
 
 `adapter/tool-adapter` is a generated transport shim (TSRPC <-> raw stdio).
 You usually only edit the scaffolded language source (`main.py`, `src/main.rs`, etc.).
@@ -155,17 +165,14 @@ fn bind_setup_manual_mode() -> String {
 
 No Docker/setup script is generated in this mode.
 
-Materialize bind rootfs externally, then patch metadata and validate:
+Materialize bind rootfs externally, then sync metadata + digest:
 
 ```bash
 ROOTFS=/abs/path/to/rootfs
-DIGEST="$(cargo run -q -p cargo-agent-platform -- sandbox-digest --source bind "$ROOTFS")"
-TMP_META="$(mktemp)"
-jq --arg path "$ROOTFS" --arg digest "$DIGEST" '
-  .runtime.image = {"kind":"bind","path":$path}
-  | .runtime_digest = $digest
-' ./tool-metadata.json > "$TMP_META" && mv "$TMP_META" ./tool-metadata.json
-cargo run -q -p cargo-agent-platform -- check-external-tool --path .
+cargo run -q -p cargo-agent-platform -- sandbox-bind-sync \
+  --tool-dir . \
+  --rootfs "$ROOTFS" \
+  --check
 ```
 "#
     .to_string()

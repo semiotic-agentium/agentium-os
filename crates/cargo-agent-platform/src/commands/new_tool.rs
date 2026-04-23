@@ -254,8 +254,25 @@ pub fn build_file_set(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
     files.extend(ctx.language.files(ctx));
     if ctx.runtime == Runtime::Sandbox && ctx.sandbox_source == Some(SandboxSource::Bind) {
         files.extend(crate::templates::external_tool::bind_sandbox::files(ctx));
+        ensure_gitignore_entry(&mut files, ".tmp/");
     }
     files
+}
+
+fn ensure_gitignore_entry(files: &mut Vec<GeneratedFile>, entry: &str) {
+    if let Some(file) = files.iter_mut().find(|f| f.relative_path == ".gitignore") {
+        let has_entry = file.content.lines().any(|line| line.trim() == entry);
+        if !has_entry {
+            if !file.content.is_empty() && !file.content.ends_with('\n') {
+                file.content.push('\n');
+            }
+            file.content.push_str(entry);
+            file.content.push('\n');
+        }
+        return;
+    }
+
+    files.push(GeneratedFile::new(".gitignore", format!("{entry}\n")));
 }
 
 fn validate_output_dir(output_dir: &Path) -> Result<()> {
@@ -662,5 +679,88 @@ mod tests {
         assert!(
             validate_generate_docker_option(Runtime::Sandbox, SandboxSource::Oci, true).is_err()
         );
+    }
+
+    #[test]
+    fn readme_supported_methods_do_not_duplicate_describe() {
+        let files = build_file_set(&ctx(Language::Python));
+        let readme = files
+            .iter()
+            .find(|f| f.relative_path == "README.md")
+            .expect("README emitted");
+
+        let describe_bullet_count = readme.content.matches("- `tool/describe`").count();
+        assert_eq!(
+            describe_bullet_count, 1,
+            "README should list tool/describe only once in supported-methods bullets"
+        );
+    }
+
+    #[test]
+    fn bind_setup_script_uses_tool_relative_rootfs_and_sync_command() {
+        let mut bind_ctx = ctx(Language::Python);
+        bind_ctx.runtime = Runtime::Sandbox;
+        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
+        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
+            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+        });
+        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+        bind_ctx.generate_docker = true;
+
+        let files = build_file_set(&bind_ctx);
+        let script = files
+            .iter()
+            .find(|f| f.relative_path == "setup_bind_sandbox.sh")
+            .expect("setup script emitted");
+
+        assert!(
+            script.content.contains("ROOTFS=\"$TOOL_DIR/.tmp/"),
+            "script should default ROOTFS under TOOL_DIR"
+        );
+        assert!(
+            script.content.contains("sandbox-bind-sync"),
+            "script should delegate to sandbox-bind-sync"
+        );
+    }
+
+    #[test]
+    fn bind_scaffold_gitignore_ignores_tmp_rootfs() {
+        let mut bind_ctx = ctx(Language::Python);
+        bind_ctx.runtime = Runtime::Sandbox;
+        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
+        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
+            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+        });
+        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+
+        let files = build_file_set(&bind_ctx);
+        let gitignore = files
+            .iter()
+            .find(|f| f.relative_path == ".gitignore")
+            .expect(".gitignore emitted");
+
+        assert!(
+            gitignore.content.lines().any(|line| line.trim() == ".tmp/"),
+            ".gitignore should ignore local bind rootfs artifacts"
+        );
+    }
+
+    #[test]
+    fn bind_scaffold_adds_gitignore_for_languages_without_one() {
+        let mut bind_ctx = ctx(Language::Bash);
+        bind_ctx.runtime = Runtime::Sandbox;
+        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
+        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
+            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+        });
+        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+
+        let files = build_file_set(&bind_ctx);
+        let gitignore = files
+            .iter()
+            .find(|f| f.relative_path == ".gitignore")
+            .expect(".gitignore emitted for bash bind scaffold");
+
+        assert_eq!(gitignore.content, ".tmp/\n");
     }
 }
