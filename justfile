@@ -670,3 +670,12 @@ k8s-pilot-smoke *args='':
 # in cluster_runners. No post-install kubectl patches.
 verify-k8s-pilot-package *args='':
     ./scripts/verify-k8s-pilot-package.sh {{args}}
+
+# Load-test harness for the Kubernetes pilot.
+# Brings up the observability stack + Helm-installed pilot (or reuses a
+# running one with --skip-bringup), runs the three canonical #226
+# scenarios (local_a2a, forwarded_a2a, split_dual_runner) at the committed
+# workload defaults, and writes machine- and human-readable results under
+# artifacts/load-test/<timestamp>/. See docs/k8s-pilot-load-testing.md.
+k8s-load-test *args='':
+    ./scripts/k8s-load-test.sh {{args}}

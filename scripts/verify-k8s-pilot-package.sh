@@ -34,6 +34,7 @@ BUILDER_BIN="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/release/baml-agent-builder
 SKIP_BUILD=false
 KEEP_CLUSTER=false
 LOCAL_PORT=18080
+EXTRA_VALUES=()
 
 usage() {
   cat <<'EOF'
@@ -53,6 +54,9 @@ Options:
   --image-repository <r>  Override IMAGE_NAME (default: agentium-runner)
   --image-tag <t>       Override IMAGE_TAG (default: demo)
   --local-port <port>   Local port for the smoke port-forward (default: 18080)
+  --values <path>       Extra Helm values file layered on top of the default
+                        k3d-values.yaml. Repeatable; later files override
+                        earlier ones (standard helm -f semantics).
   -h, --help            Show this message and exit
 
 Environment:
@@ -81,6 +85,7 @@ while [[ $# -gt 0 ]]; do
     --image-repository)   IMAGE_NAME="$2"; shift 2 ;;
     --image-tag)          IMAGE_TAG="$2"; shift 2 ;;
     --local-port)         LOCAL_PORT="$2"; shift 2 ;;
+    --values)             EXTRA_VALUES+=("$2"); shift 2 ;;
     -h|--help)            usage; exit 0 ;;
     *)                    log_fail "unknown argument: $1"; exit 1 ;;
   esac
@@ -191,7 +196,16 @@ main() {
   create_or_reuse_cluster
   ensure_runner_image_available
   create_pilot_objects
-  install_pilot_chart
+  local helm_values_args=()
+  for extra in "${EXTRA_VALUES[@]}"; do
+    if [[ ! -f "$extra" ]]; then
+      log_fail "--values path not found: ${extra}"
+      exit 1
+    fi
+    helm_values_args+=("-f" "$extra")
+    log_info "layering extra Helm values: ${extra}"
+  done
+  install_pilot_chart "${helm_values_args[@]}"
   resolve_chart_names
   wait_for_runner_readyz
   if ! run_smoke; then
