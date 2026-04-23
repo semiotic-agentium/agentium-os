@@ -1,23 +1,24 @@
 # Sandboxed External Tool + Agent Quickstart (Bind rootfs)
 
-This is a practical checklist for creating:
+Practical, integration-focused checklist for creating:
 1) a sandboxed external tool, and
 2) an agent that uses it.
 
-It is based on the `dev/meteo` flow used in this repo.
+For deep runtime/security details, see:
+- `docs/host-tool-guide.md`
+- `docs/sdk-cli.md`
 
 ---
 
 ## 0) Prerequisites
 
 - Rust/Cargo
-- Docker
-- `jq`
-- Runner with sandbox support (`microsandbox`)
+- Docker (only if you use Docker-assisted bind flow)
+- Runner built with sandbox support (`microsandbox`)
 
 ---
 
-## 1) Scaffold a new external tool
+## 1) Scaffold a new sandboxed external tool
 
 Example (Python + sandbox bind runtime):
 
@@ -28,110 +29,88 @@ cargo run -p cargo-agent-platform -- new-tool meteo-tool \
   --access read \
   --runtime sandbox \
   --sandbox-source bind \
+  --generate-docker \
   --description "Accurate Weather Forecasts for Any Location" \
   --output examples/external-tools/meteo-tool
 ```
 
-This creates:
+This emits, among others:
 - `tool-metadata.json`
 - `main.py`
 - `tool-server`
-- `README.md`
-- etc.
+- `adapter/Dockerfile`
+- `adapter/tool-adapter`
+- `setup_bind_sandbox.sh`
 
-If you want scaffolded Docker artifacts too, add `--generate-docker`.
-That also emits `adapter/Dockerfile` + `adapter/tool-adapter` +
-`setup_bind_sandbox.sh` (Docker build/export + digest + patch + validate).
+> If you skip `--generate-docker`, you can still use bind mode. You just need to materialize rootfs yourself and run `sandbox-bind-sync` (step 3).
 
 ---
 
 ## 2) Implement tool logic + schema
 
-Update `examples/external-tools/meteo-tool/tool-metadata.json`:
-- `name` (e.g. `dev/meteo`) **must match agent tool name exactly**.
-- `runtime.kind = sandbox`
-- `runtime.image.kind = bind`
-- replace scaffold placeholder `runtime.image.path = "<rootfs-path>"` with your real bind rootfs directory
-- replace scaffold placeholder `runtime_digest = sha256:00..` with a recomputed digest
-- `runtime.entrypoint = ["/tool-adapter"]`
+Update `examples/external-tools/meteo-tool/tool-metadata.json` schema/name as needed:
+- `name` (e.g. `dev/meteo`) must match the agent tool allowlist exactly
+- keep sandbox runtime shape (`runtime.kind = sandbox`, bind image)
 
-Implement protocol handling in `main.py`:
-- handle `tool/describe`
-- handle `tool/invoke`
-- return JSON-RPC errors for invalid input (`-32602`) instead of crashing
+Implement `main.py` handlers for:
+- `tool/describe`
+- `tool/invoke`
 
-Sandbox protocol invariant (including Bind rootfs):
-- `/tool-adapter` must speak **TSRPC-framed JSON-RPC** on stdin/stdout
-- framing = 4-byte big-endian payload length + JSON body
-- raw newline JSON-RPC is fine for `tool-server` local probes, but not sufficient for sandbox adapter execution
-
-Validate metadata:
+Local probe:
 
 ```bash
-cargo run -q -p cargo-agent-platform -- check-external-tool --path examples/external-tools/meteo-tool
+printf '{"jsonrpc":"2.0","id":1,"method":"tool/describe","params":{"tool_name":"dev/meteo"}}\n' | examples/external-tools/meteo-tool/tool-server
 ```
 
 ---
 
-## 3) Build sandbox image + export bind rootfs
+## 3) Materialize bind rootfs and sync metadata
 
-Create adapter Dockerfile (example path):
-- `examples/external-tools/meteo-tool/adapter/Dockerfile`
-- must expose `/tool-adapter` as entrypoint
-
-Build image:
+### Option A: Docker-assisted (recommended for scaffolded bind + docker)
 
 ```bash
-docker build -t dev-meteo-sandbox:local \
-  -f examples/external-tools/meteo-tool/adapter/Dockerfile \
-  .
+cargo run -p cargo-agent-platform -- sandbox-bind-sync \
+  --tool-dir examples/external-tools/meteo-tool \
+  --rootfs .tmp/dev-meteo-rootfs \
+  --dockerfile adapter/Dockerfile \
+  --image dev-meteo-sandbox:local \
+  --force \
+  --check
 ```
 
-Export rootfs + patch digest/entrypoint metadata:
+### Option B: Existing rootfs (non-Docker pipeline)
 
 ```bash
-./examples/external-tools/meteo-tool/setup_bind_demo.sh --image dev-meteo-sandbox:local --force
+cargo run -p cargo-agent-platform -- sandbox-bind-sync \
+  --tool-dir examples/external-tools/meteo-tool \
+  --rootfs /abs/path/to/rootfs \
+  --check
 ```
 
-This script should:
-- export image filesystem to `.tmp/dev-meteo-rootfs`
-- compute `runtime_digest`
-- patch `tool-metadata.json` with bind path + entrypoint + digest
-- re-run `check-external-tool`
-
-If you hit command-resolution mismatches (e.g., installed `cargo agent-platform`
-plugin missing newer subcommands), set:
-
-```bash
-export AGENT_PLATFORM_CMD='cargo run -q -p cargo-agent-platform --'
-```
-
-before running `setup_bind_sandbox.sh`.
+Notes:
+- Relative `--rootfs` / `--dockerfile` paths resolve against `--tool-dir`.
+- This command computes digest, patches metadata (`runtime.image.path` + `runtime_digest`), and validates with `check-external-tool` when `--check` is set.
 
 ---
 
-## 4) Set env vars for external tool discovery + sandbox
+## 4) Configure runner env for external tools + sandbox
 
-Use **colon-separated** tool dirs (NOT comma-separated):
+Use colon-separated tool dirs:
 
 ```bash
-export BAML_EXTERNAL_TOOLS_DIR="examples/external-tools/dev_echo_sandbox:examples/external-tools/meteo-tool"
+export BAML_EXTERNAL_TOOLS_DIR="examples/external-tools/meteo-tool"
 export BAML_SANDBOX_PROVIDER=microsandbox
-export BAML_SANDBOX_BIND_ROOTS="$(pwd)/.tmp"
+export BAML_SANDBOX_BIND_ROOTS="$(pwd)/examples/external-tools/meteo-tool/.tmp"
 ```
 
-Current microsandbox network default:
-- `public_only` egress policy (public internet allowed)
-- loopback/private/link-local/metadata blocked
-
-If your tool needs internet APIs and still times out, verify you are running the updated runner binary and provider (`BAML_SANDBOX_PROVIDER=microsandbox`).
+Then start runner with features needed for sandbox.
 
 ---
 
 ## 5) Scaffold an agent that uses the tool
 
 ```bash
-cargo run -p cargo-agent-platform -- agent-platform new-agent meteo-agent \
+cargo run -p cargo-agent-platform -- new-agent meteo-agent \
   --template basic-tools \
   --tools "dev/meteo" \
   --tags "dev,meteo" \
@@ -148,20 +127,16 @@ cargo run -p cargo-agent-platform -- regen meteo-agent
 
 ## 6) Keep generated types in sync after schema changes
 
-If you change external tool input/output schema, run:
+If tool input/output schema changes:
 
 ```bash
-BAML_EXTERNAL_TOOLS_DIR="examples/external-tools/dev_echo_sandbox:examples/external-tools/meteo-tool" \
+BAML_EXTERNAL_TOOLS_DIR="examples/external-tools/meteo-tool" \
 cargo run -p cargo-agent-platform -- regen meteo-agent
 ```
 
-This updates generated files such as:
-- `agents/meteo-agent/baml_src/_baml_runtime.baml`
-- `agents/meteo-agent/src/baml-runtime.d.ts`
-
 ---
 
-## 7) Publish/deploy/test (optional)
+## 7) Publish / deploy / chat
 
 ```bash
 cargo run -p cargo-agent-platform -- publish --agent-dir agents/meteo-agent
@@ -171,69 +146,32 @@ cargo run -p cargo-agent-platform -- chat --agent meteo-agent
 
 ---
 
-## Minimal troubleshooting
+## Minimal troubleshooting (integration-focused)
 
-### A) `failed to read .../tool-metadata.json`
-Cause: `BAML_EXTERNAL_TOOLS_DIR` is malformed.
+### A) `Tool metadata missing for: dev/meteo`
+Cause: agent tool name and metadata `name` mismatch.
 
-Fix: use `:` separator, no commas.
+Fix: align both exactly (`bundle/local_name`).
 
----
+### B) `failed to read .../tool-metadata.json`
+Cause: `BAML_EXTERNAL_TOOLS_DIR` malformed.
 
-### B) `Tool metadata missing for: dev/meteo`
-Cause: agent tool name and metadata `name` don’t match.
+Fix: use `:` separator (no commas), and verify directory layout.
 
-Fix: align both to same exact string (e.g. `dev/meteo`).
+### C) Runtime still behaves old after tool changes
+Cause: bind rootfs/digest stale.
 
----
+Fix: rerun `sandbox-bind-sync` (Docker-assisted with `--force` if applicable), then restart runner.
 
-### C) Regen fails with unsupported JSON schema (`anyOf`/shape errors)
-Cause: schema contains forms current generator cannot map.
+### D) Agent/tool call hangs
+Cause: tool didn’t emit a valid JSON-RPC response.
 
-Fix: simplify schema to supported object typing (explicit `type`, `properties`, `required`).
-
----
-
-### D) Tool code changed but runtime still behaves old
-Cause: bind rootfs/digest is stale.
-
-Fix:
-1. rebuild docker image
-2. re-export rootfs (`--force`)
-3. recompute digest + patch metadata (`setup_bind_demo.sh`)
+Fix: verify one request -> one response, stdout for protocol only, logs on stderr.
 
 ---
 
-### E) Agent seems to wait forever
-Usually happens if tool never writes JSON-RPC response.
+## Keep this doc lean
 
-Use a TSRPC probe (for example `examples/external-tools/dev_echo_sandbox/inspect_tsrpc.py`)
-when your adapter uses compatible input keys:
-
-```bash
-./examples/external-tools/dev_echo_sandbox/inspect_tsrpc.py \
-  --adapter ./.tmp/dev-echo-rootfs/tool-adapter describe
-./examples/external-tools/dev_echo_sandbox/inspect_tsrpc.py \
-  --adapter ./.tmp/dev-echo-rootfs/tool-adapter invoke \
-  --tool-name dev/echo \
-  --message "hello"
-```
-
-Checklist:
-- ensure one request -> one response
-- `stdout` only for protocol frames
-- logs only on `stderr`
-- sandbox `/tool-adapter` must use TSRPC-framed JSON-RPC (4-byte BE length + JSON body)
-- raw newline JSON-only handling can hang under sandbox invoke
-- keep HTTP timeouts in tool code
-- catch exceptions and return JSON-RPC error frame
-
----
-
-## Practical best practices
-
-- Keep tool name stable and explicit (`dev/<tool>`).
-- Do validation in tool code and return `invalid_argument` for bad input.
-- Prefer tool-side disambiguation/clarification signals for ambiguous entities.
-- After schema changes: `check-external-tool` + `regen <agent>`.
-- After runtime code changes (sandbox bind): rebuild image + refresh rootfs digest.
+- CLI flag details belong in `docs/sdk-cli.md`
+- Runtime/security deep dives belong in `docs/host-tool-guide.md`
+- This page is the fast tool+agent integration path
