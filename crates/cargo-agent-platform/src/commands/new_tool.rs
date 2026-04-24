@@ -17,10 +17,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use baml_rt_tools::{
-    BundleName,
-    external_tools::{SandboxImageRef, canonical_bind_digest},
-};
+use baml_rt_tools::{BundleName, external_tools::SandboxImageRef};
 use console::style;
 
 use crate::{
@@ -59,9 +56,9 @@ pub struct NewToolRunArgs<'a> {
     pub runtime: Runtime,
     pub sandbox_source: SandboxSource,
     pub sandbox_image: Option<&'a str>,
-    pub sandbox_bind_path: Option<&'a str>,
     pub runtime_digest: Option<&'a str>,
     pub sandbox_entrypoint: &'a [String],
+    pub generate_docker: bool,
     pub description: &'a str,
     pub output: Option<&'a str>,
     pub mode: RunMode,
@@ -76,9 +73,9 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         runtime,
         sandbox_source,
         sandbox_image,
-        sandbox_bind_path,
         runtime_digest,
         sandbox_entrypoint,
+        generate_docker,
         description,
         output,
         mode,
@@ -103,11 +100,12 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         description.trim()
     };
 
+    validate_generate_docker_option(runtime, sandbox_source, generate_docker)?;
+
     let (sandbox_image, runtime_digest) = validate_runtime_options(
         runtime,
         sandbox_source,
         sandbox_image,
-        sandbox_bind_path,
         runtime_digest,
         sandbox_entrypoint,
     )?;
@@ -123,6 +121,7 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         sandbox_image,
         runtime_digest,
         sandbox_entrypoint: sandbox_entrypoint.to_vec(),
+        generate_docker,
     };
 
     let files = build_file_set(&ctx);
@@ -156,6 +155,17 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
                 println!(
                     "  Entrypoint:{}",
                     style(format!(" {}", ctx.sandbox_entrypoint.join(" "))).cyan()
+                );
+            }
+            if ctx.sandbox_source == Some(SandboxSource::Bind) {
+                println!(
+                    "  Docker:    {}",
+                    style(if ctx.generate_docker {
+                        "generate adapter Dockerfile"
+                    } else {
+                        "manual rootfs mode"
+                    })
+                    .cyan()
                 );
             }
         }
@@ -242,7 +252,27 @@ pub fn build_file_set(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
         GeneratedFile::new("README.md", readme_md::generate(ctx)),
     ];
     files.extend(ctx.language.files(ctx));
+    if ctx.runtime == Runtime::Sandbox && ctx.sandbox_source == Some(SandboxSource::Bind) {
+        files.extend(crate::templates::external_tool::bind_sandbox::files(ctx));
+        ensure_gitignore_entry(&mut files, ".tmp/");
+    }
     files
+}
+
+fn ensure_gitignore_entry(files: &mut Vec<GeneratedFile>, entry: &str) {
+    if let Some(file) = files.iter_mut().find(|f| f.relative_path == ".gitignore") {
+        let has_entry = file.content.lines().any(|line| line.trim() == entry);
+        if !has_entry {
+            if !file.content.is_empty() && !file.content.ends_with('\n') {
+                file.content.push('\n');
+            }
+            file.content.push_str(entry);
+            file.content.push('\n');
+        }
+        return;
+    }
+
+    files.push(GeneratedFile::new(".gitignore", format!("{entry}\n")));
 }
 
 fn validate_output_dir(output_dir: &Path) -> Result<()> {
@@ -297,20 +327,20 @@ fn validate_tool_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+const BIND_ROOTFS_PLACEHOLDER: &str = "<rootfs-path>";
+const ZERO_RUNTIME_DIGEST: &str =
+    "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
 fn validate_runtime_options(
     runtime: Runtime,
     sandbox_source: SandboxSource,
     sandbox_image: Option<&str>,
-    sandbox_bind_path: Option<&str>,
     runtime_digest: Option<&str>,
     sandbox_entrypoint: &[String],
 ) -> Result<(Option<SandboxImageRef>, Option<String>)> {
     match runtime {
         Runtime::Process => {
-            if sandbox_image.is_some()
-                || sandbox_bind_path.is_some()
-                || runtime_digest.is_some()
-                || !sandbox_entrypoint.is_empty()
+            if sandbox_image.is_some() || runtime_digest.is_some() || !sandbox_entrypoint.is_empty()
             {
                 bail!(
                     "Error: sandbox-only options were supplied with --runtime process.\nHint: remove --sandbox-* options or use --runtime sandbox."
@@ -341,29 +371,12 @@ fn validate_runtime_options(
                 ))
             }
             SandboxSource::Bind => {
-                if sandbox_bind_path.is_none() {
-                    eprintln!(
-                        "{} --sandbox-source=bind was selected, but --sandbox-bind-path was not provided.",
-                        style("Warning:").yellow()
-                    );
-                }
-                let path = sandbox_bind_path.ok_or_else(|| {
-                    anyhow!("Error: --runtime sandbox --sandbox-source bind requires --sandbox-bind-path <dir>.")
-                })?;
-                let canonical = std::fs::canonicalize(path).map_err(|e| {
-                    anyhow!("Error: failed to resolve --sandbox-bind-path '{path}': {e}")
-                })?;
-                if !canonical.is_dir() {
-                    bail!(
-                        "Error: --sandbox-bind-path must point to a directory: {}",
-                        canonical.display()
-                    );
-                }
-                let computed = canonical_bind_digest(&canonical)?;
-                let digest = runtime_digest.unwrap_or(&computed);
+                let digest = runtime_digest.unwrap_or(ZERO_RUNTIME_DIGEST);
                 validate_runtime_digest(digest)?;
                 Ok((
-                    Some(SandboxImageRef::Bind { path: canonical }),
+                    Some(SandboxImageRef::Bind {
+                        path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+                    }),
                     Some(digest.to_string()),
                 ))
             }
@@ -377,6 +390,19 @@ fn validate_runtime_digest(digest: &str) -> Result<()> {
         && digest[7..].chars().all(|c| c.is_ascii_hexdigit());
     if !digest_ok {
         bail!("Error: --runtime-digest must match sha256:<64-hex>; got '{digest}'.");
+    }
+    Ok(())
+}
+
+fn validate_generate_docker_option(
+    runtime: Runtime,
+    sandbox_source: SandboxSource,
+    generate_docker: bool,
+) -> Result<()> {
+    if generate_docker && !(runtime == Runtime::Sandbox && sandbox_source == SandboxSource::Bind) {
+        bail!(
+            "Error: --generate-docker is only supported with --runtime sandbox --sandbox-source bind."
+        );
     }
     Ok(())
 }
@@ -427,6 +453,7 @@ mod tests {
             sandbox_image: None,
             runtime_digest: None,
             sandbox_entrypoint: Vec::new(),
+            generate_docker: false,
         }
     }
 
@@ -519,6 +546,7 @@ mod tests {
             sandbox_image: None,
             runtime_digest: None,
             sandbox_entrypoint: Vec::new(),
+            generate_docker: false,
         };
 
         let raw = metadata_json::generate(&ctx);
@@ -574,5 +602,165 @@ mod tests {
             parsed.runtime_digest.as_deref(),
             Some("sha256:2222222222222222222222222222222222222222222222222222222222222222")
         );
+    }
+
+    #[test]
+    fn bind_sandbox_defaults_to_placeholder_path_and_zero_digest() {
+        let (image, digest) =
+            validate_runtime_options(Runtime::Sandbox, SandboxSource::Bind, None, None, &[])
+                .expect("bind scaffolding defaults should be valid");
+
+        match image {
+            Some(SandboxImageRef::Bind { path }) => {
+                assert_eq!(path, PathBuf::from(BIND_ROOTFS_PLACEHOLDER));
+            }
+            other => panic!("expected bind image, got {other:?}"),
+        }
+
+        assert_eq!(digest.as_deref(), Some(ZERO_RUNTIME_DIGEST));
+    }
+
+    #[test]
+    fn bind_scaffold_does_not_emit_setup_or_docker_artifacts_by_default() {
+        let mut bind_ctx = ctx(Language::Python);
+        bind_ctx.runtime = Runtime::Sandbox;
+        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
+        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
+            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+        });
+        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+
+        let files = build_file_set(&bind_ctx);
+        assert!(
+            files
+                .iter()
+                .all(|f| f.relative_path != "setup_bind_sandbox.sh"),
+            "default bind scaffolds should not emit bind setup script"
+        );
+        assert!(
+            files
+                .iter()
+                .all(|f| f.relative_path != "adapter/Dockerfile"),
+            "default bind scaffolds should not emit adapter Dockerfile"
+        );
+        assert!(
+            files
+                .iter()
+                .all(|f| f.relative_path != "adapter/tool-adapter"),
+            "default bind scaffolds should not emit adapter tool-adapter"
+        );
+    }
+
+    #[test]
+    fn bind_scaffold_can_emit_docker_artifacts_when_requested() {
+        let mut bind_ctx = ctx(Language::Python);
+        bind_ctx.runtime = Runtime::Sandbox;
+        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
+        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
+            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+        });
+        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+        bind_ctx.generate_docker = true;
+
+        let files = build_file_set(&bind_ctx);
+        assert_scaffold_has(&files, "setup_bind_sandbox.sh");
+        assert_scaffold_has(&files, "adapter/Dockerfile");
+        assert_scaffold_has(&files, "adapter/tool-adapter");
+    }
+
+    #[test]
+    fn generate_docker_flag_is_restricted_to_bind_sandbox() {
+        assert!(
+            validate_generate_docker_option(Runtime::Sandbox, SandboxSource::Bind, true).is_ok()
+        );
+        assert!(
+            validate_generate_docker_option(Runtime::Process, SandboxSource::Bind, true).is_err()
+        );
+        assert!(
+            validate_generate_docker_option(Runtime::Sandbox, SandboxSource::Oci, true).is_err()
+        );
+    }
+
+    #[test]
+    fn readme_supported_methods_do_not_duplicate_describe() {
+        let files = build_file_set(&ctx(Language::Python));
+        let readme = files
+            .iter()
+            .find(|f| f.relative_path == "README.md")
+            .expect("README emitted");
+
+        let describe_bullet_count = readme.content.matches("- `tool/describe`").count();
+        assert_eq!(
+            describe_bullet_count, 1,
+            "README should list tool/describe only once in supported-methods bullets"
+        );
+    }
+
+    #[test]
+    fn bind_setup_script_uses_tool_relative_rootfs_and_sync_command() {
+        let mut bind_ctx = ctx(Language::Python);
+        bind_ctx.runtime = Runtime::Sandbox;
+        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
+        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
+            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+        });
+        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+        bind_ctx.generate_docker = true;
+
+        let files = build_file_set(&bind_ctx);
+        let script = files
+            .iter()
+            .find(|f| f.relative_path == "setup_bind_sandbox.sh")
+            .expect("setup script emitted");
+
+        assert!(
+            script.content.contains("ROOTFS=\"$TOOL_DIR/.tmp/"),
+            "script should default ROOTFS under TOOL_DIR"
+        );
+        assert!(
+            script.content.contains("sandbox-bind-sync"),
+            "script should delegate to sandbox-bind-sync"
+        );
+    }
+
+    #[test]
+    fn bind_scaffold_gitignore_ignores_tmp_rootfs() {
+        let mut bind_ctx = ctx(Language::Python);
+        bind_ctx.runtime = Runtime::Sandbox;
+        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
+        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
+            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+        });
+        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+
+        let files = build_file_set(&bind_ctx);
+        let gitignore = files
+            .iter()
+            .find(|f| f.relative_path == ".gitignore")
+            .expect(".gitignore emitted");
+
+        assert!(
+            gitignore.content.lines().any(|line| line.trim() == ".tmp/"),
+            ".gitignore should ignore local bind rootfs artifacts"
+        );
+    }
+
+    #[test]
+    fn bind_scaffold_adds_gitignore_for_languages_without_one() {
+        let mut bind_ctx = ctx(Language::Bash);
+        bind_ctx.runtime = Runtime::Sandbox;
+        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
+        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
+            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+        });
+        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+
+        let files = build_file_set(&bind_ctx);
+        let gitignore = files
+            .iter()
+            .find(|f| f.relative_path == ".gitignore")
+            .expect(".gitignore emitted for bash bind scaffold");
+
+        assert_eq!(gitignore.content, ".tmp/\n");
     }
 }

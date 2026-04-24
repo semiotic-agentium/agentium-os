@@ -151,6 +151,7 @@ mod tests {
             sandbox_image: None,
             runtime_digest: None,
             sandbox_entrypoint: Vec::new(),
+            generate_docker: false,
         };
 
         let files = build_file_set(&ctx);

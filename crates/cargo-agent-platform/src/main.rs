@@ -25,6 +25,7 @@
 //! - `chat` — Interactive terminal chat with a deployed agent
 //! - `check-external-tool` — Validate tool metadata schema/runtime compatibility
 //! - `sandbox-digest` — Compute sandbox runtime digests (bind rootfs)
+//! - `sandbox-bind-sync` — Sync bind rootfs path/digest into tool metadata (optionally Docker-assisted)
 
 mod commands;
 mod event_schemas;
@@ -97,17 +98,19 @@ enum Commands {
         #[arg(long)]
         sandbox_image: Option<String>,
 
-        /// Sandbox bind rootfs path when --sandbox-source bind
-        #[arg(long)]
-        sandbox_bind_path: Option<String>,
-
-        /// Runtime identity digest (`sha256:...`) when --runtime sandbox (optional for oci/bind; auto-computed)
+        /// Runtime identity digest (`sha256:...`) when --runtime sandbox.
+        /// Optional for oci (defaults to image digest) and bind (defaults to scaffold placeholder digest).
         #[arg(long)]
         runtime_digest: Option<String>,
 
         /// Optional sandbox entrypoint argv, comma-separated
         #[arg(long, value_delimiter = ',')]
         sandbox_entrypoint: Vec<String>,
+
+        /// For bind sandbox scaffolds, also generate Docker adapter artifacts
+        /// and a Docker-assisted setup script (`setup_bind_sandbox.sh`).
+        #[arg(long)]
+        generate_docker: bool,
 
         /// Human-readable description for this tool
         #[arg(long)]
@@ -298,11 +301,15 @@ enum Commands {
         url: String,
     },
 
-    /// Regenerate generated_tools.baml and baml-runtime.d.ts for all agents
+    /// Regenerate generated_tools.baml and baml-runtime.d.ts for agents
     Regen {
         /// Agent names to regenerate (omit for all agents)
         #[arg()]
         names: Vec<String>,
+
+        /// Explicit agent directory path (repeat for multiple paths)
+        #[arg(long = "path", value_name = "AGENT_DIR")]
+        paths: Vec<String>,
     },
 
     /// Validate standalone external tool metadata against schema + runtime parser
@@ -320,6 +327,46 @@ enum Commands {
 
         /// Path to source input (for bind: rootfs directory)
         path: String,
+    },
+
+    /// Sync bind sandbox metadata with a concrete rootfs directory.
+    ///
+    /// Optional Docker-assisted mode can build/export rootfs first.
+    SandboxBindSync {
+        /// Path to external tool directory (contains tool-metadata.json)
+        #[arg(long)]
+        tool_dir: String,
+
+        /// Bind rootfs path. Relative paths resolve against --tool-dir.
+        #[arg(long)]
+        rootfs: String,
+
+        /// Optional Dockerfile path for Docker-assisted build/export mode.
+        /// Relative paths resolve against --tool-dir.
+        /// Must be provided together with --image.
+        #[arg(long)]
+        dockerfile: Option<String>,
+
+        /// Optional Docker image tag/name for Docker-assisted build/export mode.
+        /// Must be provided together with --dockerfile.
+        #[arg(long)]
+        image: Option<String>,
+
+        /// Recreate rootfs directory when it already exists.
+        #[arg(long)]
+        force: bool,
+
+        /// Run check-external-tool after patching metadata.
+        #[arg(long)]
+        check: bool,
+
+        /// Validate and print planned values without writing metadata.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Emit machine-readable JSON summary.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Validate workspace integrity
@@ -394,9 +441,9 @@ fn main() -> anyhow::Result<()> {
             runtime,
             sandbox_source,
             sandbox_image,
-            sandbox_bind_path,
             runtime_digest,
             sandbox_entrypoint,
+            generate_docker,
             description,
             output,
             dry_run,
@@ -448,8 +495,7 @@ fn main() -> anyhow::Result<()> {
                 runtime
             };
 
-            let (sandbox_image, sandbox_bind_path, runtime_digest, sandbox_entrypoint) = if runtime
-                == Runtime::Sandbox
+            let (sandbox_image, runtime_digest, sandbox_entrypoint) = if runtime == Runtime::Sandbox
             {
                 let entrypoint = if interactive {
                     interactive::prompt_external_tool_sandbox_entrypoint()?
@@ -462,19 +508,12 @@ fn main() -> anyhow::Result<()> {
                             Some(v) if !interactive => v,
                             _ => interactive::prompt_external_tool_sandbox_image()?,
                         };
-                        (Some(image), None, runtime_digest, entrypoint)
+                        (Some(image), runtime_digest, entrypoint)
                     }
-                    SandboxSource::Bind => {
-                        if interactive {
-                            anyhow::bail!(
-                                "interactive bind source is not implemented yet; pass --sandbox-source bind --sandbox-bind-path <dir>"
-                            );
-                        }
-                        (None, sandbox_bind_path, runtime_digest, entrypoint)
-                    }
+                    SandboxSource::Bind => (None, runtime_digest, entrypoint),
                 }
             } else {
-                (None, None, None, Vec::new())
+                (None, None, Vec::new())
             };
 
             // Interactive flow always gets a confirm prompt so a mistyped
@@ -495,9 +534,9 @@ fn main() -> anyhow::Result<()> {
                 runtime,
                 sandbox_source,
                 sandbox_image: sandbox_image.as_deref(),
-                sandbox_bind_path: sandbox_bind_path.as_deref(),
                 runtime_digest: runtime_digest.as_deref(),
                 sandbox_entrypoint: &sandbox_entrypoint,
+                generate_docker,
                 description: &description,
                 output: output.as_deref(),
                 mode,
@@ -697,11 +736,33 @@ fn main() -> anyhow::Result<()> {
 
         Commands::ListDeployedInstances { url } => commands::list_deployed_instances::run(&url),
 
-        Commands::Regen { names } => commands::regen::run(&names),
+        Commands::Regen { names, paths } => commands::regen::run(&names, &paths),
 
         Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
 
         Commands::SandboxDigest { source, path } => commands::sandbox_digest::run(source, &path),
+
+        Commands::SandboxBindSync {
+            tool_dir,
+            rootfs,
+            dockerfile,
+            image,
+            force,
+            check,
+            dry_run,
+            json,
+        } => {
+            commands::sandbox_bind_sync::run(commands::sandbox_bind_sync::SandboxBindSyncRunArgs {
+                tool_dir: &tool_dir,
+                rootfs: &rootfs,
+                dockerfile: dockerfile.as_deref(),
+                image: image.as_deref(),
+                force,
+                check,
+                dry_run,
+                as_json: json,
+            })
+        }
 
         Commands::Doctor {
             ci,

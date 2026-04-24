@@ -17,7 +17,7 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `list-tools` | List all registered tools from the inventory |
 | `list-agents` | List all agent packages |
 | `list-event-sources` | List event source kinds and known schema versions |
-| `regen [names]...` | Regenerate type declarations for agents (all if omitted) |
+| `regen [names]... [--path <agent-dir>]` | Regenerate type declarations for agents (all if omitted) |
 | `doctor` | Validate workspace integrity |
 | `check-external-tool --path <dir>` | Validate external tool metadata against schema + runtime parser |
 | `sandbox-digest --source bind <path>` | Compute sandbox runtime digest for bind rootfs content |
@@ -97,14 +97,29 @@ cargo agent-platform new-tool [name] [options]
 | `--runtime <kind>` | `process` | Metadata runtime: `process` or `sandbox` |
 | `--sandbox-source <kind>` | `oci` | Sandbox image source: `oci` or `bind` |
 | `--sandbox-image <ref@sha256:...>` | — | Required when `--runtime sandbox --sandbox-source oci` |
-| `--sandbox-bind-path <dir>` | — | Required when `--runtime sandbox --sandbox-source bind` |
-| `--runtime-digest <sha256:...>` | auto | Optional for sandbox. Defaults to OCI digest suffix for `oci`; computed from canonical bind rootfs for `bind` |
+| `--runtime-digest <sha256:...>` | auto | Optional for sandbox. Defaults to OCI digest suffix for `oci`; for `bind` scaffolds, defaults to placeholder `sha256:00..` until you materialize rootfs + recompute |
 | `--sandbox-entrypoint <argv,...>` | — | Optional comma-separated entrypoint argv for sandbox runtime |
+| `--generate-docker` | off | For `--runtime sandbox --sandbox-source bind`, also scaffold `adapter/Dockerfile` + Docker-assisted `setup_bind_sandbox.sh` |
 | `--description <text>` | `""` | Human-readable description written into metadata |
 | `--output <dir>` | `./<name>` | Output directory for standalone tool project |
 | `--dry-run` | off | Preview changes without writing files (non-interactive only) |
 
-Generated scaffold always includes `tool-metadata.json`, `tool-server`, and `README.md`, plus language-specific files. `tool-metadata.json` always emits an explicit `runtime` block (`process` by default, or `sandbox` when selected).
+Generated scaffold always includes `tool-metadata.json`, `README.md`, and language-specific files. Most language templates also include `tool-server` for local probing. For `runtime=sandbox`, runner invocation still goes through `/tool-adapter` inside the sandbox (not host `tool-server`). `tool-metadata.json` always emits an explicit `runtime` block (`process` by default, or `sandbox` when selected). For `sandbox + bind`, scaffolding now emits placeholders (`runtime.image.path = "<rootfs-path>"` and zero `runtime_digest`) so creation is decoupled from rootfs materialization.
+
+Bind scaffold modes:
+- default (no `--generate-docker`): metadata-only bind scaffold (placeholder path + zero digest); materialize rootfs externally, then run `sandbox-digest` + metadata patch + `check-external-tool`.
+- with `--generate-docker`: additionally emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh`; script builds image, exports rootfs, computes digest, patches metadata, and validates.
+
+For `setup_bind_sandbox.sh`, command resolution is:
+1. `AGENT_PLATFORM_CMD` (if set),
+2. `cargo agent-platform <subcommand>` (only if that subcommand exists),
+3. `cargo run -q -p cargo-agent-platform -- <subcommand>` (workspace fallback).
+
+Use `AGENT_PLATFORM_CMD` to avoid stale plugin mismatches outside this workspace, e.g.:
+
+```bash
+export AGENT_PLATFORM_CMD='cargo run -q -p cargo-agent-platform --'
+```
 
 ```bash
 cargo agent-platform new-tool echo --lang bash --output ./echo-tool
@@ -119,8 +134,12 @@ cargo agent-platform new-tool secure-devtool \
 cargo agent-platform new-tool dev_echo \
   --runtime sandbox \
   --sandbox-source bind \
-  --sandbox-bind-path ./.tmp/dev-echo-rootfs \
   --sandbox-entrypoint /tool-adapter
+
+cargo agent-platform new-tool dev_echo_docker \
+  --runtime sandbox \
+  --sandbox-source bind \
+  --generate-docker
 ```
 
 ---
@@ -410,21 +429,27 @@ Current built-in schema surfaces include:
 
 ### `regen`
 
-Regenerates `generated_tools.baml` and `baml-runtime.d.ts` for agents. Omit names to regenerate all.
+Regenerates `_baml_runtime.baml` and `baml-runtime.d.ts` for agents.
 
 ```bash
-cargo agent-platform regen [names]...
+cargo agent-platform regen [names]... [--path <agent-dir>]
 ```
 
-| Argument | Description |
-|----------|-------------|
+| Argument / Option | Description |
+|-------------------|-------------|
 | `[names]...` | Agent names to regenerate (omit for all in `agents/` + `tests/fixtures/agents/`) |
+| `--path <agent-dir>` | Explicit agent directory path (repeat flag for multiple paths) |
+
+Notes:
+- `--path` cannot be combined with agent names.
+- If the agent uses external tools, set `BAML_EXTERNAL_TOOLS_DIR` to one or more tool directories containing `tool-metadata.json` (colon-separated).
 
 Run after adding/modifying tools or BAML schemas, and before committing.
 
 ```bash
 cargo agent-platform regen
 cargo agent-platform regen clickup-agent notion-agent
+cargo agent-platform regen --path examples/agents/echo-agent
 ```
 
 ---

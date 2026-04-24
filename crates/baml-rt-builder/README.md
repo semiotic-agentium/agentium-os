@@ -32,10 +32,15 @@ Agent code uses `__chat_register({ run: async (ctx) => { ... } })` or `session(m
 ## Binaries
 
 - **`baml-agent-builder`**: CLI entry point — lint, compile, and package agents.
-- **`regen_fixtures`**: Regenerates `baml-runtime.d.ts` and `_baml_runtime.baml` for every directory under `tests/fixtures/agents/` and `agents/` that has `baml_src/`. Run after changing the generator, prelude, or agent BAML. **Pass `--all-features` (or at least `http-tools`)** so optional tool crates link and manifest tools resolve (e.g. `support/crm` / `support/slack`).
+- **`regen_fixtures`**: Regenerates `baml-runtime.d.ts` and `_baml_runtime.baml` for every directory under `tests/fixtures/agents/` and `agents/` that has `baml_src/`.
+  - Default mode (no args): scan the two roots above.
+  - Targeted mode: pass one or more explicit agent directories with `--path <agent-dir>`.
+  Run after changing the generator, prelude, or agent BAML. **Pass `--all-features` (or at least `http-tools`)** so optional tool crates link and manifest tools resolve (e.g. `support/crm` / `support/slack`).
+  If an agent references external tools, also set `BAML_EXTERNAL_TOOLS_DIR` to the external tool directory (or a colon-separated list of tool directories containing `tool-metadata.json`).
 
   ```bash
   cargo run -p baml-rt-builder --all-features --bin regen_fixtures
+  cargo run -p baml-rt-builder --all-features --bin regen_fixtures --path examples/agents/echo-agent
   ```
 
   Workspace shortcut: `just regen-fixtures`.

@@ -211,10 +211,11 @@ impl SandboxProvider for MicrosandboxProvider {
             builder = builder.script(name, content);
         }
 
-        // NetworkPolicy: Workstream D compiles the real one; for now use
-        // microsandbox `none()` (fully deny) as the safe default. Deny-all
-        // is the spec default anyway (§10.2).
-        builder = builder.network(|n| n.policy(microsandbox::NetworkPolicy::none()));
+        // NetworkPolicy: until metadata/runner-policy compilation is wired,
+        // default to `public_only()` so outbound internet APIs work in
+        // sandboxed tools while still denying loopback/link-local/private/
+        // metadata destinations.
+        builder = builder.network(|n| n.policy(microsandbox::NetworkPolicy::public_only()));
 
         let sandbox = if spec.detached {
             builder.create_detached().await.map_err(|e| {

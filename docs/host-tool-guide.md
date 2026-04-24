@@ -14,7 +14,7 @@ For agent authoring (BAML prompts, planner loops, `StructuredReply`), see [How t
 For external tools in general:
 
 - Rust toolchain + Cargo (nightly pinned via `rust-toolchain.toml`)
-- `jq` (used by the bind metadata-patch flow)
+- `jq` (optional; only needed for manual JSON patching outside CLI helpers)
 
 Additional for sandboxed tools (especially `microsandbox`):
 
@@ -67,9 +67,9 @@ Useful sandbox flags:
 - `--runtime sandbox`
 - `--sandbox-source oci|bind`
 - `--sandbox-image <ref@sha256:...>` (OCI)
-- `--sandbox-bind-path <dir>` (Bind)
 - `--sandbox-entrypoint <argv,...>`
 - `--runtime-digest <sha256:...>` (optional; auto in common paths)
+- `--generate-docker` (bind-only scaffold helper: emits `adapter/Dockerfile` + `setup_bind_sandbox.sh` wrapper)
 
 Tool naming rules:
 
@@ -87,7 +87,7 @@ Tool naming rules:
 Runtime-specific emissions:
 
 - **`--runtime process`** (default): a host-side `tool-server` launcher executable is scaffolded. The runner invokes it directly over stdio.
-- **`--runtime sandbox`**: no host-side launcher. The adapter binary (usually `tool-adapter`) must be built by you and placed inside the OCI image or bind rootfs at `/tool-adapter` (see §2–§3). Metadata references the image/rootfs; the runner spawns the adapter inside the guest.
+- **`--runtime sandbox`**: runner execution goes through the guest adapter at `/tool-adapter`. Some scaffolds may still include a host `tool-server` helper for local probing, but it is not the runtime invoke path. The adapter binary/script (usually `tool-adapter`) must be built by you and placed inside the OCI image or bind rootfs at `/tool-adapter` (see §2–§3). Metadata references the image/rootfs; the runner spawns the adapter inside the guest.
 
 For sandbox tools, metadata points to a sandbox image source, but you still need to build/provide the adapter artifact (next section).
 
@@ -109,8 +109,12 @@ Skip §2 (sandbox adapter model), §3 (build adapter artifact), §4 (runtime_dig
 
 Sandbox tool invocation uses a small adapter binary (commonly `tool-adapter`) inside the guest rootfs/image.
 
-- The adapter speaks the sandbox protocol over stdin/stdout.
-- Framing is length-prefixed JSON (4-byte big-endian length + JSON payload).
+**Protocol invariant (all sandbox image sources, including Bind):**
+- sandbox adapter transport is TSRPC-framed JSON-RPC over stdin/stdout,
+- framing is length-prefixed JSON (4-byte big-endian length + JSON payload),
+- newline-delimited/raw stdio JSON-RPC is **not** sufficient for sandbox adapter mode.
+
+Additional notes:
 - Max frame size is capped at `MAX_FRAME_BYTES` — don't ship multi-MiB payloads without chunking.
 - Source of truth for framing + constants: `crates/baml-sandbox-protocol/src/codec.rs`.
 
@@ -173,15 +177,44 @@ Reference runnable example:
 ### When digest is automatic
 
 - `new-tool --runtime sandbox --sandbox-source oci --sandbox-image <...@sha256:...>`: digest derives from image ref suffix.
-- `new-tool --runtime sandbox --sandbox-source bind --sandbox-bind-path <dir>`: digest is computed from bind rootfs content.
+- `new-tool --runtime sandbox --sandbox-source bind`: scaffold emits placeholder bind path (`"<rootfs-path>"`) and placeholder digest; set real path + recompute digest after rootfs materialization.
+  - default mode emits metadata only (no setup script)
+  - adding `--generate-docker` emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh` wrapper for Docker build/export + metadata sync/validation
+
+`setup_bind_sandbox.sh` resolves the SDK CLI command in this order:
+1. `AGENT_PLATFORM_CMD` (if set)
+2. `cargo agent-platform <subcommand>` (validated per subcommand)
+3. `cargo run -q -p cargo-agent-platform -- <subcommand>` (workspace fallback)
+
+This avoids stale installed-plugin mismatches.
+
+### Preferred bind sync command
+
+Use `sandbox-bind-sync` to refresh bind path + digest and optionally validate metadata.
+Relative `--rootfs` and `--dockerfile` paths resolve against `--tool-dir`:
+
+```bash
+cargo agent-platform sandbox-bind-sync \
+  --tool-dir ./examples/external-tools/my_tool \
+  --rootfs /abs/path/to/rootfs \
+  --check
+```
+
+Docker-assisted mode (build + export + sync + validate):
+
+```bash
+cargo agent-platform sandbox-bind-sync \
+  --tool-dir ./examples/external-tools/my_tool \
+  --rootfs ./.tmp/my-tool-rootfs \
+  --dockerfile adapter/Dockerfile \
+  --image support-my-tool-sandbox:local \
+  --force \
+  --check
+```
 
 ### When to run `sandbox-digest`
 
-Use `sandbox-digest` when:
-
-- you patch metadata manually,
-- rootfs content changed after scaffold,
-- CI/script needs deterministic recompute.
+Use `sandbox-digest` for low-level digest-only checks (without metadata patching):
 
 ```bash
 cargo agent-platform sandbox-digest --source bind /abs/path/to/rootfs
@@ -221,6 +254,14 @@ Sandbox provider:
 - `BAML_SANDBOX_PROVIDER=off` (no sandbox; process-runtime tools only)
 - `BAML_SANDBOX_PROVIDER=mock` (fast wiring/dev checks, no VM)
 - `BAML_SANDBOX_PROVIDER=microsandbox` (real microVM)
+
+Current network default (microsandbox path):
+
+- sandbox egress policy defaults to `public_only`
+- allows public internet egress
+- blocks loopback, private RFC1918 ranges, link-local, and cloud metadata endpoints
+
+This default is runtime-level behavior (not currently per-tool configurable in metadata for v1).
 
 Bind allowlist (colon-separated roots):
 
@@ -270,23 +311,17 @@ cargo agent-platform chat --agent my-agent
 
 After adapter/rootfs changes in bind mode, run:
 
-1. rebuild adapter image
-2. re-export rootfs (`--force` on your export script)
-3. recompute digest (`sandbox-digest`)
-4. update metadata — typical jq patch:
+1. rebuild/export rootfs (or materialize it via your own pipeline)
+2. sync metadata + digest:
 
    ```bash
-   TOOL_METADATA=/path/to/tool-metadata.json
-   TMP="$(mktemp)"
-   jq --arg path "$BIND_ROOTFS" --arg digest "$DIGEST" '
-     .runtime.image = {"kind":"bind","path":$path}
-     | .runtime.entrypoint = ["/tool-adapter"]
-     | .runtime_digest = $digest
-   ' "$TOOL_METADATA" > "$TMP" && mv "$TMP" "$TOOL_METADATA"
+   cargo agent-platform sandbox-bind-sync \
+     --tool-dir /path/to/tool \
+     --rootfs /path/to/rootfs \
+     --check
    ```
 
-5. re-run `check-external-tool`
-6. restart runner (no hot reload) and re-publish + re-deploy agent
+3. restart runner (no hot reload) and re-publish + re-deploy agent
 
 If you skip digest refresh after rootfs mutation, metadata identity is stale and the running agent boots from drifted content.
 
