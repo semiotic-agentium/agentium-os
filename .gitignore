@@ -65,6 +65,10 @@ models/fastembed/**/blobs/*.part
 deploy/k8s/secret-fnox.yaml
 deploy/k8s/surrealdb-credentials.yaml
 
+# K8s load-test artifacts (timestamped per run; generated outputs,
+# intentionally not committed).
+/artifacts/load-test/
+
 # Nix
 .direnv/
 result

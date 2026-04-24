@@ -1,0 +1,21 @@
+# Load-test overlay for k3d-values.yaml.
+#
+# Layered on top of k3d-values.yaml when running the load-test harness so
+# runner pods export OTLP traces/metrics to the local observability stack
+# (observability/docker-compose.yml) on the host. k3d injects
+# host.k3d.internal into CoreDNS; pods can reach the host's OTLP gRPC
+# receiver through this alias.
+#
+# Install (standalone):
+#   helm upgrade --install agentium deploy/helm/agentium-os/ \
+#     --namespace agentium --create-namespace \
+#     -f deploy/helm/agentium-os/examples/k3d-values.yaml \
+#     -f deploy/helm/agentium-os/examples/k3d-load-test-values.yaml
+#
+# Used by scripts/k8s-load-test.sh via
+#   scripts/verify-k8s-pilot-package.sh --values <this file>
+
+observability:
+  enabled: true
+  otlpEndpoint: "http://host.k3d.internal:4317"
+  environment: load-test
