@@ -15,7 +15,7 @@
 //!   production — never raw JSON dumps). Matches `remotes/semiotic-agentium/pud-squashed`.
 //! - `StatusOnly` items are discarded at the conversion boundary before reaching here.
 
-use std::{borrow::Cow, collections::HashSet, fmt};
+use std::{borrow::Cow, fmt};
 
 use serde_json::{Value, json};
 
@@ -115,15 +115,6 @@ pub enum RenderedEntry {
     Two(String, String),
 }
 
-/// Cross-item state for `SendDone` and session `Read` view deduplication (historical name: **inline
-/// dedup**). Must be shared when projecting a sequence of [`PromptProjectionItem`] (live
-/// `conversation_history` and episode `session_history`).
-#[derive(Debug, Default)]
-pub struct InlineProjectionState {
-    pub inlined_archive_refs: HashSet<String>,
-    pub inlined_read_pages: HashSet<String>,
-}
-
 /// Wire `role` string in `conversation_history` / `session_history` JSON. Use
 /// [`Self::read_line`] for the second line of a two-line item (e.g. `SendDone` body) so the
 /// `read` literal is not duplicated.
@@ -212,27 +203,18 @@ fn projected_history_row_to_json(row: &ProjectedHistoryRow) -> Value {
     }
 }
 
-/// Turn one [`PromptProjectionItem`] into zero or more [`ProjectedHistoryRow`]s using shared
-/// [`InlineProjectionState`]. This is the primitive used by both [`project_prompt_context`] and
-/// episode `session_history` so inline dedup matches live BAML tags.
+/// Turn one [`PromptProjectionItem`] into zero or more [`ProjectedHistoryRow`]s. Rendering is
+/// **stateless across items** — each row reflects this graph item only; provenance is not
+/// re-written at read time (no cross-item de-duplication of archive views).
 pub fn project_projection_item_to_rows(
     item: &PromptProjectionItem,
-    state: &mut InlineProjectionState,
     registry: &ToolRegistry,
     ref_table: &RefTable,
     archive_reader: Option<ArchiveReader<'_>>,
     opts: ProjectionRenderOptions,
 ) -> Vec<ProjectedHistoryRow> {
     let role_main = ProjectedLineRole::from_primary(item.role.clone());
-    match render_projection_content_with_state(
-        item,
-        registry,
-        ref_table,
-        archive_reader,
-        opts,
-        &mut state.inlined_archive_refs,
-        &mut state.inlined_read_pages,
-    ) {
+    match render_projection_content(item, registry, ref_table, archive_reader, opts) {
         RenderedEntry::Filtered => Vec::new(),
         RenderedEntry::One {
             content,
@@ -267,26 +249,19 @@ pub fn project_prompt_context(
     ref_table: &RefTable,
     archive_reader: Option<ArchiveReader<'_>>,
 ) -> Value {
-    let mut state = InlineProjectionState::default();
     let mut history: Vec<Value> = Vec::with_capacity(items.len());
     let opts = ProjectionRenderOptions::default();
     for item in items {
-        for row in project_projection_item_to_rows(
-            &item,
-            &mut state,
-            registry,
-            ref_table,
-            archive_reader,
-            opts,
-        ) {
+        for row in project_projection_item_to_rows(&item, registry, ref_table, archive_reader, opts)
+        {
             history.push(projected_history_row_to_json(&row));
         }
     }
     Value::Array(history)
 }
 
-/// Same rules as [`project_prompt_context`], as `(role, content)` pairs for one item
-/// (per-item **fresh** [`InlineProjectionState`]). Message citation metadata is dropped; use
+/// Same rules as [`project_prompt_context`], as `(role, content)` pairs for one item. Message
+/// citation metadata is dropped; use
 /// [`project_projection_item_to_rows`] when `citations` are required.
 #[must_use]
 pub fn projection_history_pairs(
@@ -296,8 +271,7 @@ pub fn projection_history_pairs(
     archive_reader: Option<ArchiveReader<'_>>,
     opts: ProjectionRenderOptions,
 ) -> Vec<(String, String)> {
-    let mut state = InlineProjectionState::default();
-    project_projection_item_to_rows(item, &mut state, registry, ref_table, archive_reader, opts)
+    project_projection_item_to_rows(item, registry, ref_table, archive_reader, opts)
         .into_iter()
         .map(|r| (r.role.to_string(), r.content))
         .collect()
@@ -339,27 +313,12 @@ fn tool_value_to_rendered_entry(
     }
 }
 
-fn read_view_key(
-    kind: &str,
-    archive_ref: &str,
-    grep: Option<&str>,
-    offset: usize,
-    limit: usize,
-) -> String {
-    format!(
-        "{kind}|{archive_ref}|{}|{offset}|{limit}",
-        grep.unwrap_or("")
-    )
-}
-
-fn render_projection_content_with_state(
+fn render_projection_content(
     item: &PromptProjectionItem,
     registry: &ToolRegistry,
     ref_table: &RefTable,
     archive_reader: Option<ArchiveReader<'_>>,
     opts: ProjectionRenderOptions,
-    inlined_archive_refs: &mut HashSet<String>,
-    inlined_read_pages: &mut HashSet<String>,
 ) -> RenderedEntry {
     match &item.content {
         PromptProjectionContent::Message { text, citations } => {
@@ -420,11 +379,6 @@ fn render_projection_content_with_state(
                     archive_ref,
                     header,
                 } => {
-                    if inlined_archive_refs.contains(archive_ref) {
-                        return RenderedEntry::Two(header.clone(), format!("cat -n {archive_ref}"));
-                    }
-                    inlined_archive_refs.insert(archive_ref.clone());
-
                     if let Some(ref payload) = s.send_done_replay_payload
                         && let Some(body) = format_send_done_replay_from_json(
                             payload,
@@ -432,42 +386,12 @@ fn render_projection_content_with_state(
                             PageLimit::new(opts.send_done.get()),
                         )
                     {
-                        inlined_read_pages.insert(read_view_key(
-                            "page",
-                            archive_ref,
-                            None,
-                            0,
-                            opts.send_done.get(),
-                        ));
-                        inlined_read_pages.insert(read_view_key(
-                            "page",
-                            archive_ref,
-                            None,
-                            0,
-                            PageLimit::DEFAULT,
-                        ));
                         return RenderedEntry::Two(header.clone(), body);
                     }
 
                     match archive_reader.and_then(|r| r(archive_ref, None, 0, opts.send_done.get()))
                     {
-                        Some(content) => {
-                            inlined_read_pages.insert(read_view_key(
-                                "page",
-                                archive_ref,
-                                None,
-                                0,
-                                opts.send_done.get(),
-                            ));
-                            inlined_read_pages.insert(read_view_key(
-                                "page",
-                                archive_ref,
-                                None,
-                                0,
-                                PageLimit::DEFAULT,
-                            ));
-                            RenderedEntry::Two(header.clone(), content)
-                        }
+                        Some(content) => RenderedEntry::Two(header.clone(), content),
                         None => RenderedEntry::One {
                             content: header.clone(),
                             message_citations: None,
@@ -481,17 +405,9 @@ fn render_projection_content_with_state(
                     limit,
                 } => {
                     let cmd = session_read_command_line(archive_ref, Some(grep.as_str()));
-                    let read_key =
-                        read_view_key("search", archive_ref, Some(grep.as_str()), *offset, *limit);
                     if let Some(ref lines) = s.read_replay_lines
                         && !lines.is_empty()
                     {
-                        if inlined_read_pages.contains(&read_key) {
-                            return RenderedEntry::One {
-                                content: cmd,
-                                message_citations: None,
-                            };
-                        }
                         let rendered = RenderedContent::from_lines(
                             lines.iter().filter(|l| !l.is_empty()).cloned(),
                         );
@@ -502,28 +418,18 @@ fn render_projection_content_with_state(
                             *offset,
                             PageLimit::new(*limit),
                         );
-                        inlined_read_pages.insert(read_key);
                         return RenderedEntry::One {
                             content: out,
-                            message_citations: None,
-                        };
-                    }
-                    if inlined_read_pages.contains(&read_key) {
-                        return RenderedEntry::One {
-                            content: cmd,
                             message_citations: None,
                         };
                     }
                     match archive_reader
                         .and_then(|r| r(archive_ref, Some(grep.as_str()), *offset, *limit))
                     {
-                        Some(output) => {
-                            inlined_read_pages.insert(read_key);
-                            RenderedEntry::One {
-                                content: output,
-                                message_citations: None,
-                            }
-                        }
+                        Some(output) => RenderedEntry::One {
+                            content: output,
+                            message_citations: None,
+                        },
                         None => RenderedEntry::One {
                             content: cmd,
                             message_citations: None,
@@ -536,16 +442,9 @@ fn render_projection_content_with_state(
                     limit,
                 } => {
                     let cmd = session_read_command_line(archive_ref, None);
-                    let read_key = read_view_key("page", archive_ref, None, *offset, *limit);
                     if let Some(ref lines) = s.read_replay_lines
                         && !lines.is_empty()
                     {
-                        if inlined_read_pages.contains(&read_key) {
-                            return RenderedEntry::One {
-                                content: cmd,
-                                message_citations: None,
-                            };
-                        }
                         let rendered = RenderedContent::from_lines(
                             lines.iter().filter(|l| !l.is_empty()).cloned(),
                         );
@@ -556,26 +455,16 @@ fn render_projection_content_with_state(
                             *offset,
                             PageLimit::new(*limit),
                         );
-                        inlined_read_pages.insert(read_key);
                         return RenderedEntry::One {
                             content: out,
                             message_citations: None,
                         };
                     }
-                    if inlined_read_pages.contains(&read_key) {
-                        return RenderedEntry::One {
-                            content: cmd,
-                            message_citations: None,
-                        };
-                    }
                     match archive_reader.and_then(|r| r(archive_ref, None, *offset, *limit)) {
-                        Some(output) => {
-                            inlined_read_pages.insert(read_key);
-                            RenderedEntry::One {
-                                content: output,
-                                message_citations: None,
-                            }
-                        }
+                        Some(output) => RenderedEntry::One {
+                            content: output,
+                            message_citations: None,
+                        },
                         None => RenderedEntry::One {
                             content: cmd,
                             message_citations: None,
@@ -672,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_send_done_for_same_archive_ref_should_not_reinline_payload() {
+    fn repeated_send_done_for_same_archive_ref_inlines_each_time() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
         let items = vec![
@@ -732,13 +621,13 @@ mod tests {
             .count();
 
         assert_eq!(
-            payload_occurrences, 1,
-            "archive payload should be inlined once per archive_ref to prevent history snowballing"
+            payload_occurrences, 3,
+            "each graph SendDone is rendered; no read-time dedup of archive body"
         );
     }
 
     #[test]
-    fn repeated_read_same_view_should_not_reinline_payload() {
+    fn repeated_read_same_view_inlines_each_time() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
         let items = vec![
@@ -789,13 +678,13 @@ mod tests {
             .count();
 
         assert_eq!(
-            payload_occurrences, 1,
-            "read payload should be inlined once per identical read view"
+            payload_occurrences, 2,
+            "each graph PageRead is rendered in full; no read-time view dedup"
         );
     }
 
     #[test]
-    fn read_default_view_after_send_done_should_not_reinline_payload() {
+    fn read_default_view_after_send_done_inlines_again() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
         let items = vec![
@@ -846,8 +735,8 @@ mod tests {
             .count();
 
         assert_eq!(
-            payload_occurrences, 1,
-            "default Read view should be compacted when SendDone already inlined the same page"
+            payload_occurrences, 2,
+            "SendDone and a later PageRead of the same @N are both fully rendered"
         );
     }
 

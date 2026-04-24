@@ -126,8 +126,9 @@ pub trait TaskChunkApplier: Send + Sync {
 /// [`TaskStoreBackend`] deliberately does **not** include this trait — task/message mirrors are
 /// for transport and lifecycle, not for reconstructing LLM-visible history.
 ///
-/// For resume, the caller must use the same `context_id` as the session. Limit (e.g. 40) is
-/// applied by the implementation.
+/// For resume, the caller must use the same `context_id` as the session. A caller-provided
+/// `limit` truncates in the provenance reader; the A2A prompt path uses
+/// [`baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP`] as the default cap.
 #[async_trait]
 pub trait ConversationContextSource: Send + Sync {
     async fn conversation_context(

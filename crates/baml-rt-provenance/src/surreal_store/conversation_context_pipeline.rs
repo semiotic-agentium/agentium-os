@@ -3,27 +3,25 @@
 //! ## Stages
 //!
 //! - [`Raw`]: Rows from the Surreal query; session-step replay fields are not yet hydrated.
-//! - [`Hydrated`]: `SendDone` replay payloads and `Read` replay lines are filled from the payload
-//!   store and prior steps in the batch.
-//! - [`Canonical`]: Raw [`crate::store::ConversationItemContent::ToolCall`] /
-//!   [`crate::store::ConversationItemContent::ToolResult`] rows are removed when a
-//!   [`crate::store::SessionStepOp::SendDone`] covers the same tool activity via
-//!   `informed_by_tool_activity_anchor`, so prompt projection sees at most one expanded body per
-//!   logical send.
+//! - [`Hydrated`]: `SendDone` replay payloads and `Read` **raw** archive line lists are filled from
+//!   the payload store and prior steps in the batch.
+//! - [`Canonical`]: **Identity** transform — the graph rows passed through [`Hydrated`] are kept as-is.
+//!   (Older versions removed `ToolCall` / `ToolResult` rows when `SendDone` listed
+//!   `informed_by`; that **read-time** suppression is invalid for provenance truth: the read path
+//!   must not hide stored events.)
 //!
 //! Only [`ConversationContextBatch<Canonical>`] exposes [`ConversationContextBatch::into_items`]
-//! for consumers that must not accidentally project pre-canonical rows.
+//! for consumers that must not accidentally project pre-hydration rows.
 //!
-//! Within-batch `@N` dedup for rendering is implemented in [`baml_rt_tools::prompt_projection`];
-//! row-level suppression of duplicate tool rows is this pipeline’s responsibility, not the
-//! projector’s.
+//! Rendering is stateless in [`baml_rt_tools::prompt_projection`] (no cross-item “dedup” of archive
+//! views). If a duplicate row should not exist, fix the write path; do not collapse at read time.
 
-use std::{collections::HashSet, marker::PhantomData};
+use std::marker::PhantomData;
 
 use baml_rt_conversation::view::{
     ConversationItemContent, ProvenanceConversationContextItem, SessionStepOp,
 };
-use baml_rt_tools::archive_read::PageLimit;
+use baml_rt_tools::archive_read::render_to_lines;
 
 use super::SurrealProvenanceStore;
 use crate::error::Result;
@@ -43,7 +41,7 @@ pub struct Raw;
 #[derive(Debug, Clone, Copy)]
 pub struct Hydrated;
 
-/// Ready for prompt projection: duplicate raw tool rows for covered sends removed.
+/// Ready for prompt projection: post-hydration, **no** row drops.
 #[derive(Debug, Clone, Copy)]
 pub struct Canonical;
 
@@ -77,11 +75,20 @@ impl ConversationContextBatch<Raw> {
 }
 
 impl ConversationContextBatch<Hydrated> {
+    /// Historical name: previously removed tool rows when `SendDone` covered their anchors.
+    /// That **must not** run on the read path — this is now a no-op.
     pub(crate) fn canonicalize_suppress_covered_tool_rows(
         self,
     ) -> ConversationContextBatch<Canonical> {
-        let items = suppress_tool_rows_covered_by_session_send_done(self.items);
         ConversationContextBatch {
+            items: self.items,
+            _stage: PhantomData,
+        }
+    }
+
+    #[cfg(test)]
+    fn from_items_hydrated_for_test(items: Vec<ProvenanceConversationContextItem>) -> Self {
+        Self {
             items,
             _stage: PhantomData,
         }
@@ -96,24 +103,19 @@ impl ConversationContextBatch<Canonical> {
 
 /// Derives [`crate::store::SessionStepContent::read_replay_lines`] for archive read ops from an earlier
 /// `SendDone`’s hydrated replay payload in the same conversation batch. Pure derivation (no I/O).
+///
+/// Each line is a **raw rendered archive line** (the same as [`ArchiveEntry::content`] / `render_to_lines`),
+/// not a pre-formatted `cat -n` / `grep -n` session read block. Prompt projection and episode re-apply
+/// [`baml_rt_tools::archive_read::format_session_read_body_from_rendered`].
 fn hydrate_session_step_read_replays(items: &mut [ProvenanceConversationContextItem]) {
     for i in 0..items.len() {
-        let (archive_ref, grep_opt, offset, limit) = {
+        let archive_ref = {
             let ConversationItemContent::SessionStep(ss) = &items[i].content else {
                 continue;
             };
             match &ss.op {
-                SessionStepOp::SearchRead {
-                    archive_ref,
-                    grep,
-                    offset,
-                    limit,
-                } => (archive_ref.clone(), Some(grep.clone()), *offset, *limit),
-                SessionStepOp::PageRead {
-                    archive_ref,
-                    offset,
-                    limit,
-                } => (archive_ref.clone(), None, *offset, *limit),
+                SessionStepOp::SearchRead { archive_ref, .. } => archive_ref.clone(),
+                SessionStepOp::PageRead { archive_ref, .. } => archive_ref.clone(),
                 _ => continue,
             }
         };
@@ -137,19 +139,11 @@ fn hydrate_session_step_read_replays(items: &mut [ProvenanceConversationContextI
         let Some(val) = base else {
             continue;
         };
-        // Use the step's recorded `limit` (capped at `PageLimit::MAX` only) — same paging semantics
-        // as `format_session_read_body` / prompt projection, not a separate 20-line replay cap.
-        let page_limit = PageLimit::new(limit.max(1)).get();
-        let Some(body) = baml_rt_tools::archive_read::format_session_read_body_from_json_value(
-            &val,
-            archive_ref.as_str(),
-            grep_opt.as_deref(),
-            offset,
-            baml_rt_tools::archive_read::PageLimit::new(page_limit),
-        ) else {
+        let rendered = render_to_lines(&val);
+        if rendered.is_empty() {
             continue;
-        };
-        let lines: Vec<String> = body.lines().map(str::to_string).collect();
+        }
+        let lines: Vec<String> = rendered.lines().map(str::to_string).collect();
         if lines.is_empty() {
             continue;
         }
@@ -158,37 +152,6 @@ fn hydrate_session_step_read_replays(items: &mut [ProvenanceConversationContextI
         };
         ss.read_replay_lines = Some(lines);
     }
-}
-
-/// Removes [`ConversationItemContent::ToolCall`] / [`ConversationItemContent::ToolResult`] when a
-/// [`SessionStepOp::SendDone`] in the same batch lists that tool activity anchor in `informed_by`.
-fn suppress_tool_rows_covered_by_session_send_done(
-    items: Vec<ProvenanceConversationContextItem>,
-) -> Vec<ProvenanceConversationContextItem> {
-    let mut covered: HashSet<String> = HashSet::new();
-    for item in &items {
-        let ConversationItemContent::SessionStep(ss) = &item.content else {
-            continue;
-        };
-        let SessionStepOp::SendDone { informed_by, .. } = &ss.op else {
-            continue;
-        };
-        if !informed_by.is_empty() {
-            covered.insert(informed_by.clone());
-        }
-    }
-    if covered.is_empty() {
-        return items;
-    }
-    items
-        .into_iter()
-        .filter(|item| match &item.content {
-            ConversationItemContent::ToolCall(_) | ConversationItemContent::ToolResult(_) => {
-                !covered.contains(item.activity_anchor.as_str())
-            }
-            _ => true,
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -200,10 +163,8 @@ mod tests {
     use baml_rt_core::ids::ActivityAnchorId;
     use serde_json::json;
 
-    use super::suppress_tool_rows_covered_by_session_send_done;
-
     #[test]
-    fn canonical_removes_tool_rows_when_send_done_informs() {
+    fn read_path_keeps_tool_rows_even_when_send_done_informs() {
         let anchor = ActivityAnchorId::from("sess-tool-anchor");
         let items = vec![
             ProvenanceConversationContextItem {
@@ -242,12 +203,10 @@ mod tests {
                 }),
             },
         ];
-        let out = suppress_tool_rows_covered_by_session_send_done(items);
-        assert_eq!(out.len(), 1);
-        assert!(matches!(
-            out[0].content,
-            ConversationItemContent::SessionStep(_)
-        ));
+        let out = super::ConversationContextBatch::from_items_hydrated_for_test(items)
+            .canonicalize_suppress_covered_tool_rows();
+        let out = out.into_items();
+        assert_eq!(out.len(), 3, "all stored rows surface for the LLM");
     }
 
     #[test]
@@ -275,7 +234,9 @@ mod tests {
                 }),
             },
         ];
-        let out = suppress_tool_rows_covered_by_session_send_done(items);
+        let out = super::ConversationContextBatch::from_items_hydrated_for_test(items)
+            .canonicalize_suppress_covered_tool_rows();
+        let out = out.into_items();
         assert_eq!(out.len(), 2);
     }
 }

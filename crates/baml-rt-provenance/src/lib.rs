@@ -18,6 +18,8 @@ pub mod builders;
 pub mod bus_subscriber;
 pub mod citation_queries;
 pub mod context_metrics_queries;
+/// Defaults for LLM conversation-context query limits.
+pub mod conversation_context_query;
 pub mod document;
 pub mod effect_subscriber;
 pub mod episode;
@@ -54,6 +56,7 @@ pub use baml_rt_vocabulary::{
     TaskSubgraphUpdateNode,
 };
 pub use bus_subscriber::ProvenanceBusSubscriber;
+pub use conversation_context_query::DEFAULT_LLM_CONTEXT_ITEM_CAP;
 pub use effect_subscriber::ProvenanceEffectSubscriber;
 pub use episode::{
     ArtifactSummary, CachedEpisode, Episode, EpisodeArchiveSource, EpisodeContent,

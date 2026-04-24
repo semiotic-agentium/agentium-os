@@ -1,0 +1,38 @@
+---
+source: crates/baml-rt-a2a/tests/conversation_history_snapshot.rs
+expression: history
+---
+[
+  {
+    "role": "user",
+    "content": "#2 what can you do"
+  },
+  {
+    "role": "tool",
+    "content": "#3 discover_agents query=\"all\""
+  },
+  {
+    "role": "tool",
+    "content": "system/discover_agents:\n     1\t- name: crm-agent\n     2\t  description: Business reporting agent\n     3\t- name: dev-agent\n     4\t  description: Code generation agent\n"
+  },
+  {
+    "role": "tool",
+    "content": "system/discover_agents session opened"
+  },
+  {
+    "role": "tool",
+    "content": "@1 system/discover_agents \"found 2 agents\" [4 lines, 113B]"
+  },
+  {
+    "role": "read",
+    "content": "cat -n @1\n     1\t- name: crm-agent\n     2\t  description: Business reporting agent\n     3\t- name: dev-agent\n     4\t  description: Code generation agent"
+  },
+  {
+    "role": "tool",
+    "content": "grep -n 'name description' @1\n# no matches"
+  },
+  {
+    "role": "tool",
+    "content": "cat -n @1\n     1\t- name: crm-agent\n     2\t  description: Business reporting agent\n     3\t- name: dev-agent\n     4\t  description: Code generation agent"
+  }
+]

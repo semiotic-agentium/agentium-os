@@ -7,7 +7,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use baml_rt_conversation::{render::prefix_wire_citations_in_text, view::SessionStepOp};
+use baml_rt_conversation::view::SessionStepOp;
 use baml_rt_core::{
     Outcome,
     ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
@@ -16,7 +16,6 @@ use baml_rt_provenance::{
     AgentType, CallScope, Episode, EpisodeContent, LlmUsage, ProvEvent, ProvenanceWriter, StepType,
     SurrealStoreBuilder, episode::EpisodeReader,
 };
-use baml_rt_tools::archive_read::session_read_command_line;
 
 /// `ToolRead` rows with rendered archive/grep bodies (SendDone inline read + explicit Read), in timeline order.
 fn transcript_tool_read_bodies(ep: &Episode) -> Vec<String> {
@@ -342,34 +341,11 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
         "explicit Read step should appear as ToolRead (invocation or replayed output)"
     );
 
-    // --- Session history assertions ---
-    let read_lines: Vec<_> = ep
-        .session_history
-        .iter()
-        .filter(|l| l.role == "read")
-        .collect();
-    assert!(
-        !read_lines.is_empty(),
-        "session_history must include 'read' role lines"
-    );
-    let read_body = &read_lines[0].content;
-    assert!(
-        read_body.contains("cat -n"),
-        "read line must contain cat -n; got: {read_body}"
-    );
-    assert!(
-        read_body.contains("agent-alpha"),
-        "read line must contain rendered content"
-    );
-    assert!(
-        read_body.contains("agent-gamma"),
-        "read line must contain rendered content"
-    );
+    // --- Session history: golden file matches `assemble_session_history` / `project_prompt_context` (see `docs/baml-rt-conversation-spec.md`) ---
+    let session_history = serde_json::to_value(&ep.session_history).expect("json");
+    insta::assert_json_snapshot!(session_history);
 
-    // --- Hard alignment: transcript ToolRead bodies vs session_history (live projection) ---
-    // `assembly_session_history` now shares the same `InlineProjectionState` as
-    // `project_prompt_context`: a PageRead of the same default @1 view after SendDone inlines
-    // that view must **not** re-paste the full archive (command-only, see prompt_projection tests).
+    // Transcript vs session_history: shared ToolRead body formatting
     let tool_read_bodies = transcript_tool_read_bodies(&ep);
     assert_eq!(
         tool_read_bodies.len(),
@@ -381,29 +357,6 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
         "same @1 slice → identical cat-n/grep formatting for both transcript steps"
     );
     let body = &tool_read_bodies[0];
-    let read_role_lines: Vec<&str> = ep
-        .session_history
-        .iter()
-        .filter(|l| l.role == "read")
-        .map(|l| l.content.as_str())
-        .collect();
-    assert_eq!(
-        read_role_lines,
-        vec![body.as_str()],
-        "SendDone’s second line is role `read` with the inlined @1 body"
-    );
-    let page_read_cmd =
-        prefix_wire_citations_in_text(&session_read_command_line("@1", None), &ep.ref_prefix);
-    assert!(
-        ep.session_history
-            .iter()
-            .any(|l| l.role == "tool" && l.content == page_read_cmd),
-        "PageRead of the same default view is deduped to the session read command, not the body again: expected tool line {page_read_cmd:?} in history, got: {:?}",
-        ep.session_history
-            .iter()
-            .map(|l| (l.role.as_str(), l.content.as_str()))
-            .collect::<Vec<_>>()
-    );
 
     // --- Rendered text format assertions ---
     let rendered = baml_rt_provenance::render_episode(&ep);

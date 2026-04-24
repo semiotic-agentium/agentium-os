@@ -16,7 +16,10 @@ use baml_rt_conversation::{
 };
 use baml_rt_core::ids::{AgentId, ContextId, TaskId, UuidId};
 use baml_rt_tools::{
-    archive_read::format_session_read_from_vtable,
+    archive_read::{
+        PageLimit, RenderedContent, format_session_read_body_from_rendered,
+        format_session_read_from_vtable,
+    },
     archive_refs::RefTable,
     prompt_projection::{ArchiveReader, ProjectionRenderOptions},
     tools::ToolRegistry,
@@ -860,8 +863,15 @@ fn conv_item_to_entries(
                 limit,
             } => {
                 if let Some(raw_lines) = ss.read_replay_lines.as_ref().filter(|l| !l.is_empty()) {
-                    let joined = raw_lines.join("\n");
-                    let body = prefix_wire_citations_in_text(&joined, ref_prefix);
+                    let rendered = RenderedContent::from_lines(raw_lines.iter().cloned());
+                    let built = format_session_read_body_from_rendered(
+                        &rendered,
+                        archive_ref.as_str(),
+                        Some(grep.as_str()),
+                        *offset,
+                        PageLimit::new(*limit),
+                    );
+                    let body = prefix_wire_citations_in_text(&built, ref_prefix);
                     let lines: Vec<String> = body.lines().map(str::to_string).collect();
                     let line_count = lines.len();
                     let byte_count: usize = lines.iter().map(|s| s.len().saturating_add(1)).sum();
@@ -906,8 +916,15 @@ fn conv_item_to_entries(
                 limit,
             } => {
                 if let Some(raw_lines) = ss.read_replay_lines.as_ref().filter(|l| !l.is_empty()) {
-                    let joined = raw_lines.join("\n");
-                    let body = prefix_wire_citations_in_text(&joined, ref_prefix);
+                    let rendered = RenderedContent::from_lines(raw_lines.iter().cloned());
+                    let built = format_session_read_body_from_rendered(
+                        &rendered,
+                        archive_ref.as_str(),
+                        None,
+                        *offset,
+                        PageLimit::new(*limit),
+                    );
+                    let body = prefix_wire_citations_in_text(&built, ref_prefix);
                     let lines: Vec<String> = body.lines().map(str::to_string).collect();
                     let line_count = lines.len();
                     let byte_count: usize = lines.iter().map(|s| s.len().saturating_add(1)).sum();

@@ -103,8 +103,8 @@ pub fn session_history_body_from_send_done_replay(
 }
 
 /// Line pairs `(role, content)` before wire citation prefixing, matching
-/// [`baml_rt_tools::prompt_projection::project_projection_item_to_rows`] with a **per-item** fresh
-/// inline state. Message `citations` are not returned; use
+/// [`baml_rt_tools::prompt_projection::project_projection_item_to_rows`]. Message `citations` are
+/// not returned; use
 /// [`project_projection_item_to_rows`] for full metadata.
 #[must_use]
 pub fn projection_pairs_for_conv_item(

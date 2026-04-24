@@ -3,9 +3,7 @@
 use baml_rt_tools::{
     archive_read::format_session_read_from_vtable,
     archive_refs::RefTable,
-    prompt_projection::{
-        InlineProjectionState, ProjectionRenderOptions, project_projection_item_to_rows,
-    },
+    prompt_projection::{ProjectionRenderOptions, project_projection_item_to_rows},
     tools::ToolRegistry,
 };
 
@@ -27,7 +25,6 @@ pub fn assemble_session_history(
     vtable: &RefTable,
 ) -> Vec<SessionHistoryLine> {
     let scratch = RefTable::new();
-    let mut inline_state = InlineProjectionState::default();
 
     let archive_reader = |archive_ref_str: &str,
                           grep_str: Option<&str>,
@@ -44,7 +41,6 @@ pub fn assemble_session_history(
                 if let Some(proj) = provenance_item_to_projection_item(item.clone()) {
                     for row in project_projection_item_to_rows(
                         &proj,
-                        &mut inline_state,
                         tool_registry,
                         &scratch,
                         Some(&archive_reader),

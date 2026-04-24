@@ -97,6 +97,13 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                 return Ok(Vec::new());
             }
             if messages.len() > n {
+                let had = messages.len();
+                tracing::debug!(
+                    %context_id,
+                    limit = n,
+                    had,
+                    "truncating context messages to last N (tail cap)"
+                );
                 messages = messages.split_off(messages.len() - n);
             }
         }
@@ -639,6 +646,14 @@ impl SurrealProvenanceStore {
                 return Ok(Vec::new());
             }
             if items.len() > n {
+                let had = items.len();
+                tracing::debug!(
+                    %context_id,
+                    limit = n,
+                    had,
+                    forward = forward_limit,
+                    "truncating conversation context to limit (after sort)"
+                );
                 if forward_limit {
                     items.truncate(n);
                 } else {
