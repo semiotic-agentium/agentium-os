@@ -55,7 +55,7 @@
     "invocation_mode": {
       "type": "string",
       "description": "How the tool is invoked.",
-      "enum": ["single_shot"]
+      "enum": ["single_shot", "session"]
     },
     "session_policy": {
       "type": "string",
@@ -99,6 +99,12 @@
       "type": "array",
       "items": { "type": "string" },
       "description": "Secret names required by this tool (resolved by runner)."
+    },
+    "secret_scope": {
+      "type": "string",
+      "description": "Where secrets are attached for session-mode tools.",
+      "enum": ["send", "session"],
+      "default": "send"
     },
     "capabilities": {
       "type": "object",

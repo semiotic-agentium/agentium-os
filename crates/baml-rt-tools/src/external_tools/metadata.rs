@@ -48,7 +48,7 @@ pub struct ExternalToolMetadata {
     pub access_level: ToolAccess,
     #[serde(default)]
     pub tags: Vec<String>,
-    /// Invocation semantics — V1 supports single-shot only.
+    /// Invocation semantics (`single_shot` or `session`).
     pub invocation_mode: InvocationMode,
     /// FSM scheduling policy. Defaults to `Strict`.
     #[serde(default)]
@@ -58,6 +58,9 @@ pub struct ExternalToolMetadata {
     /// Secret names the runtime must resolve for this tool.
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Session-mode secret placement (`send` by default).
+    #[serde(default)]
+    pub secret_scope: ExternalSecretScope,
     /// Capability declaration (HTTP hosts, FS access, etc.). Free-form JSON
     /// until Phase 2-full formalises it into a typed struct.
     #[serde(default)]
@@ -105,6 +108,7 @@ impl ExternalToolMetadata {
                 output: output_schema,
             },
             secrets: Vec::new(),
+            secret_scope: ExternalSecretScope::default(),
             capabilities: Value::Object(Default::default()),
             config_bundle: None,
             runtime: None,
@@ -132,13 +136,25 @@ impl ExternalToolMetadata {
     }
 }
 
-/// Invocation semantics declared by the tool. V1 only supports single-shot
-/// (stateless spawn-per-invoke); streaming/keep-alive lands in a future phase
-/// and will add a new variant — the compiler enforces we handle it.
+/// Invocation semantics declared by the tool package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InvocationMode {
+    /// Stateless one-request execution (`tool/invoke`).
     SingleShot,
+    /// Stateful session protocol (`tool/session_*`).
+    Session,
+}
+
+/// Where secrets are attached for session-mode tools.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalSecretScope {
+    /// Default: include resolved secrets on each `session_send`.
+    #[default]
+    Send,
+    /// Include resolved secrets once on `session_open`.
+    Session,
 }
 
 /// Session policy encoded in the external metadata file. Separate from the
@@ -421,6 +437,7 @@ mod tests {
             serde_json::from_value(raw).expect("legacy metadata should parse");
         assert!(parsed.runtime.is_none());
         assert!(parsed.runtime_digest.is_none());
+        assert_eq!(parsed.secret_scope, ExternalSecretScope::Send);
     }
 
     #[test]

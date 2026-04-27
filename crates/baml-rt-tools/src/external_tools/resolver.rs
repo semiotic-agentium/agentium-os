@@ -23,8 +23,8 @@ use super::{
     invoker::{ExternalInvoker, ToolDescribe},
     lockfile::{ExternalLockfileMode, ExternalToolsLockfile},
     metadata::{
-        ExternalToolMetadata, build_tool_metadata, compute_tool_digest, metadata_schema_digest,
-        read_external_metadata,
+        ExternalToolMetadata, InvocationMode, build_tool_metadata, compute_tool_digest,
+        metadata_schema_digest, read_external_metadata,
     },
     policy::{DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT},
     protocol::{METHOD_INVOKE, PROTOCOL_VERSION},
@@ -36,6 +36,8 @@ use crate::{
     ExternalToolResolver, ToolName,
     tools::{ToolFunctionMetadata, ToolHandler},
 };
+
+const SESSION_SANDBOX_FLAG_ENV: &str = "BAML_EXTERNAL_SESSION_SANDBOX";
 
 /// Per-tool callback the resolver invokes to build a
 /// [`SandboxSpecBuilder`] from parsed metadata. Workstream D plugs in
@@ -295,6 +297,23 @@ async fn load_tool_dir(
     let meta = read_external_metadata(dir)?;
     let tool_name = ToolName::parse(&meta.name)?;
     let runtime_kind = meta.runtime.as_ref().map(ToolRuntime::kind);
+
+    if matches!(meta.invocation_mode, InvocationMode::Session) {
+        if !external_session_sandbox_enabled() {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "tool '{tool_name}' sets invocation_mode=session but session sandbox tools are disabled (set {SESSION_SANDBOX_FLAG_ENV}=1 to enable)"
+            )));
+        }
+
+        if !matches!(
+            runtime_kind,
+            Some(crate::external_tools::runtime::ToolRuntimeKind::Sandbox)
+        ) {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "tool '{tool_name}' sets invocation_mode=session but is not sandbox runtime; session mode is sandbox-only"
+            )));
+        }
+    }
 
     // Dispatch by runtime kind (tool_sandbox.md Workstream B step 6).
     // - None / Some(Process) → existing subprocess + stdio path.
@@ -562,15 +581,33 @@ fn validate_describe_contract(
         )));
     }
 
-    if !describe
-        .supported_methods
-        .iter()
-        .any(|method| method == METHOD_INVOKE)
-    {
-        return Err(BamlRtError::InvalidArgument(format!(
-            "external tool '{}' describe mismatch: supported_methods must include '{}'",
-            tool_name, METHOD_INVOKE
-        )));
+    match meta.invocation_mode {
+        InvocationMode::SingleShot => {
+            if !describe
+                .supported_methods
+                .iter()
+                .any(|method| method == METHOD_INVOKE)
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "external tool '{}' describe mismatch: supported_methods must include '{}'",
+                    tool_name, METHOD_INVOKE
+                )));
+            }
+        }
+        InvocationMode::Session => {
+            for required in baml_sandbox_protocol::SUPPORTED_METHODS_SESSION {
+                if !describe
+                    .supported_methods
+                    .iter()
+                    .any(|method| method == required)
+                {
+                    return Err(BamlRtError::InvalidArgument(format!(
+                        "external tool '{}' describe mismatch: supported_methods must include '{}' for invocation_mode=session",
+                        tool_name, required
+                    )));
+                }
+            }
+        }
     }
 
     if let Some(describe_schema_digest) = describe.schema_digest.as_ref() {
@@ -595,6 +632,20 @@ fn validate_describe_contract(
     Ok(())
 }
 
+fn parse_external_session_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn external_session_sandbox_enabled() -> bool {
+    std::env::var(SESSION_SANDBOX_FLAG_ENV)
+        .ok()
+        .map(|value| parse_external_session_flag(&value))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -609,7 +660,11 @@ mod tests {
 
     use super::{DevModeResolver, ExternalLifecycleEvent, ExternalLifecycleRecorder};
     use crate::{
-        ExternalToolResolver, ToolName, external_tools::metadata::metadata_schema_digest,
+        ExternalToolResolver, ToolName,
+        external_tools::{
+            ToolDescribe,
+            metadata::{ExternalToolMetadata, InvocationMode, metadata_schema_digest},
+        },
         tools::SessionPolicy,
     };
 
@@ -851,6 +906,49 @@ printf '%s\\n' '{response}'\n",
         );
 
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn validate_describe_requires_session_method_set_for_session_mode() {
+        let meta: ExternalToolMetadata = serde_json::from_value(json!({
+            "tool_abi_version": "1",
+            "name": "support/session_contract",
+            "description": "session contract",
+            "bundle": "support",
+            "local_name": "session_contract",
+            "access_level": "read",
+            "invocation_mode": "session",
+            "schemas": {
+                "input": {"type": "object"},
+                "output": {"type": "object"}
+            },
+            "secrets": [],
+            "capabilities": {}
+        }))
+        .expect("metadata parse");
+        assert!(matches!(meta.invocation_mode, InvocationMode::Session));
+
+        let describe = ToolDescribe {
+            protocol_version: "1".to_string(),
+            tool_name: "support/session_contract".to_string(),
+            supported_methods: vec![
+                "tool/describe".to_string(),
+                "tool/schema".to_string(),
+                "tool/session_open".to_string(),
+                "tool/session_send".to_string(),
+                "tool/session_read".to_string(),
+                // Missing finish + abort on purpose.
+            ],
+            max_payload_bytes: None,
+            schema_digest: None,
+            capabilities: None,
+        };
+
+        let tool_name = ToolName::parse("support/session_contract").unwrap();
+        let err = super::validate_describe_contract(&meta, &tool_name, &describe)
+            .expect_err("missing methods should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("invocation_mode=session"), "unexpected: {msg}");
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {

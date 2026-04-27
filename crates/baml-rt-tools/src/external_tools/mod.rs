@@ -32,8 +32,8 @@ pub use lockfile::{
     ExternalToolsLockfile,
 };
 pub use metadata::{
-    ExternalSessionPolicy, ExternalToolMetadata, InvocationMode, MetadataSchemas,
-    compute_tool_digest, read_external_metadata,
+    ExternalSecretScope, ExternalSessionPolicy, ExternalToolMetadata, InvocationMode,
+    MetadataSchemas, compute_tool_digest, read_external_metadata,
 };
 pub use metadata_catalog::{
     BUILDER_EXTERNAL_TOOLS_ENV, ExternalMetadataCatalog, build_builder_catalog,

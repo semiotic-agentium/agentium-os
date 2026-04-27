@@ -1,14 +1,10 @@
-//! `ExternalSessionToolHandler` — Phase 1 skeleton.
+//! `ExternalSessionToolHandler`.
 //!
 //! Maps the host [`ToolHandler`] / [`ToolSession`] contract onto a
 //! [`SessionToolInvoker`]. Per `plans/sandbox_streaming.md` §5.2 this handler
 //! is the external-side analogue of the internal session FSM: each host
 //! `ToolSession::{send, read, finish, abort}` call routes to one
 //! `tool/session_*` RPC.
-//!
-//! Phase 1 wires the types and traits but leaves session bookkeeping (resume
-//! token tracking, single-reader enforcement, reset gating) as TODOs. Phase 3
-//! fills these in alongside the pool/channel lifecycle.
 
 use std::{sync::Arc, time::Duration};
 
@@ -17,9 +13,12 @@ use baml_rt_core::{BamlRtError, Result};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::session_invoker::{
-    SessionAbortRequest, SessionFinishRequest, SessionOpenRequest, SessionReadRequest,
-    SessionSendRequest, SessionToolInvoker,
+use super::{
+    metadata::ExternalSecretScope,
+    session_invoker::{
+        SessionAbortRequest, SessionFinishRequest, SessionOpenRequest, SessionReadRequest,
+        SessionSendRequest, SessionToolInvoker,
+    },
 };
 use crate::{
     ToolName,
@@ -46,6 +45,7 @@ pub struct ExternalSessionToolHandler {
     abort_timeout: Duration,
     secrets: serde_json::Map<String, Value>,
     capabilities: Value,
+    secret_scope: ExternalSecretScope,
 }
 
 impl ExternalSessionToolHandler {
@@ -64,6 +64,7 @@ impl ExternalSessionToolHandler {
             abort_timeout: Duration::from_secs(2),
             secrets: serde_json::Map::new(),
             capabilities: Value::Null,
+            secret_scope: ExternalSecretScope::Send,
         }
     }
 
@@ -84,6 +85,11 @@ impl ExternalSessionToolHandler {
 
     pub fn with_abort_timeout(mut self, abort_timeout: Duration) -> Self {
         self.abort_timeout = abort_timeout;
+        self
+    }
+
+    pub fn with_secret_scope(mut self, secret_scope: ExternalSecretScope) -> Self {
+        self.secret_scope = secret_scope;
         self
     }
 }
@@ -107,7 +113,10 @@ impl ToolHandler for ExternalSessionToolHandler {
             tool_name: self.metadata.name.clone(),
             invocation_id: Uuid::new_v4().to_string(),
             open_input,
-            secrets: self.secrets.clone(),
+            secrets: match self.secret_scope {
+                ExternalSecretScope::Send => serde_json::Map::new(),
+                ExternalSecretScope::Session => self.secrets.clone(),
+            },
             capabilities: self.capabilities.clone(),
             timeout: self.open_timeout,
         };
@@ -125,6 +134,7 @@ impl ToolHandler for ExternalSessionToolHandler {
             finish_timeout: self.finish_timeout,
             abort_timeout: self.abort_timeout,
             secrets: self.secrets.clone(),
+            secret_scope: self.secret_scope,
         }))
     }
 }
@@ -132,9 +142,6 @@ impl ToolHandler for ExternalSessionToolHandler {
 /// Per-task session adapter. Maps each [`ToolSession`] call onto one
 /// `tool/session_*` RPC against the [`SessionToolInvoker`].
 ///
-/// Compile-only Phase 1 shape. Single-reader enforcement, resume-token
-/// validation, and the reset path are intentionally absent — they land in
-/// Phase 3 once the host-side pool/channel lifecycle is in place.
 pub struct ExternalSessionToolSession {
     #[allow(dead_code)] // Phase 3 will use this for span attributes / classified errors.
     tool_name: ToolName,
@@ -151,6 +158,7 @@ pub struct ExternalSessionToolSession {
     finish_timeout: Duration,
     abort_timeout: Duration,
     secrets: serde_json::Map<String, Value>,
+    secret_scope: ExternalSecretScope,
 }
 
 #[async_trait]
@@ -161,7 +169,10 @@ impl ToolSession for ExternalSessionToolSession {
             session_id: self.session_id.clone(),
             input,
             resume_token,
-            secrets: self.secrets.clone(),
+            secrets: match self.secret_scope {
+                ExternalSecretScope::Send => self.secrets.clone(),
+                ExternalSecretScope::Session => serde_json::Map::new(),
+            },
             timeout: self.send_timeout,
         };
         self.invoker.session_send(req).await?;
