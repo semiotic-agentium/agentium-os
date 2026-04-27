@@ -1,11 +1,12 @@
 //! `SessionToolInvoker` — transport-abstract interface for the session-mode
-//! sandbox protocol (Phase 1 skeleton from `plans/sandbox_streaming.md` §5.2).
+//! sandbox protocol from `plans/sandbox_streaming.md` §5.2.
 //!
 //! Counterpart to [`super::ExternalInvoker`]. Where `ExternalInvoker` is the
-//! single-shot `tool/invoke` surface, `SessionToolInvoker` exposes the five
-//! `tool/session_*` methods with strongly-typed request/response shapes.
-//! Concrete transports (e.g. a microsandbox-pool-backed impl) land in
-//! Phase 3.
+//! single-shot `tool/invoke` surface, `SessionToolInvoker` exposes the
+//! `tool/session_*` methods with strongly-typed request/response shapes. The
+//! concrete pool-backed implementation lives in
+//! [`super::sandbox::session_invoker::SandboxSessionInvoker`]; the trait is
+//! stand-alone so test fixtures can supply mocks without depending on it.
 
 use std::time::Duration;
 
@@ -73,9 +74,13 @@ pub struct SessionAbortRequest {
 
 /// Transport-abstract interface for the session-mode external tool protocol.
 ///
-/// Phase 3 plumbs a concrete implementation backed by the microsandbox pool
-/// and per-session adapter channels. Phase 1 keeps the trait alone so other
-/// crates can name the type without taking a dep on the runtime impl.
+/// The pool-backed implementation lives in
+/// [`super::sandbox::session_invoker::SandboxSessionInvoker`]. Test fixtures
+/// can supply mock implementations without taking that dependency.
+///
+/// The reuse-after-finish reset hook (`tool/session_reset`) is *not* exposed
+/// here — it is an implementation detail of the pool-backed invoker, fired
+/// internally between `session_finish` and the entry's return to `Idle`.
 #[async_trait]
 pub trait SessionToolInvoker: Send + Sync {
     async fn session_open(&self, req: SessionOpenRequest) -> Result<SessionOpenResponse>;

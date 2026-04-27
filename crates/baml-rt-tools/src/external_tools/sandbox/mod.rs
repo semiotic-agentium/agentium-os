@@ -23,6 +23,8 @@ pub mod microsandbox_provider;
 pub mod mock;
 pub mod path_guard;
 pub mod provider;
+pub mod session_invoker;
+pub mod session_pool;
 pub mod spec;
 pub mod wiring;
 
@@ -36,6 +38,11 @@ pub use invoker::{SandboxCache, SandboxCacheKey, SandboxInvoker, SandboxSpecBuil
 pub use microsandbox_provider::MicrosandboxProvider;
 pub use mock::{MockSandboxProvider, ScriptedAdapter, test_durations};
 pub use provider::SandboxProvider;
+pub use session_invoker::{SandboxSessionInvoker, SandboxSessionInvokerConfig};
+pub use session_pool::{
+    DEFAULT_POOL_CHECKOUT_TIMEOUT, DEFAULT_POOL_MAX, PoolError, PooledSandbox, PooledSessionId,
+    SessionPool, SessionPoolConfig,
+};
 pub use spec::{
     Destination, DestinationGroup, NetworkPolicy, NetworkRule, PortMapping, Protocol, PullPolicy,
     SandboxEvent, SandboxHandle, SandboxImageSource, SandboxSpec, SecretBinding, SecretBindingMode,

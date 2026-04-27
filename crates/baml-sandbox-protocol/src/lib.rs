@@ -29,8 +29,9 @@ pub use protocol::{
 };
 pub use session::{
     METHOD_SESSION_ABORT, METHOD_SESSION_FINISH, METHOD_SESSION_OPEN, METHOD_SESSION_READ,
-    METHOD_SESSION_SEND, SUPPORTED_METHODS_SESSION, SessionAbortParams, SessionAbortResult,
-    SessionDisposition, SessionFinishParams, SessionFinishResult, SessionOpenParams,
-    SessionOpenResult, SessionReadParams, SessionReadResult, SessionSendParams, SessionSendResult,
-    StepEnvelope, StepError, error_code,
+    METHOD_SESSION_RESET, METHOD_SESSION_SEND, SUPPORTED_METHODS_SESSION, SessionAbortParams,
+    SessionAbortResult, SessionDisposition, SessionFinishParams, SessionFinishResult,
+    SessionOpenParams, SessionOpenResult, SessionReadParams, SessionReadResult,
+    SessionResetOutcome, SessionResetParams, SessionResetResult, SessionSendParams,
+    SessionSendResult, StepEnvelope, StepError, error_code,
 };

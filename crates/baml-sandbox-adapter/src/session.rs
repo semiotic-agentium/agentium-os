@@ -16,7 +16,8 @@ use baml_sandbox_protocol::{
     session::{
         SessionAbortParams, SessionAbortResult, SessionFinishParams, SessionFinishResult,
         SessionOpenParams, SessionOpenResult, SessionReadParams, SessionReadResult,
-        SessionSendParams, SessionSendResult, StepEnvelope,
+        SessionResetOutcome, SessionResetParams, SessionResetResult, SessionSendParams,
+        SessionSendResult, StepEnvelope,
     },
 };
 use serde::Serialize;
@@ -31,6 +32,15 @@ pub enum ResetOutcome {
     Ok,
     /// Adapter does not implement reset; sandbox MUST be destroyed after finish.
     Unsupported,
+}
+
+impl From<ResetOutcome> for SessionResetOutcome {
+    fn from(value: ResetOutcome) -> Self {
+        match value {
+            ResetOutcome::Ok => SessionResetOutcome::Ok,
+            ResetOutcome::Unsupported => SessionResetOutcome::Unsupported,
+        }
+    }
 }
 
 /// Author-facing trait implemented by sandboxed session tools.
@@ -101,6 +111,16 @@ pub async fn dispatch_session_request<T: SandboxSessionTool>(
         },
         proto::METHOD_SESSION_ABORT => match parse::<SessionAbortParams>(&method, req.params) {
             Ok(p) => to_response(id, tool.abort(p).await),
+            Err(resp) => resp.with_id(id),
+        },
+        proto::METHOD_SESSION_RESET => match parse::<SessionResetParams>(&method, req.params) {
+            Ok(_p) => {
+                let outcome = tool
+                    .on_reset()
+                    .await
+                    .map(|o| SessionResetResult { outcome: o.into() });
+                to_response(id, outcome)
+            }
             Err(resp) => resp.with_id(id),
         },
         other => unknown_method(id, other),

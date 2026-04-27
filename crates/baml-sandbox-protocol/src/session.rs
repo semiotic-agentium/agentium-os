@@ -26,11 +26,20 @@ pub const METHOD_SESSION_FINISH: &str = "tool/session_finish";
 /// Method name for the abort/teardown path of a session.
 pub const METHOD_SESSION_ABORT: &str = "tool/session_abort";
 
+/// Method name for the optional reuse-after-finish reset hook.
+///
+/// Only invoked when host metadata declares `reuse_after_session=true`. Adapters
+/// that decline reuse return [`StepError::code`] [`error_code::RESET_FAILED`]
+/// or the wire ack with a `reset_unsupported` outcome marker (see
+/// [`SessionResetResult`]).
+pub const METHOD_SESSION_RESET: &str = "tool/session_reset";
+
 /// Methods a session-mode tool MUST advertise via `tool/describe`.
 ///
 /// Includes the static handshake methods (`tool/describe`, `tool/schema`) and
-/// the full session-method family. Strict validators reject session-mode
-/// tools that omit any of these.
+/// the full session-method family. `tool/session_reset` is intentionally
+/// optional — only tools that opt into pool reuse advertise it; strict
+/// validators only enforce the five core methods listed here.
 pub const SUPPORTED_METHODS_SESSION: &[&str] = &[
     crate::protocol::METHOD_DESCRIBE,
     crate::protocol::METHOD_SCHEMA,
@@ -194,6 +203,34 @@ pub struct SessionAbortParams {
 /// Ack payload for [`METHOD_SESSION_ABORT`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionAbortResult {}
+
+/// Params for [`METHOD_SESSION_RESET`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionResetParams {
+    pub session_id: String,
+}
+
+/// Outcome of a [`METHOD_SESSION_RESET`] call.
+///
+/// Mirrors `baml_sandbox_adapter::session::ResetOutcome`. Returned over the
+/// wire so the host can decide whether to return the sandbox to `Idle` or
+/// destroy it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionResetOutcome {
+    /// Sandbox state was successfully cleared and may be reused.
+    #[default]
+    Ok,
+    /// Adapter does not implement reset; sandbox MUST be destroyed.
+    Unsupported,
+}
+
+/// Result payload for [`METHOD_SESSION_RESET`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionResetResult {
+    #[serde(default)]
+    pub outcome: SessionResetOutcome,
+}
 
 #[cfg(test)]
 mod tests {
