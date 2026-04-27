@@ -97,6 +97,7 @@ cargo agent-platform new-tool [name] [options]
 | `--lang <lang>` | `rust` | Scaffold language: `rust`, `bash`, `python`, `typescript` |
 | `--access <level>` | `read` | `read` (query-only), `write` (create/update), or `delete` (strictest level) |
 | `--runtime <kind>` | `process` | Metadata runtime: `process` or `sandbox` |
+| `--invocation-mode <mode>` | `single-shot` | Invocation contract: `single-shot` or `session` (`session` requires `--runtime sandbox`) |
 | `--sandbox-source <kind>` | `oci` | Sandbox image source: `oci` or `bind` |
 | `--sandbox-image <ref@sha256:...>` | — | Required when `--runtime sandbox --sandbox-source oci` |
 | `--runtime-digest <sha256:...>` | auto | Optional for sandbox. Defaults to OCI digest suffix for `oci`; for `bind` scaffolds, defaults to placeholder `sha256:00..` until you materialize rootfs + recompute |
@@ -106,7 +107,11 @@ cargo agent-platform new-tool [name] [options]
 | `--output <dir>` | `./<name>` | Output directory for standalone tool project |
 | `--dry-run` | off | Preview changes without writing files (non-interactive only) |
 
-Generated scaffold always includes `tool-metadata.json`, `README.md`, and language-specific files. Most language templates also include `tool-server` for local probing. For `runtime=sandbox`, runner invocation still goes through `/tool-adapter` inside the sandbox (not host `tool-server`). `tool-metadata.json` always emits an explicit `runtime` block (`process` by default, or `sandbox` when selected). For `sandbox + bind`, scaffolding now emits placeholders (`runtime.image.path = "<rootfs-path>"` and zero `runtime_digest`) so creation is decoupled from rootfs materialization.
+Generated scaffold always includes `tool-metadata.json`, `README.md`, and language-specific files. Most language templates also include `tool-server` for local probing. For `runtime=sandbox`, runner invocation still goes through `/tool-adapter` inside the sandbox (not host `tool-server`). `tool-metadata.json` always emits an explicit `runtime` block (`process` by default, or `sandbox` when selected).
+
+`--invocation-mode session` scaffolds metadata with `invocation_mode: "session"` (external session protocol). For now, scaffold defaults still keep session knobs conservative (`session_policy: strict`, `secret_scope: send`) unless you edit metadata manually.
+
+For `sandbox + bind`, scaffolding now emits placeholders (`runtime.image.path = "<rootfs-path>"` and zero `runtime_digest`) so creation is decoupled from rootfs materialization.
 
 Bind scaffold modes:
 - default (no `--generate-docker`): metadata-only bind scaffold (placeholder path + zero digest); materialize rootfs externally, then run `sandbox-digest` + metadata patch + `check-external-tool`.
@@ -144,6 +149,12 @@ cargo agent-platform new-tool dev_echo_docker \
   --runtime sandbox \
   --sandbox-source bind \
   --generate-docker
+
+cargo agent-platform new-tool streamed_echo \
+  --runtime sandbox \
+  --invocation-mode session \
+  --sandbox-source oci \
+  --sandbox-image ghcr.io/acme/streamed-echo@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
 ---

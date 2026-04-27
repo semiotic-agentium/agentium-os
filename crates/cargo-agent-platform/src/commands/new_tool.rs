@@ -731,6 +731,30 @@ mod tests {
     }
 
     #[test]
+    fn session_readme_lists_session_methods() {
+        let mut session_ctx = ctx(Language::Python);
+        session_ctx.runtime = Runtime::Sandbox;
+        session_ctx.invocation_mode = InvocationMode::Session;
+        session_ctx.sandbox_source = Some(SandboxSource::Oci);
+        session_ctx.sandbox_image = Some(SandboxImageRef::Oci {
+            r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+        });
+        session_ctx.runtime_digest = Some(
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111".to_string(),
+        );
+        let files = build_file_set(&session_ctx);
+        let readme = files
+            .iter()
+            .find(|f| f.relative_path == "README.md")
+            .expect("README emitted");
+
+        assert!(readme.content.contains("- `tool/session_open`"));
+        assert!(readme.content.contains("- `tool/session_read`"));
+        assert!(readme.content.contains("payloadless"));
+    }
+
+    #[test]
     fn bind_setup_script_uses_tool_relative_rootfs_and_sync_command() {
         let mut bind_ctx = ctx(Language::Python);
         bind_ctx.runtime = Runtime::Sandbox;

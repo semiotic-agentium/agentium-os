@@ -3,9 +3,9 @@
 //! Setup instructions come from the typed `Language` enum so adding a new
 //! language requires a compile-error fix rather than a silent fall-through.
 
-use baml_rt_tools::external_tools::{METHOD_DESCRIBE, METHOD_INVOKE, SUPPORTED_METHODS};
+use baml_rt_tools::external_tools::{METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA};
 
-use super::{Language, Runtime, STARTER_INPUT_KEY, SandboxSource, ScaffoldContext};
+use super::{InvocationMode, Language, Runtime, STARTER_INPUT_KEY, SandboxSource, ScaffoldContext};
 
 pub fn generate(ctx: &ScaffoldContext<'_>) -> String {
     let tool_id = ctx.tool_id();
@@ -13,8 +13,8 @@ pub fn generate(ctx: &ScaffoldContext<'_>) -> String {
 
     // Keep the README's "supported methods" bullets in sync with the actual
     // `SUPPORTED_METHODS` list declared in `templates/mod.rs`.
-    let supported_bullets = SUPPORTED_METHODS
-        .iter()
+    let supported_bullets = supported_methods_for(ctx)
+        .into_iter()
         .map(|m| format!("- `{m}`"))
         .collect::<Vec<_>>()
         .join("\n");
@@ -71,37 +71,71 @@ Then reference this tool in an agent manifest as:
 }
 
 fn manual_probe_section(ctx: &ScaffoldContext<'_>, tool_id: &str) -> String {
-    if ctx.runtime == Runtime::Sandbox {
-        format!(
-            r#"## Local probe (developer convenience)
-
-For sandbox runtime tools, the runner invokes `/tool-adapter` inside the sandbox.
-`tool-server` is **not** the runtime invoke path; it's only a local debugging helper.
-
-```bash
-printf '{{"jsonrpc":"2.0","id":1,"method":"{method_describe}","params":{{"tool_name":"{tool_id}"}}}}\n' | ./tool-server
-printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocation_id":"demo","tool_name":"{tool_id}","input":{{"{input_key}":"hello"}}}}}}\n' | ./tool-server
-```
-"#,
-            method_describe = METHOD_DESCRIBE,
-            method_invoke = METHOD_INVOKE,
-            tool_id = tool_id,
-            input_key = STARTER_INPUT_KEY,
-        )
+    let heading = if ctx.runtime == Runtime::Sandbox {
+        "## Local probe (developer convenience)"
     } else {
-        format!(
-            r#"## Manual probe
+        "## Manual probe"
+    };
 
-```bash
+    let preface = if ctx.runtime == Runtime::Sandbox {
+        "For sandbox runtime tools, the runner invokes `/tool-adapter` inside the sandbox.\n`tool-server` is **not** the runtime invoke path; it's only a local debugging helper.\n\n"
+    } else {
+        ""
+    };
+
+    match ctx.invocation_mode {
+        InvocationMode::SingleShot => format!(
+            r#"{heading}
+
+{preface}```bash
 printf '{{"jsonrpc":"2.0","id":1,"method":"{method_describe}","params":{{"tool_name":"{tool_id}"}}}}\n' | ./tool-server
 printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocation_id":"demo","tool_name":"{tool_id}","input":{{"{input_key}":"hello"}}}}}}\n' | ./tool-server
 ```
 "#,
+            heading = heading,
+            preface = preface,
             method_describe = METHOD_DESCRIBE,
             method_invoke = METHOD_INVOKE,
             tool_id = tool_id,
             input_key = STARTER_INPUT_KEY,
-        )
+        ),
+        InvocationMode::Session => format!(
+            r#"{heading}
+
+{preface}```bash
+# open
+printf '{{"jsonrpc":"2.0","id":1,"method":"tool/session_open","params":{{"invocation_id":"demo","tool_name":"{tool_id}","open_input":{{}}}}}}\n' | ./tool-server
+
+# send input
+printf '{{"jsonrpc":"2.0","id":2,"method":"tool/session_send","params":{{"session_id":"demo-session","input":{{"{input_key}":"hello"}}}}}}\n' | ./tool-server
+
+# read next step (payloadless)
+printf '{{"jsonrpc":"2.0","id":3,"method":"tool/session_read","params":{{"session_id":"demo-session"}}}}\n' | ./tool-server
+
+# finish
+printf '{{"jsonrpc":"2.0","id":4,"method":"tool/session_finish","params":{{"session_id":"demo-session"}}}}\n' | ./tool-server
+```
+"#,
+            heading = heading,
+            preface = preface,
+            tool_id = tool_id,
+            input_key = STARTER_INPUT_KEY,
+        ),
+    }
+}
+
+fn supported_methods_for(ctx: &ScaffoldContext<'_>) -> Vec<&'static str> {
+    match ctx.invocation_mode {
+        InvocationMode::SingleShot => vec![METHOD_DESCRIBE, METHOD_INVOKE],
+        InvocationMode::Session => vec![
+            METHOD_DESCRIBE,
+            METHOD_SCHEMA,
+            "tool/session_open",
+            "tool/session_send",
+            "tool/session_read",
+            "tool/session_finish",
+            "tool/session_abort",
+        ],
     }
 }
 

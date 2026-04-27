@@ -65,6 +65,7 @@ cargo agent-platform new-tool my_tool \
 Useful sandbox flags:
 
 - `--runtime sandbox`
+- `--invocation-mode single-shot|session`
 - `--sandbox-source oci|bind`
 - `--sandbox-image <ref@sha256:...>` (OCI)
 - `--sandbox-entrypoint <argv,...>`
@@ -102,6 +103,36 @@ If you chose `--runtime process` (the default), most of the sandbox sections bel
 5. §7 agent wiring + publish + deploy + chat
 
 Skip §2 (sandbox adapter model), §3 (build adapter artifact), §4 (runtime_digest), §9's sandbox-specific entries, and §10 (Bind security).
+
+## 1.4 Session-mode external tools (`invocation_mode=session`)
+
+Use session mode when the external tool needs persistent in-session state and/or chunked streaming.
+
+Metadata essentials:
+
+- `runtime.kind = "sandbox"` (required)
+- `invocation_mode = "session"`
+- host must enable session sandbox mode (`BAML_EXTERNAL_SESSION_SANDBOX=1`)
+- default scaffold behavior keeps:
+  - `session_policy = "strict"`
+  - `secret_scope = "send"`
+
+Required adapter methods (advertised via `tool/describe.supported_methods`):
+
+- `tool/session_open`
+- `tool/session_send`
+- `tool/session_read`
+- `tool/session_finish`
+- `tool/session_abort`
+
+Host call pattern for external session tools:
+
+1. open session
+2. send input
+3. read steps until `done`/`error`
+4. finish (or abort)
+
+Important: external `read()` is payloadless at the protocol level. If a caller passes payload to host `read()`, the runtime rejects it; use explicit `send(input)` before `read()`.
 
 ---
 
@@ -394,6 +425,12 @@ Use the shipped inspector to test adapter protocol directly (outside microVM):
   - ensure rootfs/image contains adapter at `/tool-adapter` (or a PATH-resolvable `tool-adapter`)
 - **adapter hangs without responding**
   - test the adapter in isolation with `inspect_tsrpc.py` (above) before blaming the VM
+- **`resume_token_mismatch`**
+  - adapter expects a resume token from a prior `suspended` step; ensure your client flow is `send -> read(suspended) -> send(resume_token) -> read`
+- **`unknown_session`**
+  - `session_id` is stale/foreign to the invoker instance (often after restart); reopen a new session
+- **`pool_exhausted`**
+  - session pool cap reached; retry or raise `pool_max` for the tool
 
 ---
 
