@@ -16,7 +16,10 @@
 
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -48,7 +51,7 @@ use crate::{
         invoker::map_jsonrpc_error,
         session_invoker::{
             SessionAbortRequest, SessionFinishRequest, SessionOpenRequest, SessionOpenResponse,
-            SessionReadRequest, SessionSendRequest, SessionToolInvoker,
+            SessionReadRequest, SessionReadResponse, SessionSendRequest, SessionToolInvoker,
         },
     },
     tool_fsm::ToolStep,
@@ -82,10 +85,11 @@ impl Default for SandboxSessionInvokerConfig {
 
 /// Live session bookkeeping.
 struct LiveSession {
-    pooled: PooledSandbox,
-    /// One-RPC-at-a-time mutex on the persistent adapter channel
-    /// (single-reader invariant from §3.1).
+    pooled: Mutex<Option<PooledSandbox>>,
+    /// One-RPC-at-a-time mutex on the persistent adapter channel.
     channel: Mutex<TsrpcChannel>,
+    /// Enforces `SessionBusy` on concurrent `session_read` calls.
+    read_inflight: AtomicBool,
     /// Session start time, useful for span attributes / max-duration eviction.
     #[allow(dead_code)]
     started_at: Instant,
@@ -163,22 +167,29 @@ impl SessionToolInvoker for SandboxSessionInvoker {
             &mut channel,
             METHOD_SESSION_OPEN,
             params,
-            req.timeout.max(self.config.default_rpc_timeout),
+            req.timeout.min(self.config.default_rpc_timeout),
         )
         .await
         {
             Ok(r) => r,
             Err(err) => {
-                // open failed before any tool output was committed — destroy
-                // the sandbox and surface the classified error.
                 pooled.release_destroy().await;
                 return Err(err);
             }
         };
 
+        let initial = result.initial_step;
+        let (initial_step, initial_resume_token) = initial
+            .map(step_envelope_to_tool_step)
+            .map_or((None, None), |(step, resume_token)| {
+                (Some(step), resume_token)
+            });
+
+        let sandbox_name = pooled.handle().name.clone();
         let session = Arc::new(LiveSession {
-            pooled,
+            pooled: Mutex::new(Some(pooled)),
             channel: Mutex::new(channel),
+            read_inflight: AtomicBool::new(false),
             started_at: Instant::now(),
             tool_name: req.tool_name.clone(),
         });
@@ -191,13 +202,14 @@ impl SessionToolInvoker for SandboxSessionInvoker {
         debug!(
             tool = %req.tool_name,
             session_id = %session_id,
-            sandbox = %session.pooled.handle().name,
+            sandbox = %sandbox_name,
             "session opened"
         );
 
         Ok(SessionOpenResponse {
             session_id,
-            initial_step: result.initial_step.map(step_envelope_to_tool_step),
+            initial_step,
+            initial_resume_token,
         })
     }
 
@@ -215,14 +227,36 @@ impl SessionToolInvoker for SandboxSessionInvoker {
             &mut channel,
             METHOD_SESSION_SEND,
             params,
-            req.timeout.max(self.config.default_rpc_timeout),
+            req.timeout.min(self.config.default_rpc_timeout),
         )
         .await?;
         Ok(())
     }
 
-    async fn session_read(&self, req: SessionReadRequest) -> Result<ToolStep> {
+    async fn session_read(&self, req: SessionReadRequest) -> Result<SessionReadResponse> {
         let session = self.lookup_session(&req.session_id).await?;
+        if session.read_inflight.swap(true, Ordering::AcqRel) {
+            return Err(BamlRtError::ToolClassified(ClassifiedToolError {
+                code: baml_sandbox_protocol::session::error_code::SESSION_BUSY.to_string(),
+                disposition: ErrorDisposition::HostRetriable,
+                message: format!("session '{}' already has an in-flight read", req.session_id),
+                hint: Some("serialize session_read calls per session".to_string()),
+                retry_after_ms: Some(20),
+            }));
+        }
+
+        struct ReadGuard<'a> {
+            flag: &'a AtomicBool,
+        }
+        impl Drop for ReadGuard<'_> {
+            fn drop(&mut self) {
+                self.flag.store(false, Ordering::Release);
+            }
+        }
+        let _read_guard = ReadGuard {
+            flag: &session.read_inflight,
+        };
+
         let mut channel = session.channel.lock().await;
         let params = SessionReadParams {
             session_id: req.session_id.clone(),
@@ -232,10 +266,11 @@ impl SessionToolInvoker for SandboxSessionInvoker {
             &mut channel,
             METHOD_SESSION_READ,
             params,
-            req.chunk_timeout.max(self.config.default_rpc_timeout),
+            req.chunk_timeout.min(self.config.default_rpc_timeout),
         )
         .await?;
-        Ok(step_envelope_to_tool_step(envelope))
+        let (step, resume_token) = step_envelope_to_tool_step(envelope);
+        Ok(SessionReadResponse { step, resume_token })
     }
 
     async fn session_finish(&self, req: SessionFinishRequest) -> Result<()> {
@@ -253,30 +288,24 @@ impl SessionToolInvoker for SandboxSessionInvoker {
                 &mut channel,
                 METHOD_SESSION_FINISH,
                 params,
-                req.timeout.max(self.config.default_rpc_timeout),
+                req.timeout.min(self.config.default_rpc_timeout),
             )
             .await
         };
 
-        let session = Arc::try_unwrap(session).map_err(|_| {
-            BamlRtError::InvalidArgument(format!(
-                "session '{}' has outstanding readers; cannot finish",
+        let Some(pooled) = session.pooled.lock().await.take() else {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "session '{}' resources were already released",
                 req.session_id
-            ))
-        })?;
-        let LiveSession {
-            pooled,
-            channel,
-            tool_name,
-            ..
-        } = session;
+            )));
+        };
 
         match outcome {
             Ok(_) => {
                 let reuse_ok = if self.config.reuse_after_session {
-                    let mut channel = channel.into_inner();
+                    let mut channel = session.channel.lock().await;
                     run_reset_hook(
-                        &tool_name,
+                        &session.tool_name,
                         &mut channel,
                         &req.session_id,
                         self.config.reset_timeout,
@@ -316,19 +345,14 @@ impl SessionToolInvoker for SandboxSessionInvoker {
                 &mut channel,
                 METHOD_SESSION_ABORT,
                 params,
-                req.timeout.max(self.config.default_rpc_timeout),
+                req.timeout.min(self.config.default_rpc_timeout),
             )
             .await
         };
 
-        let session = Arc::try_unwrap(session).map_err(|_| {
-            BamlRtError::InvalidArgument(format!(
-                "session '{}' has outstanding readers; cannot abort",
-                req.session_id
-            ))
-        })?;
-        // Force-abort always destroys the sandbox; the RPC is best-effort.
-        session.pooled.release_destroy().await;
+        if let Some(pooled) = session.pooled.lock().await.take() {
+            pooled.release_destroy().await;
+        }
 
         if let Err(err) = abort_outcome {
             warn!(
@@ -414,11 +438,7 @@ async fn call_one_rpc<R: DeserializeOwned>(
 
     let response_value = tokio::time::timeout(timeout, exchange)
         .await
-        .map_err(|_| {
-            BamlRtError::InvalidArgument(format!(
-                "session RPC '{method}' for '{tool}' timed out after {timeout:?}"
-            ))
-        })??;
+        .map_err(|_| classify_timeout_error(tool, method, timeout))??;
 
     let response: JsonRpcResponse = serde_json::from_value(response_value).map_err(|err| {
         BamlRtError::InvalidArgumentWithSource {
@@ -446,23 +466,35 @@ fn next_rpc_id() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-fn step_envelope_to_tool_step(envelope: StepEnvelope) -> ToolStep {
+fn classify_timeout_error(tool: &ToolName, method: &str, timeout: Duration) -> BamlRtError {
+    if method == METHOD_SESSION_READ {
+        return BamlRtError::ToolClassified(ClassifiedToolError {
+            code: baml_sandbox_protocol::session::error_code::CHUNK_TIMEOUT.to_string(),
+            disposition: ErrorDisposition::InformAndContinue,
+            message: format!("session read for '{tool}' timed out after {timeout:?}"),
+            hint: Some("retry session_read within the same session".to_string()),
+            retry_after_ms: Some(timeout.as_millis().min(u128::from(u64::MAX)) as u64),
+        });
+    }
+
+    BamlRtError::InvalidArgument(format!(
+        "session RPC '{method}' for '{tool}' timed out after {timeout:?}"
+    ))
+}
+
+fn step_envelope_to_tool_step(envelope: StepEnvelope) -> (ToolStep, Option<String>) {
     use crate::{
         tool_error_classify::ClassifiedToolError as CoreClassified,
         tool_fsm::{ToolFailure, ToolFailureKind},
     };
 
     match envelope {
-        StepEnvelope::Streaming { output } => ToolStep::Streaming { output },
-        // Phase 1 of the host runtime does not yet plumb adapter resume
-        // tokens through `ToolStep` — surface as Suspended without it for
-        // now; Phase 4 wires the resume_token into the ExternalSession
-        // bookkeeping.
+        StepEnvelope::Streaming { output } => (ToolStep::Streaming { output }, None),
         StepEnvelope::Suspended {
             output,
-            resume_token: _,
-        } => ToolStep::Suspended { output },
-        StepEnvelope::Done { output } => ToolStep::Done { output },
+            resume_token,
+        } => (ToolStep::Suspended { output }, Some(resume_token)),
+        StepEnvelope::Done { output } => (ToolStep::Done { output }, None),
         StepEnvelope::Error { error } => {
             let disposition = match error.disposition {
                 baml_sandbox_protocol::session::SessionDisposition::HostRetriable => {
@@ -491,17 +523,22 @@ fn step_envelope_to_tool_step(envelope: StepEnvelope) -> ToolStep {
                 ErrorDisposition::InformAndContinue => ToolFailureKind::ExecutionFailed,
                 ErrorDisposition::Fatal => ToolFailureKind::ExecutionFailed,
             };
-            ToolStep::Error {
-                error: ToolFailure {
-                    kind,
-                    message: error.message,
-                    retryability: match disposition {
-                        ErrorDisposition::HostRetriable => baml_rt_core::Retryability::Retryable,
-                        _ => baml_rt_core::Retryability::Permanent,
+            (
+                ToolStep::Error {
+                    error: ToolFailure {
+                        kind,
+                        message: error.message,
+                        retryability: match disposition {
+                            ErrorDisposition::HostRetriable => {
+                                baml_rt_core::Retryability::Retryable
+                            }
+                            _ => baml_rt_core::Retryability::Permanent,
+                        },
+                        classified,
                     },
-                    classified,
                 },
-            }
+                None,
+            )
         }
     }
 }
@@ -599,7 +636,7 @@ mod tests {
             })
             .await
             .expect("first read");
-        assert!(matches!(step_1, ToolStep::Streaming { .. }));
+        assert!(matches!(step_1.step, ToolStep::Streaming { .. }));
 
         let step_2 = invoker
             .session_read(SessionReadRequest {
@@ -609,7 +646,7 @@ mod tests {
             .await
             .expect("second read");
 
-        let done_output = match step_2 {
+        let done_output = match step_2.step {
             ToolStep::Done { output } => output.expect("done output"),
             other => panic!("expected Done, got {other:?}"),
         };
@@ -690,7 +727,7 @@ mod tests {
             .await
             .expect("read should succeed with error step envelope");
 
-        match step {
+        match step.step {
             ToolStep::Error { error } => {
                 assert_eq!(error.classified.code, error_code::RESUME_TOKEN_MISMATCH);
                 assert_eq!(

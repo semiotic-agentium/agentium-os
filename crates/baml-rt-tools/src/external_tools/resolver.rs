@@ -18,7 +18,7 @@ use std::{
 use baml_rt_core::{BamlRtError, Result};
 
 use super::{
-    ExternalLifecycleEvent, ExternalLifecycleRecorder,
+    ExternalLifecycleEvent, ExternalLifecycleRecorder, ExternalSessionToolHandler,
     handler::ProcessToolHandler,
     invoker::{ExternalInvoker, ToolDescribe},
     lockfile::{ExternalLockfileMode, ExternalToolsLockfile},
@@ -29,12 +29,15 @@ use super::{
     policy::{DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT},
     protocol::{METHOD_INVOKE, PROTOCOL_VERSION},
     runtime::ToolRuntime,
-    sandbox::{SandboxCache, SandboxProvider, SandboxSpecBuilder, SandboxToolHandler},
+    sandbox::{
+        SandboxCache, SandboxProvider, SandboxSessionInvoker, SandboxSessionInvokerConfig,
+        SandboxSpecBuilder, SandboxToolHandler, SessionPool, SessionPoolConfig,
+    },
     stdio::StdioSubprocessInvoker,
 };
 use crate::{
     ExternalToolResolver, ToolName,
-    tools::{ToolFunctionMetadata, ToolHandler},
+    tools::{ToolFunctionMetadata, ToolHandler, ToolSessionContext},
 };
 
 const SESSION_SANDBOX_FLAG_ENV: &str = "BAML_EXTERNAL_SESSION_SANDBOX";
@@ -437,18 +440,52 @@ async fn load_sandbox_tool_dir(
     // first invoke.
     let spec_builder = (wiring.spec_factory)(&tool_name, &meta)?;
 
-    let mut handler_builder = SandboxToolHandler::new(
-        metadata.clone(),
-        wiring.provider.clone(),
-        wiring.cache.clone(),
-        spec_builder,
-        DEFAULT_INVOKE_TIMEOUT,
-    )
-    .with_capabilities(meta.capabilities.clone());
-    if let Some(recorder) = lifecycle_recorder {
-        handler_builder = handler_builder.with_lifecycle_recorder(recorder.clone());
-    }
-    let handler: Arc<dyn ToolHandler> = Arc::new(handler_builder);
+    let handler: Arc<dyn ToolHandler> = match meta.invocation_mode {
+        InvocationMode::SingleShot => {
+            let mut handler_builder = SandboxToolHandler::new(
+                metadata.clone(),
+                wiring.provider.clone(),
+                wiring.cache.clone(),
+                spec_builder,
+                DEFAULT_INVOKE_TIMEOUT,
+            )
+            .with_capabilities(meta.capabilities.clone());
+            if let Some(recorder) = lifecycle_recorder {
+                handler_builder = handler_builder.with_lifecycle_recorder(recorder.clone());
+            }
+            Arc::new(handler_builder)
+        }
+        InvocationMode::Session => {
+            let pool = Arc::new(SessionPool::new(
+                wiring.cache.runner_id().to_string(),
+                wiring.provider.clone(),
+                spec_builder,
+                SessionPoolConfig::default(),
+            ));
+            let invoker_config = SandboxSessionInvokerConfig::default();
+            let invoker_factory = {
+                let pool = pool.clone();
+                Arc::new(move |ctx: &ToolSessionContext| {
+                    Arc::new(SandboxSessionInvoker::new(
+                        pool.clone(),
+                        ctx.agent_id.clone(),
+                        ctx.context_id.clone(),
+                        invoker_config.clone(),
+                    )) as Arc<dyn super::SessionToolInvoker>
+                })
+            };
+
+            Arc::new(
+                ExternalSessionToolHandler::new_with_factory(
+                    metadata.clone(),
+                    invoker_factory,
+                    DEFAULT_INVOKE_TIMEOUT,
+                )
+                .with_capabilities(meta.capabilities.clone())
+                .with_secret_scope(meta.secret_scope),
+            )
+        }
+    };
 
     let artifact_ref = dir.display().to_string();
     Ok((

@@ -426,7 +426,7 @@ Use this when `invocation_mode=session` tools fail in production-like runs.
 
 - **`pool_exhausted`:**
   - Cause: all sandboxes for that tool key are live and checkout timed out.
-  - Action: retry; if sustained, raise tool `pool_max`.
+  - Action: retry; if sustained, raise session pool capacity in host config (current knob is pool-wide `SessionPoolConfig.default_pool_max`).
   - Verify: checkout wait and `pool_exhausted` frequency drops.
 
 - **`unknown_session`:**
@@ -482,7 +482,7 @@ Use the shipped inspector to test adapter protocol directly (outside microVM):
 - **`unknown_session`**
   - `session_id` is stale/foreign to the invoker instance (often after restart); reopen a new session
 - **`pool_exhausted`**
-  - session pool cap reached; retry or raise `pool_max` for the tool
+  - session pool cap reached; retry or raise pool capacity in host config (currently pool-wide)
 
 ---
 

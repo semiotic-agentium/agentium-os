@@ -106,13 +106,13 @@ printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocati
 # open
 printf '{{"jsonrpc":"2.0","id":1,"method":"tool/session_open","params":{{"invocation_id":"demo","tool_name":"{tool_id}","open_input":{{}}}}}}\n' | ./tool-server
 
-# send input
+# send input (replace demo-session with the session_id returned by session_open)
 printf '{{"jsonrpc":"2.0","id":2,"method":"tool/session_send","params":{{"session_id":"demo-session","input":{{"{input_key}":"hello"}}}}}}\n' | ./tool-server
 
-# read next step (payloadless)
+# read next step (payloadless, same session_id)
 printf '{{"jsonrpc":"2.0","id":3,"method":"tool/session_read","params":{{"session_id":"demo-session"}}}}\n' | ./tool-server
 
-# finish
+# finish (same session_id)
 printf '{{"jsonrpc":"2.0","id":4,"method":"tool/session_finish","params":{{"session_id":"demo-session"}}}}\n' | ./tool-server
 ```
 "#,

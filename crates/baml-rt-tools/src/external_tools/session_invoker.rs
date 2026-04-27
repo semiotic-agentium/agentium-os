@@ -35,6 +35,16 @@ pub struct SessionOpenResponse {
     pub session_id: String,
     /// Optional first step the adapter produced synchronously at open time.
     pub initial_step: Option<ToolStep>,
+    /// Resume token paired with `initial_step` when that step is `Suspended`.
+    pub initial_resume_token: Option<String>,
+}
+
+/// Response for `tool/session_read`.
+#[derive(Debug, Clone)]
+pub struct SessionReadResponse {
+    pub step: ToolStep,
+    /// Resume token paired with `step` when it is `Suspended`.
+    pub resume_token: Option<String>,
 }
 
 /// Request for `tool/session_send`. `resume_token` is required iff the last
@@ -85,7 +95,7 @@ pub struct SessionAbortRequest {
 pub trait SessionToolInvoker: Send + Sync {
     async fn session_open(&self, req: SessionOpenRequest) -> Result<SessionOpenResponse>;
     async fn session_send(&self, req: SessionSendRequest) -> Result<()>;
-    async fn session_read(&self, req: SessionReadRequest) -> Result<ToolStep>;
+    async fn session_read(&self, req: SessionReadRequest) -> Result<SessionReadResponse>;
     async fn session_finish(&self, req: SessionFinishRequest) -> Result<()>;
     async fn session_abort(&self, req: SessionAbortRequest) -> Result<()>;
 }

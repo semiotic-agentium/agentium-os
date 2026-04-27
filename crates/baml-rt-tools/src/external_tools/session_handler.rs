@@ -35,9 +35,17 @@ pub(crate) const DEFAULT_CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
 /// [`ToolCapability::Streaming`], and routes `open_session` to the invoker.
 /// The session inner-loop bookkeeping (resume tokens, single reader, reset
 /// path) lands in Phase 3.
+type SessionInvokerFactory =
+    Arc<dyn Fn(&ToolSessionContext) -> Arc<dyn SessionToolInvoker> + Send + Sync>;
+
+enum SessionInvokerBinding {
+    Static(Arc<dyn SessionToolInvoker>),
+    Factory(SessionInvokerFactory),
+}
+
 pub struct ExternalSessionToolHandler {
     metadata: ToolFunctionMetadata,
-    invoker: Arc<dyn SessionToolInvoker>,
+    invoker: SessionInvokerBinding,
     open_timeout: Duration,
     send_timeout: Duration,
     chunk_timeout: Duration,
@@ -56,7 +64,26 @@ impl ExternalSessionToolHandler {
     ) -> Self {
         Self {
             metadata,
-            invoker,
+            invoker: SessionInvokerBinding::Static(invoker),
+            open_timeout,
+            send_timeout: open_timeout,
+            chunk_timeout: DEFAULT_CHUNK_TIMEOUT,
+            finish_timeout: open_timeout,
+            abort_timeout: Duration::from_secs(2),
+            secrets: serde_json::Map::new(),
+            capabilities: Value::Null,
+            secret_scope: ExternalSecretScope::Send,
+        }
+    }
+
+    pub fn new_with_factory(
+        metadata: ToolFunctionMetadata,
+        invoker_factory: SessionInvokerFactory,
+        open_timeout: Duration,
+    ) -> Self {
+        Self {
+            metadata,
+            invoker: SessionInvokerBinding::Factory(invoker_factory),
             open_timeout,
             send_timeout: open_timeout,
             chunk_timeout: DEFAULT_CHUNK_TIMEOUT,
@@ -109,6 +136,11 @@ impl ToolHandler for ExternalSessionToolHandler {
         _ctx: ToolSessionContext,
         open_input: Value,
     ) -> Result<Box<dyn ToolSession>> {
+        let invoker: Arc<dyn SessionToolInvoker> = match &self.invoker {
+            SessionInvokerBinding::Static(invoker) => invoker.clone(),
+            SessionInvokerBinding::Factory(factory) => factory(&_ctx),
+        };
+
         let req = SessionOpenRequest {
             tool_name: self.metadata.name.clone(),
             invocation_id: Uuid::new_v4().to_string(),
@@ -121,13 +153,13 @@ impl ToolHandler for ExternalSessionToolHandler {
             timeout: self.open_timeout,
         };
 
-        let response = self.invoker.session_open(req).await?;
+        let response = invoker.session_open(req).await?;
 
         Ok(Box::new(ExternalSessionToolSession {
             tool_name: self.metadata.name.clone(),
-            invoker: self.invoker.clone(),
+            invoker,
             session_id: response.session_id,
-            pending_resume_token: pending_resume_token_from(&response.initial_step),
+            pending_resume_token: response.initial_resume_token,
             initial_step: response.initial_step,
             send_timeout: self.send_timeout,
             chunk_timeout: self.chunk_timeout,
@@ -189,7 +221,6 @@ impl ToolSession for ExternalSessionToolSession {
         }
 
         if let Some(step) = self.initial_step.take() {
-            self.pending_resume_token = pending_resume_token_from(&Some(step.clone()));
             return Ok(step);
         }
 
@@ -197,9 +228,9 @@ impl ToolSession for ExternalSessionToolSession {
             session_id: self.session_id.clone(),
             chunk_timeout: self.chunk_timeout,
         };
-        let step = self.invoker.session_read(req).await?;
-        self.pending_resume_token = pending_resume_token_from(&Some(step.clone()));
-        Ok(step)
+        let response = self.invoker.session_read(req).await?;
+        self.pending_resume_token = response.resume_token;
+        Ok(response.step)
     }
 
     async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
@@ -228,13 +259,4 @@ fn is_empty_payload(value: &Value) -> bool {
         Value::Object(map) => map.is_empty(),
         _ => false,
     }
-}
-
-fn pending_resume_token_from(step: &Option<ToolStep>) -> Option<String> {
-    // Phase 1: external resume tokens are not yet plumbed through `ToolStep`.
-    // Phase 3 will surface them via a wrapping protocol-level type so this
-    // function can return the actual adapter-issued token. Until then we
-    // never carry one forward, which keeps `send` from sending stale tokens.
-    let _ = step;
-    None
 }
