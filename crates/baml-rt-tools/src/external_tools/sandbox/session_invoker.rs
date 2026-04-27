@@ -505,3 +505,356 @@ fn step_envelope_to_tool_step(envelope: StepEnvelope) -> ToolStep {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use baml_rt_core::{
+        ContextId,
+        ids::{AgentId, UuidId},
+    };
+    use baml_sandbox_protocol::{
+        JsonRpcResponse,
+        session::{SessionDisposition, StepError, error_code},
+    };
+    use serde_json::{Value, json};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::{
+        SandboxSessionInvoker, SandboxSessionInvokerConfig, SessionOpenRequest, SessionReadRequest,
+        SessionSendRequest, SessionToolInvoker,
+    };
+    use crate::{
+        ToolName,
+        external_tools::sandbox::{
+            SandboxProvider, SandboxSpec, SandboxSpecBuilder,
+            mock::{MockSandboxProvider, ScriptedAdapter},
+            session_pool::{SessionPool, SessionPoolConfig},
+        },
+        tool_fsm::ToolStep,
+    };
+
+    #[tokio::test]
+    async fn session_streaming_happy_path_reads_chunks_then_done() {
+        let adapter = streaming_meteo_adapter();
+        let provider_concrete = MockSandboxProvider::new(adapter);
+        let provider: Arc<dyn SandboxProvider> = Arc::new(provider_concrete);
+
+        let tool_name = ToolName::parse("support/stream_weather").unwrap();
+        let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
+        let context_id = ContextId::new(10, 20);
+
+        let build_spec: SandboxSpecBuilder = Arc::new(|key| {
+            Ok(SandboxSpec::for_test(
+                format!("test-{}", key.tool_name),
+                "scratch:latest",
+            ))
+        });
+
+        let pool = Arc::new(SessionPool::new(
+            "runner-test",
+            provider,
+            build_spec,
+            SessionPoolConfig {
+                default_pool_max: 1,
+                pool_checkout_timeout: Duration::from_millis(200),
+            },
+        ));
+
+        let invoker = SandboxSessionInvoker::new(
+            pool.clone(),
+            agent_id,
+            context_id,
+            SandboxSessionInvokerConfig::default(),
+        );
+
+        let open = invoker
+            .session_open(SessionOpenRequest {
+                tool_name: tool_name.clone(),
+                invocation_id: "inv-stream-1".to_string(),
+                open_input: Value::Null,
+                secrets: serde_json::Map::new(),
+                capabilities: Value::Null,
+                timeout: Duration::from_secs(2),
+            })
+            .await
+            .expect("session_open should succeed");
+
+        invoker
+            .session_send(SessionSendRequest {
+                session_id: open.session_id.clone(),
+                input: json!({"location_query": "Quebec, Canada"}),
+                resume_token: None,
+                secrets: serde_json::Map::new(),
+                timeout: Duration::from_secs(2),
+            })
+            .await
+            .expect("session_send should succeed");
+
+        let step_1 = invoker
+            .session_read(SessionReadRequest {
+                session_id: open.session_id.clone(),
+                chunk_timeout: Duration::from_secs(2),
+            })
+            .await
+            .expect("first read");
+        assert!(matches!(step_1, ToolStep::Streaming { .. }));
+
+        let step_2 = invoker
+            .session_read(SessionReadRequest {
+                session_id: open.session_id.clone(),
+                chunk_timeout: Duration::from_secs(2),
+            })
+            .await
+            .expect("second read");
+
+        let done_output = match step_2 {
+            ToolStep::Done { output } => output.expect("done output"),
+            other => panic!("expected Done, got {other:?}"),
+        };
+        assert_eq!(
+            done_output
+                .pointer("/location/query")
+                .and_then(Value::as_str),
+            Some("Quebec, Canada")
+        );
+        assert_eq!(
+            done_output
+                .pointer("/current/temperature_2m")
+                .and_then(Value::as_f64),
+            Some(-6.2)
+        );
+
+        invoker
+            .session_finish(super::SessionFinishRequest {
+                session_id: open.session_id,
+                timeout: Duration::from_secs(2),
+            })
+            .await
+            .expect("session_finish should succeed");
+
+        assert_eq!(pool.active_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn session_error_step_maps_resume_token_mismatch_classification() {
+        let adapter = resume_token_error_adapter();
+        let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::new(adapter));
+
+        let tool_name = ToolName::parse("support/stream_weather_error").unwrap();
+        let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
+        let context_id = ContextId::new(10, 21);
+
+        let build_spec: SandboxSpecBuilder = Arc::new(|key| {
+            Ok(SandboxSpec::for_test(
+                format!("test-{}", key.tool_name),
+                "scratch:latest",
+            ))
+        });
+
+        let pool = Arc::new(SessionPool::new(
+            "runner-test",
+            provider,
+            build_spec,
+            SessionPoolConfig {
+                default_pool_max: 1,
+                pool_checkout_timeout: Duration::from_millis(200),
+            },
+        ));
+
+        let invoker = SandboxSessionInvoker::new(
+            pool,
+            agent_id,
+            context_id,
+            SandboxSessionInvokerConfig::default(),
+        );
+
+        let open = invoker
+            .session_open(SessionOpenRequest {
+                tool_name: tool_name.clone(),
+                invocation_id: "inv-stream-err-1".to_string(),
+                open_input: Value::Null,
+                secrets: serde_json::Map::new(),
+                capabilities: Value::Null,
+                timeout: Duration::from_secs(2),
+            })
+            .await
+            .expect("session_open should succeed");
+
+        let step = invoker
+            .session_read(SessionReadRequest {
+                session_id: open.session_id,
+                chunk_timeout: Duration::from_secs(2),
+            })
+            .await
+            .expect("read should succeed with error step envelope");
+
+        match step {
+            ToolStep::Error { error } => {
+                assert_eq!(error.classified.code, error_code::RESUME_TOKEN_MISMATCH);
+                assert_eq!(
+                    error.classified.disposition,
+                    baml_rt_core::ErrorDisposition::LlmCorrectable
+                );
+            }
+            other => panic!("expected ToolStep::Error, got {other:?}"),
+        }
+    }
+
+    fn streaming_meteo_adapter() -> ScriptedAdapter {
+        Arc::new(|stream| {
+            tokio::spawn(async move {
+                let (mut r, mut w) = tokio::io::split(stream);
+                let mut read_count = 0usize;
+                loop {
+                    let mut len_buf = [0u8; 4];
+                    if r.read_exact(&mut len_buf).await.is_err() {
+                        break;
+                    }
+                    let len = u32::from_be_bytes(len_buf) as usize;
+                    let mut body = vec![0u8; len];
+                    if r.read_exact(&mut body).await.is_err() {
+                        break;
+                    }
+                    let req: Value = match serde_json::from_slice(&body) {
+                        Ok(v) => v,
+                        Err(_) => break,
+                    };
+                    let id = req.get("id").and_then(Value::as_u64).unwrap_or(1);
+                    let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+                    let response = match method {
+                        "tool/session_open" => json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": { "session_id": "sess-weather-1" }
+                        }),
+                        "tool/session_send" => json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {}
+                        }),
+                        "tool/session_read" => {
+                            read_count += 1;
+                            if read_count == 1 {
+                                json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": {
+                                        "step": "streaming",
+                                        "output": { "chunk": "Fetching weather for Quebec, Canada..." }
+                                    }
+                                })
+                            } else {
+                                json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": {
+                                        "step": "done",
+                                        "output": {
+                                            "source": "mock-meteo",
+                                            "location": { "query": "Quebec, Canada", "country": "Canada" },
+                                            "current": { "temperature_2m": -6.2, "wind_speed_10m": 12.4 }
+                                        }
+                                    }
+                                })
+                            }
+                        }
+                        "tool/session_finish" => json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {}
+                        }),
+                        _ => json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": { "code": -32601, "message": "method not found" }
+                        }),
+                    };
+
+                    let out = serde_json::to_vec(&response).unwrap();
+                    if w.write_all(&(out.len() as u32).to_be_bytes())
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    if w.write_all(&out).await.is_err() {
+                        break;
+                    }
+                    if w.flush().await.is_err() {
+                        break;
+                    }
+                }
+            })
+        })
+    }
+
+    fn resume_token_error_adapter() -> ScriptedAdapter {
+        Arc::new(|stream| {
+            tokio::spawn(async move {
+                let (mut r, mut w) = tokio::io::split(stream);
+                loop {
+                    let mut len_buf = [0u8; 4];
+                    if r.read_exact(&mut len_buf).await.is_err() {
+                        break;
+                    }
+                    let len = u32::from_be_bytes(len_buf) as usize;
+                    let mut body = vec![0u8; len];
+                    if r.read_exact(&mut body).await.is_err() {
+                        break;
+                    }
+                    let req: Value = match serde_json::from_slice(&body) {
+                        Ok(v) => v,
+                        Err(_) => break,
+                    };
+                    let id = req.get("id").and_then(Value::as_u64).unwrap_or(1);
+                    let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+                    let response: JsonRpcResponse = match method {
+                        "tool/session_open" => JsonRpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id,
+                            result: Some(json!({ "session_id": "sess-weather-err-1" })),
+                            error: None,
+                        },
+                        "tool/session_read" => JsonRpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id,
+                            result: Some(json!({
+                                "step": "error",
+                                "error": StepError {
+                                    code: error_code::RESUME_TOKEN_MISMATCH.to_string(),
+                                    message: "resume token mismatch".to_string(),
+                                    disposition: SessionDisposition::LlmCorrectable,
+                                    hint: Some("send the adapter-provided resume_token".to_string()),
+                                    retry_after_ms: None,
+                                }
+                            })),
+                            error: None,
+                        },
+                        _ => JsonRpcResponse {
+                            jsonrpc: "2.0".to_string(),
+                            id,
+                            result: Some(json!({})),
+                            error: None,
+                        },
+                    };
+
+                    let out = serde_json::to_vec(&response).unwrap();
+                    if w.write_all(&(out.len() as u32).to_be_bytes())
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    if w.write_all(&out).await.is_err() {
+                        break;
+                    }
+                    if w.flush().await.is_err() {
+                        break;
+                    }
+                }
+            })
+        })
+    }
+}
