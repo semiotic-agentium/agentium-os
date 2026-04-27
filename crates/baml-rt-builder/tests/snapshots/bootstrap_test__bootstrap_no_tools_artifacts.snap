@@ -420,7 +420,7 @@ export interface ToolFailure {
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - SearchRead/PageRead need a real @N from a Send for this tool (may be earlier in history). Large @N: SearchRead with grep first, then PageRead for detail — do not dump whole archives with PageRead alone.
+// - SearchRead and PageRead require a real @N from a prior Send for this tool (per step field @description; see conversation_history when a windowed archive lists offset=).
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -492,7 +492,7 @@ class StructuredReply {
 /// Line-filtered archive read (emit op SearchRead).
 class ArchiveSearchReadInput {
   archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.")
-  grep string @description("Required non-empty line filter (substring or regex per host), e.g. deploy or -i deploy. Use SearchRead to locate lines; follow with PageRead when you need contiguous context.")
+  grep string @description("Non-empty line filter (substring or regex per host), e.g. name or -i error. Prefer SearchRead to narrow large or windowed archives before long PageRead scans. For unfiltered contiguous slices, use PageRead, not SearchRead.")
   offset int? @description("0-based offset counting lines that matched grep (after filter). Page with limit: first window offset=0; next offset = previous next_offset while matches remain.")
   limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
 }

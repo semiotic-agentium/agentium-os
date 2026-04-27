@@ -25,7 +25,9 @@ pub mod task_subgraph_store;
 pub(crate) mod wire;
 
 pub use a2a::{A2aMethod, A2aOutcome, A2aRequest};
-pub use a2a_transport::{A2aAgent, A2aAgentBuilder, RegistrationMode};
+pub use a2a_transport::{
+    A2aAgent, A2aAgentBuilder, RegistrationMode, install_provenance_conversation_wiring,
+};
 pub use agent_registry::AgentRegistry;
 pub use baml_rt_core::{A2aJsChatHost, A2aRequestHandler};
 pub use event_dispatcher::EventDispatcher;

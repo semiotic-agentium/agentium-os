@@ -238,7 +238,7 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
             "sess-1".into(),
             &SessionStepOp::SendDone {
                 archive_ref: "@1".into(),
-                header: r#"@1 system/discover_agents "agents" [3 lines, 100B]"#.into(),
+                header: r#"@1 · "agents" · 3L · 100B"#.into(),
                 informed_by: tool_anchor.as_str().to_string(),
             },
         ))

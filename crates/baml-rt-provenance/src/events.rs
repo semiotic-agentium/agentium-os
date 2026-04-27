@@ -539,7 +539,7 @@ pub enum ProvEventData {
         session_id: String,
         /// Graph `op_kind` discriminant (snake_case; includes legacy `read` for old rows).
         op_kind: ToolSessionStepOpKind,
-        /// For SendDone: full display string `"@1 tool 'summary' [N lines, KB]"`.
+        /// For SendDone: full display string `"@1 · \"summary\" · NL · size"`.
         header: Option<String>,
         /// For SendDone / SearchRead / PageRead: canonical archive ref string e.g. `"@1"`.
         archive_ref: Option<String>,

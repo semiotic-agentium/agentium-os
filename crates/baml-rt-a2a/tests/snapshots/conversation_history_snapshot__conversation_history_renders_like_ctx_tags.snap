@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-a2a/tests/conversation_history_snapshot.rs
+assertion_line: 341
 expression: history
 ---
 [
@@ -21,7 +22,7 @@ expression: history
   },
   {
     "role": "tool",
-    "content": "@1 system/discover_agents \"found 2 agents\" [4 lines, 113B]"
+    "content": "@1 · \"found 2 agents\" · 4L · 113B\n"
   },
   {
     "role": "read",

@@ -44,12 +44,13 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceContextMessage>> {
         let ctx_node_id = context_entity_id_string(context_id.as_str());
+        // SurrealDB requires every `ORDER BY` field to appear in the projection.
         let query = format!(
-            "SELECT props, props.a2a_event_order AS event_order FROM {TBL_NODE} \
+            "SELECT node_id, props, props.a2a_event_order AS event_order FROM {TBL_NODE} \
              WHERE node_id IN (\
                SELECT VALUE from_id FROM {TBL_EDGE} \
                WHERE to_id = $ctx_node_id AND rel_type = '{scoped}' AND from_label = 'Message'\
-             ) ORDER BY event_order ASC",
+             ) ORDER BY event_order ASC, node_id ASC",
             scoped = context_scope::SCOPED_TO,
         );
         let mut response = self
@@ -186,7 +187,7 @@ impl SurrealProvenanceStore {
              AND (label != 'ToolCall' OR props.a2a_activity_outcome IN ['Success', 'Failed']) \
              {after_filter_sql} \
              {task_filter_sql} \
-             ORDER BY event_order ASC"
+             ORDER BY event_order ASC, node_id ASC"
         );
 
         let mut q = self.db.query(&main_query);

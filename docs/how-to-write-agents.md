@@ -400,7 +400,17 @@ Intents, step transitions, and effects carry **`citations: string[]`** using **t
 
 The builder centralizes long `@description` text for **`StructuredReply.citations`**, session-plan and Send **citations**, and **`ArchiveSearchReadInput` / `ArchivePageReadInput`** (SearchRead: required **grep** + paging; PageRead: contiguous lines, no grep) in [`crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs`](../crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs); `regen_fixtures` refreshes `_baml_runtime.baml` from that source.
 
+When a tool result is **windowed** in `conversation_history`, the host injects an imperative line (next `offset=`, **SearchRead** / **PageRead**) next to the synthetic `cat -n` block — that is the primary nudge to read more; the static `_baml_runtime` prelude does not repeat read tactics. Policy for partial archives and FSM ordering is also on the session-plan **`step`** field and SearchRead/PageRead step descriptions in `prompt_copy.rs`.
+
 Full rationale vs PUD-style evidence strings: [citable-history-and-checked-citations.md](citable-history-and-checked-citations.md).
+
+#### 6.1.1 Jinja: `conversation_history` rows
+
+BAML does not type-check `ctx.tags` at compile time. Treat each item in `ctx.tags['conversation_history']` as a wire object with at least **`role`** and **`content`**; **message**-sourced rows may add optional **`citations: string[]`** (see [baml-rt-conversation-spec.md](baml-rt-conversation-spec.md)).
+
+- **Authoring default:** copy the multiline Jinja in `BAML_CONVERSATION_HISTORY_JINJA_BLOCK` in [`baml-rt-builder/.../prompt_copy.rs`](../crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs) (loop variable `message`, `{{ _.role(message.role) }}` and `{{ message.content }}` on **separate** lines). Avoid one-line `{{ message.role }}: {{ message.content }}` — it is valid at runtime but discouraged for diffs and consistency.
+- **Optional `citations` in prompts:** if you list them, guard with `{% if message.citations %}` (and iterate or join) so empty/absent `citations` does not break rendering.
+- **Enforcement:** [`scripts/check-baml-conversation-history.sh`](../scripts/check-baml-conversation-history.sh) (pre-commit) flags disallowed property names on the loop value; see [baml-conversation-history-jinja-audit.md](baml-conversation-history-jinja-audit.md) for a repo inventory.
 
 ### 6.2 Worked example: projected history for the reporting agent
 

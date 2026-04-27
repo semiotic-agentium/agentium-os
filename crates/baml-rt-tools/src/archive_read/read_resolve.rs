@@ -111,6 +111,12 @@ mod tests {
             ),
         );
         let r = resolve_archive_for_read(Some(&tables), "ctx-1", ShortRef::new(1), Some(&vt));
-        assert!(r.unwrap().header_line().contains("t/tool"));
+        let resolved = r.expect("resolve");
+        let h = resolved.header_line();
+        assert!(h.starts_with("@1"));
+        assert!(
+            h.contains("summary"),
+            "header should use entry summary: {h}"
+        );
     }
 }

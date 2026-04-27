@@ -395,11 +395,10 @@ impl BamlRuntimeManager {
                             .map(|l| l.original_line_number)
                             .unwrap_or(1);
                         let more = if page.has_more {
+                            let o = page.next_offset;
+                            let n = page.total_matched - page.next_offset;
                             format!(
-                                "\n--- {} more lines (SearchRead @{} offset={} for next page) ---",
-                                page.total_matched - page.next_offset,
-                                archive_ref,
-                                page.next_offset,
+                                "\n--- Not all lines shown — next step: SearchRead (grep) or PageRead {archive_ref} with offset={o} ({n} more lines — use offset={o} for next page) ---",
                             )
                         } else {
                             String::new()
@@ -514,11 +513,10 @@ impl BamlRuntimeManager {
                             .map(|l| l.original_line_number)
                             .unwrap_or(1);
                         let more = if page.has_more {
+                            let o = page.next_offset;
+                            let n = page.total_matched - page.next_offset;
                             format!(
-                                "\n--- {} more lines (PageRead @{} offset={} for next page) ---",
-                                page.total_matched - page.next_offset,
-                                archive_ref,
-                                page.next_offset,
+                                "\n--- Not all lines shown — next step: PageRead {archive_ref} with offset={o} ({n} more lines — use offset={o} for next page) ---",
                             )
                         } else {
                             String::new()

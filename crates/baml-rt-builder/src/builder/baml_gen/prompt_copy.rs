@@ -6,7 +6,8 @@
 //!
 //! - **Voice:** Imperative, second person implied. No hedging for host-enforced behaviour.
 //! - **Strength:** **Must** / **Do not** — schema and namespace rules. **Use** / **Set** — operational
-//!   defaults (e.g. large archive: SearchRead with `grep` + small `limit`, then PageRead for detail). **Optional** — fields
+//!   defaults. Read-tactics for windowed tool output are stated on the FSM step fields and in the
+//!   in-context `offset=` / pagination line in `conversation_history`, not in the static prelude. **Optional** — fields
 //!   the host allows empty (`[]`, omit).
 //! - **Verbs:** **Emit** — one FSM step or session-plan fragment. **Return** — reserved for human
 //!   doc / coordination intro (“return a report”) where it matches BAML wording; step rules use *emit*.
@@ -29,7 +30,7 @@ pub(crate) const CITATIONS_SEND_STEP: &str = "Cite evidence for this Send. Histo
 
 pub(crate) const ARCHIVE_READ_ARCHIVE_REF: &str = "Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.";
 
-pub(crate) const ARCHIVE_SEARCH_READ_GREP: &str = "Required non-empty line filter (substring or regex per host), e.g. deploy or -i deploy. Use SearchRead to locate lines; follow with PageRead when you need contiguous context.";
+pub(crate) const ARCHIVE_SEARCH_READ_GREP: &str = "Non-empty line filter (substring or regex per host), e.g. name or -i error. Prefer SearchRead to narrow large or windowed archives before long PageRead scans. For unfiltered contiguous slices, use PageRead, not SearchRead.";
 
 pub(crate) const ARCHIVE_SEARCH_READ_OFFSET: &str = "0-based offset counting lines that matched grep (after filter). Page with limit: first window offset=0; next offset = previous next_offset while matches remain.";
 
@@ -57,15 +58,15 @@ pub(crate) const BAML_CONVERSATION_HISTORY_JINJA_BLOCK: &str = r#"{% for message
 
 // --- Session plan `step` field guidance ---
 
-pub(crate) const STEP_DESC_CLAUDE_OR_A2A: &str = "Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or SearchRead/PageRead @N when that tool archive already exists; after Send (@N archived) → SearchRead (grep required) to find lines, PageRead (no grep) for contiguous slices, Finish, or Send again.";
+pub(crate) const STEP_DESC_CLAUDE_OR_A2A: &str = "Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or SearchRead/PageRead @N when that tool’s archive already exists; after Send (@N archived) → SearchRead (non-empty grep) to find lines, PageRead for contiguous unfiltered text, re-Send, or Finish. When history shows a partial or windowed @N, emit SearchRead or PageRead (offsets in the host line in conversation) before Finish if the task still needs unread lines.";
 
-pub(crate) const STEP_DESC_DEFAULT: &str = "Emit one FSM step. From history: no session → Open; session open → Send for new work or SearchRead/PageRead @N when the archive exists; after Send (@N archived) → Finish, SearchRead, PageRead, or Send again.";
+pub(crate) const STEP_DESC_DEFAULT: &str = "Emit one FSM step. From history: no session → Open; session open → Send with the tool’s input for new work, or SearchRead/PageRead @N when that tool’s archive already exists; after Send (@N archived) → SearchRead (non-empty grep) to find lines, PageRead for contiguous unfiltered text, re-Send, or Finish. When history shows a partial or windowed @N, emit SearchRead or PageRead (offsets in the host line in conversation) before Finish if the task still needs unread lines.";
 
 /// Field-level hint for `*SearchReadStep` (`ArchiveSearchReadInput`).
-pub(crate) const SEARCH_READ_STEP_INPUT_DESCRIPTION: &str = "archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.";
+pub(crate) const SEARCH_READ_STEP_INPUT_DESCRIPTION: &str = "Required: archive_ref and non-empty grep. If the visible @N in conversation is only a window, emit SearchRead with the same @N, grep, and the offset= value from the host line. Do not use SearchRead for contiguous unfiltered text — use PageRead.";
 
 /// Field-level hint for `*PageReadStep` (`ArchivePageReadInput`).
-pub(crate) const PAGE_READ_STEP_INPUT_DESCRIPTION: &str = "archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.";
+pub(crate) const PAGE_READ_STEP_INPUT_DESCRIPTION: &str = "Required: archive_ref; omit grep. Paging over full rendered lines. Use for contiguous unfiltered text or the next unfiltered window; the host line gives offset= for the next step. For locating sparse lines, use SearchRead with grep first, not long PageRead scans.";
 
 /// Full shared prelude (FSM header, planning types, StructuredReply, archive read inputs).
 pub fn render_generated_tools_prelude() -> String {
@@ -93,7 +94,7 @@ pub fn render_generated_tools_prelude() -> String {
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - SearchRead/PageRead need a real @N from a Send for this tool (may be earlier in history). Large @N: SearchRead with grep first, then PageRead for detail — do not dump whole archives with PageRead alone.
+// - SearchRead and PageRead require a real @N from a prior Send for this tool (per step field @description; see conversation_history when a windowed archive lists offset=).
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types

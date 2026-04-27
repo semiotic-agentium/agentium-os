@@ -20,18 +20,16 @@
 //! Hosts record the surfaced reply from the chat completion path, not a duplicate scraped
 //! from step envelopes.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
-use baml_rt_core::{
-    BamlFunctionId, BamlPromptName, BamlRtError, Result, VariantPhase, context,
-    types::FunctionSignature,
-};
+use baml_rt_core::{BamlFunctionId, BamlPromptName, BamlRtError, Result, VariantPhase, context};
 use baml_rt_tools::{ToolName, ToolSlug};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-use crate::baml::BamlRuntimeManager;
+use crate::baml::{
+    BamlRuntimeManager, append_step_intra_deltas, await_provider_conversation_strict_growth,
+};
 
 /// FSM status extracted from a tool session plan execution result.
 /// Streaming/Suspended/Sent are now invisible to the LLM — Send blocks until Done.
@@ -172,35 +170,6 @@ fn build_session_context(phase: &Phase) -> Value {
     serde_json::to_value(wire).unwrap_or(Value::Null)
 }
 
-/// Narrow surface the step executor needs from a BAML host (test doubles implement this instead of mocking the full manager).
-#[async_trait]
-pub trait StepExecutorRuntime: Send + Sync {
-    async fn invoke_function(
-        &self,
-        scope: &context::RuntimeScope,
-        function_name: &str,
-        args: Value,
-    ) -> Result<Value>;
-
-    fn get_function_signature(&self, name: &str) -> Option<&FunctionSignature>;
-}
-
-#[async_trait]
-impl StepExecutorRuntime for BamlRuntimeManager {
-    async fn invoke_function(
-        &self,
-        scope: &context::RuntimeScope,
-        function_name: &str,
-        args: Value,
-    ) -> Result<Value> {
-        BamlRuntimeManager::invoke_function(self, scope, function_name, args).await
-    }
-
-    fn get_function_signature(&self, name: &str) -> Option<&FunctionSignature> {
-        BamlRuntimeManager::get_function_signature(self, name)
-    }
-}
-
 /// Extract the status string from a tool execution result.
 /// Handles `{ "status": "..." }` and `{ "output": { "status": "..." } }`.
 fn extract_status(result: &Value) -> Option<StepStatus> {
@@ -280,18 +249,31 @@ fn extract_tool_binding(result: &Value) -> Option<ToolBinding> {
 ///
 /// Locks the manager per-hop (not for the entire loop) so other host helpers
 /// (`__execution_session_invoke`, `__baml_invoke`) can interleave. Each hop:
-/// lock -> invoke_function -> unlock -> advance FSM.
-pub async fn run_step_executor_loop<R: StepExecutorRuntime>(
-    manager: &Arc<RwLock<R>>,
+/// lock -> `invoke_function_with_intra` -> unlock -> advance FSM.
+///
+/// The loop holds a local `Vec` of **graph** line values not yet visible from the
+/// provider (when `EffectEvent::LlmCompleted` is still on the bus). Merged with the
+/// provider at each `invoke` only. When `step_intra_supplement_mirror` is
+/// `Some(s)`, `s` is set before each `invoke` to the supplement used for that hop
+/// (tests: share with an interceptor that calls
+/// [`BamlRuntimeManager::merged_conversation_history_lines_json`] with the same slice).
+pub async fn run_step_executor_loop(
+    manager: &Arc<RwLock<BamlRuntimeManager>>,
     scope: &context::RuntimeScope,
     function_name: &str,
     base_args: Value,
     max_steps: usize,
+    step_intra_supplement_mirror: Option<Arc<Mutex<Vec<Value>>>>,
 ) -> Result<StepExecutorResult> {
     let base = BamlPromptName::new(function_name);
     let mut phase = Phase::AwaitingOpen;
     let mut steps: Vec<Value> = Vec::new();
     let mut last = Value::Null;
+    let mut step_intra_supplement: Vec<Value> = Vec::new();
+    // Carries the prior hop's terminal provider snapshot so we do not re-read the graph
+    // at the start of the next hop. A fresh read can race async provenance / projection
+    // and disagree with the previous hop's `p_after`, breaking strict prefix extension.
+    let mut prev_hop_graph_lines: Option<Vec<Value>> = None;
 
     for hop_idx in 0..max_steps {
         if matches!(phase, Phase::Terminal(_)) {
@@ -334,9 +316,24 @@ pub async fn run_step_executor_loop<R: StepExecutorRuntime>(
             "step_executor_loop: starting hop"
         );
 
+        let p_before = if let Some(lines) = prev_hop_graph_lines.take() {
+            lines
+        } else {
+            let guard = manager.read().await;
+            guard.read_provider_conversation_array(scope).await?
+        };
+
+        if let Some(m) = step_intra_supplement_mirror.as_ref() {
+            *m.lock()
+                .expect("step_intra_supplement mirror mutex poisoned") =
+                step_intra_supplement.clone();
+        }
+
         let result = {
             let guard = manager.read().await;
-            guard.invoke_function(scope, &current_function, args).await
+            guard
+                .invoke_function_with_intra(scope, &current_function, args, &step_intra_supplement)
+                .await
         };
 
         match &result {
@@ -345,6 +342,18 @@ pub async fn run_step_executor_loop<R: StepExecutorRuntime>(
         }
 
         let result = result?;
+
+        let p_after =
+            await_provider_conversation_strict_growth(manager, scope, &p_before, &current_function)
+                .await?;
+        append_step_intra_deltas(
+            &mut step_intra_supplement,
+            &p_before,
+            &p_after,
+            &current_function,
+        )?;
+        prev_hop_graph_lines = Some(p_after);
+
         // Capture the last result with meaningful output (Done has output,
         // Finished/Open/Sent are status-only). This ensures `last` contains
         // the tool data, not a bare `{"status":"finished"}`.

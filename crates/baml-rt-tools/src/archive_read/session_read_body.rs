@@ -36,10 +36,15 @@ pub fn format_grep_page_as_session_read_body(
     }
     let range_comment = page.session_range_comment();
     // `str::lines` + `join("\n")` drops a final newline; keep one canonical form for transcript
-    // ToolOutput lines and session_history string content.
-    format!("{cmd}{range_comment}\n{formatted}")
-        .trim_end_matches('\n')
-        .to_string()
+    // ToolOutput lines and session_history string content. Put the synthetic command on its
+    // own line; when a range or paging line exists, it follows on the next line (avoids
+    // `]cat -n@N# lines…` when history rows are concatenated without extra separators).
+    let body = if range_comment.is_empty() {
+        format!("{cmd}\n{formatted}")
+    } else {
+        format!("{cmd}\n{range_comment}\n{formatted}")
+    };
+    body.trim_end_matches('\n').to_string()
 }
 
 /// Paginate rendered archive lines and format as session read body (grep parse + `grep_paginate` +
@@ -119,7 +124,10 @@ pub fn format_session_read_from_vtable(
 
 #[cfg(test)]
 mod tests {
-    use super::{super::rendered::RenderedContent, *};
+    use super::{
+        super::{rendered::RenderedContent, types::PageLimit},
+        *,
+    };
 
     #[test]
     fn session_read_command_line_matches_cat_and_grep() {
@@ -140,5 +148,24 @@ mod tests {
         assert!(s.contains("1\ta: 1"));
         assert!(s.contains("2\tb: 2"));
         assert!(!s.ends_with('\n'));
+    }
+
+    #[test]
+    fn format_grep_page_puts_paging_on_line_after_command() {
+        let lines: Vec<String> = (0..10).map(|i| format!("line {i}")).collect();
+        let rendered = RenderedContent::from_lines(lines);
+        let s = format_session_read_body_from_rendered(&rendered, "@1", None, 0, PageLimit::new(2));
+        let lines: Vec<_> = s.split('\n').collect();
+        assert_eq!(lines[0], "cat -n @1", "synthetic command on its own line");
+        assert!(
+            lines[1].contains("offset=") && lines[1].contains("for next page"),
+            "paging line after command, got: {:?}",
+            lines[1]
+        );
+        assert!(
+            lines[2].ends_with("line 0") && lines[2].contains('\t'),
+            "numbered content after paging, got: {:?}",
+            lines[2]
+        );
     }
 }

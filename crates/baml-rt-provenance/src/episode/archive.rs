@@ -369,7 +369,7 @@ mod tests {
                         tool_name: "system/discover_agents".into(),
                         op: SessionStepOp::SendDone {
                             archive_ref: "@8".into(),
-                            header: "@8 system/discover_agents \"…\" [2 lines, 1B]".into(),
+                            header: "@8 · \"…\" · 2L · 1B".into(),
                             informed_by: "test-anchor".into(),
                         },
                         send_done_replay_payload: Some(json!([
@@ -521,7 +521,7 @@ mod tests {
                         tool_name: "system/discover_agents".into(),
                         op: SessionStepOp::SendDone {
                             archive_ref: "@8".into(),
-                            header: "@8 system/discover_agents \"…\" [2 lines, 1B]".into(),
+                            header: "@8 · \"…\" · 2L · 1B".into(),
                             informed_by: "test-anchor".into(),
                         },
                         send_done_replay_payload: Some(json!([

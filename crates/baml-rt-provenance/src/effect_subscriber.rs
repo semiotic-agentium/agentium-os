@@ -1129,9 +1129,14 @@ impl ProvenanceEffectSubscriber {
             .cloned()
             .filter_map(provenance_item_to_projection_item)
             .collect();
-        // Use the live per-context archive ref table when available so `@N` citations
-        // resolve to their actual tool-result content. Without this, the table is empty
-        // for archive refs and all `@N` citations silently drop from the scored set.
+        // Use the live per-context ref table so `@N` / `#N` in the model's citation
+        // strings match the same ref numbers as the last `conversation_history` build.
+        //
+        // `project_prompt_context` calls `insert_history` for each line; history refs
+        // are idempotent per `(activity_anchor, source)` (see
+        // `baml_rt_tools::archive_refs::RefTable::insert_history`), so this pass does
+        // not advance `#N` for already-seen activities; new rows still allocate the
+        // next index.
         let ref_table: Arc<RefTable> = self
             .archive_ref_tables
             .as_ref()
@@ -1139,10 +1144,8 @@ impl ProvenanceEffectSubscriber {
                 baml_rt_tools::archive_refs::get_ref_table(tables, context_id.as_str())
             })
             .unwrap_or_else(|| Arc::new(RefTable::new()));
-        // Called for the side effect of populating `ref_table` with `#N`/`@N`
-        // slots so that citation resolution below can look up archive content.
-        // The projected history pairs returned here are not needed; only the
-        // table state matters.
+        // Populates `ref_table` with `#N` and (via prior tool completions) archive `@N`
+        // so `ResolvedCitation::resolve` can look up each parsed citation.
         let _history =
             project_prompt_context(projection_items, registry.as_ref(), &ref_table, None);
         // Parse each raw string and keep it paired so we can store it with the result.

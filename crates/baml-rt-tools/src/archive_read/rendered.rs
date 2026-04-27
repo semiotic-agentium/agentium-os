@@ -15,18 +15,22 @@ pub struct RenderedContent {
 }
 
 impl RenderedContent {
-    /// Build from a list of lines. Each line must not contain embedded newlines.
+    /// Build from a list of lines. Iterator items that contain `\\n` are split on line
+    /// breaks (e.g. projected tool rows that still carry a trailing newline on a header).
     pub fn from_lines(lines: impl IntoIterator<Item = String>) -> Self {
         let mut buf = String::new();
         let mut line_ends = Vec::new();
         for line in lines {
-            debug_assert!(
-                !line.contains('\n'),
-                "RenderedContent lines must not contain embedded newlines"
-            );
-            buf.push_str(&line);
-            buf.push('\n');
-            line_ends.push(buf.len());
+            if line.is_empty() {
+                buf.push('\n');
+                line_ends.push(buf.len());
+                continue;
+            }
+            for segment in line.lines() {
+                buf.push_str(segment);
+                buf.push('\n');
+                line_ends.push(buf.len());
+            }
         }
         Self { buf, line_ends }
     }
@@ -112,5 +116,12 @@ mod tests {
     fn byte_count_includes_newlines() {
         let rc = RenderedContent::from_lines(vec!["ab".to_string(), "cd".to_string()]);
         assert_eq!(rc.byte_count(), 6); // "ab\ncd\n"
+    }
+
+    #[test]
+    fn splits_embedded_newlines_in_single_string() {
+        let rc = RenderedContent::from_lines(vec!["a\nb".to_string()]);
+        assert_eq!(rc.line_count(), 2);
+        assert_eq!(rc.lines().collect::<Vec<_>>(), vec!["a", "b"]);
     }
 }

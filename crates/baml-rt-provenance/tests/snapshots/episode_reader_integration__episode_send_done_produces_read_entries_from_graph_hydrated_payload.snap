@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-provenance/tests/episode_reader_integration.rs
+assertion_line: 346
 expression: session_history
 ---
 [
@@ -25,7 +26,7 @@ expression: session_history
   },
   {
     "role": "tool",
-    "content": "4894@1 system/discover_agents \"agents\" [3 lines, 100B]"
+    "content": "4894@1 · \"agents\" · 3L · 100B\n"
   },
   {
     "role": "read",

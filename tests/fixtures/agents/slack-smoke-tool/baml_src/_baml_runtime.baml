@@ -13,7 +13,7 @@
 // CRITICAL FSM RULES:
 // - Open MUST come before Send
 // - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - SearchRead/PageRead need a real @N from a Send for this tool (may be earlier in history). Large @N: SearchRead with grep first, then PageRead for detail — do not dump whole archives with PageRead alone.
+// - SearchRead and PageRead require a real @N from a prior Send for this tool (per step field @description; see conversation_history when a windowed archive lists offset=).
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -85,7 +85,7 @@ class StructuredReply {
 /// Line-filtered archive read (emit op SearchRead).
 class ArchiveSearchReadInput {
   archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.")
-  grep string @description("Required non-empty line filter (substring or regex per host), e.g. deploy or -i deploy. Use SearchRead to locate lines; follow with PageRead when you need contiguous context.")
+  grep string @description("Non-empty line filter (substring or regex per host), e.g. name or -i error. Prefer SearchRead to narrow large or windowed archives before long PageRead scans. For unfiltered contiguous slices, use PageRead, not SearchRead.")
   offset int? @description("0-based offset counting lines that matched grep (after filter). Page with limit: first window offset=0; next offset = previous next_offset while matches remain.")
   limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
 }
@@ -289,12 +289,12 @@ class SupportSlackSendStep {
 
 class SupportSlackSearchReadStep {
   op "SearchRead"
-  input ArchiveSearchReadInput @description("archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.")
+  input ArchiveSearchReadInput @description("Required: archive_ref and non-empty grep. If the visible @N in conversation is only a window, emit SearchRead with the same @N, grep, and the offset= value from the host line. Do not use SearchRead for contiguous unfiltered text — use PageRead.")
 }
 
 class SupportSlackPageReadStep {
   op "PageRead"
-  input ArchivePageReadInput @description("archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.")
+  input ArchivePageReadInput @description("Required: archive_ref; omit grep. Paging over full rendered lines. Use for contiguous unfiltered text or the next unfiltered window; the host line gives offset= for the next step. For locating sparse lines, use SearchRead with grep first, not long PageRead scans.")
 }
 
 class SupportSlackFinishStep {
@@ -308,6 +308,6 @@ class SupportSlackAbortStep {
 type SupportSlackSessionStep = SupportSlackOpenStep | SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep | SupportSlackFinishStep | SupportSlackAbortStep
 
 class SupportSlackSessionPlan {
-  step SupportSlackSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or SearchRead/PageRead @N when the archive exists; after Send (@N archived) → Finish, SearchRead, PageRead, or Send again. Access: read.")
+  step SupportSlackSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send with the tool’s input for new work, or SearchRead/PageRead @N when that tool’s archive already exists; after Send (@N archived) → SearchRead (non-empty grep) to find lines, PageRead for contiguous unfiltered text, re-Send, or Finish. When history shows a partial or windowed @N, emit SearchRead or PageRead (offsets in the host line in conversation) before Finish if the task still needs unread lines. Access: read.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }

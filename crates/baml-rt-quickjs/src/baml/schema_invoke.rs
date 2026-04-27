@@ -109,6 +109,34 @@ impl BamlRuntimeManager {
         function_name: &str,
         args: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        self.log_invoke_baml_start(function_name, &args);
+        // Verify function exists
+        self.require_function_name(function_name)?;
+        let merged_tags = self.build_conversation_context_tags(scope).await?;
+        self.invoke_baml_core(scope, function_name, args, merged_tags)
+            .await
+    }
+
+    /// Step-executor hop: same as [`Self::invoke_function`], with loop-local
+    /// `conversation_intra_supplement` rows merged after the graph provider (only
+    /// when not already in the provider slice, then tail-capped like normal tags).
+    pub async fn invoke_function_with_intra(
+        &self,
+        scope: &context::RuntimeScope,
+        function_name: &str,
+        args: serde_json::Value,
+        conversation_intra_supplement: &[serde_json::Value],
+    ) -> Result<serde_json::Value> {
+        self.log_invoke_baml_start(function_name, &args);
+        self.require_function_name(function_name)?;
+        let merged_tags = self
+            .build_conversation_context_tags_with_intra(scope, conversation_intra_supplement)
+            .await?;
+        self.invoke_baml_core(scope, function_name, args, merged_tags)
+            .await
+    }
+
+    fn log_invoke_baml_start(&self, function_name: &str, args: &serde_json::Value) {
         let correlation_id = current_correlation_id();
         if let Some(correlation_id) = correlation_id.as_ref().map(|id| id.as_str()) {
             tracing::debug!(
@@ -124,14 +152,23 @@ impl BamlRuntimeManager {
                 "Invoking BAML function"
             );
         }
+    }
 
-        // Verify function exists
-        let _signature = self
-            .state
+    fn require_function_name(&self, function_name: &str) -> Result<()> {
+        self.state
             .function_registry
             .get(function_name)
             .ok_or_else(|| BamlRtError::FunctionNotFound(function_name.to_string()))?;
+        Ok(())
+    }
 
+    async fn invoke_baml_core(
+        &self,
+        scope: &context::RuntimeScope,
+        function_name: &str,
+        args: serde_json::Value,
+        merged_tags: Option<HashMap<String, BamlValue>>,
+    ) -> Result<serde_json::Value> {
         // Execute the BAML function using the executor
         let executor = self
             .state
@@ -139,13 +176,11 @@ impl BamlRuntimeManager {
             .as_ref()
             .ok_or_else(|| BamlRtError::BamlRuntime("BAML runtime not loaded".to_string()))?;
 
-        // Pass tool registry and interceptor registry to executor.
-        // Build merged context tags (persisted history + intra-turn buffer) so the LLM
-        // sees prior hops from this turn even when async provenance writes haven't landed.
+        // `conversation_history` in [`BamlRuntimeManager::build_conversation_context_tags`]
+        // (graph) or with supplement via [`Self::invoke_function_with_intra`].
         let interceptor_registry = Some(self.state.interceptor_registry.clone());
         let planning_step = resolve_planning_step(&self.state.execution_sessions, scope);
         let invocation_args = args.clone();
-        let merged_tags = self.build_conversation_context_tags(scope).await?;
         let (result, completion) = executor
             .execute_function(
                 scope,

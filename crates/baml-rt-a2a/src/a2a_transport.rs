@@ -67,6 +67,8 @@ type LiveStreamSpawnPayload = (
     async_channel::Receiver<TurnInput>,
 );
 
+type BoxedArchiveReader = Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>>;
+
 /// Single concrete backing store for SurrealDB mode.
 /// One instance is built from the builder's store Arc and reused as TaskStoreBackend and
 /// ProvenanceWriter; create-stream and tasks.subscribe use this same instance (cardinality one).
@@ -342,26 +344,22 @@ impl ProjectingConversationContextProvider {
             archive_ref_tables,
         }
     }
-}
 
-#[async_trait]
-impl ConversationContextProvider for ProjectingConversationContextProvider {
-    async fn conversation_history_json(
+    async fn project_conversation_to_json(
         &self,
         scope: &context::RuntimeScope,
+        item_limit: Option<usize>,
     ) -> Result<Option<Value>> {
         let context_id = scope.context_id();
         let items = self
             .source
-            .conversation_context(
-                context_id,
-                Some(baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP),
-            )
+            .conversation_context(context_id, item_limit)
             .await?;
         tracing::debug!(
             context_id = %context_id,
             item_count = items.len(),
-            "conversation_history_json: context source returned items"
+            item_limit = ?item_limit,
+            "project_conversation_to_json: context source returned items"
         );
         if items.is_empty() {
             return Ok(None);
@@ -379,36 +377,34 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
         // Closure re-derives cat-n output from the archive deterministically.
         let context_id_str = context_id.as_str().to_string();
         let tables = self.archive_ref_tables.clone();
-        let reader: Option<Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>>> =
-            tables.map(|t| {
-                let ctx = context_id_str.clone();
-                let boxed: Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>> =
-                    Box::new(move |archive_ref_str, grep_str, offset, limit| {
-                        let short_ref =
-                            baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
-                        let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
-                        let entry = ref_table.get(short_ref)?;
-                        let grep = grep_str
-                            .filter(|s| !s.is_empty())
-                            .and_then(|s| baml_rt_tools::archive_read::GrepPattern::parse(s).ok());
-                        let page = baml_rt_tools::archive_read::grep_paginate(
-                            &entry.content,
-                            grep.as_ref(),
-                            baml_rt_tools::archive_read::LineOffset(offset),
-                            baml_rt_tools::archive_read::PageLimit::new(limit),
-                        );
-                        // CLI invocation without $ — role attribution is handled by the
-                        // separate history entry that carries this as content.
-                        Some(
-                            baml_rt_tools::archive_read::format_grep_page_as_session_read_body(
-                                &page,
-                                archive_ref_str,
-                                grep_str,
-                            ),
-                        )
-                    });
-                boxed
-            });
+        let reader: Option<BoxedArchiveReader> = tables.map(|t| {
+            let ctx = context_id_str.clone();
+            let boxed: BoxedArchiveReader =
+                Box::new(move |archive_ref_str, grep_str, offset, limit| {
+                    let short_ref = baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
+                    let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
+                    let entry = ref_table.get(short_ref)?;
+                    let grep = grep_str
+                        .filter(|s| !s.is_empty())
+                        .and_then(|s| baml_rt_tools::archive_read::GrepPattern::parse(s).ok());
+                    let page = baml_rt_tools::archive_read::grep_paginate(
+                        &entry.content,
+                        grep.as_ref(),
+                        baml_rt_tools::archive_read::LineOffset(offset),
+                        baml_rt_tools::archive_read::PageLimit::new(limit),
+                    );
+                    // CLI invocation without $ — role attribution is handled by the
+                    // separate history entry that carries this as content.
+                    Some(
+                        baml_rt_tools::archive_read::format_grep_page_as_session_read_body(
+                            &page,
+                            archive_ref_str,
+                            grep_str,
+                        ),
+                    )
+                });
+            boxed
+        });
 
         // Get or create the ref table for this context so #N refs can be allocated
         // for messages and tool-call descriptions during projection.
@@ -424,6 +420,27 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
             &ref_table_arc,
             reader.as_deref(),
         )))
+    }
+}
+
+#[async_trait]
+impl ConversationContextProvider for ProjectingConversationContextProvider {
+    async fn conversation_history_json(
+        &self,
+        scope: &context::RuntimeScope,
+    ) -> Result<Option<Value>> {
+        self.project_conversation_to_json(
+            scope,
+            Some(baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP),
+        )
+        .await
+    }
+
+    async fn conversation_history_json_for_intra_dedup(
+        &self,
+        scope: &context::RuntimeScope,
+    ) -> Result<Option<Value>> {
+        self.project_conversation_to_json(scope, None).await
     }
 }
 
@@ -543,6 +560,19 @@ async fn wire_provenance_subsystems(
 
     tracing::debug!("wire_provenance_subsystems: all subsystems wired");
     Ok(ProvenanceWired { writer })
+}
+
+/// Wires the same Provenance → effect bus, tool-provenance hook, and graph →
+/// `conversation_history` projection as production [`A2aAgent`]. For tests and
+/// custom hosts: call after [`BamlRuntimeManager::set_effect_emitter`]; state is
+/// re-applied when the executor is created (e.g. after `load_schema`).
+pub async fn install_provenance_conversation_wiring(
+    writer: Arc<dyn ProvenanceWriter>,
+    runtime: &Arc<RwLock<BamlRuntimeManager>>,
+    effect_emitter: &Arc<dyn EffectEmitter>,
+) -> Result<()> {
+    wire_provenance_subsystems(writer, runtime.as_ref(), effect_emitter.as_ref()).await?;
+    Ok(())
 }
 
 /// Top-level agent type that owns runtime, JS bridge, and A2A comms.

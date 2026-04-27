@@ -60,6 +60,14 @@ repos:
             tests/fixtures/agents/.*
           )$
 
+      # BAML: disallowed (message|msg).<prop> in Jinja lines (allowlist: role, content, citations)
+      - id: baml-conversation-history
+        name: baml conversation_history Jinja check
+        entry: bash scripts/check-baml-conversation-history.sh
+        language: system
+        pass_filenames: true
+        files: ^(agents|tests/fixtures/agents)/.+\.baml$
+
   # Typos - spell checker for code
   - repo: https://github.com/crate-ci/typos
     rev: v1.28.1

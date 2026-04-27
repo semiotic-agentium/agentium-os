@@ -35,8 +35,9 @@ function SynthesizeCoordinatorResponse(
 
     {% if ctx.tags['conversation_history'] %}
     Prior conversation (for continuity only, NOT as evidence):
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ msg.role }}: {{ msg.content }}
+    {% for message in ctx.tags['conversation_history'] %}
+    {{ _.role(message.role) }}
+    {{ message.content }}
     {% endfor %}
     {% endif %}
 

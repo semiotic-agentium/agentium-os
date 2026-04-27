@@ -871,7 +871,7 @@ pub enum ToolSessionSendBlockingOutcome {
 #[derive(Debug, Clone)]
 pub struct SendResult {
     pub archive_ref: baml_rt_tools::archive_read::ShortRef,
-    /// Display header: `@1 support/crm "found 5 accounts" [47 lines, 3.2KB]`
+    /// Display header: `@1 · "found 5 accounts" · 47L · 3.2KB`
     pub header: String,
     /// Raw Done output (for drift scoring).
     pub output: serde_json::Value,

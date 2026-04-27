@@ -6,8 +6,9 @@
 //! - `Message`     → `{HistoryRef} {text}` (e.g. `#1 …`) via [`RefTable::insert_history`], plus
 //!   optional `citations: string[]` in the tag JSON when the row is message-sourced and refs are non-empty
 //! - `ToolCall`    → `{HistoryRef} {describe_invocation_with_hint(...)}`
-//! - `ToolResult`  → archive_read render of result value (first `DEFAULT_TOOL_RESULT_INLINE_LINES` lines)
-//! - `ToolError`   → archive_read render of error value
+//! - `ToolResult`  → archive_read render of result value (first `DEFAULT_TOOL_RESULT_INLINE_LINES` lines);
+//!   top-level and nested `citations: []` are stripped before render (no vacuous lines in history)
+//! - `ToolError`   → archive_read render of error value (same `citations` strip as tool results)
 //! - `SessionStep` → same rendering as above; items use role **`tool`** in `conversation_history`
 //!   (not `assistant`). `Open` / `SendDone` (header ± archive body) / `Read` as the **grep(1)/cat(1)
 //!   analogue**: `SearchRead` → `grep -n 'pat' @N`; `PageRead` → `cat -n @N`; with an [`ArchiveReader`], a
@@ -17,7 +18,7 @@
 
 use std::{borrow::Cow, fmt};
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::{
     archive_read::{
@@ -33,7 +34,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum SessionStepProjection {
     Open,
-    /// `header` is the full display: `"@1 tool_name 'summary' [N lines, KB]"`.
+    /// `header` is the full display: `"@1 · \"summary\" · NL · size"` (see [`ArchiveEntry::display_header`](crate::archive_refs::ArchiveEntry::display_header)).
     SendDone {
         archive_ref: String,
         header: String,
@@ -191,6 +192,25 @@ pub fn episode_session_history_projection_options() -> ProjectionRenderOptions {
     }
 }
 
+/// Recursively remove `citations` when it is an empty array so `conversation_history` does not
+/// show vacuous `citations: []` in tool-call args or tool results (e.g. planning emit payloads).
+fn strip_vacuous_citation_fields(value: &Value) -> Value {
+    match value {
+        Value::Object(m) => {
+            let mut out = Map::new();
+            for (k, v) in m {
+                if k == "citations" && v.as_array().is_some_and(|a| a.is_empty()) {
+                    continue;
+                }
+                out.insert(k.clone(), strip_vacuous_citation_fields(v));
+            }
+            Value::Object(out)
+        }
+        Value::Array(a) => Value::Array(a.iter().map(strip_vacuous_citation_fields).collect()),
+        _ => value.clone(),
+    }
+}
+
 #[must_use]
 fn projected_history_row_to_json(row: &ProjectedHistoryRow) -> Value {
     match &row.message_citations {
@@ -224,18 +244,27 @@ pub fn project_projection_item_to_rows(
             content,
             message_citations,
         }],
-        RenderedEntry::Two(first, second) => vec![
-            ProjectedHistoryRow {
-                role: role_main.clone(),
-                content: first,
-                message_citations: None,
-            },
-            ProjectedHistoryRow {
-                role: ProjectedLineRole::read_line(),
-                content: second,
-                message_citations: None,
-            },
-        ],
+        RenderedEntry::Two(first, second) => {
+            // Ensure a boundary between the SendDone header and the read body when consumers
+            // join adjacent `content` fields without adding their own newlines.
+            let first = if first.ends_with('\n') {
+                first
+            } else {
+                format!("{}\n", first)
+            };
+            vec![
+                ProjectedHistoryRow {
+                    role: role_main.clone(),
+                    content: first,
+                    message_citations: None,
+                },
+                ProjectedHistoryRow {
+                    role: ProjectedLineRole::read_line(),
+                    content: second,
+                    message_citations: None,
+                },
+            ]
+        }
     }
 }
 
@@ -284,7 +313,8 @@ fn tool_value_to_rendered_entry(
     is_error: bool,
     page_limit: PageLimit,
 ) -> RenderedEntry {
-    let rendered = crate::archive_read::render_to_lines(value);
+    let sanitized = strip_vacuous_citation_fields(value);
+    let rendered = crate::archive_read::render_to_lines(&sanitized);
     let page = crate::archive_read::grep_paginate(
         &rendered,
         None,
@@ -341,9 +371,10 @@ fn render_projection_content(
         }
 
         PromptProjectionContent::ToolCall { tool_name, args } => {
-            let mut desc = registry.describe_invocation_with_hint(Some(tool_name.as_str()), args);
+            let args = strip_vacuous_citation_fields(args);
+            let mut desc = registry.describe_invocation_with_hint(Some(tool_name.as_str()), &args);
             if desc.trim().is_empty() && opts.tool_call_fallback_json {
-                desc = serde_json::to_string_pretty(args).unwrap_or_else(|_| args.to_string());
+                desc = serde_json::to_string_pretty(&args).unwrap_or_else(|_| args.to_string());
             }
             if desc.trim().is_empty() {
                 return RenderedEntry::Filtered;
@@ -542,6 +573,53 @@ mod tests {
         );
     }
 
+    /// Spec: one graph row → one `conversation_history` line. (Duplicate user text in the
+    /// host-facing API means duplicate `ProvenanceConversationContextItem` messages or a
+    /// transport bug — the projector will not merge them.)
+    #[test]
+    fn three_message_activities_with_same_text_yield_three_distinct_ref_lines() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let same = "hi mate";
+        let items: Vec<PromptProjectionItem> = (1..=3)
+            .map(|i| PromptProjectionItem {
+                timestamp_ms: i,
+                activity_anchor: format!("evt-dup-{i}"),
+                role: "user".to_string(),
+                content: PromptProjectionContent::Message {
+                    text: same.to_string(),
+                    citations: vec![],
+                },
+            })
+            .collect();
+        let history = project_prompt_context(items, &registry, &ref_table, None);
+        let arr = history.as_array().expect("array");
+        assert_eq!(arr.len(), 3, "one row per graph message activity");
+        assert_eq!(arr[0]["content"].as_str(), Some("#1 hi mate"));
+        assert_eq!(arr[1]["content"].as_str(), Some("#2 hi mate"));
+        assert_eq!(arr[2]["content"].as_str(), Some("#3 hi mate"));
+    }
+
+    /// Stable refs: re-running projection on the same items must not churn `#N` (citation-drift
+    /// path must match `conversation_history` byte-for-byte for unchanged graph rows).
+    #[test]
+    fn repeat_projection_byte_identical_when_graph_unchanged() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![PromptProjectionItem {
+            timestamp_ms: 0,
+            activity_anchor: "evt-stable".to_string(),
+            role: "user".to_string(),
+            content: PromptProjectionContent::Message {
+                text: "hello again".to_string(),
+                citations: vec![],
+            },
+        }];
+        let h1 = project_prompt_context(items.clone(), &registry, &ref_table, None);
+        let h2 = project_prompt_context(items, &registry, &ref_table, None);
+        assert_eq!(h1, h2, "reprojection should reuse the same #N and content");
+    }
+
     #[test]
     fn message_with_citations_includes_them_in_json() {
         let registry = ToolRegistry::new();
@@ -561,6 +639,28 @@ mod tests {
     }
 
     #[test]
+    fn tool_result_strips_empty_citations_from_yaml_block() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![PromptProjectionItem {
+            timestamp_ms: 0,
+            activity_anchor: "evt-tr".to_string(),
+            role: "tool".to_string(),
+            content: PromptProjectionContent::ToolResult {
+                tool_name: "a2a/execution_session_step".to_string(),
+                result: json!({ "citations": [], "status": "ok" }),
+            },
+        }];
+        let history = project_prompt_context(items, &registry, &ref_table, None);
+        let arr = history.as_array().expect("array");
+        let content = arr[0]["content"].as_str().expect("content");
+        assert!(
+            !content.to_lowercase().contains("citations"),
+            "vacuous citations key should not appear: {content}"
+        );
+    }
+
+    #[test]
     fn repeated_send_done_for_same_archive_ref_inlines_each_time() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
@@ -573,8 +673,7 @@ mod tests {
                     "clickup/get_tasks",
                     SessionStepProjection::SendDone {
                         archive_ref: "@15".to_string(),
-                        header: "@15 clickup/get_tasks 'found tasks' [209 lines, 6.3KB]"
-                            .to_string(),
+                        header: "@15 · \"found tasks\" · 209L · 6.3KB".to_string(),
                     },
                 ),
             },
@@ -586,8 +685,7 @@ mod tests {
                     "clickup/get_tasks",
                     SessionStepProjection::SendDone {
                         archive_ref: "@15".to_string(),
-                        header: "@15 clickup/get_tasks 'found tasks' [209 lines, 6.3KB]"
-                            .to_string(),
+                        header: "@15 · \"found tasks\" · 209L · 6.3KB".to_string(),
                     },
                 ),
             },
@@ -599,8 +697,7 @@ mod tests {
                     "clickup/get_tasks",
                     SessionStepProjection::SendDone {
                         archive_ref: "@15".to_string(),
-                        header: "@15 clickup/get_tasks 'found tasks' [209 lines, 6.3KB]"
-                            .to_string(),
+                        header: "@15 · \"found tasks\" · 209L · 6.3KB".to_string(),
                     },
                 ),
             },
@@ -696,8 +793,7 @@ mod tests {
                     "clickup/get_tasks",
                     SessionStepProjection::SendDone {
                         archive_ref: "@15".to_string(),
-                        header: "@15 clickup/get_tasks 'found tasks' [209 lines, 6.3KB]"
-                            .to_string(),
+                        header: "@15 · \"found tasks\" · 209L · 6.3KB".to_string(),
                     },
                 ),
             },

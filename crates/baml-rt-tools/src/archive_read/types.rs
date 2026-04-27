@@ -252,8 +252,9 @@ pub struct GrepPage {
 }
 
 impl GrepPage {
-    /// Comment placed after the synthetic `cat -n` / `grep -n` command line and before numbered
-    /// lines — same text as in [`super::session_read_body::format_grep_page_as_session_read_body`].
+    /// Host instruction on the line after the synthetic `cat -n` / `grep -n` command, before
+    /// numbered lines. When `has_more`, this names **SearchRead** / **PageRead** and the next
+    /// `offset=` (same text as in [`super::session_read_body::format_grep_page_as_session_read_body`]).
     #[must_use]
     pub fn session_range_comment(&self) -> String {
         if self.lines.is_empty() {
@@ -270,11 +271,13 @@ impl GrepPage {
             .map(|l| l.original_line_number)
             .unwrap_or(1);
         if self.has_more {
+            let remaining = self.total_matched.saturating_sub(self.next_offset);
+            let off = self.next_offset;
             format!(
-                "  # lines {first}-{last} of {} ({} more — offset={} for next page)",
-                self.total_matched,
-                self.total_matched.saturating_sub(self.next_offset),
-                self.next_offset,
+                "  # More lines are not shown below — emit SearchRead (non-empty grep) to narrow, or PageRead to continue with offset={off} on this @N. Window: lines {first}-{last} of {total} ({rem} more — offset={off} for next page)",
+                total = self.total_matched,
+                rem = remaining,
+                off = off,
             )
         } else if first == 1 && last == self.total_matched {
             String::new()
@@ -351,6 +354,8 @@ mod tests {
         let c = page.session_range_comment();
         assert!(c.contains("offset=40"), "{c}");
         assert!(c.contains("60 more"), "{c}");
+        assert!(c.contains("SearchRead"), "{c}");
+        assert!(c.contains("PageRead"), "{c}");
     }
 
     #[test]

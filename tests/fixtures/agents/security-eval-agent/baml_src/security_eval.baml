@@ -62,8 +62,9 @@ function ExecuteStep(
     Current step: {{ step_description }}
 
     {% if ctx.tags['conversation_history'] %}
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ msg.role }}: {{ msg.content }}
+    {% for message in ctx.tags['conversation_history'] %}
+    {{ _.role(message.role) }}
+    {{ message.content }}
     {% endfor %}
     {% endif %}
 
@@ -93,8 +94,10 @@ function PresentReportingToUser(
     Plan objective: {{ objective }}
 
     {% if ctx.tags['conversation_history'] %}
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ loop.index }}. {{ msg.role }}: {{ msg.content }}
+    {% for message in ctx.tags['conversation_history'] %}
+    {{ loop.index }}.
+    {{ _.role(message.role) }}
+    {{ message.content }}
     {% endfor %}
     {% endif %}
 
