@@ -36,9 +36,11 @@
 //! read them back. This is cheap and avoids adding a new sidecar protocol.
 
 #[cfg(feature = "sandbox-provider")]
-use std::sync::Arc;
-#[cfg(feature = "sandbox-provider")]
-use std::time::{Duration, SystemTime};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, Result};
@@ -58,6 +60,8 @@ use super::{
     exec_adapter::exec_handle_into_channel,
     spec::{PullPolicy, SandboxImageSource, SecretBindingMode},
 };
+#[cfg(feature = "sandbox-provider")]
+use crate::external_tools::{read_sidecar_bundle, verify_runtime_digest};
 
 /// Env-var names used to stash reattach metadata inside the guest. Chosen
 /// under the `BAML_` prefix so they don't collide with tool-author vars.
@@ -67,6 +71,8 @@ const STASH_RUNTIME_DIGEST: &str = "BAML_RUNTIME_DIGEST";
 const STASH_POLICY_HASH: &str = "BAML_POLICY_HASH";
 #[cfg(feature = "sandbox-provider")]
 const STASH_MAX_DURATION_SECS: &str = "BAML_MAX_DURATION_SECS";
+#[cfg(feature = "sandbox-provider")]
+const SIDECAR_BUNDLE_PATH: &str = "etc/agentium/tool-bundle.json";
 
 /// How long to wait for `stop_and_wait` before falling back to `kill`.
 #[cfg(feature = "sandbox-provider")]
@@ -79,6 +85,42 @@ pub struct MicrosandboxProvider {
     live: Arc<DashMap<String, microsandbox::Sandbox>>,
     #[cfg(not(feature = "sandbox-provider"))]
     _unused: std::marker::PhantomData<()>,
+}
+
+/// Verify that the bind rootfs sidecar bundle at
+/// `/etc/agentium/tool-bundle.json` advertises the same `runtime_digest`
+/// the host metadata carries.
+///
+/// ## What this catches
+/// Staleness: rootfs was materialized against older metadata and never
+/// re-synced with `sandbox-bind-sync`. This is the common failure mode
+/// (developer edits metadata, forgets to re-sync) and gives a clear error
+/// instead of a downstream tool/invoke timeout.
+///
+/// ## What this does NOT catch
+/// Tampering. The sidecar itself embeds the expected digest value, so an
+/// attacker who can rewrite rootfs contents can also rewrite the digest
+/// field to match whatever they want. The trust anchor is `expected_digest`
+/// — which comes from **host-side tool metadata**, not from the sidecar —
+/// so this check is only as strong as the host metadata's integrity.
+/// For tamper-resistance, sign the metadata or ship a signed sidecar.
+#[cfg(feature = "sandbox-provider")]
+fn verify_bind_sidecar_runtime_digest(
+    bind_root: &Path,
+    expected_digest: Option<&str>,
+) -> Result<()> {
+    let Some(expected) = expected_digest else {
+        return Ok(());
+    };
+
+    let sidecar = bind_root.join(SIDECAR_BUNDLE_PATH);
+    let bundle = read_sidecar_bundle(&sidecar)?;
+    verify_runtime_digest(&bundle, expected).map_err(|e| {
+        BamlRtError::InvalidArgument(format!(
+            "bind sidecar runtime_digest mismatch at {}: {e}",
+            sidecar.display()
+        ))
+    })
 }
 
 impl MicrosandboxProvider {
@@ -160,6 +202,7 @@ impl SandboxProvider for MicrosandboxProvider {
                 builder.image(image.as_str())
             }
             SandboxImageSource::Bind(path) => {
+                verify_bind_sidecar_runtime_digest(path, runtime_digest.as_deref())?;
                 info!(sandbox = %name, image_source = "bind", bind_path = %path.display(), "creating sandbox with bind rootfs");
                 builder.image(path.clone())
             }

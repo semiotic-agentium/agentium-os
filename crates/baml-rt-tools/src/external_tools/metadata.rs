@@ -265,17 +265,19 @@ pub(crate) fn build_tool_metadata(
     })
 }
 
-/// Canonical SHA-256 of the input+output schemas. Both runner and tool author
-/// must compute this identically for describe-mismatch detection to work.
-pub(crate) fn metadata_schema_hash(meta: &ExternalToolMetadata) -> String {
+/// RFC 8785 (JCS) canonical SHA-256 of the input+output schemas.
+///
+/// Both runner and tool author must compute this identically for
+/// describe-mismatch detection to work.
+pub(crate) fn metadata_schema_digest(meta: &ExternalToolMetadata) -> String {
     let payload = serde_json::json!({
-        "input": sort_json_keys(&meta.schemas.input),
-        "output": sort_json_keys(&meta.schemas.output),
+        "input": &meta.schemas.input,
+        "output": &meta.schemas.output,
     });
-    let canonical = serde_json::to_string(&payload)
+    let canonical = serde_jcs::to_vec(&payload)
         .expect("serializing canonical tool schema payload should not fail");
     let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
+    hasher.update(&canonical);
     format!("sha256:{:x}", hasher.finalize())
 }
 
@@ -455,6 +457,7 @@ mod tests {
             Some(ToolRuntime::Sandbox(SandboxRuntimeSpec {
                 image: SandboxImageRef::Oci { r#ref },
                 entrypoint,
+                ..
             })) => {
                 assert!(r#ref.starts_with("ghcr.io/"));
                 assert_eq!(entrypoint, vec!["/app/tool-adapter".to_string()]);
@@ -466,6 +469,33 @@ mod tests {
             parsed.runtime_digest.as_deref(),
             Some("sha256:2222222222222222222222222222222222222222222222222222222222222222")
         );
+    }
+
+    #[test]
+    fn build_tool_metadata_pascal_cases_hyphen_and_underscore_components() {
+        let raw = serde_json::json!({
+            "tool_abi_version": "1",
+            "name": "internal-dev/meteo_tool",
+            "description": "meteo tool",
+            "bundle": "internal-dev",
+            "local_name": "meteo_tool",
+            "access_level": "read",
+            "invocation_mode": "single_shot",
+            "schemas": {
+                "input": {"type": "object"},
+                "output": {"type": "object"}
+            },
+            "secrets": [],
+            "capabilities": {}
+        });
+
+        let meta: ExternalToolMetadata = serde_json::from_value(raw).expect("metadata parses");
+        let tool_name = ToolName::parse("internal-dev/meteo_tool").expect("valid tool name");
+        let built = build_tool_metadata(&meta, &tool_name).expect("metadata builds");
+
+        assert_eq!(built.class_name, "InternalDevMeteoTool");
+        assert_eq!(built.input_type.name, "InternalDevMeteoToolInput");
+        assert_eq!(built.output_type.name, "InternalDevMeteoToolOutput");
     }
 
     #[test]
@@ -599,6 +629,29 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn schema_digest_matches_conformance_fixture() {
+        let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/sandbox-conformance/meteo-tool");
+        let metadata_path = fixture_dir.join("tool-metadata.json");
+        let expected_path = fixture_dir.join("expected-digests.json");
+
+        let metadata_raw = fs::read_to_string(&metadata_path).expect("read fixture metadata");
+        let metadata: ExternalToolMetadata =
+            serde_json::from_str(&metadata_raw).expect("parse fixture metadata");
+
+        let expected_raw = fs::read_to_string(&expected_path).expect("read expected digest");
+        let expected: serde_json::Value =
+            serde_json::from_str(&expected_raw).expect("parse expected digest json");
+        let expected_digest = expected
+            .get("schema_content_digest")
+            .and_then(|v| v.as_str())
+            .expect("schema_content_digest string");
+
+        let got = metadata_schema_digest(&metadata);
+        assert_eq!(got, expected_digest);
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {

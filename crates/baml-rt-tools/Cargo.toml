@@ -13,6 +13,7 @@ baml-derive-core = { path = "../baml-derive-core" }
 baml-derive = { path = "../baml-derive" }
 baml-tool-derive = { path = "../baml-tool-derive" }
 serde_json = { workspace = true }
+serde_jcs = { workspace = true }
 serde = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }

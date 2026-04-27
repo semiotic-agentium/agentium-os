@@ -157,6 +157,19 @@ impl Language {
             Self::Typescript => lang::typescript::generate(ctx),
         }
     }
+
+    /// Default `(command, workdir)` pair the adapter should invoke for
+    /// `tool/invoke` in a sandbox. Single source of truth for scaffold-time
+    /// `runtime.adapter` defaults and for the adapter shim's baked-in
+    /// `FALLBACK_RUNTIME` — keeping them aligned avoids silent drift.
+    pub fn default_adapter_command(self) -> (&'static [&'static str], &'static str) {
+        match self {
+            Self::Python => (&["python3", "/opt/tool/main.py"], "/opt/tool"),
+            Self::Bash => (&["/opt/tool/tool-server"], "/opt/tool"),
+            Self::Rust => (&["/opt/tool/external-tool"], "/opt/tool"),
+            Self::Typescript => (&["node", "/opt/tool/dist/main.js"], "/opt/tool"),
+        }
+    }
 }
 
 /// Inputs passed to every language scaffold so signatures stay uniform.

@@ -78,6 +78,10 @@ fn collect_entries(root: &Path, dir: &Path, out: &mut Vec<(String, EntryKind)>) 
             .to_string_lossy()
             .replace('\\', "/");
 
+        if should_exclude_from_bind_digest(&rel) {
+            continue;
+        }
+
         let metadata = fs::symlink_metadata(&path).map_err(BamlRtError::Io)?;
         let mode = mode_bits(&metadata);
         if metadata.is_dir() {
@@ -91,6 +95,10 @@ fn collect_entries(root: &Path, dir: &Path, out: &mut Vec<(String, EntryKind)>) 
         }
     }
     Ok(())
+}
+
+fn should_exclude_from_bind_digest(rel: &str) -> bool {
+    rel == "etc/agentium" || rel.starts_with("etc/agentium/")
 }
 
 #[cfg(unix)]

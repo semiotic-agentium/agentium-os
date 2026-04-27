@@ -48,6 +48,26 @@ pub fn run(path: &str) -> Result<()> {
 
     let typed = read_external_metadata(tool_dir)?;
     if let Some(ToolRuntime::Sandbox(runtime)) = &typed.runtime {
+        let adapter = runtime.adapter.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "sandbox runtime requires runtime.adapter with command/protocol (tool: {})",
+                typed.name
+            )
+        })?;
+        if adapter.command.is_empty() {
+            bail!(
+                "sandbox runtime.adapter.command must contain at least one argv token (tool: {})",
+                typed.name
+            );
+        }
+        if adapter.protocol != "jsonrpc-stdio" {
+            bail!(
+                "sandbox runtime.adapter.protocol must be 'jsonrpc-stdio' (tool: {}, got: {})",
+                typed.name,
+                adapter.protocol
+            );
+        }
+
         let runtime_digest = typed.runtime_digest.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
                 "sandbox runtime requires runtime_digest in tool-metadata.json (tool: {})",

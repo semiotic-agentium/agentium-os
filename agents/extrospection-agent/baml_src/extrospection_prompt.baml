@@ -74,7 +74,7 @@ function DetermineExtrospectionIntent(user_message: string) -> NeedClarification
 // FSM phase instructions are injected by codegen — this prompt carries goal context only.
 function GetDiscoverAgentsPlan(
   user_message: string,
-) -> SystemDiscover_agentsSessionPlan {
+) -> SystemDiscoverAgentsSessionPlan {
   client DefaultClient
   prompt #"
     Discover available agents relevant to the user's request.

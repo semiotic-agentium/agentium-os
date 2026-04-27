@@ -11,7 +11,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use baml_rt_tools::external_tools::sandbox_runtime_digest_for_bind;
+use baml_rt_tools::external_tools::{
+    SIDECAR_BUNDLE_REL_PATH, read_external_metadata, read_sidecar_bundle, render_sidecar_bundle,
+    sandbox_runtime_digest_for_bind, verify_runtime_digest,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -99,6 +102,8 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
 
     if !dry_run {
         patch_metadata(&metadata_path, &canonical_rootfs, &digest)?;
+        write_runtime_sidecars(&metadata_path, &canonical_rootfs, &digest)?;
+        verify_runtime_sidecar_digest(&canonical_rootfs, &digest)?;
     }
 
     if check {
@@ -279,6 +284,42 @@ fn patch_metadata(metadata_path: &Path, bind_path: &Path, digest: &str) -> Resul
     Ok(())
 }
 
+fn write_runtime_sidecars(metadata_path: &Path, rootfs: &Path, runtime_digest: &str) -> Result<()> {
+    let tool_dir = metadata_path
+        .parent()
+        .ok_or_else(|| anyhow!("metadata path has no parent: {}", metadata_path.display()))?;
+    let metadata = read_external_metadata(tool_dir)?;
+    let bundle = render_sidecar_bundle(&metadata, runtime_digest)
+        .map_err(|e| anyhow!("failed to render sidecar bundle: {e}"))?;
+
+    let bundle_path = rootfs.join(SIDECAR_BUNDLE_REL_PATH);
+    if let Some(parent) = bundle_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    fs::write(&bundle_path, serde_json::to_string_pretty(&bundle)? + "\n")
+        .with_context(|| format!("failed to write {}", bundle_path.display()))?;
+
+    Ok(())
+}
+
+fn verify_runtime_sidecar_digest(rootfs: &Path, expected_digest: &str) -> Result<()> {
+    let bundle_path = rootfs.join(SIDECAR_BUNDLE_REL_PATH);
+    let bundle = read_sidecar_bundle(&bundle_path).map_err(|e| {
+        anyhow!(
+            "failed to read sidecar bundle {}: {e}",
+            bundle_path.display()
+        )
+    })?;
+    verify_runtime_digest(&bundle, expected_digest).map_err(|e| {
+        anyhow!(
+            "runtime sidecar digest mismatch in {}: {e}",
+            bundle_path.display()
+        )
+    })
+}
+
 fn run_command(cmd: &mut Command, label: &str) -> Result<()> {
     let output = cmd
         .output()
@@ -368,6 +409,140 @@ mod tests {
             parsed.get("runtime_digest").and_then(Value::as_str),
             Some(digest)
         );
+    }
+
+    #[test]
+    #[ignore = "sandbox-lane-only"]
+    fn write_runtime_sidecars_materializes_expected_files() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let tool_dir = tmp.path().join("tool");
+        std::fs::create_dir_all(&tool_dir).expect("tool dir");
+        let metadata_path = tool_dir.join("tool-metadata.json");
+        std::fs::write(
+            &metadata_path,
+            r#"{
+  "tool_abi_version": "1",
+  "name": "dev/meteo-tool",
+  "description": "",
+  "bundle": "dev",
+  "local_name": "meteo-tool",
+  "access_level": "read",
+  "tags": [],
+  "invocation_mode": "single_shot",
+  "session_policy": "strict",
+  "schemas": {"input": {"type":"object"}, "output": {"type":"object"}},
+  "secrets": [],
+  "capabilities": {},
+  "runtime": {
+    "kind": "sandbox",
+    "image": {"kind":"bind","path":"./rootfs"},
+    "entrypoint": ["/tool-adapter"],
+    "adapter": {
+      "schema_version": 1,
+      "protocol": "jsonrpc-stdio",
+      "command": ["python3", "/opt/tool/main.py"],
+      "workdir": "/opt/tool"
+    }
+  },
+  "runtime_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+}
+"#,
+        )
+        .expect("write metadata");
+
+        let rootfs = tmp.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).expect("rootfs");
+
+        let digest = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+        write_runtime_sidecars(&metadata_path, &rootfs, digest).expect("write sidecars");
+
+        let bundle_path = rootfs.join(SIDECAR_BUNDLE_REL_PATH);
+        assert!(bundle_path.exists(), "sidecar bundle must exist");
+
+        let bundle_json: Value =
+            serde_json::from_str(&std::fs::read_to_string(&bundle_path).expect("read bundle"))
+                .expect("parse bundle");
+
+        let runtime_json = bundle_json.get("runtime").expect("runtime section");
+        assert_eq!(
+            runtime_json.get("tool_id").and_then(Value::as_str),
+            Some("dev/meteo-tool")
+        );
+        assert_eq!(
+            runtime_json.get("runtime_digest").and_then(Value::as_str),
+            Some(digest)
+        );
+        assert_eq!(
+            runtime_json.get("protocol").and_then(Value::as_str),
+            Some("jsonrpc-stdio")
+        );
+        assert_eq!(
+            runtime_json.get("schema_version").and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            runtime_json.get("workdir").and_then(Value::as_str),
+            Some("/opt/tool")
+        );
+        let cmd = runtime_json
+            .get("command")
+            .and_then(Value::as_array)
+            .expect("command array");
+        assert_eq!(
+            cmd.iter().filter_map(Value::as_str).collect::<Vec<_>>(),
+            vec!["python3", "/opt/tool/main.py"]
+        );
+
+        let manifest_json = bundle_json.get("manifest").expect("manifest section");
+        assert_eq!(
+            manifest_json.get("tool_name").and_then(Value::as_str),
+            Some("dev/meteo-tool")
+        );
+        let methods = manifest_json
+            .get("supported_methods")
+            .and_then(Value::as_array)
+            .expect("methods");
+        let method_strs: Vec<&str> = methods.iter().filter_map(Value::as_str).collect();
+        assert!(method_strs.contains(&"tool/describe"));
+        assert!(method_strs.contains(&"tool/schema"));
+        assert!(method_strs.contains(&"tool/invoke"));
+
+        let schema_json = bundle_json.get("schema").expect("schema section");
+        assert_eq!(
+            schema_json.get("tool_name").and_then(Value::as_str),
+            Some("dev/meteo-tool")
+        );
+        assert_eq!(
+            schema_json.get("content_type").and_then(Value::as_str),
+            Some("application/schema+json")
+        );
+        assert!(
+            schema_json
+                .get("content_digest")
+                .and_then(Value::as_str)
+                .is_some(),
+            "schema.content_digest must exist"
+        );
+
+        verify_runtime_sidecar_digest(&rootfs, digest).expect("digest verify");
+    }
+
+    #[test]
+    fn verify_runtime_sidecar_digest_detects_mismatch() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let rootfs = tmp.path();
+        let dir = rootfs.join("etc/agentium");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(
+            dir.join("tool-bundle.json"),
+            r#"{"runtime":{"schema_version":1,"tool_id":"dev/meteo-tool","runtime_digest":"sha256:aaaa","command":["python3","/opt/tool/main.py"],"protocol":"jsonrpc-stdio"},"manifest":{"tool_name":"dev/meteo-tool","protocol_version":"2","supported_methods":["tool/describe","tool/schema","tool/invoke"]},"schema":{"schema_version":1,"tool_name":"dev/meteo-tool","content_type":"application/schema+json","content_digest":"sha256:cccc","input":{"type":"object"},"output":{"type":"object"}}}"#,
+        )
+        .expect("sidecar");
+
+        let err =
+            verify_runtime_sidecar_digest(rootfs, "sha256:bbbb").expect_err("expected mismatch");
+        let msg = err.to_string();
+        assert!(msg.contains("digest mismatch"), "got: {msg}");
     }
 
     #[test]

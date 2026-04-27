@@ -190,8 +190,9 @@ This avoids stale installed-plugin mismatches.
 
 ### Preferred bind sync command
 
-Use `sandbox-bind-sync` to refresh bind path + digest and optionally validate metadata.
-Relative `--rootfs` and `--dockerfile` paths resolve against `--tool-dir`:
+Use `sandbox-bind-sync` to refresh bind path + digest, generate adapter sidecar bundle
+(`/etc/agentium/tool-bundle.json`), and optionally validate metadata. Relative
+`--rootfs` and `--dockerfile` paths resolve against `--tool-dir`:
 
 ```bash
 cargo agent-platform sandbox-bind-sync \
@@ -211,6 +212,20 @@ cargo agent-platform sandbox-bind-sync \
   --force \
   --check
 ```
+
+### OCI sidecar preparation (no registry pull)
+
+Use `sandbox-oci-prepare` when metadata already points at an OCI image and you
+want to materialize the adapter sidecar bundle next to your tool sources:
+
+```bash
+cargo agent-platform sandbox-oci-prepare \
+  --tool-dir ./examples/external-tools/my_tool \
+  --check
+```
+
+This validates OCI metadata/digest consistency and writes the default output at:
+`adapter/sidecars/etc/agentium/tool-bundle.json`.
 
 ### When to run `sandbox-digest`
 
@@ -262,6 +277,23 @@ Current network default (microsandbox path):
 - blocks loopback, private RFC1918 ranges, link-local, and cloud metadata endpoints
 
 This default is runtime-level behavior (not currently per-tool configurable in metadata for v1).
+
+Bind-mode note: bind rootfs uses filesystem contents, not full OCI image config.
+Do not rely on Dockerfile `ENV` to bootstrap `/tool-adapter`; keep adapter startup
+self-contained (or provide explicit runtime env from runner wiring).
+
+### Child process stdio discipline
+
+`/tool-adapter` speaks **length-prefixed framed JSON-RPC over stdout**. The
+tool child process spawned for `tool/invoke` therefore must:
+
+- write **only** a single JSON-RPC response to stdout (newline-terminated raw
+  JSON-RPC — the adapter re-frames it);
+- use **stderr** for logs, diagnostics, or any other output;
+- **not** print banners, progress bars, or debug prints to stdout.
+
+Anything emitted to stdout that is not the framed response will corrupt the
+channel and surface as `invalid JSON` or truncated-frame errors at the runner.
 
 Bind allowlist (colon-separated roots):
 

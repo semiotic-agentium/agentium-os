@@ -369,6 +369,34 @@ enum Commands {
         json: bool,
     },
 
+    /// Materialize sandbox sidecar bundle for OCI runtime metadata.
+    ///
+    /// Writes `tool-bundle.json` using shared sidecar helpers from metadata.
+    SandboxOciPrepare {
+        /// Path to external tool directory (contains tool-metadata.json)
+        #[arg(long, default_value = ".")]
+        tool_dir: String,
+
+        /// Output path for generated tool-bundle.json.
+        /// Relative paths resolve against --tool-dir.
+        ///
+        /// Default: adapter/sidecars/etc/agentium/tool-bundle.json
+        #[arg(long)]
+        output: Option<String>,
+
+        /// Run check-external-tool after writing bundle.
+        #[arg(long)]
+        check: bool,
+
+        /// Validate and print planned values without writing output.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Emit machine-readable JSON summary.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Validate workspace integrity
     Doctor {
         /// Exit non-zero on any issue (for CI)
@@ -763,6 +791,22 @@ fn main() -> anyhow::Result<()> {
                 as_json: json,
             })
         }
+
+        Commands::SandboxOciPrepare {
+            tool_dir,
+            output,
+            check,
+            dry_run,
+            json,
+        } => commands::sandbox_oci_prepare::run(
+            commands::sandbox_oci_prepare::SandboxOciPrepareRunArgs {
+                tool_dir: &tool_dir,
+                output: output.as_deref(),
+                check,
+                dry_run,
+                as_json: json,
+            },
+        ),
 
         Commands::Doctor {
             ci,

@@ -18,5 +18,6 @@ pub mod push;
 pub mod regen;
 pub mod sandbox_bind_sync;
 pub mod sandbox_digest;
+pub mod sandbox_oci_prepare;
 pub mod undeploy;
 pub(crate) mod utils;

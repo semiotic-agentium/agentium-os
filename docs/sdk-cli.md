@@ -21,6 +21,8 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `doctor` | Validate workspace integrity |
 | `check-external-tool --path <dir>` | Validate external tool metadata against schema + runtime parser |
 | `sandbox-digest --source bind <path>` | Compute sandbox runtime digest for bind rootfs content |
+| `sandbox-bind-sync --tool-dir <dir> --rootfs <path>` | Sync bind metadata + digest and materialize sidecar bundle into rootfs |
+| `sandbox-oci-prepare --tool-dir <dir>` | Materialize OCI sidecar bundle from metadata (no registry pull required) |
 | `chat --agent <name>` | Interactive terminal chat with a deployed agent |
 
 ## Installation
@@ -108,7 +110,9 @@ Generated scaffold always includes `tool-metadata.json`, `README.md`, and langua
 
 Bind scaffold modes:
 - default (no `--generate-docker`): metadata-only bind scaffold (placeholder path + zero digest); materialize rootfs externally, then run `sandbox-digest` + metadata patch + `check-external-tool`.
-- with `--generate-docker`: additionally emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh`; script builds image, exports rootfs, computes digest, patches metadata, and validates.
+- with `--generate-docker`: additionally emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh`; script builds image, exports rootfs, computes digest, patches metadata, writes adapter sidecar bundle (`/etc/agentium/tool-bundle.json`), and validates metadata.
+
+Bind caveat: bind-rootfs mode carries filesystem contents, not guaranteed OCI image config (e.g. Dockerfile `ENV`). Generated adapters should not require env vars for baseline startup.
 
 For `setup_bind_sandbox.sh`, command resolution is:
 1. `AGENT_PLATFORM_CMD` (if set),

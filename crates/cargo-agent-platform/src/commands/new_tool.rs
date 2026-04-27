@@ -595,6 +595,11 @@ mod tests {
                     _ => panic!("expected oci image"),
                 }
                 assert_eq!(spec.entrypoint, vec!["/app/tool-adapter".to_string()]);
+                let adapter = spec
+                    .adapter
+                    .expect("sandbox runtime should include adapter block");
+                assert_eq!(adapter.protocol, "jsonrpc-stdio");
+                assert!(!adapter.command.is_empty());
             }
             other => panic!("expected sandbox runtime, got {other:?}"),
         }
@@ -664,6 +669,7 @@ mod tests {
 
         let files = build_file_set(&bind_ctx);
         assert_scaffold_has(&files, "setup_bind_sandbox.sh");
+        assert_scaffold_has(&files, "inspect_tool.py");
         assert_scaffold_has(&files, "adapter/Dockerfile");
         assert_scaffold_has(&files, "adapter/tool-adapter");
     }

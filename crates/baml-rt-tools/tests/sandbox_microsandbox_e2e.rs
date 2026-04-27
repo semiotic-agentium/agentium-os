@@ -33,9 +33,9 @@ async fn run_required_scenarios() -> Result<(), Box<dyn std::error::Error>> {
 
     let metadata = load_sandbox_metadata()?;
     let (image, entrypoint) = match metadata.runtime {
-        Some(ToolRuntime::Sandbox(SandboxRuntimeSpec { image, entrypoint })) => {
-            (image_ref_to_source(image)?, entrypoint)
-        }
+        Some(ToolRuntime::Sandbox(SandboxRuntimeSpec {
+            image, entrypoint, ..
+        })) => (image_ref_to_source(image)?, entrypoint),
         other => {
             return Err(format!("expected runtime.kind=sandbox in metadata, got {other:?}").into());
         }

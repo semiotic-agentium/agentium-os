@@ -1,0 +1,43 @@
+{
+  "tool_abi_version": "1",
+  "name": "dev/meteo-tool",
+  "description": "Meteo sandbox conformance fixture",
+  "bundle": "dev",
+  "local_name": "meteo-tool",
+  "access_level": "read",
+  "invocation_mode": "single_shot",
+  "schemas": {
+    "input": {
+      "type": "object",
+      "properties": {
+        "city": { "type": "string" },
+        "units": { "type": "string", "enum": ["c", "f"] }
+      },
+      "required": ["city"]
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "temp_c": { "type": "number" }
+      },
+      "required": ["temp_c"]
+    }
+  },
+  "secrets": [],
+  "capabilities": {},
+  "runtime": {
+    "kind": "sandbox",
+    "image": {
+      "kind": "bind",
+      "path": "/tmp/meteo-rootfs"
+    },
+    "entrypoint": ["/tool-adapter"],
+    "adapter": {
+      "schema_version": 1,
+      "protocol": "jsonrpc-stdio",
+      "command": ["python3", "/opt/tool/main.py"],
+      "workdir": "/opt/tool"
+    }
+  },
+  "runtime_digest": "sha256:meteo-runtime"
+}

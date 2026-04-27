@@ -93,6 +93,30 @@ pub enum SandboxImageRef {
     Bind { path: PathBuf },
 }
 
+/// Adapter-side runtime dispatch declaration for sandbox tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxAdapterRuntimeSpec {
+    /// Sidecar schema version written under `tool-bundle.json.runtime`.
+    #[serde(default = "default_adapter_schema_version")]
+    pub schema_version: u32,
+    /// Child-protocol spoken by the tool process behind `/tool-adapter`.
+    #[serde(default = "default_adapter_protocol")]
+    pub protocol: String,
+    /// Child process argv invoked by the adapter for `tool/invoke`.
+    pub command: Vec<String>,
+    /// Optional working directory for the tool child process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
+}
+
+fn default_adapter_schema_version() -> u32 {
+    1
+}
+
+fn default_adapter_protocol() -> String {
+    "jsonrpc-stdio".to_string()
+}
+
 /// Sandbox runtime: OCI or bind rootfs executed inside a microVM.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxRuntimeSpec {
@@ -106,6 +130,11 @@ pub struct SandboxRuntimeSpec {
     /// `microsandbox::Sandbox::exec_stream` with this argv (§5.2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entrypoint: Vec<String>,
+
+    /// Adapter dispatch config authored in metadata and materialized under
+    /// `/etc/agentium/tool-bundle.json` during bind sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<SandboxAdapterRuntimeSpec>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,6 +215,24 @@ mod tests {
                 ..
             }) => assert_eq!(path, PathBuf::from("./rootfs")),
             other => panic!("expected bind image, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sandbox_runtime_adapter_roundtrips() {
+        let json = r#"{"kind":"sandbox","image":{"kind":"bind","path":"./rootfs"},"adapter":{"command":["python3","/opt/tool/main.py"],"workdir":"/opt/tool","protocol":"jsonrpc-stdio"}}"#;
+        let rt: ToolRuntime = serde_json::from_str(json).unwrap();
+        match rt {
+            ToolRuntime::Sandbox(SandboxRuntimeSpec {
+                adapter: Some(adapter),
+                ..
+            }) => {
+                assert_eq!(adapter.command, vec!["python3", "/opt/tool/main.py"]);
+                assert_eq!(adapter.workdir.as_deref(), Some("/opt/tool"));
+                assert_eq!(adapter.protocol, "jsonrpc-stdio");
+                assert_eq!(adapter.schema_version, 1);
+            }
+            other => panic!("expected sandbox adapter, got {other:?}"),
         }
     }
 

@@ -133,14 +133,22 @@ These notes apply to both bind modes:
 fn bind_setup_docker_mode(_ctx: &ScaffoldContext<'_>) -> String {
     r#"## Bind setup (Docker-assisted)
 
-A helper script is scaffolded at `./setup_bind_sandbox.sh`.
+Helper scripts are scaffolded at:
+
+- `./setup_bind_sandbox.sh` (build/export/sync/check)
+- `./inspect_tool.py` (framed adapter probe: describe/schema/invoke)
 
 ```bash
 ./setup_bind_sandbox.sh --force
 ```
 
 This script wraps `sandbox-bind-sync` to build `adapter/Dockerfile`, export bind
-rootfs, patch metadata, and run `check-external-tool`.
+rootfs, patch metadata, materialize adapter sidecar bundle (`/etc/agentium/tool-bundle.json`),
+and run `check-external-tool`.
+
+> Bind rootfs mode copies filesystem contents only. Docker image config
+> (like `ENV TOOL_CMD=...`) is not guaranteed at runtime. The generated
+> adapter resolves a default tool command without requiring env vars.
 
 You can also call the command directly:
 
@@ -156,6 +164,17 @@ cargo run -q -p cargo-agent-platform -- sandbox-bind-sync \
 
 `adapter/tool-adapter` is a generated transport shim (TSRPC <-> raw stdio).
 You usually only edit the scaffolded language source (`main.py`, `src/main.rs`, etc.).
+
+Example probes:
+
+```bash
+# Reads bind artifact sidecar from .tmp/<tool>-rootfs by default.
+./inspect_tool.py describe
+./inspect_tool.py schema
+
+# invoke requires a runnable adapter command
+./inspect_tool.py invoke --input '{"message":"hello"}' -- docker run --rm -i local-sandbox:latest /tool-adapter
+```
 "#
     .to_string()
 }

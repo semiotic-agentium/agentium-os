@@ -16,6 +16,7 @@ pub mod protocol;
 pub mod resolver;
 pub mod runtime;
 pub mod sandbox;
+pub mod sidecar_bundle;
 pub mod stdio;
 
 use std::{path::Path, sync::Arc};
@@ -41,16 +42,24 @@ pub use policy::{
     DEFAULT_QUARANTINE_THRESHOLD, InvocationPolicy, PolicyError, QuarantineState, ToolQuota,
 };
 pub use protocol::{
-    ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR, ErrorClass, JsonRpcError, JsonRpcRequest,
-    JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, PROTOCOL_VERSION, SUPPORTED_METHODS,
-    ToolDescribeResult, ToolInvokeParams, ToolInvokeResult,
+    ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR,
+    ERR_PAYLOAD_LIMIT_EXCEEDED, ERR_SCHEMA_DIGEST_MISMATCH, ERR_SIDECAR_MALFORMED,
+    ERR_SIDECAR_MISSING, ERR_SIDECAR_SCHEMA_INVALID, ERR_SIDECAR_SIZE_EXCEEDED,
+    ERR_UNSUPPORTED_PROTOCOL, ErrorClass, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
+    METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION, SUPPORTED_METHODS,
+    SUPPORTED_METHODS_V2, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
 };
 pub use resolver::DevModeResolver;
 pub use runtime::{
-    DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxImageRef, SandboxRuntimeSpec, ToolRuntime,
-    ToolRuntimeKind,
+    DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxAdapterRuntimeSpec, SandboxImageRef,
+    SandboxRuntimeSpec, ToolRuntime, ToolRuntimeKind,
 };
 pub use sandbox::canonical_bind_digest;
+pub use sidecar_bundle::{
+    DEFAULT_SCHEMA_CONTENT_TYPE, SIDECAR_BUNDLE_ABS_PATH, SIDECAR_BUNDLE_REL_PATH, SIDECAR_DIR_ABS,
+    ToolManifestSidecar, ToolRuntimeSidecar, ToolSchemaSidecar, ToolSidecarBundle,
+    read_sidecar_bundle, render_sidecar_bundle, verify_runtime_digest,
+};
 
 /// Compute runtime digest for a bind rootfs path using canonical bind hashing.
 pub fn sandbox_runtime_digest_for_bind(path: &Path) -> baml_rt_core::Result<String> {

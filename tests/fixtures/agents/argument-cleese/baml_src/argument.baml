@@ -13,7 +13,7 @@ function ArgumentReply(other_message: string) -> string {
 }
 
 // Send Cleese's line to Chapman via internal_a2a. Phase executors reuse this prompt verbatim; op shape comes from {{ ctx.output_format }} per hop.
-function CleeseSendToChapman(first_line: string) -> SystemInternal_a2aSessionPlan {
+function CleeseSendToChapman(first_line: string) -> SystemInternalA2aSessionPlan {
   client DefaultClient
   prompt #"
     Argue in the style of a Monty Python sketch.

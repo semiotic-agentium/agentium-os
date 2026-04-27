@@ -1,7 +1,8 @@
 //! JSON-RPC 2.0 wire contract for the sandbox tool protocol.
 //!
-//! Two methods are supported in V1:
-//! - `tool/describe` — returns the tool's ABI, protocol version, and schema hash.
+//! Methods supported by the protocol:
+//! - `tool/describe` — returns tool identity/capabilities.
+//! - `tool/schema` — returns tool contract schema metadata + input/output schemas.
 //! - `tool/invoke` — executes one invocation and returns a result (single-shot).
 //!
 //! Framing rules (stdio transport): see [`crate::codec`]. Frames are
@@ -11,26 +12,31 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Protocol version supported by V1.
+/// Protocol version supported by this crate's default constants.
 pub const PROTOCOL_VERSION: &str = "1";
 
 /// Method name for the tool description handshake.
 pub const METHOD_DESCRIBE: &str = "tool/describe";
 
+/// Method name for tool schema introspection.
+pub const METHOD_SCHEMA: &str = "tool/schema";
+
 /// Method name for invoking the tool.
 pub const METHOD_INVOKE: &str = "tool/invoke";
 
 /// Method names a V1 tool is expected to declare in its `tool/describe`
-/// response under `supported_methods`. Scaffolders render this list into the
-/// generated handler so CLI output and runtime contract stay aligned.
-///
-/// Even though `tool/describe` is the handshake method, it is also a callable
-/// protocol method and should be explicitly advertised alongside
-/// `tool/invoke`.
+/// response under `supported_methods`.
 pub const SUPPORTED_METHODS: &[&str] = &[METHOD_DESCRIBE, METHOD_INVOKE];
+
+/// Method names for protocol V2 tools that expose static schema via
+/// `tool/schema`.
+pub const SUPPORTED_METHODS_V2: &[&str] = &[METHOD_DESCRIBE, METHOD_SCHEMA, METHOD_INVOKE];
 
 /// JSON-RPC 2.0 "Method not found" error code. Mirrors the spec constant.
 pub const ERR_METHOD_NOT_FOUND: i32 = -32601;
+
+/// JSON-RPC 2.0 "Invalid params" error code. Mirrors the spec constant.
+pub const ERR_INVALID_PARAMS: i32 = -32602;
 
 /// JSON-RPC 2.0 "Parse error" error code. Used when the request is not valid JSON.
 pub const ERR_PARSE_ERROR: i32 = -32700;
@@ -38,6 +44,21 @@ pub const ERR_PARSE_ERROR: i32 = -32700;
 /// Application-defined server error code for generic tool execution failures.
 /// Mirrors the lower bound of the JSON-RPC 2.0 reserved implementation-defined range.
 pub const ERR_INTERNAL: i32 = -32000;
+
+/// Sidecar bundle is missing at the required path.
+pub const ERR_SIDECAR_MISSING: i32 = -32010;
+/// Sidecar bundle bytes are present but malformed JSON/UTF-8.
+pub const ERR_SIDECAR_MALFORMED: i32 = -32011;
+/// Sidecar bundle shape/fields failed validation.
+pub const ERR_SIDECAR_SCHEMA_INVALID: i32 = -32012;
+/// Recomputed schema digest does not match declared content digest.
+pub const ERR_SCHEMA_DIGEST_MISMATCH: i32 = -32013;
+/// Sidecar/runtime protocol declaration is unsupported.
+pub const ERR_UNSUPPORTED_PROTOCOL: i32 = -32014;
+/// Static response payload exceeds configured size limit.
+pub const ERR_PAYLOAD_LIMIT_EXCEEDED: i32 = -32015;
+/// Sidecar file exceeds configured size limit.
+pub const ERR_SIDECAR_SIZE_EXCEEDED: i32 = -32016;
 
 /// JSON-RPC 2.0 request envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,10 +128,29 @@ pub struct ToolDescribeResult {
     pub supported_methods: Vec<String>,
     #[serde(default)]
     pub max_payload_bytes: Option<u64>,
-    #[serde(default)]
-    pub schema_hash: Option<String>,
+    /// Digest of the schema content (`{input, output}`), if advertised by the tool.
+    ///
+    /// Accepts legacy `schema_hash` on decode for backward compatibility.
+    #[serde(default, alias = "schema_hash")]
+    pub schema_digest: Option<String>,
     #[serde(default)]
     pub capabilities: Option<Value>,
+}
+
+/// Result payload returned from `tool/schema`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolSchemaResult {
+    pub schema_version: u64,
+    pub tool_name: String,
+    #[serde(default = "default_schema_content_type")]
+    pub content_type: String,
+    pub content_digest: String,
+    pub input: Value,
+    pub output: Value,
+}
+
+fn default_schema_content_type() -> String {
+    "application/schema+json".to_string()
 }
 
 /// Params for `tool/invoke`.

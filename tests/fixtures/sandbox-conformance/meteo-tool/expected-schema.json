@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "tool_name": "dev/meteo-tool",
+  "content_type": "application/schema+json",
+  "content_digest": "sha256:54352a842cb13fcd030c69402d70075b655668bda3b0859bb79cb9f632c05a5a",
+  "input": {
+    "type": "object",
+    "properties": {
+      "city": { "type": "string" },
+      "units": { "type": "string", "enum": ["c", "f"] }
+    },
+    "required": ["city"]
+  },
+  "output": {
+    "type": "object",
+    "properties": {
+      "temp_c": { "type": "number" }
+    },
+    "required": ["temp_c"]
+  }
+}

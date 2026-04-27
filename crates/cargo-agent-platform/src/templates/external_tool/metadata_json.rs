@@ -5,10 +5,12 @@
 //! shape the runtime parses: a field rename in the runtime crate is a
 //! compile-time failure here, not a silent mismatch at load.
 
-use baml_rt_tools::external_tools::{ExternalToolMetadata, SandboxRuntimeSpec, ToolRuntime};
+use baml_rt_tools::external_tools::{
+    ExternalToolMetadata, SandboxAdapterRuntimeSpec, SandboxRuntimeSpec, ToolRuntime,
+};
 use serde_json::json;
 
-use super::{Runtime, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext};
+use super::{Language, Runtime, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext};
 
 /// Generate `tool-metadata.json` content for an external tool scaffold.
 ///
@@ -16,7 +18,17 @@ use super::{Runtime, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext};
 /// layer since those are DX defaults; the metadata envelope (`name`, `bundle`,
 /// `access_level`, `invocation_mode`, …) flows through the runtime's typed
 /// constructor so there's one source of truth for the schema.
-pub fn generate(ctx: &ScaffoldContext<'_>) -> String {
+fn default_adapter_spec(language: Language) -> SandboxAdapterRuntimeSpec {
+    let (command, workdir) = language.default_adapter_command();
+    SandboxAdapterRuntimeSpec {
+        schema_version: 1,
+        protocol: "jsonrpc-stdio".to_string(),
+        command: command.iter().map(|s| (*s).to_string()).collect(),
+        workdir: Some(workdir.to_string()),
+    }
+}
+
+pub fn build_metadata(ctx: &ScaffoldContext<'_>) -> ExternalToolMetadata {
     let tool_id = ctx.tool_id();
 
     let input_schema = json!({
@@ -76,14 +88,20 @@ pub fn generate(ctx: &ScaffoldContext<'_>) -> String {
             meta.runtime = Some(ToolRuntime::Sandbox(SandboxRuntimeSpec {
                 image,
                 entrypoint: ctx.sandbox_entrypoint.clone(),
+                adapter: Some(default_adapter_spec(ctx.language)),
             }));
             meta.runtime_digest = Some(runtime_digest);
         }
     }
 
+    meta
+}
+
+pub fn generate(ctx: &ScaffoldContext<'_>) -> String {
     // Hand-rolled schema above is static JSON; serialization is infallible for
     // `ExternalToolMetadata` + schema Value payloads. Propagate errors via
     // expect so any future serialization break surfaces at scaffold time.
-    meta.to_pretty_json()
+    build_metadata(ctx)
+        .to_pretty_json()
         .expect("ExternalToolMetadata serializes")
 }

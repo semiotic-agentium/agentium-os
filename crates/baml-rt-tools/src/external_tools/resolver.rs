@@ -23,7 +23,7 @@ use super::{
     invoker::{ExternalInvoker, ToolDescribe},
     lockfile::{ExternalLockfileMode, ExternalToolsLockfile},
     metadata::{
-        ExternalToolMetadata, build_tool_metadata, compute_tool_digest, metadata_schema_hash,
+        ExternalToolMetadata, build_tool_metadata, compute_tool_digest, metadata_schema_digest,
         read_external_metadata,
     },
     policy::{DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT},
@@ -498,7 +498,7 @@ async fn describe_with_cache(
             result: "ok".to_string(),
             details: serde_json::json!({
                 "supported_methods": describe.supported_methods.clone(),
-                "schema_hash": describe.schema_hash.clone(),
+                "schema_digest": describe.schema_digest.clone(),
             }),
         });
     }
@@ -573,12 +573,12 @@ fn validate_describe_contract(
         )));
     }
 
-    if let Some(describe_schema_hash) = describe.schema_hash.as_ref() {
-        let expected = metadata_schema_hash(meta);
-        if describe_schema_hash != &expected {
+    if let Some(describe_schema_digest) = describe.schema_digest.as_ref() {
+        let expected = metadata_schema_digest(meta);
+        if describe_schema_digest != &expected {
             return Err(BamlRtError::InvalidArgument(format!(
-                "external tool '{}' describe mismatch: metadata schema hash '{}' != describe schema hash '{}'",
-                tool_name, expected, describe_schema_hash
+                "external tool '{}' describe mismatch: metadata schema digest '{}' != describe schema digest '{}'",
+                tool_name, expected, describe_schema_digest
             )));
         }
     }
@@ -609,7 +609,7 @@ mod tests {
 
     use super::{DevModeResolver, ExternalLifecycleEvent, ExternalLifecycleRecorder};
     use crate::{
-        ExternalToolResolver, ToolName, external_tools::metadata::metadata_schema_hash,
+        ExternalToolResolver, ToolName, external_tools::metadata::metadata_schema_digest,
         tools::SessionPolicy,
     };
 
@@ -644,10 +644,10 @@ mod tests {
         )
         .unwrap();
 
-        let schema_hash = metadata_schema_hash(&serde_json::from_value(metadata).unwrap());
+        let schema_digest = metadata_schema_digest(&serde_json::from_value(metadata).unwrap());
         let counter_path = tool_dir.join("describe-count");
         let response = format!(
-            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"],\"schema_hash\":\"{schema_hash}\"}}}}"
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"],\"schema_digest\":\"{schema_digest}\"}}}}"
         );
         write_tool_server(
             &tool_dir.join("tool-server"),

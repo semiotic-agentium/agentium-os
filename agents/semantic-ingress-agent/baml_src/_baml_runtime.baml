@@ -1,10 +1,20 @@
 // Auto-generated tool interfaces
 // This file is auto-generated - do not edit manually
+
+// FSM (Finite State Machine) Tool Session Protocol:
+// All host tools use a session-based FSM with strict state transitions:
+// 1. Open: Must be the FIRST step - opens a tool session
+// 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
+// 3. SearchRead: line-filtered archive read (grep required). Page with offset/limit over matches.
+// 4. PageRead: contiguous archive paging (no grep). Page with offset/limit over full rendered lines.
+// 5. Finish: Closes the session gracefully
+// 6. Abort: Closes the session with an error
 //
-// Host tools use a session FSM. Which ops are valid on a given model hop is defined only by the
-// narrowed BAML return type for that function, not by duplicated prose. Step classes (Open/Send/…)
-// and `*SendInput` / `*OpenInput` give field names and @description; see the shared prelude
-// and each session-plan `prompt` order: stable types, task, transcript, then ctx.output_format last.
+// CRITICAL FSM RULES:
+// - Open MUST come before Send
+// - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
+// - SearchRead/PageRead need a real @N from a Send for this tool (may be earlier in history). Large @N: SearchRead with grep first, then PageRead for detail — do not dump whole archives with PageRead alone.
+// - Always Finish or Abort to close the session
 
 // Shared standard planning types
 class StandardAgentPlanStep {
@@ -74,29 +84,17 @@ class StructuredReply {
 
 /// Line-filtered archive read (emit op SearchRead).
 class ArchiveSearchReadInput {
-  archive_ref string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
-  grep string @description("Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.")
-  offset int? @description("0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.")
-  limit int? @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.")
+  grep string @description("Required non-empty line filter (substring or regex per host), e.g. deploy or -i deploy. Use SearchRead to locate lines; follow with PageRead when you need contiguous context.")
+  offset int? @description("0-based offset counting lines that matched grep (after filter). Page with limit: first window offset=0; next offset = previous next_offset while matches remain.")
+  limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
 }
 
 /// Contiguous archive paging without a line filter (emit op PageRead).
 class ArchivePageReadInput {
-  archive_ref string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
-  offset int? @description("0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.")
-  limit int? @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
-}
-
-/// Global line-filtered archive read step. Legal before Open, during a session, or after a Send.
-class ArchiveSearchReadStep {
-  op "SearchRead"
-  input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
-}
-
-/// Global contiguous archive paging step. Legal before Open, during a session, or after a Send.
-class ArchivePageReadStep {
-  op "PageRead"
-  input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.")
+  offset int? @description("0-based offset over full rendered archive lines (no grep). Page with limit: first window offset=0; next offset = previous next_offset while lines remain.")
+  limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
 }
 // Domain types generated from #[derive(BamlType)]
 /// Which Slack API token to use.
@@ -398,17 +396,17 @@ class SupportSlackOpenStep {
 class SupportSlackSendStep {
   op "Send"
   input SlackInput @description("Payload for this step.")
-  citations string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+  citations string[] @description("Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.")
 }
 
 class SupportSlackSearchReadStep {
   op "SearchRead"
-  input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+  input ArchiveSearchReadInput @description("archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.")
 }
 
 class SupportSlackPageReadStep {
   op "PageRead"
-  input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+  input ArchivePageReadInput @description("archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.")
 }
 
 class SupportSlackFinishStep {
@@ -422,12 +420,12 @@ class SupportSlackAbortStep {
 type SupportSlackSessionStep = SupportSlackOpenStep | SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep | SupportSlackFinishStep | SupportSlackAbortStep
 
 class SupportSlackSessionPlan {
-  step SupportSlackSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. A @N in history is a handle until you read it. Access: read.")
+  step SupportSlackSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or SearchRead/PageRead @N when the archive exists; after Send (@N archived) → Finish, SearchRead, PageRead, or Send again. Access: read.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
 /// Tool card for system/discover_agents: metadata for polymorphic Open selection.
-class SystemDiscover_agentsToolCard {
+class SystemDiscoverAgentsToolCard {
   tool_name "system/discover_agents"
   description "Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents."
   session_policy "Strict"
@@ -435,45 +433,45 @@ class SystemDiscover_agentsToolCard {
   tags string[] @description("Tool tags: system, discovery")
 }
 
-class SystemDiscover_agentsOpenStep {
+class SystemDiscoverAgentsOpenStep {
   op "Open"
   tool_name "system/discover_agents" @description("Tool to open")
   initial_input DiscoverAgentsOpenInput? @description("Optional open payload.")
 }
 
-class SystemDiscover_agentsSendStep {
+class SystemDiscoverAgentsSendStep {
   op "Send"
   input DiscoverAgentsSendInput @description("Payload for this step.")
-  citations string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+  citations string[] @description("Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.")
 }
 
-class SystemDiscover_agentsSearchReadStep {
+class SystemDiscoverAgentsSearchReadStep {
   op "SearchRead"
-  input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+  input ArchiveSearchReadInput @description("archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.")
 }
 
-class SystemDiscover_agentsPageReadStep {
+class SystemDiscoverAgentsPageReadStep {
   op "PageRead"
-  input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+  input ArchivePageReadInput @description("archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.")
 }
 
-class SystemDiscover_agentsFinishStep {
+class SystemDiscoverAgentsFinishStep {
   op "Finish"
 }
 
-class SystemDiscover_agentsAbortStep {
+class SystemDiscoverAgentsAbortStep {
   op "Abort"
 }
 
-type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsSearchReadStep | SystemDiscover_agentsPageReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep
+type SystemDiscoverAgentsSessionStep = SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsAbortStep
 
-class SystemDiscover_agentsSessionPlan {
-  step SystemDiscover_agentsSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. A @N in history is a handle until you read it.")
+class SystemDiscoverAgentsSessionPlan {
+  step SystemDiscoverAgentsSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or SearchRead/PageRead @N when the archive exists; after Send (@N archived) → Finish, SearchRead, PageRead, or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
 /// Tool card for system/internal_a2a: metadata for polymorphic Open selection.
-class SystemInternal_a2aToolCard {
+class SystemInternalA2aToolCard {
   tool_name "system/internal_a2a"
   description "Opens a conversational session to another agent. Send a message (text or parts), Read the response, then Send follow-ups or Finish. Multiple Send/Read rounds are allowed within one session — use this for multi-turn conversations with the delegated agent."
   session_policy "MultiSend"
@@ -481,39 +479,39 @@ class SystemInternal_a2aToolCard {
   tags string[] @description("Tool tags: system, a2a")
 }
 
-class SystemInternal_a2aOpenStep {
+class SystemInternalA2aOpenStep {
   op "Open"
   tool_name "system/internal_a2a" @description("Tool to open")
   initial_input InternalA2aOpenInput @description("Required open payload.")
 }
 
-class SystemInternal_a2aSendStep {
+class SystemInternalA2aSendStep {
   op "Send"
   input InternalA2aSendInput @description("Conversational message payload. Set text to a non-empty string. Never null, never omit text.")
-  citations string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+  citations string[] @description("Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.")
 }
 
-class SystemInternal_a2aSearchReadStep {
+class SystemInternalA2aSearchReadStep {
   op "SearchRead"
-  input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+  input ArchiveSearchReadInput @description("archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.")
 }
 
-class SystemInternal_a2aPageReadStep {
+class SystemInternalA2aPageReadStep {
   op "PageRead"
-  input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+  input ArchivePageReadInput @description("archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.")
 }
 
-class SystemInternal_a2aFinishStep {
+class SystemInternalA2aFinishStep {
   op "Finish"
 }
 
-class SystemInternal_a2aAbortStep {
+class SystemInternalA2aAbortStep {
   op "Abort"
 }
 
-type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aSearchReadStep | SystemInternal_a2aPageReadStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep
+type SystemInternalA2aSessionStep = SystemInternalA2aOpenStep | SystemInternalA2aSendStep | SystemInternalA2aSearchReadStep | SystemInternalA2aPageReadStep | SystemInternalA2aFinishStep | SystemInternalA2aAbortStep
 
-class SystemInternal_a2aSessionPlan {
-  step SystemInternal_a2aSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes above — do not paraphrase them in prose. A @N in history is a handle until you read it. For A2A Send, `input.text` is required when sending.")
+class SystemInternalA2aSessionPlan {
+  step SystemInternalA2aSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or SearchRead/PageRead @N when that tool archive already exists; after Send (@N archived) → SearchRead (grep required) to find lines, PageRead (no grep) for contiguous slices, Finish, or Send again.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }

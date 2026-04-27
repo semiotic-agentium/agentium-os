@@ -1,7 +1,7 @@
 // Discover which agents are available. Archive handle rules are in the merged runtime prelude; per-hop ops: narrowed return type only.
 function GetDiscoverAgentsPlan(
   inferred_intent: string,
-) -> SystemDiscover_agentsSessionPlan {
+) -> SystemDiscoverAgentsSessionPlan {
   client DefaultClient
   prompt #"
     Discover available agents to match the user's intent.
@@ -137,7 +137,7 @@ function DecideDelegationAction(
   goal: string,
   agent_package: string,
   agent_instance_id: string,
-) -> SystemInternal_a2aSessionPlan | string? {
+) -> SystemInternalA2aSessionPlan | string? {
   client DefaultClient
   prompt #"
     Coordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}

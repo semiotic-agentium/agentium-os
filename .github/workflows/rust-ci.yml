@@ -45,6 +45,12 @@ jobs:
               - 'crates/baml-sandbox-adapter/**'
               - 'crates/baml-sandbox-protocol/**'
               - 'crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter/**'
+              - 'tests/fixtures/sandbox-conformance/**'
+              - 'crates/baml-rt-tools/src/external_tools/metadata.rs'
+              - 'crates/cargo-agent-platform/src/commands/sandbox_bind_sync.rs'
+              - 'crates/cargo-agent-platform/src/commands/sandbox_oci_prepare.rs'
+              - 'crates/cargo-agent-platform/src/commands/mod.rs'
+              - 'crates/cargo-agent-platform/src/main.rs'
               - '.github/workflows/rust-ci.yml'
 
   doctor:
@@ -301,6 +307,19 @@ jobs:
             -p baml-sandbox-adapter \
             -p baml-sandbox-protocol \
             --locked --profile ci --no-fail-fast
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+      - name: Conformance digest check (Rust authority)
+        run: |
+          cargo test -p baml-rt-tools schema_digest_matches_conformance_fixture --locked -- --nocapture
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+      - name: Sandbox sidecar parity checks (bind + OCI)
+        run: |
+          cargo test -p cargo-agent-platform write_runtime_sidecars_materializes_expected_files --locked -- --ignored --nocapture
+          cargo test -p cargo-agent-platform sandbox_oci_prepare --locked -- --ignored --nocapture
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 

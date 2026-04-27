@@ -167,7 +167,7 @@
         },
         {
           "type": "object",
-          "required": ["kind", "image"],
+          "required": ["kind", "image", "adapter"],
           "properties": {
             "kind": { "const": "sandbox" },
             "image": {
@@ -204,6 +204,25 @@
               "type": "array",
               "items": { "type": "string" },
               "description": "optional argv entrypoint for tool adapter"
+            },
+            "adapter": {
+              "type": "object",
+              "required": ["command", "protocol"],
+              "properties": {
+                "schema_version": { "type": "integer", "minimum": 1, "default": 1 },
+                "protocol": {
+                  "type": "string",
+                  "enum": ["jsonrpc-stdio"]
+                },
+                "command": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "minItems": 1,
+                  "description": "argv used by /tool-adapter to invoke tool child process"
+                },
+                "workdir": { "type": "string" }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false

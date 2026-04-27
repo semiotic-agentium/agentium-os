@@ -74,15 +74,27 @@ impl std::fmt::Display for ToolAccess {
     }
 }
 
-/// Capitalize the first character of a string
+/// Capitalize the first character of a string.
 ///
-/// Used for generating class names and TypeScript identifiers.
+/// Used for lightweight identifier shaping where separator-aware handling is not needed.
 pub(crate) fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
         None => String::new(),
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
     }
+}
+
+/// Convert identifier components to PascalCase for generated type/class names.
+///
+/// Splits on `-` / `_`, capitalizes each segment's first character, and joins.
+/// This keeps runtime tool IDs unchanged while guaranteeing codegen-safe
+/// class/type identifiers for BAML/TS.
+fn to_pascal_identifier_component(s: &str) -> String {
+    s.split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(capitalize_first)
+        .collect()
 }
 
 /// Helper function for creating an empty open_input value.
@@ -236,14 +248,17 @@ pub trait BamlTool: Send + Sync + 'static {
         format!("{}/{}", Self::Bundle::NAME, Self::LOCAL_NAME)
     }
 
-    /// The class name for BAML generation (e.g., "SupportCalculate" from Support + Calculate)
+    /// The class name for BAML generation (e.g., "SupportCalculate" from Support + Calculate).
+    ///
+    /// Runtime tool IDs can contain `-` / `_`; generated class names are always
+    /// PascalCase-safe identifiers.
     fn class_name() -> String {
         let bundle_name = Self::Bundle::NAME;
         let local_name = Self::LOCAL_NAME;
         format!(
             "{}{}",
-            capitalize_first(bundle_name),
-            capitalize_first(local_name)
+            to_pascal_identifier_component(bundle_name),
+            to_pascal_identifier_component(local_name)
         )
     }
 
@@ -611,8 +626,19 @@ impl ToolName {
     }
 
     /// Derived slug for codegen identifiers: `"support_calculate"` from `"support/calculate"`.
+    ///
+    /// Normalizes `-` to `_` in bundle/local components so generated BAML
+    /// function names remain valid identifiers.
     pub fn slug(&self) -> ToolSlug {
-        ToolSlug(format!("{}_{}", self.bundle, self.local))
+        fn normalize_slug_component(s: &str) -> String {
+            s.replace('-', "_")
+        }
+
+        ToolSlug(format!(
+            "{}_{}",
+            normalize_slug_component(self.bundle.as_str()),
+            normalize_slug_component(self.local.as_str())
+        ))
     }
 }
 
@@ -914,12 +940,15 @@ impl ToolFunctionMetadata {
         self.name.bundle()
     }
 
-    /// Derive class name from bundle and local tool names
+    /// Derive class name from bundle and local tool names.
+    ///
+    /// Runtime IDs remain unchanged (`bundle/local`), but derived class names
+    /// are normalized to PascalCase for BAML-safe identifiers.
     pub fn derive_class_name(bundle: &BundleName, local: &LocalToolName) -> String {
         format!(
             "{}{}",
-            capitalize_first(bundle.as_str()),
-            capitalize_first(local.as_str())
+            to_pascal_identifier_component(bundle.as_str()),
+            to_pascal_identifier_component(local.as_str())
         )
     }
 
@@ -3165,7 +3194,9 @@ mod session_type_names_alignment_tests {
 
 #[cfg(test)]
 mod tool_name_identifier_tests {
-    use super::{BundleName, LocalToolName, ToolName};
+    use super::{
+        BundleName, LocalToolName, ToolFunctionMetadata, ToolName, parse_tool_name_and_class,
+    };
 
     #[test]
     fn accepts_ascii_lowercase_identifier_components() {
@@ -3181,5 +3212,25 @@ mod tool_name_identifier_tests {
         assert!(BundleName::new("Support").is_err());
         assert!(LocalToolName::new("echo🙂").is_err());
         assert!(ToolName::parse("support/echo🙂").is_err());
+    }
+
+    #[test]
+    fn derive_class_name_normalizes_hyphen_and_underscore() {
+        let tool_name = ToolName::parse("internal-dev/internal_a2a").unwrap();
+        let class_name =
+            ToolFunctionMetadata::derive_class_name(tool_name.bundle(), tool_name.local());
+        assert_eq!(class_name, "InternalDevInternalA2a");
+    }
+
+    #[test]
+    fn parse_tool_name_and_class_normalizes_external_style_ids() {
+        let (_tool_name, class_name) = parse_tool_name_and_class("dev/meteo-tool").unwrap();
+        assert_eq!(class_name, "DevMeteoTool");
+    }
+
+    #[test]
+    fn tool_slug_normalizes_hyphen_to_underscore() {
+        let tool_name = ToolName::parse("dev/meteo-tool").unwrap();
+        assert_eq!(tool_name.slug().as_str(), "dev_meteo_tool");
     }
 }
