@@ -12,9 +12,6 @@ STATE_FILE="${TASK_DAEMON_DEMO_STATE_FILE:-/tmp/task-daemon-demo-state.json}"
 JSONL_OUT="${TASK_DAEMON_DEMO_JSONL:-/tmp/task-daemon-demo-batch.jsonl}"
 RUN_LOG="${TASK_DAEMON_DEMO_LOG:-/tmp/task-daemon-demo.log}"
 MERMAID_OUT="${TASK_DAEMON_DEMO_MERMAID_OUT:-/tmp/task-daemon-demo-sequence.mmd}"
-DOT_OUT="${TASK_DAEMON_DEMO_DOT_OUT:-/tmp/task-daemon-demo-sequence.dot}"
-STAGE_DOT_OUT="${TASK_DAEMON_DEMO_STAGE_DOT_OUT:-/tmp/task-daemon-demo-sequence-stage.dot}"
-SVG_OUT="${TASK_DAEMON_DEMO_SVG_OUT:-/tmp/task-daemon-demo-sequence.svg}"
 METRICS_OUT="${TASK_DAEMON_DEMO_METRICS_OUT:-/tmp/task-daemon-demo-metrics.json}"
 SUMMARY_OUT="${TASK_DAEMON_DEMO_SUMMARY_OUT:-/tmp/task-daemon-demo-scoreboard.md}"
 REPORT_OUT="${TASK_DAEMON_DEMO_REPORT_OUT:-/tmp/task-daemon-demo-report.html}"
@@ -47,7 +44,7 @@ if [ -f .env ]; then
 fi
 
 if [ "$RESET_STATE" = "1" ]; then
-  rm -f "$STATE_FILE" "$JSONL_OUT" "$RUN_LOG" "$COORDINATOR_LOG" "$MERMAID_OUT" "$DOT_OUT" "$STAGE_DOT_OUT" "$SVG_OUT" "$METRICS_OUT" "$SUMMARY_OUT" "$REPORT_OUT"
+  rm -f "$STATE_FILE" "$JSONL_OUT" "$RUN_LOG" "$COORDINATOR_LOG" "$METRICS_OUT" "$SUMMARY_OUT" "$REPORT_OUT"
 fi
 
 COORDINATOR_LOG_START_LINE=0
@@ -175,30 +172,6 @@ else
   fi
 fi
 
-echo "Exporting Mermaid sequence diagram to ${MERMAID_OUT}..." >&2
-cargo run -p baml-rt-provenance --features cli --bin graph_exporter -- \
-  --db "$PROVENANCE_DB" \
-  --context-id "$CONTEXT_ID" \
-  --simplify \
-  --format mermaid \
-  --output "$MERMAID_OUT"
-
-echo "Exporting DOT graph to ${DOT_OUT}..." >&2
-cargo run -p baml-rt-provenance --features cli --bin graph_exporter -- \
-  --db "$PROVENANCE_DB" \
-  --context-id "$CONTEXT_ID" \
-  --simplify \
-  --format dot \
-  --group \
-  --output "$DOT_OUT"
-
-if command -v dot >/dev/null 2>&1; then
-  ./scripts/render-task-daemon-stage-dot.sh "$DOT_OUT" "$STAGE_DOT_OUT"
-  dot -Tsvg "$STAGE_DOT_OUT" -o "$SVG_OUT"
-else
-  echo "Graphviz 'dot' not found; skipping SVG render." >&2
-fi
-
 echo "Writing demo scoreboard to ${SUMMARY_OUT}..." >&2
 {
   echo "# Task Daemon Demo Scoreboard"
@@ -274,12 +247,6 @@ echo "Demo artifacts:" >&2
 echo "- Context id: $CONTEXT_ID" >&2
 echo "- Task-daemon batch JSONL: $JSONL_OUT" >&2
 echo "- Context metrics JSON: $METRICS_OUT" >&2
-echo "- Mermaid sequence: $MERMAID_OUT" >&2
-echo "- DOT graph: $DOT_OUT" >&2
-echo "- Stage DOT graph: $STAGE_DOT_OUT" >&2
-if [ -f "$SVG_OUT" ]; then
-  echo "- SVG graph: $SVG_OUT" >&2
-fi
 echo "- Demo scoreboard: $SUMMARY_OUT" >&2
 echo "- Demo report: $REPORT_OUT" >&2
 echo "- Task-daemon run log: $RUN_LOG" >&2

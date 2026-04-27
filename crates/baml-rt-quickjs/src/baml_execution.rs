@@ -11,6 +11,7 @@ use baml_rt_core::{
 };
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use baml_rt_llm_config::LlmClientResolver;
+use baml_rt_tools::prompt_projection::format_conversation_history_transcript;
 use baml_runtime::{
     BamlRuntime, FunctionResultStream, RuntimeContextManager, client_registry::ClientRegistry,
 };
@@ -172,7 +173,8 @@ impl Default for ParseRetryPolicy {
 pub trait ConversationContextProvider: Send + Sync {
     /// Return conversation-history payload for the current runtime scope.
     ///
-    /// The payload is injected as `ctx.tags['conversation_history']` in BAML templates.
+    /// The payload is injected as `ctx.tags['conversation_history']` and
+    /// `ctx.tags['conversation_transcript']` in BAML templates.
     /// Provider is called with the runtime scope of the current invocation. For resume,
     /// scope must be TaskScoped with the session's `context_id` so history includes
     /// prior turns. Used in both stream and non-stream paths when conversation context
@@ -685,9 +687,14 @@ impl BamlExecutor {
             return Ok(None);
         }
         let mut tags = HashMap::new();
+        let transcript = format_conversation_history_transcript(&lines);
         tags.insert(
             "conversation_history".to_string(),
             self.json_to_baml_value(&Value::Array(lines))?,
+        );
+        tags.insert(
+            "conversation_transcript".to_string(),
+            self.json_to_baml_value(&Value::String(transcript))?,
         );
         Ok(Some(tags))
     }

@@ -268,6 +268,8 @@ The runtime accepts **flat** `{ "op": … }` (from per-phase functions) and **wr
 
 **Strictness:** If the package is stale and a phase function (e.g. `ExecuteStep__select`) is **missing**, the executor **fails fast** with an explicit rebuild message.
 
+**Tool corpus, transcript order, and spare prose (session and step-executor BAML).** The merged `baml_src/_baml_runtime.baml` (builder prelude) holds **all** `*OpenInput`, `*SendInput`, `ArchiveSearchReadInput` / `ArchivePageReadInput`, and step classes. Field names and semantics live in those types and in `@@description` — not in a second, hand-copied “JSON with `query` / `limit` / …” block in the `prompt` text. Which operations are valid on a given model hop is expressed **only** by the **narrowed** return type for that function, rendered as `{{ ctx.output_format }}`. Per-phase step functions (`__select` / `__act__` / `__continue__*`) start with `{{ ctx.tags['session_step_stable_prefix'] }}` in generated BAML; the QuickJS host sets that tag on [`invoke_function_with_intra`](../crates/baml-rt-quickjs/src/baml/intra_turn.rs) (the `run_step_executor_loop` path only) so archive read-before-repeat policy is **one** runtime string, not re-embedded per package. Do not add a parallel FSM story in the prompt that could disagree with that union. For hand-written session-plan `prompt` bodies, a practical order is: **task** lines → **`{{ ctx.tags['conversation_transcript'] }}`** (if used) → **`{{ ctx.output_format }}` last**; plain plan/synthesis functions may order `output_format` for readability, but step-executor flows should end with the narrow schema.
+
 ### 3.5 Map the BAML function to session plans (packaging)
 
 `baml-agent-builder package` produces **`session_plan_functions.json`**:

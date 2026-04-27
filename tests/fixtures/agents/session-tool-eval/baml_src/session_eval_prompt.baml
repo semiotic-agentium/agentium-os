@@ -39,10 +39,7 @@ function PlanSessionToolEvalStep(
 
     {% if ctx.tags['conversation_history'] %}
     Session history:
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
+    {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
 
     {{ ctx.output_format }}

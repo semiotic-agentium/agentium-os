@@ -16,11 +16,13 @@ pub mod event_producer;
 pub mod external_tools;
 pub mod host_registration;
 pub mod ingress_store;
+pub mod llm_request_display;
 mod metrics;
 pub mod opaque_json;
 pub mod open_input_schema;
 pub mod prompt_projection;
 pub mod session_coordination;
+pub mod session_ctx_tags;
 mod spans;
 pub mod tool_catalog;
 pub mod tool_discovery;
@@ -51,11 +53,18 @@ pub use ingress_store::{
     IngressId, IngressItem, IngressStore, clear_ingress_store, ingress_store,
     install_ingress_store, require_ingress_store,
 };
+pub use llm_request_display::{
+    flatten_chat_completion_request_for_display, flatten_message_content_value,
+};
 pub use opaque_json::{
     OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY, OpaqueJson, opaque_json_map_from_object,
 };
 pub use open_input_schema::schema_allows_empty_or_optional_open_input;
 pub use session_coordination::get_session_coordination_baml_for_tools;
+pub use session_ctx_tags::{
+    CTX_TAG_SESSION_STEP_STABLE_PREFIX, SESSION_STEP_STABLE_PREFIX_BAML,
+    SESSION_STEP_STABLE_PREFIX_VALUE,
+};
 pub use tool_catalog::{CompositeCatalog, InventoryCatalog, ManifestToolNames, ToolCatalog};
 pub use tool_discovery::search_tools;
 pub use tool_error_classify::{

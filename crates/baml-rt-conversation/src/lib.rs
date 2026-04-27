@@ -10,7 +10,7 @@
 //! - **Isomorphism** with live BAML tags: the pipeline is
 //!   **provenance view row** → [`provenance_item_to_projection_item`] →
 //!   [`project_projection_item_to_rows`] (or [`project_prompt_context`](baml_rt_tools::prompt_projection::project_prompt_context) for `ctx.tags`) **without**
-//!   cross-item state. The A2A runtime uses the same sequence in
+//!   cross-item state. `SendDone` is summary + read guidance only; archive text is only on explicit read steps. The A2A runtime uses the same sequence in
 //!   `ProjectingConversationContextProvider` (`baml-rt-a2a` / `a2a_transport.rs`), not a separate
 //!   fork. Episode [`assemble_session_history`](session_history::assemble_session_history) uses the
 //!   same row primitive with [`ProjectionRenderOptions`] from
@@ -40,9 +40,6 @@ pub use baml_rt_tools::prompt_projection::{
     ProjectedLineRole, ProjectionRenderOptions, episode_session_history_projection_options,
     project_projection_item_to_rows,
 };
-pub use projection::{
-    projection_pairs_for_conv_item, provenance_item_to_projection_item,
-    session_history_body_from_send_done_replay,
-};
+pub use projection::{projection_pairs_for_conv_item, provenance_item_to_projection_item};
 pub use render::{prefix_wire_citation, prefix_wire_citations_in_text, render_episode};
 pub use session_history::assemble_session_history;

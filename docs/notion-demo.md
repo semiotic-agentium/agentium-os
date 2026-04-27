@@ -53,12 +53,13 @@ Custom text:
 NOTION_DEMO_TEXT="Summarize this Notion page <id> with sources." just notion-demo
 ```
 
-## Provenance Replay
+## Provenance replay
 
-If `notion-demo` prints a `contextId`, export the sequence diagram:
+If `notion-demo` prints a `contextId`, fetch the Mermaid sequence from the runner (file-backed
+provenance, same `NOTION_DEMO_RUNNER_URL` the demo used):
 
 ```bash
-just provenance-mermaid <context_id>
+curl -sS "${NOTION_DEMO_RUNNER_URL:-http://127.0.0.1:18080}/contexts/<context_id>/mermaid"
 ```
 
 The diagram should show the runtime narrative end-to-end:
@@ -74,7 +75,7 @@ For team demos, run these scenes in order:
 
 1. `Search scene`: `just notion-demo`
 2. `Deterministic scene`: `NOTION_DEMO_PAGE_ID="<page-or-block-id>" just notion-demo`
-3. `Trace scene`: run `just provenance-mermaid <context_id>` from either prior run and inspect the sequence narrative
+3. `Trace scene`: run `curl -sS "$NOTION_DEMO_RUNNER_URL/contexts/<context_id>/mermaid"` from either prior run and inspect the sequence narrative
 
 This sequence highlights planning behavior, deterministic direct-ID behavior, and
 provenance-backed observability in one arc.

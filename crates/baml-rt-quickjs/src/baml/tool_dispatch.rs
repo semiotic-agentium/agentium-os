@@ -97,6 +97,7 @@ impl BamlRuntimeManager {
         )?;
         let plan_kind = match &classified {
             BamlToolInvocationPlan::Passthrough(_) => "passthrough",
+            BamlToolInvocationPlan::ArchiveRead { .. } => "archive_read",
             BamlToolInvocationPlan::SessionPlan { .. } => "session_plan",
             BamlToolInvocationPlan::OneShot { .. } => "one_shot",
         };
@@ -105,6 +106,9 @@ impl BamlRuntimeManager {
             "execute_tool_from_baml_result_or_value: classified invocation plan"
         );
         match classified {
+            BamlToolInvocationPlan::ArchiveRead { plan } => {
+                self.execute_archive_read_plan(scope, plan).await
+            }
             BamlToolInvocationPlan::SessionPlan {
                 tool_name,
                 plan,

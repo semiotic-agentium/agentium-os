@@ -3,14 +3,11 @@ function ChooseCalcTool(user_message: string, session_context: SessionContext?) 
   client DefaultClient
   prompt #"
     Evaluate this calculation: {{ user_message }}
-    For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
+    Send payload: `CalculateSendInput` in the merged runtime; match this hop’s `ctx.output_format`.
 
     {% if ctx.tags['conversation_history'] %}
     Session history:
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
+    {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
 
     {{ ctx.output_format }}

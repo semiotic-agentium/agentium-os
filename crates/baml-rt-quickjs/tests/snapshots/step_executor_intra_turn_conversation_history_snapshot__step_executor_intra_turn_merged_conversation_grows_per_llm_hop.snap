@@ -1,6 +1,5 @@
 ---
 source: crates/baml-rt-quickjs/tests/step_executor_intra_turn_conversation_history_snapshot.rs
-assertion_line: 252
 expression: "&redact_stochastic_strings(&report)"
 ---
 {
@@ -32,11 +31,7 @@ expression: "&redact_stochastic_strings(&report)"
       },
       {
         "role": "tool",
-        "content": "<redacted-@ref> · \"computing 2 + 3\" · 3L · 51B\n"
-      },
-      {
-        "role": "read",
-        "content": "cat -n <redacted-@ref>\n     1\t5.0"
+        "content": "<redacted-@ref> · \"computing 2 + 3\" · 3L · 51B"
       }
     ]
   ],

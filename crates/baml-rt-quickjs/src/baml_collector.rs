@@ -17,6 +17,7 @@ use baml_rt_core::{
     ids::ContextId,
 };
 use baml_rt_interceptor::{InterceptorRegistry, LLMCallContext};
+use baml_rt_tools::flatten_chat_completion_request_for_display;
 use baml_runtime::tracingv2::storage::storage::Collector;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -279,9 +280,11 @@ impl BamlLLMCollector {
         let client = call.client_name.clone();
         let model = call.provider.clone(); // provider is the model/provider name
 
-        // Extract prompt/messages from the request if available
+        // Extract prompt/messages from the request; flatten `content: [{type:text,...}]` to
+        // `content: "…"` for interceptors/telemetry (same token payload; readable JSON).
         let prompt = if let Some(ref http_request) = call.request {
-            serde_json::to_value(http_request.as_ref()).unwrap_or_else(|_| json!({}))
+            let raw = serde_json::to_value(http_request.as_ref()).unwrap_or_else(|_| json!({}));
+            flatten_chat_completion_request_for_display(&raw)
         } else {
             json!({})
         };

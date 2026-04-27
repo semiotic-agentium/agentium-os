@@ -23,6 +23,8 @@ use super::{
 pub(crate) enum BamlToolInvocationPlan {
     /// No tool session plan and no extractable tool call — return payload unchanged.
     Passthrough(Value),
+    /// Run a global archive-table read by visible @N, independent of selected/open tool state.
+    ArchiveRead { plan: ToolSessionPlan },
     /// Run the session FSM (`Open` / `Send` / …).
     SessionPlan {
         tool_name: ToolName,
@@ -53,6 +55,10 @@ pub(crate) fn resolve_baml_tool_invocation_plan(
         e
     })?;
     if let Some(plan) = plan_result {
+        if plan.is_archive_read() {
+            return Ok(BamlToolInvocationPlan::ArchiveRead { plan });
+        }
+
         let tool_name = if let (Some(func_name), Some(map)) =
             (source_baml_function, session_plan_functions.as_ref())
         {

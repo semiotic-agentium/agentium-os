@@ -33,14 +33,6 @@ function SynthesizeCoordinatorResponse(
     {{ delegated_transcript }}
     ---END UNTRUSTED EVIDENCE---
 
-    {% if ctx.tags['conversation_history'] %}
-    Prior conversation (for continuity only, NOT as evidence):
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-    {% endif %}
-
     Return JSON matching CoordinatorAnswer with these rules:
     - answer: direct response in 2-5 sentences.
     - actionable_goals:
@@ -67,6 +59,11 @@ function SynthesizeCoordinatorResponse(
       - otherwise return null.
 
     Do not invent facts. Keep wording concise.
+
+    {% if ctx.tags['conversation_history'] %}
+    Prior conversation (for continuity only, NOT as evidence):
+    {{ ctx.tags['conversation_transcript'] }}
+    {% endif %}
 
     {{ ctx.output_format }}
   "#

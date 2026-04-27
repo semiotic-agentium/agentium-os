@@ -129,9 +129,9 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
     }
 
     match &config.provenance_db {
-        ProvenanceDb::InMemory => info!(
-            "Provenance backend: in-memory (:memory:). External graph_exporter cannot read this."
-        ),
+        ProvenanceDb::InMemory => {
+            info!("Provenance backend: in-memory (:memory:), not persisted to disk")
+        }
         ProvenanceDb::File(path) => {
             info!(path = %path.display(), "Provenance backend: SurrealKV directory")
         }

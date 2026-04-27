@@ -121,7 +121,7 @@ TASK_ID="$(
 
 if [ -n "$CONTEXT_ID" ]; then
   echo "Captured context id: $CONTEXT_ID" >&2
-  echo "Export sequence diagram: just provenance-mermaid $CONTEXT_ID" >&2
+  echo "Mermaid sequence: curl -sS ${RUNNER_URL}/contexts/${CONTEXT_ID}/mermaid" >&2
 fi
 if [ -n "$TASK_ID" ]; then
   echo "Captured task id: $TASK_ID" >&2

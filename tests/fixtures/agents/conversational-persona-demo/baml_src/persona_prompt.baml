@@ -1,6 +1,4 @@
-// Discover which agents are available to handle the user's request.
-// If a prior Send already archived a listing at @N, page with Read before re-Sending the same broad query.
-// FSM phase instructions are injected by codegen — this prompt carries goal context only.
+// Discover which agents are available. Archive handle rules are in the merged runtime prelude; per-hop ops: narrowed return type only.
 function GetDiscoverAgentsPlan(
   inferred_intent: string,
 ) -> SystemDiscover_agentsSessionPlan {
@@ -9,11 +7,7 @@ function GetDiscoverAgentsPlan(
     Discover available agents to match the user's intent.
     Inferred intent: {{ inferred_intent }}
 
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-
+    {{ ctx.tags['conversation_transcript'] }}
     {{ ctx.output_format }}
   "#
 }
@@ -25,9 +19,9 @@ function InferDiscoveryIntent(user_message: string) -> string {
     Write exactly one concise sentence describing the user's likely intent at a goal level.
     This is pre-discovery: do not mention specific agents, tools, or execution mechanics.
     Focus on what outcome the user appears to want.
-    {{ ctx.output_format }}
     {{ _.role('user') }}
     {{ user_message }}
+    {{ ctx.output_format }}
   "#
 }
 
@@ -51,14 +45,9 @@ function FormatCapabilities(user_message: string) -> StructuredReply {
     Describe what agents are available to help the user, in brutal ork persona voice.
     Match the output schema exactly (StructuredReply: parts + citations). 2-5 sentences in the text part; no tool jargon.
 
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-
+    {{ ctx.tags['conversation_transcript'] }}
     {{ _.role('user') }}
     {{ user_message }}
-
     {{ ctx.output_format }}
   "#
 }
@@ -74,15 +63,10 @@ function SelectAgentForMessage(user_message: string) -> SelectedAgent | null {
     Pick the single best agent for the user's request. Use prior turns in ctx.tags['conversation_history'] when present (e.g. follow-ups like "use the argument one").
     Return that agent's agent_package and agent_instance_id only. If no agent fits, or the user just wants to know capabilities, return null. Never select conversational-persona-demo (that is this router itself).
 
-    {{ ctx.output_format }}
-
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-
+    {{ ctx.tags['conversation_transcript'] }}
     {{ _.role('user') }}
     {{ user_message }}
+    {{ ctx.output_format }}
   "#
 }
 
@@ -111,15 +95,10 @@ function MakeStructuredPlan(user_message: string) -> StandardStructuredPlan {
     - If the user is asking what is available, what you can do, greetings/help, casual social chat, set plan_steps to [].
     A task may need one agent chat (one step) or multiple (multiple steps). Never plan a step for conversational-persona-demo. Output only the structured plan.
 
-    {{ ctx.output_format }}
-
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-
+    {{ ctx.tags['conversation_transcript'] }}
     {{ _.role('user') }}
     {{ user_message }}
+    {{ ctx.output_format }}
   "#
 }
 
@@ -133,16 +112,9 @@ function DecideDelegationAction(
   client DefaultClient
   prompt #"
     Coordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
+    `Open` / `Send` field shapes: `*OpenInput` and `*SendInput` in the merged runtime. Return `null` when the goal is satisfied or after 2+ exchanges.
 
-    For Open: set initial_input.target to { agent_package: "{{ agent_package }}", agent_instance_id: "{{ agent_instance_id }}" }.
-    For Send: write the message that will achieve the goal.
-    Return null (string?) when the goal is satisfied or after 2+ exchanges.
-
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-
+    {{ ctx.tags['conversation_transcript'] }}
     {{ ctx.output_format }}
   "#
 }
@@ -164,11 +136,7 @@ function PersonaReact(
     Match the output schema exactly (StructuredReply: parts + citations).
     Synthesize across steps when needed; use ork-flavoured diction (krump, waaagh) sparingly.
 
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-
+    {{ ctx.tags['conversation_transcript'] }}
     {{ ctx.output_format }}
   "#
 }
@@ -183,11 +151,7 @@ function PersonaChat(user_message: string) -> string {
     - Keep responses short (2-5 sentences) unless the user asks for depth.
     - Ask one follow-up question when it helps continue the conversation.
 
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-
+    {{ ctx.tags['conversation_transcript'] }}
     {{ _.role('user') }}
     {{ user_message }}
   "#

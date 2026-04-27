@@ -164,7 +164,7 @@ async fn episode_aggregates_llm_tokens_and_wall_clock() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: Graph-hydrated SendDone produces READ entries in transcript
+// Test 2: SendDone is summary-only; explicit PageRead has archive body (transcript ∥ session_history)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -277,85 +277,59 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
         .chain(ep.transcript.iter())
         .collect();
 
-    // SendDone should produce a ToolResult header + ToolRead body pair
+    // SendDone → ToolResult (summary line only), not ToolRead. Archive text only on explicit read.
+    let send_done_entry = all_entries
+        .iter()
+        .find(|e| {
+            e.step_type == StepType::ToolResult
+                && matches!(&e.content, EpisodeContent::ToolOutput { lines, .. } if {
+                    let t = lines.join("\n");
+                    t.contains("4894@1") && !t.contains("PageRead for")
+                })
+        })
+        .expect("SendDone transcript row with compact header only");
+    if let EpisodeContent::ToolOutput { lines, .. } = &send_done_entry.content {
+        let t = lines.join("\n");
+        assert!(
+            !t.contains("agent-alpha"),
+            "SendDone must not inline tool/archive payload: {t}"
+        );
+    } else {
+        panic!("expected ToolOutput for SendDone");
+    }
+
     let tool_read_entries: Vec<_> = all_entries
         .iter()
         .filter(|e| e.step_type == StepType::ToolRead)
         .collect();
-    assert!(
-        tool_read_entries.len() >= 2,
-        "expected >= 2 ToolRead entries (SendDone body + explicit PageRead); got {}",
+    assert_eq!(
+        tool_read_entries.len(),
+        1,
+        "only explicit PageRead/SearchRead produce ToolRead; got {}",
         tool_read_entries.len()
     );
 
-    // The SendDone body entry should contain the actual tool result content
-    let send_done_body = tool_read_entries.iter().find(
-        |e| matches!(&e.content, EpisodeContent::ToolOutput { lines, .. } if !lines.is_empty()),
-    );
-    assert!(
-        send_done_body.is_some(),
-        "SendDone should produce a ToolRead with rendered archive lines"
-    );
-    let body = send_done_body.unwrap();
-    if let EpisodeContent::ToolOutput {
-        lines,
-        summary,
-        line_count,
-        ..
-    } = &body.content
-    {
+    let read_body = tool_read_entries[0];
+    if let EpisodeContent::ToolOutput { lines, summary, .. } = &read_body.content {
         assert!(
-            summary.contains("cat -n"),
-            "summary should contain cat -n command; got: {summary}"
-        );
-        assert!(
-            *line_count > 1,
-            "line_count should reflect multi-line payload; got {line_count}"
+            summary.contains("cat -n") || lines.iter().any(|l| l.contains("cat -n")),
+            "PageRead should format as cat -n; summary={summary:?}"
         );
         let joined = lines.join("\n");
-        assert!(
-            joined.contains("agent-alpha"),
-            "rendered lines must include tool result content (agent-alpha); got:\n{joined}"
-        );
-        assert!(
-            joined.contains("agent-beta"),
-            "rendered lines must include tool result content (agent-beta)"
-        );
-        assert!(
-            joined.contains("agent-gamma"),
-            "rendered lines must include tool result content (agent-gamma)"
-        );
+        assert!(joined.contains("agent-alpha"), "PageRead body: {joined}");
+        assert!(joined.contains("agent-beta"), "PageRead body: {joined}");
+        assert!(joined.contains("agent-gamma"), "PageRead body: {joined}");
     } else {
-        panic!("expected ToolOutput content for SendDone body");
+        panic!("expected ToolOutput for PageRead");
     }
-
-    // Explicit Read: invocation-only when no replay; with graph hydration, replayed archive body.
-    assert!(
-        all_entries.iter().any(|e| {
-            e.step_type == StepType::ToolRead
-                && (matches!(&e.content, EpisodeContent::ToolInvocation { description, .. }
-                    if description.contains("read @1"))
-                    || matches!(&e.content, EpisodeContent::ToolOutput { summary, .. }
-                        if summary.contains("@1")))
-        }),
-        "explicit Read step should appear as ToolRead (invocation or replayed output)"
-    );
 
     // --- Session history: golden file matches `assemble_session_history` / `project_prompt_context` (see `docs/baml-rt-conversation-spec.md`) ---
     let session_history = serde_json::to_value(&ep.session_history).expect("json");
     insta::assert_json_snapshot!(session_history);
 
-    // Transcript vs session_history: shared ToolRead body formatting
+    // Transcript: one ToolRead body (explicit PageRead), not duplicated from SendDone
     let tool_read_bodies = transcript_tool_read_bodies(&ep);
-    assert_eq!(
-        tool_read_bodies.len(),
-        2,
-        "fixture expects SendDone hydrated body + explicit Read replay in transcript"
-    );
-    assert_eq!(
-        tool_read_bodies[0], tool_read_bodies[1],
-        "same @1 slice → identical cat-n/grep formatting for both transcript steps"
-    );
+    assert_eq!(tool_read_bodies.len(), 1, "one explicit read in transcript");
     let body = &tool_read_bodies[0];
 
     // --- Rendered text format assertions ---
@@ -366,15 +340,14 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
     );
     assert!(
         rendered.contains("agent-alpha"),
-        "rendered must include archive content in tool_read lines"
+        "rendered must include archive content in the explicit tool_read block"
     );
-    // Text renderer prefixes each stored line with `  | ` — no single verbatim multiline blob.
     for ln in body.lines() {
         let needle = format!("  | {ln}");
         let hits = rendered.match_indices(&needle).count();
         assert!(
-            hits >= 2,
-            "each read line must appear in both ToolRead render blocks; line={ln:?} hits={hits}"
+            hits >= 1,
+            "read line should appear in rendered episode; line={ln:?} hits={hits}"
         );
     }
 }

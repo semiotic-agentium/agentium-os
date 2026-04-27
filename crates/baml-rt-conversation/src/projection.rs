@@ -2,7 +2,6 @@
 //! `ctx.tags['conversation_history']`.
 
 use baml_rt_tools::{
-    archive_read::{PageLimit, format_send_done_replay_from_json},
     archive_refs::RefTable,
     prompt_projection::{
         ArchiveReader, ProjectionRenderOptions, PromptProjectionContent, PromptProjectionItem,
@@ -91,15 +90,6 @@ pub fn provenance_item_to_projection_item(
         role: item.role,
         content,
     })
-}
-
-/// `SendDone` session line: JSON replay → cat-n body (same cap as prompt projection `send_done`).
-pub fn session_history_body_from_send_done_replay(
-    payload: &serde_json::Value,
-    archive_ref: &str,
-    limit: usize,
-) -> Option<String> {
-    format_send_done_replay_from_json(payload, archive_ref, PageLimit::new(limit))
 }
 
 /// Line pairs `(role, content)` before wire citation prefixing, matching

@@ -251,48 +251,12 @@ pub struct GrepPage {
     pub next_offset: usize,
 }
 
-impl GrepPage {
-    /// Host instruction on the line after the synthetic `cat -n` / `grep -n` command, before
-    /// numbered lines. When `has_more`, this names **SearchRead** / **PageRead** and the next
-    /// `offset=` (same text as in [`super::session_read_body::format_grep_page_as_session_read_body`]).
-    #[must_use]
-    pub fn session_range_comment(&self) -> String {
-        if self.lines.is_empty() {
-            return String::new();
-        }
-        let first = self
-            .lines
-            .first()
-            .map(|l| l.original_line_number)
-            .unwrap_or(1);
-        let last = self
-            .lines
-            .last()
-            .map(|l| l.original_line_number)
-            .unwrap_or(1);
-        if self.has_more {
-            let remaining = self.total_matched.saturating_sub(self.next_offset);
-            let off = self.next_offset;
-            format!(
-                "  # More lines are not shown below — emit SearchRead (non-empty grep) to narrow, or PageRead to continue with offset={off} on this @N. Window: lines {first}-{last} of {total} ({rem} more — offset={off} for next page)",
-                total = self.total_matched,
-                rem = remaining,
-                off = off,
-            )
-        } else if first == 1 && last == self.total_matched {
-            String::new()
-        } else {
-            format!("  # lines {first}-{last} of {}", self.total_matched)
-        }
-    }
-}
-
 /// Default line cap for tool results in [`ProjectionRenderOptions`](crate::prompt_projection::ProjectionRenderOptions).
 /// Episode transcript inline rendering uses the same cap so exports match LLM-visible history.
 pub const DEFAULT_TOOL_RESULT_INLINE_LINES: usize = 40;
 
-/// Teaser line cap for `SendDone` archive bodies in prompts, session history, and BAML `conversation_history`.
-/// Full archive content is reached via `Read` (`PageRead` / `SearchRead`), not by inflating this inline window.
+/// Legacy name: `SendDone` no longer inlines archive bodies in `conversation_history`. Kept in case
+/// external code referenced this constant; use explicit `PageRead` / `SearchRead` for content.
 pub const SEND_DONE_HISTORY_INLINE_LINES: usize = 20;
 
 #[cfg(test)]
@@ -340,22 +304,6 @@ mod tests {
         assert_eq!(PageLimit::new(1000).get(), 500);
         assert_eq!(PageLimit::new(50).get(), 50);
         assert_eq!(PageLimit::default().get(), 200);
-    }
-
-    #[test]
-    fn grep_page_session_range_comment_when_truncated() {
-        use crate::archive_read::{
-            LineOffset, PageLimit, grep::grep_paginate, rendered::RenderedContent,
-        };
-        let lines: Vec<String> = (0..100).map(|i| format!("L{i}")).collect();
-        let rc = RenderedContent::from_lines(lines);
-        let page = grep_paginate(&rc, None, LineOffset::default(), PageLimit::new(40));
-        assert!(page.has_more);
-        let c = page.session_range_comment();
-        assert!(c.contains("offset=40"), "{c}");
-        assert!(c.contains("60 more"), "{c}");
-        assert!(c.contains("SearchRead"), "{c}");
-        assert!(c.contains("PageRead"), "{c}");
     }
 
     #[test]

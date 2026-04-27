@@ -13,6 +13,53 @@ use super::{
 };
 use crate::archive_refs::RefTable;
 
+/// A rendered archive page with the concrete ref required to tell the model how to continue.
+pub struct ArchiveReadPage<'a> {
+    pub page: &'a GrepPage,
+    pub archive_ref: &'a str,
+}
+
+impl ArchiveReadPage<'_> {
+    /// Host instruction on the line after the synthetic `cat -n` / `grep -n` command, before
+    /// numbered lines. Rendering this instruction requires a concrete archive ref.
+    #[must_use]
+    pub fn session_range_comment(&self) -> String {
+        if self.page.lines.is_empty() {
+            return String::new();
+        }
+        let first = self
+            .page
+            .lines
+            .first()
+            .map(|l| l.original_line_number)
+            .unwrap_or(1);
+        let last = self
+            .page
+            .lines
+            .last()
+            .map(|l| l.original_line_number)
+            .unwrap_or(1);
+        if self.page.has_more {
+            let remaining = self
+                .page
+                .total_matched
+                .saturating_sub(self.page.next_offset);
+            let off = self.page.next_offset;
+            let archive_ref = self.archive_ref;
+            format!(
+                "  # More lines are not shown below — emit SearchRead (non-empty grep) to narrow {archive_ref}, or PageRead to continue {archive_ref} with offset={off}. Window: lines {first}-{last} of {total} ({rem} more — offset={off} for next page)",
+                total = self.page.total_matched,
+                rem = remaining,
+                off = off,
+            )
+        } else if first == 1 && last == self.page.total_matched {
+            String::new()
+        } else {
+            format!("  # lines {first}-{last} of {}", self.page.total_matched)
+        }
+    }
+}
+
 /// CLI analogue for a session `Read` when showing the command line only (no resolved archive).
 #[must_use]
 pub fn session_read_command_line(archive_ref_str: &str, grep_pattern_raw: Option<&str>) -> String {
@@ -34,7 +81,11 @@ pub fn format_grep_page_as_session_read_body(
     if page.lines.is_empty() {
         return format!("{cmd}\n# no matches");
     }
-    let range_comment = page.session_range_comment();
+    let range_comment = ArchiveReadPage {
+        page,
+        archive_ref: archive_ref_str,
+    }
+    .session_range_comment();
     // `str::lines` + `join("\n")` drops a final newline; keep one canonical form for transcript
     // ToolOutput lines and session_history string content. Put the synthetic command on its
     // own line; when a range or paging line exists, it follows on the next line (avoids
@@ -85,18 +136,6 @@ pub fn format_session_read_body_from_json_value(
         offset,
         page_limit,
     ))
-}
-
-/// `SendDone` graph JSON replay: same as [`format_session_read_body_from_json_value`] with
-/// `grep = None`, `offset = 0`, and the caller’s `send_done` cap (live projection and episode
-/// assembly both use this).
-#[must_use]
-pub fn format_send_done_replay_from_json(
-    payload: &Value,
-    archive_ref: &str,
-    send_done_limit: PageLimit,
-) -> Option<String> {
-    format_session_read_body_from_json_value(payload, archive_ref, None, 0, send_done_limit)
 }
 
 /// Look up `archive_ref_str` in a graph [`RefTable`], then format the session read body the same
@@ -167,5 +206,26 @@ mod tests {
             "numbered content after paging, got: {:?}",
             lines[2]
         );
+    }
+
+    #[test]
+    fn archive_read_page_session_range_comment_when_truncated_names_ref() {
+        let lines: Vec<String> = (0..100).map(|i| format!("L{i}")).collect();
+        let rendered = RenderedContent::from_lines(lines);
+        let page = grep_paginate(&rendered, None, LineOffset::default(), PageLimit::new(40));
+        assert!(page.has_more);
+
+        let c = ArchiveReadPage {
+            page: &page,
+            archive_ref: "@7",
+        }
+        .session_range_comment();
+
+        assert!(c.contains("@7"), "{c}");
+        assert!(c.contains("offset=40"), "{c}");
+        assert!(c.contains("60 more"), "{c}");
+        assert!(c.contains("SearchRead"), "{c}");
+        assert!(c.contains("PageRead"), "{c}");
+        assert!(!c.contains("this @N"), "{c}");
     }
 }

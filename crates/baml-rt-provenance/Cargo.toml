@@ -28,8 +28,6 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
-clap = { workspace = true, optional = true }
-anyhow = { workspace = true, optional = true }
 surrealdb = { workspace = true }
 
 [dev-dependencies]
@@ -41,12 +39,6 @@ paste = { workspace = true }
 
 [features]
 default = []
-cli = ["dep:clap", "dep:anyhow"]
-
-[[bin]]
-name = "graph_exporter"
-path = "src/bin/graph_exporter.rs"
-required-features = ["cli"]
 
 [[bench]]
 name = "sequence_render"

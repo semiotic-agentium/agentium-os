@@ -7,7 +7,6 @@ use std::{
 
 use baml_rt_conversation::{
     assemble_session_history,
-    projection::projection_pairs_for_conv_item,
     render::{prefix_wire_citation, prefix_wire_citations_in_text},
     timeline::{ArtifactRow, StatusRow, TimelineKind},
     view::{
@@ -16,12 +15,11 @@ use baml_rt_conversation::{
 };
 use baml_rt_core::ids::{AgentId, ContextId, TaskId, UuidId};
 use baml_rt_tools::{
-    archive_read::{
-        PageLimit, RenderedContent, format_session_read_body_from_rendered,
-        format_session_read_from_vtable,
-    },
+    archive_read::{PageLimit, RenderedContent, format_session_read_body_from_rendered},
     archive_refs::RefTable,
-    prompt_projection::{ArchiveReader, ProjectionRenderOptions},
+    prompt_projection::{
+        episode_session_history_projection_options, format_send_done_projection_line,
+    },
     tools::ToolRegistry,
 };
 use futures_util::future::try_join_all;
@@ -337,20 +335,9 @@ impl EpisodeReader {
             TimelineKind::Artifact(a) => (a.event_order, 2u8, 0u8, a.activity_anchor.clone()),
         });
 
-        let projection_opts =
-            baml_rt_tools::prompt_projection::episode_session_history_projection_options();
-
         let replay_table = RefTable::new();
         let mut wire_filled = HashSet::new();
         seed_replay_payload_slots_from_merged(&replay_table, &merged, &mut wire_filled);
-
-        let archive_reader = |archive_ref_str: &str,
-                              grep_str: Option<&str>,
-                              offset: usize,
-                              limit: usize|
-         -> Option<String> {
-            format_session_read_from_vtable(&replay_table, archive_ref_str, grep_str, offset, limit)
-        };
 
         let mut seq: u32 = 0;
         let mut prior_context: Vec<EpisodeEntry> = Vec::new();
@@ -368,15 +355,7 @@ impl EpisodeReader {
                         task_line += 1;
                         task_line * EPISODE_LINE_TICK_MS
                     };
-                    let entries = conv_item_to_entries(
-                        item,
-                        tick_ms,
-                        &mut seq,
-                        &ref_prefix,
-                        &projection_opts,
-                        self.tool_registry.as_ref(),
-                        Some(&archive_reader),
-                    )?;
+                    let entries = conv_item_to_entries(item, tick_ms, &mut seq, &ref_prefix)?;
                     for e in &entries {
                         absorb_episode_entry_into_ref_table(&replay_table, &mut wire_filled, e);
                     }
@@ -509,6 +488,7 @@ impl EpisodeReader {
             drift_calls,
         };
         let vtable = super::archive::episode_ref_table_with_merged(&episode, &merged);
+        let projection_opts = episode_session_history_projection_options();
         episode.session_history = assemble_session_history(
             &merged,
             &episode.ref_prefix,
@@ -718,9 +698,6 @@ fn conv_item_to_entries(
     elapsed_ms: i64,
     seq: &mut u32,
     ref_prefix: &EpisodeRefPrefix,
-    projection_opts: &ProjectionRenderOptions,
-    tool_registry: &ToolRegistry,
-    archive_reader: Option<ArchiveReader<'_>>,
 ) -> Result<Vec<EpisodeEntry>> {
     if !item.content.is_meaningful() {
         return Ok(Vec::new());
@@ -792,67 +769,20 @@ fn conv_item_to_entries(
                 archive_ref,
                 ..
             } => {
-                use baml_rt_tools::archive_refs::RefTable;
-                if let Some(pairs) = projection_pairs_for_conv_item(
-                    item,
-                    tool_registry,
-                    &RefTable::new(),
-                    archive_reader,
-                    *projection_opts,
-                ) && pairs.len() == 2
-                {
-                    let header_prefixed = prefix_wire_citations_in_text(&pairs[0].1, ref_prefix);
-                    let body = prefix_wire_citations_in_text(&pairs[1].1, ref_prefix);
-                    let lines: Vec<String> = body.lines().map(str::to_string).collect();
-                    let line_count = lines.len();
-                    let byte_count: usize = lines.iter().map(|s| s.len().saturating_add(1)).sum();
-                    let summary = lines
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| format!("cat -n {}", archive_ref.as_str()));
-                    *seq += 1;
-                    let header_entry = EpisodeEntry {
-                        seq: *seq,
-                        step_type: StepType::ToolResult,
-                        role: item.role.clone(),
-                        elapsed_ms,
-                        content: EpisodeContent::ToolOutput {
-                            tool_name: ss.tool_name.clone(),
-                            summary: header_prefixed.clone(),
-                            line_count: 1,
-                            byte_count: header_prefixed.len(),
-                            lines: vec![header_prefixed.clone()],
-                        },
-                        activity_anchor: anchor.clone(),
-                        citation_strings: Vec::new(),
-                    };
-                    *seq += 1;
-                    let body_entry = EpisodeEntry {
-                        seq: *seq,
-                        step_type: StepType::ToolRead,
-                        role: "read".into(),
-                        elapsed_ms,
-                        content: EpisodeContent::ToolOutput {
-                            tool_name: ss.tool_name.clone(),
-                            summary,
-                            line_count,
-                            byte_count,
-                            lines,
-                        },
-                        activity_anchor: anchor,
-                        citation_strings: Vec::new(),
-                    };
-                    return Ok(vec![header_entry, body_entry]);
-                }
-                let header_prefixed = prefix_wire_citations_in_text(header, ref_prefix);
+                let line = format_send_done_projection_line(header, archive_ref.as_str());
+                let prefixed = prefix_wire_citations_in_text(&line, ref_prefix);
+                let lines: Vec<String> = prefixed.lines().map(str::to_string).collect();
+                let line_count = lines.len();
+                let byte_count: usize = lines.iter().map(|s| s.len().saturating_add(1)).sum();
+                let summary = lines.first().cloned().unwrap_or_else(|| prefixed.clone());
                 (
                     StepType::ToolResult,
                     EpisodeContent::ToolOutput {
                         tool_name: ss.tool_name.clone(),
-                        summary: header_prefixed.clone(),
-                        line_count: 1,
-                        byte_count: header_prefixed.len(),
-                        lines: vec![header_prefixed],
+                        summary,
+                        line_count,
+                        byte_count,
+                        lines,
                     },
                 )
             }

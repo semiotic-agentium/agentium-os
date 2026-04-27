@@ -60,17 +60,14 @@ function DetermineExtrospectionIntent(user_message: string) -> NeedClarification
     - If user explicitly asks for llm/models/prompts -> Llm_calls
     - Else Auto
 
-    {{ ctx.output_format }}
-
-    {% if ctx.tags['conversation_history'] %}
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-    {% endif %}
-
     {{ _.role('user') }}
     {{ user_message }}
+
+    {% if ctx.tags['conversation_history'] %}
+    {{ ctx.tags['conversation_transcript'] }}
+    {% endif %}
+
+    {{ ctx.output_format }}
   "#
 }
 
@@ -81,16 +78,13 @@ function GetDiscoverAgentsPlan(
   client DefaultClient
   prompt #"
     Discover available agents relevant to the user's request.
-    For Send: use empty input {} to list all agents.
+    Send input shape and empty-payload cases are defined on `DiscoverAgentsSendInput` in the merged runtime — do not restate those fields here.
 
     Context: {{ user_message }}
 
     {% if ctx.tags['conversation_history'] %}
     Session history:
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
+    {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
 
     {{ ctx.output_format }}
@@ -112,18 +106,15 @@ function SelectAgentFocus(
     - Mentioned capabilities matching one agent strongly
 
     Never invent agents. Only return one from the provided list.
-    {{ ctx.output_format }}
-
-    {% if ctx.tags['conversation_history'] %}
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-    {% endif %}
-
     {{ _.role('user') }}
     {{ user_message }}
     Agents: {{ agents }}
+
+    {% if ctx.tags['conversation_history'] %}
+    {{ ctx.tags['conversation_transcript'] }}
+    {% endif %}
+
+    {{ ctx.output_format }}
   "#
 }
 
@@ -134,24 +125,14 @@ function BuildExtrospectionPlan(
 ) -> SystemExtrospectionSessionPlan {
   client DefaultClient
   prompt #"
-    Query provenance data matching the intent. For Send, populate input fields:
-    - resource: llm_calls | tool_calls | messages
-      (if Auto: use llm_calls for token queries, messages for message-focused)
-    - outcome: both | failed_only | successful_only
-    - groupBy: llm_calls→["agent_id","provider","model"], tool_calls→["agent_id","tool_name"], messages→["agent_id"]
-    - sortBy from intent.priority_sort, sortDir "desc"
-    - pageSize from intent.page_size, topK from intent.top_k
-    - Do NOT set agentId from selected_agent — only if user gave an explicit provenance agent_id.
+    Query provenance data matching the intent. Fill `ProvenanceQuerySendInput` (and other step payloads) from the field `@@description` on those types and this hop’s narrowed return union — do not duplicate the JSON field list in prose. Do not set `agentId` from `selected_agent` unless the user gave an explicit provenance agent_id.
 
     intent: {{ intent }}
     selected_agent: {{ selected_agent }}
 
     {% if ctx.tags['conversation_history'] %}
     Session history:
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
+    {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
 
     {{ ctx.output_format }}
@@ -204,15 +185,6 @@ function SummarizeExtrospectionReport(
     - Keep total response under ~220 words.
     - No roleplay language, no theatrics, no invented entities or metrics.
 
-        {{ ctx.output_format }}
-
-    {% if ctx.tags['conversation_history'] %}
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-    {% endif %}
-
     {{ _.role('user') }}
     {{ user_message }}
 
@@ -221,6 +193,12 @@ function SummarizeExtrospectionReport(
     discovered_agents: {{ agents }}
     primary_payload_json: {{ primary_payload_json }}
     secondary_payload_json: {{ secondary_payload_json }}
+
+    {% if ctx.tags['conversation_history'] %}
+    {{ ctx.tags['conversation_transcript'] }}
+    {% endif %}
+
+    {{ ctx.output_format }}
   "#
 }
 

@@ -1901,7 +1901,6 @@ dependencies = [
 name = "baml-rt-provenance"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "baml-rt-conversation",
  "baml-rt-core",
@@ -1911,7 +1910,6 @@ dependencies = [
  "baml-rt-observability",
  "baml-rt-tools",
  "baml-rt-vocabulary",
- "clap",
  "criterion",
  "dashmap 6.1.0",
  "futures-util",

@@ -12,6 +12,9 @@
 //! current builder fails **deterministically** on the first hop with a clear error — there is
 //! no fallback to the base polymorphic function.
 //!
+//! BAML `ctx.tags['session_step_stable_prefix']` is set on every hop (see
+//! `baml_rt_tools::session_ctx_tags` and `BamlRuntimeManager::invoke_function_with_intra`).
+//!
 //! ## Provenance
 //!
 //! [`StepExecutorResult`] is **execution telemetry** (per-hop JSON, `last`, selected tool).
@@ -371,6 +374,9 @@ pub async fn run_step_executor_loop(
         // Advance FSM based on current phase + status.
         phase = match phase {
             Phase::AwaitingOpen => {
+                if status == StepStatus::Done {
+                    continue;
+                }
                 if status != StepStatus::Open {
                     return Err(BamlRtError::InvalidArgument(format!(
                         "step executor contract violation ({current_function}): \

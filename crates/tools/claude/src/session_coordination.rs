@@ -64,10 +64,7 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
 
     {{ ctx.output_format }}
 
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
+    {{ ctx.tags['conversation_transcript'] }}
 
     spec_text:
     {{ spec_text }}

@@ -1,6 +1,7 @@
 //! Step-executor hop graph deltas: **provenance-backed** `conversation_context` line changes
-//! (strict prefix extension or set-delta) for composing `ctx.tags['conversation_history']`
-//! with a loop-local `Vec<serde_json::Value>` that augments the provider when the graph
+//! (strict prefix extension or set-delta) for composing `ctx.tags['conversation_history']` /
+//! `ctx.tags['conversation_transcript']` with a loop-local `Vec<serde_json::Value>` that augments
+//! the provider when the graph
 //! lags a hop. No second copy of history on [`BamlRuntimeState`].
 
 use std::{
@@ -11,6 +12,7 @@ use std::{
 
 use baml_rt_core::{Result, context};
 use baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP;
+use baml_rt_tools::{CTX_TAG_SESSION_STEP_STABLE_PREFIX, SESSION_STEP_STABLE_PREFIX_VALUE};
 use baml_types::BamlValue;
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -197,7 +199,14 @@ impl BamlRuntimeManager {
         let prov = exec.provider_conversation_history_lines(scope).await?;
         let merged =
             append_intra_lines_to_provider_then_cap(prov, step_intra_supplement.iter().cloned());
-        exec.tags_from_merged_conversation_lines(merged)
+        let mut tags = exec
+            .tags_from_merged_conversation_lines(merged)?
+            .unwrap_or_default();
+        tags.insert(
+            CTX_TAG_SESSION_STEP_STABLE_PREFIX.to_string(),
+            BamlValue::String(SESSION_STEP_STABLE_PREFIX_VALUE.to_string()),
+        );
+        Ok(Some(tags))
     }
 
     /// Full projected graph lines for step-executor `p_before` / `p_after` (uncapped when the

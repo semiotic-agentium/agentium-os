@@ -28,11 +28,7 @@ function ChatWithContext(user_message: string) -> string {
     - If no such token exists, reply exactly: UNKNOWN
 
     Structured conversation history:
-    {% for message in ctx.tags['conversation_history'] %}
-    ---
-    role: {{ message.role }}
-    content: {{ message.content }}
-    {% endfor %}
+    {{ ctx.tags['conversation_transcript'] }}
 
     {{ _.role('user') }}
     {{ user_message }}

@@ -1,6 +1,7 @@
 //! Conversation context projection for BAML prompt injection.
 //!
-//! Produces a flat `conversation_history` array for `ctx.tags`.
+//! Produces a flat `conversation_history` array for `ctx.tags` (and the runtime mirrors a
+//! [`format_conversation_history_transcript`] string as `conversation_transcript`).
 //! Each item has `{role, content}` — rendered by the trait system:
 //!
 //! - `Message`     → `{HistoryRef} {text}` (e.g. `#1 …`) via [`RefTable::insert_history`], plus
@@ -10,10 +11,9 @@
 //!   top-level and nested `citations: []` are stripped before render (no vacuous lines in history)
 //! - `ToolError`   → archive_read render of error value (same `citations` strip as tool results)
 //! - `SessionStep` → same rendering as above; items use role **`tool`** in `conversation_history`
-//!   (not `assistant`). `Open` / `SendDone` (header ± archive body) / `Read` as the **grep(1)/cat(1)
-//!   analogue**: `SearchRead` → `grep -n 'pat' @N`; `PageRead` → `cat -n @N`; with an [`ArchiveReader`], a
-//!   **single** line of **paginated** archive text (same `grep_paginate` path as
-//!   production — never raw JSON dumps). Matches `remotes/semiotic-agentium/pud-squashed`.
+//!   (not `assistant`). `Open` and `SendDone` are **summary** rows only; archive **content** appears
+//!   only for explicit `SearchRead` / `PageRead` (the **grep(1)/cat(1)** analogues) via
+//!   [`ArchiveReader`] and `grep_paginate` — never raw JSON dumps, never a SendDone inline preview.
 //! - `StatusOnly` items are discarded at the conversion boundary before reaching here.
 
 use std::{borrow::Cow, fmt};
@@ -23,12 +23,50 @@ use serde_json::{Map, Value, json};
 use crate::{
     archive_read::{
         DEFAULT_TOOL_RESULT_INLINE_LINES, PageLimit, RenderedContent,
-        SEND_DONE_HISTORY_INLINE_LINES, format_send_done_replay_from_json,
         format_session_read_body_from_rendered, session_read_command_line,
     },
     archive_refs::{HistoryEntry, RefTable},
+    llm_request_display::flatten_message_content_value,
     tools::ToolRegistry,
 };
+
+/// `SendDone` in `conversation_history` / episode transcript: a single line — the same compact
+/// `header` the archive table uses (e.g. `@2 · "…" · NL · size`). No inline read instructions;
+/// the static FSM descriptions cover SearchRead/PageRead.
+#[must_use]
+pub fn format_send_done_projection_line(header: &str, _archive_ref: &str) -> String {
+    header.to_string()
+}
+
+/// Flatten `ctx.tags['conversation_history']` JSON array into chat-style `role: content` blocks
+/// (blank line between turns). `role` and `content` are taken from each row; optional fields are
+/// ignored. If `content` is an array of `type: "text"` parts (OpenAI-style), it is flattened to
+/// a single string for display, matching [`flatten_message_content_value`].
+#[must_use]
+pub fn format_conversation_history_transcript(rows: &[Value]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for row in rows {
+        let Some(obj) = row.as_object() else {
+            continue;
+        };
+        let role = obj
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let content_raw = obj.get("content");
+        let content = match content_raw {
+            None => String::new(),
+            Some(c) if c.is_string() => c.as_str().unwrap_or("").to_string(),
+            Some(c) if c.is_array() => flatten_message_content_value(c)
+                .as_str()
+                .map(String::from)
+                .unwrap_or_else(|| c.to_string()),
+            Some(c) => c.to_string(),
+        };
+        parts.push(format!("{role}: {content}"));
+    }
+    parts.join("\n\n")
+}
 
 /// Session step op for prompt projection — mirrors `SessionStepOp` from provenance.
 #[derive(Debug, Clone)]
@@ -62,8 +100,8 @@ pub enum SessionStepProjection {
 pub struct SessionStepPayload {
     pub tool_name: String,
     pub op: SessionStepProjection,
-    /// `SendDone` only: when set, build the read body from this JSON (Graph `WAS_INFORMED_BY` replay)
-    /// with the same `send_done` cap as `archive_reader`, instead of (or before falling back to) archive read.
+    /// `SendDone` only: graph-hydrated tool `tool_result` JSON (for ref-table and replay), **not**
+    /// rendered in `conversation_history` — only explicit read steps show archive text.
     pub send_done_replay_payload: Option<Value>,
     /// `SearchRead` / `PageRead` only: pre-hydrated window; wins over `archive_reader` when non-empty.
     pub read_replay_lines: Option<Vec<String>>,
@@ -99,9 +137,8 @@ pub struct PromptProjectionItem {
 
 /// Output from rendering a single projection item.
 ///
-/// A single item in the source can map to zero, one, or two attributed
-/// history entries (e.g. `SendDone` emits the archive header then the
-/// inline content as separate entries so both carry the `assistant:` prefix).
+/// A single item in the source maps to zero or one attributed history entry
+/// (archive body lines are only emitted for explicit `SearchRead` / `PageRead` graph rows).
 pub enum RenderedEntry {
     /// Item is filtered — contributes nothing to conversation history.
     Filtered,
@@ -111,19 +148,15 @@ pub enum RenderedEntry {
         /// `Some` only for [`PromptProjectionContent::Message`] with non-empty graph citations.
         message_citations: Option<Vec<String>>,
     },
-    /// Two attributed entries, first then second (e.g. send_done header + inline content; second line
-    /// uses role `read`, not `tool`).
-    Two(String, String),
 }
 
 /// Wire `role` string in `conversation_history` / `session_history` JSON. Use
-/// [`Self::read_line`] for the second line of a two-line item (e.g. `SendDone` body) so the
-/// `read` literal is not duplicated.
+/// [`Self::read_line`] for explicit `SearchRead` / `PageRead` tool_result rows.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ProjectedLineRole(Cow<'static, str>); // `Clone` is cheap for the read-line `Borrowed` case
 
 impl ProjectedLineRole {
-    /// Second history row for `SendDone` (header + archive body) and other two-line projections.
+    /// History row for a session read step (archive content: `cat -n` / `grep -n` block).
     #[must_use]
     pub fn read_line() -> Self {
         Self(Cow::Borrowed("read"))
@@ -164,7 +197,6 @@ pub type ArchiveReader<'a> = &'a dyn Fn(&str, Option<&str>, usize, usize) -> Opt
 pub struct ProjectionRenderOptions {
     pub tool_result: PageLimit,
     pub tool_error: PageLimit,
-    pub send_done: PageLimit,
     /// When the registry yields no invocation description, fall back to pretty-printed JSON args.
     pub tool_call_fallback_json: bool,
 }
@@ -174,7 +206,6 @@ impl Default for ProjectionRenderOptions {
         Self {
             tool_result: PageLimit::new(DEFAULT_TOOL_RESULT_INLINE_LINES),
             tool_error: PageLimit::new(10),
-            send_done: PageLimit::new(SEND_DONE_HISTORY_INLINE_LINES),
             tool_call_fallback_json: false,
         }
     }
@@ -187,7 +218,6 @@ pub fn episode_session_history_projection_options() -> ProjectionRenderOptions {
     ProjectionRenderOptions {
         tool_result: PageLimit::new(DEFAULT_TOOL_RESULT_INLINE_LINES),
         tool_error: PageLimit::new(DEFAULT_TOOL_RESULT_INLINE_LINES),
-        send_done: PageLimit::new(SEND_DONE_HISTORY_INLINE_LINES),
         tool_call_fallback_json: true,
     }
 }
@@ -244,27 +274,6 @@ pub fn project_projection_item_to_rows(
             content,
             message_citations,
         }],
-        RenderedEntry::Two(first, second) => {
-            // Ensure a boundary between the SendDone header and the read body when consumers
-            // join adjacent `content` fields without adding their own newlines.
-            let first = if first.ends_with('\n') {
-                first
-            } else {
-                format!("{}\n", first)
-            };
-            vec![
-                ProjectedHistoryRow {
-                    role: role_main.clone(),
-                    content: first,
-                    message_citations: None,
-                },
-                ProjectedHistoryRow {
-                    role: ProjectedLineRole::read_line(),
-                    content: second,
-                    message_citations: None,
-                },
-            ]
-        }
     }
 }
 
@@ -307,6 +316,33 @@ pub fn projection_history_pairs(
 }
 
 /// Paginated `cat -n` block for tool result / error values (shared caps via [`PageLimit`]).
+fn inline_tool_result_range_comment(page: &crate::archive_read::GrepPage) -> String {
+    if page.lines.is_empty() {
+        return String::new();
+    }
+    let first = page
+        .lines
+        .first()
+        .map(|l| l.original_line_number)
+        .unwrap_or(1);
+    let last = page
+        .lines
+        .last()
+        .map(|l| l.original_line_number)
+        .unwrap_or(1);
+    if page.has_more {
+        let remaining = page.total_matched.saturating_sub(page.next_offset);
+        format!(
+            "  # lines {first}-{last} of {} ({remaining} more not shown in this preview)",
+            page.total_matched
+        )
+    } else if first == 1 && last == page.total_matched {
+        String::new()
+    } else {
+        format!("  # lines {first}-{last} of {}", page.total_matched)
+    }
+}
+
 fn tool_value_to_rendered_entry(
     value: &Value,
     tool_name: &str,
@@ -325,7 +361,7 @@ fn tool_value_to_rendered_entry(
     if formatted.trim().is_empty() {
         RenderedEntry::Filtered
     } else {
-        let range_comment = page.session_range_comment();
+        let range_comment = inline_tool_result_range_comment(&page);
         let base = if is_error {
             format!("{tool_name} [error]")
         } else {
@@ -409,26 +445,10 @@ fn render_projection_content(
                 SessionStepProjection::SendDone {
                     archive_ref,
                     header,
-                } => {
-                    if let Some(ref payload) = s.send_done_replay_payload
-                        && let Some(body) = format_send_done_replay_from_json(
-                            payload,
-                            archive_ref,
-                            PageLimit::new(opts.send_done.get()),
-                        )
-                    {
-                        return RenderedEntry::Two(header.clone(), body);
-                    }
-
-                    match archive_reader.and_then(|r| r(archive_ref, None, 0, opts.send_done.get()))
-                    {
-                        Some(content) => RenderedEntry::Two(header.clone(), content),
-                        None => RenderedEntry::One {
-                            content: header.clone(),
-                            message_citations: None,
-                        },
-                    }
-                }
+                } => RenderedEntry::One {
+                    content: format_send_done_projection_line(header, archive_ref.as_str()),
+                    message_citations: None,
+                },
                 SessionStepProjection::SearchRead {
                     archive_ref,
                     grep,
@@ -524,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn send_done_two_emits_read_role_on_second_history_row() {
+    fn send_done_is_one_summary_row_and_ignores_archive_reader() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
         let items = vec![PromptProjectionItem {
@@ -545,9 +565,34 @@ mod tests {
             };
         let history = project_prompt_context(items, &registry, &ref_table, Some(&archive_reader));
         let arr = history.as_array().expect("array");
-        assert_eq!(arr.len(), 2);
+        assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["role"].as_str(), Some("assistant"));
-        assert_eq!(arr[1]["role"].as_str(), Some("read"));
+        let content = arr[0]["content"].as_str().expect("content");
+        assert_eq!(
+            content, "@3 demo/tool 'ok' [1 lines]",
+            "SendDone is header only"
+        );
+        assert!(
+            !content.contains("BODY") && !content.contains("cat -n @3"),
+            "SendDone must not inline archive body: {content}"
+        );
+    }
+
+    #[test]
+    fn format_conversation_history_transcript_flattens_role_content() {
+        let rows = vec![json!({"role": "user", "content": "#1 hi"})];
+        let t = format_conversation_history_transcript(&rows);
+        assert_eq!(t, "user: #1 hi");
+    }
+
+    #[test]
+    fn format_conversation_history_transcript_flattens_openai_text_part_array() {
+        let rows = vec![json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "line1"}]
+        })];
+        let t = format_conversation_history_transcript(&rows);
+        assert_eq!(t, "user: line1");
     }
 
     #[test]
@@ -661,7 +706,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_send_done_for_same_archive_ref_inlines_each_time() {
+    fn repeated_send_done_emits_summary_each_time_no_archive_body() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
         let items = vec![
@@ -709,18 +754,19 @@ mod tests {
             };
 
         let history = project_prompt_context(items, &registry, &ref_table, Some(&archive_reader));
-        let payload_occurrences = history
-            .as_array()
-            .expect("array")
-            .iter()
-            .filter_map(|item| item.get("content").and_then(Value::as_str))
-            .filter(|content| content.contains("TASK_LIST_PAYLOAD"))
-            .count();
-
-        assert_eq!(
-            payload_occurrences, 3,
-            "each graph SendDone is rendered; no read-time dedup of archive body"
-        );
+        let rows = history.as_array().expect("array");
+        assert_eq!(rows.len(), 3);
+        for r in rows {
+            let content = r["content"].as_str().expect("content");
+            assert!(
+                content.contains("@15") && content.contains("found tasks"),
+                "header names the ref and summary: {content}"
+            );
+            assert!(
+                !content.contains("TASK_LIST_PAYLOAD"),
+                "SendDone must not call archive reader: {content}"
+            );
+        }
     }
 
     #[test]
@@ -781,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn read_default_view_after_send_done_inlines_again() {
+    fn page_read_after_send_done_shows_archive_send_done_does_not() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
         let items = vec![
@@ -831,13 +877,13 @@ mod tests {
             .count();
 
         assert_eq!(
-            payload_occurrences, 2,
-            "SendDone and a later PageRead of the same @N are both fully rendered"
+            payload_occurrences, 1,
+            "only PageRead may inline archive text; SendDone is summary only"
         );
     }
 
     #[test]
-    fn tool_result_includes_pagination_hint_when_truncated() {
+    fn tool_result_inline_preview_does_not_emit_archive_read_cta_when_truncated() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
         let rows: Vec<Value> = (0..100).map(|i| json!(format!("line{i}"))).collect();
@@ -854,12 +900,16 @@ mod tests {
         let arr = history.as_array().expect("array");
         let content = arr[0]["content"].as_str().expect("content");
         assert!(
-            content.contains("more — offset="),
-            "expected pagination footer in: {content}"
+            content.contains("more not shown in this preview"),
+            "expected inline preview footer in: {content}"
         );
         assert!(
-            content.contains(&format!("offset={DEFAULT_TOOL_RESULT_INLINE_LINES}")),
-            "expected default cap offset in: {content}"
+            !content.contains("SearchRead") && !content.contains("PageRead"),
+            "inline preview must not instruct archive reads: {content}"
+        );
+        assert!(
+            !content.contains("@N") && !content.contains("offset="),
+            "inline preview must not invent archive refs or read offsets: {content}"
         );
     }
 
@@ -874,6 +924,5 @@ mod tests {
         assert_eq!(d.tool_error.get(), 10);
         assert_eq!(e.tool_error.get(), DEFAULT_TOOL_RESULT_INLINE_LINES);
         assert_eq!(d.tool_result.get(), e.tool_result.get());
-        assert_eq!(d.send_done.get(), e.send_done.get());
     }
 }

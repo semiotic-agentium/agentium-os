@@ -52,7 +52,8 @@ pub struct ToolResultContent {
 pub struct SessionStepContent {
     pub tool_name: String,
     pub op: SessionStepOp,
-    /// `SendDone` only: `tool_result` JSON from the linked `ToolCall` (via `WAS_INFORMED_BY` graph edge).
+    /// `SendDone` only: `tool_result` JSON from the linked `ToolCall` (via `WAS_INFORMED_BY` graph edge),
+    /// for ref-table / replay **hydration** only — not rendered as `conversation_history` content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_done_replay_payload: Option<serde_json::Value>,
     /// SearchRead/PageRead only: **raw** rendered archive body lines (from the linked

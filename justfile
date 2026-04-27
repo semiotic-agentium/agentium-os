@@ -27,7 +27,6 @@ otel_protocol := "grpc"
 # Respect CARGO_TARGET_DIR when present (.env sets it in some dev setups).
 builder_bin := "${CARGO_TARGET_DIR:-target}/release/baml-agent-builder"
 runner_bin := "${CARGO_TARGET_DIR:-target}/release/baml-agent-runner"
-graph_exporter_bin := "${CARGO_TARGET_DIR:-target}/release/graph_exporter"
 
 # Regenerate `_baml_runtime.baml` + `src/baml-runtime.d.ts` for every fixture under `tests/fixtures/agents/` and agent under `agents/`. Requires all tool crates (same as build-release).
 regen-fixtures:
@@ -51,7 +50,7 @@ download-models:
     set +a
     cargo run --release -p baml-rt-embedding --bin download_models
 
-# Build release versions of builder, runner, and graph_exporter. Run once before using agent recipes.
+# Build release versions of builder and runner. Run once before using agent recipes.
 build-release:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -61,7 +60,6 @@ build-release:
     set +a
     cargo build --release -p baml-rt-builder --bin baml-agent-builder --all-features
     cargo build --release -p baml-agent-runner --all-features
-    cargo build --release -p baml-rt-provenance --bin graph_exporter --features cli
 
 # Build the runner in release mode (default; matches `runner_bin`).
 # Note: build does not require OTEL env vars; export wiring is runtime-only.
@@ -89,7 +87,7 @@ build-debug:
 runner: build
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
-# Same as `runner`, but persists provenance to provenance.db.
+# Same as `runner`, but persists provenance to `provenance.db` (SurrealKV on disk).
 runner-provenance: build
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
@@ -231,7 +229,7 @@ clickup-agent: build-release
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
-# Same as clickup-agent, but persists provenance to provenance.db for graph_exporter.
+# Same as clickup-agent, but persists provenance to provenance.db.
 clickup-agent-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
@@ -265,7 +263,7 @@ notion-agent: build-release
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
-# Same as notion-agent, but persists provenance to provenance.db for graph_exporter.
+# Same as notion-agent, but persists provenance to provenance.db.
 notion-agent-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
@@ -299,7 +297,7 @@ slack-agent: build-release
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
-# Same as slack-agent, but persists provenance to provenance.db for graph_exporter.
+# Same as slack-agent, but persists provenance to provenance.db.
 slack-agent-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
@@ -373,7 +371,7 @@ claude-session-agent: build-release
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
-# Same as claude-session-agent, but persists provenance to provenance.db for graph_exporter.
+# Same as claude-session-agent, but persists provenance to provenance.db.
 claude-session-agent-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
@@ -625,17 +623,6 @@ test-crate crate:
 # Run tests that don't need FalkorDB or API keys (unit tests only).
 test-unit:
     cargo nextest run --workspace --features baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
-
-# Export a Mermaid sequence diagram for a given context-id. Requires: just build-release
-# Usage: just provenance-mermaid ctx-1771426017780-2
-provenance-mermaid context_id: build-release
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "$(git rev-parse --show-toplevel)"
-    set -a
-    [ -f .env ] && . ./.env
-    set +a
-    {{graph_exporter_bin}} --db {{provenance_db}} --context-id {{context_id}} --simplify --format mermaid
 
 # SDK CLI: workspace integrity check
 doctor:

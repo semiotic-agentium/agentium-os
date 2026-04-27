@@ -70,7 +70,7 @@ Implemented by [`project_prompt_context`](../crates/baml-rt-tools/src/prompt_pro
 Graph rows may carry:
 
 - `read_replay_lines` on `SearchRead` / `PageRead` — pre-hydrated text; the projection must prefer this over calling the archive reader when non-empty.
-- `send_done_replay_payload` on `SendDone` — JSON replay for the read body; formatted with the same `send_done` line cap as archive reads.
+- `send_done_replay_payload` on `SendDone` — optional JSON from the graph for **ref-table seeding and hydration**; it is **not** rendered as `conversation_history` or transcript content. `SendDone` projects as a **summary + read-guidance** line only; archive lines appear on explicit `SearchRead` / `PageRead` rows.
 
 Types: [`SessionStepContent`](../crates/baml-rt-conversation/src/view.rs) and [`SessionStepPayload`](../crates/baml-rt-tools/src/prompt_projection.rs).
 
