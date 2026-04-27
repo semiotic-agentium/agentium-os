@@ -191,8 +191,6 @@ function SummarizeNotionContent(
     - If you have sources, include them in the sources array.
     - The response must be JSON that matches the schema.
 
-    {{ ctx.output_format }}
-
     Page title: {{ page_title }}
     Page url: {{ page_url }}
 
@@ -200,6 +198,8 @@ function SummarizeNotionContent(
 
     Notion content:
     {{ blocks_text }}
+
+    {{ ctx.output_format }}
   "#
 }
 
