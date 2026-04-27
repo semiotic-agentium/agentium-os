@@ -101,6 +101,13 @@ pub enum Runtime {
     Sandbox,
 }
 
+/// Invocation mode encoded in scaffolded `tool-metadata.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum InvocationMode {
+    SingleShot,
+    Session,
+}
+
 /// Sandbox source type when `runtime=sandbox`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SandboxSource {
@@ -113,6 +120,15 @@ impl Runtime {
         match self {
             Self::Process => "process",
             Self::Sandbox => "sandbox",
+        }
+    }
+}
+
+impl InvocationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SingleShot => "single_shot",
+            Self::Session => "session",
         }
     }
 }
@@ -185,6 +201,8 @@ pub struct ScaffoldContext<'a> {
     pub description: &'a str,
     /// Runtime metadata block to emit in `tool-metadata.json`.
     pub runtime: Runtime,
+    /// Invocation mode to emit in metadata (`single_shot` or `session`).
+    pub invocation_mode: InvocationMode,
     /// Sandbox source when runtime is sandbox.
     pub sandbox_source: Option<SandboxSource>,
     /// Sandbox image reference/path when runtime is sandbox.

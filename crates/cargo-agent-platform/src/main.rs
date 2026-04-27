@@ -45,7 +45,9 @@ use commands::{
     sandbox_digest::SandboxDigestSourceArg,
     utils::resolve_runner_token,
 };
-use templates::external_tool::{Access, DEFAULT_BUNDLE, Language, Runtime, SandboxSource};
+use templates::external_tool::{
+    Access, DEFAULT_BUNDLE, InvocationMode, Language, Runtime, SandboxSource,
+};
 
 /// Agent Platform SDK CLI
 ///
@@ -89,6 +91,10 @@ enum Commands {
         /// Runtime declaration to scaffold into tool-metadata.json
         #[arg(long, value_enum, default_value_t = Runtime::Process)]
         runtime: Runtime,
+
+        /// Invocation contract to scaffold into tool-metadata.json
+        #[arg(long, value_enum, default_value_t = InvocationMode::SingleShot)]
+        invocation_mode: InvocationMode,
 
         /// Sandbox source kind when --runtime sandbox
         #[arg(long, value_enum, default_value_t = SandboxSource::Oci)]
@@ -467,6 +473,7 @@ fn main() -> anyhow::Result<()> {
             lang,
             access,
             runtime,
+            invocation_mode,
             sandbox_source,
             sandbox_image,
             runtime_digest,
@@ -560,6 +567,7 @@ fn main() -> anyhow::Result<()> {
                 lang,
                 access,
                 runtime,
+                invocation_mode,
                 sandbox_source,
                 sandbox_image: sandbox_image.as_deref(),
                 runtime_digest: runtime_digest.as_deref(),

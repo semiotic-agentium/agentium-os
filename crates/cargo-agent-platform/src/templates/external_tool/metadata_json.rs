@@ -6,11 +6,14 @@
 //! compile-time failure here, not a silent mismatch at load.
 
 use baml_rt_tools::external_tools::{
-    ExternalToolMetadata, SandboxAdapterRuntimeSpec, SandboxRuntimeSpec, ToolRuntime,
+    ExternalToolMetadata, InvocationMode as RtInvocationMode, SandboxAdapterRuntimeSpec,
+    SandboxRuntimeSpec, ToolRuntime,
 };
 use serde_json::json;
 
-use super::{Language, Runtime, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext};
+use super::{
+    InvocationMode, Language, Runtime, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext,
+};
 
 /// Generate `tool-metadata.json` content for an external tool scaffold.
 ///
@@ -69,6 +72,11 @@ pub fn build_metadata(ctx: &ScaffoldContext<'_>) -> ExternalToolMetadata {
         ctx.name.to_string(),
         "external".to_string(),
     ]);
+    meta.invocation_mode = match ctx.invocation_mode {
+        InvocationMode::SingleShot => RtInvocationMode::SingleShot,
+        InvocationMode::Session => RtInvocationMode::Session,
+    };
+
     // Emit runtime blocks explicitly so scaffolds always match the current
     // metadata schema while preserving process-wrapper defaults.
     match ctx.runtime {

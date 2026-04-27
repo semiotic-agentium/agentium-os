@@ -155,7 +155,9 @@ mod tests {
     use super::*;
     use crate::{
         commands::new_tool::build_file_set,
-        templates::external_tool::{Access, Language, Runtime, SandboxSource, ScaffoldContext},
+        templates::external_tool::{
+            Access, InvocationMode, Language, Runtime, SandboxSource, ScaffoldContext,
+        },
     };
 
     #[test]
@@ -167,6 +169,7 @@ mod tests {
             language: Language::Bash,
             description: "Echo external tool",
             runtime: Runtime::Process,
+            invocation_mode: InvocationMode::SingleShot,
             sandbox_source: Some(SandboxSource::Oci),
             sandbox_image: None,
             runtime_digest: None,

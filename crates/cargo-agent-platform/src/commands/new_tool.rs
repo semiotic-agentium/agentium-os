@@ -22,8 +22,8 @@ use console::style;
 
 use crate::{
     templates::external_tool::{
-        Access, GeneratedFile, Language, Runtime, SandboxSource, ScaffoldContext, metadata_json,
-        readme_md,
+        Access, GeneratedFile, InvocationMode, Language, Runtime, SandboxSource, ScaffoldContext,
+        metadata_json, readme_md,
     },
     transaction::TransactionalWriter,
 };
@@ -54,6 +54,7 @@ pub struct NewToolRunArgs<'a> {
     pub lang: Language,
     pub access: Access,
     pub runtime: Runtime,
+    pub invocation_mode: InvocationMode,
     pub sandbox_source: SandboxSource,
     pub sandbox_image: Option<&'a str>,
     pub runtime_digest: Option<&'a str>,
@@ -71,6 +72,7 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         lang,
         access,
         runtime,
+        invocation_mode,
         sandbox_source,
         sandbox_image,
         runtime_digest,
@@ -101,6 +103,7 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
     };
 
     validate_generate_docker_option(runtime, sandbox_source, generate_docker)?;
+    validate_invocation_mode(runtime, invocation_mode)?;
 
     let (sandbox_image, runtime_digest) = validate_runtime_options(
         runtime,
@@ -117,6 +120,7 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         language: lang,
         description,
         runtime,
+        invocation_mode,
         sandbox_source: Some(sandbox_source),
         sandbox_image,
         runtime_digest,
@@ -134,6 +138,7 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         println!("  Language:  {}", style(lang.as_str()).cyan());
         println!("  Access:    {}", style(access.as_str()).cyan());
         println!("  Runtime:   {}", style(runtime.as_str()).cyan());
+        println!("  Invoke:    {}", style(invocation_mode.as_str()).cyan());
         if runtime == Runtime::Sandbox {
             println!(
                 "  Source:    {}",
@@ -407,6 +412,15 @@ fn validate_generate_docker_option(
     Ok(())
 }
 
+fn validate_invocation_mode(runtime: Runtime, invocation_mode: InvocationMode) -> Result<()> {
+    if invocation_mode == InvocationMode::Session && runtime != Runtime::Sandbox {
+        bail!(
+            "Error: --invocation-mode session requires --runtime sandbox.\nHint: use --runtime sandbox or switch to --invocation-mode single-shot."
+        );
+    }
+    Ok(())
+}
+
 fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
@@ -449,6 +463,7 @@ mod tests {
             language: lang,
             description: "Echo external tool",
             runtime: Runtime::Process,
+            invocation_mode: InvocationMode::SingleShot,
             sandbox_source: Some(SandboxSource::Oci),
             sandbox_image: None,
             runtime_digest: None,
@@ -542,6 +557,7 @@ mod tests {
             language: Language::Bash,
             description: &desc_with_specials,
             runtime: Runtime::Process,
+            invocation_mode: InvocationMode::SingleShot,
             sandbox_source: Some(SandboxSource::Oci),
             sandbox_image: None,
             runtime_digest: None,
@@ -574,6 +590,7 @@ mod tests {
     fn scaffolded_metadata_emits_sandbox_runtime_block_when_requested() {
         let mut ctx = ctx(Language::Rust);
         ctx.runtime = Runtime::Sandbox;
+        ctx.invocation_mode = InvocationMode::Session;
         ctx.sandbox_source = Some(SandboxSource::Oci);
         ctx.sandbox_image = Some(SandboxImageRef::Oci {
             r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -607,6 +624,10 @@ mod tests {
             parsed.runtime_digest.as_deref(),
             Some("sha256:2222222222222222222222222222222222222222222222222222222222222222")
         );
+        assert!(matches!(
+            parsed.invocation_mode,
+            baml_rt_tools::external_tools::InvocationMode::Session
+        ));
     }
 
     #[test]
@@ -685,6 +706,13 @@ mod tests {
         assert!(
             validate_generate_docker_option(Runtime::Sandbox, SandboxSource::Oci, true).is_err()
         );
+    }
+
+    #[test]
+    fn session_invocation_mode_requires_sandbox_runtime() {
+        assert!(validate_invocation_mode(Runtime::Sandbox, InvocationMode::Session).is_ok());
+        assert!(validate_invocation_mode(Runtime::Process, InvocationMode::Session).is_err());
+        assert!(validate_invocation_mode(Runtime::Process, InvocationMode::SingleShot).is_ok());
     }
 
     #[test]
