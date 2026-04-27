@@ -16,6 +16,8 @@ pub mod protocol;
 pub mod resolver;
 pub mod runtime;
 pub mod sandbox;
+pub mod session_handler;
+pub mod session_invoker;
 pub mod sidecar_bundle;
 pub mod stdio;
 
@@ -55,6 +57,11 @@ pub use runtime::{
     SandboxRuntimeSpec, ToolRuntime, ToolRuntimeKind,
 };
 pub use sandbox::canonical_bind_digest;
+pub use session_handler::{ExternalSessionToolHandler, ExternalSessionToolSession};
+pub use session_invoker::{
+    SessionAbortRequest, SessionFinishRequest, SessionOpenRequest, SessionOpenResponse,
+    SessionReadRequest, SessionSendRequest, SessionToolInvoker,
+};
 pub use sidecar_bundle::{
     DEFAULT_SCHEMA_CONTENT_TYPE, SIDECAR_BUNDLE_ABS_PATH, SIDECAR_BUNDLE_REL_PATH, SIDECAR_DIR_ABS,
     ToolManifestSidecar, ToolRuntimeSidecar, ToolSchemaSidecar, ToolSidecarBundle,

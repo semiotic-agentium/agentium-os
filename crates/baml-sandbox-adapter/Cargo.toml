@@ -16,6 +16,7 @@ baml-sandbox-protocol = { path = "../baml-sandbox-protocol" }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 libc = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }

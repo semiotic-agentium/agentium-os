@@ -20,6 +20,7 @@ compile_error!(
 );
 
 mod panic_catch;
+pub mod session;
 mod stdout_swap;
 
 use async_trait::async_trait;
@@ -29,6 +30,7 @@ use baml_sandbox_protocol::{
     ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult, TsrpcChannel,
 };
 use serde_json::{Value, json};
+pub use session::{ResetOutcome, SandboxSessionTool, dispatch_session_request};
 
 use crate::panic_catch::catch_tool_panic;
 
