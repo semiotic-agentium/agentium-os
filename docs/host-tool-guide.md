@@ -392,6 +392,35 @@ If you skip digest refresh after rootfs mutation, metadata identity is stale and
 
 ## 9) Debugging and troubleshooting
 
+### 9.1 Session-mode runbook (operator quick actions)
+
+Use this when `invocation_mode=session` tools fail in production-like runs.
+
+- **Tool rejected at load (`invocation_mode=session` disabled):**
+  - Cause: session sandbox kill-switch is off.
+  - Action: set `BAML_EXTERNAL_SESSION_SANDBOX=1` and restart runner.
+  - Verify: resolver no longer emits session-mode rejection; tool appears in load/resolve logs.
+
+- **`pool_exhausted`:**
+  - Cause: all sandboxes for that tool key are live and checkout timed out.
+  - Action: retry; if sustained, raise tool `pool_max`.
+  - Verify: checkout wait and `pool_exhausted` frequency drops.
+
+- **`unknown_session`:**
+  - Cause: stale/foreign `session_id` (restart, eviction, or wrong invoker scope).
+  - Action: reopen a fresh session; do not reuse old ids across runner restarts.
+  - Verify: `session_open -> session_send -> session_read` succeeds with new id.
+
+- **`resume_token_mismatch`:**
+  - Cause: incorrect or missing resume token after a `suspended` step.
+  - Action: enforce flow `read(suspended) -> send(resume_token) -> read`.
+  - Verify: mismatch errors stop and steps progress to `streaming`/`done`.
+
+- **Timeout confusion (`chunk_timeout` vs session lifecycle timeout):**
+  - Cause: chunk timeout means “no next step yet”; lifecycle timeout means session-level failure.
+  - Action: on chunk timeout, retry/read again in-session; on lifecycle timeout, reopen session.
+  - Verify: error code/disposition aligns with expected timeout class.
+
 ### Useful debugging helper
 
 Use the shipped inspector to test adapter protocol directly (outside microVM):
