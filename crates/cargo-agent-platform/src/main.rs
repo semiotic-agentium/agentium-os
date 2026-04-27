@@ -92,7 +92,10 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = Runtime::Process)]
         runtime: Runtime,
 
-        /// Invocation contract to scaffold into tool-metadata.json
+        /// Invocation contract to scaffold into tool-metadata.json.
+        ///
+        /// - `single-shot`: stateless `tool/invoke`
+        /// - `session`: `tool/session_*` protocol (requires `--runtime sandbox`)
         #[arg(long, value_enum, default_value_t = InvocationMode::SingleShot)]
         invocation_mode: InvocationMode,
 

@@ -48,6 +48,29 @@ Use this sequence for a new sandboxed external tool:
 
 ---
 
+## 0.6) Quick session-mode sanity check
+
+If you just want to verify the full session path quickly:
+
+```bash
+# 1) Scaffold a sandbox session-mode tool
+cargo agent-platform new-tool streamed_echo \
+  --runtime sandbox \
+  --invocation-mode session \
+  --sandbox-source oci \
+  --sandbox-image ghcr.io/acme/streamed-echo@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+# 2) Validate metadata
+cargo agent-platform check-external-tool --path ./streamed_echo
+
+# 3) Start runner with required env
+export BAML_EXTERNAL_TOOLS_DIR="$(pwd)/streamed_echo"
+export BAML_EXTERNAL_SESSION_SANDBOX=1
+cargo run -p baml-agent-runner --all-features
+```
+
+Then allowlist the tool in an agent manifest, publish + deploy, and verify with `cargo agent-platform chat`.
+
 ## 1) External tools (standalone, recommended)
 
 ## 1.1 Scaffold a new tool

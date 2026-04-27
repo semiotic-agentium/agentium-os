@@ -147,6 +147,17 @@ pub fn run(path: &str) -> Result<()> {
         style(typed.name).cyan()
     );
 
+    if matches!(
+        typed.invocation_mode,
+        baml_rt_tools::external_tools::InvocationMode::Session
+    ) {
+        println!(
+            "{} session-mode tool detected; runner must enable {}",
+            style("i").cyan(),
+            style("BAML_EXTERNAL_SESSION_SANDBOX=1").cyan()
+        );
+    }
+
     Ok(())
 }
 

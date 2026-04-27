@@ -244,6 +244,12 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         style("BAML_EXTERNAL_TOOLS_DIR").cyan(),
         style(ctx.tool_id()).cyan()
     );
+    if invocation_mode == InvocationMode::Session {
+        println!(
+            "  4. Enable {} in the runner environment for session-mode sandbox tools",
+            style("BAML_EXTERNAL_SESSION_SANDBOX=1").cyan()
+        );
+    }
 
     Ok(())
 }
