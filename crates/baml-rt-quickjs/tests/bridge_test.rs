@@ -897,7 +897,7 @@ async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
     let mut map = std::collections::HashMap::new();
     map.insert(
         "EchoPlanFn".to_string(),
-        vec![baml_rt_tools::SessionPlanTypeName::new("TestScope_echoSessionPlan").unwrap()],
+        vec![baml_rt_tools::SessionPlanTypeName::new("TestScopeEchoSessionPlan").unwrap()],
     );
     manager.set_session_plan_functions(Some(map));
 
