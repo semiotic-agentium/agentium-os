@@ -126,6 +126,8 @@ The harness checks both conditions at startup and exits with a clear message if 
 | 14 | Concurrent deployment convergence | Same agent deployed on both runners simultaneously; each serves locally, placement converges |
 | 15 | Task lifecycle across pods | Multi-turn conversation with INPUT_REQUIRED; documents behavior when agent migrates mid-conversation |
 
+Scenario 10 is the harness version of the Cleese/Chapman product story. It is LLM-dependent and only exercises the full cross-pod conversation when the installed cluster's `fnox-config` supplies `OPENROUTER_API_KEY`. For the narrower operator-facing validation path on a Helm-installed pilot, use [`scripts/k8s-pilot-cleese-chapman.sh`](../scripts/k8s-pilot-cleese-chapman.sh) after following [`docs/k8s-pilot-operator-guide.md`](k8s-pilot-operator-guide.md).
+
 ## Interpreting failures
 
 On any scenario failure, the harness dumps diagnostic data before tearing down:

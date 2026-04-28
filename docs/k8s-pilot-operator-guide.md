@@ -220,7 +220,44 @@ done
 
 Expected: both lines print `http=200`. `dispatch-echo` does not implement A2A, so its response body is the literal string `"dispatch-echo does not handle A2A messages"`; the step does not assert anything about the body because the HTTP status alone is sufficient to prove the runner layer routed the request end-to-end.
 
-## Step 11 — Observability sanity check (optional)
+## Step 11 — Distributed multi-agent conversation (optional, LLM-backed)
+
+This is the supported pilot validation path for the `argument-cleese` / `argument-chapman` cross-pod conversation. It uses the Helm-installed runner pods directly and enforces the Kubernetes `fnox` contract: no host `.env` secrets, no ad hoc local env exports.
+
+Before running it, make sure the mounted `fnox-config` ConfigMap contains a real `OPENROUTER_API_KEY` default:
+
+```toml
+[secrets.OPENROUTER_API_KEY]
+default = "sk-or-v1-..."
+```
+
+If you changed the ConfigMap after the runners started, restart them first:
+
+```bash
+kubectl -n agentium rollout restart statefulset/agentium-agentium-os-runner
+kubectl -n agentium rollout status statefulset/agentium-agentium-os-runner --timeout=180s
+```
+
+Then run:
+
+```bash
+bash scripts/k8s-pilot-cleese-chapman.sh
+```
+
+The script:
+
+- opens per-pod port-forwards to runner-0 and runner-1
+- publishes `argument-cleese` and `argument-chapman` to both repositories
+- deploys Cleese on runner-0 and Chapman on runner-1
+- sends an A2A request to Cleese through the supported runner API
+- prints the resulting `contextId`, `taskId`, Chapman's contradiction reply, placement rows, and provenance-backed transcript lookups
+
+Two important caveats:
+
+- This path is intentionally LLM-driven. It is slower and less deterministic than the dispatch smoke.
+- Provider cold starts and network latency can make the conversation take tens of seconds. Re-run once before treating a single timeout as a cluster regression.
+
+## Step 12 — Observability sanity check (optional)
 
 If `observability.enabled` is `true` and `observability.otlpEndpoint` points at a reachable collector, OTLP traces and metrics are emitted with the pilot identity contract (`service.name=agentium-runner`, `service.instance.id=<pod-name>`, `k8s.namespace.name=<namespace>`). `deployment.environment` is the first non-empty of `observability.environment`, `global.environment`, or the literal `pilot`. See [`observability/README.md`](../observability/README.md) for the collector setup and dashboard walkthrough, and [`docs/metrics-inventory.md`](metrics-inventory.md) for the canonical metric names.
 
@@ -235,6 +272,7 @@ If `observability.enabled` is `true` and `observability.otlpEndpoint` points at 
 | `400 routing_key must be non-empty` on dispatch | request body | Ensure `routing_key` and `message_type` are present and non-empty strings. |
 | `/agents` is empty after publish+deploy | runner logs, `cargo agent-platform list-deployed-instances --url http://localhost:18080` | Deploy silently failed or ran on the other pod. Check both pods (Step 10). |
 | LLM-backed agents fail with `secret not resolved` | runner logs | `fnox.toml` in the ConfigMap does not have a `default = "..."` for the required key. Update the ConfigMap, then `kubectl -n agentium rollout restart statefulset/agentium-agentium-os-runner`. |
+| `scripts/k8s-pilot-cleese-chapman.sh` times out after deploy | script output, runner logs | The LLM-backed path can stall on provider latency or cold starts. Re-run once. If it repeats, inspect `fnox-config`, runner connectivity, and the provider account. |
 
 Pod logs:
 
@@ -252,6 +290,7 @@ Supported in the pilot:
 - `fnox-config` ConfigMap mounted at `/config/fnox.toml` for LLM credentials.
 - Helm values profiles: [`examples/k3d-values.yaml`](../deploy/helm/agentium-os/examples/k3d-values.yaml) (local) and [`examples/design-partner-values.yaml`](../deploy/helm/agentium-os/examples/design-partner-values.yaml) (production-like).
 - OpenTelemetry export to an operator-supplied OTLP gRPC endpoint.
+- Optional distributed conversation validation via [`scripts/k8s-pilot-cleese-chapman.sh`](../scripts/k8s-pilot-cleese-chapman.sh), using the mounted `fnox-config` ConfigMap rather than host env secrets.
 
 Deferred to follow-on pilot issues:
 
@@ -260,4 +299,4 @@ Deferred to follow-on pilot issues:
 - Published runner image. Until then, operators build and push their own cluster-reachable image, typically via a private registry. `k3d image import` is a local-development exception only.
 - Ingress / TLS termination. Operators front the API service with their own ingress controller if needed.
 - Multi-node SurrealDB HA. The pilot ships a single SurrealDB replica.
-- Conversational smoke coverage on the pilot path. The chat and A2A surfaces are exercised by the E2E harness ([`scripts/e2e-k8s/run.sh`](../scripts/e2e-k8s/run.sh)) and in-repo tests, but the operator-facing smoke uses the deterministic dispatch endpoint only so that success does not depend on an LLM call.
+- Deterministic conversational smoke coverage on the pilot path. The dispatch smoke remains the stable first-run check; the Cleese/Chapman validation above is supported, but still intentionally depends on a live LLM call.
