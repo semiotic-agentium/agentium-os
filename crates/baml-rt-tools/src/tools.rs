@@ -51,6 +51,12 @@ pub enum ToolAccess {
 }
 
 impl ToolAccess {
+    /// Every declared access class. The single source of truth for "what
+    /// classes exist"; iterate this anywhere you need to enumerate them
+    /// instead of hard-coding the variant list.
+    pub const ALL: &'static [ToolAccess] =
+        &[ToolAccess::Read, ToolAccess::Write, ToolAccess::Delete];
+
     /// Canonical lowercase spelling used in `tool-metadata.json` and
     /// everywhere the access level is serialized as a string.
     pub fn as_str(self) -> &'static str {

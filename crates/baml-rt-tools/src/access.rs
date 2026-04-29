@@ -43,11 +43,7 @@ impl ToolAccessPolicy {
     /// No cap: every access class (read, write, delete) is permitted by this
     /// layer. The manifest allowlist still applies.
     pub fn permit_all() -> Self {
-        Self::PermitOnly(
-            [ToolAccess::Read, ToolAccess::Write, ToolAccess::Delete]
-                .into_iter()
-                .collect(),
-        )
+        Self::PermitOnly(ToolAccess::ALL.iter().copied().collect())
     }
 
     /// Strict cap: forbid every access class. Tools that declare a class will
@@ -66,7 +62,9 @@ impl ToolAccessPolicy {
     /// and only the manifest allowlist gates tool exposure. Useful for
     /// startup logs that surface the active policy to operators.
     pub fn is_unrestricted(&self) -> bool {
-        self.permitted() == Self::permit_all().permitted()
+        // `permitted` is `HashSet<ToolAccess>` (unique elements drawn from
+        // `ToolAccess`), so size-equality with `ALL` is sufficient.
+        self.permitted().len() == ToolAccess::ALL.len()
     }
 }
 
@@ -86,9 +84,16 @@ impl Default for ToolAccessPolicy {
 ///   classes. Unknown tokens are warned and ignored. An entirely unknown or
 ///   empty value caps to the empty set (every classed tool is rejected).
 pub fn parse_access_allowlist() -> ToolAccessPolicy {
-    let raw = match std::env::var(ACCESS_ALLOWLIST_ENV) {
-        Ok(s) => s,
-        Err(_) => return ToolAccessPolicy::default(),
+    parse_access_allowlist_from(std::env::var(ACCESS_ALLOWLIST_ENV).ok().as_deref())
+}
+
+/// Pure form of [`parse_access_allowlist`] that takes the raw env value as a
+/// parameter. `None` means the variable was unset; `Some("")` means it was
+/// set to an empty string (which caps to the empty set).
+pub fn parse_access_allowlist_from(value: Option<&str>) -> ToolAccessPolicy {
+    let raw = match value {
+        Some(s) => s,
+        None => return ToolAccessPolicy::default(),
     };
     let mut set = HashSet::new();
     for token in raw.split(',') {
@@ -109,6 +114,88 @@ pub fn parse_access_allowlist() -> ToolAccessPolicy {
         set.insert(access);
     }
     ToolAccessPolicy::PermitOnly(set)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permit_all_is_unrestricted() {
+        assert!(ToolAccessPolicy::permit_all().is_unrestricted());
+    }
+
+    #[test]
+    fn deny_all_is_not_unrestricted() {
+        assert!(!ToolAccessPolicy::deny_all().is_unrestricted());
+    }
+
+    #[test]
+    fn partial_cap_is_not_unrestricted() {
+        let policy = ToolAccessPolicy::PermitOnly([ToolAccess::Read].into_iter().collect());
+        assert!(!policy.is_unrestricted());
+    }
+
+    #[test]
+    fn permit_all_membership_matches_tool_access_all() {
+        let permitted = ToolAccessPolicy::permit_all();
+        for access in ToolAccess::ALL {
+            assert!(
+                permitted.permitted().contains(access),
+                "permit_all is missing {access:?}; ToolAccess::ALL and permit_all are out of sync"
+            );
+        }
+        assert_eq!(permitted.permitted().len(), ToolAccess::ALL.len());
+    }
+
+    #[test]
+    fn parse_unset_returns_default() {
+        let policy = parse_access_allowlist_from(None);
+        assert!(policy.is_unrestricted());
+    }
+
+    #[test]
+    fn parse_single_class_caps_to_that_class() {
+        let policy = parse_access_allowlist_from(Some("read"));
+        assert_eq!(policy.permitted().len(), 1);
+        assert!(policy.permitted().contains(&ToolAccess::Read));
+        assert!(!policy.is_unrestricted());
+    }
+
+    #[test]
+    fn parse_comma_list_admits_each_listed_class() {
+        let policy = parse_access_allowlist_from(Some("read, write"));
+        assert!(policy.permitted().contains(&ToolAccess::Read));
+        assert!(policy.permitted().contains(&ToolAccess::Write));
+        assert!(!policy.permitted().contains(&ToolAccess::Delete));
+    }
+
+    #[test]
+    fn parse_full_list_is_unrestricted() {
+        let policy = parse_access_allowlist_from(Some("read,write,delete"));
+        assert!(policy.is_unrestricted());
+    }
+
+    #[test]
+    fn parse_empty_string_caps_to_empty_set() {
+        let policy = parse_access_allowlist_from(Some(""));
+        assert!(policy.permitted().is_empty());
+    }
+
+    #[test]
+    fn parse_unknown_tokens_are_ignored_not_admitted() {
+        let policy = parse_access_allowlist_from(Some("read,bogus,write"));
+        assert!(policy.permitted().contains(&ToolAccess::Read));
+        assert!(policy.permitted().contains(&ToolAccess::Write));
+        assert_eq!(policy.permitted().len(), 2);
+    }
+
+    #[test]
+    fn parse_is_case_insensitive_and_trims_whitespace() {
+        let policy = parse_access_allowlist_from(Some("  READ , Write "));
+        assert!(policy.permitted().contains(&ToolAccess::Read));
+        assert!(policy.permitted().contains(&ToolAccess::Write));
+    }
 }
 
 /// Enforce access policy for a tool. All tools (including system) must be gated; always runs the check.

@@ -32,6 +32,7 @@ pub mod ts_gen;
 
 pub use access::{
     ACCESS_ALLOWLIST_ENV, ToolAccessPolicy, enforce_tool_access, parse_access_allowlist,
+    parse_access_allowlist_from,
 };
 /// Re-export the `#[baml_tool]` attribute macro so tool crates can use
 /// `use baml_rt_tools::baml_tool;` as a single import path.
