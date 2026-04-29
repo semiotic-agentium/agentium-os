@@ -85,6 +85,8 @@ Schema is initialised idempotently on every open via `DEFINE TABLE IF NOT EXISTS
 
 ### Tables
 
+The statements below show structure only. The actual `init_schema` call wraps every `DEFINE TABLE` / `DEFINE FIELD` / `DEFINE INDEX` with `IF NOT EXISTS` so reopens are safe.
+
 ```surql
 DEFINE TABLE entries SCHEMAFULL;
 DEFINE FIELD hash                       ON entries TYPE string;
@@ -156,18 +158,20 @@ DEFINE INDEX idx_blob_hash ON blobs FIELDS hash UNIQUE;
 
 ### Edge Kinds
 
-| Kind | Meaning | Cardinality | Generation effect |
-|---|---|---|---|
-| **Fork** | Hard derivation — "this was created by mutating that" | Single parent | Increments parent's generation |
-| **Influence** | Soft reference — "this was informed by those" | Zero or more | New generation = max(influence generations) + 1 |
+| Kind | Meaning | Cardinality |
+|---|---|---|
+| **Fork** | Hard derivation — "this was created by mutating that" | Single parent |
+| **Influence** | Soft reference — "this was informed by those" | Zero or more |
+
+Generation is determined by the publish command, not by the edge kind. See [Generation](#generation-is-computed-not-declared) for the per-command rule.
 
 ### Parentage (discriminated union)
 
 ```rust
 enum Parentage {
-    Original,                                      // no parent — first in lineage
-    Forked     { parent: ContentHash, … },         // single fork parent
-    Synthesized { influences: Vec<InfluenceRef> }, // one or more soft references
+    Original,                                                       // no parent — first in lineage
+    Forked      { parent: ContentHash, description: EdgeDescription },
+    Synthesized { influences: Vec<InfluenceRef> },                  // one or more soft references
 }
 ```
 
@@ -340,7 +344,16 @@ Builder and runner need to compute hashes without pulling in SurrealDB or Axum. 
 `LineageKind::{Fork, Influence}`, `Parentage::{Original, Forked, Synthesized}`, `PublishOrigin::{Original, Iteration, Influenced}` — invalid states are unrepresentable at the type level.
 
 ### Generation is computed, not declared
-Fork increments the parent's generation; influence sets generation to `max(influence generations) + 1`. Original entries are at generation 0. The store never accepts a caller-supplied generation; it is always derived from parentage.
+The store never accepts a caller-supplied generation; it is always derived from the publish command:
+
+| Command / origin | Generation of the new entry |
+|---|---|
+| `PublishOrigin::Original` | `0` (root) |
+| `PublishOrigin::Iteration` | Same as the previous version of this lineage (unchanged) |
+| `PublishOrigin::Influenced` | `max(influence generations) + 1` |
+| `ForkCommand` | Parent's generation `+ 1` |
+
+Iteration creates a Fork-kind edge in the DAG but inherits the predecessor's generation; only an explicit `ForkCommand` advances generation along a Fork edge.
 
 ### Version is canonical, not advisory
 The repository assigns the next monotonic version, rewrites `manifest.version` to that value, and hashes the result. The published `ContentHash` reflects the repository-assigned version, not anything the client wrote into the manifest beforehand.
@@ -358,5 +371,5 @@ Storing tar.gz bytes inside SurrealDB removes the need for a separately mounted 
 The following capabilities appear in earlier design notes but are not implemented today:
 
 - **Fitness scoring.** There is no fitness table, no score recording API, and no fitness filter in `SearchQuery`. ADAS-style "best agent for X" selection would need this added before it can be expressed.
-- **Native graph traversal.** Lineage walks are done in Rust over loaded edges. SurrealDB's `RELATE` / graph query syntax is unused.
+- **Native graph traversal.** Replace the in-process BFS with SurrealDB's `RELATE` / graph query syntax once edge volumes warrant pushing traversal into the database.
 - **Full-text relevance ranking.** `SearchOrder::Relevance` currently falls back to newest-first. A real relevance score would need either FTS scoring or embedding-based similarity.
