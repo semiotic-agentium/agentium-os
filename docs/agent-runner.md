@@ -121,6 +121,35 @@ Routes are divided into three tiers:
 
 Cross-runner A2A forwarding uses the same `/agents/.../a2a` routes but relies on K8s NetworkPolicy for isolation. The forwarding path is unauthenticated at the application layer; network isolation is the boundary.
 
+## Tool Access
+
+A deployed agent's tool surface is controlled by two independent layers. Both must permit a tool for it to be invokable.
+
+### 1. Per-agent manifest allowlist (deny-by-default)
+
+Every agent ships with a `manifest.json` that lists the exact tools it may use. The runner registers only those tools into that agent's registry. A tool that is not in the manifest is unreachable from the agent — there is no implicit "allow all", and no runner-side flag that turns this off.
+
+This is the layer that gives the runtime its deny-by-default property: the only path to a tool is to add its name to the agent's manifest, rebuild, and republish.
+
+### 2. Cluster-wide access-class cap (optional)
+
+Each host tool declares an access class — `read`, `write`, or `delete` — in its metadata. Operators can cap which classes a runner will expose by setting the `BAML_TOOL_ACCESS_ALLOWLIST` environment variable to a comma-separated list, for example:
+
+```bash
+# Permit only read tools cluster-wide; reject write/delete tools at registration.
+export BAML_TOOL_ACCESS_ALLOWLIST=read,write
+```
+
+When the variable is unset, the cap imposes no extra restriction — the manifest allowlist is still the gate. When set, the cap applies in addition to the manifest: a tool is permitted only if it appears in the agent's manifest **and** its declared access class is in the cap.
+
+The runner logs the resolved cap at boot, e.g.:
+
+```text
+Tool access cap resolved (per-agent manifest allowlist still gates tool exposure) env_set=false unrestricted=true permitted=["delete", "read", "write"]
+```
+
+Operators can read this line to confirm what cap is active without grepping source.
+
 ## Deploy vs Publish
 
 - Publish sends source bundle to `/repository/publish`; server-side build stores artifact bytes under canonical `content_hash`.
