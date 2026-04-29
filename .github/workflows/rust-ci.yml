@@ -104,8 +104,11 @@ jobs:
       - name: Install OS build deps
         run: |
           sudo apt-get install -y \
-            build-essential pkg-config libssl-dev libclang-dev util-linux lld \
+            build-essential pkg-config libssl-dev libclang-dev clang llvm-dev util-linux lld \
             zstd git-lfs
+
+      - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
+        run: bash scripts/ci/set-libclang-path.sh
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -282,7 +285,10 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config lld
+          sudo apt update && sudo apt install -y build-essential pkg-config libclang-dev clang llvm-dev lld
+
+      - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
+        run: bash scripts/ci/set-libclang-path.sh
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
