@@ -191,17 +191,18 @@ jobs:
           default = "$SLACK_USER_TOKEN"
           EOF
 
-      - name: Run nextest (LLM suite)
+      - name: Run nextest (workspace)
         run: |
-          # LLM tests with full parallelism (no thread limits).
-          # Tests gated by #[cfg(feature = "llm-tests")] compile only when feature enabled.
+          # Single workspace pass with the union feature set (LLM + non-LLM).
+          # Tests gated by #[cfg(feature = "llm-tests")] compile when llm-tests is enabled,
+          # producing one artifact graph that contains every test.
           # IMPORTANT: keep explicit feature list here (do NOT switch to --all-features).
           # `sandbox-e2e-kvm` must only compile in .github/workflows/sandbox-e2e-kvm.yml
           # on KVM-capable runners.
-          echo ">>> nextest LLM suite: full parallelism (nproc=$(nproc))"
+          echo ">>> nextest workspace: full parallelism (nproc=$(nproc))"
           # Sandbox protocol/adapter coverage is owned by downstream sandbox jobs
           # in this workflow; excluding them here keeps each test in one lane.
-          cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast \
+          cargo nextest run --workspace --locked --profile ci-merged --no-fail-fast \
             --exclude baml-sandbox-adapter --exclude baml-sandbox-protocol --exclude sandbox-echo-adapter \
             --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
@@ -216,44 +217,13 @@ jobs:
           OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ""
           OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ""
 
-      - name: Run nextest (non-LLM suite)
-        run: |
-          # Non-LLM tests with full parallelism.
-          # LLM-gated tests don't compile without llm-tests feature.
-          # IMPORTANT: keep explicit feature list here (do NOT switch to --all-features).
-          # `sandbox-e2e-kvm` must only compile in .github/workflows/sandbox-e2e-kvm.yml
-          # on KVM-capable runners.
-          echo ">>> nextest non-LLM suite: full parallelism (nproc=$(nproc))"
-          cargo nextest run --workspace --locked --profile ci-non-llm --no-fail-fast \
-            --exclude baml-sandbox-adapter --exclude baml-sandbox-protocol --exclude sandbox-echo-adapter \
-            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
-        env:
-          RUSTUP_TOOLCHAIN: stable
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OTEL_SDK_DISABLED: "true"
-          OTEL_TRACES_EXPORTER: "none"
-          OTEL_METRICS_EXPORTER: "none"
-          OTEL_LOGS_EXPORTER: "none"
-          OTEL_EXPORTER_OTLP_ENDPOINT: ""
-          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ""
-          OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ""
-
-      - name: Publish JUnit report (LLM suite)
+      - name: Publish JUnit report
         if: always()
         uses: mikepenz/action-junit-report@v4
         with:
-          report_paths: "target/nextest/ci-llm/junit-llm.xml"
+          report_paths: "target/nextest/ci-merged/junit.xml"
           require_tests: false
-          check_name: Nextest results (LLM)
-
-      - name: Publish JUnit report (non-LLM suite)
-        if: always()
-        uses: mikepenz/action-junit-report@v4
-        with:
-          report_paths: "target/nextest/ci-non-llm/junit-non-llm.xml"
-          require_tests: false
-          check_name: Nextest results (non-LLM)
+          check_name: Nextest results
 
   sandbox-adapter:
     name: Sandbox adapter (stdio E2E + protocol)

@@ -608,13 +608,11 @@ clippy:
 
 ci_features := "baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests"
 
-# CI parity: run nextest in CI order (LLM suite first, then non-LLM suite).
+# CI parity: single workspace pass with the union feature set, matching rust-ci.yml.
 # Requires: cargo-nextest and OPENROUTER_API_KEY for LLM tests.
-# Both suites use full parallelism (no thread limits).
 # OTEL is disabled for stability/noise reduction in local test runs.
 test:
-    OTEL_SDK_DISABLED=true OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none OTEL_EXPORTER_OTLP_ENDPOINT="" cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
-    OTEL_SDK_DISABLED=true OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none OTEL_EXPORTER_OTLP_ENDPOINT="" cargo nextest run --workspace --locked --profile ci-non-llm --no-fail-fast --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
+    OTEL_SDK_DISABLED=true OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none OTEL_EXPORTER_OTLP_ENDPOINT="" cargo nextest run --workspace --locked --profile ci-merged --no-fail-fast --features baml-rt-tools/http-tools,{{ci_features}}
 
 # Same as `test` but only compile — useful for a quick pre-push check.
 test-build:
