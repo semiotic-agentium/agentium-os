@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    metadata::{ExternalToolMetadata, metadata_schema_digest},
+    metadata::{ExternalToolMetadata, InvocationMode, metadata_schema_digest},
     protocol::SUPPORTED_METHODS_V2,
     runtime::ToolRuntime,
 };
@@ -88,10 +88,16 @@ pub fn render_sidecar_bundle(
         manifest: ToolManifestSidecar {
             tool_name: meta.name.clone(),
             protocol_version: "2".to_string(),
-            supported_methods: SUPPORTED_METHODS_V2
-                .iter()
-                .map(|m| (*m).to_string())
-                .collect(),
+            supported_methods: match meta.invocation_mode {
+                InvocationMode::SingleShot => SUPPORTED_METHODS_V2
+                    .iter()
+                    .map(|m| (*m).to_string())
+                    .collect(),
+                InvocationMode::Session => baml_sandbox_protocol::session::SUPPORTED_METHODS_SESSION
+                    .iter()
+                    .map(|m| (*m).to_string())
+                    .collect(),
+            },
         },
         schema: ToolSchemaSidecar {
             schema_version: 1,
