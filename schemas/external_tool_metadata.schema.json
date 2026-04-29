@@ -239,6 +239,19 @@
       "type": "string",
       "pattern": "^sha256:[a-f0-9]{64}$",
       "description": "runtime identity digest (required for sandbox runtime)"
+    },
+    "coordination": {
+      "type": "object",
+      "description": "Optional session-coordination BAML pointer. Required for session tools that expose a Choose<Tool>Action step-executor function; forbidden for single_shot tools.",
+      "required": ["baml_file"],
+      "properties": {
+        "baml_file": {
+          "type": "string",
+          "description": "File name (relative to the tool directory) containing the coordination BAML fragment.",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
     }
   },
   "allOf": [
