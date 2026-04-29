@@ -400,6 +400,7 @@ mod tests {
             projection_semantics: None,
             session_policy: SessionPolicy::Strict,
             event_sources: vec![],
+            coordination_baml: None,
         }
     }
 

@@ -77,6 +77,30 @@ pub struct ExternalToolMetadata {
     /// Required when `runtime.kind == "sandbox"`; omitted for process tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_digest: Option<String>,
+    /// Optional session-coordination BAML declaration. When set, the builder
+    /// reads the referenced file from the tool directory and merges its
+    /// contents into the agent's generated BAML prelude — equivalent to an
+    /// internal tool registering a `SessionCoordinationProvider` via inventory.
+    ///
+    /// Required for external `invocation_mode=session` tools that expose a
+    /// `Choose<Tool>Action` step-executor function to agents. Forbidden for
+    /// `single_shot` tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordination: Option<CoordinationSpec>,
+}
+
+/// Tool-author-supplied coordination BAML pointer.
+///
+/// The file lives next to `tool-metadata.json` in the tool package and contains
+/// the `Choose<Tool>Action` function plus any tool-specific terminal classes
+/// (Report / AskUser / etc.). The builder concatenates this into the prelude;
+/// auto-generated session classes (Open/Send/.../SessionPlan) come from the
+/// JSON schema and are emitted by the builder, not by the tool author.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoordinationSpec {
+    /// File name (relative to the tool directory) containing the coordination
+    /// BAML fragment.
+    pub baml_file: String,
 }
 
 impl ExternalToolMetadata {
@@ -113,6 +137,7 @@ impl ExternalToolMetadata {
             config_bundle: None,
             runtime: None,
             runtime_digest: None,
+            coordination: None,
         }
     }
 
@@ -222,7 +247,12 @@ pub(crate) fn read_raw_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
 }
 
 /// Project parsed metadata into the runtime [`ToolFunctionMetadata`] shape.
+///
+/// `dir` is the tool package directory containing `tool-metadata.json`. When
+/// `meta.coordination` is set, the referenced BAML file is read relative to
+/// `dir` and attached as [`ToolFunctionMetadata::coordination_baml`].
 pub(crate) fn build_tool_metadata(
+    dir: &Path,
     meta: &ExternalToolMetadata,
     tool_name: &ToolName,
 ) -> Result<ToolFunctionMetadata> {
@@ -244,6 +274,37 @@ pub(crate) fn build_tool_metadata(
             )
         })
         .collect();
+
+    let coordination_baml = match &meta.coordination {
+        Some(spec) => {
+            if matches!(meta.invocation_mode, InvocationMode::SingleShot) {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "tool '{}' declares coordination.baml_file but invocation_mode is single_shot; \
+                     coordination is only valid for session tools",
+                    meta.name
+                )));
+            }
+            if spec.baml_file.is_empty() {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "tool '{}' has empty coordination.baml_file",
+                    meta.name
+                )));
+            }
+            let coord_path = dir.join(&spec.baml_file);
+            let body = fs::read_to_string(&coord_path).map_err(|e| {
+                BamlRtError::InvalidArgumentWithSource {
+                    message: format!(
+                        "tool '{}': failed to read coordination BAML at {}",
+                        meta.name,
+                        coord_path.display()
+                    ),
+                    source: Box::new(e),
+                }
+            })?;
+            Some(body)
+        }
+        None => None,
+    };
 
     Ok(ToolFunctionMetadata {
         name: tool_name.clone(),
@@ -278,6 +339,7 @@ pub(crate) fn build_tool_metadata(
         projection_semantics: None,
         session_policy: meta.session_policy.to_session_policy(),
         event_sources: Vec::new(),
+        coordination_baml,
     })
 }
 
@@ -508,7 +570,8 @@ mod tests {
 
         let meta: ExternalToolMetadata = serde_json::from_value(raw).expect("metadata parses");
         let tool_name = ToolName::parse("internal-dev/meteo_tool").expect("valid tool name");
-        let built = build_tool_metadata(&meta, &tool_name).expect("metadata builds");
+        let dir = std::env::temp_dir();
+        let built = build_tool_metadata(&dir, &meta, &tool_name).expect("metadata builds");
 
         assert_eq!(built.class_name, "InternalDevMeteoTool");
         assert_eq!(built.input_type.name, "InternalDevMeteoToolInput");

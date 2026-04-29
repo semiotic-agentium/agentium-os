@@ -4,7 +4,7 @@ use std::{collections::HashMap, fs, path::Path};
 
 use baml_rt_tools::{
     external_tools::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolsLockfile, external_dirs_from_env},
-    get_session_coordination_baml_for_tools,
+    gather_coordination_fragments,
 };
 use baml_runtime::BamlRuntime;
 use tokio::task;
@@ -61,10 +61,26 @@ impl TypeGenerator for RuntimeTypeGenerator {
             purge_managed_generated_baml_files(&baml_src_build).map_err(BamlBuilderError::Io)?;
 
             let tool_names = load_manifest_tools(&baml_src)?;
+
+            // Resolve tool metadata once — used for the coordination prelude,
+            // polymorphic type generation, and per-phase function generation.
+            // Coordination BAML is sourced from `metadata.coordination_baml`,
+            // which is populated by the catalog from inventory providers
+            // (internal tools) or `coordination.baml_file` (external bundles).
+            let tool_metadata = if !tool_names.is_empty() {
+                let catalog = baml_rt_tools::external_tools::build_builder_catalog()?;
+                baml_rt_tools::tool_catalog::resolve_manifest_tools_with_catalog(
+                    &catalog,
+                    &tool_names,
+                )?
+            } else {
+                Vec::new()
+            };
+
             // Single `_baml_runtime.baml` prelude (mirrors `baml-runtime.d.ts`): tools + coordination + IR sections.
             let mut generated_baml = render_baml_tool_interfaces(&tool_names)?;
-            if !tool_names.is_empty()
-                && let Some(coord_baml) = get_session_coordination_baml_for_tools(&tool_names)?
+            if !tool_metadata.is_empty()
+                && let Some(coord_baml) = gather_coordination_fragments(&tool_metadata)?
             {
                 generated_baml
                     .push_str("\n\n// ── builder: session coordination (tool crates) ──\n\n");
@@ -76,18 +92,6 @@ impl TypeGenerator for RuntimeTypeGenerator {
                 fs::create_dir_all(parent).map_err(BamlBuilderError::Io)?;
             }
             atomic_write(&prelude_path, generated_baml.as_bytes())?;
-
-            // Resolve tool metadata once — used by both polymorphic type generation
-            // and per-phase function generation.
-            let tool_metadata = if !tool_names.is_empty() {
-                let catalog = baml_rt_tools::external_tools::build_builder_catalog()?;
-                baml_rt_tools::tool_catalog::resolve_manifest_tools_with_catalog(
-                    &catalog,
-                    &tool_names,
-                )?
-            } else {
-                Vec::new()
-            };
 
             // First compile: user BAML + generated tool interfaces.
             // Polymorphic session types are generated from the IR *after* this compile,

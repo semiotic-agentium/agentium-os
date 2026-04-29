@@ -356,7 +356,7 @@ async fn load_process_tool_dir(
     }
 
     let digest = compute_tool_digest(dir)?;
-    let mut metadata = build_tool_metadata(&meta, &tool_name)?;
+    let mut metadata = build_tool_metadata(dir, &meta, &tool_name)?;
     metadata.digest = Some(digest.clone());
 
     if let Some(recorder) = lifecycle_recorder {
@@ -415,7 +415,7 @@ async fn load_sandbox_tool_dir(
     // synthesize a best-effort digest off the metadata until the full
     // sandbox artifact digesting story lands.
     let digest = format!("sandbox:{}", meta.name);
-    let mut metadata = build_tool_metadata(&meta, &tool_name)?;
+    let mut metadata = build_tool_metadata(dir, &meta, &tool_name)?;
     metadata.digest = Some(digest.clone());
 
     if let Some(recorder) = lifecycle_recorder {

@@ -136,7 +136,7 @@ impl ToolCatalog for ExternalMetadataCatalog {
 fn load_metadata(dir: &Path) -> Result<ToolFunctionMetadata> {
     let meta = read_external_metadata(dir)?;
     let tool_name = ToolName::parse(&meta.name)?;
-    build_tool_metadata(&meta, &tool_name)
+    build_tool_metadata(dir, &meta, &tool_name)
 }
 
 #[cfg(test)]

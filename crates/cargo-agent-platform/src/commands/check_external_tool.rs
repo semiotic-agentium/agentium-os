@@ -144,7 +144,7 @@ pub fn run(path: &str) -> Result<()> {
     println!(
         "{} metadata valid for {} ({runtime_kind})",
         style("✓").green(),
-        style(typed.name).cyan()
+        style(&typed.name).cyan()
     );
 
     if matches!(
@@ -155,6 +155,47 @@ pub fn run(path: &str) -> Result<()> {
             "{} session-mode tool detected; runner must enable {}",
             style("i").cyan(),
             style("BAML_EXTERNAL_SESSION_SANDBOX=1").cyan()
+        );
+    }
+
+    if let Some(spec) = &typed.coordination {
+        if matches!(
+            typed.invocation_mode,
+            baml_rt_tools::external_tools::InvocationMode::SingleShot
+        ) {
+            bail!(
+                "tool '{}' declares coordination.baml_file but invocation_mode is single_shot; coordination is only valid for session tools",
+                typed.name
+            );
+        }
+        if spec.baml_file.is_empty() {
+            bail!("tool '{}' has empty coordination.baml_file", typed.name);
+        }
+        let coord_path = tool_dir.join(&spec.baml_file);
+        if !coord_path.is_file() {
+            bail!(
+                "tool '{}': coordination file not found at {}",
+                typed.name,
+                coord_path.display()
+            );
+        }
+        let coord_body = fs::read_to_string(&coord_path).with_context(|| {
+            format!(
+                "failed to read coordination BAML at {}",
+                coord_path.display()
+            )
+        })?;
+        if coord_body.trim().is_empty() {
+            bail!(
+                "tool '{}': coordination file is empty: {}",
+                typed.name,
+                coord_path.display()
+            );
+        }
+        println!(
+            "{} coordination BAML loaded from {}",
+            style("✓").green(),
+            style(coord_path.display()).cyan()
         );
     }
 

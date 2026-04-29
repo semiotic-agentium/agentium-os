@@ -62,7 +62,10 @@ pub use opaque_json::{
     OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY, OpaqueJson, opaque_json_map_from_object,
 };
 pub use open_input_schema::schema_allows_empty_or_optional_open_input;
-pub use session_coordination::get_session_coordination_baml_for_tools;
+pub use session_coordination::{
+    SessionCoordinationProvider, gather_coordination_fragments,
+    get_session_coordination_baml_for_tools,
+};
 pub use session_ctx_tags::{
     CTX_TAG_SESSION_STEP_STABLE_PREFIX, SESSION_STEP_STABLE_PREFIX_BAML,
     SESSION_STEP_STABLE_PREFIX_VALUE,

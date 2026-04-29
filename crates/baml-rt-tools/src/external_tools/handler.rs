@@ -651,6 +651,7 @@ mod tests {
             projection_semantics: None,
             session_policy: Default::default(),
             event_sources: Vec::new(),
+            coordination_baml: None,
         }
     }
 }

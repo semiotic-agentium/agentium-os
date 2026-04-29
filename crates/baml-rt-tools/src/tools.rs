@@ -924,6 +924,15 @@ pub struct ToolFunctionMetadata {
     /// Event source kinds this tool can produce when polled.
     /// Empty means the tool is invoke-only (no event production).
     pub event_sources: Vec<EventSourceKind>,
+    /// Optional session-coordination BAML fragment shipped with the tool.
+    ///
+    /// Authored once per tool (by the tool author) and merged into the builder's
+    /// generated prelude when an agent lists the tool in its manifest. Internal
+    /// tools populate this via `inventory!` providers in `session_coordination.rs`;
+    /// external tools populate it from a `coordination.baml_file` declared in
+    /// `tool-metadata.json`. `None` for tools that do not need coordination
+    /// (single-shot invokes, internal tools without a `Choose<X>Action` flow).
+    pub coordination_baml: Option<String>,
 }
 
 /// Trait for building ToolFunctionMetadata consistently
@@ -1005,6 +1014,7 @@ impl ToolFunctionMetadata {
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
             event_sources: Vec::new(),
+            coordination_baml: None,
         }
     }
 }
