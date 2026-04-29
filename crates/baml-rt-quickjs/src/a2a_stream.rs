@@ -683,6 +683,7 @@ fn chunk_state(chunk: &Value) -> Option<String> {
         .get("task")
         .and_then(from_maybe_string)
         .or_else(|| chunk.get("statusUpdate").and_then(from_maybe_string))
+        .or_else(|| chunk.get("status_update").and_then(from_maybe_string))
 }
 
 fn chunk_has_final_state(chunk: &Value) -> bool {

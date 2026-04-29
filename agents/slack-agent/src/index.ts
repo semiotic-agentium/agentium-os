@@ -10,7 +10,6 @@ import type {
 } from "./baml-runtime";
 
 const MAX_REACT_STEPS = 10;
-const MAX_CLARIFY = 2;
 const PKG_RETRIEVE = "slack-retrieve";
 const PKG_SYNTH = "slack-synthesize";
 
@@ -209,7 +208,9 @@ __chat_register({
     let text = originalText.trim();
 
     let validatedIntent: string | null = null;
-    for (let i = 0; i <= MAX_CLARIFY; i++) {
+    // NeedClarification must always use awaitInput so the host emits TASK_STATE_INPUT_REQUIRED — never
+    // substitute a fake intent after N rounds (that completed the stream without suspending).
+    while (true) {
       const intentResult = await InferSlackIntent({ user_message: text });
 
       if (isSlackIntent(intentResult)) {
@@ -221,14 +222,16 @@ __chat_register({
           message: textReply(`This doesn't look like a Slack request — ${intentResult.reason}`),
         };
       }
-      if (isNeedClarification(intentResult) && i < MAX_CLARIFY) {
+      if (isNeedClarification(intentResult)) {
         const reply = await ctx.emit.awaitInput(intentResult.question);
         const clarified = messageText(reply).trim();
         if (clarified) text = clarified;
-      } else {
-        validatedIntent = originalText.trim() || text;
-        break;
+        continue;
       }
+      return {
+        error:
+          "InferSlackIntent returned an unexpected shape — expected SlackIntent, NeedClarification, or NotRelevant.",
+      };
     }
     if (!validatedIntent) return { error: "Could not determine a valid Slack intent." };
 
