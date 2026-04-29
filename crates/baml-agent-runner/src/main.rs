@@ -262,6 +262,19 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
     );
 
     let access_allowlist = parse_access_allowlist();
+    let env_set = std::env::var("BAML_TOOL_ACCESS_ALLOWLIST").is_ok();
+    let mut permitted: Vec<&'static str> = access_allowlist
+        .permitted()
+        .iter()
+        .map(|a| a.as_str())
+        .collect();
+    permitted.sort_unstable();
+    info!(
+        env_set,
+        unrestricted = access_allowlist.is_unrestricted(),
+        permitted = ?permitted,
+        "Tool access cap resolved (per-agent manifest allowlist still gates tool exposure)"
+    );
     let builder = builder::RunnerBuilder::<builder::Loading>::new(
         provenance_config,
         deployment_state,

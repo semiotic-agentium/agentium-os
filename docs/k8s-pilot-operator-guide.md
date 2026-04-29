@@ -287,6 +287,7 @@ Supported in the pilot:
 
 - Two-replica runner `StatefulSet` + shared SurrealDB + `ClusterIP` API service + `kubectl port-forward` operator access.
 - `runner-token` secret for operator auth on protected routes.
+- Per-agent manifest allowlist as the deny-by-default tool gate, with an optional cluster-wide access-class cap via the `BAML_TOOL_ACCESS_ALLOWLIST` env var. See [Tool Access in `docs/agent-runner.md`](agent-runner.md#tool-access) for the full model.
 - `fnox-config` ConfigMap mounted at `/config/fnox.toml` for LLM credentials.
 - Helm values profiles: [`examples/k3d-values.yaml`](../deploy/helm/agentium-os/examples/k3d-values.yaml) (local) and [`examples/design-partner-values.yaml`](../deploy/helm/agentium-os/examples/design-partner-values.yaml) (production-like).
 - OpenTelemetry export to an operator-supplied OTLP gRPC endpoint.
