@@ -41,16 +41,16 @@ pub fn canonical_bind_digest(dir: &Path) -> Result<String> {
         hasher.update([0]);
         match kind {
             EntryKind::Dir(mode) => {
-                hasher.update([b'd']);
+                hasher.update(b"d");
                 hasher.update(mode.to_le_bytes());
             }
             EntryKind::File(mode, content_hash) => {
-                hasher.update([b'f']);
+                hasher.update(b"f");
                 hasher.update(mode.to_le_bytes());
                 hasher.update(content_hash.as_bytes());
             }
             EntryKind::Symlink(mode, target) => {
-                hasher.update([b'l']);
+                hasher.update(b"l");
                 hasher.update(mode.to_le_bytes());
                 hasher.update(target.as_os_str().as_encoded_bytes());
             }
