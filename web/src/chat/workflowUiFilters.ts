@@ -10,3 +10,10 @@ export function isWorkflowStatusText(text: string): boolean {
     /^Compiling final/i.test(t)
   );
 }
+
+/** Relay/model status lines that must never land in chat bubbles (workflow banner only). */
+export function isChatStatusNoiseText(text: string): boolean {
+  const t = text.trim();
+  if (isWorkflowStatusText(t)) return true;
+  return /^Calling model:/i.test(t) || /^Invoking tool:/i.test(t);
+}

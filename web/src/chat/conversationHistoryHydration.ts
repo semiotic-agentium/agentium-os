@@ -15,7 +15,38 @@ import {
   pushTerminalResultEvent,
   stableJsonSignature,
 } from "./toolNotificationEvents";
+import { stripLegacyStructuredPlaceholderLines } from "./legacyStructuredPlaceholders";
 import { isWorkflowStatusText } from "./workflowUiFilters";
+
+/** Non-user message entries with `type: message` and visible text (assistant output in provenance). */
+export function conversationHistoryHasAssistantMessageText(
+  page: ConversationHistoryPage,
+): boolean {
+  return page.items.some(
+    (item) =>
+      item.role.toLowerCase() !== "user" &&
+      item.content.type === "message" &&
+      typeof item.content.text === "string" &&
+      item.content.text.trim().length > 0,
+  );
+}
+
+/**
+ * Live stream already rendered agent content that full-page hydration would wipe if provenance lags
+ * (GET /conversation-history can briefly return only the user turn after the stream ends).
+ */
+export function chatMessagesHaveStreamedAgentBody(messages: ChatMessage[]): boolean {
+  return messages.some((m) => {
+    if (m.role !== "agent") return false;
+    if (m.text?.trim()) return true;
+    const blocks = m.contentBlocks;
+    if (!blocks?.length) return false;
+    return blocks.some((b) => {
+      if (b.type === "text") return (b.text ?? "").trim().length > 0;
+      return b.type === "tool";
+    });
+  });
+}
 
 export function applyConversationHistoryPage(
   messages: Ref<ChatMessage[]>,
@@ -88,7 +119,10 @@ export function applyConversationHistoryPage(
           break;
         }
         if (content.text) {
-          pushTextBlock(msg, content.text);
+          const cleaned = stripLegacyStructuredPlaceholderLines(content.text);
+          if (cleaned.trim().length > 0) {
+            pushTextBlock(msg, cleaned);
+          }
         }
         if (Array.isArray(content.citations) && content.citations.length > 0) {
           const prev = Array.isArray(msg.metadata?.citations)
@@ -178,7 +212,10 @@ export function applyConversationHistoryDelta(
     switch (content.type) {
       case "message":
         if (content.text && !appendExecutionErrorCard(msg, content.text)) {
-          pushTextBlock(msg, content.text);
+          const cleaned = stripLegacyStructuredPlaceholderLines(content.text);
+          if (cleaned.trim().length > 0) {
+            pushTextBlock(msg, cleaned);
+          }
         }
         break;
       case "tool_call": {

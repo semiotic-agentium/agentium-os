@@ -15,7 +15,7 @@ pub(crate) fn list_agents() -> Span {
     tracing::debug_span!("baml_rt_api.list_agents")
 }
 
-/// Create span for POST /agents/.../a2a (JSON-RPC forward).
+/// Create span for POST /agents/.../a2a (JSON-RPC request → SSE JSON-RPC stream).
 ///
 /// Parent: when the inbound request carries W3C `traceparent`, the caller
 /// attaches that context via `OpenTelemetrySpanExt::set_parent(..)` before

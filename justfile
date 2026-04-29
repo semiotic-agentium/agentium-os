@@ -84,12 +84,23 @@ build-debug:
 
 # Run bare runner (HTTP + stdio) with OTEL defaults suitable for local docker observability stack.
 # Override by exporting OTEL_* in your shell or .env.
+# Serves `web/dist` at / when present (`npm run build` in `web/`) so http://127.0.0.1:18080/ loads the chat UI.
 runner: build
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    WEB=()
+    [ -d web/dist ] && WEB=(--web-dir web/dist)
+    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio "${WEB[@]}"
 
 # Same as `runner`, but persists provenance to `provenance.db` (SurrealKV on disk).
 runner-provenance: build
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    WEB=()
+    [ -d web/dist ] && WEB=(--web-dir web/dist)
+    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio "${WEB[@]}"
 
 # Profile runner CPU hotspots with flamegraph.
 # Requires: cargo-flamegraph (`cargo install flamegraph`) and Linux perf permissions.

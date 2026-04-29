@@ -1,6 +1,7 @@
 //! BAML runtime core types and shared utilities.
 
 pub mod a2a_handler;
+pub mod a2a_sse;
 pub mod a2a_wire;
 pub mod agent_routing;
 pub mod backoff;
@@ -28,6 +29,7 @@ pub mod types;
 pub use a2a_handler::{
     A2aJsChatHost, A2aRequestHandler, collect_a2a_stream, collect_a2a_stream_until,
 };
+pub use a2a_sse::{A2aSseParseError, parse_a2a_sse_json_rpc_chunks};
 pub use a2a_wire::{A2aStreamChunk, A2aWireRequest};
 pub use agent_routing::{
     AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey,

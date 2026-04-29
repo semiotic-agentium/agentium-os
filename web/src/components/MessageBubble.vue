@@ -10,6 +10,7 @@ import {
   type ParsedCoordinatorAnswer,
 } from "../utils/parseCoordinatorAnswer";
 import { renderMarkdown } from "../utils/renderMarkdown";
+import { stripLegacyStructuredPlaceholderLines } from "../chat/legacyStructuredPlaceholders";
 
 const props = withDefaults(
   defineProps<{ message: ChatMessage; showInlineStreamingDots?: boolean }>(),
@@ -73,6 +74,11 @@ const confidenceClass = computed(() => {
 
 const showGoals = ref(false);
 const showGaps = ref(false);
+
+/** Hide vacuous legacy provenance placeholders when message rows still carry separate structured blocks. */
+function displayTextBlockContent(raw: string | undefined): string {
+  return stripLegacyStructuredPlaceholderLines(raw ?? "");
+}
 </script>
 
 <template>
@@ -103,10 +109,13 @@ const showGaps = ref(false);
         <template v-for="(block, idx) in message.contentBlocks" :key="idx">
           <div v-if="block.type === 'text'" :class="['bubble', message.role]">
             <div :class="['bubble-text', message.role === 'agent' ? 'bubble-markdown' : '']">
-              <template v-if="block.text">
+              <template v-if="displayTextBlockContent(block.text).length > 0">
                 <!-- eslint-disable-next-line vue/no-v-html -->
-                <div v-if="message.role === 'agent'" v-html="renderMarkdown(block.text)"></div>
-                <template v-else>{{ block.text }}</template>
+                <div
+                  v-if="message.role === 'agent'"
+                  v-html="renderMarkdown(displayTextBlockContent(block.text))"
+                ></div>
+                <template v-else>{{ displayTextBlockContent(block.text) }}</template>
                 <span
                   v-if="
                     showInlineStreamingDots &&
@@ -154,22 +163,28 @@ const showGaps = ref(false);
       <template v-else>
         <div :class="['bubble', message.role]">
           <div :class="['bubble-text', message.role === 'agent' ? 'bubble-markdown' : '']">
-            <template v-if="showInlineStreamingDots && message.isStreaming && !message.text">
+            <template
+              v-if="
+                showInlineStreamingDots &&
+                  message.isStreaming &&
+                  displayTextBlockContent(message.text).length === 0
+              "
+            >
               <span class="thinking-dots"> <span></span><span></span><span></span> </span>
             </template>
-            <template v-else-if="message.text">
+            <template v-else-if="displayTextBlockContent(message.text).length > 0">
               <!-- eslint-disable-next-line vue/no-v-html -->
-              <div v-if="message.role === 'agent'" v-html="renderMarkdown(message.text)"></div>
-              <template v-else>{{ message.text }}</template>
+              <div
+                v-if="message.role === 'agent'"
+                v-html="renderMarkdown(displayTextBlockContent(message.text))"
+              ></div>
+              <template v-else>{{ displayTextBlockContent(message.text) }}</template>
               <span
                 v-if="showInlineStreamingDots && message.isStreaming"
                 class="thinking-dots inline"
               >
                 <span></span><span></span><span></span>
               </span>
-            </template>
-            <template v-else>
-              {{ message.text }}
             </template>
           </div>
           <div v-if="message.awaitingInput" class="awaiting-input-hint" role="status">

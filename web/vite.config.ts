@@ -2,17 +2,19 @@ import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import type { ProxyOptions } from "vite";
 
-// Same origin as `justfile` `runner_http_bind` and `baml-agent-runner` defaults (127.0.0.1:8080).
-const RUNNER_ORIGIN = "http://127.0.0.1:8080";
+// Must match `justfile` `runner_http_bind` / typical local `baml-agent-runner --serve-http`.
+const RUNNER_ORIGIN = "http://127.0.0.1:18080";
 
-/** Proxy to baml-agent-runner; avoid gzip on SSE so chunks are not buffered by the dev proxy. */
+/** Proxy to baml-agent-runner; disable gzip on agent/API routes so SSE (`POST .../a2a`) is not buffered. */
 function runnerProxy(): ProxyOptions {
   return {
     target: RUNNER_ORIGIN,
     changeOrigin: true,
     configure(proxy) {
       proxy.on("proxyReq", (proxyReq, req) => {
-        if (req.url?.includes("sse")) {
+        const url = req.url ?? "";
+        // `/agents/.../a2a` does not contain "sse" — still needs identity encoding for streaming bodies.
+        if (url.startsWith("/agents") || url.includes("sse")) {
           proxyReq.setHeader("accept-encoding", "identity");
         }
       });

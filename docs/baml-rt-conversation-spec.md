@@ -20,7 +20,7 @@ These separate **what happened** in the graph from **how the model is guided** i
 4. **Render** — [`project_prompt_context`](../crates/baml-rt-tools/src/prompt_projection.rs) assigns `#N` via idempotent `RefTable::insert_history` (stable per activity + source).
 5. **Provider** — [`ProjectingConversationContextProvider`](../crates/baml-rt-a2a/src/a2a_transport.rs) → `ctx.tags['conversation_history']` in [`BamlExecutor`](../crates/baml-rt-quickjs/src/baml_execution.rs).
 6. **Intra-turn** — [`baml/intra_turn.rs`](../crates/baml-rt-quickjs/src/baml/intra_turn.rs) may merge a loop-local supplement with the provider; dedup is by full JSON line equality (stable refs make re-reads match).
-7. **Phase executors (codegen)** — [`session_from_ir.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir.rs) generates per-phase BAML **without** long `[OPEN]` / `[ACT]` / `[CONTINUE]` preambles; IR `prompt_template` is the only inlined task text in the default path.
+7. **Phase executors (codegen)** — [`session_from_ir/mod.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/mod.rs) generates per-phase BAML **without** long `[OPEN]` / `[ACT]` / `[CONTINUE]` preambles; IR `prompt_template` is the only inlined task text in the default path.
 8. **Citation drift** — [`compute_citation_drift_section`](../crates/baml-rt-provenance/src/effect_subscriber.rs) re-runs `project_prompt_context` on the live `RefTable`; idempotent history refs keep `#N` aligned with the last build.
 
 ## Non-negotiable invariants
@@ -35,7 +35,7 @@ These separate **what happened** in the graph from **how the model is guided** i
 
 - **Provenance write:** duplicate `Message` nodes or bad `event_order` → wrong order or repeated lines in the graph; fix the write path, not the projector.
 - **Ref churn (mitigated):** previously, `insert_history` allocated a new `#N` on every full pass, breaking intra-turn `Value` equality; now idempotent per `(activity_anchor, source)`.
-- **Builder preambles (mitigated for generated phase tools):** long `[ACT]` / `[CONTINUE]` blocks in the `prompt` string conflated **PhaseOverlay** with the task template; removed from [`session_from_ir.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir.rs) — hand-written BAML in agent repos may still document FSM in `@@description` or comments.
+- **Builder preambles (mitigated for generated phase tools):** long `[ACT]` / `[CONTINUE]` blocks in the `prompt` string conflated **PhaseOverlay** with the task template; removed from [`session_from_ir/mod.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/mod.rs) — hand-written BAML in agent repos may still document FSM in `@@description` or comments.
 - **Intra-turn async:** `LlmCompleted` can lag; the step executor supplement exists until the graph catches up; this is not non-monotonic *provenance*, but a composite read until sync.
 
 ## R9 — Prefix cacheability (append-only before compaction)
