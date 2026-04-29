@@ -37,8 +37,8 @@ use baml_rt_repository::{
     BlobStore, LineageStore, MetadataStore, RepositoryService, SearchStore, SurrealStore,
 };
 use baml_rt_tools::{
-    InventoryCatalog, ProducerCheckpoint, load_configured_event_producers_with_checkpoints,
-    parse_access_allowlist,
+    ACCESS_ALLOWLIST_ENV, InventoryCatalog, ProducerCheckpoint,
+    load_configured_event_producers_with_checkpoints, parse_access_allowlist,
 };
 use baml_tools_calculator as _;
 #[cfg(feature = "clickup")]
@@ -262,7 +262,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
     );
 
     let access_allowlist = parse_access_allowlist();
-    let env_set = std::env::var("BAML_TOOL_ACCESS_ALLOWLIST").is_ok();
+    let env_set = std::env::var(ACCESS_ALLOWLIST_ENV).is_ok();
     let mut permitted: Vec<&'static str> = access_allowlist
         .permitted()
         .iter()

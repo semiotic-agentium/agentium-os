@@ -25,6 +25,10 @@ use crate::{
     tools::ToolAccess,
 };
 
+/// Environment variable that configures the cluster-wide access-class cap.
+/// See [`parse_access_allowlist`] and the module-level docs for semantics.
+pub const ACCESS_ALLOWLIST_ENV: &str = "BAML_TOOL_ACCESS_ALLOWLIST";
+
 /// Operator-configured cap on the host-tool access classes a runner will
 /// expose. Composed with the per-agent manifest allowlist; see the module
 /// docs for the full model.
@@ -62,10 +66,7 @@ impl ToolAccessPolicy {
     /// and only the manifest allowlist gates tool exposure. Useful for
     /// startup logs that surface the active policy to operators.
     pub fn is_unrestricted(&self) -> bool {
-        let p = self.permitted();
-        p.contains(&ToolAccess::Read)
-            && p.contains(&ToolAccess::Write)
-            && p.contains(&ToolAccess::Delete)
+        self.permitted() == Self::permit_all().permitted()
     }
 }
 
@@ -85,7 +86,7 @@ impl Default for ToolAccessPolicy {
 ///   classes. Unknown tokens are warned and ignored. An entirely unknown or
 ///   empty value caps to the empty set (every classed tool is rejected).
 pub fn parse_access_allowlist() -> ToolAccessPolicy {
-    let raw = match std::env::var("BAML_TOOL_ACCESS_ALLOWLIST") {
+    let raw = match std::env::var(ACCESS_ALLOWLIST_ENV) {
         Ok(s) => s,
         Err(_) => return ToolAccessPolicy::default(),
     };
