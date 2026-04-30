@@ -43,8 +43,8 @@ function handleSend() {
 }
 
 const inputPlaceholder = computed(() => {
-  if (props.awaitingInput && props.inputRequiredPrompt?.trim()) {
-    return props.inputRequiredPrompt.trim();
+  if (props.awaitingInput) {
+    return props.inputRequiredPrompt?.trim() || "Reply to continue…";
   }
   if (props.disabled && !props.isLoading) return "Select an agent to start";
   if (props.isLoading) return "Agent is responding…";

@@ -28,6 +28,32 @@ pub use test_tools::{
 };
 use tokio::sync::RwLock;
 
+/// Deep-copy an agent fixture tree into `dst` so the builder can write tsconfig / generated `.d.ts`
+/// without touching the committed workspace (read-only checkouts, Nix sandboxes, sparse clones).
+fn copy_agent_tree_for_build(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !src.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("agent source is not a directory: {}", src.display()),
+        ));
+    }
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let dest = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_agent_tree_for_build(&path, &dest)?;
+        } else {
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&path, &dest)?;
+        }
+    }
+    Ok(())
+}
+
 /// Effect subscriber that captures all emitted `EffectEvent`s into a `Vec`.
 ///
 /// Useful in tests that need to assert planning/tool effect sequences without
@@ -112,9 +138,25 @@ pub async fn build_fixture_package_to_temp(fixture_name: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir).expect("create extract dir");
 
-    baml_rt_builder::build_agent_package(&agent_dir, &tar_path)
+    let staging = std::env::temp_dir().join(format!(
+        "a2a-test-{fixture_name}-stage-{pid}-{unique}",
+        fixture_name = fixture_name,
+        pid = pid,
+        unique = unique
+    ));
+    let _ = fs::remove_dir_all(&staging);
+    copy_agent_tree_for_build(&agent_dir, &staging).unwrap_or_else(|e| {
+        panic!(
+            "copy fixture {fixture_name} from {} to staging {} failed: {e}",
+            agent_dir.display(),
+            staging.display()
+        );
+    });
+
+    baml_rt_builder::build_agent_package(&staging, &tar_path)
         .await
         .unwrap_or_else(|e| panic!("build fixture {fixture_name} failed: {e}"));
+    let _ = fs::remove_dir_all(&staging);
 
     let tar_gz = fs::File::open(&tar_path).expect("open built tar");
     let tar_dec = GzDecoder::new(tar_gz);
@@ -153,9 +195,25 @@ pub async fn build_agent_package_to_temp(agent_dir: PathBuf, package_label: &str
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir).expect("create extract dir");
 
-    baml_rt_builder::build_agent_package(&agent_dir, &tar_path)
+    let staging = std::env::temp_dir().join(format!(
+        "runner-test-{package_label}-stage-{pid}-{unique}",
+        package_label = package_label,
+        pid = pid,
+        unique = unique
+    ));
+    let _ = fs::remove_dir_all(&staging);
+    copy_agent_tree_for_build(&agent_dir, &staging).unwrap_or_else(|e| {
+        panic!(
+            "copy agent {package_label} from {} to staging {} failed: {e}",
+            agent_dir.display(),
+            staging.display()
+        );
+    });
+
+    baml_rt_builder::build_agent_package(&staging, &tar_path)
         .await
         .unwrap_or_else(|e| panic!("build agent {package_label} failed: {e}"));
+    let _ = fs::remove_dir_all(&staging);
 
     let tar_gz = fs::File::open(&tar_path).expect("open built tar");
     let tar_dec = GzDecoder::new(tar_gz);
@@ -190,9 +248,25 @@ pub async fn build_agent_package_archive_to_temp(
     let tar_path =
         std::env::temp_dir().join(format!("runner-test-{package_label}-{pid}-{unique}.tar.gz"));
 
-    baml_rt_builder::build_agent_package(&agent_dir, &tar_path)
+    let staging = std::env::temp_dir().join(format!(
+        "runner-test-{package_label}-archive-stage-{pid}-{unique}",
+        package_label = package_label,
+        pid = pid,
+        unique = unique
+    ));
+    let _ = fs::remove_dir_all(&staging);
+    copy_agent_tree_for_build(&agent_dir, &staging).unwrap_or_else(|e| {
+        panic!(
+            "copy agent archive {package_label} from {} to staging {} failed: {e}",
+            agent_dir.display(),
+            staging.display()
+        );
+    });
+
+    baml_rt_builder::build_agent_package(&staging, &tar_path)
         .await
         .unwrap_or_else(|e| panic!("build agent archive {package_label} failed: {e}"));
+    let _ = fs::remove_dir_all(&staging);
 
     tar_path
 }

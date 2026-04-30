@@ -20,6 +20,7 @@ pub mod llm_request_display;
 mod metrics;
 pub mod opaque_json;
 pub mod open_input_schema;
+pub mod phase_step_json;
 pub mod prompt_projection;
 pub mod session_coordination;
 pub mod session_ctx_tags;

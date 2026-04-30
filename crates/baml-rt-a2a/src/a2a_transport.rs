@@ -2023,16 +2023,30 @@ impl A2aAgent {
                         .await;
                     }
                     if comp == Some(StreamCompletion::InputRequired) && view.is_null() {
-                        // Emit a minimal wire chunk so the client receives TASK_STATE_INPUT_REQUIRED and can show the banner.
+                        // Emit a wire chunk so the client receives TASK_STATE_INPUT_REQUIRED. Include a
+                        // short status message so web/React clients can populate the compose hint even
+                        // when the prior yield did not carry `statusUpdate.status.message` on the wire.
                         let tid = last_task_id
                             .clone()
                             .or(session_task_id_str.clone())
                             .unwrap_or_else(|| format!("stream-{}", session_context_id));
+                        let prompt_msg = json!({
+                            "parts": [{ "text": "Reply to continue the conversation." }]
+                        });
                         let input_required_chunk = json!({
                             "task": {
                                 "id": tid,
                                 "contextId": session_context_id.as_str(),
-                                "status": { "state": "TASK_STATE_INPUT_REQUIRED" }
+                                "status": {
+                                    "state": "TASK_STATE_INPUT_REQUIRED",
+                                    "message": prompt_msg.clone()
+                                }
+                            },
+                            "statusUpdate": {
+                                "status": {
+                                    "state": "TASK_STATE_INPUT_REQUIRED",
+                                    "message": prompt_msg
+                                }
                             },
                             "final": false
                         });

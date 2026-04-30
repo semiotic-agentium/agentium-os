@@ -62,8 +62,9 @@ pub fn unwrap_session_plan_step_shape_for_phase_output(v: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn unwrap_promotes_step_to_root() {

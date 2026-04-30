@@ -204,6 +204,11 @@ export function useA2aClient() {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
         if (page.version === _historyVersion) return;
+        // Do not merge provenance deltas while the live stream left an agent bubble awaiting resume;
+        // deltas can reorder or fork bubbles and drop stream-only INPUT_REQUIRED flags.
+        if (messages.value.some((m) => m.role === "agent" && m.awaitingInput)) {
+          return;
+        }
         applyConversationHistoryDelta(messages, page);
         _historyVersion = page.version;
         selectedHistoryContextId.value = page.contextId;
@@ -702,6 +707,7 @@ export function useA2aClient() {
     }
     // Input required: stream suspended (no final); agent waiting for user reply.
     if (state === "TASK_STATE_INPUT_REQUIRED") {
+      const DEFAULT_INPUT_REQUIRED_PROMPT = "Reply to continue.";
       updateMessage(messages, agentMsgId, (msg) => {
         msg.isStreaming = false;
         msg.awaitingInput = true;
@@ -709,18 +715,16 @@ export function useA2aClient() {
           extractTextFromStatusUpdate(chunk) ??
           extractText(chunk.statusUpdate?.status?.message) ??
           extractText(chunk.task?.status?.message);
-        if (prompt?.trim()) {
-          const p = prompt.trim();
-          msg.inputRequiredPrompt = p;
-          // Shim `emit.awaitInput` sends INPUT_REQUIRED on statusUpdate.status.message (flat).
-          // Older extract paths missed that shape, leaving an empty agent bubble with only "waiting" hint.
-          if (!msg.text?.trim()) {
-            if (msg.contentBlocks?.length) {
-              ensureContentBlocks(msg);
-              pushTextBlock(msg, p);
-            } else {
-              msg.text = p;
-            }
+        const p = prompt?.trim() ? prompt.trim() : DEFAULT_INPUT_REQUIRED_PROMPT;
+        msg.inputRequiredPrompt = p;
+        // Shim `emit.awaitInput` sends INPUT_REQUIRED on statusUpdate.status.message (flat).
+        // Synthetic suspend chunks may only carry task.status.message — still surface readable text.
+        if (!msg.text?.trim()) {
+          if (msg.contentBlocks?.length) {
+            ensureContentBlocks(msg);
+            pushTextBlock(msg, p);
+          } else {
+            msg.text = p;
           }
         }
       });

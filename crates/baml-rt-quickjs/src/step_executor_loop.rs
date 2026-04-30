@@ -26,7 +26,9 @@
 use std::sync::{Arc, Mutex};
 
 use baml_rt_core::{BamlFunctionId, BamlPromptName, BamlRtError, Result, VariantPhase, context};
-use baml_rt_tools::{ToolName, ToolSlug};
+use baml_rt_tools::{
+    ToolName, ToolSlug, phase_step_json::unwrap_session_plan_step_shape_for_phase_output,
+};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -222,30 +224,61 @@ fn phase_function_id(base: &BamlPromptName, phase: &Phase) -> BamlFunctionId {
 
 /// Extract tool_name from a step executor result (Open step output).
 fn extract_tool_binding(result: &Value) -> Option<ToolBinding> {
-    let raw = result
-        .get("tool_name")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            result
-                .get("step")
-                .and_then(|s| s.get("tool_name"))
-                .and_then(Value::as_str)
-        })?;
-
-    match ToolName::parse(raw) {
-        Ok(name) => {
-            let slug = name.slug();
-            Some(ToolBinding { name, slug })
-        }
-        Err(e) => {
-            tracing::warn!(
-                raw_tool_name = raw,
-                error = %e,
-                "step_executor_loop: invalid tool_name in result, ignoring"
-            );
-            None
+    fn binding_from_tool_name_str(raw: &str) -> Option<ToolBinding> {
+        match ToolName::parse(raw) {
+            Ok(name) => {
+                let slug = name.slug();
+                Some(ToolBinding { name, slug })
+            }
+            Err(e) => {
+                tracing::warn!(
+                    raw_tool_name = raw,
+                    error = %e,
+                    "step_executor_loop: invalid tool_name in result, ignoring"
+                );
+                None
+            }
         }
     }
+
+    fn extract_tool_binding_inner(result: &Value) -> Option<ToolBinding> {
+        let raw = result
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                result
+                    .get("step")
+                    .and_then(|s| s.get("tool_name"))
+                    .and_then(Value::as_str)
+            })
+            .or_else(|| {
+                result
+                    .get("output")
+                    .and_then(|o| o.get("tool_name"))
+                    .and_then(Value::as_str)
+            })
+            .or_else(|| {
+                result
+                    .get("output")
+                    .and_then(|o| o.get("step"))
+                    .and_then(|s| s.get("tool_name"))
+                    .and_then(Value::as_str)
+            })?;
+        binding_from_tool_name_str(raw)
+    }
+
+    extract_tool_binding_inner(result).or_else(|| {
+        // LLM sometimes returns `SystemInternal_a2aSessionPlan` shape (`step` + `citations`) at
+        // the root without a top-level `op`; normalize to a flat step for tool_name extraction.
+        let Value::Object(map) = result else {
+            return None;
+        };
+        if map.contains_key("op") || !map.contains_key("step") {
+            return None;
+        }
+        let unwrapped = unwrap_session_plan_step_shape_for_phase_output(result.clone());
+        extract_tool_binding_inner(&unwrapped)
+    })
 }
 
 /// Run the step executor loop entirely in Rust.
