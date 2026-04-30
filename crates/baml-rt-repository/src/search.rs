@@ -60,7 +60,7 @@ pub struct SearchQuery {
 // Filter types — each is a distinct, validated value
 // ---------------------------------------------------------------------------
 
-/// Full-text search term for content search (FTS5 or similar).
+/// Search term matched case-insensitively against manifest and source content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct FullTextTerm(String);
