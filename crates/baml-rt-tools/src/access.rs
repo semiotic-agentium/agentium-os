@@ -116,6 +116,28 @@ pub fn parse_access_allowlist_from(value: Option<&str>) -> ToolAccessPolicy {
     ToolAccessPolicy::PermitOnly(set)
 }
 
+/// Enforce access policy for a tool. All tools (including system) must be gated; always runs the check.
+pub fn enforce_tool_access(tool_name: &str, policy: &ToolAccessPolicy) -> Result<()> {
+    let permitted = policy.permitted();
+    let catalog = InventoryCatalog::new();
+    let name = ToolName::parse(tool_name)?;
+    if let Some(metadata) = catalog.by_name(&name) {
+        if let Some(access) = metadata.access {
+            if !permitted.contains(&access) {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Tool '{tool_name}' access '{access}' is not allowed by BAML_TOOL_ACCESS_ALLOWLIST"
+                )));
+            }
+        } else {
+            warn!(
+                tool = tool_name,
+                "Tool has no declared access; allowing due to policy"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,26 +218,4 @@ mod tests {
         assert!(policy.permitted().contains(&ToolAccess::Read));
         assert!(policy.permitted().contains(&ToolAccess::Write));
     }
-}
-
-/// Enforce access policy for a tool. All tools (including system) must be gated; always runs the check.
-pub fn enforce_tool_access(tool_name: &str, policy: &ToolAccessPolicy) -> Result<()> {
-    let permitted = policy.permitted();
-    let catalog = InventoryCatalog::new();
-    let name = ToolName::parse(tool_name)?;
-    if let Some(metadata) = catalog.by_name(&name) {
-        if let Some(access) = metadata.access {
-            if !permitted.contains(&access) {
-                return Err(BamlRtError::InvalidArgument(format!(
-                    "Tool '{tool_name}' access '{access}' is not allowed by BAML_TOOL_ACCESS_ALLOWLIST"
-                )));
-            }
-        } else {
-            warn!(
-                tool = tool_name,
-                "Tool has no declared access; allowing due to policy"
-            );
-        }
-    }
-    Ok(())
 }

@@ -3,7 +3,6 @@
   "name": "coordinator-agent",
   "entry_point": "src/index.ts",
   "signature": "coordinator-agent@1.0.0",
-  "runtime_version": "0.1.0",
   "tools": [
     "system/discover_agents",
     "system/discover_tools",
