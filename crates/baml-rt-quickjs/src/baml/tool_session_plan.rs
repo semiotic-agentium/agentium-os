@@ -191,7 +191,7 @@ impl BamlRuntimeManager {
                     // For Open step, use initial_input if provided and non-null, otherwise empty object
                     let open_input = initial_input
                         .clone()
-                        .and_then(|v| if v.is_null() { None } else { Some(v) })
+                        .filter(|v| !v.is_null())
                         .unwrap_or_else(open_input::empty_open_input);
                     let session = self
                         .open_tool_session(&plan_scope, &tool_name_str, open_input)

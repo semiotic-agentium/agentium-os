@@ -1136,10 +1136,7 @@ impl TaskStore {
         let task_id = task_id?;
         let task_id_str = task_id.as_str().to_string();
         let new_state = status_to_string(&status);
-        let new_state = match &new_state {
-            Some(s) => s.as_str(),
-            None => return None,
-        };
+        let new_state = new_state.as_ref()?.as_str();
 
         let task = self.tasks.get_mut(&task_id_str)?;
         let current_state_str = task.status.as_ref().and_then(status_to_string);
