@@ -21,8 +21,8 @@ use baml_rt_core::{AgentDiscoveryEntry, AgentLister, context};
 use baml_tools_system::SystemBundle;
 use serde_json::{Value, json};
 use test_support::common::{
-    AddNumbersTool, CalculatorTool, first_message_text_from_stream, first_task_id_from_stream,
-    send_stream_request,
+    AddNumbersTool, CalculatorTool, chunks_from_responses, first_task_id_from_stream,
+    message_visible_content_from_chunks, send_stream_request,
 };
 
 async fn collect_responses(
@@ -101,11 +101,11 @@ fn fixture_js_code() -> String {
                 const session = await openToolSession("test/add_numbers");
                 await session.send({ a: 2, b: 3 });
                 await session.continue();
-                __chat_yield({ message: { parts: [{ text: "sum=5" }] } });
+                __chat_yield({ __session: message.__session, message: { parts: [{ text: "sum=5" }] } });
             } catch (e) {
-                __chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
+                __chat_yield({ __session: message.__session, message: { parts: [{ text: `tool_error=${String(e)}` }] } });
             }
-            __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_COMPLETED" } } });
+            __chat_yield({ __session: message.__session, statusUpdate: { status: { state: "TASK_STATE_COMPLETED" } } });
             return;
         }
         if (text.startsWith("baml-tool:")) {
@@ -113,11 +113,11 @@ fn fixture_js_code() -> String {
                 const session = await openToolSession("support/calculate");
                 await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
                 await session.continue();
-                __chat_yield({ message: { parts: [{ text: "sum=5" }] } });
+                __chat_yield({ __session: message.__session, message: { parts: [{ text: "sum=5" }] } });
             } catch (e) {
-                __chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
+                __chat_yield({ __session: message.__session, message: { parts: [{ text: `tool_error=${String(e)}` }] } });
             }
-            __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_COMPLETED" } } });
+            __chat_yield({ __session: message.__session, statusUpdate: { status: { state: "TASK_STATE_COMPLETED" } } });
             return;
         }
         __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
@@ -437,11 +437,12 @@ async fn test_message_send_tool_calling() {
     );
 
     let responses = collect_responses(&agent, request).await.unwrap();
-    let text = first_message_text_from_stream(&responses);
+    let chunks = chunks_from_responses(&responses);
+    let merged_visible = message_visible_content_from_chunks(&chunks).join("\n");
     assert!(
-        text.contains("sum=5"),
-        "expected tool result in message text, got: {}",
-        text
+        merged_visible.contains("sum=5"),
+        "expected tool result in merged stream text, got: {}",
+        merged_visible
     );
 }
 
@@ -463,11 +464,12 @@ async fn test_message_send_baml_tool_calling() {
     );
 
     let responses = collect_responses(&agent, request).await.unwrap();
-    let text = first_message_text_from_stream(&responses);
+    let chunks = chunks_from_responses(&responses);
+    let merged_visible = message_visible_content_from_chunks(&chunks).join("\n");
     assert!(
-        text.contains("sum=5"),
-        "expected BAML tool result in message text, got: {}",
-        text
+        merged_visible.contains("sum=5"),
+        "expected BAML tool result in merged stream text, got: {}",
+        merged_visible
     );
 }
 

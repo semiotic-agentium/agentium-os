@@ -20,8 +20,9 @@ use baml_rt_core::ids::ContextId;
 use proptest::prelude::*;
 use serde_json::json;
 use test_support::common::{
-    CalculatorTool, agent_fixture, ensure_fixture_runtime_types, first_message_text_from_stream,
-    is_error_response, send_stream_request,
+    CalculatorTool, agent_fixture, chunks_from_responses, ensure_fixture_runtime_types,
+    first_message_text_from_stream, is_error_response, message_visible_content_from_chunks,
+    send_stream_request,
 };
 use tokio::{
     task::JoinSet,
@@ -400,20 +401,20 @@ proptest! {
                     .count();
                 assert_eq!(final_count, 1, "stream must include exactly one final marker");
 
-                let text = first_message_text_from_stream(&responses);
+                let chunks = chunks_from_responses(&responses);
+                let visible = message_visible_content_from_chunks(&chunks);
                 let expected_prefix = match kind.as_str() {
                     "a2a" => "A2A:",
                     "tool" => "TOOL:",
                     _ => "LLM:",
                 };
+                let ctx_str = context_id.as_str();
+                let matched = visible.iter().find(|s| {
+                    s.starts_with(expected_prefix) && s.contains(ctx_str)
+                });
                 assert!(
-                    text.starts_with(expected_prefix),
-                    "message text prefix mismatch for kind {kind}: {text}"
-                );
-                assert!(
-                    text.contains(context_id.as_str()),
-                    "context contamination: expected {ctx} in {text}",
-                    ctx = context_id.as_str(),
+                    matched.is_some(),
+                    "expected one visible segment with prefix {expected_prefix} and context {ctx_str} for kind {kind}; visible={visible:?}"
                 );
             }
             assert_eq!(completed, ops.len(), "all spawned requests must complete");
