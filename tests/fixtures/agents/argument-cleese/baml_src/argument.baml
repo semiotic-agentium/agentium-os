@@ -25,7 +25,9 @@ function CleeseSendToChapman(first_line: string) -> SystemInternal_a2aSessionPla
 
     On Send, the message body must be exactly the Cleese line above, character for character. Do not improvise dialogue.
 
-    One round trip only: send Cleese’s line once; when Chapman’s reply appears in the session below (or after at most one Read if history is not yet visible), end this tool session. Do not Send again to Chapman in the same planner turn.
+    One round trip only: send Cleese’s line once; when Chapman’s reply appears in the session below (or after at most one SearchRead/PageRead on the delegated archive if history is not yet visible), end this tool session with Finish. Do not Send again to Chapman in the same planner turn.
+
+    FSM ops for this tool are exactly Open, Send, SearchRead, PageRead, Finish, Abort — never use op Read (invalid).
 
     {% if ctx.tags['conversation_history'] %}
     Session history:

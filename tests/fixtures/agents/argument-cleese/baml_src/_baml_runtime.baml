@@ -237,7 +237,9 @@ Cleese line — this is the only text you may send to Chapman on Send (copy it e
 
 On Send, the message body must be exactly the Cleese line above, character for character. Do not improvise dialogue.
 
-One round trip only: send Cleese’s line once; when Chapman’s reply appears in the session below (or after at most one Read if history is not yet visible), end this tool session. Do not Send again to Chapman in the same planner turn.
+One round trip only: send Cleese’s line once; when Chapman’s reply appears in the session below (or after at most one SearchRead/PageRead on the delegated archive if history is not yet visible), end this tool session with Finish. Do not Send again to Chapman in the same planner turn.
+
+FSM ops for this tool are exactly Open, Send, SearchRead, PageRead, Finish, Abort — never use op Read (invalid).
 
 {% if ctx.tags['conversation_history'] %}
 Session history:
@@ -253,14 +255,14 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — first post-Open hop: Send or SearchRead/PageRead system/internal_a2a.
+/// Phase: act — first post-Open hop: Send, SearchRead, or PageRead (system/internal_a2a).
 function CleeseSendToChapman__act__system_internal_a2a(
   first_line: string,
   session_context: SessionContext
 ) -> SystemInternal_a2aSendStep | SystemInternal_a2aSearchReadStep | SystemInternal_a2aPageReadStep {
 
   client DefaultClient
-  prompt #"[ACT] A system/internal_a2a session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nArgue in the style of a Monty Python sketch.
+  prompt #"[ACT] A system/internal_a2a session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nArgue in the style of a Monty Python sketch.
 
 For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
 
@@ -269,7 +271,9 @@ Cleese line — this is the only text you may send to Chapman on Send (copy it e
 
 On Send, the message body must be exactly the Cleese line above, character for character. Do not improvise dialogue.
 
-One round trip only: send Cleese’s line once; when Chapman’s reply appears in the session below (or after at most one Read if history is not yet visible), end this tool session. Do not Send again to Chapman in the same planner turn.
+One round trip only: send Cleese’s line once; when Chapman’s reply appears in the session below (or after at most one SearchRead/PageRead on the delegated archive if history is not yet visible), end this tool session with Finish. Do not Send again to Chapman in the same planner turn.
+
+FSM ops for this tool are exactly Open, Send, SearchRead, PageRead, Finish, Abort — never use op Read (invalid).
 
 {% if ctx.tags['conversation_history'] %}
 Session history:
@@ -280,7 +284,7 @@ Session history:
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
+PHASE CONSTRAINT (act — Send or archive read): The JSON root must be exactly one Send, SearchRead, or PageRead step. op must be exactly the string Send, SearchRead, or PageRead — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
 "#
 
 }
@@ -292,7 +296,7 @@ function CleeseSendToChapman__continue__system_internal_a2a(
 ) -> SystemInternal_a2aSendStep | SystemInternal_a2aSearchReadStep | SystemInternal_a2aPageReadStep | SystemInternal_a2aFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/internal_a2a result is archived.\nCheck session history:\n- See \"@N system/internal_a2a\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/internal_a2a\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/internal_a2a\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nArgue in the style of a Monty Python sketch.
+  prompt #"[CONTINUE] system/internal_a2a result is archived.\nCheck session history:\n- See \"@N system/internal_a2a\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/internal_a2a\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n- See \"@N system/internal_a2a\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\nArgue in the style of a Monty Python sketch.
 
 For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
 
@@ -301,7 +305,9 @@ Cleese line — this is the only text you may send to Chapman on Send (copy it e
 
 On Send, the message body must be exactly the Cleese line above, character for character. Do not improvise dialogue.
 
-One round trip only: send Cleese’s line once; when Chapman’s reply appears in the session below (or after at most one Read if history is not yet visible), end this tool session. Do not Send again to Chapman in the same planner turn.
+One round trip only: send Cleese’s line once; when Chapman’s reply appears in the session below (or after at most one SearchRead/PageRead on the delegated archive if history is not yet visible), end this tool session with Finish. Do not Send again to Chapman in the same planner turn.
+
+FSM ops for this tool are exactly Open, Send, SearchRead, PageRead, Finish, Abort — never use op Read (invalid).
 
 {% if ctx.tags['conversation_history'] %}
 Session history:
@@ -312,7 +318,7 @@ Session history:
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, or Finish step. op must be Send, SearchRead, PageRead, or Finish — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
 "#
 
 }

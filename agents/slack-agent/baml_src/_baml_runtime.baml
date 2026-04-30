@@ -645,7 +645,7 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — first post-Open hop: Send or SearchRead/PageRead support/slack.
+/// Phase: act — first post-Open hop: Send, SearchRead, or PageRead (support/slack).
 function ChooseSlackAction__act__support_slack(
   goal: string,
   step_description: string,
@@ -653,7 +653,7 @@ function ChooseSlackAction__act__support_slack(
 ) -> SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep {
 
   client DefaultClient
-  prompt #"[ACT] A support/slack session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nYou execute ONE retrieve step of a read-only Slack plan.
+  prompt #"[ACT] A support/slack session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nYou execute ONE retrieve step of a read-only Slack plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
@@ -693,7 +693,7 @@ Session history:
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
+PHASE CONSTRAINT (act — Send or archive read): The JSON root must be exactly one Send, SearchRead, or PageRead step. op must be exactly the string Send, SearchRead, or PageRead — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
 "#
 
 }
@@ -706,7 +706,7 @@ function ChooseSlackAction__continue__support_slack(
 ) -> SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep | SupportSlackFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/slack result is archived.\nCheck session history:\n- See \"@N support/slack\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/slack\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/slack\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nYou execute ONE retrieve step of a read-only Slack plan.
+  prompt #"[CONTINUE] support/slack result is archived.\nCheck session history:\n- See \"@N support/slack\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/slack\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n- See \"@N support/slack\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\nYou execute ONE retrieve step of a read-only Slack plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
@@ -746,7 +746,7 @@ Session history:
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, or Finish step. op must be Send, SearchRead, PageRead, or Finish — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
 "#
 
 }

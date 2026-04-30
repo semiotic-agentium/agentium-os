@@ -5,8 +5,9 @@
 //! preamble** (describing the operation allowed — Open, Send-or-Read, Send-or-Read-or-Finish —
 //! and teaching the `@N` archive-ref notation) and a **phase-constraint suffix** (restating the
 //! legal JSON root shape for that hop). These bookends are essential: without them the LLM
-//! regularly emits malformed ops (e.g. `Read` with `archive_ref = "#0"` instead of `"@0"`) that
-//! fail schema validation and stall the step-executor loop with no assistant output. The narrowed
+//! regularly emits malformed ops (e.g. the nonexistent op `Read` instead of `SearchRead` /
+//! `PageRead`, or `archive_ref = "#0"` instead of `"@0"`) that fail schema validation and stall the
+//! step-executor loop with no assistant output. The narrowed
 //! return type alone is not enough — the model needs the prose as well.
 
 use std::{collections::HashMap, ops::Deref};
@@ -26,16 +27,16 @@ const PHASE_STEP_EXECUTOR_SUFFIX_SELECT: &str = r#"
 PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
 "#;
 
-/// Appended on **act** (first post-Open hop: Send or Read) — same archive discipline as continue.
+/// Appended on **act** (first post-Open hop: Send or archive paging) — same archive discipline as continue.
 const PHASE_STEP_EXECUTOR_SUFFIX_ACT: &str = r#"
 
-PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send or Read step: op must be the string Send or Read, plus input and citations fields as required by the schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset) — use this when an aligned @N archive already exists in history instead of re-Sending the same fetch.
+PHASE CONSTRAINT (act — Send or archive read): The JSON root must be exactly one Send, SearchRead, or PageRead step. op must be exactly the string Send, SearchRead, or PageRead — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
 "#;
 
-/// Appended on **continue** hops (Send | Read | Finish).
+/// Appended on **continue** hops (Send | SearchRead | PageRead | Finish).
 const PHASE_STEP_EXECUTOR_SUFFIX_CONTINUE: &str = r#"
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Finish step. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For Read, follow ArchiveReadInput in the prelude (grep, limit, offset).
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, or Finish step. op must be Send, SearchRead, PageRead, or Finish — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
 "#;
 
 /// Injected into **act** and **continue** preambles for `system/discover_agents` only.
@@ -44,7 +45,7 @@ PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Fi
 /// fallback and looks like no agents exist.
 const DISCOVER_AGENTS_SEND_DISCIPLINE: &str = r#"DISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
 
-PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agents listing at @N, prefer Read on that @N (grep/limit/offset) to page or narrow — do not re-Send discover_agents with the same broad query as a substitute for pagination.
+PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agents listing at @N, prefer SearchRead or PageRead on that @N (grep/limit/offset) to page or narrow — do not re-Send discover_agents with the same broad query as a substitute for pagination.
 
 "#;
 
@@ -241,18 +242,18 @@ pub fn render_generated_session_baml_from_ir(
 
             let act_preamble = if tool_name_str == "system/discover_agents" {
                 format!(
-                    "[ACT] A {tool_name_str} session is open. Emit Send for a new query, or Read an existing @N archive from history (grep/limit/offset) when listing output is already fetched — do not re-Send the same discover_agents listing without trying Read/pagination first.\\n\\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
+                    "[ACT] A {tool_name_str} session is open. Emit Send for a new query, or SearchRead/PageRead an existing @N archive from history when listing output is already fetched — do not re-Send the same discover_agents listing without trying SearchRead/PageRead pagination first.\\n\\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
                 )
             } else {
                 format!(
-                    "[ACT] A {tool_name_str} session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\\n\\n"
+                    "[ACT] A {tool_name_str} session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\\n\\n"
                 )
             };
             let act_name = SessionTypeNames::act(func_name, &slug);
             write_line(
                 &mut phase_out,
                 &format!(
-                    "/// Phase: act — first post-Open hop: Send or SearchRead/PageRead {tool_name_str}."
+                    "/// Phase: act — first post-Open hop: Send, SearchRead, or PageRead ({tool_name_str})."
                 ),
             )?;
             write_line(
@@ -278,9 +279,9 @@ pub fn render_generated_session_baml_from_ir(
                     "[CONTINUE] {tool_name_str} result is archived.\\n\
                      Check session history:\\n\
                      - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
-                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit Read to paginate\\n\
-                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit Read archive_ref=\\\"@N\\\"\\n\
-                     - Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\\n\\n\
+                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit SearchRead or PageRead to paginate\\n\
+                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead with archive_ref=\\\"@N\\\"\\n\
+                     - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\\n\\n\
                      {DISCOVER_AGENTS_SEND_DISCIPLINE}"
                 )
             } else {
@@ -288,9 +289,9 @@ pub fn render_generated_session_baml_from_ir(
                     "[CONTINUE] {tool_name_str} result is archived.\\n\
                      Check session history:\\n\
                      - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
-                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit Read to paginate\\n\
-                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit Read archive_ref=\\\"@N\\\"\\n\
-                     - Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\\n\\n"
+                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit SearchRead or PageRead to paginate\\n\
+                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead with archive_ref=\\\"@N\\\"\\n\
+                     - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\\n\\n"
                 )
             };
             let continue_name = SessionTypeNames::r#continue(func_name, &slug);
@@ -447,14 +448,14 @@ fn discover_agents_send_discipline_requires_paging_before_resend() {
 fn discover_agents_act_preamble_aligns_with_generic_archive_discipline() {
     let tool = "system/discover_agents";
     let act = format!(
-        "[ACT] A {tool} session is open. Emit Send for a new query, or Read an existing @N archive from history (grep/limit/offset) when listing output is already fetched — do not re-Send the same discover_agents listing without trying Read/pagination first.\\n\\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
+        "[ACT] A {tool} session is open. Emit Send for a new query, or SearchRead/PageRead an existing @N archive from history when listing output is already fetched — do not re-Send the same discover_agents listing without trying SearchRead/PageRead pagination first.\\n\\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
     );
     assert!(
         act.contains("do not re-Send the same discover_agents listing"),
         "expected explicit anti-resend for duplicate listing: {act}"
     );
     assert!(
-        act.contains("Read/pagination"),
-        "expected Read/pagination coupling: {act}"
+        act.contains("SearchRead/PageRead"),
+        "expected SearchRead/PageRead coupling: {act}"
     );
 }
