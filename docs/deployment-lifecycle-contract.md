@@ -16,6 +16,8 @@ This document defines MVP runner deployment contracts and runtime semantics.
 - Runtime HTTP deploy accepts:
   - `{ "hash": "..." }`
   - `{ "name": "...", "version": N }` resolved to hash in API layer
+- Runtime contract identity is content-hash-based; there is no separate `runtime_version` field in `AgentManifest`.
+- Manifest schema or runner contract changes propagate by content-hash change, enforcing compatibility at the hash boundary rather than via parallel version negotiation.
 
 ## Deployment Semantics (MVP)
 
