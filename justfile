@@ -606,13 +606,13 @@ fmt:
 clippy:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-ci_features := "baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests"
+ci_features := "baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests"
 
 # CI parity: single workspace pass with the union feature set, matching rust-ci.yml.
 # Requires: cargo-nextest and OPENROUTER_API_KEY for LLM tests.
 # OTEL is disabled for stability/noise reduction in local test runs.
 test:
-    OTEL_SDK_DISABLED=true OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none OTEL_EXPORTER_OTLP_ENDPOINT="" cargo nextest run --workspace --locked --profile ci-merged --no-fail-fast --features baml-rt-tools/http-tools,{{ci_features}}
+    OTEL_SDK_DISABLED=true OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none OTEL_EXPORTER_OTLP_ENDPOINT="" cargo nextest run --workspace --locked --profile ci-merged --no-fail-fast --features {{ci_features}}
 
 # Same as `test` but only compile — useful for a quick pre-push check.
 test-build:
