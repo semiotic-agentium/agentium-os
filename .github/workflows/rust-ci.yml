@@ -48,6 +48,44 @@ jobs:
               - 'crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter/**'
               - '.github/workflows/rust-ci.yml'
 
+  doctor:
+    name: Workspace integrity (doctor)
+    runs-on: arc-runner-set
+    needs: changes
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refresh apt indices (retry; mitigates mirror sync races)
+        run: bash scripts/ci/apt-update-retry.sh
+
+      - name: Install OS build deps
+        run: |
+          sudo apt-get install -y build-essential pkg-config libssl-dev libclang-dev lld
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate scope from nextest: `cargo run -p cargo-agent-platform`
+          # resolves a different feature graph than the workspace nextest
+          # invocation, producing distinct rlib variants for shared crates
+          # (e.g. baml-rt-builder, baml-rt-tools). Sharing `ci-nextest` would
+          # have nextest's save prune doctor's variants from target/.
+          shared-key: "ci-doctor"
+          cache-on-failure: true
+          cache-targets: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+
+      - name: Workspace integrity check
+        # `--warn-missing-catalog` downgrades unknown tool names to warnings so that agents
+        # referencing external/sandbox tools (declared via tool-metadata.json, not Rust inventory)
+        # do not fail CI. Doctor discovery of external tool catalogs is tracked separately.
+        run: cargo run -p cargo-agent-platform -- doctor --ci --warn-missing-catalog
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
   nextest:
     name: Nextest (workspace)
     runs-on: arc-runner-set
@@ -58,21 +96,11 @@ jobs:
       - name: Refresh apt indices (retry; mitigates mirror sync races)
         run: bash scripts/ci/apt-update-retry.sh
 
-      - name: Ensure zstd available
+      - name: Install OS build deps
         run: |
-          if ! command -v zstd &>/dev/null; then
-            sudo apt-get install -y zstd
-          fi
-
-      - name: Ensure ONNX model artifacts are materialized (git-lfs)
-        run: |
-          if ! command -v git-lfs &>/dev/null; then
-            sudo apt-get install -y git-lfs
-          fi
-          git lfs install --local
-          # Best-effort hydrate checked-in model blobs; validation/repair happens
-          # in the dedicated warm-up step via fastembed model initialization.
-          git lfs pull --include="models/fastembed/**"
+          sudo apt-get install -y \
+            build-essential pkg-config libssl-dev libclang-dev util-linux lld \
+            zstd git-lfs
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -91,8 +119,13 @@ jobs:
           shared-key: "ci-nextest"
           cache-on-failure: true
           cache-targets: "true"
+          # Only main pushes (and manual dispatches) repopulate the shared
+          # cache. PRs restore-only — the post-job cache save would otherwise
+          # cost ~9 min compressing/uploading target/ on every PR run.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
 
       - name: Cache ONNX model artifacts
+        id: onnx_cache
         uses: actions/cache@v4
         with:
           path: |
@@ -102,9 +135,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-fastembed-v1-
 
-      - name: Install build dependencies
+      - name: Ensure ONNX model artifacts are materialized (git-lfs)
+        if: steps.onnx_cache.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get install -y build-essential pkg-config libssl-dev libclang-dev util-linux lld
+          git lfs install --local
+          # Best-effort hydrate checked-in model blobs; validation/repair happens
+          # in the dedicated warm-up step via fastembed model initialization.
+          git lfs pull --include="models/fastembed/**"
 
       - name: Install Node.js and TypeScript
         run: |
@@ -132,16 +169,11 @@ jobs:
           }
 
       - name: Warm ONNX caches and validate model load
+        if: steps.onnx_cache.outputs.cache-hit != 'true'
         run: |
           cargo run -p baml-rt-embedding --bin download_models
         env:
           RUSTUP_TOOLCHAIN: stable
-
-      - name: Workspace integrity check
-        # `--warn-missing-catalog` downgrades unknown tool names to warnings so that agents
-        # referencing external/sandbox tools (declared via tool-metadata.json, not Rust inventory)
-        # do not fail CI. Doctor discovery of external tool catalogs is tracked separately.
-        run: cargo run -p cargo-agent-platform -- doctor --ci --warn-missing-catalog
 
       - name: System info
         run: |
