@@ -15,4 +15,5 @@ pub const SESSION_STEP_STABLE_PREFIX_BAML: &str =
 
 /// Injected on the step-executor BAML path only. Must match the historical embedded preamble text
 /// (now host-owned so it can be updated in one place).
-pub const SESSION_STEP_STABLE_PREFIX_VALUE: &str = "Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.\n\n";
+pub const SESSION_STEP_STABLE_PREFIX_VALUE: &str = "Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.\n\n\
+For `op: \"Open\"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.\n\n";

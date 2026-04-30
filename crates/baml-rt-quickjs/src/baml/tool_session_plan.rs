@@ -29,10 +29,12 @@ fn plan_send_tool_error_value(
 }
 
 fn send_done_json(send_result: &SendResult) -> Value {
+    // `output` remains the archive header line; `result` carries typed tool JSON (e.g. calculator).
     serde_json::json!({
         "status": "done",
         "output": send_result.header,
         "archive_ref": send_result.archive_ref.to_string(),
+        "result": send_result.output.clone(),
     })
 }
 
