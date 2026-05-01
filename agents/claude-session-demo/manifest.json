@@ -3,7 +3,7 @@
   "name": "claude-session-demo",
   "entry_point": "src/index.ts",
   "signature": "claude-session-demo@1.0.0",
-  "tools": ["dev/claude-ext"],
+  "tools": ["claude/dev"],
   "tags": [
     "development",
     "code-generation",

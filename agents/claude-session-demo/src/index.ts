@@ -1,16 +1,26 @@
 /// <reference path="./baml-runtime.d.ts" />
 
 type StructuredReply = import("./baml-runtime").StructuredReply;
-import type { RunContext, SessionResult } from "./baml-runtime";
+
+declare function RequirementsPhase(args: { user_message: string }): Promise<unknown>;
+declare function ProduceSpec(args: { requirements_summary: string }): Promise<unknown>;
+declare function ChooseClaudeDevAction(args: {
+  spec_text: string;
+  validation_criteria_json: string;
+  last_tool_output: string;
+  user_approval_intent: string;
+  session_context?: unknown;
+}): Promise<unknown>;
+declare function SummarizeDevWorkInPersonality(args: {
+  session_report: string;
+}): Promise<StructuredReply>;
 
 // --- BAML return types and guards ---
-// BAML-declared functions (RequirementsPhase, ProduceSpec, ChooseDevClaudeExtAction,
-// SummarizeDevWorkInPersonality) and their return types come from baml-runtime.d.ts.
 type NeedMoreInput = { question: string };
 type RequirementsReady = { summary: string; requirements: string[] };
 type Spec = { specification_text: string; validation_criteria: string[] };
-type DevClaudeExtAskUser = { action: string; prompt: string };
-type DevClaudeExtReport = { action: string; message: string };
+type ClaudeDevAskUser = { action: string; prompt: string };
+type ClaudeDevReport = { action: string; message: string };
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return v != null && typeof v === "object";
@@ -36,12 +46,12 @@ function isSpec(v: unknown): v is Spec {
   );
 }
 
-function isDevClaudeExtAskUser(v: unknown): v is DevClaudeExtAskUser {
-  return isObject(v) && (v as DevClaudeExtAskUser).action === "AskUser" && typeof (v as DevClaudeExtAskUser).prompt === "string";
+function isClaudeDevAskUser(v: unknown): v is ClaudeDevAskUser {
+  return isObject(v) && (v as ClaudeDevAskUser).action === "AskUser" && typeof (v as ClaudeDevAskUser).prompt === "string";
 }
 
-function isDevClaudeExtReport(v: unknown): v is DevClaudeExtReport {
-  return isObject(v) && (v as DevClaudeExtReport).action === "Report" && typeof (v as DevClaudeExtReport).message === "string";
+function isClaudeDevReport(v: unknown): v is ClaudeDevReport {
+  return isObject(v) && (v as ClaudeDevReport).action === "Report" && typeof (v as ClaudeDevReport).message === "string";
 }
 
 // --- Tool output (runtime executes session plan and returns this) ---
@@ -282,7 +292,7 @@ __chat_register({
       ctx.emit.message(planMessage);
       // Emit a clear "still working" so UIs don't treat the plan as the final chunk
       ctx.emit.statusChanged("TASK_STATE_WORKING");
-      // Yield so the stream collector can drain and forward the plan chunks to the client before the long ChooseDevClaudeExtAction/tool session runs.
+      // Yield so the stream collector can drain and forward the plan chunks to the client before the long ChooseClaudeDevAction/tool session runs.
       await Promise.resolve()
 
       // ---------- Tool session: host-driven step executor loop (same pattern as coordinator agents). ----------
@@ -296,7 +306,7 @@ __chat_register({
 
       for (let operatorRound = 0; operatorRound < MAX_DEV_ACTIONS; operatorRound++) {
         const run = await runGeneratedStepExecutor(
-          "ChooseDevClaudeExtAction",
+          "ChooseClaudeDevAction",
           {
             spec_text: spec.specification_text,
             validation_criteria_json: validationCriteriaJson,
@@ -307,7 +317,7 @@ __chat_register({
         );
 
         const result = isObject(run) ? (run as { last?: unknown }).last : run;
-        if (isDevClaudeExtReport(result)) {
+        if (isClaudeDevReport(result)) {
           if (executionExecutable != null) {
             await executionExecutable.completeStep?.("step-development");
             await executionExecutable.finish();
@@ -320,7 +330,7 @@ __chat_register({
 
         lastToolOutput = formatLastToolOutputFromExecutorRun(run);
 
-        if (isDevClaudeExtAskUser(result)) {
+        if (isClaudeDevAskUser(result)) {
           const neutralPrompt = "Your next message will be sent to Claude.";
           ctx.emit.message(neutralPrompt);
           const reply = await ctx.emit.awaitInput(neutralPrompt);

@@ -97,96 +97,106 @@ class ArchivePageReadInput {
   limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
 }
 // Domain types generated from JSON schemas
-class DevClaudeExtInputContent {
+class ClaudeToolNextOutputEvents {
   kind string
   text string
 }
 
-class DevClaudeExtInputUserInput {
-  display_text string?
-  prompt string?
-}
-
-class DevClaudeExtInput {
-  prompt string?
-  content DevClaudeExtInputContent[] | DevClaudeExtInputContent?
-  userInput DevClaudeExtInputUserInput?
-}
-
-class DevClaudeExtOutputEvents {
-  kind string
-  text string
-}
-
-enum DevClaudeExtOutputCompletion {
+enum ClaudeToolNextOutputCompletion {
   DONE
   INPUTREQUIRED
     @alias("INPUT_REQUIRED")
   INTERRUPTED
 }
 
-class DevClaudeExtOutputHistoryContextPayload {
-  eventCount int?
-  completion string?
+enum HistoryContextV1Op {
+  SearchRead
+  PageRead
 }
 
-class DevClaudeExtOutputHistoryContext {
+enum HistoryContextV1Status {
+  Done
+    @alias("done")
+  Streaming
+    @alias("streaming")
+  Suspended
+    @alias("suspended")
+  Error
+    @alias("error")
+}
+
+class HistoryContextV1 {
   hop int
-  op string
-  status string
+  op HistoryContextV1Op
+  status HistoryContextV1Status
   truncated bool
-  cursor string?
-  payload DevClaudeExtOutputHistoryContextPayload?
+  cursor string | null?
+  payload map<string, OpaqueJson> | null?
 }
 
-class DevClaudeExtOutput {
-  events DevClaudeExtOutputEvents[]?
-  completion DevClaudeExtOutputCompletion?
-  historyContext DevClaudeExtOutputHistoryContext?
+class ClaudeToolNextOutput {
+  events ClaudeToolNextOutputEvents[]
+  completion ClaudeToolNextOutputCompletion | null?
+  history_context HistoryContextV1 | null?
 }
 
-/// Tool card for dev/claude-ext: metadata for polymorphic Open selection.
-class DevClaudeExtToolCard {
-  tool_name "dev/claude-ext"
-  description "Sandboxed Claude-style streaming session external tool"
+class ClaudeToolOpenInput {
+  workspace string | null?
+}
+
+class ClaudeToolSendInputContent {
+  kind string
+  text string
+}
+
+class ClaudeToolSendInput {
+  prompt string | null?
+  content (ClaudeToolSendInputContent | ClaudeToolSendInputContent[]) | null?
+}
+
+/// Tool card for claude/dev: metadata for polymorphic Open selection.
+class ClaudeDevToolCard {
+  tool_name "claude/dev"
+  description "Host-managed Claude streaming session. Open once, send prompt/content, then call next() until completion is DONE/INTERRUPTED or INPUT_REQUIRED for resume."
   session_policy "Strict"
-  input_summary "{ content?: oneOf(oneOf({ kind: \"text\", text: string } | { kind: \"image_url\", url: string } | { data: string, kind: \"image_base64\", media_type: string })[] | oneOf({ kind: \"text\", text: string } | { kind: \"image_url\", url: string } | { data: string, kind: \"image_base64\", media_type: string })), prompt?: string, userInput?: { display_text?: string, prompt?: string } }"
-  tags string[] @description("Tool tags: dev, claude-ext, external, session, streaming")
+  input_summary "{ content?: anyOf(oneOf(oneOf({ kind: \"text\", text: string } | { kind: \"image_url\", url: string } | { data: string, kind: \"image_base64\", media_type: string }) | oneOf({ kind: \"text\", text: string } | { kind: \"image_url\", url: string } | { data: string, kind: \"image_base64\", media_type: string })[]) | null), prompt?: anyOf(string | null) }"
+  tags string[] @description("Tool tags: claude, stream, session")
 }
 
-class DevClaudeExtOpenStep {
+class ClaudeDevOpenStep {
   op "Open"
-  tool_name "dev/claude-ext" @description("Tool to open")
+  tool_name "claude/dev" @description("Tool to open")
+  initial_input ClaudeToolOpenInput? @description("Optional open payload.")
 }
 
-class DevClaudeExtSendStep {
+class ClaudeDevSendStep {
   op "Send"
-  input DevClaudeExtInput @description("Payload for this step.")
+  input ClaudeToolSendInput @description("Conversational message payload. Set text to a non-empty string. Never null, never omit text.")
   citations string[] @description("Cite evidence for this Send. History: #N. Archive: @N. Lines: @N:L / @N:L1-L2 — use @N:L for specific lines. Counter-evidence: ! prefix. Must cite what informed this Send.")
 }
 
-class DevClaudeExtSearchReadStep {
+class ClaudeDevSearchReadStep {
   op "SearchRead"
   input ArchiveSearchReadInput @description("archive_ref and grep required. Large body: small limit; page matches with offset. Do not use SearchRead when you need contiguous unfiltered lines — use PageRead.")
 }
 
-class DevClaudeExtPageReadStep {
+class ClaudeDevPageReadStep {
   op "PageRead"
   input ArchivePageReadInput @description("archive_ref required; omit grep. Contiguous paging over rendered archive lines. Use after SearchRead when you need surrounding detail.")
 }
 
-class DevClaudeExtFinishStep {
+class ClaudeDevFinishStep {
   op "Finish"
 }
 
-class DevClaudeExtAbortStep {
+class ClaudeDevAbortStep {
   op "Abort"
 }
 
-type DevClaudeExtSessionStep = DevClaudeExtOpenStep | DevClaudeExtSendStep | DevClaudeExtSearchReadStep | DevClaudeExtPageReadStep | DevClaudeExtFinishStep | DevClaudeExtAbortStep
+type ClaudeDevSessionStep = ClaudeDevOpenStep | ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep
 
-class DevClaudeExtSessionPlan {
-  step DevClaudeExtSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send for new work or SearchRead/PageRead @N when the archive exists; after Send (@N archived) → Finish, SearchRead, PageRead, or Send again. Access: write.")
+class ClaudeDevSessionPlan {
+  step ClaudeDevSessionStep @description("Emit one FSM step. From history: no session → Open; session open → Send (input.text must be non-empty) for new work, or SearchRead/PageRead @N when that tool archive already exists; after Send (@N archived) → SearchRead (grep required) to find lines, PageRead (no grep) for contiguous slices, Finish, or Send again. Access: write.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -194,45 +204,35 @@ class DevClaudeExtSessionPlan {
 
 // ── builder: session coordination (tool crates) ──
 
-// Session coordination BAML for dev/claude-ext.
-//
-// Authored once by the tool author; the runner builder concatenates this into
-// every agent prelude that lists "dev/claude-ext" in `manifest.json`. Mirrors
-// the internal `claude/dev` provider (`crates/tools/claude/src/session_coordination.rs`)
-// but uses the slug-derived class-name root `DevClaudeExt`.
-//
-// The host generates `DevClaudeExtSessionPlan` (and the Open/Send/SearchRead/
-// PageRead/Finish/Abort step classes) from the JSON schema in `tool-metadata.json`.
-// This file only declares the tool-specific terminal classes plus the
-// `Choose<Tool>Action` step-executor function.
+// Auto-generated session coordination — do not edit manually
+// Coordinates the claude/dev session tool (Open/Send/SearchRead/PageRead/Finish/Abort).
+// ClaudeDevSessionPlan is defined in _baml_runtime.baml (builder prelude).
 
-class DevClaudeExtAskUser {
+class ClaudeDevAskUser {
   action string @description("Always 'AskUser'.")
   prompt string @description("When you need the end user to supply information you do not have, state clearly what to provide; the user's reply will be sent to the Claude session as the next Send prompt.")
 }
 
-class DevClaudeExtReport {
+class ClaudeDevReport {
   action string @description("Always 'Report'.")
   message string @description("Final report to return to the user (requirements + spec + dev output + validation).")
 }
 
-function ChooseDevClaudeExtAction(
+function ChooseClaudeDevAction(
   spec_text: string,
   validation_criteria_json: string,
   last_tool_output: string,
   user_approval_intent: string @description("When the last user input was a tool approval: 'approved' or 'rejected'. Empty string when not applicable. Use this to return Send (approval input) + Next or Abort. Do not use or infer any request ids."),
   session_context: SessionContext?
-) -> DevClaudeExtReport | DevClaudeExtAskUser | DevClaudeExtSessionPlan {
+) -> ClaudeDevReport | ClaudeDevAskUser | ClaudeDevSessionPlan {
   client DefaultClient
   prompt #"
-    You control a claude cli tool session that implements a spec and may run validation when the task actually requires it. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
+    You control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
     RULES:
-    0. CRITICAL: When emitting DevClaudeExtSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
+    0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
     1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
     2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
-       - Treat lightweight static checks (syntax, exact printed output, shape of example code) as sufficient for simple snippet/example requests.
-       - Do not request an extra validation turn just because validation_criteria_json exists.
     3. Initialization is two-hop under host FSM:
        - On the select/Open phase, emit Open (initial_input may be null/default).
        - Next hop, on the Send phase and last_tool_output is empty, emit Send with:
@@ -241,17 +241,16 @@ function ChooseDevClaudeExtAction(
        - approved -> Send userInput { kind: "toolApproval", approved: true } (optional short prompt allowed)
        - rejected -> Abort with short reason, or Send userInput { kind: "toolApproval", approved: false, reason: "..." } if continuing
     5. When completion is DONE or INTERRUPTED:
-       - if the task is a simple snippet/example or the validation criteria are lightweight static checks, emit Report immediately
-       - only Send a validation prompt when the task explicitly requires execution, testing, debugging, or verification beyond the produced code
+       - if validation has not been requested yet, Send validation prompt
        - otherwise emit Report with concise requirements/build/validation summary
     6. Non-terminal sessions: poll tool output (SearchRead to filter, PageRead for contiguous lines) before more Send or Finish when needed. Large @N: SearchRead requires grep + limit + offset; PageRead pages rendered lines without grep.
     7. AskUser is only for genuine missing operator input. Keep prompt neutral and short.
     8. Never emit Open except on the Open/select phase (session not yet open).
     9. Never emit tool_call objects.
 
-    SESSION PLAN FORMAT: For DevClaudeExtSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
+    SESSION PLAN FORMAT: For ClaudeDevSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
 
-    OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or DevClaudeExtSessionPlan with step plus citations as required by ctx.output_format.
+    OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
 
     {{ ctx.output_format }}
 
@@ -283,23 +282,21 @@ function ChooseDevClaudeExtAction(
 // Each phase narrows the return type to only the legal FSM ops.
 
 /// Phase: select — open a tool session.
-function ChooseDevClaudeExtAction__select(
+function ChooseClaudeDevAction__select(
   spec_text: string,
   validation_criteria_json: string,
   last_tool_output: string,
   user_approval_intent: string,
   session_context: SessionContext?
-) -> DevClaudeExtReport | DevClaudeExtAskUser | DevClaudeExtOpenStep {
+) -> ClaudeDevReport | ClaudeDevAskUser | ClaudeDevOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: dev/claude-ext.\n\nYou control a claude cli tool session that implements a spec and may run validation when the task actually requires it. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
+  prompt #"[OPEN] Open a session with: claude/dev.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
-0. CRITICAL: When emitting DevClaudeExtSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
+0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
 1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
 2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
-   - Treat lightweight static checks (syntax, exact printed output, shape of example code) as sufficient for simple snippet/example requests.
-   - Do not request an extra validation turn just because validation_criteria_json exists.
 3. Initialization is two-hop under host FSM:
    - On the select/Open phase, emit Open (initial_input may be null/default).
    - Next hop, on the Send phase and last_tool_output is empty, emit Send with:
@@ -308,17 +305,16 @@ RULES:
    - approved -> Send userInput { kind: "toolApproval", approved: true } (optional short prompt allowed)
    - rejected -> Abort with short reason, or Send userInput { kind: "toolApproval", approved: false, reason: "..." } if continuing
 5. When completion is DONE or INTERRUPTED:
-   - if the task is a simple snippet/example or the validation criteria are lightweight static checks, emit Report immediately
-   - only Send a validation prompt when the task explicitly requires execution, testing, debugging, or verification beyond the produced code
+   - if validation has not been requested yet, Send validation prompt
    - otherwise emit Report with concise requirements/build/validation summary
 6. Non-terminal sessions: poll tool output (SearchRead to filter, PageRead for contiguous lines) before more Send or Finish when needed. Large @N: SearchRead requires grep + limit + offset; PageRead pages rendered lines without grep.
 7. AskUser is only for genuine missing operator input. Keep prompt neutral and short.
 8. Never emit Open except on the Open/select phase (session not yet open).
 9. Never emit tool_call objects.
 
-SESSION PLAN FORMAT: For DevClaudeExtSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
+SESSION PLAN FORMAT: For ClaudeDevSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
 
-OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or DevClaudeExtSessionPlan with step plus citations as required by ctx.output_format.
+OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
 
 {{ ctx.output_format }}
 
@@ -346,24 +342,22 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — first post-Open hop: Send or SearchRead/PageRead dev/claude-ext.
-function ChooseDevClaudeExtAction__act__dev_claude_ext(
+/// Phase: act — first post-Open hop: Send or SearchRead/PageRead claude/dev.
+function ChooseClaudeDevAction__act__claude_dev(
   spec_text: string,
   validation_criteria_json: string,
   last_tool_output: string,
   user_approval_intent: string,
   session_context: SessionContext?
-) -> DevClaudeExtSendStep | DevClaudeExtSearchReadStep | DevClaudeExtPageReadStep {
+) -> ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep {
 
   client DefaultClient
-  prompt #"[ACT] A dev/claude-ext session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nYou control a claude cli tool session that implements a spec and may run validation when the task actually requires it. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
+  prompt #"[ACT] A claude/dev session is open. Emit Send for new work, or Read an existing @N archive from history (grep/limit/offset) when the data is already fetched — do not re-Send the same listing.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
-0. CRITICAL: When emitting DevClaudeExtSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
+0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
 1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
 2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
-   - Treat lightweight static checks (syntax, exact printed output, shape of example code) as sufficient for simple snippet/example requests.
-   - Do not request an extra validation turn just because validation_criteria_json exists.
 3. Initialization is two-hop under host FSM:
    - On the select/Open phase, emit Open (initial_input may be null/default).
    - Next hop, on the Send phase and last_tool_output is empty, emit Send with:
@@ -372,17 +366,16 @@ RULES:
    - approved -> Send userInput { kind: "toolApproval", approved: true } (optional short prompt allowed)
    - rejected -> Abort with short reason, or Send userInput { kind: "toolApproval", approved: false, reason: "..." } if continuing
 5. When completion is DONE or INTERRUPTED:
-   - if the task is a simple snippet/example or the validation criteria are lightweight static checks, emit Report immediately
-   - only Send a validation prompt when the task explicitly requires execution, testing, debugging, or verification beyond the produced code
+   - if validation has not been requested yet, Send validation prompt
    - otherwise emit Report with concise requirements/build/validation summary
 6. Non-terminal sessions: poll tool output (SearchRead to filter, PageRead for contiguous lines) before more Send or Finish when needed. Large @N: SearchRead requires grep + limit + offset; PageRead pages rendered lines without grep.
 7. AskUser is only for genuine missing operator input. Keep prompt neutral and short.
 8. Never emit Open except on the Open/select phase (session not yet open).
 9. Never emit tool_call objects.
 
-SESSION PLAN FORMAT: For DevClaudeExtSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
+SESSION PLAN FORMAT: For ClaudeDevSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
 
-OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or DevClaudeExtSessionPlan with step plus citations as required by ctx.output_format.
+OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
 
 {{ ctx.output_format }}
 
@@ -410,24 +403,22 @@ PHASE CONSTRAINT (act — Send or Read): The JSON root must be exactly one Send 
 
 }
 
-/// Phase: continue — SearchRead/PageRead, send again, or finish dev/claude-ext.
-function ChooseDevClaudeExtAction__continue__dev_claude_ext(
+/// Phase: continue — SearchRead/PageRead, send again, or finish claude/dev.
+function ChooseClaudeDevAction__continue__claude_dev(
   spec_text: string,
   validation_criteria_json: string,
   last_tool_output: string,
   user_approval_intent: string,
   session_context: SessionContext?
-) -> DevClaudeExtSendStep | DevClaudeExtSearchReadStep | DevClaudeExtPageReadStep | DevClaudeExtFinishStep {
+) -> ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep | ClaudeDevFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] dev/claude-ext result is archived.\nCheck session history:\n- See \"@N dev/claude-ext\" followed by numbered lines → content is inline; emit Finish\n- See \"@N dev/claude-ext\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N dev/claude-ext\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nYou control a claude cli tool session that implements a spec and may run validation when the task actually requires it. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
+  prompt #"[CONTINUE] claude/dev result is archived.\nCheck session history:\n- See \"@N claude/dev\" followed by numbered lines → content is inline; emit Finish\n- See \"@N claude/dev\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N claude/dev\" with no content yet → emit Read archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not Read wide windows without a pattern\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
-0. CRITICAL: When emitting DevClaudeExtSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
+0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
 1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
 2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
-   - Treat lightweight static checks (syntax, exact printed output, shape of example code) as sufficient for simple snippet/example requests.
-   - Do not request an extra validation turn just because validation_criteria_json exists.
 3. Initialization is two-hop under host FSM:
    - On the select/Open phase, emit Open (initial_input may be null/default).
    - Next hop, on the Send phase and last_tool_output is empty, emit Send with:
@@ -436,17 +427,16 @@ RULES:
    - approved -> Send userInput { kind: "toolApproval", approved: true } (optional short prompt allowed)
    - rejected -> Abort with short reason, or Send userInput { kind: "toolApproval", approved: false, reason: "..." } if continuing
 5. When completion is DONE or INTERRUPTED:
-   - if the task is a simple snippet/example or the validation criteria are lightweight static checks, emit Report immediately
-   - only Send a validation prompt when the task explicitly requires execution, testing, debugging, or verification beyond the produced code
+   - if validation has not been requested yet, Send validation prompt
    - otherwise emit Report with concise requirements/build/validation summary
 6. Non-terminal sessions: poll tool output (SearchRead to filter, PageRead for contiguous lines) before more Send or Finish when needed. Large @N: SearchRead requires grep + limit + offset; PageRead pages rendered lines without grep.
 7. AskUser is only for genuine missing operator input. Keep prompt neutral and short.
 8. Never emit Open except on the Open/select phase (session not yet open).
 9. Never emit tool_call objects.
 
-SESSION PLAN FORMAT: For DevClaudeExtSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
+SESSION PLAN FORMAT: For ClaudeDevSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
 
-OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or DevClaudeExtSessionPlan with step plus citations as required by ctx.output_format.
+OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
 
 {{ ctx.output_format }}
 
@@ -473,4 +463,3 @@ PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, Read, or Fi
 "#
 
 }
-

@@ -17,52 +17,51 @@ offset: number | null;
 limit: number | null;
  }
 
-export interface DevClaudeExtAbortStep { op: "Abort";
+export interface ClaudeDevAbortStep { op: "Abort";
  }
 
-export interface DevClaudeExtAskUser { action: string;
+export interface ClaudeDevAskUser { action: string;
 prompt: string;
  }
 
-export interface DevClaudeExtFinishStep { op: "Finish";
+export interface ClaudeDevFinishStep { op: "Finish";
  }
 
-export interface DevClaudeExtInput { prompt: string | null;
-content: DevClaudeExtInputContent[] | DevClaudeExtInputContent | null;
-userInput: DevClaudeExtInputUserInput | null;
+export interface ClaudeDevOpenStep { op: "Open";
+tool_name: "claude/dev";
+initial_input: ClaudeToolOpenInput | null;
  }
 
-export interface DevClaudeExtInputContent { kind: string;
-text: string;
- }
-
-export interface DevClaudeExtInputUserInput { display_text: string | null;
-prompt: string | null;
- }
-
-export interface DevClaudeExtOpenStep { op: "Open";
-tool_name: "dev/claude-ext";
- }
-
-export interface DevClaudeExtPageReadStep { op: "PageRead";
+export interface ClaudeDevPageReadStep { op: "PageRead";
 input: ArchivePageReadInput;
  }
 
-export interface DevClaudeExtReport { action: string;
+export interface ClaudeDevReport { action: string;
 message: string;
  }
 
-export interface DevClaudeExtSearchReadStep { op: "SearchRead";
+export interface ClaudeDevSearchReadStep { op: "SearchRead";
 input: ArchiveSearchReadInput;
  }
 
-export interface DevClaudeExtSendStep { op: "Send";
-input: DevClaudeExtInput;
+export interface ClaudeDevSendStep { op: "Send";
+input: ClaudeToolSendInput;
 citations: string[];
  }
 
-export interface DevClaudeExtSessionPlan { step: DevClaudeExtOpenStep | DevClaudeExtSendStep | DevClaudeExtSearchReadStep | DevClaudeExtPageReadStep | DevClaudeExtFinishStep | DevClaudeExtAbortStep;
+export interface ClaudeDevSessionPlan { step: ClaudeDevOpenStep | ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep;
 citations: string[];
+ }
+
+export interface ClaudeToolOpenInput { workspace: string | null;
+ }
+
+export interface ClaudeToolSendInput { prompt: string | null;
+content: ClaudeToolSendInputContent | ClaudeToolSendInputContent[] | null;
+ }
+
+export interface ClaudeToolSendInputContent { kind: string;
+text: string;
  }
 
 export interface NeedMoreInput { question: string;
@@ -84,7 +83,7 @@ validation_criteria: string[];
 
 declare global {
 
-declare function ChooseDevClaudeExtAction(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<DevClaudeExtReport | DevClaudeExtAskUser | DevClaudeExtSessionPlan>;
+declare function ChooseClaudeDevAction(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ClaudeDevReport | ClaudeDevAskUser | ClaudeDevSessionPlan>;
 
 declare function ProduceSpec(args: { requirements_summary: string } & { __baml_invocation_token?: string }): Promise<Spec>;
 
@@ -416,7 +415,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseDevClaudeExtAction" | "ChooseDevClaudeExtAction__act__dev_claude_ext" | "ChooseDevClaudeExtAction__continue__dev_claude_ext" | "ChooseDevClaudeExtAction__select";
+export type StepExecutorFunctionName = "ChooseClaudeDevAction" | "ChooseClaudeDevAction__act__claude_dev" | "ChooseClaudeDevAction__continue__claude_dev" | "ChooseClaudeDevAction__select";
 
 export interface SessionContext {
     contract_version: "session_context";
@@ -460,10 +459,10 @@ export interface StepExecutorRunResult<R = unknown> {
 }
 
 export interface StepExecutorFunctionMap {
-  ChooseDevClaudeExtAction: { args: Parameters<typeof ChooseDevClaudeExtAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction>>; };
-  ChooseDevClaudeExtAction__act__dev_claude_ext: { args: Parameters<typeof ChooseDevClaudeExtAction__act__dev_claude_ext>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__act__dev_claude_ext>>; };
-  ChooseDevClaudeExtAction__continue__dev_claude_ext: { args: Parameters<typeof ChooseDevClaudeExtAction__continue__dev_claude_ext>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__continue__dev_claude_ext>>; };
-  ChooseDevClaudeExtAction__select: { args: Parameters<typeof ChooseDevClaudeExtAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__select>>; };
+  ChooseClaudeDevAction: { args: Parameters<typeof ChooseClaudeDevAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction>>; };
+  ChooseClaudeDevAction__act__claude_dev: { args: Parameters<typeof ChooseClaudeDevAction__act__claude_dev>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__act__claude_dev>>; };
+  ChooseClaudeDevAction__continue__claude_dev: { args: Parameters<typeof ChooseClaudeDevAction__continue__claude_dev>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__continue__claude_dev>>; };
+  ChooseClaudeDevAction__select: { args: Parameters<typeof ChooseClaudeDevAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__select>>; };
 }
 
 declare global {
