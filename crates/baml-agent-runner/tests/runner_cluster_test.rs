@@ -109,107 +109,133 @@ struct RunnerProcess {
     state_dir: PathBuf,
 }
 
+struct PreparedRunner {
+    base_url: String,
+    repository_dir: PathBuf,
+    state_dir: PathBuf,
+    log_path: PathBuf,
+    command: Command,
+}
+
+impl PreparedRunner {
+    fn into_runner(self, child: Child) -> RunnerProcess {
+        RunnerProcess {
+            base_url: self.base_url,
+            child,
+            log_path: self.log_path,
+            repository_dir: self.repository_dir,
+            state_dir: self.state_dir,
+        }
+    }
+}
+
+fn prepare_runner_subprocess(config: &RunnerProcessConfig) -> PreparedRunner {
+    let bind_host = config.bind_addr.as_deref().unwrap_or("127.0.0.1");
+    // When the caller pre-advertised a runner endpoint, bind that port so
+    // the URL registered with the cluster matches the actual listener.
+    let desired_port = config
+        .runner_endpoint
+        .as_deref()
+        .and_then(|ep| url::Url::parse(ep).ok())
+        .and_then(|u| u.port())
+        .unwrap_or(0);
+    let reserved =
+        TcpListener::bind(format!("{bind_host}:{desired_port}")).expect("bind ephemeral port");
+    let addr = reserved.local_addr().expect("local address");
+    drop(reserved);
+
+    // In cluster mode, bind 0.0.0.0 so cross-runner traffic routed via the
+    // advertised non-loopback IP still reaches the socket when the host
+    // application firewall refuses inbound on specific-IP binds.
+    let serve_bind = if config.bind_addr.is_some() {
+        format!("0.0.0.0:{}", addr.port())
+    } else {
+        addr.to_string()
+    };
+
+    let base_url = format!("http://{addr}");
+    let uid = uuid::Uuid::new_v4();
+    let pid = std::process::id();
+    let repository_dir = std::env::temp_dir().join(format!("cluster-runner-repo-{pid}-{uid}"));
+    let state_dir = std::env::temp_dir().join(format!("cluster-runner-state-{pid}-{uid}"));
+    fs::create_dir_all(&repository_dir).expect("create temp repository dir");
+    fs::create_dir_all(&state_dir).expect("create temp state dir");
+    let log_path = std::env::temp_dir().join(format!("cluster-runner-{pid}-{uid}.log"));
+    let stdout = fs::File::create(&log_path).expect("create runner log");
+    let stderr = stdout.try_clone().expect("clone runner log handle");
+
+    let repository_url = format!("http://{addr}/repository");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_baml-agent-runner"));
+    command
+        .current_dir(&state_dir)
+        .arg("--serve-http")
+        .arg(&serve_bind)
+        .arg("--repository-url")
+        .arg(&repository_url)
+        .arg("--repository-dir")
+        .arg(&repository_dir)
+        .arg("--state-dir")
+        .arg(&state_dir)
+        .env_remove("BAML_FNOX_CONFIG")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("CLICKUP_API_KEY")
+        .env_remove("NOTION_API_TOKEN")
+        .env_remove("SLACK_BOT_TOKEN")
+        .env_remove("SLACK_USER_TOKEN")
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+
+    if let Some(token) = &config.token {
+        command.arg("--runner-token").arg(token);
+    }
+    if let Some(surreal) = &config.surreal_endpoint {
+        command
+            .arg("--surreal-endpoint")
+            .arg(surreal)
+            .arg("--surreal-username")
+            .arg("root")
+            .arg("--surreal-password")
+            .arg("root");
+    }
+    if let Some(runner_ep) = &config.runner_endpoint {
+        command.arg("--runner-endpoint").arg(runner_ep);
+    }
+    if let Some(fnox_path) = &config.fnox_config {
+        command.env("BAML_FNOX_CONFIG", fnox_path);
+    }
+
+    PreparedRunner {
+        base_url,
+        repository_dir,
+        state_dir,
+        log_path,
+        command,
+    }
+}
+
 impl RunnerProcess {
     async fn start(config: RunnerProcessConfig) -> Self {
-        let bind_host = config.bind_addr.as_deref().unwrap_or("127.0.0.1");
-        // When the caller pre-advertised a runner endpoint, bind that port so
-        // the URL registered with the cluster matches the actual listener.
-        let desired_port = config
-            .runner_endpoint
-            .as_deref()
-            .and_then(|ep| url::Url::parse(ep).ok())
-            .and_then(|u| u.port())
-            .unwrap_or(0);
-        let reserved =
-            TcpListener::bind(format!("{bind_host}:{desired_port}")).expect("bind ephemeral port");
-        let addr = reserved.local_addr().expect("local address");
-        drop(reserved);
-
-        // In cluster mode, bind 0.0.0.0 so cross-runner traffic routed via the
-        // advertised non-loopback IP still reaches the socket when the host
-        // application firewall refuses inbound on specific-IP binds.
-        let serve_bind = if config.bind_addr.is_some() {
-            format!("0.0.0.0:{}", addr.port())
-        } else {
-            addr.to_string()
-        };
-
-        let base_url = format!("http://{addr}");
-        let uid = uuid::Uuid::new_v4();
-        let pid = std::process::id();
-        let repository_dir = std::env::temp_dir().join(format!("cluster-runner-repo-{pid}-{uid}"));
-        let state_dir = std::env::temp_dir().join(format!("cluster-runner-state-{pid}-{uid}"));
-        fs::create_dir_all(&repository_dir).expect("create temp repository dir");
-        fs::create_dir_all(&state_dir).expect("create temp state dir");
-        let log_path = std::env::temp_dir().join(format!("cluster-runner-{pid}-{uid}.log"));
-        let stdout = fs::File::create(&log_path).expect("create runner log");
-        let stderr = stdout.try_clone().expect("clone runner log handle");
-
-        let repository_url = format!("http://{addr}/repository");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_baml-agent-runner"));
-        command
-            .current_dir(&state_dir)
-            .arg("--serve-http")
-            .arg(&serve_bind)
-            .arg("--repository-url")
-            .arg(&repository_url)
-            .arg("--repository-dir")
-            .arg(&repository_dir)
-            .arg("--state-dir")
-            .arg(&state_dir)
-            .env_remove("BAML_FNOX_CONFIG")
-            .env_remove("OPENROUTER_API_KEY")
-            .env_remove("CLICKUP_API_KEY")
-            .env_remove("NOTION_API_TOKEN")
-            .env_remove("SLACK_BOT_TOKEN")
-            .env_remove("SLACK_USER_TOKEN")
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr));
-
-        if let Some(token) = &config.token {
-            command.arg("--runner-token").arg(token);
-        }
-        if let Some(surreal) = &config.surreal_endpoint {
-            command
-                .arg("--surreal-endpoint")
-                .arg(surreal)
-                .arg("--surreal-username")
-                .arg("root")
-                .arg("--surreal-password")
-                .arg("root");
-        }
-        if let Some(runner_ep) = &config.runner_endpoint {
-            command.arg("--runner-endpoint").arg(runner_ep);
-        }
-        if let Some(fnox_path) = &config.fnox_config {
-            command.env("BAML_FNOX_CONFIG", fnox_path);
-        }
-
-        let mut child = command.spawn().expect("spawn baml-agent-runner");
+        let mut prepared = prepare_runner_subprocess(&config);
+        let mut child = prepared.command.spawn().expect("spawn baml-agent-runner");
         let client = reqwest::Client::new();
-        let agents_url = format!("{base_url}/agents");
+        let agents_url = format!("{}/agents", prepared.base_url);
         let readiness_deadline =
             Instant::now() + Duration::from_secs(e2e_secs_ci_or_local(240, 60));
         while Instant::now() < readiness_deadline {
             if let Some(status) = child.try_wait().expect("poll runner process") {
-                let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "<unreadable>".into());
+                let log = fs::read_to_string(&prepared.log_path)
+                    .unwrap_or_else(|_| "<unreadable>".into());
                 panic!("runner exited before serving HTTP (status: {status}). Log:\n{log}");
             }
             if let Ok(response) = client.get(&agents_url).send().await
                 && response.status().is_success()
             {
-                return Self {
-                    base_url,
-                    child,
-                    log_path,
-                    repository_dir,
-                    state_dir,
-                };
+                return prepared.into_runner(child);
             }
             sleep(Duration::from_millis(200)).await;
         }
 
-        let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "<unreadable>".into());
+        let log = fs::read_to_string(&prepared.log_path).unwrap_or_else(|_| "<unreadable>".into());
         let _ = child.kill();
         let _ = child.wait();
         panic!("runner did not become ready. Log:\n{log}");
@@ -217,59 +243,10 @@ impl RunnerProcess {
 
     /// Spawn a runner without waiting for readiness (for testing readyz/healthz probes).
     fn spawn_no_wait(config: RunnerProcessConfig) -> (Self, String) {
-        let bind_host = config.bind_addr.as_deref().unwrap_or("127.0.0.1");
-        let reserved = TcpListener::bind(format!("{bind_host}:0")).expect("bind ephemeral port");
-        let addr = reserved.local_addr().expect("local address");
-        drop(reserved);
-
-        let base_url = format!("http://{addr}");
-        let uid = uuid::Uuid::new_v4();
-        let pid = std::process::id();
-        let repository_dir = std::env::temp_dir().join(format!("cluster-runner-repo-{pid}-{uid}"));
-        let state_dir = std::env::temp_dir().join(format!("cluster-runner-state-{pid}-{uid}"));
-        fs::create_dir_all(&repository_dir).expect("create temp repository dir");
-        fs::create_dir_all(&state_dir).expect("create temp state dir");
-        let log_path = std::env::temp_dir().join(format!("cluster-runner-{pid}-{uid}.log"));
-        let stdout = fs::File::create(&log_path).expect("create runner log");
-        let stderr = stdout.try_clone().expect("clone runner log handle");
-
-        let repository_url = format!("http://{addr}/repository");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_baml-agent-runner"));
-        command
-            .current_dir(&state_dir)
-            .arg("--serve-http")
-            .arg(addr.to_string())
-            .arg("--repository-url")
-            .arg(&repository_url)
-            .arg("--repository-dir")
-            .arg(&repository_dir)
-            .arg("--state-dir")
-            .arg(&state_dir)
-            .env_remove("BAML_FNOX_CONFIG")
-            .env_remove("OPENROUTER_API_KEY")
-            .env_remove("CLICKUP_API_KEY")
-            .env_remove("NOTION_API_TOKEN")
-            .env_remove("SLACK_BOT_TOKEN")
-            .env_remove("SLACK_USER_TOKEN")
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr));
-
-        if let Some(token) = &config.token {
-            command.arg("--runner-token").arg(token);
-        }
-
-        let child = command.spawn().expect("spawn baml-agent-runner");
-        let url = base_url.clone();
-        (
-            Self {
-                base_url,
-                child,
-                log_path,
-                repository_dir,
-                state_dir,
-            },
-            url,
-        )
+        let mut prepared = prepare_runner_subprocess(&config);
+        let child = prepared.command.spawn().expect("spawn baml-agent-runner");
+        let url = prepared.base_url.clone();
+        (prepared.into_runner(child), url)
     }
 }
 
