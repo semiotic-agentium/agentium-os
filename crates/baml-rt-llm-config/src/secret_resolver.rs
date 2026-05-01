@@ -152,6 +152,43 @@ pub trait RuntimeSecretStore: Send + Sync {
     fn remove(&self, request: &SecretRequestName);
 }
 
+/// Whether fnox is the sole credential source or env-var fallback is permitted.
+///
+/// Determined from `BAML_FNOX_CONFIG`: when the env var is set (and non-empty),
+/// fnox is the exclusive source; otherwise integration clients may fall back to
+/// process environment variables for missing keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretSourcePolicy {
+    /// Fnox is the only secret source; integration clients must not consult
+    /// process environment variables.
+    FnoxOnly,
+    /// Fnox first; on miss, integration clients may fall back to process env.
+    FnoxWithEnvFallback,
+}
+
+impl SecretSourcePolicy {
+    /// Determine the policy from a `BAML_FNOX_CONFIG` value (or its absence).
+    /// Pure helper — exposed so tests can verify the rule without touching the
+    /// process environment.
+    pub fn from_env_value(baml_fnox_config: Option<&str>) -> Self {
+        match baml_fnox_config {
+            Some(v) if !v.trim().is_empty() => Self::FnoxOnly,
+            _ => Self::FnoxWithEnvFallback,
+        }
+    }
+
+    /// Read `BAML_FNOX_CONFIG` from the current process environment and map it
+    /// to a policy.
+    pub fn from_env() -> Self {
+        Self::from_env_value(std::env::var("BAML_FNOX_CONFIG").ok().as_deref())
+    }
+
+    /// Whether fnox is the exclusive secret source (no env-var fallback).
+    pub fn is_exclusive(self) -> bool {
+        matches!(self, Self::FnoxOnly)
+    }
+}
+
 /// Secret resolver backed by the **fnox** crate (fnox.toml). Loads config via fnox's discovery
 /// (or `BAML_FNOX_CONFIG` path), resolves all secrets for the profile at construction time
 /// using fnox's `resolve_secret`, and serves them synchronously.
@@ -160,6 +197,9 @@ pub trait RuntimeSecretStore: Send + Sync {
 pub struct FnoxFileSecretResolver {
     /// Pre-resolved store key → value from fnox.
     cache: Arc<HashMap<StoreKey, SecretValue>>,
+    /// Secret-source policy, captured at construction so resolution does not
+    /// re-read the environment.
+    policy: SecretSourcePolicy,
 }
 
 impl std::fmt::Debug for FnoxFileSecretResolver {
@@ -169,6 +209,7 @@ impl std::fmt::Debug for FnoxFileSecretResolver {
                 "cache_keys",
                 &self.cache.keys().map(StoreKey::as_str).collect::<Vec<_>>(),
             )
+            .field("policy", &self.policy)
             .finish_non_exhaustive()
     }
 }
@@ -216,6 +257,7 @@ impl FnoxFileSecretResolver {
         }
         Self {
             cache: Arc::new(cache),
+            policy: SecretSourcePolicy::from_env(),
         }
     }
 
@@ -259,11 +301,11 @@ impl FnoxFileSecretResolver {
         Ok(cache)
     }
 
-    /// Whether fnox is the exclusive secret source (`BAML_FNOX_CONFIG` is set).
-    /// When true, integration clients must not fall back to process environment
-    /// variables for credential resolution — all secrets come from fnox.toml.
-    pub fn is_exclusive() -> bool {
-        is_exclusive_value(std::env::var("BAML_FNOX_CONFIG").ok().as_deref())
+    /// Whether fnox is the exclusive secret source. When true, integration
+    /// clients must not fall back to process environment variables for
+    /// credential resolution — all secrets come from fnox.toml.
+    pub fn is_exclusive(&self) -> bool {
+        self.policy.is_exclusive()
     }
 
     /// Resolve a credential by name from fnox, falling back to the process environment
@@ -271,7 +313,7 @@ impl FnoxFileSecretResolver {
     /// Tries both `env.{name}` and `{name}` as fnox keys for compatibility with
     /// BAML placeholder conventions.
     pub fn resolve_or_env(&self, name: &str) -> Option<String> {
-        self.resolve_or_env_with(name, Self::is_exclusive(), |n| std::env::var(n).ok())
+        self.resolve_or_env_with(name, self.is_exclusive(), |n| std::env::var(n).ok())
     }
 
     /// Core resolution logic with injectable exclusivity flag and env lookup.
@@ -461,43 +503,48 @@ pub fn apply_secret_links_state(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pure helpers for testability
-// ---------------------------------------------------------------------------
-
-/// Whether the given `BAML_FNOX_CONFIG` value indicates exclusive mode (fnox is
-/// the sole secret source; env-var fallback is disabled). Exposed as a free
-/// function so tests can verify the rule without touching the process environment.
-pub fn is_exclusive_value(baml_fnox_config: Option<&str>) -> bool {
-    baml_fnox_config
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── is_exclusive_value ───────────────────────────────────────────────
+    // ── SecretSourcePolicy::from_env_value ──────────────────────────────
 
     #[test]
-    fn exclusive_when_set_nonempty() {
-        assert!(is_exclusive_value(Some("/config/fnox.toml")));
+    fn fnox_only_when_set_nonempty() {
+        assert_eq!(
+            SecretSourcePolicy::from_env_value(Some("/config/fnox.toml")),
+            SecretSourcePolicy::FnoxOnly,
+        );
     }
 
     #[test]
-    fn not_exclusive_when_empty() {
-        assert!(!is_exclusive_value(Some("")));
+    fn fallback_when_empty() {
+        assert_eq!(
+            SecretSourcePolicy::from_env_value(Some("")),
+            SecretSourcePolicy::FnoxWithEnvFallback,
+        );
     }
 
     #[test]
-    fn not_exclusive_when_whitespace() {
-        assert!(!is_exclusive_value(Some("  ")));
+    fn fallback_when_whitespace() {
+        assert_eq!(
+            SecretSourcePolicy::from_env_value(Some("  ")),
+            SecretSourcePolicy::FnoxWithEnvFallback,
+        );
     }
 
     #[test]
-    fn not_exclusive_when_absent() {
-        assert!(!is_exclusive_value(None));
+    fn fallback_when_absent() {
+        assert_eq!(
+            SecretSourcePolicy::from_env_value(None),
+            SecretSourcePolicy::FnoxWithEnvFallback,
+        );
+    }
+
+    #[test]
+    fn is_exclusive_only_for_fnox_only() {
+        assert!(SecretSourcePolicy::FnoxOnly.is_exclusive());
+        assert!(!SecretSourcePolicy::FnoxWithEnvFallback.is_exclusive());
     }
 
     // ── resolve_or_env_with ──────────────────────────────────────────────
