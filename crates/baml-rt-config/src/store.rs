@@ -99,9 +99,8 @@ impl SurrealConfigStore {
 }
 
 async fn init_schema(db: &Surreal<Any>) -> Result<()> {
-    for stmt in SCHEMA_QUERIES {
-        db.query(*stmt).await.map_err(map_err)?;
-    }
+    let batch = SCHEMA_QUERIES.join("; ");
+    db.query(batch).await.map_err(map_err)?;
     Ok(())
 }
 
