@@ -1,8 +1,8 @@
 {
   "version": "1.0.0",
-  "name": "claude-session-demo",
+  "name": "claude-agent",
   "entry_point": "src/index.ts",
-  "signature": "claude-session-demo@1.0.0",
+  "signature": "claude-agent@1.0.0",
   "tools": ["dev/claude-ext"],
   "tags": [
     "development",
