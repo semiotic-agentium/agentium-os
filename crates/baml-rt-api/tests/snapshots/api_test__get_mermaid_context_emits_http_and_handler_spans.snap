@@ -1508,9 +1508,9 @@ expression: snapshot
         "code.lineno": "[redacted]",
         "thread.id": "[redacted]",
         "thread.name": "[redacted]",
-        "input": "DEFINE TABLE IF NOT EXISTS config_current SCHEMAFULL",
+        "input": "DEFINE TABLE IF NOT EXISTS config_current SCHEMAFULL; DEFINE FIELD IF NOT EXISTS bundle_name ON config_current TYPE string; DEFINE FIELD IF NOT EXISTS config_json ON config_current TYPE string; DEFINE FIELD IF NOT EXISTS version ON config_current TYPE int; DEFINE FIELD IF NOT EXISTS updated_at_ms ON config_current TYPE int; DEFINE INDEX IF NOT EXISTS idx_cc_bundle ON config_current FIELDS bundle_name UNIQUE; DEFINE TABLE IF NOT EXISTS config_version_history SCHEMAFULL; DEFINE FIELD IF NOT EXISTS bundle_name ON config_version_history TYPE string; DEFINE FIELD IF NOT EXISTS version ON config_version_history TYPE int; DEFINE FIELD IF NOT EXISTS config_json ON config_version_history TYPE string; DEFINE FIELD IF NOT EXISTS created_at_ms ON config_version_history TYPE int; DEFINE INDEX IF NOT EXISTS idx_cvh_bundle_ver ON config_version_history FIELDS bundle_name, version UNIQUE; DEFINE TABLE IF NOT EXISTS config_internal SCHEMAFULL; DEFINE FIELD IF NOT EXISTS key ON config_internal TYPE string; DEFINE FIELD IF NOT EXISTS config_json ON config_internal TYPE string; DEFINE INDEX IF NOT EXISTS idx_ci_key ON config_internal FIELDS key UNIQUE",
         "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "52",
+        "length": "1149",
         "busy_ns": "[redacted]",
         "idle_ns": "[redacted]"
       }
@@ -2232,69 +2232,6 @@ expression: snapshot
       }
     },
     {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE FIELD IF NOT EXISTS bundle_name ON config_current TYPE string",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "68",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
       "name": "Literal::compute",
       "attributes": {
         "code.filepath": "[redacted]",
@@ -2888,69 +2825,6 @@ expression: snapshot
         "code.lineno": "[redacted]",
         "thread.id": "[redacted]",
         "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE FIELD IF NOT EXISTS config_json ON config_current TYPE string",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "68",
         "busy_ns": "[redacted]",
         "idle_ns": "[redacted]"
       }
@@ -3554,69 +3428,6 @@ expression: snapshot
       }
     },
     {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE FIELD IF NOT EXISTS version ON config_current TYPE int",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "61",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
       "name": "Literal::compute",
       "attributes": {
         "code.filepath": "[redacted]",
@@ -4215,69 +4026,6 @@ expression: snapshot
       }
     },
     {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE FIELD IF NOT EXISTS updated_at_ms ON config_current TYPE int",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "67",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
       "name": "Literal::compute",
       "attributes": {
         "code.filepath": "[redacted]",
@@ -4871,69 +4619,6 @@ expression: snapshot
         "code.lineno": "[redacted]",
         "thread.id": "[redacted]",
         "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE INDEX IF NOT EXISTS idx_cc_bundle ON config_current FIELDS bundle_name UNIQUE",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "84",
         "busy_ns": "[redacted]",
         "idle_ns": "[redacted]"
       }
@@ -6202,69 +5887,6 @@ expression: snapshot
       }
     },
     {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE TABLE IF NOT EXISTS config_version_history SCHEMAFULL",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "60",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
       "name": "get",
       "attributes": {
         "code.filepath": "[redacted]",
@@ -6734,69 +6356,6 @@ expression: snapshot
         "code.lineno": "[redacted]",
         "thread.id": "[redacted]",
         "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE FIELD IF NOT EXISTS bundle_name ON config_version_history TYPE string",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "76",
         "busy_ns": "[redacted]",
         "idle_ns": "[redacted]"
       }
@@ -7400,69 +6959,6 @@ expression: snapshot
       }
     },
     {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE FIELD IF NOT EXISTS version ON config_version_history TYPE int",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "69",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
       "name": "Literal::compute",
       "attributes": {
         "code.filepath": "[redacted]",
@@ -8056,69 +7552,6 @@ expression: snapshot
         "code.lineno": "[redacted]",
         "thread.id": "[redacted]",
         "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE FIELD IF NOT EXISTS config_json ON config_version_history TYPE string",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "76",
         "busy_ns": "[redacted]",
         "idle_ns": "[redacted]"
       }
@@ -8722,69 +8155,6 @@ expression: snapshot
       }
     },
     {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE FIELD IF NOT EXISTS created_at_ms ON config_version_history TYPE int",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "75",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
       "name": "Literal::compute",
       "attributes": {
         "code.filepath": "[redacted]",
@@ -9378,69 +8748,6 @@ expression: snapshot
         "code.lineno": "[redacted]",
         "thread.id": "[redacted]",
         "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE INDEX IF NOT EXISTS idx_cvh_bundle_ver ON config_version_history FIELDS bundle_name, version UNIQUE",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "106",
         "busy_ns": "[redacted]",
         "idle_ns": "[redacted]"
       }
@@ -10763,69 +10070,6 @@ expression: snapshot
       }
     },
     {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE TABLE IF NOT EXISTS config_internal SCHEMAFULL",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "53",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
       "name": "get",
       "attributes": {
         "code.filepath": "[redacted]",
@@ -11295,69 +10539,6 @@ expression: snapshot
         "code.lineno": "[redacted]",
         "thread.id": "[redacted]",
         "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE FIELD IF NOT EXISTS key ON config_internal TYPE string",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "61",
         "busy_ns": "[redacted]",
         "idle_ns": "[redacted]"
       }
@@ -11961,69 +11142,6 @@ expression: snapshot
       }
     },
     {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE FIELD IF NOT EXISTS config_json ON config_internal TYPE string",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "69",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
       "name": "Literal::compute",
       "attributes": {
         "code.filepath": "[redacted]",
@@ -12617,69 +11735,6 @@ expression: snapshot
         "code.lineno": "[redacted]",
         "thread.id": "[redacted]",
         "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "executor",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "process",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "execute",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "busy_ns": "[redacted]",
-        "idle_ns": "[redacted]"
-      }
-    },
-    {
-      "name": "parse_with_capabilities",
-      "attributes": {
-        "code.filepath": "[redacted]",
-        "code.namespace": "[redacted]",
-        "code.lineno": "[redacted]",
-        "thread.id": "[redacted]",
-        "thread.name": "[redacted]",
-        "input": "DEFINE INDEX IF NOT EXISTS idx_ci_key ON config_internal FIELDS key UNIQUE",
-        "capabilities": "Capabilities { scripting: false, guest_access: false, live_query_notifications: true, allow_funcs: All, deny_funcs: None, allow_net: None, deny_net: None, allow_rpc: All, deny_rpc: None, allow_http: All, deny_http: None, allow_experimental: None, deny_experimental: None, allow_arbitrary_query: All, deny_arbitrary_query: None, planner_strategy: BestEffortReadOnlyStatements }",
-        "length": "74",
         "busy_ns": "[redacted]",
         "idle_ns": "[redacted]"
       }

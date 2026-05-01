@@ -49,8 +49,7 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         "DEFINE ANALYZER IF NOT EXISTS payload_analyzer TOKENIZERS blank, class FILTERS snowball(english)".to_string(),
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_search_fts ON {TBL_PAYLOAD} FIELDS search_text FULLTEXT ANALYZER payload_analyzer BM25"),
     ];
-    for query in &schema_queries {
-        db.query(query).await.map_err(map_surreal_error)?;
-    }
+    let batch = schema_queries.join("; ");
+    db.query(batch).await.map_err(map_surreal_error)?;
     Ok(())
 }
