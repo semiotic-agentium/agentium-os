@@ -192,6 +192,7 @@ impl SandboxProvider for MicrosandboxProvider {
         let mut builder = microsandbox::Sandbox::builder(&name)
             .cpus(clamp_cpus(spec.cpus))
             .memory(spec.memory_mib)
+            .workdir("/home/sandbox/workspace")
             .idle_timeout(spec.idle_timeout.as_secs())
             .max_duration(spec.max_duration.as_secs())
             .replace(); // idempotent by name-replace per trait contract
@@ -212,6 +213,21 @@ impl SandboxProvider for MicrosandboxProvider {
 
         for (k, v) in &spec.env {
             builder = builder.env(k, v);
+        }
+
+        // Match the working probe's baseline runtime env unless the tool spec
+        // already set an explicit value.
+        for (k, v) in [
+            ("HOME", "/home/sandbox"),
+            ("USER", "sandbox"),
+            ("PWD", "/home/sandbox/workspace"),
+            ("XDG_CONFIG_HOME", "/home/sandbox/.config"),
+            ("XDG_CACHE_HOME", "/home/sandbox/.cache"),
+            ("TMPDIR", "/tmp"),
+        ] {
+            if !spec.env.contains_key(k) {
+                builder = builder.env(k, v);
+            }
         }
 
         // Reattach-metadata stash (§9.4 — runtime_digest / policy_hash /
@@ -298,7 +314,9 @@ impl SandboxProvider for MicrosandboxProvider {
         // (distroless style) without PATH entries; prefer absolute path and
         // fall back to PATH lookup for compatibility.
         let exec_handle = match sandbox
-            .exec_stream_with("/tool-adapter", |opts| opts.stdin_pipe())
+            .exec_stream_with("/tool-adapter", |opts| {
+                opts.cwd("/home/sandbox/workspace").stdin_pipe()
+            })
             .await
         {
             Ok(h) => h,
@@ -309,7 +327,9 @@ impl SandboxProvider for MicrosandboxProvider {
                     "exec '/tool-adapter' failed; retrying with PATH lookup 'tool-adapter'"
                 );
                 sandbox
-                    .exec_stream_with("tool-adapter", |opts| opts.stdin_pipe())
+                    .exec_stream_with("tool-adapter", |opts| {
+                        opts.cwd("/home/sandbox/workspace").stdin_pipe()
+                    })
                     .await
                     .map_err(|e| {
                         to_rt_err(
