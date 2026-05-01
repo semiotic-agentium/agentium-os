@@ -208,7 +208,7 @@ async fn setup_notion_agent_with_provenance()
         .load_schema(built.to_str().expect("notion built path utf8"))
         .expect("load notion schema");
     manager
-        .register_tool(NotionTool::new())
+        .register_tool(NotionTool::new().expect("construct notion tool"))
         .await
         .expect("register notion tool");
 

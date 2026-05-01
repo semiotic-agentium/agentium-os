@@ -91,36 +91,29 @@ pub enum NotionReadError {
 #[derive(Clone)]
 pub struct NotionReadClient {
     client: reqwest::Client,
-    api_key: Option<String>,
+    api_key: String,
     base_url: String,
 }
 
-impl Default for NotionReadClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl NotionReadClient {
-    pub fn new() -> Self {
-        let api_key =
-            FnoxFileSecretResolver::default_path_resolver().resolve_or_env("NOTION_API_TOKEN");
+    pub fn new() -> std::result::Result<Self, NotionReadError> {
+        let api_key = FnoxFileSecretResolver::default_path_resolver()
+            .resolve_or_env("NOTION_API_TOKEN")
+            .ok_or(NotionReadError::MissingApiKey)?;
         let base_url = resolve_base_url();
-        Self {
+        Ok(Self {
             client: reqwest::Client::new(),
             api_key,
             base_url,
-        }
+        })
     }
 
     pub fn base_url(&self) -> &str {
         self.base_url.as_str()
     }
 
-    pub fn api_key(&self) -> std::result::Result<&str, NotionReadError> {
-        self.api_key
-            .as_deref()
-            .ok_or(NotionReadError::MissingApiKey)
+    pub fn api_key(&self) -> &str {
+        self.api_key.as_str()
     }
 
     pub fn normalize_id(id: &str) -> std::result::Result<String, NotionReadError> {
