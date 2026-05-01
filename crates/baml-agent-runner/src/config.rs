@@ -337,7 +337,7 @@ pub(crate) async fn provenance_config_builder(
             password,
         } => {
             let credentials = parse_surreal_credentials(username.as_deref(), password.as_deref())
-                .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?
+                .map_err(|e| BamlRtError::InvalidArgument(format!("provenance: {e}")))?
                 .map(|(u, p)| RemoteCredentials {
                     username: u.to_string(),
                     password: p.to_string(),
