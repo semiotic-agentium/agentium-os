@@ -79,6 +79,12 @@ function SummarizeDevWorkInPersonality(session_report: string) -> StructuredRepl
   client DefaultClient
   prompt #"
     You have received the raw report from a claude/dev session (requirements, spec, implementation, validation). Rewrite it for the end user in clear, plain technical language. Preserve all factual content (what was built, validation results, any errors or caveats).
+
+    IMPORTANT:
+    - If the raw report contains source code, include the complete source code block unchanged.
+    - Do not replace requested code with prose-only summaries.
+    - For requests where the user asked to be shown code, start the answer with the code block, then add any concise notes.
+
     Match the output schema exactly (StructuredReply: parts + citations).
 
     {{ ctx.output_format }}

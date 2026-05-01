@@ -172,6 +172,8 @@ __chat_register({
     } | null = null;
     try {
       let currentUserMessage = ctx.text?.trim() ?? "";
+      const originalUserMessage = currentUserMessage;
+      let authoritativeUserRequest = originalUserMessage;
       const executionSession = typeof openA2aExecutionSession === "function"
         ? await openA2aExecutionSession("claude-session-" + Date.now().toString())
         : null;
@@ -179,12 +181,10 @@ __chat_register({
 
       // ---------- Phase 1: Requirements ----------
       let requirementsSummary: string | undefined;
-      let requirementsList: string[] = [];
       for (let r = 0; r < MAX_REQUIREMENTS_TURNS; r++) {
         const result = await RequirementsPhase({ user_message: currentUserMessage });
         if (isRequirementsReady(result)) {
           requirementsSummary = result.summary;
-          requirementsList = result.requirements ?? [];
           break;
         }
         if (isNeedMoreInput(result)) {
@@ -192,6 +192,12 @@ __chat_register({
           const reply = await ctx.emit.awaitInput("");
           currentUserMessage = messageText(reply) || "";
           if (!currentUserMessage) currentUserMessage = "Continue.";
+          authoritativeUserRequest = [
+            originalUserMessage,
+            "",
+            "Additional user clarification:",
+            currentUserMessage,
+          ].join("\n");
           continue;
         }
         return { error: "Requirements phase returned an unexpected response." };
@@ -211,17 +217,8 @@ __chat_register({
           })
         : null;
 
-      // Report requirements back to the user before writing the spec.
-      const requirementsMessage = [
-        "--- Requirements ---",
-        requirementsSummary,
-        ...(requirementsList.length > 0
-          ? ["", "Discrete requirements:", ...requirementsList.map((req) => `- ${req}`)]
-          : []),
-        "",
-        "Writing the specification...",
-      ].join("\n");
-      ctx.emit.message(requirementsMessage);
+      // Keep derived requirements internal provenance. The original user request remains
+      // the authoritative instruction passed to Claude Code.
 
       // ---------- Phase 2: Spec ----------
       const specResult = await ProduceSpec({ requirements_summary: requirementsSummary });
@@ -264,28 +261,32 @@ __chat_register({
         await executionExecutable.completeStep?.("step-specification");
       }
 
-      // Send the plan to the user in one message (so the client cannot show only the follow-up line).
-      const planMessage = [
-        "--- Plan ---",
-        "Requirements:",
-        ...(requirementsList.length > 0 ? requirementsList.map((req) => `- ${req}`) : ["- (see summary)"]),
-        "",
-        "Specification:",
-        spec.specification_text,
-        "",
-        "Validation criteria:",
-        ...spec.validation_criteria.map((c) => `- ${c}`),
-        "---",
-        "",
-        "Starting development via claude/dev (BAML-controlled).",
-      ].join("\n");
-      ctx.emit.message(planMessage);
-      // Emit a clear "still working" so UIs don't treat the plan as the final chunk
+      // Do not expose the intermediate Requirements/Plan rewrite as the user-visible answer.
+      // It is advisory context for provenance only; Claude Code should work from the raw request.
+      ctx.emit.message("Working with Claude Code...");
       ctx.emit.statusChanged("TASK_STATE_WORKING");
-      // Yield so the stream collector can drain and forward the plan chunks to the client before the long ChooseDevClaudeExtAction/tool session runs.
-      await Promise.resolve()
+      await Promise.resolve();
 
       // ---------- Tool session: host-driven step executor loop (same pattern as coordinator agents). ----------
+      const claudeHandoff = [
+        authoritativeUserRequest,
+        "",
+        "---",
+        "Non-authoritative planner context follows. Use it only if helpful.",
+        "The original user request above is the source of truth.",
+        "If the planner context conflicts with the original request, follow the original request.",
+        "",
+        "Planner specification:",
+        spec.specification_text,
+        "",
+        "Planner validation criteria:",
+        ...spec.validation_criteria.map((c) => `- ${c}`),
+        "",
+        "Important instructions:",
+        "- Do not rename functions, files, APIs, variables, or entities requested by the user.",
+        "- Do not add constraints, edge cases, file creation, tests, or execution unless the user asked",
+        "  for them or they are necessary for the task.",
+      ].join("\n");
       const validationCriteriaJson = JSON.stringify(spec.validation_criteria);
       let lastToolOutput = "";
       const messageParts = (ctx.message as { parts?: unknown })?.parts;
@@ -298,7 +299,7 @@ __chat_register({
         const run = await runGeneratedStepExecutor(
           "ChooseDevClaudeExtAction",
           {
-            spec_text: spec.specification_text,
+            spec_text: claudeHandoff,
             validation_criteria_json: validationCriteriaJson,
             last_tool_output: lastToolOutput,
             user_approval_intent: userApprovalIntent,
