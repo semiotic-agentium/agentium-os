@@ -15,6 +15,7 @@ mod deployment_state;
 mod package;
 mod routing;
 mod runner;
+mod runner_config_file;
 mod services;
 mod stdio;
 
@@ -303,6 +304,8 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         config.claude_workspaces_base,
         config.repository_url.clone(),
         Some(repository_service.clone()),
+        config.external_tools_dirs.clone(),
+        config.sandbox_bind_roots.clone(),
     )
     .map_err(|e| anyhow::anyhow!("runner builder init: {e}"))?;
 
@@ -870,6 +873,8 @@ globalThis.onChatMessage = async function(_message) {
                 None,
                 "http://127.0.0.1:18080/repository".to_string(),
                 None,
+                Vec::new(),
+                Vec::new(),
             )
             .expect("test runner construction"),
         );

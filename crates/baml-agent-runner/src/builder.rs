@@ -37,6 +37,8 @@ impl RunnerBuilder<Loading> {
         claude_workspaces_base: Option<std::path::PathBuf>,
         repository_url: String,
         embedded_repository: Option<Arc<RepositoryService>>,
+        external_tools_dirs: Vec<std::path::PathBuf>,
+        sandbox_bind_roots: Vec<std::path::PathBuf>,
     ) -> Result<Self> {
         let runner = Arc::new(AgentRunner::new(
             provenance_config,
@@ -46,6 +48,8 @@ impl RunnerBuilder<Loading> {
             claude_workspaces_base,
             repository_url,
             embedded_repository,
+            external_tools_dirs,
+            sandbox_bind_roots,
         )?);
         // Wire the internal A2A router to the runner for cross-agent dispatch.
         runner.internal_a2a_router().set_runner(Arc::clone(&runner));

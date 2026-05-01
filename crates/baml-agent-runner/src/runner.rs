@@ -91,6 +91,8 @@ pub(crate) struct AgentRunner {
     pub(crate) cluster_manager: std::sync::OnceLock<Arc<crate::cluster::ClusterManager>>,
     /// One map for all deployed agents so `@N` survives internal A2A to another manager.
     pub(crate) shared_context_ref_store: SharedContextRefStore,
+    pub(crate) external_tools_dirs: Vec<std::path::PathBuf>,
+    pub(crate) sandbox_bind_roots: Vec<std::path::PathBuf>,
 }
 
 impl AgentRunner {
@@ -102,6 +104,8 @@ impl AgentRunner {
         claude_workspaces_base: Option<std::path::PathBuf>,
         repository_url: String,
         embedded_repository: Option<Arc<RepositoryService>>,
+        external_tools_dirs: Vec<std::path::PathBuf>,
+        sandbox_bind_roots: Vec<std::path::PathBuf>,
     ) -> baml_rt_core::Result<Self> {
         let routed_agents = std::sync::RwLock::new(HashMap::new());
         let internal_a2a_router = Arc::new(InternalA2aRouter::new());
@@ -119,7 +123,17 @@ impl AgentRunner {
             repository_http_client: reqwest::Client::new(),
             cluster_manager: std::sync::OnceLock::new(),
             shared_context_ref_store: SharedContextRefStore::new(),
+            external_tools_dirs,
+            sandbox_bind_roots,
         })
+    }
+
+    pub(crate) fn external_tools_dirs(&self) -> &[std::path::PathBuf] {
+        &self.external_tools_dirs
+    }
+
+    pub(crate) fn sandbox_bind_roots(&self) -> &[std::path::PathBuf] {
+        &self.sandbox_bind_roots
     }
 
     pub(crate) fn deployment_state(&self) -> &Arc<crate::deployment_state::DeploymentStateStore> {
@@ -390,6 +404,8 @@ impl AgentRunner {
                 a2a_handler: scoped_router,
                 stream_idle_secs: self.stream_idle_secs(),
                 claude_workspaces_base: self.claude_workspaces_base.as_deref(),
+                external_tools_dirs: self.external_tools_dirs(),
+                sandbox_bind_roots: self.sandbox_bind_roots(),
             })
             .await?;
         let manifest = package.manifest().clone();

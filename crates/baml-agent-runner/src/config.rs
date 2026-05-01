@@ -5,6 +5,9 @@ use std::{path::PathBuf, sync::Arc};
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_provenance::{RemoteConfig, RemoteCredentials, SurrealStoreBuilder};
 use clap::Parser;
+use tracing::info;
+
+use crate::runner_config_file::{self, FileConfig};
 
 /// Provenance store backend selection.
 #[derive(Debug, Clone)]
@@ -58,6 +61,10 @@ pub(crate) struct RunnerConfig {
     /// Placement TTL in milliseconds: placements on runners whose last heartbeat
     /// is older than this are excluded from resolution.
     pub(crate) placement_ttl_ms: u64,
+    /// Resolved external tool package directories (file → env precedence).
+    pub(crate) external_tools_dirs: Vec<PathBuf>,
+    /// Resolved sandbox bind allowlist roots (file → env precedence).
+    pub(crate) sandbox_bind_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -147,6 +154,12 @@ pub(crate) struct Cli {
         env = "PLACEMENT_TTL_MS"
     )]
     pub(crate) placement_ttl_ms: u64,
+
+    /// Path to a runner.toml with optional `[external_tools]` and
+    /// `[sandbox.bind]` sections. Values are merged with the legacy env vars
+    /// (`BAML_EXTERNAL_TOOLS_DIR`, `BAML_SANDBOX_BIND_ROOTS`); env wins when set.
+    #[arg(long, value_name = "FILE", env = "BAML_RUNNER_CONFIG")]
+    pub(crate) runner_config: Option<PathBuf>,
 }
 
 impl Cli {
@@ -169,6 +182,22 @@ impl Cli {
         } else {
             ProvenanceDb::File(PathBuf::from(self.provenance_db))
         };
+
+        let file_config = match &self.runner_config {
+            Some(path) => FileConfig::load(path)?,
+            None => FileConfig::default(),
+        };
+        let resolved = runner_config_file::resolve_paths(&file_config);
+        info!(
+            count = resolved.external_tools_dirs.len(),
+            source = resolved.external_tools_source.as_str(),
+            "external_tools.dirs resolved"
+        );
+        info!(
+            count = resolved.sandbox_bind_roots.len(),
+            source = resolved.sandbox_bind_source.as_str(),
+            "sandbox.bind.roots resolved"
+        );
 
         Ok(RunnerConfig {
             repository_url: self.repository_url,
@@ -194,6 +223,8 @@ impl Cli {
                 .filter(|t| !t.is_empty()),
             runner_endpoint: self.runner_endpoint,
             placement_ttl_ms: self.placement_ttl_ms,
+            external_tools_dirs: resolved.external_tools_dirs,
+            sandbox_bind_roots: resolved.sandbox_bind_roots,
         })
     }
 }

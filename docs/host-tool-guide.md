@@ -63,9 +63,19 @@ cargo agent-platform new-tool streamed_echo \
 # 2) Validate metadata
 cargo agent-platform check-external-tool --path ./streamed_echo
 
-# 3) Start runner with required env
-export BAML_EXTERNAL_TOOLS_DIR="$(pwd)/streamed_echo"
-cargo run -p baml-agent-runner --all-features
+# 3) Start runner with a runner.toml (recommended) or fall back to env vars
+cat > runner.toml <<'EOF'
+[external_tools]
+dirs = ["./streamed_echo"]
+
+[sandbox.bind]
+roots = []  # add host paths here when sandbox tools need bind mounts
+EOF
+cargo run -p baml-agent-runner --all-features -- --runner-config ./runner.toml
+
+# Equivalent legacy form (still supported; env wins when both file and env are set):
+# export BAML_EXTERNAL_TOOLS_DIR="$(pwd)/streamed_echo"
+# cargo run -p baml-agent-runner --all-features
 ```
 
 Then allowlist the tool in an agent manifest, publish + deploy, and verify with `cargo agent-platform chat`.
@@ -309,13 +319,31 @@ This validates:
 
 ## 6) Configure and start runner
 
-Core env:
+Recommended: a `runner.toml` consumed via `--runner-config`. Falls back to env vars; env wins when both file and env are set.
 
-```bash
-export BAML_EXTERNAL_TOOLS_DIR=/abs/path/to/external-tools
+```toml
+# runner.toml — paths relative to this file's parent dir
+[external_tools]
+dirs = ["/abs/path/to/external-tools"]
+
+[sandbox.bind]
+roots = ["/abs/root1", "/abs/root2"]
 ```
 
-`BAML_EXTERNAL_TOOLS_DIR` scans for one subdirectory per tool, each containing its own `tool-metadata.json`. The runner loads the catalog at boot — **restart the runner after adding / editing / removing tools**; there is no hot reload in v1.
+```bash
+cargo run -p baml-agent-runner --all-features -- --runner-config ./runner.toml
+```
+
+Each entry under `[external_tools].dirs` is a tool package directory containing its own `tool-metadata.json`. The runner loads the catalog at boot — **restart the runner after adding / editing / removing tools**; there is no hot reload in v1.
+
+Legacy env vars still work (for back-compat and quick scripts):
+
+```bash
+export BAML_EXTERNAL_TOOLS_DIR=/abs/path/to/external-tools   # colon-separated
+export BAML_SANDBOX_BIND_ROOTS=/abs/root1:/abs/root2         # colon-separated
+```
+
+Resolution precedence per list: env (when set and non-empty) replaces the file value; otherwise the file value applies. Startup logs show the resolved source: `external_tools.dirs source=<file|env|none>` and `sandbox.bind.roots source=<file|env|none>`.
 
 Sandbox provider:
 
@@ -348,11 +376,7 @@ tool child process spawned for `tool/invoke` therefore must:
 Anything emitted to stdout that is not the framed response will corrupt the
 channel and surface as `invalid JSON` or truncated-frame errors at the runner.
 
-Bind allowlist (colon-separated roots):
-
-```bash
-export BAML_SANDBOX_BIND_ROOTS=/abs/root1:/abs/root2
-```
+Bind allowlist (configured via `runner.toml` `[sandbox.bind].roots` or `BAML_SANDBOX_BIND_ROOTS`):
 
 - Empty or unset → **all Bind sources are rejected** (`bind rootfs is disabled`). Safe default for non-dev deployments.
 - Narrow the roots. Broad roots (e.g. `/`) are tenant-escape vectors; see §10.
