@@ -15,18 +15,10 @@ offset: number | null;
 limit: number | null;
  }
 
-export interface ArchivePageReadStep { op: "PageRead";
-input: ArchivePageReadInput;
- }
-
 export interface ArchiveSearchReadInput { archive_ref: string;
 grep: string;
 offset: number | null;
 limit: number | null;
- }
-
-export interface ArchiveSearchReadStep { op: "SearchRead";
-input: ArchiveSearchReadInput;
  }
 
 export interface CalculatorInput { expression: Expression;
@@ -78,11 +70,11 @@ declare function ChooseCalcTool(args: { user_message: string; session_context: S
 
 declare function ChooseCalcToolStream(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
-declare function ChooseCalcTool__act__support_calculate(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ArchiveSearchReadStep | ArchivePageReadStep | SupportCalculateSendStep>;
+declare function ChooseCalcTool__act__support_calculate(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep>;
 
-declare function ChooseCalcTool__continue__support_calculate(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ArchiveSearchReadStep | ArchivePageReadStep | SupportCalculateSendStep | SupportCalculateFinishStep>;
+declare function ChooseCalcTool__continue__support_calculate(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep>;
 
-declare function ChooseCalcTool__select(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ArchiveSearchReadStep | ArchivePageReadStep | SupportCalculateOpenStep>;
+declare function ChooseCalcTool__select(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportCalculateOpenStep>;
 
 }
 
