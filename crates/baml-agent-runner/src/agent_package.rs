@@ -28,12 +28,12 @@ use baml_rt_tools::{
         ExternalLifecycleEvent, ExternalLifecycleRecorder, ExternalLockfileMode,
         ExternalToolsLockfile,
         resolver::SandboxRuntimeWiring,
-        sandbox::{
-            MockSandboxProvider, SandboxProvider, fresh_runner_id, stock_wiring_with_bind_roots,
-        },
+        sandbox::{SandboxProvider, fresh_runner_id, stock_wiring_with_bind_roots},
     },
     register_manifest_tools_with_fallback,
 };
+#[cfg(test)]
+use baml_rt_tools::external_tools::sandbox::MockSandboxProvider;
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_system::SystemBundle;
 use serde_json::Value;
@@ -576,20 +576,9 @@ fn build_external_lifecycle_recorder(
 ///
 /// Value is a colon-separated list of tool package directories. Returns `None`
 /// when the env var is absent or empty, meaning "no external tools in dev mode".
-/// Env var controlling the sandbox backend used by this runner.
-///
-/// - unset / `off` / empty → no sandbox provider; sandbox-declared tools
-///   fail at resolve time with a clear message.
-/// - `mock`               → [`MockSandboxProvider::echo`] (dev / fixture
-///   mode; no VM required).
-/// - `microsandbox`       → real microsandbox backend; requires the
-///   `sandbox-provider` cargo feature to be built in.
-pub const SANDBOX_PROVIDER_ENV: &str = "BAML_SANDBOX_PROVIDER";
 pub const SANDBOX_BIND_ROOTS_ENV: &str = "BAML_SANDBOX_BIND_ROOTS";
 
 fn build_sandbox_wiring() -> Result<Option<SandboxRuntimeWiring>> {
-    let raw = std::env::var(SANDBOX_PROVIDER_ENV).unwrap_or_default();
-    let kind = raw.trim().to_ascii_lowercase();
     let bind_roots: Vec<std::path::PathBuf> = std::env::var(SANDBOX_BIND_ROOTS_ENV)
         .ok()
         .map(|v| {
@@ -600,36 +589,31 @@ fn build_sandbox_wiring() -> Result<Option<SandboxRuntimeWiring>> {
         })
         .unwrap_or_default();
 
-    match kind.as_str() {
-        "" | "off" => Ok(None),
-        "mock" => {
-            let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::echo());
-            Ok(Some(stock_wiring_with_bind_roots(
-                provider,
-                fresh_runner_id(),
-                bind_roots,
-            )))
-        }
-        "microsandbox" => {
-            #[cfg(feature = "sandbox-provider")]
-            {
-                use baml_rt_tools::external_tools::sandbox::MicrosandboxProvider;
-                let provider: Arc<dyn SandboxProvider> = Arc::new(MicrosandboxProvider::new()?);
-                Ok(Some(stock_wiring_with_bind_roots(
-                    provider,
-                    fresh_runner_id(),
-                    bind_roots,
-                )))
-            }
-            #[cfg(not(feature = "sandbox-provider"))]
-            Err(BamlRtError::InvalidArgument(
-                "BAML_SANDBOX_PROVIDER=microsandbox requires building with the 'sandbox-provider' cargo feature"
-                    .to_string(),
-            ))
-        }
-        other => Err(BamlRtError::InvalidArgument(format!(
-            "unknown {SANDBOX_PROVIDER_ENV}='{other}'; expected 'off', 'mock', or 'microsandbox'"
-        ))),
+    #[cfg(feature = "sandbox-provider")]
+    {
+        use baml_rt_tools::external_tools::sandbox::MicrosandboxProvider;
+        let provider: Arc<dyn SandboxProvider> = Arc::new(MicrosandboxProvider::new()?);
+        Ok(Some(stock_wiring_with_bind_roots(
+            provider,
+            fresh_runner_id(),
+            bind_roots,
+        )))
+    }
+
+    #[cfg(all(not(feature = "sandbox-provider"), test))]
+    {
+        let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::echo());
+        Ok(Some(stock_wiring_with_bind_roots(
+            provider,
+            fresh_runner_id(),
+            bind_roots,
+        )))
+    }
+
+    #[cfg(all(not(feature = "sandbox-provider"), not(test)))]
+    {
+        let _ = bind_roots;
+        Ok(None)
     }
 }
 

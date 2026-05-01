@@ -38,11 +38,8 @@ microsandbox = { version = "=0.3.13", optional = true }
 default = []
 # No-op for CI/workspace feature parity; runner and builder enable clickup/notion via their own deps.
 http-tools = []
-# Enable MicrosandboxProvider (Workstream B of tool_sandbox.md). When off,
-# sandbox runtime declarations still parse, but instantiating the provider
-# returns an explicit "sandbox support not compiled in" error. The activation
-# model remains metadata-declaration (§15); this feature is purely a
-# build-safety gate for the microsandbox beta crate.
+# Compile-time gate for MicrosandboxProvider. When off, the runner uses
+# MockSandboxProvider in tests or no sandbox at all in release builds.
 sandbox-provider = ["dep:microsandbox"]
 # KVM-gated real microVM E2E lane. Off by default and only enabled in
 # dedicated CI/manual runs.
