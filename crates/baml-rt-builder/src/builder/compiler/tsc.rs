@@ -20,12 +20,15 @@ use crate::builder::{
 /// containing `tsconfig.json` unless set; sources under `src/` then trigger TS5011 unless
 /// `rootDir` is explicitly `"./src"` (must match the inferred common source path; see
 /// <https://aka.ms/ts6> migration notes).
+///
+/// **`moduleResolution`** is `nodenext` (not `bundler`): `bundler` requires TS 5.0+; runners
+/// and CI may resolve `tsc` from PATH (e.g. TS 4.9) during repository publish builds.
 pub const TSCONFIG_JSON: &str = r#"{
   "compilerOptions": {
     "target": "ES2020",
     "lib": ["ES2020"],
     "module": "ESNext",
-    "moduleResolution": "bundler",
+    "moduleResolution": "nodenext",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
