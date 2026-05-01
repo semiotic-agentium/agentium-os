@@ -78,9 +78,7 @@ fn render_inventory_fragment(tool_id: &str) -> Result<Option<String>> {
 /// must pick one and only one source of truth.
 ///
 /// Returns `None` when no tool has coordination BAML.
-pub fn gather_coordination_fragments(
-    tools: &[ToolFunctionMetadata],
-) -> Result<Option<String>> {
+pub fn gather_coordination_fragments(tools: &[ToolFunctionMetadata]) -> Result<Option<String>> {
     let mut fragments: Vec<String> = Vec::new();
     for meta in tools {
         let tool_id = meta.name.to_string();

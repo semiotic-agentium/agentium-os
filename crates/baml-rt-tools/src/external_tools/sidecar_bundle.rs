@@ -93,10 +93,12 @@ pub fn render_sidecar_bundle(
                     .iter()
                     .map(|m| (*m).to_string())
                     .collect(),
-                InvocationMode::Session => baml_sandbox_protocol::session::SUPPORTED_METHODS_SESSION
-                    .iter()
-                    .map(|m| (*m).to_string())
-                    .collect(),
+                InvocationMode::Session => {
+                    baml_sandbox_protocol::session::SUPPORTED_METHODS_SESSION
+                        .iter()
+                        .map(|m| (*m).to_string())
+                        .collect()
+                }
             },
         },
         schema: ToolSchemaSidecar {
