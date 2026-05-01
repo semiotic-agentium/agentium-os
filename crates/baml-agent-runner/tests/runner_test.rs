@@ -1316,6 +1316,31 @@ async fn test_e2e_argument_sketch_two_agents() {
 }
 
 #[cfg(feature = "llm-tests")]
+fn task_failed_status_texts_from_chunks(chunks: &[&Value]) -> Vec<String> {
+    chunks
+        .iter()
+        .filter_map(|c| {
+            let state = c.get("task")?.get("status")?.get("state")?.as_str()?;
+            if state != "TASK_STATE_FAILED" {
+                return None;
+            }
+            let parts = c
+                .get("task")?
+                .get("status")?
+                .get("message")?
+                .get("parts")?
+                .as_array()?;
+            let text = parts.first()?.get("text")?.as_str()?.trim();
+            if text.is_empty() {
+                None
+            } else {
+                Some(text.to_string())
+            }
+        })
+        .collect()
+}
+
+#[cfg(feature = "llm-tests")]
 async fn run_argument_sketch_two_agents_body() {
     let cleese_agent = setup_argument_fixture_agent("argument-cleese").await;
     let chapman_agent = setup_argument_fixture_agent("argument-chapman").await;
@@ -1380,10 +1405,12 @@ async fn run_argument_sketch_two_agents_body() {
         .expect("argument sketch first turn");
     let first_chunks = chunks_from_responses(&first_responses);
     let first_states: Vec<String> = first_chunks.iter().filter_map(|c| task_state(c)).collect();
+    let failed_texts = task_failed_status_texts_from_chunks(&first_chunks);
     assert!(
         first_states.contains(&"TASK_STATE_INPUT_REQUIRED".to_string()),
-        "Expected TASK_STATE_INPUT_REQUIRED in first stream (Cleese awaitInput after Chapman reply); states: {:?}",
-        first_states
+        "Expected TASK_STATE_INPUT_REQUIRED in first stream (Cleese awaitInput after Chapman reply); states: {:?}; task_failed_messages: {:?}",
+        first_states,
+        failed_texts
     );
     let first_texts = message_texts_from_chunks(&first_chunks);
     let argument_like = |t: &String| {
