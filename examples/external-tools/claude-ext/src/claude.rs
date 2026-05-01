@@ -135,6 +135,7 @@ pub struct SdkClaudeEngine {
 #[cfg(feature = "sdk-engine")]
 impl SdkClaudeEngine {
     pub async fn try_new(cwd: std::path::PathBuf, session_id: String) -> Result<Self, String> {
+        // We use eprintln as logs because then upsstream we gated them to our log system at microsandbox boundaries
         eprintln!(
             "[cli] open host_session_id={session_id} cwd={}",
             cwd.display()
@@ -177,19 +178,7 @@ impl ClaudeEngine for SdkClaudeEngine {
             return Err("session_send requires prompt/content/userInput text".to_string());
         }
 
-        // Optional diagnostics mode: force the real runner path to send the
-        // same tiny payload as probe-claude.sh so we can isolate transport/
-        // stdio issues from prompt-content issues.
-        let text = match std::env::var("CLAUDE_EXT_FORCE_MINIMAL_PROMPT") {
-            Ok(v) if v == "1" || v.eq_ignore_ascii_case("true") => {
-                eprintln!(
-                    "[cli] diagnostic override active: forcing minimal prompt 'hi' instead of payload_bytes={}",
-                    extracted_text.len()
-                );
-                "hi".to_string()
-            }
-            _ => extracted_text,
-        };
+        let text = extracted_text;
 
         let resume_id = self.claude_session_id.lock().await.clone();
 
@@ -214,9 +203,11 @@ impl ClaudeEngine for SdkClaudeEngine {
             eprintln!("[cli] send fresh claude (will capture session_id from system.init)");
         }
 
-        // Shell-fed pipeline is the default because it has been the most
-        // reliable path in microsandbox. Keep direct stdin available as an
-        // explicit comparison/debug path with CLAUDE_EXT_USE_SHELL_PIPELINE=0.
+        // let use_shell_pipeline = true;
+
+        // // Shell-fed pipeline is the default because it has been the most
+        // // reliable path in microsandbox. Keep direct stdin available as an
+        // // explicit comparison/debug path with CLAUDE_EXT_USE_SHELL_PIPELINE=0.
         let use_shell_pipeline = std::env::var("CLAUDE_EXT_USE_SHELL_PIPELINE")
             .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
             .unwrap_or(true);
@@ -242,9 +233,22 @@ impl ClaudeEngine for SdkClaudeEngine {
                 .map(|s| shlex_quote(s))
                 .collect::<Vec<_>>()
                 .join(" ");
-            // Send payload then close pipe (EOF). claude-code reads frame,
-            // processes turn, emits result, exits. No sleep — stdin EOF is
-            // valid stream-json terminator.
+
+            // Launch Claude through a shell pipeline instead of Tokio's direct
+            // stdin pipe.
+            //
+            //   printf '%s\n' "$CLAUDE_EXT_STREAM_PAYLOAD" | claude ...
+            //
+            // `CLAUDE_EXT_STREAM_PAYLOAD` contains exactly one stream-json user
+            // frame. `printf` writes that frame plus a terminating newline, then
+            // exits, naturally closing the pipe. Claude Code treats that EOF as
+            // the end of the turn, processes it, emits stream-json events on
+            // stdout, emits a terminal `result` frame, and exits.
+            //
+            // The stage `echo`s are diagnostics only and are intentionally sent
+            // to stderr (`>&2`) so stdout remains clean stream-json for the
+            // reader task. `set -o pipefail` and `exit $rc` preserve Claude's
+            // failure status at the shell process boundary.
             let shell_script = format!(
                 "set -o pipefail; \
                  echo \"[sh] STAGE=start payload_len=${{#CLAUDE_EXT_STREAM_PAYLOAD}}\" >&2; \
@@ -254,8 +258,6 @@ impl ClaudeEngine for SdkClaudeEngine {
                  echo \"[sh] STAGE=end claude_exit=$rc\" >&2; \
                  exit $rc"
             );
-            eprintln!("[cli] shell pipeline mode enabled");
-            eprintln!("[cli] argv: /bin/bash -lc {}", shell_script);
             shell_cmd.arg("-lc").arg(shell_script);
             shell_cmd.env("CLAUDE_EXT_STREAM_PAYLOAD", payload_json);
             shell_cmd
@@ -278,16 +280,10 @@ impl ClaudeEngine for SdkClaudeEngine {
             "HOME",
             "USER",
             "PATH",
-            "ANTHROPIC_LOG",
-            "ANTHROPIC_DEBUG",
-            "DEBUG",
-            "NODE_DEBUG",
             "NODE_OPTIONS",
             "TERM",
             "LANG",
             "LC_ALL",
-            "RUST_LOG",
-            "CLAUDE_CODE_VERBOSE",
             "PWD",
             "XDG_CONFIG_HOME",
             "XDG_CACHE_HOME",
