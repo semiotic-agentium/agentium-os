@@ -172,7 +172,7 @@ impl NotionReadClient {
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, NotionReadError> {
         let request = request.build().map_err(NotionReadError::Http)?;
-        let mut retries = 0usize;
+        let mut retries: u32 = 0;
 
         loop {
             let req = request.try_clone().ok_or(NotionReadError::RequestClone)?;
@@ -189,9 +189,9 @@ impl NotionReadClient {
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS
                     && retries < MAX_RATE_LIMIT_RETRIES
                 {
-                    let delay = retry_after.as_duration().unwrap_or_else(|| {
-                        rate_limit_backoff_delay(u32::try_from(retries).unwrap_or(u32::MAX))
-                    });
+                    let delay = retry_after
+                        .as_duration()
+                        .unwrap_or_else(|| rate_limit_backoff_delay(retries));
                     tracing::warn!(
                         retries = retries + 1,
                         retry_after = %retry_after,

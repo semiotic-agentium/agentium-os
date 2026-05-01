@@ -7,7 +7,7 @@ pub const RATE_LIMIT_BASE_DELAY: Duration = Duration::from_millis(500);
 /// Default cap for HTTP rate-limit retry delays.
 pub const RATE_LIMIT_MAX_DELAY: Duration = Duration::from_secs(5);
 /// Default maximum number of retries when an HTTP request is rate-limited.
-pub const MAX_RATE_LIMIT_RETRIES: usize = 3;
+pub const MAX_RATE_LIMIT_RETRIES: u32 = 3;
 
 /// Compute the delay for a single backoff attempt.
 ///

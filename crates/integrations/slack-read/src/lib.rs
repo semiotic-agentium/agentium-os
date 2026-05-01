@@ -267,7 +267,7 @@ impl SlackReadClient {
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, SlackReadError> {
         let request = request.build().map_err(SlackReadError::Http)?;
-        let mut retries = 0usize;
+        let mut retries: u32 = 0;
         loop {
             let req = request.try_clone().ok_or(SlackReadError::RequestClone)?;
             let resp = self
@@ -280,9 +280,9 @@ impl SlackReadClient {
                 let retry_after = parse_retry_after(resp.headers().get("retry-after"));
                 let body = resp.text().await.unwrap_or_default();
                 if retries < MAX_RATE_LIMIT_RETRIES {
-                    let delay = retry_after.as_duration().unwrap_or_else(|| {
-                        rate_limit_backoff_delay(u32::try_from(retries).unwrap_or(u32::MAX))
-                    });
+                    let delay = retry_after
+                        .as_duration()
+                        .unwrap_or_else(|| rate_limit_backoff_delay(retries));
                     tracing::warn!(
                         method = method_name,
                         retries = retries + 1,
