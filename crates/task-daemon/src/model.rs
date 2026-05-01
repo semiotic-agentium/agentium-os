@@ -294,10 +294,6 @@ pub struct TaskBatch {
     pub derived_tasks: Vec<InvestigationTask>,
 }
 
-pub fn unix_now() -> u64 {
-    baml_rt_core::now_unix_secs("task_daemon")
-}
-
 #[cfg(test)]
 mod tests {
     use baml_rt_core::EventSourceKind;

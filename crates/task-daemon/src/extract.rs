@@ -11,7 +11,6 @@ use crate::{
         ClarificationPrompt, FollowUpItem, FollowUpKind, InvestigationPrompt,
         InvestigationRunCondition, InvestigationTask, ProjectContext, ProjectInterpretation,
         QuestionItem, SlackMessage, TaskBatch, TaskConfidence, TaskSourceKind, WorkflowSeed,
-        unix_now,
     },
 };
 
@@ -163,7 +162,7 @@ impl TaskExtractor {
         Ok(TaskBatch {
             source: TaskSourceKind::Slack,
             source_label: source_label.to_string(),
-            generated_at_unix: unix_now(),
+            generated_at_unix: baml_rt_core::now_unix_secs("task_daemon_slack_batch"),
             messages_scanned: messages.len(),
             project: project.clone(),
             interpretation,

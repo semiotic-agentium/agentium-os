@@ -12,7 +12,7 @@ use crate::{
     extract::TaskExtractor,
     model::{
         InvestigationTask, ProjectContext, ProjectInterpretation, SlackMessage, TaskBatch,
-        TaskSourceKind, unix_now,
+        TaskSourceKind,
     },
     sink::TaskSink,
     state::StateStore,
@@ -302,7 +302,7 @@ impl TaskDaemon {
             SourcePollPayload::Clickup { inferred_tasks } => TaskBatch {
                 source: TaskSourceKind::Clickup,
                 source_label,
-                generated_at_unix: unix_now(),
+                generated_at_unix: baml_rt_core::now_unix_secs("task_daemon_clickup_batch"),
                 messages_scanned: source_items_scanned,
                 project: self.project_context.clone(),
                 interpretation: clickup_interpretation_for_batch(
@@ -352,7 +352,7 @@ impl TaskDaemon {
             }
         }
 
-        let seen_at = unix_now();
+        let seen_at = baml_rt_core::now_unix_secs("task_daemon_seen_task");
         {
             let source_state = state.source_state_mut(&source_key);
             for task in &dispatch.batch.derived_tasks {

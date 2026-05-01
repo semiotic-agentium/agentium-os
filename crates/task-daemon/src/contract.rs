@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{
     InvestigationTask, ProjectContext, ProjectInterpretation, SlackMessage, TaskBatch,
-    TaskSourceKind, unix_now,
+    TaskSourceKind,
 };
 
 /// Event format name used by task-daemon interpretation messages.
@@ -128,7 +128,7 @@ impl InterpretationRequestEvent {
         Self {
             schema_version: INTERPRETATION_EVENT_SCHEMA_VERSION.to_string(),
             event_id,
-            emitted_at_unix: unix_now(),
+            emitted_at_unix: baml_rt_core::now_unix_secs("task_daemon_interpretation_request"),
             source,
             project,
             provenance: normalized_provenance,
@@ -192,7 +192,7 @@ impl InterpretationResultEvent {
             schema_version: INTERPRETATION_EVENT_SCHEMA_VERSION.to_string(),
             event_id,
             request_event_id: request.event_id.clone(),
-            emitted_at_unix: unix_now(),
+            emitted_at_unix: baml_rt_core::now_unix_secs("task_daemon_interpretation_result"),
             source: request.source.clone(),
             project: request.project.clone(),
             messages_scanned,

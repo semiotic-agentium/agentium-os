@@ -286,16 +286,13 @@ async fn run_and_query(
     wait_for_step_executor: bool,
 ) -> Vec<Value> {
     let client = A2aInMemoryClient::new_for_chat_parity(agent.clone());
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    let ts = baml_rt_core::now_unix_ms("drift_integration_test");
     // Execution-session open requires task scope (`__execution_session_invoke` Open path).
     let request = send_stream_request_with_task(
         &format!("ui-msg-{ts}-1"),
         message,
         &format!("corr-{ts}-1"),
-        Some(ContextId::new(ts as u64, 1)),
+        Some(ContextId::new(ts, 1)),
         Some(TaskId::from_external(ExternalId::new(format!(
             "drift-integ-{ts}"
         )))),

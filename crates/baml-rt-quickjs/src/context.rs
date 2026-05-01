@@ -106,13 +106,7 @@ impl BamlContext {
 impl Default for ContextMetadata {
     fn default() -> Self {
         Self {
-            context_id: format!(
-                "ctx-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_else(|_| std::time::Duration::from_secs(0))
-                    .as_nanos()
-            ),
+            context_id: baml_rt_core::context::generate_context_id().to_string(),
             user_id: None,
             request_id: None,
         }
