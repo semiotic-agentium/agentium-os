@@ -7,8 +7,8 @@ use std::sync::Arc;
 use axum::{Json, extract::State, http::StatusCode as AxumStatus};
 use baml_rt_config::{InternalConfigReader, InternalConfigWriter};
 use baml_rt_llm_config::{
-    FnoxFileSecretResolver, LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, LlmProvider,
-    RuntimeSecretStore, SECRET_LINKS_CONFIG_KEY, SecretLinksState, SecretRequestName, SecretValue,
+    LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, LlmProvider, RuntimeSecretStore,
+    SECRET_LINKS_CONFIG_KEY, SecretLinksState, SecretRequestName, SecretSourcePolicy, SecretValue,
     StoreKey, apply_secret_links_state,
 };
 use baml_rt_tools::{BundleName, ToolName};
@@ -326,10 +326,9 @@ pub async fn put_secret(
     }
     let request_name = SecretRequestName::new(name);
     let store_key = StoreKey::new(link_from);
-    let env_hint = if FnoxFileSecretResolver::is_exclusive() {
-        ""
-    } else {
-        " (or set it as an environment variable)"
+    let env_hint = match SecretSourcePolicy::from_env() {
+        SecretSourcePolicy::FnoxOnly => "",
+        SecretSourcePolicy::FnoxWithEnvFallback => " (or set it as an environment variable)",
     };
     let value = state
         .secret_resolver
