@@ -27,6 +27,19 @@ const TBL_EVENT_PRODUCER_CHECKPOINTS: &str = "event_producer_checkpoints";
 const TBL_SCHEDULED_CALLBACKS: &str = "scheduled_callbacks";
 const TBL_INGRESS_INBOX: &str = "ingress_inbox";
 
+/// Hard ceiling on how long a single `DeploymentStateStore::open` call will
+/// wait to acquire the on-disk database lock. The embedded engine releases
+/// the file lock from a background driver task, so a `drop`-then-reopen
+/// pattern can observe the prior lock as still held; without a timeout the
+/// call blocks inside `.await` instead of returning an error, which leaves
+/// the existing `retry_open` exponential-backoff loop unable to make
+/// progress. A bounded timeout converts the hang into a retryable
+/// [`BamlRtError::Io`]. The value is generous (well above any plausible
+/// cold-open latency under heavy CI parallelism) because the timeout is an
+/// emergency stop for the indefinite-hang failure mode, not a budget for
+/// the normal case — a healthy cold-open completes in tens of milliseconds.
+const OPEN_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE TABLE IF NOT EXISTS deployments SCHEMAFULL",
     "DEFINE FIELD IF NOT EXISTS content_hash ON deployments TYPE string",
@@ -86,9 +99,19 @@ pub struct DeploymentStateStore {
 
 impl DeploymentStateStore {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let db = Surreal::new::<SurrealKv>(path.as_ref().to_string_lossy().as_ref())
-            .await
-            .map_err(to_write_err)?;
+        let path_str = path.as_ref().to_string_lossy().into_owned();
+        let db = tokio::time::timeout(
+            OPEN_LOCK_TIMEOUT,
+            Surreal::new::<SurrealKv>(path_str.as_str()),
+        )
+        .await
+        .map_err(|_| {
+            let secs = OPEN_LOCK_TIMEOUT.as_secs();
+            BamlRtError::Io(std::io::Error::other(format!(
+                "timed out after {secs}s acquiring on-disk database lock at {path_str}"
+            )))
+        })?
+        .map_err(to_write_err)?;
         db.use_ns(NS).use_db(DB_NAME).await.map_err(to_write_err)?;
         let store = Self {
             db: Arc::new(db),
