@@ -19,13 +19,8 @@ pub(crate) enum ProvenanceDb {
     },
 }
 
-/// Validate that SurrealDB credentials are either both supplied or both
-/// omitted, returning the borrowed pair when present.
-///
-/// Surreal authentication is all-or-nothing: a username without a password
-/// (or vice versa) is always a misconfiguration. Centralising the check here
-/// keeps the error message consistent across the config store, provenance
-/// builder, and cluster manager wiring.
+/// SurrealDB authentication is all-or-nothing: a username without a password
+/// (or vice versa) is always a misconfiguration.
 pub(crate) fn parse_surreal_credentials<'a>(
     username: Option<&'a str>,
     password: Option<&'a str>,
