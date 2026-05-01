@@ -1,5 +1,7 @@
-use baml_rt_core::backoff::{MAX_RATE_LIMIT_RETRIES, rate_limit_backoff_delay};
-pub use baml_rt_core::retry_after::{RetryAfter, parse_retry_after};
+use baml_rt_core::{
+    backoff::{MAX_RATE_LIMIT_RETRIES, rate_limit_backoff_delay},
+    retry_after::{RetryAfter, parse_retry_after},
+};
 use baml_rt_llm_config::FnoxFileSecretResolver;
 
 pub const BASE_URL: &str = "https://slack.com/api";

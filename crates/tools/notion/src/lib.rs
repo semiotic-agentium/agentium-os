@@ -9,15 +9,13 @@ use std::{collections::VecDeque, fmt, sync::Arc};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_rt_core::{BamlRtError, Result, semantics::ErrorDisposition};
+use baml_rt_core::{BamlRtError, Result, retry_after::RetryAfter, semantics::ErrorDisposition};
 use baml_rt_tools::{
     ClassifiedToolError, baml_tool,
     bundles::Support,
     tools::{BamlTool, ToolHandler, create_tool_handler},
 };
-use integrations_notion_read::{
-    self as notion_read, NotionReadClient, NotionReadError, RetryAfter,
-};
+use integrations_notion_read::{self as notion_read, NotionReadClient, NotionReadError};
 /// Notion REST API base URL.
 pub use notion_read::BASE_URL;
 /// Notion API version header value.
