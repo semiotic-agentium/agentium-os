@@ -5,12 +5,16 @@
 //! - `raw_blocks`: render mode (raw skips Notable lines / Missing info hints).
 //! - `max_depth`: limit child block expansion depth (0 disables expansion).
 
-use std::{collections::VecDeque, fmt};
+use std::{collections::VecDeque, fmt, sync::Arc};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::{BamlRtError, Result, semantics::ErrorDisposition};
-use baml_rt_tools::{ClassifiedToolError, baml_tool, bundles::Support, tools::BamlTool};
+use baml_rt_tools::{
+    ClassifiedToolError, baml_tool,
+    bundles::Support,
+    tools::{BamlTool, ToolHandler, create_tool_handler},
+};
 use integrations_notion_read::{
     self as notion_read, NotionReadClient, NotionReadError, RetryAfter,
 };
@@ -387,10 +391,10 @@ struct NotionClient {
 }
 
 impl NotionClient {
-    fn new() -> Self {
-        Self {
-            client: NotionReadClient::new(),
-        }
+    fn new() -> std::result::Result<Self, NotionError> {
+        Ok(Self {
+            client: NotionReadClient::new().map_err(NotionError::from)?,
+        })
     }
 
     #[cfg(test)]
@@ -398,8 +402,8 @@ impl NotionClient {
         self.client.base_url()
     }
 
-    fn api_key(&self) -> std::result::Result<&str, NotionError> {
-        self.client.api_key().map_err(NotionError::from)
+    fn api_key(&self) -> &str {
+        self.client.api_key()
     }
 
     fn normalize_id(id: &str) -> std::result::Result<String, NotionError> {
@@ -887,7 +891,8 @@ mod tests {
             .lock()
             .expect("lock notion base URL test mutex");
         let _env = TempEnvVar::remove("NOTION_API_BASE_URL");
-        let client = NotionClient::new();
+        let _token = TempEnvVar::set("NOTION_API_TOKEN", "test-token");
+        let client = NotionClient::new().expect("construct notion client");
         assert_eq!(client.base_url(), BASE_URL);
     }
 
@@ -897,7 +902,8 @@ mod tests {
             .lock()
             .expect("lock notion base URL test mutex");
         let _env = TempEnvVar::set("NOTION_API_BASE_URL", " https://mock.notion.local/v1/ ");
-        let client = NotionClient::new();
+        let _token = TempEnvVar::set("NOTION_API_TOKEN", "test-token");
+        let client = NotionClient::new().expect("construct notion client");
         assert_eq!(client.base_url(), "https://mock.notion.local/v1");
     }
 
@@ -907,7 +913,8 @@ mod tests {
             .lock()
             .expect("lock notion base URL test mutex");
         let _env_unset = TempEnvVar::remove("NOTION_API_BASE_URL");
-        let client = NotionClient::new();
+        let _token = TempEnvVar::set("NOTION_API_TOKEN", "test-token");
+        let client = NotionClient::new().expect("construct notion client");
         let _env_override = TempEnvVar::set("NOTION_API_BASE_URL", "https://mock.notion.local");
         assert_eq!(client.base_url(), BASE_URL);
     }
@@ -982,18 +989,17 @@ pub struct NotionTool {
     client: NotionClient,
 }
 
-impl Default for NotionTool {
-    fn default() -> Self {
-        Self::new()
+impl NotionTool {
+    pub fn new() -> std::result::Result<Self, NotionError> {
+        Ok(Self {
+            client: NotionClient::new()?,
+        })
     }
 }
 
-impl NotionTool {
-    pub fn new() -> Self {
-        Self {
-            client: NotionClient::new(),
-        }
-    }
+fn build_notion_tool() -> Result<Arc<dyn ToolHandler>> {
+    let tool = NotionTool::new()?;
+    create_tool_handler(tool).map(|(_, h)| h)
 }
 
 #[baml_tool(
@@ -1010,6 +1016,7 @@ impl NotionTool {
         NotionSource, NotionOutput,
     ],
     extra_ts_types = [BlockRenderMode],
+    build_with = build_notion_tool,
 )]
 #[async_trait]
 impl BamlTool for NotionTool {
@@ -1025,7 +1032,7 @@ impl BamlTool for NotionTool {
     }
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
-        let api_key = self.client.api_key()?;
+        let api_key = self.client.api_key();
         let mut output = match args {
             NotionInput::SearchPages(input) => {
                 self.client
@@ -1100,18 +1107,17 @@ pub struct NotionSearchPagesTool {
     client: NotionClient,
 }
 
-impl Default for NotionSearchPagesTool {
-    fn default() -> Self {
-        Self::new()
+impl NotionSearchPagesTool {
+    pub fn new() -> std::result::Result<Self, NotionError> {
+        Ok(Self {
+            client: NotionClient::new()?,
+        })
     }
 }
 
-impl NotionSearchPagesTool {
-    pub fn new() -> Self {
-        Self {
-            client: NotionClient::new(),
-        }
-    }
+fn build_notion_search_pages_tool() -> Result<Arc<dyn ToolHandler>> {
+    let tool = NotionSearchPagesTool::new()?;
+    create_tool_handler(tool).map(|(_, h)| h)
 }
 
 #[baml_tool(
@@ -1126,6 +1132,7 @@ impl NotionSearchPagesTool {
         NotionSearchPagesInput, NotionPageSummary, NotionBlockSummary,
         NotionSource, NotionOutput,
     ],
+    build_with = build_notion_search_pages_tool,
 )]
 #[async_trait]
 impl BamlTool for NotionSearchPagesTool {
@@ -1140,7 +1147,7 @@ impl BamlTool for NotionSearchPagesTool {
     }
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
-        let api_key = self.client.api_key()?;
+        let api_key = self.client.api_key();
         let mut output = self
             .client
             .search_pages(
@@ -1171,18 +1178,17 @@ pub struct NotionGetPageTool {
     client: NotionClient,
 }
 
-impl Default for NotionGetPageTool {
-    fn default() -> Self {
-        Self::new()
+impl NotionGetPageTool {
+    pub fn new() -> std::result::Result<Self, NotionError> {
+        Ok(Self {
+            client: NotionClient::new()?,
+        })
     }
 }
 
-impl NotionGetPageTool {
-    pub fn new() -> Self {
-        Self {
-            client: NotionClient::new(),
-        }
-    }
+fn build_notion_get_page_tool() -> Result<Arc<dyn ToolHandler>> {
+    let tool = NotionGetPageTool::new()?;
+    create_tool_handler(tool).map(|(_, h)| h)
 }
 
 #[baml_tool(
@@ -1197,6 +1203,7 @@ impl NotionGetPageTool {
         NotionGetPageInput, NotionPageSummary, NotionBlockSummary,
         NotionSource, NotionOutput,
     ],
+    build_with = build_notion_get_page_tool,
 )]
 #[async_trait]
 impl BamlTool for NotionGetPageTool {
@@ -1211,7 +1218,7 @@ impl BamlTool for NotionGetPageTool {
     }
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
-        let api_key = self.client.api_key()?;
+        let api_key = self.client.api_key();
         let mut output = self.client.get_page(api_key, &args.page_id).await?;
         output.operation = None;
         Ok(output)
@@ -1234,18 +1241,17 @@ pub struct NotionGetPageBlocksTool {
     client: NotionClient,
 }
 
-impl Default for NotionGetPageBlocksTool {
-    fn default() -> Self {
-        Self::new()
+impl NotionGetPageBlocksTool {
+    pub fn new() -> std::result::Result<Self, NotionError> {
+        Ok(Self {
+            client: NotionClient::new()?,
+        })
     }
 }
 
-impl NotionGetPageBlocksTool {
-    pub fn new() -> Self {
-        Self {
-            client: NotionClient::new(),
-        }
-    }
+fn build_notion_get_page_blocks_tool() -> Result<Arc<dyn ToolHandler>> {
+    let tool = NotionGetPageBlocksTool::new()?;
+    create_tool_handler(tool).map(|(_, h)| h)
 }
 
 #[baml_tool(
@@ -1260,6 +1266,7 @@ impl NotionGetPageBlocksTool {
         BlockRenderMode, NotionGetPageBlocksInput, NotionPageSummary,
         NotionBlockSummary, NotionSource, NotionOutput,
     ],
+    build_with = build_notion_get_page_blocks_tool,
 )]
 #[async_trait]
 impl BamlTool for NotionGetPageBlocksTool {
@@ -1274,7 +1281,7 @@ impl BamlTool for NotionGetPageBlocksTool {
     }
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
-        let api_key = self.client.api_key()?;
+        let api_key = self.client.api_key();
         let render_mode = args.raw_blocks.unwrap_or_default();
         let max_depth = args.max_depth.unwrap_or(2).min(MAX_BLOCK_DEPTH);
         let mut output = self
