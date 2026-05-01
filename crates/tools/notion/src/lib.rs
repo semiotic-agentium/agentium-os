@@ -420,11 +420,6 @@ impl NotionClient {
             .map_err(NotionError::from)
     }
 
-    #[cfg(test)]
-    fn parse_retry_after(value: Option<&reqwest::header::HeaderValue>) -> RetryAfter {
-        notion_read::parse_retry_after(value)
-    }
-
     async fn search_pages(
         &self,
         api_key: &str,
@@ -797,11 +792,10 @@ mod tests {
         time::Duration,
     };
 
-    use reqwest::header::HeaderValue;
     use test_support::common::TempEnvVar;
 
     use super::{
-        BASE_URL, NotionClient, NotionInput, RetryAfter, next_depth_for_children,
+        BASE_URL, NotionClient, NotionInput, next_depth_for_children,
         should_warn_on_insecure_base_url,
     };
 
@@ -828,26 +822,6 @@ mod tests {
         assert_eq!(backoff_delay(base, max, 2), Duration::from_millis(2000));
         assert_eq!(backoff_delay(base, max, 3), Duration::from_millis(4000));
         assert_eq!(backoff_delay(base, max, 4), Duration::from_millis(5000));
-    }
-
-    #[test]
-    fn parse_retry_after_header() {
-        let header = HeaderValue::from_static("120");
-        assert!(matches!(
-            NotionClient::parse_retry_after(Some(&header)),
-            RetryAfter::Seconds(120)
-        ));
-
-        let header = HeaderValue::from_static("n/a");
-        assert!(matches!(
-            NotionClient::parse_retry_after(Some(&header)),
-            RetryAfter::Unknown(value) if value == "n/a"
-        ));
-
-        assert!(matches!(
-            NotionClient::parse_retry_after(None),
-            RetryAfter::Missing
-        ));
     }
 
     #[test]

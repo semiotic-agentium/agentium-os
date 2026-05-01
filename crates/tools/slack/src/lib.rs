@@ -20,7 +20,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_rt_core::{BamlRtError, Result, semantics::ErrorDisposition};
+use baml_rt_core::{BamlRtError, Result, retry_after::RetryAfter, semantics::ErrorDisposition};
 use baml_rt_tools::{ClassifiedToolError, baml_tool, bundles::Support, tools::BamlTool};
 use integrations_slack_read::{self as slack_read, SlackReadClient, SlackReadError};
 pub use normalize::{
@@ -519,33 +519,6 @@ impl From<SlackError> for BamlRtError {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum RetryAfter {
-    Seconds(u64),
-    Unknown(String),
-    Missing,
-}
-
-impl std::fmt::Display for RetryAfter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RetryAfter::Seconds(seconds) => write!(f, "{seconds}s"),
-            RetryAfter::Unknown(raw) => write!(f, "unknown({raw})"),
-            RetryAfter::Missing => write!(f, "missing"),
-        }
-    }
-}
-
-impl From<slack_read::RetryAfter> for RetryAfter {
-    fn from(value: slack_read::RetryAfter) -> Self {
-        match value {
-            slack_read::RetryAfter::Seconds(seconds) => RetryAfter::Seconds(seconds),
-            slack_read::RetryAfter::Unknown(raw) => RetryAfter::Unknown(raw),
-            slack_read::RetryAfter::Missing => RetryAfter::Missing,
-        }
-    }
-}
-
 impl From<slack_read::SlackApiErrorClass> for SlackApiErrorClass {
     fn from(value: slack_read::SlackApiErrorClass) -> Self {
         match value {
@@ -563,10 +536,9 @@ impl From<SlackReadError> for SlackError {
             SlackReadError::Unauthorized { status, body } => {
                 SlackError::Unauthorized { status, body }
             }
-            SlackReadError::RateLimited { body, retry_after } => SlackError::RateLimited {
-                body,
-                retry_after: retry_after.into(),
-            },
+            SlackReadError::RateLimited { body, retry_after } => {
+                SlackError::RateLimited { body, retry_after }
+            }
             SlackReadError::Api { status, body } => SlackError::Api { status, body },
             SlackReadError::ApiError {
                 method,
@@ -772,11 +744,6 @@ impl SlackClient {
             .send_request(method_name, request)
             .await
             .map_err(SlackError::from)
-    }
-
-    #[cfg(test)]
-    fn parse_retry_after(value: Option<&reqwest::header::HeaderValue>) -> RetryAfter {
-        slack_read::parse_retry_after(value).into()
     }
 
     async fn list_conversations(&self, input: ListConversationsInput) -> Result<SlackOutput> {
@@ -1591,9 +1558,9 @@ mod tests {
     use test_support::common::TempEnvVar;
 
     use super::{
-        BASE_URL, GetConversationHistoryInput, ListConversationsInput, RetryAfter,
-        SlackApiErrorClass, SlackClient, SlackConversationKind, SlackInput, SlackTool,
-        SlackUserResolutionMode, map_slack_api_error, should_warn_on_insecure_base_url,
+        BASE_URL, GetConversationHistoryInput, ListConversationsInput, SlackApiErrorClass,
+        SlackClient, SlackConversationKind, SlackInput, SlackTool, SlackUserResolutionMode,
+        map_slack_api_error, should_warn_on_insecure_base_url,
     };
 
     #[test]
@@ -1606,24 +1573,6 @@ mod tests {
         assert_eq!(backoff_delay(base, max, 2), Duration::from_millis(2000));
         assert_eq!(backoff_delay(base, max, 3), Duration::from_millis(4000));
         assert_eq!(backoff_delay(base, max, 4), Duration::from_millis(5000));
-    }
-
-    #[test]
-    fn parse_retry_after_header() {
-        let header = reqwest::header::HeaderValue::from_static("5");
-        assert!(matches!(
-            SlackClient::parse_retry_after(Some(&header)),
-            RetryAfter::Seconds(5)
-        ));
-        let header = reqwest::header::HeaderValue::from_static("n/a");
-        assert!(matches!(
-            SlackClient::parse_retry_after(Some(&header)),
-            RetryAfter::Unknown(value) if value == "n/a"
-        ));
-        assert!(matches!(
-            SlackClient::parse_retry_after(None),
-            RetryAfter::Missing
-        ));
     }
 
     /// LLMs often emit TypeScript / BAML-style PascalCase for enum JSON values; serde must accept it.
