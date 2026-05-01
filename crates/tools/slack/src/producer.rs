@@ -581,10 +581,10 @@ impl EventProducer for SlackEventProducer {
             &source_key,
             &self.channel.display_label(),
             &messages,
-            emitted_at_unix(),
+            baml_rt_core::now_unix_secs("slack_poll_normalize"),
         );
         if let Some(store) = ingress_store() {
-            let enqueued_at_unix_ms = emitted_at_unix_ms();
+            let enqueued_at_unix_ms = baml_rt_core::now_unix_ms("slack_ingress");
             let payload_json = serde_json::to_string(&normalized_batch).map_err(|err| {
                 BamlRtError::InvalidArgument(format!(
                     "failed to serialize Slack ingress payload: {err}"
@@ -636,7 +636,7 @@ impl EventProducer for SlackInboxEventProducer {
                 "support/slack inbox producer requires an installed ingress store".to_string(),
             )
         })?;
-        let now_unix_ms = emitted_at_unix_ms();
+        let now_unix_ms = baml_rt_core::now_unix_ms("slack_ingress");
         let checkpoint_state = SlackInboxProducerCheckpoint::from_checkpoint(checkpoint);
         let reconciled_deliveries = !checkpoint_state.delivered_ingress_ids.is_empty();
         if reconciled_deliveries {
@@ -1178,14 +1178,6 @@ fn canonical_polling_message_identity(index: usize, message: &serde_json::Value)
                 "failed to serialize Slack polling message for ingress fingerprint: {err}"
             ))
         })
-}
-
-fn emitted_at_unix() -> u64 {
-    baml_rt_core::now_unix_secs("slack_poll_normalize")
-}
-
-fn emitted_at_unix_ms() -> u64 {
-    baml_rt_core::now_unix_ms("slack_ingress")
 }
 
 inventory::submit! {

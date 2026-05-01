@@ -106,13 +106,7 @@ impl BamlContext {
 impl Default for ContextMetadata {
     fn default() -> Self {
         Self {
-            context_id: format!(
-                "ctx-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_else(|_| std::time::Duration::from_secs(0))
-                    .as_nanos()
-            ),
+            context_id: format!("ctx-{}", baml_rt_core::now_unix_ms("quickjs_context_id")),
             user_id: None,
             request_id: None,
         }
