@@ -1,0 +1,16 @@
+{
+  "version": "1.0.0",
+  "name": "meteo-agent",
+  "entry_point": "src/index.ts",
+  "signature": "meteo-agent@1.0.0",
+  "tools": [
+    "dev/meteo-tool"
+  ],
+  "tags": [
+    "dev",
+    "meteo"
+  ],
+  "discovery": {
+    "description": "An agent to handle meteo prompts"
+  }
+}

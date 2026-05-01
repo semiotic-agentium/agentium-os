@@ -1,0 +1,54 @@
+{
+  "runtime": {
+    "schema_version": 1,
+    "tool_id": "dev/meteo-tool",
+    "runtime_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "command": [
+      "python3",
+      "/opt/tool/main.py"
+    ],
+    "workdir": "/opt/tool",
+    "protocol": "jsonrpc-stdio"
+  },
+  "manifest": {
+    "tool_name": "dev/meteo-tool",
+    "protocol_version": "2",
+    "supported_methods": [
+      "tool/describe",
+      "tool/schema",
+      "tool/invoke"
+    ]
+  },
+  "schema": {
+    "schema_version": 1,
+    "tool_name": "dev/meteo-tool",
+    "content_type": "application/schema+json",
+    "content_digest": "sha256:d47f72f52a14d08bc767c566de2d0985da2176130b7b9c026619f63f740e76cd",
+    "input": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "Arbitrary text input for the starter scaffold."
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "echoed": {
+          "type": "string",
+          "description": "Echoed message from tool input."
+        }
+      },
+      "required": [
+        "echoed"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

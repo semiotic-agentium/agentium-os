@@ -1,0 +1,244 @@
+{
+  "tool_abi_version": "1",
+  "name": "dev/meteo-tool",
+  "description": "Accurate Weather Forecasts for Any Location",
+  "bundle": "dev",
+  "local_name": "meteo-tool",
+  "access_level": "read",
+  "tags": [
+    "dev",
+    "meteo",
+    "external",
+    "weather"
+  ],
+  "invocation_mode": "single_shot",
+  "session_policy": "strict",
+  "schemas": {
+    "input": {
+      "type": "object",
+      "properties": {
+        "location_query": {
+          "type": "string",
+          "description": "Free-form place query (city, country, region), e.g. 'Buenos Aires' or 'Athens, Greece'."
+        },
+        "city": {
+          "type": "string",
+          "description": "Optional city hint. Used when location_query is omitted."
+        },
+        "country": {
+          "type": "string",
+          "description": "Optional country hint, e.g. 'Panama'."
+        },
+        "timezone": {
+          "type": "string",
+          "description": "IANA timezone like Europe/Berlin, or auto.",
+          "default": "auto"
+        },
+        "hourly_limit": {
+          "type": "integer",
+          "description": "Maximum number of hourly datapoints to return (1..48).",
+          "minimum": 1,
+          "maximum": 48,
+          "default": 12
+        }
+      },
+      "required": [
+        "location_query"
+      ],
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "fetched_at": {
+          "type": "string"
+        },
+        "location": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "admin1": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "country": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "country_code": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "latitude": {
+              "type": "number"
+            },
+            "longitude": {
+              "type": "number"
+            },
+            "timezone": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query",
+            "name",
+            "admin1",
+            "country",
+            "country_code",
+            "latitude",
+            "longitude",
+            "timezone"
+          ],
+          "additionalProperties": false
+        },
+        "current": {
+          "type": "object",
+          "properties": {
+            "time": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "temperature_2m": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "wind_speed_10m": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "time",
+            "temperature_2m",
+            "wind_speed_10m"
+          ],
+          "additionalProperties": false
+        },
+        "hourly": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "time": {
+                "type": "string"
+              },
+              "temperature_2m": {
+                "type": "number"
+              },
+              "relative_humidity_2m": {
+                "type": "number"
+              },
+              "wind_speed_10m": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "time",
+              "temperature_2m",
+              "relative_humidity_2m",
+              "wind_speed_10m"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "location_candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "admin1": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "country": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "latitude": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "longitude": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "admin1",
+              "country",
+              "latitude",
+              "longitude"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "source",
+        "fetched_at",
+        "location",
+        "current",
+        "hourly",
+        "location_candidates"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "secrets": [],
+  "capabilities": {},
+  "runtime": {
+    "kind": "sandbox",
+    "image": {
+      "kind": "bind",
+      "path": "/home/neithanmo/Documents/Work/Semiotic/agent-platform-notify/examples/external-tools/meteo-tool/.tmp/dev-meteo-tool-rootfs"
+    },
+    "adapter": {
+      "schema_version": 1,
+      "protocol": "jsonrpc-stdio",
+      "command": [
+        "python3",
+        "/opt/tool/main.py"
+      ],
+      "workdir": "/opt/tool"
+    }
+  },
+  "runtime_digest": "sha256:1c091644ce74f40bec1113f8796f6263d1b70b80eff4d006aede5f45a55a73a5"
+}
