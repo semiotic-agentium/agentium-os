@@ -19,6 +19,27 @@ pub(crate) enum ProvenanceDb {
     },
 }
 
+/// Validate that SurrealDB credentials are either both supplied or both
+/// omitted, returning the borrowed pair when present.
+///
+/// Surreal authentication is all-or-nothing: a username without a password
+/// (or vice versa) is always a misconfiguration. Centralising the check here
+/// keeps the error message consistent across the config store, provenance
+/// builder, and cluster manager wiring.
+pub(crate) fn parse_surreal_credentials<'a>(
+    username: Option<&'a str>,
+    password: Option<&'a str>,
+) -> anyhow::Result<Option<(&'a str, &'a str)>> {
+    match (username, password) {
+        (Some(u), Some(p)) => Ok(Some((u, p))),
+        (None, None) => Ok(None),
+        _ => anyhow::bail!(
+            "partial SurrealDB credentials: both --surreal-username and \
+             --surreal-password are required"
+        ),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RunnerConfig {
     pub(crate) repository_url: String,
@@ -320,23 +341,12 @@ pub(crate) async fn provenance_config_builder(
             username,
             password,
         } => {
-            let credentials = match (username, password) {
-                (Some(u), Some(p)) => Some(RemoteCredentials {
-                    username: u.clone(),
-                    password: p.clone(),
-                }),
-                (None, None) => None,
-                (Some(_), None) => {
-                    return Err(BamlRtError::InvalidArgument(
-                        "partial SurrealDB credentials: --surreal-password is required when --surreal-username is set".into(),
-                    ));
-                }
-                (None, Some(_)) => {
-                    return Err(BamlRtError::InvalidArgument(
-                        "partial SurrealDB credentials: --surreal-username is required when --surreal-password is set".into(),
-                    ));
-                }
-            };
+            let credentials = parse_surreal_credentials(username.as_deref(), password.as_deref())
+                .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?
+                .map(|(u, p)| RemoteCredentials {
+                    username: u.to_string(),
+                    password: p.to_string(),
+                });
             let cache = baml_rt_provenance::MermaidCache::new();
             let backend = baml_rt_provenance::SurrealBackend::Remote(RemoteConfig {
                 endpoint: endpoint.clone(),
@@ -369,5 +379,38 @@ pub(crate) async fn provenance_config_builder(
                 llm_secret_resolver,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_surreal_credentials;
+
+    #[test]
+    fn both_present_yields_pair() {
+        let creds = parse_surreal_credentials(Some("root"), Some("hunter2")).unwrap();
+        assert_eq!(creds, Some(("root", "hunter2")));
+    }
+
+    #[test]
+    fn both_absent_yields_none() {
+        let creds = parse_surreal_credentials(None, None).unwrap();
+        assert_eq!(creds, None);
+    }
+
+    #[test]
+    fn username_without_password_is_rejected() {
+        let err = parse_surreal_credentials(Some("root"), None).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--surreal-username"), "{msg}");
+        assert!(msg.contains("--surreal-password"), "{msg}");
+    }
+
+    #[test]
+    fn password_without_username_is_rejected() {
+        let err = parse_surreal_credentials(None, Some("hunter2")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--surreal-username"), "{msg}");
+        assert!(msg.contains("--surreal-password"), "{msg}");
     }
 }
