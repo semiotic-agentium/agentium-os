@@ -28,13 +28,15 @@ const TBL_SCHEDULED_CALLBACKS: &str = "scheduled_callbacks";
 const TBL_INGRESS_INBOX: &str = "ingress_inbox";
 
 /// Hard ceiling on how long a single `DeploymentStateStore::open` call will
-/// wait for SurrealKV to acquire the on-disk lock. SurrealKV releases the file
-/// lock from a background driver task, so a `drop`-then-reopen pattern can
-/// observe the prior lock as still held; without a timeout the call blocks
-/// inside `.await` instead of returning an error, which leaves the existing
-/// `retry_open` exponential-backoff loop unable to make progress. A bounded
-/// timeout converts the hang into a retryable [`BamlRtError::Io`].
-const OPEN_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// wait to acquire the on-disk database lock. The embedded engine releases
+/// the file lock from a background driver task, so a `drop`-then-reopen
+/// pattern can observe the prior lock as still held; without a timeout the
+/// call blocks inside `.await` instead of returning an error, which leaves
+/// the existing `retry_open` exponential-backoff loop unable to make
+/// progress. A bounded timeout converts the hang into a retryable
+/// [`BamlRtError::Io`]. Sized to leave comfortable headroom under nextest's
+/// 60 s slow-warn threshold across the full retry budget.
+const OPEN_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE TABLE IF NOT EXISTS deployments SCHEMAFULL",
@@ -102,8 +104,9 @@ impl DeploymentStateStore {
         )
         .await
         .map_err(|_| {
+            let secs = OPEN_LOCK_TIMEOUT.as_secs();
             BamlRtError::Io(std::io::Error::other(format!(
-                "timed out waiting {OPEN_LOCK_TIMEOUT:?} for SurrealKV lock at {path_str}"
+                "timed out after {secs}s acquiring on-disk database lock at {path_str}"
             )))
         })?
         .map_err(to_write_err)?;
