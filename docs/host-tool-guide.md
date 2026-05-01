@@ -65,7 +65,6 @@ cargo agent-platform check-external-tool --path ./streamed_echo
 
 # 3) Start runner with required env
 export BAML_EXTERNAL_TOOLS_DIR="$(pwd)/streamed_echo"
-export BAML_EXTERNAL_SESSION_SANDBOX=1
 cargo run -p baml-agent-runner --all-features
 ```
 
@@ -135,7 +134,7 @@ Metadata essentials:
 
 - `runtime.kind = "sandbox"` (required)
 - `invocation_mode = "session"`
-- host must enable session sandbox mode (`BAML_EXTERNAL_SESSION_SANDBOX=1`)
+- host must be built with the `sandbox-provider` feature (default for the runner) so sandbox wiring is present
 - default scaffold behavior keeps:
   - `session_policy = "strict"`
   - `secret_scope = "send"`
@@ -419,10 +418,10 @@ If you skip digest refresh after rootfs mutation, metadata identity is stale and
 
 Use this when `invocation_mode=session` tools fail in production-like runs.
 
-- **Tool rejected at load (`invocation_mode=session` disabled):**
-  - Cause: session sandbox kill-switch is off.
-  - Action: set `BAML_EXTERNAL_SESSION_SANDBOX=1` and restart runner.
-  - Verify: resolver no longer emits session-mode rejection; tool appears in load/resolve logs.
+- **Tool rejected at load (no sandbox wiring):**
+  - Cause: runner built without the `sandbox-provider` feature, so no SandboxRuntimeWiring is registered.
+  - Action: rebuild the runner with the `sandbox-provider` feature enabled (default) and restart.
+  - Verify: resolver no longer emits sandbox-wiring rejection; tool appears in load/resolve logs.
 
 - **`pool_exhausted`:**
   - Cause: all sandboxes for that tool key are live and checkout timed out.

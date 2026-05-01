@@ -3,7 +3,6 @@ set -euo pipefail
 
 export BAML_SANDBOX_BIND_ROOTS=/home/neithanmo/Documents/Work/Semiotic/agent-platform-notify/examples/external-tools/claude-ext/.tmp/
 export BAML_EXTERNAL_TOOLS_DIR="$PWD/examples/external-tools/claude-ext"
-export BAML_EXTERNAL_SESSION_SANDBOX=1
 export CLAUDE_EXT_USE_SHELL_PIPELINE=0
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

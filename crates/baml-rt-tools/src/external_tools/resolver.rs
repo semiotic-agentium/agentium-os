@@ -40,8 +40,6 @@ use crate::{
     tools::{ToolFunctionMetadata, ToolHandler, ToolSessionContext},
 };
 
-const SESSION_SANDBOX_FLAG_ENV: &str = "BAML_EXTERNAL_SESSION_SANDBOX";
-
 /// Per-tool callback the resolver invokes to build a
 /// [`SandboxSpecBuilder`] from parsed metadata. Workstream D plugs in
 /// policy compilation, secret resolution, and runtime-digest selection
@@ -301,21 +299,15 @@ async fn load_tool_dir(
     let tool_name = ToolName::parse(&meta.name)?;
     let runtime_kind = meta.runtime.as_ref().map(ToolRuntime::kind);
 
-    if matches!(meta.invocation_mode, InvocationMode::Session) {
-        if !external_session_sandbox_enabled() {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "tool '{tool_name}' sets invocation_mode=session but session sandbox tools are disabled (set {SESSION_SANDBOX_FLAG_ENV}=1 to enable)"
-            )));
-        }
-
-        if !matches!(
+    if matches!(meta.invocation_mode, InvocationMode::Session)
+        && !matches!(
             runtime_kind,
             Some(crate::external_tools::runtime::ToolRuntimeKind::Sandbox)
-        ) {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "tool '{tool_name}' sets invocation_mode=session but is not sandbox runtime; session mode is sandbox-only"
-            )));
-        }
+        )
+    {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "tool '{tool_name}' sets invocation_mode=session but is not sandbox runtime; session mode is sandbox-only"
+        )));
     }
 
     // Dispatch by runtime kind (tool_sandbox.md Workstream B step 6).
@@ -667,20 +659,6 @@ fn validate_describe_contract(
     }
 
     Ok(())
-}
-
-fn parse_external_session_flag(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
-fn external_session_sandbox_enabled() -> bool {
-    std::env::var(SESSION_SANDBOX_FLAG_ENV)
-        .ok()
-        .map(|value| parse_external_session_flag(&value))
-        .unwrap_or(false)
 }
 
 #[cfg(test)]

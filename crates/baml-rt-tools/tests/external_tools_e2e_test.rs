@@ -95,8 +95,6 @@ fi\n",
 
 #[tokio::test]
 async fn external_sandbox_session_tool_resolver_path_supports_suspend_resume() {
-    unsafe { std::env::set_var("BAML_EXTERNAL_SESSION_SANDBOX", "1") };
-
     let temp_root = unique_temp_dir("external-tools-e2e-session");
     let temp_tool_dir = temp_root.join("tool");
     let bind_root = temp_root.join("bind-rootfs");
@@ -320,7 +318,6 @@ async fn external_sandbox_session_tool_resolver_path_supports_suspend_resume() {
         .await
         .expect("finish session");
 
-    unsafe { std::env::remove_var("BAML_EXTERNAL_SESSION_SANDBOX") };
     let _ = fs::remove_dir_all(temp_root);
 }
 
