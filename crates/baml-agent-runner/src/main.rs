@@ -54,7 +54,7 @@ use baml_tools_slack as _;
 use baml_tools_system::callback_delivery_gate::install_callback_delivery_gate;
 use callback_delivery::RunnerCallbackDeliveryGate;
 use clap::Parser;
-use config::{Cli, ProvenanceDb, provenance_config_builder};
+use config::{Cli, ProvenanceDb, parse_surreal_credentials, provenance_config_builder};
 use serde_json::Value;
 use services::{
     ContextIndexServiceImpl, ContextMetricsServiceImpl, ConversationHistoryEventServiceImpl,
@@ -151,14 +151,8 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             username,
             password,
         } => {
-            let credentials = match (username.as_deref(), password.as_deref()) {
-                (Some(u), Some(p)) => Some((u, p)),
-                (None, None) => None,
-                _ => anyhow::bail!(
-                    "partial SurrealDB credentials for config store: both \
-                     --surreal-username and --surreal-password are required"
-                ),
-            };
+            let credentials = parse_surreal_credentials(username.as_deref(), password.as_deref())
+                .context("config store")?;
             Arc::new(
                 baml_rt_config::SurrealConfigStore::remote(endpoint, credentials)
                     .await
@@ -295,25 +289,19 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         ref password,
     } = config.provenance_db
     {
+        let credentials = parse_surreal_credentials(username.as_deref(), password.as_deref())
+            .context("cluster")?;
         let cluster_db = surrealdb::engine::any::connect(endpoint)
             .await
             .context("cluster: failed to connect to shared SurrealDB")?;
-        match (username, password) {
-            (Some(user), Some(pass)) => {
-                cluster_db
-                    .signin(surrealdb::opt::auth::Root {
-                        username: user.clone(),
-                        password: pass.clone(),
-                    })
-                    .await
-                    .context("cluster: failed to sign in to shared SurrealDB")?;
-            }
-            (None, None) => {}
-            _ => {
-                anyhow::bail!(
-                    "partial cluster credentials: both --surreal-username and --surreal-password are required"
-                );
-            }
+        if let Some((user, pass)) = credentials {
+            cluster_db
+                .signin(surrealdb::opt::auth::Root {
+                    username: user.to_string(),
+                    password: pass.to_string(),
+                })
+                .await
+                .context("cluster: failed to sign in to shared SurrealDB")?;
         }
         cluster_db
             .use_ns("cluster")
