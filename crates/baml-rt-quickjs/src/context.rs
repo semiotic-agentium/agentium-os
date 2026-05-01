@@ -106,7 +106,7 @@ impl BamlContext {
 impl Default for ContextMetadata {
     fn default() -> Self {
         Self {
-            context_id: format!("ctx-{}", baml_rt_core::now_unix_ms("quickjs_context_id")),
+            context_id: baml_rt_core::context::generate_context_id().to_string(),
             user_id: None,
             request_id: None,
         }
