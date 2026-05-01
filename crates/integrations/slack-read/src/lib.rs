@@ -1,6 +1,7 @@
-use std::time::Duration;
-
-use baml_rt_core::backoff::{MAX_RATE_LIMIT_RETRIES, rate_limit_backoff_delay};
+use baml_rt_core::{
+    backoff::{MAX_RATE_LIMIT_RETRIES, rate_limit_backoff_delay},
+    retry_after::{RetryAfter, parse_retry_after},
+};
 use baml_rt_llm_config::FnoxFileSecretResolver;
 
 pub const BASE_URL: &str = "https://slack.com/api";
@@ -24,32 +25,6 @@ pub enum SlackApiErrorClass {
     Configuration,
     InvalidArgument,
     ToolExecution,
-}
-
-#[derive(Debug, Clone)]
-pub enum RetryAfter {
-    Seconds(u64),
-    Unknown(String),
-    Missing,
-}
-
-impl RetryAfter {
-    pub fn as_duration(&self) -> Option<Duration> {
-        match self {
-            RetryAfter::Seconds(seconds) => Some(Duration::from_secs(*seconds)),
-            RetryAfter::Unknown(_) | RetryAfter::Missing => None,
-        }
-    }
-}
-
-impl std::fmt::Display for RetryAfter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RetryAfter::Seconds(seconds) => write!(f, "{seconds}s"),
-            RetryAfter::Unknown(raw) => write!(f, "unknown({raw})"),
-            RetryAfter::Missing => write!(f, "missing"),
-        }
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -277,7 +252,8 @@ impl SlackReadClient {
                 .map_err(SlackReadError::Http)?;
             let status = resp.status();
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                let retry_after = parse_retry_after(resp.headers().get("retry-after"));
+                let retry_after =
+                    parse_retry_after(resp.headers().get("retry-after").map(|v| v.as_bytes()));
                 let body = resp.text().await.unwrap_or_default();
                 if retries < MAX_RATE_LIMIT_RETRIES {
                     let delay = retry_after
@@ -324,20 +300,6 @@ impl SlackReadClient {
                 }
             }
         }
-    }
-}
-
-pub fn parse_retry_after(value: Option<&reqwest::header::HeaderValue>) -> RetryAfter {
-    let Some(value) = value else {
-        return RetryAfter::Missing;
-    };
-    let raw = match value.to_str() {
-        Ok(raw) => raw,
-        Err(_) => return RetryAfter::Unknown("invalid-utf8".to_string()),
-    };
-    match raw.trim().parse::<u64>() {
-        Ok(seconds) => RetryAfter::Seconds(seconds),
-        Err(_) => RetryAfter::Unknown(raw.to_string()),
     }
 }
 

@@ -9,15 +9,13 @@ use std::{collections::VecDeque, fmt, sync::Arc};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_rt_core::{BamlRtError, Result, semantics::ErrorDisposition};
+use baml_rt_core::{BamlRtError, Result, retry_after::RetryAfter, semantics::ErrorDisposition};
 use baml_rt_tools::{
     ClassifiedToolError, baml_tool,
     bundles::Support,
     tools::{BamlTool, ToolHandler, create_tool_handler},
 };
-use integrations_notion_read::{
-    self as notion_read, NotionReadClient, NotionReadError, RetryAfter,
-};
+use integrations_notion_read::{self as notion_read, NotionReadClient, NotionReadError};
 /// Notion REST API base URL.
 pub use notion_read::BASE_URL;
 /// Notion API version header value.
@@ -420,11 +418,6 @@ impl NotionClient {
             .map_err(NotionError::from)
     }
 
-    #[cfg(test)]
-    fn parse_retry_after(value: Option<&reqwest::header::HeaderValue>) -> RetryAfter {
-        notion_read::parse_retry_after(value)
-    }
-
     async fn search_pages(
         &self,
         api_key: &str,
@@ -797,11 +790,10 @@ mod tests {
         time::Duration,
     };
 
-    use reqwest::header::HeaderValue;
     use test_support::common::TempEnvVar;
 
     use super::{
-        BASE_URL, NotionClient, NotionInput, RetryAfter, next_depth_for_children,
+        BASE_URL, NotionClient, NotionInput, next_depth_for_children,
         should_warn_on_insecure_base_url,
     };
 
@@ -828,26 +820,6 @@ mod tests {
         assert_eq!(backoff_delay(base, max, 2), Duration::from_millis(2000));
         assert_eq!(backoff_delay(base, max, 3), Duration::from_millis(4000));
         assert_eq!(backoff_delay(base, max, 4), Duration::from_millis(5000));
-    }
-
-    #[test]
-    fn parse_retry_after_header() {
-        let header = HeaderValue::from_static("120");
-        assert!(matches!(
-            NotionClient::parse_retry_after(Some(&header)),
-            RetryAfter::Seconds(120)
-        ));
-
-        let header = HeaderValue::from_static("n/a");
-        assert!(matches!(
-            NotionClient::parse_retry_after(Some(&header)),
-            RetryAfter::Unknown(value) if value == "n/a"
-        ));
-
-        assert!(matches!(
-            NotionClient::parse_retry_after(None),
-            RetryAfter::Missing
-        ));
     }
 
     #[test]
