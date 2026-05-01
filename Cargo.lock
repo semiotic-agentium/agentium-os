@@ -6967,6 +6967,7 @@ dependencies = [
 name = "integrations-notion-read"
 version = "0.1.0"
 dependencies = [
+ "baml-rt-core",
  "baml-rt-llm-config",
  "reqwest 0.12.26",
  "serde_json",
@@ -6979,6 +6980,7 @@ dependencies = [
 name = "integrations-slack-read"
 version = "0.1.0"
 dependencies = [
+ "baml-rt-core",
  "baml-rt-llm-config",
  "reqwest 0.12.26",
  "serde",

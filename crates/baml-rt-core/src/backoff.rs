@@ -2,6 +2,13 @@
 
 use std::time::Duration;
 
+/// Default base delay for HTTP rate-limit retries.
+pub const RATE_LIMIT_BASE_DELAY: Duration = Duration::from_millis(500);
+/// Default cap for HTTP rate-limit retry delays.
+pub const RATE_LIMIT_MAX_DELAY: Duration = Duration::from_secs(5);
+/// Default maximum number of retries when an HTTP request is rate-limited.
+pub const MAX_RATE_LIMIT_RETRIES: u32 = 3;
+
 /// Compute the delay for a single backoff attempt.
 ///
 /// `base * 2^attempt`, capped at `max`. Uses saturating arithmetic to avoid
@@ -10,6 +17,12 @@ pub fn backoff_delay(base: Duration, max: Duration, attempt: u32) -> Duration {
     let shift = attempt.min(16);
     let delay = base.saturating_mul(2u32.pow(shift));
     delay.min(max)
+}
+
+/// Convenience wrapper for HTTP clients that want the standard rate-limit
+/// backoff schedule (`RATE_LIMIT_BASE_DELAY` doubling up to `RATE_LIMIT_MAX_DELAY`).
+pub fn rate_limit_backoff_delay(attempt: u32) -> Duration {
+    backoff_delay(RATE_LIMIT_BASE_DELAY, RATE_LIMIT_MAX_DELAY, attempt)
 }
 
 /// Stateful exponential backoff tracker.
@@ -97,6 +110,15 @@ mod tests {
             backoff.next_delay();
         }
         assert_eq!(backoff.next_delay(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn rate_limit_backoff_delay_uses_default_schedule() {
+        assert_eq!(rate_limit_backoff_delay(0), Duration::from_millis(500));
+        assert_eq!(rate_limit_backoff_delay(1), Duration::from_millis(1000));
+        assert_eq!(rate_limit_backoff_delay(2), Duration::from_millis(2000));
+        assert_eq!(rate_limit_backoff_delay(3), Duration::from_millis(4000));
+        assert_eq!(rate_limit_backoff_delay(10), RATE_LIMIT_MAX_DELAY);
     }
 
     #[test]

@@ -1,22 +1,12 @@
 use std::time::Duration;
 
+use baml_rt_core::backoff::{MAX_RATE_LIMIT_RETRIES, rate_limit_backoff_delay};
 use baml_rt_llm_config::FnoxFileSecretResolver;
 
 /// Notion REST API base URL.
 pub const BASE_URL: &str = "https://api.notion.com/v1";
 /// Notion API version header value.
 pub const NOTION_VERSION: &str = "2022-06-28";
-
-const MAX_RATE_LIMIT_RETRIES: usize = 3;
-const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
-const RATE_LIMIT_MAX_DELAY_MS: u64 = 5_000;
-
-fn backoff_delay(retries: usize) -> Duration {
-    let shift = u32::try_from(retries).unwrap_or(u32::MAX);
-    let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
-    let backoff = RATE_LIMIT_BASE_DELAY_MS.saturating_mul(multiplier);
-    Duration::from_millis(backoff.min(RATE_LIMIT_MAX_DELAY_MS))
-}
 
 #[derive(Debug, Clone)]
 pub enum RetryAfter {
@@ -182,7 +172,7 @@ impl NotionReadClient {
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, NotionReadError> {
         let request = request.build().map_err(NotionReadError::Http)?;
-        let mut retries = 0usize;
+        let mut retries: u32 = 0;
 
         loop {
             let req = request.try_clone().ok_or(NotionReadError::RequestClone)?;
@@ -201,7 +191,7 @@ impl NotionReadClient {
                 {
                     let delay = retry_after
                         .as_duration()
-                        .unwrap_or_else(|| backoff_delay(retries));
+                        .unwrap_or_else(|| rate_limit_backoff_delay(retries));
                     tracing::warn!(
                         retries = retries + 1,
                         retry_after = %retry_after,
