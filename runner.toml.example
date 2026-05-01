@@ -1,0 +1,25 @@
+# Example runner.toml — copy to runner.toml and adjust paths.
+#
+# Pass to the runner via `--runner-config ./runner.toml`
+# (or set BAML_RUNNER_CONFIG=./runner.toml).
+#
+# Relative paths are resolved against this file's parent directory.
+# Legacy env vars (BAML_EXTERNAL_TOOLS_DIR, BAML_SANDBOX_BIND_ROOTS) still work
+# and override the file values when set and non-empty.
+
+[external_tools]
+# Each entry is a tool package directory containing tool-metadata.json.
+# Add one entry per tool you want the runner to load in dev mode.
+dirs = [
+    "./examples/external-tools/claude-ext",
+    # "./examples/external-tools/meteo-tool",
+    # "./examples/external-tools/dev_echo_sandbox",
+]
+
+[sandbox.bind]
+# Host paths the sandbox is allowed to bind-mount as the tool rootfs.
+# Empty list = all bind sources rejected (`bind rootfs is disabled`).
+# Narrow the roots — broad roots like "/" are tenant-escape vectors.
+roots = [
+    "./examples/external-tools/claude-ext/.tmp",
+]
