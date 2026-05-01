@@ -82,6 +82,57 @@ pub fn chunks_from_responses(responses: &[Value]) -> Vec<&Value> {
     responses.iter().filter_map(chunk_content).collect()
 }
 
+/// Collects wire `Message` JSON values embedded in a stream chunk (top-level `message`,
+/// `task.history` / `task.status.message`, flattened `status.message`, `statusUpdate`, …).
+fn message_surfaces_from_chunk(chunk: &Value) -> Vec<&Value> {
+    let mut out: Vec<&Value> = Vec::new();
+    if let Some(m) = chunk.get("message") {
+        out.push(m);
+    }
+    if let Some(t) = chunk.get("task") {
+        if let Some(hist) = t.get("history").and_then(Value::as_array) {
+            for m in hist {
+                out.push(m);
+            }
+        }
+        if let Some(m) = t.get("status").and_then(|s| s.get("message")) {
+            out.push(m);
+        }
+    }
+    // Flattened task/status-update fields on the chunk (serde flatten / relay shapes).
+    if let Some(m) = chunk.get("status").and_then(|s| s.get("message")) {
+        out.push(m);
+    }
+    if let Some(su) = chunk.get("statusUpdate") {
+        if let Some(m) = su.get("status").and_then(|s| s.get("message")) {
+            out.push(m);
+        }
+        let nested = su.get("statusUpdate").or_else(|| su.get("status_update"));
+        if let Some(inner) = nested {
+            if let Some(m) = inner.get("message") {
+                out.push(m);
+            }
+            if let Some(m) = inner.get("status").and_then(|s| s.get("message")) {
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+/// Parts from `artifactUpdate.artifact` (or bare `artifact`) on a stream chunk.
+fn artifact_parts_from_chunk(chunk: &Value) -> Vec<&Value> {
+    let artifact = chunk
+        .get("artifactUpdate")
+        .and_then(|u| u.get("artifact"))
+        .or_else(|| chunk.get("artifact"));
+    artifact
+        .and_then(|a| a.get("parts"))
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().collect())
+        .unwrap_or_default()
+}
+
 fn message_parts(message: &Value) -> Vec<Value> {
     if let Some(parts) = message.get("parts").and_then(Value::as_array) {
         return parts.clone();
@@ -127,11 +178,11 @@ pub fn message_texts_from_chunks(chunks: &[&Value]) -> Vec<String> {
     chunks
         .iter()
         .flat_map(|chunk| {
-            chunk
-                .get("message")
-                .map(message_parts)
-                .unwrap_or_default()
+            let from_messages = message_surfaces_from_chunk(chunk)
                 .into_iter()
+                .flat_map(message_parts);
+            let from_artifact = artifact_parts_from_chunk(chunk).into_iter().cloned();
+            from_messages.chain(from_artifact)
         })
         .filter_map(|part| {
             part.get("text")
@@ -151,11 +202,11 @@ pub fn message_visible_content_from_chunks(chunks: &[&Value]) -> Vec<String> {
     chunks
         .iter()
         .flat_map(|chunk| {
-            chunk
-                .get("message")
-                .map(message_parts)
-                .unwrap_or_default()
+            let from_messages = message_surfaces_from_chunk(chunk)
                 .into_iter()
+                .flat_map(message_parts);
+            let from_artifact = artifact_parts_from_chunk(chunk).into_iter().cloned();
+            from_messages.chain(from_artifact)
         })
         .filter_map(|part| part_visible_string(&part))
         .collect()
@@ -166,11 +217,15 @@ pub fn first_message_text_from_stream(responses: &[Value]) -> String {
         let Some(content) = chunk_content(response) else {
             continue;
         };
-        let Some(message) = content.get("message") else {
-            continue;
-        };
-        for part in message_parts(message) {
-            if let Some(s) = part_visible_string(&part) {
+        for surface in message_surfaces_from_chunk(content) {
+            for part in message_parts(surface) {
+                if let Some(s) = part_visible_string(&part) {
+                    return s;
+                }
+            }
+        }
+        for part in artifact_parts_from_chunk(content) {
+            if let Some(s) = part_visible_string(part) {
                 return s;
             }
         }

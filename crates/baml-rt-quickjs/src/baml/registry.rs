@@ -7,16 +7,18 @@ impl BamlRuntimeManager {
     }
 
     /// Build conversation context tags for the given scope.
-    /// Provenance is the single source of truth — writes are synchronous so this always
-    /// reflects the current state of the conversation.
+    ///
+    /// Graph / provider provenance only (the projection `ConversationContextProvider` exposes).
+    /// Step-executor FSM uses [`BamlRuntimeManager::invoke_function_with_intra`]
+    /// to merge a loop-local supplement with the same provider.
     pub async fn build_conversation_context_tags(
         &self,
         scope: &context::RuntimeScope,
     ) -> Result<Option<HashMap<String, BamlValue>>> {
-        match &self.state.executor {
-            Some(exec) => exec.build_conversation_context_tags(scope).await,
-            None => Ok(None),
-        }
+        let Some(ref exec) = self.state.executor else {
+            return Ok(None);
+        };
+        exec.build_conversation_context_tags(scope).await
     }
 
     /// List all available BAML functions

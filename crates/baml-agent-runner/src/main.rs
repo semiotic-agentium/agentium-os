@@ -129,9 +129,9 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
     }
 
     match &config.provenance_db {
-        ProvenanceDb::InMemory => info!(
-            "Provenance backend: in-memory (:memory:). External graph_exporter cannot read this."
-        ),
+        ProvenanceDb::InMemory => {
+            info!("Provenance backend: in-memory (:memory:), not persisted to disk")
+        }
         ProvenanceDb::File(path) => {
             info!(path = %path.display(), "Provenance backend: SurrealKV directory")
         }
@@ -1407,15 +1407,16 @@ globalThis.onChatMessage = async function(_message) {
     // ── planning service ───────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_planning_service_not_found_for_empty_context() {
+    async fn test_planning_service_empty_snapshot_for_unknown_context() {
         let prov = test_provenance_config().await;
         let svc = PlanningServiceImpl::new(prov.store().clone());
-        let result = svc.planning_for_context("ctx-nonexistent-000").await;
-        assert!(
-            matches!(result, Err(baml_rt_api::PlanningError::NotFound)),
-            "Expected NotFound for empty context, got: {:?}",
-            result
-        );
+        let result = svc
+            .planning_for_context("ctx-nonexistent-000")
+            .await
+            .expect("planning ok");
+        assert!(result.tasks.is_empty());
+        assert!(result.all_task_ids.is_empty());
+        assert_eq!(result.context_id, "ctx-nonexistent-000");
     }
 
     #[tokio::test]

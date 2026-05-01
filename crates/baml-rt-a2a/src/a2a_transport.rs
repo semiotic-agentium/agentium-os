@@ -67,6 +67,8 @@ type LiveStreamSpawnPayload = (
     async_channel::Receiver<TurnInput>,
 );
 
+type BoxedArchiveReader = Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>>;
+
 /// Single concrete backing store for SurrealDB mode.
 /// One instance is built from the builder's store Arc and reused as TaskStoreBackend and
 /// ProvenanceWriter; create-stream and tasks.subscribe use this same instance (cardinality one).
@@ -313,7 +315,16 @@ impl ProvenanceWriter for SurrealRuntimeStore {
 
 /// Projects [`ProvenanceConversationContextItem`] rows into BAML `conversation_history` JSON.
 ///
+/// This is the **runtime** home for the tag pipeline: `ConversationContextSource::conversation_context`
+/// → [`to_projection_item`] ([`baml_rt_conversation::provenance_item_to_projection_item`]) →
+/// [`baml_rt_tools::prompt_projection::project_prompt_context`]. Episode assembly and
+/// `assemble_session_history` in `baml-rt-conversation` use the same `project_*` and
+/// [`baml_rt_tools::prompt_projection::ProjectedLineRole`] row rules; they are not a parallel
+/// codepath.
+///
 /// The `source` is always [`ProvenanceWriterConversationSource`] (graph-backed).
+/// Integration snapshot of the same projection path: `tests/conversation_history_snapshot.rs`
+/// (stub `ToolRegistry` for `system/discover_agents` + [`project_prompt_context`](baml_rt_tools::prompt_projection::project_prompt_context) defaults).
 struct ProjectingConversationContextProvider {
     source: Arc<dyn ConversationContextSource>,
     tool_registry: Arc<ToolRegistry>,
@@ -333,23 +344,22 @@ impl ProjectingConversationContextProvider {
             archive_ref_tables,
         }
     }
-}
 
-#[async_trait]
-impl ConversationContextProvider for ProjectingConversationContextProvider {
-    async fn conversation_history_json(
+    async fn project_conversation_to_json(
         &self,
         scope: &context::RuntimeScope,
+        item_limit: Option<usize>,
     ) -> Result<Option<Value>> {
         let context_id = scope.context_id();
         let items = self
             .source
-            .conversation_context(context_id, Some(40))
+            .conversation_context(context_id, item_limit)
             .await?;
         tracing::debug!(
             context_id = %context_id,
             item_count = items.len(),
-            "conversation_history_json: context source returned items"
+            item_limit = ?item_limit,
+            "project_conversation_to_json: context source returned items"
         );
         if items.is_empty() {
             return Ok(None);
@@ -367,39 +377,34 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
         // Closure re-derives cat-n output from the archive deterministically.
         let context_id_str = context_id.as_str().to_string();
         let tables = self.archive_ref_tables.clone();
-        let reader: Option<Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>>> =
-            tables.map(|t| {
-                let ctx = context_id_str.clone();
-                let boxed: Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>> =
-                    Box::new(move |archive_ref_str, grep_str, offset, limit| {
-                        let short_ref =
-                            baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
-                        let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
-                        let entry = ref_table.get(short_ref)?;
-                        let grep = grep_str
-                            .filter(|s| !s.is_empty())
-                            .and_then(|s| baml_rt_tools::archive_read::GrepPattern::parse(s).ok());
-                        let page = baml_rt_tools::archive_read::grep_paginate(
-                            &entry.content,
-                            grep.as_ref(),
-                            baml_rt_tools::archive_read::LineOffset(offset),
-                            baml_rt_tools::archive_read::PageLimit::new(limit),
-                        );
-                        let formatted = baml_rt_tools::archive_read::format_cat_n(&page.lines);
-                        // CLI invocation without $ — role attribution is handled by the
-                        // separate history entry that carries this as content.
-                        let cmd = match grep_str.filter(|s| !s.is_empty()) {
-                            Some(pat) => format!("grep -n '{pat}' {archive_ref_str}"),
-                            None => format!("cat -n {archive_ref_str}"),
-                        };
-                        if page.lines.is_empty() {
-                            return Some(format!("{cmd}\n# no matches"));
-                        }
-                        let range_comment = page.session_range_comment();
-                        Some(format!("{cmd}{range_comment}\n{formatted}"))
-                    });
-                boxed
-            });
+        let reader: Option<BoxedArchiveReader> = tables.map(|t| {
+            let ctx = context_id_str.clone();
+            let boxed: BoxedArchiveReader =
+                Box::new(move |archive_ref_str, grep_str, offset, limit| {
+                    let short_ref = baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
+                    let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
+                    let entry = ref_table.get(short_ref)?;
+                    let grep = grep_str
+                        .filter(|s| !s.is_empty())
+                        .and_then(|s| baml_rt_tools::archive_read::GrepPattern::parse(s).ok());
+                    let page = baml_rt_tools::archive_read::grep_paginate(
+                        &entry.content,
+                        grep.as_ref(),
+                        baml_rt_tools::archive_read::LineOffset(offset),
+                        baml_rt_tools::archive_read::PageLimit::new(limit),
+                    );
+                    // CLI invocation without $ — role attribution is handled by the
+                    // separate history entry that carries this as content.
+                    Some(
+                        baml_rt_tools::archive_read::format_grep_page_as_session_read_body(
+                            &page,
+                            archive_ref_str,
+                            grep_str,
+                        ),
+                    )
+                });
+            boxed
+        });
 
         // Get or create the ref table for this context so #N refs can be allocated
         // for messages and tool-call descriptions during projection.
@@ -415,6 +420,27 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
             &ref_table_arc,
             reader.as_deref(),
         )))
+    }
+}
+
+#[async_trait]
+impl ConversationContextProvider for ProjectingConversationContextProvider {
+    async fn conversation_history_json(
+        &self,
+        scope: &context::RuntimeScope,
+    ) -> Result<Option<Value>> {
+        self.project_conversation_to_json(
+            scope,
+            Some(baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP),
+        )
+        .await
+    }
+
+    async fn conversation_history_json_for_intra_dedup(
+        &self,
+        scope: &context::RuntimeScope,
+    ) -> Result<Option<Value>> {
+        self.project_conversation_to_json(scope, None).await
     }
 }
 
@@ -534,6 +560,19 @@ async fn wire_provenance_subsystems(
 
     tracing::debug!("wire_provenance_subsystems: all subsystems wired");
     Ok(ProvenanceWired { writer })
+}
+
+/// Wires the same Provenance → effect bus, tool-provenance hook, and graph →
+/// `conversation_history` projection as production [`A2aAgent`]. For tests and
+/// custom hosts: call after [`BamlRuntimeManager::set_effect_emitter`]; state is
+/// re-applied when the executor is created (e.g. after `load_schema`).
+pub async fn install_provenance_conversation_wiring(
+    writer: Arc<dyn ProvenanceWriter>,
+    runtime: &Arc<RwLock<BamlRuntimeManager>>,
+    effect_emitter: &Arc<dyn EffectEmitter>,
+) -> Result<()> {
+    wire_provenance_subsystems(writer, runtime.as_ref(), effect_emitter.as_ref()).await?;
+    Ok(())
 }
 
 /// Top-level agent type that owns runtime, JS bridge, and A2A comms.
@@ -1984,16 +2023,30 @@ impl A2aAgent {
                         .await;
                     }
                     if comp == Some(StreamCompletion::InputRequired) && view.is_null() {
-                        // Emit a minimal wire chunk so the client receives TASK_STATE_INPUT_REQUIRED and can show the banner.
+                        // Emit a wire chunk so the client receives TASK_STATE_INPUT_REQUIRED. Include a
+                        // short status message so web/React clients can populate the compose hint even
+                        // when the prior yield did not carry `statusUpdate.status.message` on the wire.
                         let tid = last_task_id
                             .clone()
                             .or(session_task_id_str.clone())
                             .unwrap_or_else(|| format!("stream-{}", session_context_id));
+                        let prompt_msg = json!({
+                            "parts": [{ "text": "Reply to continue the conversation." }]
+                        });
                         let input_required_chunk = json!({
                             "task": {
                                 "id": tid,
                                 "contextId": session_context_id.as_str(),
-                                "status": { "state": "TASK_STATE_INPUT_REQUIRED" }
+                                "status": {
+                                    "state": "TASK_STATE_INPUT_REQUIRED",
+                                    "message": prompt_msg.clone()
+                                }
+                            },
+                            "statusUpdate": {
+                                "status": {
+                                    "state": "TASK_STATE_INPUT_REQUIRED",
+                                    "message": prompt_msg
+                                }
                             },
                             "final": false
                         });
@@ -2633,180 +2686,5 @@ mod tests {
             }
             other => panic!("expected conflict error, got {other:?}"),
         }
-    }
-
-    /// Full-pipeline history test: events → provenance store → conversation_context
-    /// → to_projection_item → project_prompt_context → rendered JSON.
-    ///
-    /// This exercises the exact path used by `ctx.tags['conversation_history']` in BAML
-    /// prompts: the same call sequence as `ProjectingConversationContextProvider::conversation_history_json`.
-    #[tokio::test]
-    async fn session_history_renders_correctly_through_full_pipeline() {
-        use baml_rt_conversation::view::SessionStepOp;
-        use baml_rt_core::ids::{AgentId, ExternalId, MessageId, UuidId};
-        use baml_rt_provenance::{
-            CallScope, ProvEvent, ProvenanceContextReader, ProvenanceWriter, SurrealStoreBuilder,
-        };
-        use baml_rt_tools::{
-            ToolRegistry,
-            archive_read::{ShortRef, render_to_lines},
-            archive_refs::ArchiveEntry,
-            prompt_projection::project_prompt_context,
-        };
-
-        // build() returns Arc<SurrealProvenanceStore> — do not double-wrap.
-        let store = SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("build isolated test store");
-        let context_id = ContextId::new(1, 1);
-        let agent_id =
-            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
-
-        // User message — mirrors what arrives via A2A task handling.
-        store
-            .add_event(ProvEvent::message_received_global(
-                context_id.clone(),
-                MessageId::from_external(ExternalId::new("msg-1")),
-                "user".into(),
-                vec!["what can you do".into()],
-                None,
-                agent_id.clone(),
-                1_700_000_000_000,
-            ))
-            .await
-            .expect("message_received");
-
-        let scope = CallScope::Message {
-            message_id: MessageId::from_external(ExternalId::new("msg-1")),
-        };
-        let session_id = "session-abc123".to_string();
-        let tool_name = "system/discover_agents".to_string();
-
-        // Open — LLM chose to open the discover_agents session.
-        store
-            .add_event(ProvEvent::tool_session_step(
-                context_id.clone(),
-                scope.clone(),
-                tool_name.clone(),
-                session_id.clone(),
-                &SessionStepOp::Open,
-            ))
-            .await
-            .expect("session open");
-
-        // SendDone — blocking Send completed; result archived at @1.
-        // Header is derived the same way production code does it: via ArchiveEntry::display_header.
-        let short_ref = ShortRef::new(1);
-        let archive_ref = short_ref.to_string(); // "@1"
-        let result_payload = serde_json::json!([
-            {"name": "crm-agent", "description": "Business reporting agent"},
-            {"name": "dev-agent", "description": "Code generation agent"},
-        ]);
-        let entry = ArchiveEntry::new(
-            render_to_lines(&result_payload),
-            tool_name.clone(),
-            "found 2 agents".into(),
-            String::new(),
-            "tool_result".to_string(),
-        );
-        let header = entry.display_header(short_ref);
-        store
-            .add_event(ProvEvent::tool_session_step(
-                context_id.clone(),
-                scope.clone(),
-                tool_name.clone(),
-                session_id.clone(),
-                &SessionStepOp::SendDone {
-                    archive_ref: archive_ref.clone(),
-                    header: header.clone(),
-                    informed_by: "test-anchor-1".to_string(),
-                },
-            ))
-            .await
-            .expect("session send_done");
-
-        // Read — LLM requested a grep of the archived result.
-        store
-            .add_event(ProvEvent::tool_session_step(
-                context_id.clone(),
-                scope.clone(),
-                tool_name.clone(),
-                session_id.clone(),
-                &SessionStepOp::SearchRead {
-                    archive_ref: archive_ref.clone(),
-                    grep: "name description".into(),
-                    offset: 0,
-                    limit: 200,
-                },
-            ))
-            .await
-            .expect("session read");
-
-        // --- Pipeline: store → to_projection_item → project_prompt_context ---
-        let raw_items = store
-            .conversation_context(&context_id, None)
-            .await
-            .expect("conversation_context");
-
-        let projection_items: Vec<_> = raw_items
-            .into_iter()
-            .filter_map(super::to_projection_item)
-            .collect();
-
-        let registry = ToolRegistry::new();
-        let ref_table = baml_rt_tools::archive_refs::RefTable::new();
-        // No archive reader — SearchRead shows the grep analogue (`grep -n '…' @1`), pud-squashed.
-        let history = project_prompt_context(projection_items, &registry, &ref_table, None);
-        let items = history.as_array().expect("array");
-
-        // 4 items: user message + Open + SendDone + SearchRead
-        // (no ToolCall/ToolResult — only the user line plus three session steps)
-        assert_eq!(items.len(), 4, "expected 4 history items, got: {history}");
-
-        // Roles in `conversation_history` are canonical chat labels: messages map to
-        // `user` / `assistant` (see `conversation_history_role_for_message`), and
-        // tool/session rows use `tool` (see prompt_projection module docs).
-        // [0] user message — citation-aware projection allocates `#1` for the first history line
-        // (see `prompt_projection::render_content` Message branch).
-        let user_role = items[0]["role"].as_str().unwrap();
-        assert!(
-            user_role.contains("USER") || user_role == "user",
-            "expected user role, got: {user_role}"
-        );
-        assert_eq!(
-            items[0]["content"].as_str().unwrap(),
-            "#1 what can you do",
-            "user content should be history-ref prefixed for drift/citation resolution"
-        );
-
-        // [1] Open: describes the session being opened. Session rows use role `tool`.
-        assert_eq!(items[1]["role"], "tool");
-        let open_content = items[1]["content"].as_str().unwrap();
-        assert!(
-            open_content.contains("discover_agents"),
-            "Open should mention tool name, got: {open_content}"
-        );
-
-        // [2] SendDone: the header IS the display ("@1 tool 'summary' [...]")
-        // No double @1 prefix — header already starts with the archive ref.
-        assert_eq!(items[2]["role"], "tool");
-        let send_content = items[2]["content"].as_str().unwrap();
-        assert_eq!(
-            send_content, header,
-            "SendDone content should be exactly the header, got: {send_content}"
-        );
-        assert!(
-            send_content.starts_with("@1"),
-            "SendDone must start with archive ref, got: {send_content}"
-        );
-
-        // [3] SearchRead: grep analogue (pud-squashed); with reader would be paginated output only.
-        assert_eq!(items[3]["role"], "tool");
-        let read_content = items[3]["content"].as_str().unwrap();
-        assert_eq!(
-            read_content, "grep -n 'name description' @1",
-            "Read without archive_reader must show grep command line"
-        );
     }
 }

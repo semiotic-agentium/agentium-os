@@ -60,15 +60,6 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
 
     SESSION PLAN FORMAT: For ClaudeDevSessionPlan only: one wrapper object whose step field holds a single FSM step, plus a citations array (history refs use hash-prefixed line numbers in prose; avoid embedding the literal quote-hash sequence in examples). For Report/AskUser: flat objects with action field. Do not confuse SessionPlan (wrapper) with a bare step type returned on narrowed hops.
 
-    OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
-
-    {{ ctx.output_format }}
-
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-
     spec_text:
     {{ spec_text }}
 
@@ -82,6 +73,12 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
     {{ user_approval_intent }}
 
     Session open (host FSM): {{ session_context.session_open }}
+
+    {{ ctx.tags['conversation_transcript'] }}
+
+    OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
+
+    {{ ctx.output_format }}
   "#"##);
     out.push_str("\n}\n");
 

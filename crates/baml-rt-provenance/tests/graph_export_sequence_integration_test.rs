@@ -21,7 +21,7 @@ use insta::assert_snapshot;
 /// End-to-end check for file-backed provenance export:
 /// write events -> export graph by context -> simplify -> render Mermaid sequence.
 ///
-/// This guards the storage path used by the graph_exporter binary so storage/query
+/// This guards the on-disk provenance store path so storage/query
 /// refactors do not silently break sequence diagrams.
 #[tokio::test]
 async fn file_backed_export_renders_expected_sequence_flow() {

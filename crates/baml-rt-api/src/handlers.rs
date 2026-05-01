@@ -17,14 +17,14 @@ use axum::{
 };
 use baml_rt_core::{
     A2aWireRequest, AgentDispatchRequest, AgentInstanceId, AgentPackageName, AgentRouteKey,
-    BamlRtError, DeploymentContentHash, DeploymentStatus, collect_a2a_stream,
+    BamlRtError, DeploymentContentHash, DeploymentStatus,
     ids::{AgentId, ContextId, TaskId},
 };
 use baml_rt_provenance::{
     ProvenanceOpsFilters, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
     ProvenanceOutcomeSegment, ProvenanceResponseProfile,
 };
-use futures_util::stream::Stream;
+use futures_util::stream::{Stream, StreamExt};
 use http_api_problem::HttpApiProblem;
 use serde_json::Value;
 
@@ -555,6 +555,8 @@ pub async fn post_migrate(
 
 /// Forward A2A JSON-RPC request (POST /agents/{agent_package}/{agent_instance_id}/a2a).
 ///
+/// Streams **SSE** (`text/event-stream`): each event `data:` line is one JSON-RPC 2.0 response object (same objects as the historical buffered JSON array).
+///
 /// Unauthenticated at the application layer. Cluster isolation relies on
 /// network policy (K8s NetworkPolicy / service mesh); external client auth
 /// belongs at the ingress. Control-plane endpoints are protected by `ClusterAuthLayer`.
@@ -568,7 +570,7 @@ pub async fn post_migrate(
     ),
     request_body = Value,
     responses(
-        (status = 200, description = "JSON-RPC responses", body = [Value]),
+        (status = 200, description = "SSE stream of JSON-RPC responses", content_type = "text/event-stream"),
         (status = 400, description = "Malformed request"),
         (status = 404, description = "Agent not found"),
         (status = 500, description = "Internal error")
@@ -579,7 +581,7 @@ pub async fn post_a2a(
     ingress_ext: Option<Extension<IngressServiceInstanceId>>,
     axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
     Json(body): Json<Value>,
-) -> HttpResult<Json<Vec<Value>>> {
+) -> HttpResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
     let start = Instant::now();
 
     // Low-cardinality rule: parse must succeed before raw path input is allowed
@@ -608,6 +610,7 @@ pub async fn post_a2a(
         .as_ref()
         .map(|e| e.as_str())
         .unwrap_or(local_service_instance_id);
+    let ingress_metrics_id = ingress_service_instance_id.to_string();
     let serving_service_instance_id = local_service_instance_id;
 
     let span = spans::post_a2a(
@@ -645,14 +648,26 @@ pub async fn post_a2a(
         .handle_a2a_stream(&key, A2aWireRequest::from(body))
         .await
     {
-        Ok(stream) => {
-            let responses = collect_a2a_stream(stream)
-                .await
-                .into_iter()
-                .map(|chunk| chunk.into_inner())
-                .collect();
-            record_metric("success");
-            Ok(Json(responses))
+        Ok(mut stream) => {
+            let start_time = start;
+            let key_metrics = key.clone();
+            let sse_stream = async_stream::stream! {
+                while let Some(chunk) = stream.next().await {
+                    let data = serde_json::to_string(&chunk.into_inner())
+                        .unwrap_or_else(|_| "{}".to_string());
+                    yield Ok(Event::default().data(data));
+                }
+                metrics::record_agent_http_request(
+                    "post_a2a",
+                    &key_metrics.agent_package,
+                    &key_metrics.agent_instance_id,
+                    forwarded,
+                    ingress_metrics_id.as_str(),
+                    "success",
+                    start_time.elapsed(),
+                );
+            };
+            Ok(Sse::new(sse_stream).keep_alive(KeepAlive::default()))
         }
         Err(e) => {
             record_metric(result_label_for_domain_error(&e));
@@ -858,7 +873,7 @@ pub async fn get_context_metrics(
         ("context_id" = String, Path, description = "A2A context id")
     ),
     responses(
-        (status = 200, description = "Context planning snapshot", body = Value),
+        (status = 200, description = "Context planning snapshot (`tasks` empty when no provenance messages exist for this context)", body = Value),
         (status = 404, description = "No planning data found for context"),
         (status = 501, description = "Planning service unavailable"),
         (status = 500, description = "Internal error"),

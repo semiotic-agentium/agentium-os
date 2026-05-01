@@ -1,20 +1,10 @@
 // Auto-generated tool interfaces
 // This file is auto-generated - do not edit manually
-
-// FSM (Finite State Machine) Tool Session Protocol:
-// All host tools use a session-based FSM with strict state transitions:
-// 1. Open: Must be the FIRST step - opens a tool session
-// 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
-// 3. SearchRead: line-filtered archive read (grep required). Page with offset/limit over matches.
-// 4. PageRead: contiguous archive paging (no grep). Page with offset/limit over full rendered lines.
-// 5. Finish: Closes the session gracefully
-// 6. Abort: Closes the session with an error
 //
-// CRITICAL FSM RULES:
-// - Open MUST come before Send
-// - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
-// - SearchRead/PageRead need a real @N from a Send for this tool (may be earlier in history). Large @N: SearchRead with grep first, then PageRead for detail — do not dump whole archives with PageRead alone.
-// - Always Finish or Abort to close the session
+// Host tools use a session FSM. Which ops are valid on a given model hop is defined only by the
+// narrowed BAML return type for that function, not by duplicated prose. Step classes (Open/Send/…)
+// and `*SendInput` / `*OpenInput` give field names and @description; see the shared prelude
+// and each session-plan `prompt` order: stable types, task, transcript, then ctx.output_format last.
 
 // Shared standard planning types
 class StandardAgentPlanStep {
@@ -84,15 +74,27 @@ class StructuredReply {
 
 /// Line-filtered archive read (emit op SearchRead).
 class ArchiveSearchReadInput {
-  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.")
-  grep string @description("Required non-empty line filter (substring or regex per host), e.g. deploy or -i deploy. Use SearchRead to locate lines; follow with PageRead when you need contiguous context.")
-  offset int? @description("0-based offset counting lines that matched grep (after filter). Page with limit: first window offset=0; next offset = previous next_offset while matches remain.")
-  limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
+  archive_ref string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
+  grep string @description("Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.")
+  offset int? @description("0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.")
+  limit int? @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
 }
 
 /// Contiguous archive paging without a line filter (emit op PageRead).
 class ArchivePageReadInput {
-  archive_ref string @description("Required: @N referencing an existing Send archive for this tool (same session or earlier conversation history). Every SearchRead/PageRead must use a real @N; do not invent refs.")
-  offset int? @description("0-based offset over full rendered archive lines (no grep). Page with limit: first window offset=0; next offset = previous next_offset while lines remain.")
-  limit int? @description("Max lines in this window. Use a small explicit value when exploring (e.g. tens). Omitting limit uses the host default page size (bounded).")
+  archive_ref string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
+  offset int? @description("0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.")
+  limit int? @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
+}
+
+/// Global line-filtered archive read step. Legal before Open, during a session, or after a Send.
+class ArchiveSearchReadStep {
+  op "SearchRead"
+  input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+}
+
+/// Global contiguous archive paging step. Legal before Open, during a session, or after a Send.
+class ArchivePageReadStep {
+  op "PageRead"
+  input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
 }

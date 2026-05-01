@@ -15,7 +15,6 @@ import type {
 } from "./baml-runtime";
 
 const MAX_REACT_STEPS = 8;
-const MAX_CLARIFY = 2;
 /** Max chars threaded into the next ChooseClickUpAction hop as `prior_results` (agentic / non-deterministic stream). */
 const PRIOR_RESULTS_MAX_CHARS = 6000;
 
@@ -315,7 +314,7 @@ __chat_register({
 
     // ── Phase 1: Intent inference (agentic — can clarify like claude-session-demo RequirementsPhase) ──
     let resolvedIntent: ClickUpIntent | null = null;
-    for (let i = 0; i <= MAX_CLARIFY; i++) {
+    while (true) {
       const intentResult = await InferClickUpIntent({ user_message: text });
 
       if (isClickUpIntent(intentResult)) {
@@ -327,14 +326,16 @@ __chat_register({
           message: textReply(`This doesn't look like a ClickUp request — ${intentResult.reason}`),
         };
       }
-      if (isNeedClarification(intentResult) && i < MAX_CLARIFY) {
+      if (isNeedClarification(intentResult)) {
         const reply = await ctx.emit.awaitInput(intentResult.question);
         const clarifiedText = messageText(reply).trim();
         if (clarifiedText) text = clarifiedText;
-      } else {
-        resolvedIntent = { intent: text, operation_kind: "read" };
-        break;
+        continue;
       }
+      return {
+        error:
+          "InferClickUpIntent returned an unexpected shape — expected ClickUpIntent, NeedClarification, or NotRelevant.",
+      };
     }
     if (!resolvedIntent) return { error: "Could not determine a valid ClickUp intent." };
 

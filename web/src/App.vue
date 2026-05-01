@@ -183,7 +183,15 @@ async function applyRouteStateFromUrl(): Promise<void> {
           (!next.agentInstance || a.agent_instance_id === next.agentInstance),
       );
       if (match) {
-        activeClient.value.selectAgent(match);
+        const cur = activeClient.value.selectedAgent.value;
+        const sameAgent =
+          cur?.agent_package === match.agent_package &&
+          cur?.agent_instance_id === match.agent_instance_id;
+        // selectAgent clears the transcript; skip when URL already matches the active agent so we
+        // do not wipe messages before loadConversationHistoryContext runs (or on redundant applies).
+        if (!sameAgent) {
+          activeClient.value.selectAgent(match);
+        }
       }
     }
     if (next.contextId && activeClient.value) {

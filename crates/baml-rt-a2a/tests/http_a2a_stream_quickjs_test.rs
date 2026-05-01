@@ -33,8 +33,8 @@ use baml_rt_core::{A2aStreamChunk, A2aWireRequest, collect_a2a_stream};
 use serde_json::Value;
 use test_support::common::{
     CalculatorTool, agent_fixture, build_fixture_package_to_temp, chunk_content,
-    chunks_from_responses, ensure_fixture_runtime_types, first_message_text_from_stream,
-    message_texts_from_chunks, send_stream_request,
+    chunks_from_responses, ensure_fixture_runtime_types, message_texts_from_chunks,
+    message_visible_content_from_chunks, send_stream_request,
 };
 
 fn task_state_from_chunk(chunk: &Value) -> Option<String> {
@@ -86,12 +86,12 @@ fn tool_invoker_js() -> String {
             const session = await openToolSession("support/calculate");
             await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
             await session.continue();
-            __chat_yield({ message: { parts: [{ text: "sum=5" }] } });
-            __chat_yield({ final: true });
+            __chat_yield({ __session: message.__session, message: { parts: [{ text: "sum=5" }] } });
+            __chat_yield({ __session: message.__session, final: true });
             return;
         }
-        __chat_yield({ message: { parts: [{ text: "unknown" }] } });
-        __chat_yield({ final: true });
+        __chat_yield({ __session: message.__session, message: { parts: [{ text: "unknown" }] } });
+        __chat_yield({ __session: message.__session, final: true });
     };
     "#
     .to_string()
@@ -271,11 +271,13 @@ async fn test_a2a_stream_fsm_starts_with_submitted_quickjs() {
         .count();
     assert_eq!(final_count, 1, "exactly one response must have final: true");
 
-    let text = first_message_text_from_stream(&responses);
+    // stream-js-tool emits an artifact (JSON body) before the user-visible Complete line;
+    // scan merged visible content, not only the first segment.
+    let merged_visible = message_visible_content_from_chunks(&chunks).join("\n");
     assert!(
-        text.contains("Complete:"),
-        "expected completion message, got: {}",
-        text
+        merged_visible.contains("Complete:"),
+        "expected completion message in merged stream text, got: {}",
+        merged_visible
     );
 }
 

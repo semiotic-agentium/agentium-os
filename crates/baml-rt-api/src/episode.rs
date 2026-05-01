@@ -110,6 +110,9 @@ pub enum EpisodeContentDto {
 pub struct SessionHistoryLineDto {
     pub role: String,
     pub content: String,
+    /// Ref-table strings on message-sourced rows; empty for tool/system lines.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub citations: Vec<String>,
 }
 
 /// Episode transcript entry for UI display.
@@ -269,7 +272,7 @@ from_field_copy!(TokenSummary => TokenSummaryDto {
 });
 
 from_field_copy!(SessionHistoryLine => SessionHistoryLineDto {
-    role, content
+    role, content, citations
 });
 
 from_field_copy!(ArtifactSummary => ArtifactSummaryDto {

@@ -54,7 +54,8 @@ impl ArchiveEntry {
         }
     }
 
-    /// One-line display: `@3 support/slack "summary" [47 lines, 12.4KB]`
+    /// One-line display: ref + summary + size (tool name is omitted here — it appears on the
+    /// session open / tool lines; keeps `@N` from duplicating next to `cat -n @N` in reads).
     pub fn display_header(&self, r: ShortRef) -> String {
         let kb = self.byte_count as f64 / 1024.0;
         let size_str = if kb < 1.0 {
@@ -63,8 +64,8 @@ impl ArchiveEntry {
             format!("{:.1}KB", kb)
         };
         format!(
-            r#"{} {} "{}" [{} lines, {}]"#,
-            r, self.tool_name, self.summary, self.line_count, size_str
+            r#"{r} · "{}" · {}L · {}"#,
+            self.summary, self.line_count, size_str
         )
     }
 }
@@ -96,13 +97,36 @@ impl HistoryEntry {
 ///
 /// Both `@N` archive refs (`ShortRef`) and `#N` history refs (`HistoryRef`) share
 /// the same monotonic counter so ref numbers never collide within a session context.
+///
+/// # Idempotent history refs (`#N`) per activity
+///
+/// [`RefTable::insert_history`] is **idempotent** per
+/// `(\`activity_anchor\`, \`source\`)` (e.g. `("evt-1", "message")`): repeated
+/// full-graph [`project_prompt_context`](crate::prompt_projection::project_prompt_context)
+/// passes and citation-drift reprojection **reuse** the same `HistoryRef` and do
+/// not advance [`insert`] / [`insert_history`] indices for that line. Updated body
+/// text for the same activity is written into [`RefTable::history_text_for_activity`]
+/// on each call.
+///
+/// # Why `@N` for **new** archives can still be large
+///
+/// A [`ContextRefTables`] map is **per** `context_id` string. New archive rows use
+/// [`insert`](Self::insert) which always allocates the next number. The counter is
+/// **never reset** for a context.
 #[derive(Debug)]
 pub struct RefTable {
     next: AtomicU32,
     entries: DashMap<u32, ArchiveEntry>,
     history: DashMap<u32, HistoryEntry>,
+    /// `(activity_anchor, source)` (see [`history_stable_key`]) -> allocated `#N` index.
+    history_stable_key_to_n: DashMap<String, u32>,
     /// Prompt-visible text keyed by [`HistoryEntry::activity_anchor`] (not copied on [`HistoryEntry`]).
     history_text_by_activity: DashMap<String, Arc<str>>,
+}
+
+#[inline]
+fn history_stable_key(entry: &HistoryEntry) -> String {
+    format!("{}\0{}", entry.activity_anchor, entry.source)
 }
 
 impl RefTable {
@@ -111,6 +135,7 @@ impl RefTable {
             next: AtomicU32::new(1),
             entries: DashMap::new(),
             history: DashMap::new(),
+            history_stable_key_to_n: DashMap::new(),
             history_text_by_activity: DashMap::new(),
         }
     }
@@ -135,13 +160,29 @@ impl RefTable {
     ///
     /// Text is stored once per activity anchor, not on [`HistoryEntry`], so resolution and graph replay
     /// both key off the same `a2a_activity_anchor` string.
+    ///
+    /// If this `(activity_anchor, source)` was already registered (including via
+    /// [`insert_virtual_history`]), returns the **existing** [`HistoryRef`] and
+    /// refreshes the stored text.
     pub fn insert_history(&self, entry: HistoryEntry, content: impl Into<Arc<str>>) -> HistoryRef {
+        let key = history_stable_key(&entry);
+        let content: Arc<str> = content.into();
+        if let Some(existing) = self.history_stable_key_to_n.get(&key) {
+            let n = *existing;
+            self.history_text_by_activity
+                .insert(entry.activity_anchor.clone(), Arc::clone(&content));
+            // Ensure the history slot exists (defensive: virtual insert may have registered key first)
+            if self.history.get(&n).is_none() {
+                self.history.insert(n, entry);
+            }
+            return HistoryRef::new(n);
+        }
         let n = self.next.fetch_add(1, Ordering::Relaxed);
-        let r = HistoryRef::new(n);
+        self.history_stable_key_to_n.insert(key, n);
         self.history_text_by_activity
-            .insert(entry.activity_anchor.clone(), content.into());
+            .insert(entry.activity_anchor.clone(), content);
         self.history.insert(n, entry);
-        r
+        HistoryRef::new(n)
     }
 
     /// Resolve the prompt/tool-call body for a history line by activity anchor (`a2a_activity_anchor`).
@@ -182,6 +223,15 @@ impl RefTable {
         content: impl Into<Arc<str>>,
     ) {
         debug_assert!(n > 0, "ref indices start at 1");
+        let key = history_stable_key(&entry);
+        if let Some(existing) = self.history_stable_key_to_n.get(&key) {
+            assert_eq!(
+                *existing, n,
+                "insert_virtual_history: stable key already mapped to a different n"
+            );
+        } else {
+            self.history_stable_key_to_n.insert(key, n);
+        }
         self.history_text_by_activity
             .insert(entry.activity_anchor.clone(), content.into());
         self.history.insert(n, entry);
@@ -261,8 +311,9 @@ mod tests {
         );
         let r = ShortRef::new(3);
         let header = entry.display_header(r);
-        assert!(header.starts_with("@3 support/slack"));
+        assert!(header.starts_with("@3 · "));
         assert!(header.contains("fetched 1 message"));
+        assert!(!header.contains("support/slack"));
     }
 
     #[test]
@@ -304,5 +355,26 @@ mod tests {
         let t3 = get_or_create_ref_table(&tables, "ctx-2");
         assert!(Arc::ptr_eq(&t1, &t2));
         assert!(!Arc::ptr_eq(&t1, &t3));
+    }
+
+    /// Same `(activity_anchor, source)` reuses `#N` across reprojection (no counter churn).
+    #[test]
+    fn insert_history_is_idempotent_for_same_activity_and_source() {
+        let table = RefTable::new();
+        let e1 = HistoryEntry::new("anchor-a".into(), "message".into());
+        let r1 = table.insert_history(e1.clone(), "first");
+        let r2 = table.insert_history(e1, "second body");
+        assert_eq!(r1.as_u32(), r2.as_u32());
+        let e2 = HistoryEntry::new("anchor-b".into(), "message".into());
+        let r3 = table.insert_history(e2, "other");
+        assert_eq!(
+            r3.as_u32(),
+            2,
+            "only one new #N after two idempotent inserts for anchor-a"
+        );
+        assert_eq!(
+            table.history_text_for_activity("anchor-a").as_deref(),
+            Some("second body")
+        );
     }
 }

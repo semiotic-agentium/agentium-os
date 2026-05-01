@@ -11,6 +11,7 @@ use baml_rt_core::{
 };
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use baml_rt_llm_config::LlmClientResolver;
+use baml_rt_tools::prompt_projection::format_conversation_history_transcript;
 use baml_runtime::{
     BamlRuntime, FunctionResultStream, RuntimeContextManager, client_registry::ClientRegistry,
 };
@@ -133,6 +134,20 @@ impl std::fmt::Debug for BamlStreamInvocation {
     }
 }
 
+/// Parse provider `conversation_history_json` payload into a flat line array.
+pub(crate) fn extract_conversation_array_from_payload(payload: &Value) -> Vec<Value> {
+    let history = if payload.is_array() {
+        payload
+    } else if let Some(obj) = payload.as_object()
+        && let Some(ch) = obj.get("conversation_history")
+    {
+        ch
+    } else {
+        payload
+    };
+    history.as_array().map(|a| a.to_vec()).unwrap_or_default()
+}
+
 /// Policy for retrying BAML calls when the LLM response fails to parse.
 ///
 /// Allows tests to use `max_attempts: 1` to avoid retry delay and non-determinism.
@@ -158,7 +173,8 @@ impl Default for ParseRetryPolicy {
 pub trait ConversationContextProvider: Send + Sync {
     /// Return conversation-history payload for the current runtime scope.
     ///
-    /// The payload is injected as `ctx.tags['conversation_history']` in BAML templates.
+    /// The payload is injected as `ctx.tags['conversation_history']` and
+    /// `ctx.tags['conversation_transcript']` in BAML templates.
     /// Provider is called with the runtime scope of the current invocation. For resume,
     /// scope must be TaskScoped with the session's `context_id` so history includes
     /// prior turns. Used in both stream and non-stream paths when conversation context
@@ -167,6 +183,19 @@ pub trait ConversationContextProvider: Send + Sync {
         &self,
         scope: &context::RuntimeScope,
     ) -> Result<Option<Value>>;
+
+    /// Graph read for step-executor intra buffer delta (`p_before` / `p_after`).
+    ///
+    /// Defaults to the same as [`Self::conversation_history_json`]. Implementations
+    /// that cap history (e.g. last _N_ items) should override and read without that
+    /// cap, otherwise a sliding window can make consecutive reads **not** a strict
+    /// prefix extension and break step-executor `p_before` / `p_after` hop checks.
+    async fn conversation_history_json_for_intra_dedup(
+        &self,
+        scope: &context::RuntimeScope,
+    ) -> Result<Option<Value>> {
+        self.conversation_history_json(scope).await
+    }
 }
 
 pub struct BamlExecutor {
@@ -617,43 +646,68 @@ impl BamlExecutor {
         Ok(ctx_manager)
     }
 
+    /// Raw `conversation_history` line objects from the provider only (no intra-turn merge).
+    /// Matches `ctx.tags['conversation_history']` capping (e.g. last _N_ graph items).
+    pub(crate) async fn provider_conversation_history_lines(
+        &self,
+        scope: &context::RuntimeScope,
+    ) -> Result<Vec<Value>> {
+        let Some(provider) = self.conversation_context_provider.as_ref() else {
+            return Ok(vec![]);
+        };
+        let Some(payload) = provider.conversation_history_json(scope).await? else {
+            return Ok(vec![]);
+        };
+        Ok(extract_conversation_array_from_payload(&payload))
+    }
+
+    /// Full projected line list for step-executor `p_before` / `p_after` prefix checks (uncapped).
+    pub(crate) async fn provider_conversation_history_lines_for_intra_dedup(
+        &self,
+        scope: &context::RuntimeScope,
+    ) -> Result<Vec<Value>> {
+        let Some(provider) = self.conversation_context_provider.as_ref() else {
+            return Ok(vec![]);
+        };
+        let Some(payload) = provider
+            .conversation_history_json_for_intra_dedup(scope)
+            .await?
+        else {
+            return Ok(vec![]);
+        };
+        Ok(extract_conversation_array_from_payload(&payload))
+    }
+
+    /// Build `ctx.tags` from a merged `conversation_history` line list.
+    pub(crate) fn tags_from_merged_conversation_lines(
+        &self,
+        lines: Vec<Value>,
+    ) -> Result<Option<HashMap<String, BamlValue>>> {
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        let mut tags = HashMap::new();
+        let transcript = format_conversation_history_transcript(&lines);
+        tags.insert(
+            "conversation_history".to_string(),
+            self.json_to_baml_value(&Value::Array(lines))?,
+        );
+        tags.insert(
+            "conversation_transcript".to_string(),
+            self.json_to_baml_value(&Value::String(transcript))?,
+        );
+        Ok(Some(tags))
+    }
+
     /// Build conversation-history tags for the given scope (used by stream path for resume).
-    /// Returns None if no provider is set or provider returns empty.
+    /// Returns None if no provider is set or provider returns empty. The manager-facing
+    /// For step-executor hops, use the manager’s `invoke_function_with_intra` path instead.
     pub async fn build_conversation_context_tags(
         &self,
         scope: &context::RuntimeScope,
     ) -> Result<Option<HashMap<String, BamlValue>>> {
-        let Some(provider) = self.conversation_context_provider.as_ref() else {
-            return Ok(None);
-        };
-
-        let Some(payload) = provider.conversation_history_json(scope).await? else {
-            return Ok(None);
-        };
-
-        // Provider returns a flat JSON array of {role, content} items.
-        // Legacy providers may return a keyed object — extract conversation_history key
-        // for backward compatibility during transition.
-        let history = if payload.is_array() {
-            &payload
-        } else if let Some(obj) = payload.as_object()
-            && let Some(ch) = obj.get("conversation_history")
-        {
-            ch
-        } else {
-            &payload
-        };
-
-        if history.as_array().map(|a| a.is_empty()).unwrap_or(false) {
-            return Ok(None);
-        }
-
-        let mut tags = HashMap::new();
-        tags.insert(
-            "conversation_history".to_string(),
-            self.json_to_baml_value(history)?,
-        );
-        Ok(Some(tags))
+        let lines = self.provider_conversation_history_lines(scope).await?;
+        self.tags_from_merged_conversation_lines(lines)
     }
 
     /// List all available function names from the loaded BAML runtime

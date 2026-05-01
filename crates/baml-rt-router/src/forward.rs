@@ -2,7 +2,7 @@
 
 use std::{net::SocketAddr, time::Instant};
 
-use baml_rt_core::{AgentInstanceId, AgentPackageName, BamlRtError};
+use baml_rt_core::{AgentInstanceId, AgentPackageName, BamlRtError, parse_a2a_sse_json_rpc_chunks};
 use baml_rt_observability::{INGRESS_SERVICE_INSTANCE_ID_BAGGAGE_KEY, metrics, spans};
 use opentelemetry::{KeyValue, baggage::BaggageExt};
 use tracing::Instrument;
@@ -230,13 +230,13 @@ async fn forward_request_inner(
     // handed back a partial buffer, which could parse as syntactically valid
     // JSON even though the upstream dropped mid-stream.
     let body_bytes = read_body_capped(resp, MAX_RESPONSE_BYTES).await?;
-    let items: Vec<serde_json::Value> = serde_json::from_slice(&body_bytes).map_err(|e| {
+    let text = String::from_utf8(body_bytes).map_err(|e| {
         BamlRtError::Io(std::io::Error::other(format!(
-            "cluster A2A response parse: {e}"
+            "cluster A2A response body is not UTF-8: {e}"
         )))
     })?;
-
-    Ok(items)
+    parse_a2a_sse_json_rpc_chunks(&text)
+        .map_err(|e| BamlRtError::Io(std::io::Error::other(format!("cluster A2A SSE parse: {e}"))))
 }
 
 /// Read a response body into bytes with a byte-count cap, propagating read
@@ -543,9 +543,9 @@ mod tests {
                 }
             }
 
-            let body = b"[{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}]";
+            let body = b"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n";
             let headers = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
                 len = body.len()
             );
             let _ = socket.write_all(headers.as_bytes()).await;
@@ -568,7 +568,7 @@ mod tests {
             Some("runner-1"),
         )
         .await
-        .expect("complete body should parse");
+        .expect("complete SSE body should parse");
         let _ = server.await;
 
         assert_eq!(items.len(), 1);
@@ -603,9 +603,9 @@ mod tests {
             }
             let _ = header_tx.send(acc);
 
-            let body = b"[{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}]";
+            let body = b"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n";
             let headers = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n",
                 len = body.len()
             );
             let _ = socket.write_all(headers.as_bytes()).await;

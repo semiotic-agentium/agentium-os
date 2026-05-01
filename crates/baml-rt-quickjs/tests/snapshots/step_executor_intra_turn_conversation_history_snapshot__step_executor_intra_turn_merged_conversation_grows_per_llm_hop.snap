@@ -1,0 +1,39 @@
+---
+source: crates/baml-rt-quickjs/tests/step_executor_intra_turn_conversation_history_snapshot.rs
+expression: "&redact_stochastic_strings(&report)"
+---
+{
+  "per_llm_merged_conversation_history": [
+    [
+      {
+        "role": "user",
+        "content": "<redacted-#ref> intra turn merged snapshot"
+      }
+    ],
+    [
+      {
+        "role": "user",
+        "content": "<redacted-#ref> intra turn merged snapshot"
+      },
+      {
+        "role": "tool",
+        "content": "using calculator for arithmetic"
+      }
+    ],
+    [
+      {
+        "role": "user",
+        "content": "<redacted-#ref> intra turn merged snapshot"
+      },
+      {
+        "role": "tool",
+        "content": "using calculator for arithmetic"
+      },
+      {
+        "role": "tool",
+        "content": "<redacted-@ref> · \"computing 2 + 3\" · 3L · 51B"
+      }
+    ]
+  ],
+  "step_count": 3
+}

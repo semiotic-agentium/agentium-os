@@ -842,6 +842,7 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
                                 &function_name,
                                 base_args,
                                 max_steps,
+                                None,
                             )
                             .await;
 

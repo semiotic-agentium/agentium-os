@@ -39,10 +39,7 @@ impl VirtualArchiveRow {
         } else {
             format!("{kb:.1}KB")
         };
-        format!(
-            r#"{r} {} "{}" [{} lines, {}]"#,
-            self.tool_name, self.summary, line_count, size_str
-        )
+        format!(r#"{r} · "{}" · {line_count}L · {size_str}"#, self.summary)
     }
 }
 

@@ -206,10 +206,9 @@ async fn post_a2a_sse_collect(
         let text = response.text().await.unwrap_or_default();
         return Err(format!("HTTP {status}: {text}").into());
     }
-    response
-        .json::<Vec<Value>>()
-        .await
-        .map_err(|e| format!("Invalid JSON-RPC response array: {e}").into())
+    let text = response.text().await?;
+    baml_rt_core::parse_a2a_sse_json_rpc_chunks(&text)
+        .map_err(|e| format!("Invalid A2A SSE response: {e}").into())
 }
 
 struct CallbackScheduleRequest<'a> {

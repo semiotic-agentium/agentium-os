@@ -4,7 +4,7 @@
 //! - [`prelude`] + [`prompt_copy`] — shared `_baml_runtime` header types (`render_generated_tools_prelude`); module docs define prompt style (Must / Use / Optional, emit vs return).
 //! - [`writer`] — small line-oriented buffer ([`writer::BamlWriter`]); BAML is not JS/Rust, so we do
 //! - [`tool_interfaces`] — manifest-driven tool cards + FSM step types.
-//! - [`session_from_ir`] — polymorphic plans + per-phase executors from compiled IR.
+//! - [`session_from_ir`] — polymorphic plans + per-phase executors from compiled IR (`phase_prompt` submodule: cue/footer/`output_format` algebra).
 //!
 //! [`genco`]: https://docs.rs/genco
 

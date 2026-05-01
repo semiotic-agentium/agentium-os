@@ -1,15 +1,15 @@
 //! BAML-style `session_history` lines for an episode, aligned with live `conversation_history` projection.
 
 use baml_rt_tools::{
-    archive_read::{PageLimit, ShortRef, format_session_read_body_from_rendered},
+    archive_read::format_session_read_from_vtable,
     archive_refs::RefTable,
-    prompt_projection::ProjectionRenderOptions,
+    prompt_projection::{ProjectionRenderOptions, project_projection_item_to_rows},
     tools::ToolRegistry,
 };
 
 use crate::{
     episode::{EpisodeRefPrefix, SessionHistoryLine},
-    projection::projection_pairs_for_conv_item,
+    projection::provenance_item_to_projection_item,
     render::prefix_wire_citations_in_text,
     timeline::TimelineKind,
 };
@@ -26,37 +26,37 @@ pub fn assemble_session_history(
 ) -> Vec<SessionHistoryLine> {
     let scratch = RefTable::new();
 
-    let archive_reader = move |archive_ref_str: &str,
-                               grep_str: Option<&str>,
-                               offset: usize,
-                               limit: usize|
-          -> Option<String> {
-        let short_ref = ShortRef::parse_loose(archive_ref_str)?;
-        let entry = vtable.get(short_ref)?;
-        Some(format_session_read_body_from_rendered(
-            &entry.content,
-            archive_ref_str,
-            grep_str,
-            offset,
-            PageLimit::new(limit),
-        ))
+    let archive_reader = |archive_ref_str: &str,
+                          grep_str: Option<&str>,
+                          offset: usize,
+                          limit: usize|
+     -> Option<String> {
+        format_session_read_from_vtable(vtable, archive_ref_str, grep_str, offset, limit)
     };
 
     let mut out = Vec::new();
     for m in merged {
         match m {
             TimelineKind::Conv(item, _) => {
-                if let Some(pairs) = projection_pairs_for_conv_item(
-                    item,
-                    tool_registry,
-                    &scratch,
-                    Some(&archive_reader),
-                    *opts,
-                ) {
-                    for (role, content) in pairs {
+                if let Some(proj) = provenance_item_to_projection_item(item.clone()) {
+                    for row in project_projection_item_to_rows(
+                        &proj,
+                        tool_registry,
+                        &scratch,
+                        Some(&archive_reader),
+                        *opts,
+                    ) {
+                        let cits: Vec<String> = match &row.message_citations {
+                            Some(refs) if !refs.is_empty() => refs
+                                .iter()
+                                .map(|r| prefix_wire_citations_in_text(r, ref_prefix))
+                                .collect(),
+                            _ => Vec::new(),
+                        };
                         out.push(SessionHistoryLine {
-                            role,
-                            content: prefix_wire_citations_in_text(&content, ref_prefix),
+                            role: row.role.to_string(),
+                            content: prefix_wire_citations_in_text(&row.content, ref_prefix),
+                            citations: cits,
                         });
                     }
                 }
@@ -66,6 +66,7 @@ pub fn assemble_session_history(
                 out.push(SessionHistoryLine {
                     role: "system".into(),
                     content: prefix_wire_citations_in_text(&content, ref_prefix),
+                    citations: vec![],
                 });
             }
             TimelineKind::Artifact(a) => {
@@ -74,6 +75,7 @@ pub fn assemble_session_history(
                 out.push(SessionHistoryLine {
                     role: "agent".into(),
                     content: prefix_wire_citations_in_text(&content, ref_prefix),
+                    citations: vec![],
                 });
             }
         }

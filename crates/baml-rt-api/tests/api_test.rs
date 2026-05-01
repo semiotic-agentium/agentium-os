@@ -1316,6 +1316,8 @@ async fn get_openapi_json_repo_less_omits_repository_paths() {
 
 #[tokio::test]
 async fn post_a2a_returns_jsonrpc_array() {
+    // Serialize with other POST /a2a tests that assert on shared OTEL exporter state.
+    let _otel = OtelTestFixture::new();
     let registry: Arc<dyn AgentRegistry> = Arc::new(
         MockRegistry::with_entries(vec![discovery_entry("pkg", "default", "pkg", "1.0.0")])
             .with_handle_ok(vec![serde_json::json!({

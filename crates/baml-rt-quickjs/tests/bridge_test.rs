@@ -1004,6 +1004,20 @@ async fn test_step_executor_loop_drives_full_session_with_interceptor() {
     let built =
         test_support::common::build_agent_package_to_temp(agent_dir, "stream-baml-tool").await;
 
+    // Task-scoped + minimal graph so LLM rows attach to a task thread (synthetic message-only
+    // scopes are not sufficient for the conversation query to grow every hop in tests).
+    let scope = InvocationScope::synthetic_task(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
+    ));
+    let (context_id, message_id, task_id) = {
+        let rs = scope.as_scope();
+        let task_id = rs
+            .task_id_opt()
+            .expect("synthetic_task has task_id")
+            .clone();
+        (rs.context_id().clone(), rs.message_id().clone(), task_id)
+    };
+
     let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager
         .load_schema(built.to_str().unwrap())
@@ -1024,6 +1038,46 @@ async fn test_step_executor_loop_drives_full_session_with_interceptor() {
     baml_rt_tools::register_manifest_tools(manager.tool_registry().as_ref(), &manifest, &policy)
         .unwrap();
     manager.rebuild_function_tool_manifest();
+
+    let bus: Arc<dyn EffectEmitter> = Arc::new(BusWithEffects::new());
+    let store = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("in-memory provenance for step executor e2e");
+    manager.set_effect_emitter(bus.clone());
+    let manager = Arc::new(RwLock::new(manager));
+    baml_rt::a2a_transport::install_provenance_conversation_wiring(store.clone(), &manager, &bus)
+        .await
+        .expect("provenance + conversation wiring");
+
+    {
+        let agent = scope.as_scope().agent_id().clone();
+        store
+            .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+            .await
+            .expect("task exists");
+        store
+            .add_event(ProvEvent::task_execution_started(
+                context_id.clone(),
+                task_id.clone(),
+                agent.clone(),
+            ))
+            .await
+            .expect("task execution started");
+        store
+            .add_event(ProvEvent::message_received_task(
+                context_id.clone(),
+                task_id,
+                message_id,
+                "user".to_string(),
+                vec!["stream-baml step executor e2e".to_string()],
+                None,
+                agent,
+                1_700_000_010_303,
+            ))
+            .await
+            .expect("message received");
+    }
 
     // Interceptor: returns Open, Send (blocking until Done), Finish in sequence.
     // Read is now optional — Send blocks and archives; the FSM goes directly to __continue__.
@@ -1064,16 +1118,13 @@ async fn test_step_executor_loop_drives_full_session_with_interceptor() {
         }
     }
 
-    manager
-        .register_llm_interceptor(SequenceInterceptor {
+    {
+        let w = manager.write().await;
+        w.register_llm_interceptor(SequenceInterceptor {
             count: call_count_clone,
         })
         .await;
-
-    let agent_id =
-        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
-    let scope = InvocationScope::synthetic_message(agent_id);
-    let manager = Arc::new(RwLock::new(manager));
+    }
 
     let result = context::with_scope(
         scope.as_scope().clone(),
@@ -1083,6 +1134,7 @@ async fn test_step_executor_loop_drives_full_session_with_interceptor() {
             "ChooseCalcTool",
             json!({ "user_message": "what is 2 + 3?" }),
             8,
+            None,
         ),
     )
     .await

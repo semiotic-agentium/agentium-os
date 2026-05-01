@@ -77,11 +77,16 @@ pub struct TokenSummary {
     pub llm_duration_ms: u64,
 }
 
-/// One line of BAML-style `conversation_history`: same `{ role, content }` shape as live projection.
+/// One line of BAML-style `conversation_history`, aligned with the JSON rows from
+/// [`baml_rt_tools::prompt_projection::project_prompt_context`]: `role`, `content`, and optional
+/// `citations` (wire refs) on message-sourced rows; `#N`/`@N` are episode-prefixed for eval/replay.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionHistoryLine {
     pub role: String,
     pub content: String,
+    /// Ref-table strings from graph/CITED for agent messages only; empty when inapplicable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub citations: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,7 +102,9 @@ pub struct Episode {
     pub prior_context: Vec<EpisodeEntry>,
     pub goal: EpisodeEntry,
     pub transcript: Vec<EpisodeEntry>,
-    /// Session-style mirror of [`Self::transcript`] timeline (role + projection-shaped content); wire `#N`/`@N` are episode-prefixed.
+    /// Session-style projection of the **merged** episode timeline (prior + in-task conversation +
+    /// status + artifacts, see provenance `EpisodeReader`), aligned with live
+    /// `ctx.tags['conversation_history']` and optional per-message `citations`.
     pub session_history: Vec<SessionHistoryLine>,
     pub intents: Vec<IntentRevision>,
     pub plans: Vec<PlanRevision>,

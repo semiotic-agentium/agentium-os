@@ -1,5 +1,10 @@
 import { ref, computed, type Ref } from "vue";
-import { applyConversationHistoryDelta, applyConversationHistoryPage } from "../chat/conversationHistoryHydration";
+import {
+  applyConversationHistoryDelta,
+  applyConversationHistoryPage,
+  chatMessagesHaveStreamedAgentBody,
+  conversationHistoryHasAssistantMessageText,
+} from "../chat/conversationHistoryHydration";
 import { normalizeEpochMs, normalizePreview } from "../chat/chatTime";
 import {
   ensureContentBlocks,
@@ -17,7 +22,7 @@ import {
   pushToolEventsDeduped,
   withSessionStepDetailEvents,
 } from "../chat/toolNotificationEvents";
-import { isWorkflowStatusText } from "../chat/workflowUiFilters";
+import { isChatStatusNoiseText } from "../chat/workflowUiFilters";
 import type {
   AgentDiscoveryEntry,
   A2aMessage,
@@ -36,6 +41,38 @@ import type {
 let counter = 0;
 function nextId(prefix: string): string {
   return `${prefix}-${Date.now()}-${++counter}`;
+}
+
+/** Extract `data:` payloads from one SSE event block (between blank-line separators). */
+function sseEventDataPayload(block: string): string | null {
+  const lines = block.split("\n");
+  const parts: string[] = [];
+  for (const line of lines) {
+    const t = line.trimEnd();
+    if (t.startsWith("data:")) {
+      parts.push(t.slice(5).trimStart());
+    }
+  }
+  if (parts.length === 0) return null;
+  return parts.join("\n");
+}
+
+/**
+ * Parse a full `text/event-stream` body into JSON-RPC objects (aligned with
+ * `baml_rt_core::parse_a2a_sse_json_rpc_chunks`). We use `response.text()` rather than
+ * ReadableStream parsing so dev proxies (Vite) and gzip cannot break SSE framing.
+ */
+function parseA2aSseJsonRpcBody(body: string): JSONRPCResponse[] {
+  const normalized = body.replace(/\r\n/g, "\n");
+  const out: JSONRPCResponse[] = [];
+  for (const rawEvent of normalized.split("\n\n")) {
+    const trimmed = rawEvent.trim();
+    if (!trimmed) continue;
+    const payload = sseEventDataPayload(trimmed);
+    if (!payload?.trim()) continue;
+    out.push(JSON.parse(payload) as JSONRPCResponse);
+  }
+  return out;
 }
 
 function updateMessage(
@@ -109,6 +146,9 @@ export function useA2aClient() {
   let lastSeenTaskState: string | undefined;
   const TRACE_REFRESH_DEBOUNCE_MS = 300;
 
+  /** One-shot retry when hydration is skipped because provenance lags behind the live stream. */
+  let pendingHydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
   function scheduleTraceRefreshBump(): void {
     if (!_contextId.value) return;
     if (traceRefreshDebounceTimer !== null) clearTimeout(traceRefreshDebounceTimer);
@@ -143,6 +183,16 @@ export function useA2aClient() {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
         if (page.version === _historyVersion) return;
+        // Full rebuild drops stream-only flags (e.g. TASK_STATE_INPUT_REQUIRED / awaitInput prompt).
+        if (messages.value.some((m) => m.role === "agent" && m.awaitingInput)) {
+          return;
+        }
+        if (
+          chatMessagesHaveStreamedAgentBody(messages.value) &&
+          !conversationHistoryHasAssistantMessageText(page)
+        ) {
+          return;
+        }
         applyConversationHistoryPage(messages, page);
         _historyVersion = page.version;
         selectedHistoryContextId.value = page.contextId;
@@ -154,6 +204,11 @@ export function useA2aClient() {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
         if (page.version === _historyVersion) return;
+        // Do not merge provenance deltas while the live stream left an agent bubble awaiting resume;
+        // deltas can reorder or fork bubbles and drop stream-only INPUT_REQUIRED flags.
+        if (messages.value.some((m) => m.role === "agent" && m.awaitingInput)) {
+          return;
+        }
         applyConversationHistoryDelta(messages, page);
         _historyVersion = page.version;
         selectedHistoryContextId.value = page.contextId;
@@ -308,6 +363,11 @@ export function useA2aClient() {
   async function sendMessage(text: string): Promise<void> {
     if (!selectedAgent.value || !text.trim()) return;
 
+    if (pendingHydrateRetryTimer !== null) {
+      clearTimeout(pendingHydrateRetryTimer);
+      pendingHydrateRetryTimer = null;
+    }
+
     // Clear input-required state on the last agent message when user replies (resume turn)
     const lastAgent = [...messages.value].reverse().find((m) => m.role === "agent");
     if (lastAgent?.awaitingInput) {
@@ -377,17 +437,32 @@ export function useA2aClient() {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const events = (await response.json()) as JSONRPCResponse[];
-      if (Array.isArray(events)) {
-        for (const event of events) {
-          processEvent(event, agentMsgId);
-        }
+      const ct = response.headers.get("content-type") ?? "";
+      const bodyText = await response.text();
+      if (bodyText.trimStart().startsWith("<")) {
+        throw new Error(
+          `Unexpected HTML from /a2a — proxy or runner URL misconfigured (content-type: ${ct || "missing"})`,
+        );
+      }
+      if (!ct.toLowerCase().includes("text/event-stream") && bodyText.trim().length > 0) {
+        console.warn(`POST /a2a unexpected Content-Type: ${ct || "(missing)"}; parsing as SSE anyway`);
+      }
+      const events = parseA2aSseJsonRpcBody(bodyText);
+      if (events.length === 0 && bodyText.trim().length > 0) {
+        throw new Error(
+          `No JSON-RPC events parsed from /a2a body (content-type: ${ct || "missing"})`,
+        );
+      }
+      for (const event of events) {
+        processEvent(event, agentMsgId);
       }
       updateMessage(messages, agentMsgId, (msg) => {
         msg.isStreaming = false;
       });
+      const awaitingResume =
+        messages.value.find((m) => m.id === agentMsgId)?.awaitingInput === true;
       await Promise.all([
-        hydrateMessagesFromConversationHistory(),
+        awaitingResume ? Promise.resolve() : hydrateMessagesFromConversationHistory(),
         fetchProvenanceDiagram(),
         fetchContextMetrics(),
         fetchConversationHistoryOptions(),
@@ -493,8 +568,42 @@ export function useA2aClient() {
       }
       sawProvenanceMutation = true;
     } else if (result.toolStreamChunk && toolChunk) {
-      // Phase chunk: toolStreamChunk true but no tool payload — statusUpdate.message only.
-      // Keep workflow state in the header and avoid duplicating phase chatter in chat bubbles.
+      // Relay may still mark toolStreamChunk while attaching real assistant prose on chunk.message.
+      // Without this branch, that prose was dropped because phase chunks never reached the handler below.
+      let appliedAssistantFromWire = false;
+      updateMessage(messages, agentMsgId, (msg) => {
+        if (chunk.message && tryApplyStructuredMessage(msg, chunk.message)) {
+          appliedAssistantFromWire = true;
+          return;
+        }
+        if (
+          chunk.task?.status?.message &&
+          tryApplyStructuredMessage(msg, chunk.task.status.message)
+        ) {
+          appliedAssistantFromWire = true;
+        }
+      });
+      if (!appliedAssistantFromWire) {
+        const direct =
+          extractText(chunk.message) ?? extractText(chunk.task?.status?.message);
+        if (direct?.trim()) {
+          const dtrim = direct.trim();
+          if (
+            !isChatStatusNoiseText(dtrim) &&
+            !parseExecutionErrorText(dtrim)
+          ) {
+            updateMessage(messages, agentMsgId, (msg) => {
+              if (msg.contentBlocks) {
+                pushTextBlock(msg, direct);
+              } else {
+                msg.text = msg.text ? `${msg.text}\n\n${direct}` : direct;
+              }
+            });
+            sawProvenanceMutation = true;
+          }
+        }
+      }
+      // Phase chunk: statusUpdate drives WorkflowProgress only (not duplicate tool chatter).
       const statusText =
         extractTextFromStatusUpdate(chunk) ??
         extractText(chunk.statusUpdate?.status?.message) ??
@@ -532,7 +641,7 @@ export function useA2aClient() {
 
         if (text) {
           const trimmed = text.trim();
-          if (trimmed && isWorkflowStatusText(trimmed)) {
+          if (trimmed && isChatStatusNoiseText(trimmed)) {
             updateWorkflowPhase(trimmed);
             sawProvenanceMutation = true;
           } else if (trimmed && parseExecutionErrorText(trimmed)) {
@@ -598,20 +707,38 @@ export function useA2aClient() {
     }
     // Input required: stream suspended (no final); agent waiting for user reply.
     if (state === "TASK_STATE_INPUT_REQUIRED") {
+      const DEFAULT_INPUT_REQUIRED_PROMPT = "Reply to continue.";
       updateMessage(messages, agentMsgId, (msg) => {
         msg.isStreaming = false;
         msg.awaitingInput = true;
         const prompt =
-          extractTextFromStatusUpdate(chunk) ?? extractText(chunk.statusUpdate?.status?.message);
-        if (prompt?.trim()) msg.inputRequiredPrompt = prompt.trim();
+          extractTextFromStatusUpdate(chunk) ??
+          extractText(chunk.statusUpdate?.status?.message) ??
+          extractText(chunk.task?.status?.message);
+        const p = prompt?.trim() ? prompt.trim() : DEFAULT_INPUT_REQUIRED_PROMPT;
+        msg.inputRequiredPrompt = p;
+        // Shim `emit.awaitInput` sends INPUT_REQUIRED on statusUpdate.status.message (flat).
+        // Synthetic suspend chunks may only carry task.status.message — still surface readable text.
+        if (!msg.text?.trim()) {
+          if (msg.contentBlocks?.length) {
+            ensureContentBlocks(msg);
+            pushTextBlock(msg, p);
+          } else {
+            msg.text = p;
+          }
+        }
       });
     }
   }
 
   function extractTextFromStatusUpdate(chunk: ChunkPayload): string | undefined {
     const su = chunk.statusUpdate;
-    const inner = su?.statusUpdate ?? su?.status_update;
-    // Relay sends status_update.status.message; flat shape uses inner.message
+    if (!su) return undefined;
+    // Flat shape from runtime shim (emitInputRequired): statusUpdate.status.message only.
+    const flat = extractText(su.status?.message);
+    if (flat?.trim()) return flat;
+    const inner = su.statusUpdate ?? su.status_update;
+    // Relay: nested status_update.status.message or inner.message
     const nested = inner as { message?: A2aMessage; status?: { message?: A2aMessage } } | undefined;
     return extractText(nested?.status?.message) ?? extractText(nested?.message);
   }
@@ -630,7 +757,16 @@ export function useA2aClient() {
   function extractText(
     message: { parts?: { text?: string }[] } | undefined | null,
   ): string | undefined {
-    return message?.parts?.[0]?.text ?? undefined;
+    const parts = message?.parts;
+    if (!parts?.length) return undefined;
+    const texts: string[] = [];
+    for (const p of parts) {
+      if (typeof p?.text === "string" && p.text.length > 0) {
+        texts.push(p.text);
+      }
+    }
+    if (texts.length === 0) return undefined;
+    return texts.join("\n\n");
   }
 
   async function fetchProvenanceDiagram(): Promise<void> {
@@ -667,6 +803,7 @@ export function useA2aClient() {
 
   async function hydrateMessagesFromConversationHistory(
     contextId: string = _contextId.value ?? "",
+    options: { allowRetry?: boolean } = {},
   ): Promise<void> {
     if (!contextId) return;
     try {
@@ -679,6 +816,18 @@ export function useA2aClient() {
 
       const page = (await response.json()) as ConversationHistoryPage;
       if (!Array.isArray(page.items)) return;
+      if (
+        chatMessagesHaveStreamedAgentBody(messages.value) &&
+        !conversationHistoryHasAssistantMessageText(page)
+      ) {
+        if (options.allowRetry !== false && pendingHydrateRetryTimer === null) {
+          pendingHydrateRetryTimer = setTimeout(() => {
+            pendingHydrateRetryTimer = null;
+            void hydrateMessagesFromConversationHistory(contextId, { allowRetry: false });
+          }, 400);
+        }
+        return;
+      }
       applyConversationHistoryPage(messages, page);
       _historyVersion = page.version;
       selectedHistoryContextId.value = page.contextId;
@@ -690,6 +839,10 @@ export function useA2aClient() {
   async function loadConversationHistoryContext(
     contextId: string,
   ): Promise<void> {
+    if (pendingHydrateRetryTimer !== null) {
+      clearTimeout(pendingHydrateRetryTimer);
+      pendingHydrateRetryTimer = null;
+    }
     closeConversationHistoryStream();
     _historyVersion = "";
     _contextId.value = contextId;
@@ -716,6 +869,10 @@ export function useA2aClient() {
   });
 
   function cancelStream(): void {
+    if (pendingHydrateRetryTimer !== null) {
+      clearTimeout(pendingHydrateRetryTimer);
+      pendingHydrateRetryTimer = null;
+    }
     if (_abortController) {
       _abortController.abort();
       _abortController = null;

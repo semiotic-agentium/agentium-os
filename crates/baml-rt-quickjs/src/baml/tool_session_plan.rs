@@ -29,6 +29,7 @@ fn plan_send_tool_error_value(
 }
 
 fn send_done_json(send_result: &SendResult) -> Value {
+    // `output` remains the archive header line; `result` carries typed tool JSON (e.g. calculator).
     serde_json::json!({
         "status": "done",
         "output": send_result.header,
@@ -69,6 +70,136 @@ impl BamlRuntimeManager {
         }
     }
 
+    pub(in crate::baml) async fn execute_archive_read_plan(
+        &self,
+        scope: &context::RuntimeScope,
+        plan: ToolSessionPlan,
+    ) -> Result<Value> {
+        match plan.step {
+            ToolSessionOp::SearchRead {
+                archive_ref,
+                offset,
+                limit,
+                grep,
+                reason,
+            } => {
+                self.execute_archive_read_step(
+                    scope,
+                    "SearchRead",
+                    archive_ref,
+                    offset,
+                    limit,
+                    Some(grep),
+                    reason,
+                )
+                .await
+            }
+            ToolSessionOp::PageRead {
+                archive_ref,
+                offset,
+                limit,
+                reason,
+            } => {
+                self.execute_archive_read_step(
+                    scope,
+                    "PageRead",
+                    archive_ref,
+                    offset,
+                    limit,
+                    None,
+                    reason,
+                )
+                .await
+            }
+            other => Err(BamlRtError::InvalidArgument(format!(
+                "global archive read executor received non-read op {}",
+                other.op_name()
+            ))),
+        }
+    }
+
+    // Distinct grep vs no-grep paths share one implementation; keep args explicit for FSM clarity.
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_archive_read_step(
+        &self,
+        scope: &context::RuntimeScope,
+        op_name: &'static str,
+        archive_ref: baml_rt_tools::archive_read::ShortRef,
+        offset: baml_rt_tools::archive_read::LineOffset,
+        limit: baml_rt_tools::archive_read::PageLimit,
+        grep: Option<baml_rt_tools::archive_read::GrepPattern>,
+        reason: Option<String>,
+    ) -> Result<Value> {
+        tracing::debug!(
+            archive_ref = %archive_ref,
+            reason = ?reason,
+            op = op_name,
+            "FSM step: global archive read"
+        );
+        let context_id = scope.context_id().as_str().to_string();
+        let ref_table = baml_rt_tools::archive_refs::get_or_create_ref_table(
+            &self.state.archive_ref_tables,
+            &context_id,
+        );
+        let entry = ref_table
+            .get(archive_ref)
+            .map(|entry| entry.clone())
+            .ok_or_else(|| {
+                BamlRtError::InvalidArgument(format!(
+                    "{op_name} step: archive ref {archive_ref} not found in session context"
+                ))
+            })?;
+        let archive_ref_str = archive_ref.to_string();
+        let grep_raw = grep.as_ref().map(|g| g.pattern_text().to_string());
+        let page = baml_rt_tools::archive_read::grep_paginate(
+            &entry.content,
+            grep.as_ref(),
+            offset,
+            limit,
+        );
+        let body = baml_rt_tools::archive_read::format_session_read_body_from_rendered(
+            &entry.content,
+            &archive_ref_str,
+            grep_raw.as_deref(),
+            offset.0,
+            limit,
+        );
+        let header = entry.display_header(archive_ref);
+        let read_output = serde_json::json!({
+            "status": "done",
+            "output": format!("{header}\n{body}"),
+            "has_more": page.has_more,
+            "next_offset": page.next_offset,
+        });
+
+        if let Some(emitter) = self.state.effect_emitter.as_ref() {
+            let op = match grep_raw.as_deref() {
+                Some(grep_str) => baml_rt_core::bus::SessionStepOp::SearchRead {
+                    archive_ref: archive_ref_str.clone(),
+                    grep: grep_str.to_string(),
+                    offset: offset.0,
+                    limit: limit.get(),
+                },
+                None => baml_rt_core::bus::SessionStepOp::PageRead {
+                    archive_ref: archive_ref_str.clone(),
+                    offset: offset.0,
+                    limit: limit.get(),
+                },
+            };
+            let _ = emitter
+                .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
+                    context_id: scope.context_id().clone(),
+                    tool_name: entry.tool_name.clone(),
+                    session_id: format!("global-archive-read:{context_id}"),
+                    op,
+                    task_id: scope.task_id_opt().cloned(),
+                })
+                .await;
+        }
+
+        Ok(read_output)
+    }
+
     /// The plan is a sequence of typed `ToolSessionOp` operations that must follow FSM rules:
     /// - First operation must be Open
     /// - Subsequent operations must be Send/SearchRead/PageRead/Finish/Abort (after Open)
@@ -101,12 +232,7 @@ impl BamlRuntimeManager {
             );
         }
         if let Some(first) = steps.first()
-            && matches!(
-                first,
-                ToolSessionOp::Send { .. }
-                    | ToolSessionOp::SearchRead { .. }
-                    | ToolSessionOp::PageRead { .. }
-            )
+            && matches!(first, ToolSessionOp::Send { .. })
             && session_id.is_none()
         {
             let can_auto_open = self
@@ -130,6 +256,10 @@ impl BamlRuntimeManager {
             );
         } else if let Some(first) = steps.first()
             && !matches!(first, ToolSessionOp::Open { .. })
+            && !matches!(
+                first,
+                ToolSessionOp::SearchRead { .. } | ToolSessionOp::PageRead { .. }
+            )
             && session_id.is_none()
         {
             return Err(BamlRtError::InvalidArgument(
@@ -395,11 +525,10 @@ impl BamlRuntimeManager {
                             .map(|l| l.original_line_number)
                             .unwrap_or(1);
                         let more = if page.has_more {
+                            let o = page.next_offset;
+                            let n = page.total_matched - page.next_offset;
                             format!(
-                                "\n--- {} more lines (SearchRead @{} offset={} for next page) ---",
-                                page.total_matched - page.next_offset,
-                                archive_ref,
-                                page.next_offset,
+                                "\n--- Not all lines shown — next step: SearchRead (grep) or PageRead {archive_ref} with offset={o} ({n} more lines — use offset={o} for next page) ---",
                             )
                         } else {
                             String::new()
@@ -514,11 +643,10 @@ impl BamlRuntimeManager {
                             .map(|l| l.original_line_number)
                             .unwrap_or(1);
                         let more = if page.has_more {
+                            let o = page.next_offset;
+                            let n = page.total_matched - page.next_offset;
                             format!(
-                                "\n--- {} more lines (PageRead @{} offset={} for next page) ---",
-                                page.total_matched - page.next_offset,
-                                archive_ref,
-                                page.next_offset,
+                                "\n--- Not all lines shown — next step: PageRead {archive_ref} with offset={o} ({n} more lines — use offset={o} for next page) ---",
                             )
                         } else {
                             String::new()

@@ -52,10 +52,14 @@ pub struct ToolResultContent {
 pub struct SessionStepContent {
     pub tool_name: String,
     pub op: SessionStepOp,
-    /// `SendDone` only: `tool_result` JSON from the linked `ToolCall` (via `WAS_INFORMED_BY` graph edge).
+    /// `SendDone` only: `tool_result` JSON from the linked `ToolCall` (via `WAS_INFORMED_BY` graph edge),
+    /// for ref-table / replay **hydration** only — not rendered as `conversation_history` content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_done_replay_payload: Option<serde_json::Value>,
-    /// SearchRead/PageRead only: replayed lines after resolving `archive_ref` against a prior hydrated SendDone in the same context batch.
+    /// SearchRead/PageRead only: **raw** rendered archive body lines (from the linked
+    /// `SendDone` JSON, same as ref-table `ArchiveEntry::content`), not a pre-formatted
+    /// `cat -n` / `grep -n` session read block. Prompt/episode re-apply
+    /// `baml_rt_tools::archive_read::format_session_read_body_from_rendered`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_replay_lines: Option<Vec<String>>,
 }

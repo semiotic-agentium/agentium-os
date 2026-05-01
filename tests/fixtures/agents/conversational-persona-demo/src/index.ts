@@ -7,8 +7,9 @@
  * No data extraction, no thunking. History carries context between steps.
  *
  * Flow:
- *   1. InferDiscoveryIntent  — LLM distils user intent (single-shot)
- *   2. GetDiscoverAgentsPlan — FSM: Open→Send→Read→Finish (archives agents @N)
+ *   1. ClassifyPersonaCoordinatorTurn — Ready (delegatable task) | NeedTaskClarification | MetaOnly
+ *      Loop with awaitInput until Ready (with delegatable inferred_intent), MetaOnly, or clarified.
+ *   2. GetDiscoverAgentsPlan — **only if** step 1 chose a delegatable task (skip for greetings/meta).
  *   3. MakeStructuredPlan    — LLM plans from history; returns plan_steps or []
  *   4a. FormatCapabilities   — if no steps: in-persona capability summary (StructuredReply)
  *   4b. DecideDelegationAction × N — FSM: Open→Send→Read→null per delegate
@@ -25,55 +26,114 @@ function slug(text: string, fallback: string): string {
   return s || fallback;
 }
 
-function messageId(ctx: { message?: unknown }): string {
-  const m = ctx.message;
-  if (m && typeof m === "object") {
-    const id = (m as Record<string, unknown>).messageId ?? (m as Record<string, unknown>).id;
-    if (typeof id === "string" && id.trim()) return id;
-  }
-  return "msg-persona-fallback";
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+/** BAML union PersonaReadyIntent — concrete delegatable task for discovery. */
+function isPersonaReadyIntent(v: unknown): v is { inferred_intent: string } {
+  return (
+    isObject(v) &&
+    typeof v.inferred_intent === "string" &&
+    v.inferred_intent.trim().length > 0
+  );
+}
+
+/** BAML union PersonaMetaOnly — greetings / capabilities / chat with no work request. */
+function isPersonaMetaOnly(v: unknown): v is { reason: string } {
+  return (
+    isObject(v) &&
+    typeof v.reason === "string" &&
+    typeof v.inferred_intent !== "string" &&
+    typeof v.question !== "string"
+  );
+}
+
+/**
+ * Model-only Ready labels still need a gate: do not treat greetings or generic discovery prose as work.
+ */
+function looksDelegatableIntent(raw: string): boolean {
+  const s = raw.trim();
+  if (s.length < 12) return false;
+  if (/^(hi|hello|hey|thanks|thank you|good morning|good afternoon)\b/i.test(s)) return false;
+  if (/^(identify|list|find|discover)\s+(available\s+)?agents?\b/i.test(s)) return false;
+  if (/list and orient\b/i.test(s)) return false;
+  if (/\b(capabilities only|what can you do|who are you)\b/i.test(s)) return false;
+  return true;
 }
 
 __chat_register({
   run: async (ctx): Promise<SessionResult> => {
-    const text = (ctx.text ?? "").trim() || "unknown";
-    const msgId = messageId(ctx);
+    let text = (ctx.text ?? "").trim() || "unknown";
 
-    // ── Phase 1: infer discovery intent (single-shot, goal-level) ───────────
-    const intentText = String(await InferDiscoveryIntent({ user_message: text })).trim()
-      || "Identify agents relevant to the user intent.";
+    let runDiscovery = false;
+    let intentText = "";
 
-    // ── Phase 2: discover agents (own provenance session) ───────────────────
+    while (true) {
+      const turn = await ClassifyPersonaCoordinatorTurn({ user_message: text });
+      if (isObject(turn) && typeof turn.question === "string" && turn.question.trim().length > 0) {
+        const reply = await ctx.emit.awaitInput(turn.question.trim());
+        const next = messageText(reply).trim();
+        if (next) text = next;
+        continue;
+      }
+      if (isPersonaReadyIntent(turn)) {
+        const cand = turn.inferred_intent.trim();
+        if (looksDelegatableIntent(cand)) {
+          intentText = cand;
+          runDiscovery = true;
+          break;
+        }
+        const reply = await ctx.emit.awaitInput(
+          "That still doesn't sound like a concrete outcome I can route to a specialist. What system, artifact, or deliverable should we target?",
+        );
+        const next = messageText(reply).trim();
+        if (next) text = next;
+        continue;
+      }
+      if (isPersonaMetaOnly(turn)) {
+        runDiscovery = false;
+        break;
+      }
+      const reply = await ctx.emit.awaitInput(
+        "Say what you want done (scoped task), or ask what coordination can do — I won't search specialists until there's an actual goal.",
+      );
+      const next = messageText(reply).trim();
+      if (next) text = next;
+      continue;
+    }
+
     let discoveryError: string | null = null;
-    try {
-      const discoverySession = typeof openA2aExecutionSession === "function"
-        ? await openA2aExecutionSession("persona-discover-" + Date.now())
-        : null;
-      const discoveryIntentPhase = discoverySession
-        ? await discoverySession.submitIntent({
-            intentId: "intent-" + slug(intentText, "persona"),
-            description: intentText,
-          })
-        : null;
-      const discoveryExecutable = discoveryIntentPhase
-        ? await discoveryIntentPhase.submitPlan({
-            intentId: "intent-" + slug(intentText, "persona"),
-            planId: "plan-discover-" + slug(intentText, "persona"),
-            steps: [{ stepId: "step-discover", description: "Discover available agents.", order: 0, dependsOn: [] }],
-          })
-        : null;
+    if (runDiscovery) {
+      try {
+        const discoverySession = typeof openA2aExecutionSession === "function"
+          ? await openA2aExecutionSession("persona-discover-" + Date.now())
+          : null;
+        const discoveryIntentPhase = discoverySession
+          ? await discoverySession.submitIntent({
+              intentId: "intent-" + slug(intentText, "persona"),
+              description: intentText,
+            })
+          : null;
+        const discoveryExecutable = discoveryIntentPhase
+          ? await discoveryIntentPhase.submitPlan({
+              intentId: "intent-" + slug(intentText, "persona"),
+              planId: "plan-discover-" + slug(intentText, "persona"),
+              steps: [{ stepId: "step-discover", description: "Discover available agents.", order: 0, dependsOn: [] }],
+            })
+          : null;
 
-      await discoveryExecutable?.startStep("step-discover");
-      await runGeneratedStepExecutor("GetDiscoverAgentsPlan", { inferred_intent: intentText }, { max_steps: 8 });
-      await discoveryExecutable?.completeStep("step-discover");
-      await discoveryExecutable?.finish();
-    } catch (e) {
-      discoveryError = e instanceof Error ? e.message : String(e);
-      ctx.emit.message(`[discovery failed: ${discoveryError}]`);
+        await discoveryExecutable?.startStep("step-discover");
+        await runGeneratedStepExecutor("GetDiscoverAgentsPlan", { inferred_intent: intentText }, { max_steps: 8 });
+        await discoveryExecutable?.completeStep("step-discover");
+        await discoveryExecutable?.finish();
+      } catch (e) {
+        discoveryError = e instanceof Error ? e.message : String(e);
+        ctx.emit.message(`[discovery failed: ${discoveryError}]`);
+      }
     }
 
     try {
-      // ── Phase 3: plan from history (own provenance session) ─────────────────
       const plan = await MakeStructuredPlan({ user_message: text }) as StandardStructuredPlan;
       const steps = Array.isArray(plan?.plan_steps) ? plan.plan_steps : [];
       const objective = String(plan?.objective ?? text);
@@ -91,7 +151,6 @@ __chat_register({
           })
         : null;
 
-      // ── Phase 4a: capability query (no delegation) ───────────────────────────
       if (steps.length === 0) {
         const capExecutable = planIntentPhase
           ? await planIntentPhase.submitPlan({
@@ -107,7 +166,6 @@ __chat_register({
         return { message: cap };
       }
 
-      // ── Phase 4b: delegate to specialist agents ──────────────────────────────
       const delegateExecutable = planIntentPhase
         ? await planIntentPhase.submitPlan({
             intentId: planIntentId,
@@ -138,7 +196,6 @@ __chat_register({
         await delegateExecutable?.completeStep(stepId);
       }
 
-      // ── Phase 5: synthesize in persona voice from history ────────────────────
       const reacted = (await PersonaReact({
         user_message: text,
         plan_objective: objective,

@@ -286,7 +286,6 @@ The project uses [just](https://github.com/casey/just) as a command runner. A `.
 | `just slack-demo-stop` | `just slack-demo-stop` | Stop the background runner started by `slack-demo`. |
 | `just coordinator-demo` | `just coordinator-demo` | Start coordinator + notion HTTP demo runner and stream one coordinated request via `coordinator-agent`. |
 | `just coordinator-demo-stop` | `just coordinator-demo-stop` | Stop the background runner started by `coordinator-demo`. |
-| `just provenance-mermaid <context_id>` | `just provenance-mermaid ctx-1771426017780-2` | Export a simplified Mermaid sequence diagram for a given provenance context ID. |
 
 For a provenance-first walkthrough of the Notion flow, see `docs/notion-demo.md`.
 For Slack auth/setup and demo notes, see `docs/slack-tool.md`.

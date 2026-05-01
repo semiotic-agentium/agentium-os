@@ -2,11 +2,10 @@
 //! `ctx.tags['conversation_history']`.
 
 use baml_rt_tools::{
-    archive_read::{PageLimit, format_session_read_body_from_json_value},
     archive_refs::RefTable,
     prompt_projection::{
         ArchiveReader, ProjectionRenderOptions, PromptProjectionContent, PromptProjectionItem,
-        SessionStepProjection, projection_history_pairs,
+        SessionStepPayload, SessionStepProjection, projection_history_pairs,
     },
     tools::ToolRegistry,
 };
@@ -23,7 +22,13 @@ pub fn provenance_item_to_projection_item(
     item: ProvenanceConversationContextItem,
 ) -> Option<PromptProjectionItem> {
     let content = match item.content {
-        ConversationItemContent::Message { text, .. } => PromptProjectionContent::Message(text),
+        ConversationItemContent::Message { text, citations } => PromptProjectionContent::Message {
+            text,
+            citations: citations
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+        },
         ConversationItemContent::ToolCall(tc) => PromptProjectionContent::ToolCall {
             tool_name: tc.tool_name,
             args: tc.args,
@@ -71,10 +76,12 @@ pub fn provenance_item_to_projection_item(
                     limit,
                 },
             };
-            PromptProjectionContent::SessionStep {
+            PromptProjectionContent::SessionStep(SessionStepPayload {
                 tool_name: step.tool_name,
                 op: projection_op,
-            }
+                send_done_replay_payload: step.send_done_replay_payload,
+                read_replay_lines: step.read_replay_lines,
+            })
         }
     };
     Some(PromptProjectionItem {
@@ -85,17 +92,10 @@ pub fn provenance_item_to_projection_item(
     })
 }
 
-/// `SendDone` session line: JSON replay → cat-n body (same cap as prompt projection `send_done`).
-pub fn session_history_body_from_send_done_replay(
-    payload: &serde_json::Value,
-    archive_ref: &str,
-    limit: usize,
-) -> Option<String> {
-    format_session_read_body_from_json_value(payload, archive_ref, None, 0, PageLimit::new(limit))
-}
-
 /// Line pairs `(role, content)` before wire citation prefixing, matching
-/// [`projection_history_pairs`] / SendDone replay split used for BAML `conversation_history`.
+/// [`baml_rt_tools::prompt_projection::project_projection_item_to_rows`]. Message `citations` are
+/// not returned; use
+/// [`project_projection_item_to_rows`] for full metadata.
 #[must_use]
 pub fn projection_pairs_for_conv_item(
     item: &ProvenanceConversationContextItem,
@@ -108,25 +108,6 @@ pub fn projection_pairs_for_conv_item(
         return None;
     }
 
-    if let ConversationItemContent::SessionStep(ss) = &item.content
-        && let SessionStepOp::SendDone {
-            archive_ref,
-            header,
-            ..
-        } = &ss.op
-        && let Some(payload) = ss.send_done_replay_payload.as_ref()
-        && let Some(body) = session_history_body_from_send_done_replay(
-            payload,
-            archive_ref.as_str(),
-            opts.send_done.get(),
-        )
-    {
-        return Some(vec![
-            (item.role.clone(), header.clone()),
-            ("read".to_string(), body),
-        ]);
-    }
-
     let proj = provenance_item_to_projection_item(item.clone())?;
     Some(projection_history_pairs(
         &proj,
@@ -135,4 +116,33 @@ pub fn projection_pairs_for_conv_item(
         archive_reader,
         opts,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use baml_rt_core::{Citation, ids::ActivityAnchorId};
+
+    use super::*;
+
+    #[test]
+    fn message_maps_citations_into_projection() {
+        let c = Citation::try_new("#1").expect("citation");
+        let item = ProvenanceConversationContextItem {
+            timestamp_ms: 1,
+            activity_anchor: ActivityAnchorId::from_counter(1),
+            role: "assistant".into(),
+            content: ConversationItemContent::Message {
+                text: "hi".into(),
+                citations: vec![c],
+            },
+        };
+        let p = provenance_item_to_projection_item(item).expect("proj");
+        match p.content {
+            PromptProjectionContent::Message { text, citations } => {
+                assert_eq!(text, "hi");
+                assert_eq!(citations, vec!["#1"]);
+            }
+            _ => panic!("expected Message"),
+        }
+    }
 }

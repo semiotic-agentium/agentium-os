@@ -1,6 +1,5 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
-assertion_line: 1201
 expression: snapshot
 ---
 {
@@ -51,7 +50,7 @@ expression: snapshot
             "agents"
           ],
           "summary": "Forward A2A JSON-RPC request (POST /agents/{agent_package}/{agent_instance_id}/a2a).",
-          "description": "Unauthenticated at the application layer. Cluster isolation relies on\nnetwork policy (K8s NetworkPolicy / service mesh); external client auth\nbelongs at the ingress. Control-plane endpoints are protected by `ClusterAuthLayer`.",
+          "description": "Streams **SSE** (`text/event-stream`): each event `data:` line is one JSON-RPC 2.0 response object (same objects as the historical buffered JSON array).\n\nUnauthenticated at the application layer. Cluster isolation relies on\nnetwork policy (K8s NetworkPolicy / service mesh); external client auth\nbelongs at the ingress. Control-plane endpoints are protected by `ClusterAuthLayer`.",
           "operationId": "post_a2a",
           "parameters": [
             {
@@ -83,14 +82,9 @@ expression: snapshot
           },
           "responses": {
             "200": {
-              "description": "JSON-RPC responses",
+              "description": "SSE stream of JSON-RPC responses",
               "content": {
-                "application/json": {
-                  "schema": {
-                    "type": "array",
-                    "items": {}
-                  }
-                }
+                "text/event-stream": {}
               }
             },
             "400": {
@@ -982,7 +976,7 @@ expression: snapshot
           ],
           "responses": {
             "200": {
-              "description": "Context planning snapshot",
+              "description": "Context planning snapshot (`tasks` empty when no provenance messages exist for this context)",
               "content": {
                 "application/json": {
                   "schema": {}
@@ -2801,6 +2795,13 @@ expression: snapshot
             "content"
           ],
           "properties": {
+            "citations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Ref-table strings on message-sourced rows; empty for tool/system lines."
+            },
             "content": {
               "type": "string"
             },

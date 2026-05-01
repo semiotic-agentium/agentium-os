@@ -219,6 +219,15 @@ pub(crate) struct ToolSessionPlan {
     pub selected_tool: Option<ToolName>,
 }
 
+impl ToolSessionPlan {
+    pub(crate) fn is_archive_read(&self) -> bool {
+        matches!(
+            self.step,
+            ToolSessionOp::SearchRead { .. } | ToolSessionOp::PageRead { .. }
+        )
+    }
+}
+
 /// Extract and convert a JSON tool session fragment into one typed operation and optional plan-level reason.
 pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSessionPlan>> {
     let obj = match result.as_object() {

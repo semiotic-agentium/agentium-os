@@ -776,7 +776,7 @@ pub async fn fetch_context_mermaid(
     mermaid_response.text().await.expect("mermaid body")
 }
 
-/// POST to `/a2a` and collect all JSON-RPC responses from the response array.
+/// POST to `/a2a` and collect all JSON-RPC responses from the SSE (`text/event-stream`) body.
 ///
 /// Not every `tests/*.rs` binary links all helpers; integration targets are feature-split.
 #[cfg(any(
@@ -798,8 +798,7 @@ pub async fn post_a2a_sse_collect(
         let text = response.text().await.unwrap_or_default();
         return Err(format!("HTTP {}: {}", status, text).into());
     }
-    response
-        .json::<Vec<Value>>()
-        .await
-        .map_err(|e| format!("Invalid JSON-RPC response array: {e}").into())
+    let text = response.text().await?;
+    baml_rt_core::parse_a2a_sse_json_rpc_chunks(&text)
+        .map_err(|e| format!("Invalid A2A SSE response: {e}").into())
 }

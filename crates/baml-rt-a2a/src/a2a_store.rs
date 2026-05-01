@@ -12,7 +12,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::a2a_types::{
-    Artifact, ListTasksRequest, ListTasksResponse, Message, MessageRole, ROLE_USER,
+    Artifact, ListTasksRequest, ListTasksResponse, Message, MessageRole, Part, ROLE_USER,
     TASK_STATE_CANCELED, Task, TaskArtifactUpdateEvent, TaskState, TaskStatus,
     TaskStatusUpdateEvent,
 };
@@ -126,8 +126,9 @@ pub trait TaskChunkApplier: Send + Sync {
 /// [`TaskStoreBackend`] deliberately does **not** include this trait — task/message mirrors are
 /// for transport and lifecycle, not for reconstructing LLM-visible history.
 ///
-/// For resume, the caller must use the same `context_id` as the session. Limit (e.g. 40) is
-/// applied by the implementation.
+/// For resume, the caller must use the same `context_id` as the session. A caller-provided
+/// `limit` truncates in the provenance reader; the A2A prompt path uses
+/// [`baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP`] as the default cap.
 #[async_trait]
 pub trait ConversationContextSource: Send + Sync {
     async fn conversation_context(
@@ -651,11 +652,53 @@ pub(crate) fn message_role_string(role: &MessageRole) -> String {
     role.as_wire_str().to_string()
 }
 
+/// Maximum UTF-8 bytes for JSON / raw previews embedded in provenance and conversation history.
+const STRUCTURED_PREVIEW_MAX_BYTES: usize = 8192;
+
+fn truncate_utf8_owned(mut s: String, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes.saturating_sub(1);
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+    s.push('…');
+    s
+}
+
+/// Compact JSON for structured-data parts — replaces the old `[structured-data part]` placeholder
+/// so UIs and transcripts show actual payload (truncated when huge).
+fn json_preview_for_provenance(value: &Value) -> String {
+    let s = serde_json::to_string(value).unwrap_or_else(|_| "\"<non-serializable>\"".to_string());
+    truncate_utf8_owned(s, STRUCTURED_PREVIEW_MAX_BYTES)
+}
+
+fn raw_preview_for_provenance(raw: &str) -> String {
+    truncate_utf8_owned(raw.to_string(), STRUCTURED_PREVIEW_MAX_BYTES)
+}
+
+fn file_part_preview(part: &Part) -> String {
+    let mut bits: Vec<String> = Vec::new();
+    if let Some(ref u) = part.url {
+        bits.push(format!("url={u}"));
+    }
+    if let Some(ref f) = part.filename {
+        bits.push(format!("file={f}"));
+    }
+    if bits.is_empty() {
+        "[file part]".to_string()
+    } else {
+        format!("[file part] {}", bits.join(" "))
+    }
+}
+
 /// Provenance-safe content extraction from A2A message parts.
 ///
-/// Text parts are included verbatim (trimmed, blanks dropped). Non-text parts
-/// (data, file, raw) emit a structural descriptor so the provenance validator
-/// sees a non-empty message without coupling to any domain-specific schema.
+/// Text parts are included verbatim (trimmed, blanks dropped). Structured-data parts
+/// contribute compact JSON previews (truncated when large). File and raw parts include
+/// short descriptors so conversation history remains human-readable.
 pub(crate) fn validated_message_content(
     message: &Message,
     _operation: &str,
@@ -669,14 +712,17 @@ pub(crate) fn validated_message_content(
             }
             continue;
         }
-        // Non-text parts: emit a generic structural marker so provenance knows
-        // the message carried content. No domain-specific fields are inspected.
-        if part.data.is_some() {
-            content.push("[structured-data part]".to_string());
-        } else if part.url.is_some() || part.filename.is_some() {
-            content.push("[file part]".to_string());
-        } else if part.raw.is_some() {
-            content.push("[raw part]".to_string());
+        if let Some(ref data) = part.data {
+            content.push(json_preview_for_provenance(data));
+            continue;
+        }
+        if part.url.is_some() || part.filename.is_some() {
+            content.push(file_part_preview(part));
+            continue;
+        }
+        if let Some(ref raw) = part.raw {
+            content.push(raw_preview_for_provenance(raw));
+            continue;
         }
         // Parts with none of the above fields are truly empty — skip them.
     }

@@ -7,7 +7,6 @@ import type {
 } from "./baml-runtime";
 
 const MAX_REACT_STEPS = 8;
-const MAX_CLARIFY = 2;
 
 function textReply(text: string): StructuredReply {
   const parts: ReplyPart[] = [{ type: "text", text }];
@@ -281,7 +280,7 @@ __chat_register({
     // Conversation history is passed via ctx.tags in the BAML prompt so the model
     // always has full context — no need to thread originalText manually.
     let validatedIntent: string | null = null;
-    for (let i = 0; i <= MAX_CLARIFY; i++) {
+    while (true) {
       const intentResult = await InferNotionIntent({ user_message: text });
 
       if (isNotionIntent(intentResult)) {
@@ -293,15 +292,16 @@ __chat_register({
           message: textReply(`This doesn't look like a Notion question — ${intentResult.reason}`),
         };
       }
-      if (isNeedClarification(intentResult) && i < MAX_CLARIFY) {
+      if (isNeedClarification(intentResult)) {
         const reply = await ctx.emit.awaitInput(intentResult.question);
         const clarifiedText = messageText(reply).trim();
         if (clarifiedText) text = normalizeUserMessage(clarifiedText);
-      } else {
-        // Clarification exhausted — fall back to the original message as the search topic.
-        validatedIntent = originalText;
-        break;
+        continue;
       }
+      return {
+        error:
+          "InferNotionIntent returned an unexpected shape — expected NotionIntent, NeedClarification, or NotRelevant.",
+      };
     }
     if (!validatedIntent) return { error: "Could not determine a valid Notion intent." };
 

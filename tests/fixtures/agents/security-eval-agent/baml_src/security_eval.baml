@@ -62,9 +62,7 @@ function ExecuteStep(
     Current step: {{ step_description }}
 
     {% if ctx.tags['conversation_history'] %}
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ msg.role }}: {{ msg.content }}
-    {% endfor %}
+    {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
 
     This invocation uses a narrowed output schema: only the operations listed
@@ -93,9 +91,7 @@ function PresentReportingToUser(
     Plan objective: {{ objective }}
 
     {% if ctx.tags['conversation_history'] %}
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ loop.index }}. {{ msg.role }}: {{ msg.content }}
-    {% endfor %}
+    {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
 
     Ground the answer in the history and objective only. Do not invent CRM figures or email

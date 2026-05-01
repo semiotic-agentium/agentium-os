@@ -122,11 +122,15 @@ impl baml_rt_api::PlanningService for PlanningServiceImpl {
             }
         }
 
-        if task_ids.is_empty() {
-            return Err(baml_rt_api::PlanningError::NotFound);
-        }
-
         let all_task_ids = task_ids.clone();
+
+        if task_ids.is_empty() {
+            return Ok(baml_rt_api::ContextPlanningResponse {
+                context_id: context_id.to_string(),
+                all_task_ids,
+                tasks: vec![],
+            });
+        }
 
         let mut tasks = Vec::new();
         for task_id_raw in task_ids {

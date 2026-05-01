@@ -679,10 +679,28 @@ fn chunk_state(chunk: &Value) -> Option<String> {
             })
         })
     }
+    /// Match wire variants: `statusUpdate.status.state` and nested relay
+    /// `statusUpdate.status_update.status.state` (see web `getStateFromChunk`).
+    fn from_status_update_container(su: &Value) -> Option<String> {
+        from_maybe_string(su).or_else(|| {
+            su.get("status_update")
+                .or_else(|| su.get("statusUpdate"))
+                .and_then(from_maybe_string)
+        })
+    }
     chunk
         .get("task")
         .and_then(from_maybe_string)
-        .or_else(|| chunk.get("statusUpdate").and_then(from_maybe_string))
+        .or_else(|| {
+            chunk
+                .get("statusUpdate")
+                .and_then(from_status_update_container)
+        })
+        .or_else(|| {
+            chunk
+                .get("status_update")
+                .and_then(from_status_update_container)
+        })
 }
 
 fn chunk_has_final_state(chunk: &Value) -> bool {

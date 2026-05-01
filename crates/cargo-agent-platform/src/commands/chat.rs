@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use baml_rt_core::correlation::generate_correlation_id;
+use baml_rt_core::{correlation::generate_correlation_id, parse_a2a_sse_json_rpc_chunks};
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
@@ -380,9 +380,8 @@ async fn list_agents(client: &reqwest::Client, base_url: &str) -> Result<Vec<Age
 
 /// Sends one chat turn over HTTP JSON-RPC (`/a2a`), then renders collected chunks.
 ///
-/// The runner collects stream chunks server-side and returns them as a JSON array
-/// of JSON-RPC items. We process them in-order and render text snapshots as deltas
-/// to avoid duplicated cumulative output.
+/// The runner streams SSE (`text/event-stream`): each event `data:` line is one JSON-RPC item.
+/// We process them in-order and render text snapshots as deltas to avoid duplicated cumulative output.
 async fn send_message_http(
     req: &SseRequest<'_>,
     stdout: &mut io::Stdout,
@@ -429,12 +428,8 @@ async fn send_message_http(
         ));
     }
 
-    let parsed = serde_json::from_str::<Value>(&body)
-        .map_err(|e| tagged_error("JSON", format!("Invalid /a2a response JSON: {e}")))?;
-    let events: Vec<Value> = match parsed {
-        Value::Array(items) => items,
-        single => vec![single],
-    };
+    let events: Vec<Value> = parse_a2a_sse_json_rpc_chunks(&body)
+        .map_err(|e| tagged_error("SSE", format!("Invalid /a2a SSE response: {e}")))?;
 
     let mut printed_by_message_id: HashMap<String, String> = HashMap::new();
     let mut active_message_id: Option<String> = None;

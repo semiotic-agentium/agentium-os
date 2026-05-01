@@ -85,10 +85,11 @@ The coordinator will discover capabilities, choose a specialist route, and eithe
 
 ## Provenance replay
 
-If `coordinator-demo` prints a `contextId`, export sequence diagram:
+If `coordinator-demo` prints a `contextId`, fetch the Mermaid sequence from the runner
+(`COORDINATOR_DEMO_RUNNER_URL`, default `http://127.0.0.1:8082` unless overridden):
 
 ```bash
-just provenance-mermaid <context_id>
+curl -sS "${COORDINATOR_DEMO_RUNNER_URL:-http://127.0.0.1:8082}/contexts/<context_id>/mermaid"
 ```
 
 ## Useful environment overrides

@@ -38,7 +38,6 @@ pub use llm_client_registry::{
 pub use llm_resolver_adapter::SecretResolverToLlmAdapter;
 pub use quickjs_bridge::QuickJSBridge;
 pub use runtime::{QuickJSConfig, Runtime, RuntimeBuilder, RuntimeConfig};
-pub use step_executor_loop::StepExecutorRuntime;
 pub use traits::{
     BamlFunctionExecutor, BamlGateway, JsRuntimeHost, SchemaLoader, ToolRegistryTrait,
 };

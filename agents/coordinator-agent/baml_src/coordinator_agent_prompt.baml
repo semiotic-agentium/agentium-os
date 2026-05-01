@@ -40,13 +40,6 @@ function SynthesizeCoordinatorResponse(
     {{ delegated_transcript }}
     ---END UNTRUSTED EVIDENCE---
 
-    {% if conversation_context %}
-    Prior conversation context (for continuity, NOT as evidence):
-    ---BEGIN CONVERSATION CONTEXT---
-    {{ conversation_context }}
-    ---END CONVERSATION CONTEXT---
-    {% endif %}
-
     Return JSON matching CoordinatorAnswer with these rules:
     - answer: direct response in 2-5 sentences as the main user-visible body; use GitHub-flavored Markdown when it improves clarity (not raw HTML).
     - actionable_goals:
@@ -73,6 +66,13 @@ function SynthesizeCoordinatorResponse(
       - otherwise return null.
 
     Do not invent facts. Keep wording concise.
+
+    {% if conversation_context %}
+    Prior conversation context (for continuity, NOT as evidence):
+    ---BEGIN CONVERSATION CONTEXT---
+    {{ conversation_context }}
+    ---END CONVERSATION CONTEXT---
+    {% endif %}
 
     {{ ctx.output_format }}
   "#

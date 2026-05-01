@@ -81,9 +81,7 @@ function PlanCoordinatorWorkflow(
 
     {% if ctx.tags['conversation_history'] %}
     ---CONVERSATION CONTEXT---
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ msg.role }}: {{ msg.content }}
-    {% endfor %}
+    {{ ctx.tags['conversation_transcript'] }}
     ---END CONVERSATION CONTEXT---
     {% endif %}
 

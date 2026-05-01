@@ -165,7 +165,7 @@ pub enum SessionStepOp {
     /// Session opened — tool session is now active, next op is Send.
     Open,
     /// Blocking Send completed — result archived at `archive_ref` (e.g. `"@1"`).
-    /// `header` is the full display string: `"@1 tool_name 'summary' [N lines, KB]"`.
+    /// `header` is the full display string: `"@1 · \"summary\" · NL · size"`.
     SendDone {
         archive_ref: String,
         header: String,

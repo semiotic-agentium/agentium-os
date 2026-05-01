@@ -28,6 +28,32 @@ pub use test_tools::{
 };
 use tokio::sync::RwLock;
 
+/// Deep-copy an agent fixture tree into `dst` so the builder can write tsconfig / generated `.d.ts`
+/// without touching the committed workspace (read-only checkouts, Nix sandboxes, sparse clones).
+fn copy_agent_tree_for_build(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !src.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("agent source is not a directory: {}", src.display()),
+        ));
+    }
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let dest = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_agent_tree_for_build(&path, &dest)?;
+        } else {
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&path, &dest)?;
+        }
+    }
+    Ok(())
+}
+
 /// Effect subscriber that captures all emitted `EffectEvent`s into a `Vec`.
 ///
 /// Useful in tests that need to assert planning/tool effect sequences without
@@ -112,9 +138,25 @@ pub async fn build_fixture_package_to_temp(fixture_name: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir).expect("create extract dir");
 
-    baml_rt_builder::build_agent_package(&agent_dir, &tar_path)
+    let staging = std::env::temp_dir().join(format!(
+        "a2a-test-{fixture_name}-stage-{pid}-{unique}",
+        fixture_name = fixture_name,
+        pid = pid,
+        unique = unique
+    ));
+    let _ = fs::remove_dir_all(&staging);
+    copy_agent_tree_for_build(&agent_dir, &staging).unwrap_or_else(|e| {
+        panic!(
+            "copy fixture {fixture_name} from {} to staging {} failed: {e}",
+            agent_dir.display(),
+            staging.display()
+        );
+    });
+
+    baml_rt_builder::build_agent_package(&staging, &tar_path)
         .await
         .unwrap_or_else(|e| panic!("build fixture {fixture_name} failed: {e}"));
+    let _ = fs::remove_dir_all(&staging);
 
     let tar_gz = fs::File::open(&tar_path).expect("open built tar");
     let tar_dec = GzDecoder::new(tar_gz);
@@ -153,9 +195,25 @@ pub async fn build_agent_package_to_temp(agent_dir: PathBuf, package_label: &str
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir).expect("create extract dir");
 
-    baml_rt_builder::build_agent_package(&agent_dir, &tar_path)
+    let staging = std::env::temp_dir().join(format!(
+        "runner-test-{package_label}-stage-{pid}-{unique}",
+        package_label = package_label,
+        pid = pid,
+        unique = unique
+    ));
+    let _ = fs::remove_dir_all(&staging);
+    copy_agent_tree_for_build(&agent_dir, &staging).unwrap_or_else(|e| {
+        panic!(
+            "copy agent {package_label} from {} to staging {} failed: {e}",
+            agent_dir.display(),
+            staging.display()
+        );
+    });
+
+    baml_rt_builder::build_agent_package(&staging, &tar_path)
         .await
         .unwrap_or_else(|e| panic!("build agent {package_label} failed: {e}"));
+    let _ = fs::remove_dir_all(&staging);
 
     let tar_gz = fs::File::open(&tar_path).expect("open built tar");
     let tar_dec = GzDecoder::new(tar_gz);
@@ -190,9 +248,25 @@ pub async fn build_agent_package_archive_to_temp(
     let tar_path =
         std::env::temp_dir().join(format!("runner-test-{package_label}-{pid}-{unique}.tar.gz"));
 
-    baml_rt_builder::build_agent_package(&agent_dir, &tar_path)
+    let staging = std::env::temp_dir().join(format!(
+        "runner-test-{package_label}-archive-stage-{pid}-{unique}",
+        package_label = package_label,
+        pid = pid,
+        unique = unique
+    ));
+    let _ = fs::remove_dir_all(&staging);
+    copy_agent_tree_for_build(&agent_dir, &staging).unwrap_or_else(|e| {
+        panic!(
+            "copy agent archive {package_label} from {} to staging {} failed: {e}",
+            agent_dir.display(),
+            staging.display()
+        );
+    });
+
+    baml_rt_builder::build_agent_package(&staging, &tar_path)
         .await
         .unwrap_or_else(|e| panic!("build agent archive {package_label} failed: {e}"));
+    let _ = fs::remove_dir_all(&staging);
 
     tar_path
 }
@@ -704,88 +778,59 @@ pub fn assert_result_contract_actual_result(val: &serde_json::Value) {
 /// BAML function name used in `stream-baml-tool` E2E session plan tests.
 pub const STREAM_BAML_TOOL_FUNCTION: &str = "ChooseCalcTool";
 
-/// Drives a strict Open→Send→Next→Finish calculator session plan end-to-end.
+/// Extracts `result.result` from a blocking Send completion payload (`send_done_json`).
+fn calc_numeric_result_from_tool_payload(val: &serde_json::Value) -> Option<f64> {
+    val.get("result")?.get("result")?.as_f64()
+}
+
+/// Drives a strict calculator session plan end-to-end.
 ///
-/// Accepts either a raw BAML result (containing `"step": { "op": "Send", ... }`) or
-/// an already-sent status (`"status": "sent"`). After confirming `sent`, calls `Next`
-/// then `Finish` and returns the numeric result extracted from `output.result`.
+/// Accepts a raw BAML result (`step`: Open / Send / …) or an executor payload that already
+/// completed blocking Send (`status`: `done` with typed `result`). Host Send blocks until the
+/// tool returns [`ToolStep::Done`] and archives output; there is no separate legacy `sent` +
+/// empty `PageRead` hop for calculator fixtures.
 pub async fn execute_calc_session_strict(
     manager: &BamlRuntimeManager,
     scope: &baml_rt_core::context::InvocationScope,
     tool_choice: serde_json::Value,
 ) -> baml_rt_core::Result<f64> {
     use baml_rt_core::BamlRtError;
-    let initial_status = tool_choice.get("status").and_then(|v| v.as_str());
-    // invoke_function auto-executes session plans when session_plan_functions.json is present.
-    // If it already ran the full session and returned a done result, extract the value directly.
-    if initial_status == Some("done")
-        && let Some(result) = tool_choice.get("result")
-        && let Some(v) = result.get("result").and_then(|v| v.as_f64())
-    {
+
+    if let Some(v) = calc_numeric_result_from_tool_payload(&tool_choice) {
         return Ok(v);
     }
-    if initial_status != Some("sent") {
-        let has_step = tool_choice
-            .get("step")
-            .and_then(|v| v.as_object())
-            .is_some();
-        if !has_step {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "expected strict single-step plan or sent status, got: {tool_choice}"
-            )));
-        }
-        let sent = manager
-            .execute_tool_from_baml_result_or_value(
-                scope.as_scope(),
-                tool_choice,
-                Some(STREAM_BAML_TOOL_FUNCTION),
-                None,
-            )
-            .await?;
-        if sent.get("status").and_then(|v| v.as_str()) != Some("sent") {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "expected sent status, got {sent}"
-            )));
-        }
+
+    let initial_status = tool_choice.get("status").and_then(|v| v.as_str());
+    let has_step = tool_choice
+        .get("step")
+        .and_then(|v| v.as_object())
+        .is_some();
+
+    if !has_step {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "expected session plan step or done payload with calculator result, got: {tool_choice}"
+        )));
     }
 
-    // Pass an empty input object so the tool_fsm merges nothing into the previously-sent
-    // expression; a non-empty expression here would override the Send payload (e.g. 0+0=0).
-    let next = manager
+    if initial_status == Some("sent") {
+        return Err(BamlRtError::InvalidArgument(
+            "legacy intermediate status \"sent\" is not supported for strict calculator E2E; Send blocks until done"
+                .to_string(),
+        ));
+    }
+
+    let executed = manager
         .execute_tool_from_baml_result_or_value(
             scope.as_scope(),
-            serde_json::json!({ "step": { "op": "PageRead", "input": {} } }),
+            tool_choice,
             Some(STREAM_BAML_TOOL_FUNCTION),
             None,
         )
         .await?;
-    if next.get("status").and_then(|v| v.as_str()) != Some("done") {
-        return Err(BamlRtError::InvalidArgument(format!(
-            "expected done status, got {next}"
-        )));
-    }
-    let value = next
-        .get("output")
-        .and_then(|v| v.get("result"))
-        .and_then(|v| v.as_f64())
-        .ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!(
-                "missing output.result in strict Next response: {next}"
-            ))
-        })?;
 
-    let finished = manager
-        .execute_tool_from_baml_result_or_value(
-            scope.as_scope(),
-            serde_json::json!({ "step": { "op": "Finish" } }),
-            Some(STREAM_BAML_TOOL_FUNCTION),
-            None,
-        )
-        .await?;
-    if finished.get("status").and_then(|v| v.as_str()) != Some("finished") {
-        return Err(BamlRtError::InvalidArgument(format!(
-            "expected finished status, got {finished}"
-        )));
-    }
-    Ok(value)
+    calc_numeric_result_from_tool_payload(&executed).ok_or_else(|| {
+        BamlRtError::InvalidArgument(format!(
+            "expected blocking Send completion with calculator result.result, got {executed}"
+        ))
+    })
 }
