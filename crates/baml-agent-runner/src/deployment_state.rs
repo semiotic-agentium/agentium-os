@@ -34,9 +34,11 @@ const TBL_INGRESS_INBOX: &str = "ingress_inbox";
 /// call blocks inside `.await` instead of returning an error, which leaves
 /// the existing `retry_open` exponential-backoff loop unable to make
 /// progress. A bounded timeout converts the hang into a retryable
-/// [`BamlRtError::Io`]. Sized to leave comfortable headroom under nextest's
-/// 60 s slow-warn threshold across the full retry budget.
-const OPEN_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// [`BamlRtError::Io`]. The value is generous (well above any plausible
+/// cold-open latency under heavy CI parallelism) because the timeout is an
+/// emergency stop for the indefinite-hang failure mode, not a budget for
+/// the normal case — a healthy cold-open completes in tens of milliseconds.
+const OPEN_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE TABLE IF NOT EXISTS deployments SCHEMAFULL",
