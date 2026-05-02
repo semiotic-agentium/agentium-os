@@ -7,13 +7,8 @@ yarn-debug.log*
 yarn-error.log*
 package-lock.json
 
-# Example agent dependencies
-examples/agent-example/node_modules/
-examples/agent-example/package-lock.json
-
 # Build artifacts
 *.tar.gz
-!examples/agent-packages/*.tar.gz
 
 # ts-rs generated TypeScript bindings
 bindings/
@@ -72,3 +67,4 @@ deploy/k8s/surrealdb-credentials.yaml
 # Nix
 .direnv/
 result
+.pi/
