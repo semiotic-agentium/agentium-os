@@ -51,6 +51,8 @@ pub(crate) async fn token_summary_for_task(
         .query(&query)
         .bind(("task_exec", task_exec))
         .await
+        .map_err(surreal_err)?
+        .check()
         .map_err(surreal_err)?;
     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
     let Some(row) = rows.first().and_then(|v| v.as_object()) else {
@@ -91,6 +93,8 @@ pub(crate) async fn llm_earliest_timestamp_ms(
         .query(&query)
         .bind(("task_exec", task_exec))
         .await
+        .map_err(surreal_err)?
+        .check()
         .map_err(surreal_err)?;
     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
     Ok(rows

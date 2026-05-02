@@ -46,6 +46,8 @@ pub async fn session_totals_by_context(
         .query(&query)
         .bind(("ctx_node", ctx_node))
         .await
+        .map_err(surreal_err)?
+        .check()
         .map_err(surreal_err)?;
     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
     Ok(rows
@@ -81,6 +83,8 @@ pub async fn turn_totals_by_context(
         .query(&edge_query)
         .bind(("ctx_node", ctx_node.clone()))
         .await
+        .map_err(surreal_err)?
+        .check()
         .map_err(surreal_err)?;
     let edge_rows: Vec<Value> = edge_resp.take(0).map_err(surreal_err)?;
 
@@ -107,6 +111,8 @@ pub async fn turn_totals_by_context(
             ))
             .bind(("nid", nid.clone()))
             .await
+            .map_err(surreal_err)?
+            .check()
             .map_err(surreal_err)?;
         let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
         msg_rows.extend(rows);
@@ -130,6 +136,8 @@ pub async fn turn_totals_by_context(
             ))
             .bind(("nid", nid.clone()))
             .await
+            .map_err(surreal_err)?
+            .check()
             .map_err(surreal_err)?;
         let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
         llm_rows.extend(rows);
@@ -232,6 +240,8 @@ pub async fn user_prompts_by_context(
         .query(&query)
         .bind(("ctx_node", ctx_node))
         .await
+        .map_err(surreal_err)?
+        .check()
         .map_err(surreal_err)?;
     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
     Ok(rows

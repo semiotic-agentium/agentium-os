@@ -67,6 +67,8 @@ pub async fn query_step_citations(
         .query(&query)
         .bind(("task_exec", task_exec))
         .await
+        .map_err(surreal_err)?
+        .check()
         .map_err(surreal_err)?;
     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
     Ok(rows
@@ -102,6 +104,8 @@ pub async fn query_plan_citations(
         .query(&query)
         .bind(("plan_node", plan_node_id))
         .await
+        .map_err(surreal_err)?
+        .check()
         .map_err(surreal_err)?;
     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
     Ok(rows
@@ -137,6 +141,8 @@ pub async fn query_uncited_steps(
         .query(&query)
         .bind(("task_node", task_node))
         .await
+        .map_err(surreal_err)?
+        .check()
         .map_err(surreal_err)?;
     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
     Ok(rows

@@ -94,6 +94,8 @@ async fn upsert_tool(
         .bind(("secret_requirements", secret_requirements))
         .bind(("is_host_tool", is_host_tool))
         .await
+        .map_err(surreal_err)?
+        .check()
         .map_err(surreal_err)?;
 
     Ok(())

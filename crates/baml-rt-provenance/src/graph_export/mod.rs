@@ -149,6 +149,8 @@ impl GraphExporter {
             .db()
             .query(&node_query)
             .await
+            .map_err(surreal_err)?
+            .check()
             .map_err(surreal_err)?;
         let node_rows: Vec<Value> = node_response.take(0).map_err(surreal_err)?;
 
@@ -176,6 +178,8 @@ impl GraphExporter {
             .db()
             .query(&edge_query)
             .await
+            .map_err(surreal_err)?
+            .check()
             .map_err(surreal_err)?;
         let edge_rows: Vec<Value> = edge_response.take(0).map_err(surreal_err)?;
 
@@ -201,6 +205,8 @@ impl GraphExporter {
                         )
                         .bind(("nid", nid))
                         .await
+                        .map_err(surreal_err)?
+                        .check()
                         .map_err(surreal_err)?;
                     let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
                     Ok::<Vec<Value>, ProvenanceError>(rows)
@@ -276,6 +282,8 @@ impl GraphExporter {
                 .query(&query)
                 .bind(("label", ctx_label))
                 .await
+                .map_err(surreal_err)?
+                .check()
                 .map_err(surreal_err)?;
             let rows: Vec<Value> = response.take(0).map_err(surreal_err)?;
             let mut ids: Vec<String> = rows
@@ -295,6 +303,8 @@ impl GraphExporter {
                     .db()
                     .query(&fallback)
                     .await
+                    .map_err(surreal_err)?
+                    .check()
                     .map_err(surreal_err)?;
                 let fb_rows: Vec<Value> = fb_response.take(0).map_err(surreal_err)?;
                 ids = fb_rows
@@ -330,6 +340,8 @@ impl GraphExporter {
             .query(&query)
             .bind(("task_node", task_node))
             .await
+            .map_err(surreal_err)?
+            .check()
             .map_err(surreal_err)?;
         let rows: Vec<Value> = response.take(0).map_err(surreal_err)?;
         // The to_id is the Context entity node_id (e.g. "context:ctx-1234-0").
