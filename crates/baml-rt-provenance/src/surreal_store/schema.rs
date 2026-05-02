@@ -50,6 +50,10 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_search_fts ON {TBL_PAYLOAD} FIELDS search_text FULLTEXT ANALYZER payload_analyzer BM25"),
     ];
     let batch = schema_queries.join("; ");
-    db.query(batch).await.map_err(map_surreal_error)?;
+    db.query(batch)
+        .await
+        .map_err(map_surreal_error)?
+        .check()
+        .map_err(map_surreal_error)?;
     Ok(())
 }

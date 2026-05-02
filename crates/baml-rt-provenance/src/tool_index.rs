@@ -5,7 +5,10 @@
 
 use baml_rt_tools::ToolFunctionMetadataExport;
 
-use crate::{error::Result, surreal_store::SurrealProvenanceStore};
+use crate::{
+    error::Result,
+    surreal_store::{SurrealProvenanceStore, map_surreal_error},
+};
 
 const TOOL_LABEL: &str = "ToolFunction";
 
@@ -41,10 +44,6 @@ pub async fn index_tools(
         upsert_tool(store, tool).await?;
     }
     Ok(())
-}
-
-fn surreal_err(e: surrealdb::Error) -> crate::error::ProvenanceError {
-    crate::error::ProvenanceError::Storage(Box::new(e))
 }
 
 async fn upsert_tool(
@@ -94,7 +93,9 @@ async fn upsert_tool(
         .bind(("secret_requirements", secret_requirements))
         .bind(("is_host_tool", is_host_tool))
         .await
-        .map_err(surreal_err)?;
+        .map_err(map_surreal_error)?
+        .check()
+        .map_err(map_surreal_error)?;
 
     Ok(())
 }

@@ -18,8 +18,9 @@ use super::{
     SurrealProvenanceStore,
     conversation_context_pipeline::ConversationContextBatch,
     helpers::{
-        has_meaningful_result, is_empty_object, json_value_from_embedded_string, map_surreal_error,
-        metadata_error, normalize_message_content, parse_json_object_field, query_take_zero,
+        check_and_take_zero, has_meaningful_result, is_empty_object,
+        json_value_from_embedded_string, map_surreal_error, metadata_error,
+        normalize_message_content, parse_json_object_field,
     },
     payload::{decode_payload_row, payload_id_for},
 };
@@ -53,13 +54,13 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
              ) ORDER BY event_order ASC, node_id ASC",
             scoped = context_scope::SCOPED_TO,
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("ctx_node_id", ctx_node_id))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
 
         let mut messages: Vec<ProvenanceContextMessage> = Vec::new();
         for row in &rows {
@@ -203,8 +204,8 @@ impl SurrealProvenanceStore {
         if let Some(after) = after_event_order {
             q = q.bind(("after_event_order", after));
         }
-        let mut response = q.await.map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let response = q.await.map_err(map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
 
         // Collect ToolCall node_ids, payload anchors, and Message node_ids for batch queries.
         let mut tool_call_node_ids: Vec<String> = Vec::new();

@@ -77,10 +77,10 @@ use baml_rt_core::{
 };
 pub use builder::{RemoteConfig, RemoteCredentials, SurrealBackend, SurrealStoreBuilder};
 use dashmap::DashMap;
+pub(crate) use helpers::{check_and_take_zero, map_surreal_error};
 use serde_json::Value;
 use surrealdb::{Surreal, engine::any::Any};
 
-use self::helpers::{map_surreal_error, query_take_zero};
 use crate::{
     error::{ProvenanceError, Result},
     id_semantics::{MessageEntityId, MessageEntityInput},
@@ -156,8 +156,8 @@ impl SurrealProvenanceStore {
         sql: &str,
         map_err: impl Fn(surrealdb::Error) -> E + Copy,
     ) -> std::result::Result<Vec<Value>, E> {
-        let mut response = self.db.query(sql).await.map_err(map_err)?;
-        query_take_zero(&mut response, map_err)
+        let response = self.db.query(sql).await.map_err(map_err)?;
+        check_and_take_zero(response, map_err)
     }
 
     pub(super) async fn query_sql_rows(&self, sql: &str) -> Result<Vec<Value>> {
@@ -177,7 +177,7 @@ impl SurrealProvenanceStore {
                WHERE to_id = $ctx_node AND rel_type = $scoped_rel AND from_label = 'Message'\
              ) AND props.a2a_activity_anchor = $anchor LIMIT 1"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&q)
             .bind(("ctx_node", ctx_node))
@@ -185,7 +185,7 @@ impl SurrealProvenanceStore {
             .bind(("anchor", activity_anchor.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         Ok(rows.first().and_then(|r| {
             r.get("node_id")
                 .and_then(|v| v.as_str())

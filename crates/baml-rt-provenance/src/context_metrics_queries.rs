@@ -8,16 +8,12 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use crate::{
-    error::{ProvenanceError, Result},
+    error::Result,
     id_semantics::context_entity_id_string,
-    surreal_store::SurrealProvenanceStore,
+    surreal_store::{SurrealProvenanceStore, check_and_take_zero, map_surreal_error},
     surreal_tables::{TBL_EDGE, TBL_NODE},
     vocabulary::{context_scope, semantic_labels},
 };
-
-fn surreal_err(e: surrealdb::Error) -> ProvenanceError {
-    ProvenanceError::Storage(Box::new(e))
-}
 
 pub type MetricsRow = HashMap<String, Value>;
 
@@ -41,13 +37,13 @@ pub async fn session_totals_by_context(
           AND props.a2a_usage_total_tokens IS NOT NULL \
         GROUP ALL"
     );
-    let mut resp = store
+    let response = store
         .db()
         .query(&query)
         .bind(("ctx_node", ctx_node))
         .await
-        .map_err(surreal_err)?;
-    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+        .map_err(map_surreal_error)?;
+    let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
     Ok(rows
         .into_iter()
         .filter_map(|v| {
@@ -76,13 +72,13 @@ pub async fn turn_totals_by_context(
            AND to_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
              WHERE to_id = $ctx_node AND rel_type = '{scoped}')"
     );
-    let mut edge_resp = store
+    let edge_response = store
         .db()
         .query(&edge_query)
         .bind(("ctx_node", ctx_node.clone()))
         .await
-        .map_err(surreal_err)?;
-    let edge_rows: Vec<Value> = edge_resp.take(0).map_err(surreal_err)?;
+        .map_err(map_surreal_error)?;
+    let edge_rows: Vec<Value> = check_and_take_zero(edge_response, map_surreal_error)?;
 
     let msg_ids: Vec<String> = edge_rows
         .iter()
@@ -99,7 +95,7 @@ pub async fn turn_totals_by_context(
 
     let mut msg_rows: Vec<Value> = Vec::new();
     for nid in &msg_ids {
-        let mut resp = store
+        let response = store
             .db()
             .query(format!(
                 "SELECT node_id, props.a2a_message_id AS message_id OMIT id \
@@ -107,8 +103,8 @@ pub async fn turn_totals_by_context(
             ))
             .bind(("nid", nid.clone()))
             .await
-            .map_err(surreal_err)?;
-        let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+            .map_err(map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         msg_rows.extend(rows);
     }
     let msg_map: HashMap<String, String> = msg_rows
@@ -122,7 +118,7 @@ pub async fn turn_totals_by_context(
 
     let mut llm_rows: Vec<Value> = Vec::new();
     for nid in &llm_ids {
-        let mut resp = store
+        let response = store
             .db()
             .query(format!(
                 "SELECT node_id, props OMIT id FROM {TBL_NODE} \
@@ -130,8 +126,8 @@ pub async fn turn_totals_by_context(
             ))
             .bind(("nid", nid.clone()))
             .await
-            .map_err(surreal_err)?;
-        let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+            .map_err(map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         llm_rows.extend(rows);
     }
     let llm_map: HashMap<String, Value> = llm_rows
@@ -227,13 +223,13 @@ pub async fn user_prompts_by_context(
           AND (props.a2a_role = 'user' OR props.a2a_role = 'ROLE_USER') \
         GROUP BY props.a2a_message_id"
     );
-    let mut resp = store
+    let response = store
         .db()
         .query(&query)
         .bind(("ctx_node", ctx_node))
         .await
-        .map_err(surreal_err)?;
-    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+        .map_err(map_surreal_error)?;
+    let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
     Ok(rows
         .into_iter()
         .filter_map(|v| {

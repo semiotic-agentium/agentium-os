@@ -9,8 +9,8 @@ use serde_json::{Map, Value};
 use super::{
     SurrealProvenanceStore,
     helpers::{
-        json_value_from_embedded_string, map_surreal_error, normalize_payload_text_query,
-        parse_json_object_field, query_take_zero,
+        check_and_take_zero, json_value_from_embedded_string, map_surreal_error,
+        normalize_payload_text_query, parse_json_object_field,
     },
     payload::{
         ParsedArchiveRef, archive_payload_from_record, archive_ref_for_activity,
@@ -76,13 +76,13 @@ impl SurrealProvenanceStore {
                AND from_id IN $ids \
                AND to_label = 'FailureClassification'"
         );
-        let mut edge_response = self
+        let edge_response = self
             .db
             .query(&edge_query)
             .bind(("ids", activity_ids.to_vec()))
             .await
             .map_err(map_surreal_error)?;
-        let edge_rows: Vec<Value> = query_take_zero(&mut edge_response, map_surreal_error)?;
+        let edge_rows: Vec<Value> = check_and_take_zero(edge_response, map_surreal_error)?;
 
         if edge_rows.is_empty() {
             return Ok(HashMap::new());
@@ -104,13 +104,13 @@ impl SurrealProvenanceStore {
             "SELECT node_id, props.a2a_failure_class AS failure_class, props.a2a_failure_evidence AS failure_evidence \
              FROM {TBL_NODE} WHERE node_id IN $ids"
         );
-        let mut fc_response = self
+        let fc_response = self
             .db
             .query(&fc_query)
             .bind(("ids", fc_node_ids))
             .await
             .map_err(map_surreal_error)?;
-        let fc_rows: Vec<Value> = query_take_zero(&mut fc_response, map_surreal_error)?;
+        let fc_rows: Vec<Value> = check_and_take_zero(fc_response, map_surreal_error)?;
 
         let mut fc_map: HashMap<String, (String, String)> = HashMap::new();
         for row in fc_rows {
@@ -186,13 +186,13 @@ impl SurrealProvenanceStore {
                  WHERE to_id = $ctx_node AND rel_type = '{scoped}' AND from_label = 'LlmCall') \
                AND props.a2a_duration_ms IS NOT NULL"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("ctx_node", ctx_node))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
 
         let mut out: HashMap<String, u64> = HashMap::new();
         for row in rows {
@@ -225,13 +225,13 @@ impl SurrealProvenanceStore {
                  WHERE to_id = $ctx_node AND rel_type = '{scoped}' AND from_label = 'ToolCall') \
                AND props.a2a_duration_ms IS NOT NULL"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("ctx_node", ctx_node))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
 
         let mut out: HashMap<String, u64> = HashMap::new();
         for row in rows {
@@ -712,8 +712,8 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
         for (k, v) in binds {
             q = q.bind((k, v));
         }
-        let mut response = q.await.map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let response = q.await.map_err(map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
 
         // Canonicalize rows to the public ops shape.
         let mut ops_rows: Vec<Map<String, Value>> = rows
