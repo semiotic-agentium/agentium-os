@@ -7,11 +7,12 @@
 use std::sync::Arc;
 
 use baml_rt_core::Result;
-use baml_rt_repository::RepositoryService;
-use baml_rt_tools::ToolAccessPolicy;
 use serde_json::Value;
 
-use crate::{config::ProvenanceConfig, routing::RunnerRegistry, runner::AgentRunner};
+use crate::{
+    routing::RunnerRegistry,
+    runner::{AgentRunner, AgentRunnerConfig},
+};
 
 /// Builder state: runner constructed; add agents via [`AgentRunner::deploy_by_hash`](crate::runner::AgentRunner::deploy_by_hash) before [`RunnerBuilder::build`](RunnerBuilder::build).
 pub struct Loading;
@@ -29,28 +30,8 @@ pub struct RunnerBuilder<S> {
 impl RunnerBuilder<Loading> {
     /// Start building: parse config and create empty runner + registry.
     /// Registry is wired to the runner so discovery/A2A see agents as they are deployed.
-    pub fn new(
-        provenance_config: ProvenanceConfig,
-        deployment_state: Arc<crate::deployment_state::DeploymentStateStore>,
-        access_policy: ToolAccessPolicy,
-        stream_idle_secs: Option<u64>,
-        claude_workspaces_base: Option<std::path::PathBuf>,
-        repository_url: String,
-        embedded_repository: Option<Arc<RepositoryService>>,
-        external_tools_dirs: Vec<std::path::PathBuf>,
-        sandbox_bind_roots: Vec<std::path::PathBuf>,
-    ) -> Result<Self> {
-        let runner = Arc::new(AgentRunner::new(
-            provenance_config,
-            deployment_state,
-            access_policy,
-            stream_idle_secs,
-            claude_workspaces_base,
-            repository_url,
-            embedded_repository,
-            external_tools_dirs,
-            sandbox_bind_roots,
-        )?);
+    pub fn new(config: AgentRunnerConfig) -> Result<Self> {
+        let runner = Arc::new(AgentRunner::new(config)?);
         // Wire the internal A2A router to the runner for cross-agent dispatch.
         runner.internal_a2a_router().set_runner(Arc::clone(&runner));
         let registry = Arc::new(RunnerRegistry(Arc::clone(&runner)));

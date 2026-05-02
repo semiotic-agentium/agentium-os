@@ -20,6 +20,8 @@ use baml_rt_core::{
 use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
+#[cfg(all(not(feature = "sandbox-provider"), test))]
+use baml_rt_tools::external_tools::sandbox::MockSandboxProvider;
 use baml_rt_tools::{
     BundleRegistrar, ExternalToolResolver, ManifestToolNames, SharedContextRefStore,
     ToolAccessPolicy, ToolRegistry,
@@ -31,8 +33,6 @@ use baml_rt_tools::{
     },
     register_manifest_tools_with_fallback,
 };
-#[cfg(test)]
-use baml_rt_tools::external_tools::sandbox::MockSandboxProvider;
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_system::SystemBundle;
 use serde_json::Value;

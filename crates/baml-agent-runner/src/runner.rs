@@ -73,6 +73,18 @@ fn parse_repository_entry_version(value: &serde_json::Value) -> Option<u32> {
     None
 }
 
+pub(crate) struct AgentRunnerConfig {
+    pub(crate) provenance_config: ProvenanceConfig,
+    pub(crate) deployment_state: Arc<crate::deployment_state::DeploymentStateStore>,
+    pub(crate) access_policy: ToolAccessPolicy,
+    pub(crate) stream_idle_secs: Option<u64>,
+    pub(crate) claude_workspaces_base: Option<std::path::PathBuf>,
+    pub(crate) repository_url: String,
+    pub(crate) embedded_repository: Option<Arc<RepositoryService>>,
+    pub(crate) external_tools_dirs: Vec<std::path::PathBuf>,
+    pub(crate) sandbox_bind_roots: Vec<std::path::PathBuf>,
+}
+
 /// Agent runner host: manages agents and composes the tool catalogue at startup.
 pub(crate) struct AgentRunner {
     pub(crate) agents: RwLock<HashMap<String, BootedAgent>>,
@@ -96,35 +108,25 @@ pub(crate) struct AgentRunner {
 }
 
 impl AgentRunner {
-    pub(crate) fn new(
-        provenance_config: ProvenanceConfig,
-        deployment_state: Arc<crate::deployment_state::DeploymentStateStore>,
-        access_policy: ToolAccessPolicy,
-        stream_idle_secs: Option<u64>,
-        claude_workspaces_base: Option<std::path::PathBuf>,
-        repository_url: String,
-        embedded_repository: Option<Arc<RepositoryService>>,
-        external_tools_dirs: Vec<std::path::PathBuf>,
-        sandbox_bind_roots: Vec<std::path::PathBuf>,
-    ) -> baml_rt_core::Result<Self> {
+    pub(crate) fn new(config: AgentRunnerConfig) -> baml_rt_core::Result<Self> {
         let routed_agents = std::sync::RwLock::new(HashMap::new());
         let internal_a2a_router = Arc::new(InternalA2aRouter::new());
         Ok(Self {
             agents: RwLock::new(HashMap::new()),
-            provenance_config,
-            deployment_state,
-            access_policy,
+            provenance_config: config.provenance_config,
+            deployment_state: config.deployment_state,
+            access_policy: config.access_policy,
             routed_agents,
             internal_a2a_router,
-            stream_idle_secs,
-            claude_workspaces_base,
-            repository_url,
-            embedded_repository,
+            stream_idle_secs: config.stream_idle_secs,
+            claude_workspaces_base: config.claude_workspaces_base,
+            repository_url: config.repository_url,
+            embedded_repository: config.embedded_repository,
             repository_http_client: reqwest::Client::new(),
             cluster_manager: std::sync::OnceLock::new(),
             shared_context_ref_store: SharedContextRefStore::new(),
-            external_tools_dirs,
-            sandbox_bind_roots,
+            external_tools_dirs: config.external_tools_dirs,
+            sandbox_bind_roots: config.sandbox_bind_roots,
         })
     }
 

@@ -224,10 +224,7 @@ unknown = true
         assert_eq!(resolved.external_tools_source, PathSource::Env);
         assert_eq!(
             resolved.external_tools_dirs,
-            vec![
-                PathBuf::from("/from-env-a"),
-                PathBuf::from("/from-env-b"),
-            ]
+            vec![PathBuf::from("/from-env-a"), PathBuf::from("/from-env-b"),]
         );
 
         remove_env(EXTERNAL_TOOLS_DIR_ENV);
@@ -252,7 +249,10 @@ unknown = true
 
         let resolved = resolve_paths(&file);
         assert_eq!(resolved.external_tools_source, PathSource::File);
-        assert_eq!(resolved.external_tools_dirs, vec![PathBuf::from("/from-file")]);
+        assert_eq!(
+            resolved.external_tools_dirs,
+            vec![PathBuf::from("/from-file")]
+        );
         assert_eq!(resolved.sandbox_bind_source, PathSource::File);
         assert_eq!(
             resolved.sandbox_bind_roots,
@@ -289,7 +289,10 @@ unknown = true
 
         let resolved = resolve_paths(&file);
         assert_eq!(resolved.external_tools_source, PathSource::File);
-        assert_eq!(resolved.external_tools_dirs, vec![PathBuf::from("/from-file")]);
+        assert_eq!(
+            resolved.external_tools_dirs,
+            vec![PathBuf::from("/from-file")]
+        );
 
         remove_env(EXTERNAL_TOOLS_DIR_ENV);
     }
