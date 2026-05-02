@@ -45,6 +45,15 @@ export interface InternalA2aTarget { agent_package: string;
 agent_instance_id: string;
  }
 
+export interface PersonaMetaOnly { reason: string;
+ }
+
+export interface PersonaNeedTaskClarification { question: string;
+ }
+
+export interface PersonaReadyIntent { inferred_intent: string;
+ }
+
 export interface SelectedAgent { agent_package: string;
 agent_instance_id: string;
  }
@@ -120,13 +129,13 @@ citations: string[];
 
 declare global {
 
+declare function ClassifyPersonaCoordinatorTurn(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<PersonaReadyIntent | PersonaNeedTaskClarification | PersonaMetaOnly>;
+
 declare function DecideDelegationAction(args: { goal: string; agent_package: string; agent_instance_id: string } & { __baml_invocation_token?: string }): Promise<SystemInternalA2aSessionPlan | string | null>;
 
 declare function FormatCapabilities(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
 
 declare function GetDiscoverAgentsPlan(args: { inferred_intent: string } & { __baml_invocation_token?: string }): Promise<SystemDiscoverAgentsSessionPlan>;
-
-declare function InferDiscoveryIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
 declare function MakeStructuredPlan(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<StandardStructuredPlan>;
 
