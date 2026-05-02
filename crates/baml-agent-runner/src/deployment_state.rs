@@ -6,6 +6,7 @@ use baml_rt_core::{
         CallbackStore, CancelCallbackSelector, ScheduleCallbackRequest, ScheduleCallbackResult,
         StoredCallback,
     },
+    clock_events,
     event_subscription::EventSourceKey,
     ingress_store::{IngressId, IngressItem, IngressStore},
     now_unix_ms,
@@ -564,7 +565,7 @@ impl DeploymentStateStore {
             "cancelled",
             None,
             None,
-            Some(now_unix_ms("system_callback_cancel")),
+            Some(now_unix_ms(clock_events::SYSTEM_CALLBACK_CANCEL)),
         )
         .await?;
         debug!(

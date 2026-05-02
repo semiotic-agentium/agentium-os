@@ -8,7 +8,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use baml_rt_core::{
-    BamlRtError, ExponentialBackoff, Result,
+    BamlRtError, ExponentialBackoff, Result, clock_events,
     event_subscription::EventSourceKey,
     ingress_store::{IngressId, IngressItem, IngressStore},
     time::{now_unix_ms, now_unix_secs},
@@ -334,7 +334,7 @@ impl SocketModeReceiver {
         };
 
         // 4. Normalize.
-        let emitted_at = now_unix_secs("socket_mode_normalize");
+        let emitted_at = now_unix_secs(clock_events::SOCKET_MODE_NORMALIZE);
         let ctx = SocketModeEventContext {
             event: &payload.event,
             event_id,
@@ -387,7 +387,7 @@ impl SocketModeReceiver {
                 ingress_id: ingress_id.clone(),
                 source_key: channel_meta.source_key.clone(),
                 payload_json,
-                enqueued_at_unix_ms: now_unix_ms("socket_mode_enqueue"),
+                enqueued_at_unix_ms: now_unix_ms(clock_events::SOCKET_MODE_ENQUEUE),
             })
             .await?;
 

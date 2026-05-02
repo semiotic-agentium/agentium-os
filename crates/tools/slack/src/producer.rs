@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::{
     AgentDispatchRoutingKey, BamlRtError, EventSchemaVersion, EventSourceKind, ProducedEvent,
-    Result,
+    Result, clock_events,
     event_subscription::EventSourceKey,
     ingress_store::{IngressId, IngressItem},
 };
@@ -344,7 +344,7 @@ impl SlackEventProducer {
         let oldest_param = match oldest {
             Some(ts) => ts.to_string(),
             None => {
-                let lookback = baml_rt_core::now_unix_secs("slack_lookback")
+                let lookback = baml_rt_core::now_unix_secs(clock_events::SLACK_LOOKBACK)
                     .saturating_sub(INITIAL_LOOKBACK_SECS);
                 format!("{lookback}.000000")
             }
@@ -581,10 +581,10 @@ impl EventProducer for SlackEventProducer {
             &source_key,
             &self.channel.display_label(),
             &messages,
-            baml_rt_core::now_unix_secs("slack_poll_normalize"),
+            baml_rt_core::now_unix_secs(clock_events::SLACK_POLL_NORMALIZE),
         );
         if let Some(store) = ingress_store() {
-            let enqueued_at_unix_ms = baml_rt_core::now_unix_ms("slack_ingress");
+            let enqueued_at_unix_ms = baml_rt_core::now_unix_ms(clock_events::SLACK_INGRESS);
             let payload_json = serde_json::to_string(&normalized_batch).map_err(|err| {
                 BamlRtError::InvalidArgument(format!(
                     "failed to serialize Slack ingress payload: {err}"
@@ -636,7 +636,7 @@ impl EventProducer for SlackInboxEventProducer {
                 "support/slack inbox producer requires an installed ingress store".to_string(),
             )
         })?;
-        let now_unix_ms = baml_rt_core::now_unix_ms("slack_ingress");
+        let now_unix_ms = baml_rt_core::now_unix_ms(clock_events::SLACK_INGRESS);
         let checkpoint_state = SlackInboxProducerCheckpoint::from_checkpoint(checkpoint);
         let reconciled_deliveries = !checkpoint_state.delivered_ingress_ids.is_empty();
         if reconciled_deliveries {

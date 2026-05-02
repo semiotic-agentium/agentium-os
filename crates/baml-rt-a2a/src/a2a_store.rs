@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 use async_trait::async_trait;
 use baml_rt_conversation::view::ProvenanceConversationContextItem;
 use baml_rt_core::{
-    BamlRtError, Citation, Result,
+    BamlRtError, Citation, Result, clock_events,
     ids::{AgentId, ContextId, TaskId},
 };
 use baml_rt_observability::metrics;
@@ -447,7 +447,7 @@ impl ProvenanceTaskStore {
 }
 
 fn now_millis() -> u64 {
-    baml_rt_core::now_unix_ms("a2a_store")
+    baml_rt_core::now_unix_ms(clock_events::A2A_STORE)
 }
 
 fn require_context_id(context_id: Option<ContextId>, operation: &str) -> Result<ContextId> {

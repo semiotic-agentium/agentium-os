@@ -5,7 +5,10 @@
 //! material that was polled, through interpretation, to the tasks produced
 //! from it.
 
-use baml_rt_core::ids::{ActivityAnchorId, ContextId, CorrelationId, TaskId};
+use baml_rt_core::{
+    clock_events,
+    ids::{ActivityAnchorId, ContextId, CorrelationId, TaskId},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
@@ -128,7 +131,7 @@ impl InterpretationRequestEvent {
         Self {
             schema_version: INTERPRETATION_EVENT_SCHEMA_VERSION.to_string(),
             event_id,
-            emitted_at_unix: baml_rt_core::now_unix_secs("task_daemon_interpretation_request"),
+            emitted_at_unix: baml_rt_core::now_unix_secs(clock_events::TASK_DAEMON_INTERPRETATION),
             source,
             project,
             provenance: normalized_provenance,
@@ -192,7 +195,7 @@ impl InterpretationResultEvent {
             schema_version: INTERPRETATION_EVENT_SCHEMA_VERSION.to_string(),
             event_id,
             request_event_id: request.event_id.clone(),
-            emitted_at_unix: baml_rt_core::now_unix_secs("task_daemon_interpretation_result"),
+            emitted_at_unix: baml_rt_core::now_unix_secs(clock_events::TASK_DAEMON_INTERPRETATION),
             source: request.source.clone(),
             project: request.project.clone(),
             messages_scanned,

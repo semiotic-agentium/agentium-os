@@ -28,6 +28,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::{
+    clock_events,
     context::RuntimeScope,
     correlation,
     ids::{AgentId, ContextId, CorrelationId, IntentId, PlanId, PlanStepId, TaskId},
@@ -625,7 +626,7 @@ impl Envelope {
         Self {
             scope,
             correlation_id: correlation::current_correlation_id(),
-            timestamp_ms: crate::now_unix_ms("bus_envelope"),
+            timestamp_ms: crate::now_unix_ms(clock_events::BUS_ENVELOPE),
             payload,
         }
     }

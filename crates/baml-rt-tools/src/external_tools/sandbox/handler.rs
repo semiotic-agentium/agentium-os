@@ -7,7 +7,9 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, ClassifiedToolError, ErrorDisposition, Result, ids::AgentId};
+use baml_rt_core::{
+    BamlRtError, ClassifiedToolError, ErrorDisposition, Result, clock_events, ids::AgentId,
+};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -182,7 +184,7 @@ impl ToolSession for SandboxToolSession {
                         tool_name: self.tool_name.to_string(),
                         reason,
                         consecutive_failures,
-                        started_at_ms: baml_rt_core::now_unix_ms("sandbox_quarantine"),
+                        started_at_ms: baml_rt_core::now_unix_ms(clock_events::SANDBOX_QUARANTINE),
                     });
                 }
                 Err(with_backoff_retry_after(err, backoff).into())

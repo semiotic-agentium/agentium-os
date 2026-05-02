@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use baml_rt_core::Result;
+use baml_rt_core::{Result, clock_events};
 use baml_rt_tools::{BundleName, ConfigResolver};
 use serde_json::Value;
 use surrealdb::{Surreal, engine::any::Any};
@@ -46,7 +46,7 @@ fn map_err(e: surrealdb::Error) -> ConfigStoreError {
 }
 
 fn now_ms() -> UnixMs {
-    UnixMs(baml_rt_core::now_unix_ms("config_store"))
+    UnixMs(baml_rt_core::now_unix_ms(clock_events::CONFIG_STORE))
 }
 
 pub struct SurrealConfigStore {
