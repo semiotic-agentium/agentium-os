@@ -265,27 +265,27 @@ baml-rt/
 
 The project uses [just](https://github.com/casey/just) as a command runner. A `.env` file is loaded automatically (`set dotenv-load`). Run `just --list` to see all available recipes.
 
-| Recipe | Usage | Description |
-|---|---|---|
-| `just fmt` | `just fmt` | Run `cargo fmt --all` to format the entire workspace. |
-| `just test` | `just test` | Full nextest suite with CI-parity feature flags. Requires `cargo-nextest` and `OPENROUTER_API_KEY` for LLM tests. |
-| `just test-build` | `just test-build` | Compile-only (no execution) — useful as a quick pre-push sanity check. |
-| `just test-crate <crate>` | `just test-crate baml-rt-provenance` | Run tests for a single crate with the same CI feature flags. |
-| `just test-unit` | `just test-unit` | Run only unit tests that need neither FalkorDB nor API keys. |
-| `just clickup-agent` | `just clickup-agent` | Build and run the ClickUp agent: packages it via `baml-agent-builder` then launches the runner in A2A stdio mode. Uses in-memory provenance (embedded SurrealDB) by default. |
-| `just clickup-agent-provenance` | `just clickup-agent-provenance` | Same as `clickup-agent`, but persists provenance to `provenance.db` and exposes HTTP API endpoints (including Mermaid and context metrics). |
-| `just notion-agent` | `just notion-agent` | Build and run the Notion agent in A2A stdio mode (HTTP tools enabled). Uses in-memory provenance by default. |
-| `just notion-agent-provenance` | `just notion-agent-provenance` | Same as `notion-agent`, but persists provenance to `provenance.db`. |
-| `just slack-agent` | `just slack-agent` | Build and run the Slack todo-extraction agent in A2A stdio mode (read-only Slack tool). |
-| `just slack-agent-provenance` | `just slack-agent-provenance` | Same as `slack-agent`, but persists provenance to `provenance.db`. |
-| `just coordinator-agent` | `just coordinator-agent` | Build and run `coordinator-agent` with `notion-agent` loaded so delegation via `system/internal_a2a` works in stdio mode. |
-| `just coordinator-agent-provenance` | `just coordinator-agent-provenance` | Same as `coordinator-agent`, but persists provenance to `provenance.db`. |
-| `just notion-demo` | `just notion-demo` | Start the Notion HTTP demo runner and stream one request; writes SSE output and captures context/task IDs when present. |
-| `just notion-demo-stop` | `just notion-demo-stop` | Stop the background runner started by `notion-demo`. |
-| `just slack-demo` | `just slack-demo` | Start the Slack HTTP demo runner and stream one todo-extraction request. |
-| `just slack-demo-stop` | `just slack-demo-stop` | Stop the background runner started by `slack-demo`. |
-| `just coordinator-demo` | `just coordinator-demo` | Start coordinator + notion HTTP demo runner and stream one coordinated request via `coordinator-agent`. |
-| `just coordinator-demo-stop` | `just coordinator-demo-stop` | Stop the background runner started by `coordinator-demo`. |
+| Recipe                              | Usage                                | Description                                                                                                                                                                  |
+| ----------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just fmt`                          | `just fmt`                           | Run `cargo fmt --all` to format the entire workspace.                                                                                                                        |
+| `just test`                         | `just test`                          | Full nextest suite with CI-parity feature flags. Requires `cargo-nextest` and `OPENROUTER_API_KEY` for LLM tests.                                                            |
+| `just test-build`                   | `just test-build`                    | Compile-only (no execution) — useful as a quick pre-push sanity check.                                                                                                       |
+| `just test-crate <crate>`           | `just test-crate baml-rt-provenance` | Run tests for a single crate with the same CI feature flags.                                                                                                                 |
+| `just test-unit`                    | `just test-unit`                     | Run only unit tests that need neither FalkorDB nor API keys.                                                                                                                 |
+| `just clickup-agent`                | `just clickup-agent`                 | Build and run the ClickUp agent: packages it via `baml-agent-builder` then launches the runner in A2A stdio mode. Uses in-memory provenance (embedded SurrealDB) by default. |
+| `just clickup-agent-provenance`     | `just clickup-agent-provenance`      | Same as `clickup-agent`, but persists provenance to `provenance.db` and exposes HTTP API endpoints (including Mermaid and context metrics).                                  |
+| `just notion-agent`                 | `just notion-agent`                  | Build and run the Notion agent in A2A stdio mode (HTTP tools enabled). Uses in-memory provenance by default.                                                                 |
+| `just notion-agent-provenance`      | `just notion-agent-provenance`       | Same as `notion-agent`, but persists provenance to `provenance.db`.                                                                                                          |
+| `just slack-agent`                  | `just slack-agent`                   | Build and run the Slack todo-extraction agent in A2A stdio mode (read-only Slack tool).                                                                                      |
+| `just slack-agent-provenance`       | `just slack-agent-provenance`        | Same as `slack-agent`, but persists provenance to `provenance.db`.                                                                                                           |
+| `just coordinator-agent`            | `just coordinator-agent`             | Build and run `coordinator-agent` with `notion-agent` loaded so delegation via `system/internal_a2a` works in stdio mode.                                                    |
+| `just coordinator-agent-provenance` | `just coordinator-agent-provenance`  | Same as `coordinator-agent`, but persists provenance to `provenance.db`.                                                                                                     |
+| `just notion-demo`                  | `just notion-demo`                   | Start the Notion HTTP demo runner and stream one request; writes SSE output and captures context/task IDs when present.                                                      |
+| `just notion-demo-stop`             | `just notion-demo-stop`              | Stop the background runner started by `notion-demo`.                                                                                                                         |
+| `just slack-demo`                   | `just slack-demo`                    | Start the Slack HTTP demo runner and stream one todo-extraction request.                                                                                                     |
+| `just slack-demo-stop`              | `just slack-demo-stop`               | Stop the background runner started by `slack-demo`.                                                                                                                          |
+| `just coordinator-demo`             | `just coordinator-demo`              | Start coordinator + notion HTTP demo runner and stream one coordinated request via `coordinator-agent`.                                                                      |
+| `just coordinator-demo-stop`        | `just coordinator-demo-stop`         | Stop the background runner started by `coordinator-demo`.                                                                                                                    |
 
 For a provenance-first walkthrough of the Notion flow, see `docs/notion-demo.md`.
 For Slack auth/setup and demo notes, see `docs/slack-tool.md`.
@@ -305,6 +305,7 @@ cargo bench -p baml-rt-provenance --bench drift_llm_completed
 ```
 
 Notes:
+
 - First run can take longer due to build and warm-up.
 - If you see old comparison output, Criterion is comparing against a previous baseline in `target/criterion`.
 
