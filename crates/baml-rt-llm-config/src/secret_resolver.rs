@@ -127,6 +127,15 @@ impl std::fmt::Debug for SecretValue {
     }
 }
 
+/// Map placeholder to secret-store key: `"vault:KEY"` → `KEY`, `"env.VAR"` → `VAR` (for compat),
+/// else as-is.
+fn placeholder_to_key(placeholder: &str) -> &str {
+    let s = placeholder.trim();
+    s.strip_prefix("vault:")
+        .or_else(|| s.strip_prefix("env."))
+        .unwrap_or(s)
+}
+
 /// Resolves secret placeholders (e.g. `env.OPENROUTER_API_KEY` or vault keys) to actual values.
 pub trait SecretResolver: Send + Sync {
     /// Resolve a placeholder to the secret value. Returns None if not found or not applicable.
@@ -341,19 +350,11 @@ impl FnoxFileSecretResolver {
         }
         None
     }
-
-    /// Map placeholder to secret-store key: "vault:KEY" → KEY, "env.VAR" → VAR (for compat), else as-is.
-    fn placeholder_to_key(placeholder: &str) -> &str {
-        let s = placeholder.trim();
-        s.strip_prefix("vault:")
-            .or_else(|| s.strip_prefix("env."))
-            .unwrap_or(s)
-    }
 }
 
 impl SecretResolver for FnoxFileSecretResolver {
     fn resolve(&self, placeholder: &str) -> Option<SecretValue> {
-        let key = StoreKey::from(Self::placeholder_to_key(placeholder));
+        let key = StoreKey::from(placeholder_to_key(placeholder));
         self.cache.get(&key).cloned()
     }
 
@@ -383,18 +384,11 @@ impl OverlaySecretResolver {
             overlay: Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
     }
-
-    fn placeholder_to_key(placeholder: &str) -> &str {
-        let s = placeholder.trim();
-        s.strip_prefix("vault:")
-            .or_else(|| s.strip_prefix("env."))
-            .unwrap_or(s)
-    }
 }
 
 impl SecretResolver for OverlaySecretResolver {
     fn resolve(&self, placeholder: &str) -> Option<SecretValue> {
-        let request = SecretRequestName::from(Self::placeholder_to_key(placeholder));
+        let request = SecretRequestName::from(placeholder_to_key(placeholder));
         let overlay_result = {
             let guard = match self.overlay.read() {
                 Ok(g) => g,
@@ -579,5 +573,42 @@ mod tests {
             result.is_none(),
             "whitespace-only env value should be skipped"
         );
+    }
+
+    // ── placeholder_to_key ───────────────────────────────────────────────
+
+    #[test]
+    fn placeholder_to_key_strips_vault_prefix() {
+        assert_eq!(
+            placeholder_to_key("vault:OPENROUTER_API_KEY"),
+            "OPENROUTER_API_KEY"
+        );
+    }
+
+    #[test]
+    fn placeholder_to_key_strips_env_prefix() {
+        assert_eq!(
+            placeholder_to_key("env.OPENROUTER_API_KEY"),
+            "OPENROUTER_API_KEY"
+        );
+    }
+
+    #[test]
+    fn placeholder_to_key_returns_unprefixed_as_is() {
+        assert_eq!(
+            placeholder_to_key("OPENROUTER_API_KEY"),
+            "OPENROUTER_API_KEY"
+        );
+    }
+
+    #[test]
+    fn placeholder_to_key_trims_before_stripping() {
+        assert_eq!(placeholder_to_key("  vault:KEY  "), "KEY");
+        assert_eq!(placeholder_to_key("\tenv.KEY\n"), "KEY");
+    }
+
+    #[test]
+    fn placeholder_to_key_only_strips_first_match() {
+        assert_eq!(placeholder_to_key("vault:env.KEY"), "env.KEY");
     }
 }
