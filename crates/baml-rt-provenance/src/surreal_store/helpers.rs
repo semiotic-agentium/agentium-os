@@ -27,10 +27,6 @@ pub(super) fn map_surreal_error(e: surrealdb::Error) -> ProvenanceError {
 
 /// Validate every statement in a SurrealDB [`surrealdb::IndexedResults`] via
 /// [`surrealdb::IndexedResults::check`] before deserializing statement `0` as JSON object rows.
-///
-/// Without `.check()`, server-side errors against individual statements in a multi-statement
-/// query are silently swallowed by the SDK. Calling `.take(0)` only surfaces errors on the
-/// indexed statement, leaving sibling errors invisible to the caller.
 #[inline]
 pub(super) fn check_and_take_zero<E>(
     response: surrealdb::IndexedResults,

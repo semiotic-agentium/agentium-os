@@ -391,9 +391,6 @@ mod tests {
             .expect("connect mem");
         db.use_ns("t").use_db("t").await.expect("use ns/db");
 
-        // First statement is valid; the second triggers a runtime error.
-        // Without `.check()`, the SDK reports overall success — the silent-swallow
-        // behavior this issue is fixing.
         let batch = "DEFINE TABLE IF NOT EXISTS ok SCHEMAFULL; THROW 'inner statement failed';";
         let response = db
             .query(batch)
