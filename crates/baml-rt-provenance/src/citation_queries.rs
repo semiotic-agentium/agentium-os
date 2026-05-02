@@ -19,14 +19,10 @@ use baml_rt_core::Citation;
 use serde_json::Value;
 
 use crate::{
-    error::{ProvenanceError, Result},
-    surreal_store::SurrealProvenanceStore,
+    error::Result,
+    surreal_store::{SurrealProvenanceStore, check_and_take_zero, map_surreal_error},
     surreal_tables::{TBL_EDGE, TBL_NODE},
 };
-
-fn surreal_err(e: surrealdb::Error) -> ProvenanceError {
-    ProvenanceError::Storage(Box::new(e))
-}
 
 /// Citation entry returned by query functions.
 #[derive(Debug, Clone)]
@@ -62,15 +58,13 @@ pub async fn query_step_citations(
             WHERE from_id = $task_exec AND rel_type = '{task_call}' AND to_label = 'LlmCall') \
           AND props.citations IS NOT NONE"
     );
-    let mut resp = store
+    let response = store
         .db()
         .query(&query)
         .bind(("task_exec", task_exec))
         .await
-        .map_err(surreal_err)?
-        .check()
-        .map_err(surreal_err)?;
-    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+        .map_err(map_surreal_error)?;
+    let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
     Ok(rows
         .into_iter()
         .filter_map(|v| parse_citation_row(&v))
@@ -99,15 +93,13 @@ pub async fn query_plan_citations(
             WHERE to_id = $plan_node AND rel_type = '{derived}' AND from_label = 'PlanStep') \
           AND props.citations IS NOT NONE"
     );
-    let mut resp = store
+    let response = store
         .db()
         .query(&query)
         .bind(("plan_node", plan_node_id))
         .await
-        .map_err(surreal_err)?
-        .check()
-        .map_err(surreal_err)?;
-    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+        .map_err(map_surreal_error)?;
+    let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
     Ok(rows
         .into_iter()
         .filter_map(|v| parse_citation_row(&v))
@@ -136,15 +128,13 @@ pub async fn query_uncited_steps(
             AND rel_type = '{derived}' AND from_label = 'PlanStep') \
           AND (props.citations IS NONE OR (type::is::array(props.citations) AND array::len(props.citations) = 0))"
     );
-    let mut resp = store
+    let response = store
         .db()
         .query(&query)
         .bind(("task_node", task_node))
         .await
-        .map_err(surreal_err)?
-        .check()
-        .map_err(surreal_err)?;
-    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+        .map_err(map_surreal_error)?;
+    let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
     Ok(rows
         .into_iter()
         .map(|v| CitationEntry {

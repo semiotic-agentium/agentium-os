@@ -33,13 +33,9 @@ use crate::{
     graph_model::GraphNodeLabel,
     id_semantics::context_entity_id_string,
     spans,
-    surreal_store::SurrealProvenanceStore,
+    surreal_store::{SurrealProvenanceStore, check_and_take_zero, map_surreal_error},
     vocabulary::{a2a, context_scope, message_directions, prov, storage_safe},
 };
-
-fn surreal_err(e: surrealdb::Error) -> ProvenanceError {
-    ProvenanceError::Storage(Box::new(e))
-}
 
 // ── Core types ──────────────────────────────────────────────────────────────
 
@@ -144,15 +140,13 @@ impl GraphExporter {
         let node_query = format!(
             "SELECT node_id, label, props OMIT id FROM prov_node WHERE node_id IN {scoped_ids_subquery}"
         );
-        let mut node_response = self
+        let node_response = self
             .store
             .db()
             .query(&node_query)
             .await
-            .map_err(surreal_err)?
-            .check()
-            .map_err(surreal_err)?;
-        let node_rows: Vec<Value> = node_response.take(0).map_err(surreal_err)?;
+            .map_err(map_surreal_error)?;
+        let node_rows: Vec<Value> = check_and_take_zero(node_response, map_surreal_error)?;
 
         if node_rows.is_empty() {
             tracing::debug!(context_id = %context_id, "no scoped nodes found");
@@ -173,15 +167,13 @@ impl GraphExporter {
             "SELECT from_id, from_label, to_id, to_label, rel_type, props OMIT id FROM prov_edge \
              WHERE from_id IN {scoped_ids_subquery} AND rel_type != '{scoped_to}'"
         );
-        let mut edge_response = self
+        let edge_response = self
             .store
             .db()
             .query(&edge_query)
             .await
-            .map_err(surreal_err)?
-            .check()
-            .map_err(surreal_err)?;
-        let edge_rows: Vec<Value> = edge_response.take(0).map_err(surreal_err)?;
+            .map_err(map_surreal_error)?;
+        let edge_rows: Vec<Value> = check_and_take_zero(edge_response, map_surreal_error)?;
 
         // Collect target node IDs not in the scoped set (e.g. AgentRuntimeInstance)
         let extra_ids: HashSet<String> = edge_rows
@@ -197,7 +189,7 @@ impl GraphExporter {
                 let store = Arc::clone(&self.store);
                 let nid = extra_id.clone();
                 async move {
-                    let mut resp = store
+                    let response = store
                         .db()
                         .query(
                             "SELECT node_id, label, props OMIT id FROM prov_node \
@@ -205,10 +197,8 @@ impl GraphExporter {
                         )
                         .bind(("nid", nid))
                         .await
-                        .map_err(surreal_err)?
-                        .check()
-                        .map_err(surreal_err)?;
-                    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+                        .map_err(map_surreal_error)?;
+                    let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
                     Ok::<Vec<Value>, ProvenanceError>(rows)
                 }
             }))
@@ -276,16 +266,14 @@ impl GraphExporter {
         let result = async {
             let ctx_label = context_scope::LABEL;
             let query = "SELECT node_id OMIT id FROM prov_node WHERE label = $label".to_string();
-            let mut response = self
+            let response = self
                 .store
                 .db()
                 .query(&query)
                 .bind(("label", ctx_label))
                 .await
-                .map_err(surreal_err)?
-                .check()
-                .map_err(surreal_err)?;
-            let rows: Vec<Value> = response.take(0).map_err(surreal_err)?;
+                .map_err(map_surreal_error)?;
+            let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
             let mut ids: Vec<String> = rows
                 .iter()
                 .filter_map(|r| r.get("node_id").and_then(Value::as_str).map(String::from))
@@ -298,15 +286,13 @@ impl GraphExporter {
                     "SELECT DISTINCT to_id OMIT id FROM prov_edge \
                      WHERE rel_type = '{scoped}' AND to_label = '{ctx_label}'"
                 );
-                let mut fb_response = self
+                let fb_response = self
                     .store
                     .db()
                     .query(&fallback)
                     .await
-                    .map_err(surreal_err)?
-                    .check()
-                    .map_err(surreal_err)?;
-                let fb_rows: Vec<Value> = fb_response.take(0).map_err(surreal_err)?;
+                    .map_err(map_surreal_error)?;
+                let fb_rows: Vec<Value> = check_and_take_zero(fb_response, map_surreal_error)?;
                 ids = fb_rows
                     .iter()
                     .filter_map(|r| r.get("to_id").and_then(Value::as_str).map(String::from))
@@ -334,16 +320,14 @@ impl GraphExporter {
             "SELECT to_id OMIT id FROM prov_edge \
              WHERE from_id = $task_node AND rel_type = '{scoped}' LIMIT 1"
         );
-        let mut response = self
+        let response = self
             .store
             .db()
             .query(&query)
             .bind(("task_node", task_node))
             .await
-            .map_err(surreal_err)?
-            .check()
-            .map_err(surreal_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(surreal_err)?;
+            .map_err(map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         // The to_id is the Context entity node_id (e.g. "context:ctx-1234-0").
         // Extract the raw context_id by stripping the "context:" prefix.
         let ctx_node_id = rows

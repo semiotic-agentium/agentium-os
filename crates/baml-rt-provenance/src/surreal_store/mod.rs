@@ -77,10 +77,10 @@ use baml_rt_core::{
 };
 pub use builder::{RemoteConfig, RemoteCredentials, SurrealBackend, SurrealStoreBuilder};
 use dashmap::DashMap;
+pub(crate) use helpers::{check_and_take_zero, map_surreal_error};
 use serde_json::Value;
 use surrealdb::{Surreal, engine::any::Any};
 
-use self::helpers::{check_and_take_zero, map_surreal_error};
 use crate::{
     error::{ProvenanceError, Result},
     id_semantics::{MessageEntityId, MessageEntityInput},

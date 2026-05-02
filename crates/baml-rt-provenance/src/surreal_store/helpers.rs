@@ -21,14 +21,14 @@ pub(super) fn parse_json_object_field(value: &Value) -> Option<Value> {
     }
 }
 
-pub(super) fn map_surreal_error(e: surrealdb::Error) -> ProvenanceError {
+pub(crate) fn map_surreal_error(e: surrealdb::Error) -> ProvenanceError {
     ProvenanceError::Storage(Box::new(e))
 }
 
 /// Validate every statement in a SurrealDB [`surrealdb::IndexedResults`] via
 /// [`surrealdb::IndexedResults::check`] before deserializing statement `0` as JSON object rows.
 #[inline]
-pub(super) fn check_and_take_zero<E>(
+pub(crate) fn check_and_take_zero<E>(
     response: surrealdb::IndexedResults,
     map_err: impl Fn(surrealdb::Error) -> E + Copy,
 ) -> std::result::Result<Vec<Value>, E> {

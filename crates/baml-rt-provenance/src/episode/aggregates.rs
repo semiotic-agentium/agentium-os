@@ -5,15 +5,11 @@ use serde_json::Value;
 
 use super::TokenSummary;
 use crate::{
-    error::{ProvenanceError, Result},
+    error::Result,
     id_semantics::task_execution_activity_id_string,
-    surreal_store::SurrealProvenanceStore,
+    surreal_store::{SurrealProvenanceStore, check_and_take_zero, map_surreal_error},
     surreal_tables::{TBL_EDGE, TBL_NODE},
 };
-
-fn surreal_err(e: surrealdb::Error) -> ProvenanceError {
-    ProvenanceError::Storage(Box::new(e))
-}
 
 fn json_u64(v: &Value) -> Option<u64> {
     v.as_u64()
@@ -46,15 +42,13 @@ pub(crate) async fn token_summary_for_task(
         d = storage_safe::A2A_DURATION_MS,
         lbl = node_labels::LLM_CALL,
     );
-    let mut resp = store
+    let response = store
         .db()
         .query(&query)
         .bind(("task_exec", task_exec))
         .await
-        .map_err(surreal_err)?
-        .check()
-        .map_err(surreal_err)?;
-    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+        .map_err(map_surreal_error)?;
+    let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
     let Some(row) = rows.first().and_then(|v| v.as_object()) else {
         return Ok(TokenSummary::default());
     };
@@ -88,15 +82,13 @@ pub(crate) async fn llm_earliest_timestamp_ms(
         t = storage_safe::PROV_TIME,
         lbl = node_labels::LLM_CALL,
     );
-    let mut resp = store
+    let response = store
         .db()
         .query(&query)
         .bind(("task_exec", task_exec))
         .await
-        .map_err(surreal_err)?
-        .check()
-        .map_err(surreal_err)?;
-    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+        .map_err(map_surreal_error)?;
+    let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
     Ok(rows
         .first()
         .and_then(|r| r.get("earliest"))
