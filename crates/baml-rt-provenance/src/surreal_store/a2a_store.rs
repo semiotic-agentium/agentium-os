@@ -7,7 +7,7 @@ use baml_rt_vocabulary::{
 };
 use serde_json::Value;
 
-use super::{SurrealProvenanceStore, helpers::query_take_zero};
+use super::{SurrealProvenanceStore, helpers::check_and_take_zero};
 use crate::surreal_tables::{TBL_A2A_MESSAGE, TBL_A2A_TASK, TBL_A2A_UPDATE};
 
 #[async_trait]
@@ -27,13 +27,13 @@ impl A2aGraphStore for SurrealProvenanceStore {
         let query = format!(
             "SELECT seq FROM {TBL_A2A_MESSAGE} WHERE task_id = $task_id ORDER BY seq DESC LIMIT 1"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("task_id", task_id.to_string()))
             .await
             .map_err(A2aGraphStoreError::backend)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, A2aGraphStoreError::backend)?;
+        let rows: Vec<Value> = check_and_take_zero(response, A2aGraphStoreError::backend)?;
         Ok(rows
             .first()
             .and_then(|r| r.get("seq").and_then(Value::as_i64))
@@ -44,13 +44,13 @@ impl A2aGraphStore for SurrealProvenanceStore {
         let query = format!(
             "SELECT seq FROM {TBL_A2A_UPDATE} WHERE task_id = $task_id ORDER BY seq DESC LIMIT 1"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("task_id", task_id.to_string()))
             .await
             .map_err(A2aGraphStoreError::backend)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, A2aGraphStoreError::backend)?;
+        let rows: Vec<Value> = check_and_take_zero(response, A2aGraphStoreError::backend)?;
         Ok(rows
             .first()
             .and_then(|r| r.get("seq").and_then(Value::as_i64))
@@ -60,13 +60,13 @@ impl A2aGraphStore for SurrealProvenanceStore {
     async fn get_task_node(&self, id: &str) -> A2aGraphStoreResult<Option<TaskSubgraphNode>> {
         let query =
             format!("SELECT * OMIT id FROM {TBL_A2A_TASK} WHERE task_id = $task_id LIMIT 1");
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("task_id", id.to_string()))
             .await
             .map_err(A2aGraphStoreError::backend)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, A2aGraphStoreError::backend)?;
+        let rows: Vec<Value> = check_and_take_zero(response, A2aGraphStoreError::backend)?;
         Ok(rows.first().and_then(|row| {
             Some(TaskSubgraphNode {
                 id: row.get("task_id")?.as_str()?.to_string(),
@@ -120,8 +120,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
         if let Some(cid) = context_id {
             q = q.bind(("context_id", cid.to_string()));
         }
-        let mut response = q.await.map_err(A2aGraphStoreError::backend)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, A2aGraphStoreError::backend)?;
+        let response = q.await.map_err(A2aGraphStoreError::backend)?;
+        let rows: Vec<Value> = check_and_take_zero(response, A2aGraphStoreError::backend)?;
         Ok(rows
             .iter()
             .filter_map(|row| {
@@ -181,6 +181,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .bind(("artifacts_json", node.artifacts_json.clone()))
             .bind(("ord", ord_if_create))
             .await
+            .map_err(A2aGraphStoreError::backend)?
+            .check()
             .map_err(A2aGraphStoreError::backend)?;
         Ok(())
     }
@@ -210,6 +212,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .bind(("context_id", context_id.to_string()))
             .bind(("ord", ord_if_create))
             .await
+            .map_err(A2aGraphStoreError::backend)?
+            .check()
             .map_err(A2aGraphStoreError::backend)?;
         Ok(())
     }
@@ -231,6 +235,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .bind(("seq", seq))
             .bind(("message_json", message_json.to_string()))
             .await
+            .map_err(A2aGraphStoreError::backend)?
+            .check()
             .map_err(A2aGraphStoreError::backend)?;
         Ok(())
     }
@@ -239,13 +245,13 @@ impl A2aGraphStore for SurrealProvenanceStore {
         let query = format!(
             "SELECT message_json, seq FROM {TBL_A2A_MESSAGE} WHERE task_id = $task_id ORDER BY seq"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("task_id", task_id.to_string()))
             .await
             .map_err(A2aGraphStoreError::backend)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, A2aGraphStoreError::backend)?;
+        let rows: Vec<Value> = check_and_take_zero(response, A2aGraphStoreError::backend)?;
         Ok(rows
             .iter()
             .filter_map(|row| {
@@ -265,6 +271,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .bind(("task_id", id.to_string()))
             .bind(("status_json", status_json.to_string()))
             .await
+            .map_err(A2aGraphStoreError::backend)?
+            .check()
             .map_err(A2aGraphStoreError::backend)?;
         Ok(())
     }
@@ -288,6 +296,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .bind(("kind", kind.to_string()))
             .bind(("payload_json", payload_json.to_string()))
             .await
+            .map_err(A2aGraphStoreError::backend)?
+            .check()
             .map_err(A2aGraphStoreError::backend)?;
         Ok(())
     }
@@ -299,13 +309,13 @@ impl A2aGraphStore for SurrealProvenanceStore {
         let query = format!(
             "SELECT update_id, kind, payload_json, seq FROM {TBL_A2A_UPDATE} WHERE task_id = $task_id ORDER BY seq"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("task_id", task_id.to_string()))
             .await
             .map_err(A2aGraphStoreError::backend)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, A2aGraphStoreError::backend)?;
+        let rows: Vec<Value> = check_and_take_zero(response, A2aGraphStoreError::backend)?;
         Ok(rows
             .iter()
             .filter_map(|row| {
@@ -324,6 +334,8 @@ impl A2aGraphStore for SurrealProvenanceStore {
             .query(&query)
             .bind(("update_id", id.to_string()))
             .await
+            .map_err(A2aGraphStoreError::backend)?
+            .check()
             .map_err(A2aGraphStoreError::backend)?;
         Ok(())
     }

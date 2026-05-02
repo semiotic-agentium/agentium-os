@@ -25,13 +25,19 @@ pub(super) fn map_surreal_error(e: surrealdb::Error) -> ProvenanceError {
     ProvenanceError::Storage(Box::new(e))
 }
 
-/// Deserialize SurrealDB [`surrealdb::IndexedResults`] statement `0` as JSON object rows.
+/// Validate every statement in a SurrealDB [`surrealdb::IndexedResults`] via
+/// [`surrealdb::IndexedResults::check`] before deserializing statement `0` as JSON object rows.
+///
+/// Without `.check()`, server-side errors against individual statements in a multi-statement
+/// query are silently swallowed by the SDK. Calling `.take(0)` only surfaces errors on the
+/// indexed statement, leaving sibling errors invisible to the caller.
 #[inline]
-pub(super) fn query_take_zero<E>(
-    response: &mut surrealdb::IndexedResults,
-    map_err: impl FnOnce(surrealdb::Error) -> E,
+pub(super) fn check_and_take_zero<E>(
+    response: surrealdb::IndexedResults,
+    map_err: impl Fn(surrealdb::Error) -> E + Copy,
 ) -> std::result::Result<Vec<Value>, E> {
-    response.take(0).map_err(map_err)
+    let mut checked = response.check().map_err(map_err)?;
+    checked.take(0).map_err(map_err)
 }
 
 pub(super) fn normalize_message_content(value: &Value) -> String {

@@ -10,7 +10,7 @@ use serde_json::Value;
 use super::{
     SurrealProvenanceStore,
     helpers::{
-        has_meaningful_result, map_surreal_error, normalize_payload_text_query, query_take_zero,
+        check_and_take_zero, has_meaningful_result, map_surreal_error, normalize_payload_text_query,
     },
 };
 use crate::{
@@ -276,13 +276,13 @@ pub(super) fn decode_payload_row(v: Value) -> Result<PayloadRecord> {
 impl SurrealProvenanceStore {
     async fn read_payload_blob_body(&self, content_hash: &str) -> Result<Option<String>> {
         let query = format!("SELECT body FROM {TBL_PAYLOAD_BLOB} WHERE content_hash = $h LIMIT 1");
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("h", content_hash.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         Ok(rows.into_iter().next().and_then(|row| {
             row.get("body")
                 .and_then(Value::as_str)
@@ -327,8 +327,8 @@ impl SurrealProvenanceStore {
         for (i, (_, value)) in filters.iter().enumerate() {
             q = q.bind((format!("filter_{i}"), value.to_string()));
         }
-        let mut response = q.await.map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let response = q.await.map_err(map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         Ok(rows)
     }
 
@@ -337,13 +337,13 @@ impl SurrealProvenanceStore {
     #[allow(dead_code)]
     async fn get_node(&self, node_id: &str) -> Result<Option<Value>> {
         let query = format!("SELECT * OMIT id FROM {TBL_NODE} WHERE node_id = $node_id LIMIT 1");
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("node_id", node_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         Ok(rows.into_iter().next())
     }
 
@@ -422,13 +422,13 @@ impl SurrealProvenanceStore {
         let query = format!(
             "SELECT {PAYLOAD_ROW_SELECT} FROM {TBL_PAYLOAD} WHERE payload_id = $payload_id LIMIT 1"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("payload_id", payload_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         let Some(v) = rows.into_iter().next() else {
             return Ok(None);
         };
@@ -446,13 +446,13 @@ impl SurrealProvenanceStore {
         let query = format!(
             "SELECT {PAYLOAD_ROW_SELECT} FROM {TBL_PAYLOAD} WHERE payload_id = $payload_id LIMIT 1"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("payload_id", payload_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         match rows.into_iter().next() {
             Some(row) => {
                 let rec = decode_payload_row(row)?;
@@ -481,13 +481,13 @@ impl SurrealProvenanceStore {
         let query = format!(
             "SELECT {PAYLOAD_ROW_SELECT} FROM {TBL_PAYLOAD} WHERE activity_id = $activity_id ORDER BY payload_kind"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("activity_id", activity_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         let mut out = Vec::new();
         for v in rows {
             let rec = decode_payload_row(v)?;
@@ -511,13 +511,13 @@ impl SurrealProvenanceStore {
         let query = format!(
             "SELECT DISTINCT activity_id FROM {TBL_PAYLOAD} WHERE {FTS_PAYLOAD_ACTIVITY_WHERE}"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("query_text", normalized))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         Ok(rows
             .iter()
             .filter_map(|row| {

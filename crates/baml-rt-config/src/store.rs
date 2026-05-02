@@ -99,8 +99,16 @@ impl SurrealConfigStore {
 }
 
 async fn init_schema(db: &Surreal<Any>) -> Result<()> {
-    let batch = SCHEMA_QUERIES.join("; ");
-    db.query(batch).await.map_err(map_err)?;
+    init_schema_with(db, SCHEMA_QUERIES).await
+}
+
+async fn init_schema_with(db: &Surreal<Any>, queries: &[&str]) -> Result<()> {
+    let batch = queries.join("; ");
+    db.query(batch)
+        .await
+        .map_err(map_err)?
+        .check()
+        .map_err(map_err)?;
     Ok(())
 }
 
@@ -124,6 +132,8 @@ impl ConfigReader for SurrealConfigStore {
             )
             .bind(("name", name))
             .await
+            .map_err(map_err)?
+            .check()
             .map_err(map_err)?;
         let rows: Vec<Value> = resp.take(0).map_err(map_err)?;
         match rows.first() {
@@ -148,6 +158,8 @@ impl ConfigReader for SurrealConfigStore {
             .db
             .query("SELECT bundle_name FROM config_current")
             .await
+            .map_err(map_err)?
+            .check()
             .map_err(map_err)?;
         let rows: Vec<Value> = resp.take(0).map_err(map_err)?;
         let mut out = Vec::new();
@@ -172,7 +184,7 @@ impl ConfigWriter for SurrealConfigStore {
         // Atomic version increment via BEGIN/COMMIT transaction.
         // All three statements execute as one atomic batch — concurrent callers
         // cannot interleave between the SELECT and the writes.
-        let _resp = self.db
+        self.db
             .query("\
                 BEGIN; \
                 LET $cur = (SELECT version FROM config_current WHERE bundle_name = $name LIMIT 1); \
@@ -185,6 +197,8 @@ impl ConfigWriter for SurrealConfigStore {
             .bind(("cj", config_json))
             .bind(("ts", ts.0 as i64))
             .await
+            .map_err(map_err)?
+            .check()
             .map_err(map_err)?;
 
         // After COMMIT, read back the version we just wrote
@@ -193,6 +207,8 @@ impl ConfigWriter for SurrealConfigStore {
             .query("SELECT version OMIT id FROM config_current WHERE bundle_name = $name LIMIT 1")
             .bind(("name", name))
             .await
+            .map_err(map_err)?
+            .check()
             .map_err(map_err)?;
         let ver_rows: Vec<Value> = ver_resp.take(0).map_err(map_err)?;
         let new_version = ver_rows
@@ -214,11 +230,15 @@ impl ConfigWriter for SurrealConfigStore {
             .query("DELETE FROM config_current WHERE bundle_name = $name")
             .bind(("name", name.clone()))
             .await
+            .map_err(map_err)?
+            .check()
             .map_err(map_err)?;
         self.db
             .query("DELETE FROM config_version_history WHERE bundle_name = $name")
             .bind(("name", name))
             .await
+            .map_err(map_err)?
+            .check()
             .map_err(map_err)?;
         Ok(())
     }
@@ -234,6 +254,8 @@ impl ConfigWriter for SurrealConfigStore {
             .bind(("name", name))
             .bind(("ver", version as i64))
             .await
+            .map_err(map_err)?
+            .check()
             .map_err(map_err)?;
         let rows: Vec<Value> = resp.take(0).map_err(map_err)?;
         match rows.first() {
@@ -264,6 +286,8 @@ impl ConfigWriter for SurrealConfigStore {
             .query("SELECT version, config_json, created_at_ms FROM config_version_history WHERE bundle_name = $name ORDER BY version DESC")
             .bind(("name", name))
             .await
+            .map_err(map_err)?
+            .check()
             .map_err(map_err)?;
         let rows: Vec<Value> = resp.take(0).map_err(map_err)?;
         let mut out = Vec::new();
@@ -298,6 +322,8 @@ impl InternalConfigReader for SurrealConfigStore {
             .query("SELECT config_json FROM config_internal WHERE key = $key LIMIT 1")
             .bind(("key", key))
             .await
+            .map_err(map_err)?
+            .check()
             .map_err(map_err)?;
         let rows: Vec<Value> = resp.take(0).map_err(map_err)?;
         match rows.first() {
@@ -324,6 +350,8 @@ impl InternalConfigWriter for SurrealConfigStore {
             .bind(("key", key))
             .bind(("cj", config_json))
             .await
+            .map_err(map_err)?
+            .check()
             .map_err(map_err)?;
         Ok(())
     }
@@ -344,5 +372,58 @@ impl ConfigResolver for SurrealConfigStore {
         ConfigReader::get_with_version(self, bundle_name)
             .await
             .map(|opt| opt.map(|s| (s.config, s.version.into())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Without `.check()`, runtime errors inside a multi-statement batch are
+    /// silently swallowed by the SurrealDB SDK — the outer `.await` only surfaces
+    /// parse / transport / authentication failures, not per-statement runtime
+    /// errors. This test pins that contract: a batch whose final statement throws
+    /// at execution time must surface as `Err` once `.check()` is chained.
+    #[tokio::test]
+    async fn check_surfaces_inner_statement_error_in_batch() {
+        let db = surrealdb::engine::any::connect("mem://")
+            .await
+            .expect("connect mem");
+        db.use_ns("t").use_db("t").await.expect("use ns/db");
+
+        // First statement is valid; the second triggers a runtime error.
+        // Without `.check()`, the SDK reports overall success — the silent-swallow
+        // behavior this issue is fixing.
+        let batch = "DEFINE TABLE IF NOT EXISTS ok SCHEMAFULL; THROW 'inner statement failed';";
+        let response = db
+            .query(batch)
+            .await
+            .expect("await must succeed; the runtime error lives inside the response");
+        assert!(
+            response.check().is_err(),
+            "an inner runtime error must be surfaced via Response::check"
+        );
+    }
+
+    /// Regression test for issue #291: a malformed schema statement injected into
+    /// the init batch must propagate as an `Err` from the public store
+    /// initialization path, instead of silently completing with a broken schema.
+    #[tokio::test]
+    async fn init_schema_with_invalid_statement_returns_err() {
+        let db = surrealdb::engine::any::connect("mem://")
+            .await
+            .expect("connect mem");
+        db.use_ns("t").use_db("t").await.expect("use ns/db");
+
+        let valid_then_failing = &[
+            "DEFINE TABLE IF NOT EXISTS ok SCHEMAFULL",
+            "THROW 'schema init regression #291'",
+        ];
+
+        let result = init_schema_with(&db, valid_then_failing).await;
+        assert!(
+            result.is_err(),
+            "init_schema_with must fail when any statement in the batch errors at runtime"
+        );
     }
 }

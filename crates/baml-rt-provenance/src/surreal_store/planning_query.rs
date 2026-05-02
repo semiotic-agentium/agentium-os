@@ -11,7 +11,9 @@ use serde_json::Value;
 
 use super::{
     SurrealProvenanceStore,
-    helpers::{decode_depends_on, is_step_completed_status, map_surreal_error, query_take_zero},
+    helpers::{
+        check_and_take_zero, decode_depends_on, is_step_completed_status, map_surreal_error,
+    },
 };
 use crate::{
     error::{ProvenanceError, Result},
@@ -69,13 +71,13 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
              ) ORDER BY event_order DESC",
             has_intent = semantic_labels::HAS_INTENT,
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("task_node_id", task_node_id))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
 
         let (intent_incoming, intent_outgoing) =
             self.query_supersession_maps("Intent", task_id).await?;
@@ -136,13 +138,13 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
              ) ORDER BY event_order DESC",
             has_plan = semantic_labels::HAS_PLAN,
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("task_node_id", task_node_id))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
 
         let (plan_incoming, plan_outgoing) = self.query_supersession_maps("Plan", task_id).await?;
 
@@ -251,7 +253,7 @@ impl SurrealProvenanceStore {
             "SELECT VALUE to_id FROM {TBL_EDGE} \
              WHERE from_id = $task_node AND rel_type = $rel_created LIMIT 1"
         );
-        let mut r1 = self
+        let r1 = self
             .db
             .query(&hop1)
             .bind(("task_node", task_entity_id))
@@ -260,7 +262,7 @@ impl SurrealProvenanceStore {
             .map_err(map_surreal_error)?;
         use crate::store::TaskAgentResolution;
 
-        let execution_ids: Vec<Value> = query_take_zero(&mut r1, map_surreal_error)?;
+        let execution_ids: Vec<Value> = check_and_take_zero(r1, map_surreal_error)?;
         let Some(execution_id) = execution_ids.first().and_then(Value::as_str) else {
             return Ok(TaskAgentResolution::NotLinked);
         };
@@ -269,14 +271,14 @@ impl SurrealProvenanceStore {
             "SELECT VALUE to_id FROM {TBL_EDGE} \
              WHERE from_id = $exec_node AND rel_type = $rel_executed LIMIT 1"
         );
-        let mut r2 = self
+        let r2 = self
             .db
             .query(&hop2)
             .bind(("exec_node", execution_id.to_string()))
             .bind(("rel_executed", semantic_labels::WAS_EXECUTED_BY))
             .await
             .map_err(map_surreal_error)?;
-        let agent_node_ids: Vec<Value> = query_take_zero(&mut r2, map_surreal_error)?;
+        let agent_node_ids: Vec<Value> = check_and_take_zero(r2, map_surreal_error)?;
         let Some(agent_node_id) = agent_node_ids.first().and_then(Value::as_str) else {
             return Ok(TaskAgentResolution::NotLinked);
         };
@@ -285,13 +287,13 @@ impl SurrealProvenanceStore {
             "SELECT props.a2a_agent_id AS agent_id OMIT id FROM {TBL_NODE} \
              WHERE node_id = $agent_node LIMIT 1"
         );
-        let mut r3 = self
+        let r3 = self
             .db
             .query(&hop3)
             .bind(("agent_node", agent_node_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut r3, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(r3, map_surreal_error)?;
         let Some(row) = rows.first() else {
             return Ok(TaskAgentResolution::NotLinked);
         };
@@ -376,13 +378,13 @@ impl SurrealProvenanceStore {
             "SELECT props.a2a_depends_on AS deps FROM {TBL_NODE} \
              WHERE node_id = $step_node_id LIMIT 1"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("step_node_id", step_node_id))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         let Some(row) = rows.first() else {
             return Ok(Vec::new());
         };
@@ -397,13 +399,13 @@ impl SurrealProvenanceStore {
             "SELECT props.a2a_status AS status FROM {TBL_NODE} \
              WHERE node_id = $step_node_id LIMIT 1"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("step_node_id", step_node_id))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         let Some(row) = rows.first() else {
             return Ok(false);
         };
@@ -437,7 +439,7 @@ impl SurrealProvenanceStore {
                AND props.a2a_activity_outcome = 'Success' \
              LIMIT 1"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("ctx_node", ctx_node_id))
@@ -446,7 +448,7 @@ impl SurrealProvenanceStore {
             .bind(("step_id", step_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         Ok(!rows.is_empty())
     }
 
@@ -470,13 +472,13 @@ impl SurrealProvenanceStore {
              ) ORDER BY step_order ASC",
             derived = crate::vocabulary::prov_relations::WAS_DERIVED_FROM,
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("plan_node_id", plan_node_id))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
 
         let mut steps = Vec::new();
         for row in &rows {
@@ -570,7 +572,7 @@ impl SurrealProvenanceStore {
                AND from_id IN (SELECT VALUE to_id FROM {TBL_EDGE} WHERE from_id = $task_node_id AND rel_type = $ownership_edge) \
                AND to_id IN (SELECT VALUE to_id FROM {TBL_EDGE} WHERE from_id = $task_node_id AND rel_type = $ownership_edge)"
         );
-        let mut response = self
+        let response = self
             .db
             .query(&query)
             .bind(("rel_type", rel_type.to_string()))
@@ -579,7 +581,7 @@ impl SurrealProvenanceStore {
             .bind(("ownership_edge", ownership_edge.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
 
         // Collect all referenced node IDs, then batch-fetch activity anchors in one query.
         let mut node_ids: Vec<String> = Vec::new();
@@ -608,13 +610,13 @@ impl SurrealProvenanceStore {
         let anchor_query = format!(
             "SELECT node_id, props.a2a_activity_anchor AS anchor FROM {TBL_NODE} WHERE node_id IN $ids"
         );
-        let mut anchor_response = self
+        let anchor_response = self
             .db
             .query(&anchor_query)
             .bind(("ids", node_ids))
             .await
             .map_err(map_surreal_error)?;
-        let anchor_rows: Vec<Value> = query_take_zero(&mut anchor_response, map_surreal_error)?;
+        let anchor_rows: Vec<Value> = check_and_take_zero(anchor_response, map_surreal_error)?;
 
         let anchor_map: HashMap<String, String> = anchor_rows
             .iter()
