@@ -322,7 +322,9 @@
     }
   },
   "secrets": [
-    "ANTHROPIC_API_KEY"
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_EXT_USE_SHELL_PIPELINE"
   ],
   "secret_scope": "send",
   "capabilities": {
@@ -352,5 +354,5 @@
       "workdir": "/"
     }
   },
-  "runtime_digest": "sha256:faec795055bcedeba75bb3c32e19621b6d6acb70a7bf81f10e895ce4dabb9d5a"
+  "runtime_digest": "sha256:f204a5aace322fdd8a1ba2f676c7dce0d9944f12ed4d5ffb98178118953bd4b3"
 }
