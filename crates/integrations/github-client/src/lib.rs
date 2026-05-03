@@ -35,31 +35,27 @@ pub enum GitHubClientError {
 #[derive(Clone)]
 pub struct GitHubClient {
     client: reqwest::Client,
+    token: String,
     base_url: String,
 }
 
-impl Default for GitHubClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl GitHubClient {
-    pub fn new() -> Self {
-        Self {
+    /// Resolves `GITHUB_TOKEN` from `fnox.toml` / process environment and caches it on the
+    /// client so subsequent operations reuse the resolved value.
+    pub fn new() -> std::result::Result<Self, GitHubClientError> {
+        Ok(Self {
             client: reqwest::Client::new(),
+            token: resolve_token()?,
             base_url: resolve_base_url(),
-        }
+        })
     }
 
     pub fn base_url(&self) -> &str {
         self.base_url.as_str()
     }
 
-    pub fn token() -> std::result::Result<String, GitHubClientError> {
-        FnoxFileSecretResolver::default_path_resolver()
-            .resolve_or_env("GITHUB_TOKEN")
-            .ok_or(GitHubClientError::MissingToken)
+    pub fn token(&self) -> &str {
+        self.token.as_str()
     }
 
     pub fn get(&self, path: &str, token: &str) -> reqwest::RequestBuilder {
@@ -127,4 +123,10 @@ pub fn resolve_base_url() -> String {
         .map(|raw| raw.trim().trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| BASE_URL.to_string())
+}
+
+fn resolve_token() -> std::result::Result<String, GitHubClientError> {
+    FnoxFileSecretResolver::default_path_resolver()
+        .resolve_or_env("GITHUB_TOKEN")
+        .ok_or(GitHubClientError::MissingToken)
 }

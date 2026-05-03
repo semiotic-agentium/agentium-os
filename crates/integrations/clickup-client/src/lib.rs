@@ -32,41 +32,39 @@ pub enum ClickUpClientError {
 #[derive(Clone)]
 pub struct ClickUpClient {
     client: reqwest::Client,
+    api_key: String,
     base_url: String,
 }
 
-impl Default for ClickUpClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ClickUpClient {
-    pub fn new() -> Self {
-        Self {
+    /// Resolves `CLICKUP_API_KEY` from `fnox.toml` / process environment and caches it on the
+    /// client so subsequent operations reuse the resolved value.
+    pub fn new() -> std::result::Result<Self, ClickUpClientError> {
+        Ok(Self {
             client: reqwest::Client::new(),
+            api_key: resolve_api_key()?,
             base_url: resolve_base_url(),
-        }
+        })
     }
 
-    /// Use a fixed API base (e.g. local fixture server). Trailing slashes are stripped.
-    pub fn with_base_url(base: impl Into<String>) -> Self {
+    /// Same as [`Self::new`] but targets a fixed API base (e.g. local fixture server). Trailing
+    /// slashes are stripped.
+    pub fn with_base_url(base: impl Into<String>) -> std::result::Result<Self, ClickUpClientError> {
         let raw = base.into();
         let base_url = raw.trim().trim_end_matches('/').to_string();
-        Self {
+        Ok(Self {
             client: reqwest::Client::new(),
+            api_key: resolve_api_key()?,
             base_url,
-        }
+        })
     }
 
     pub fn base_url(&self) -> &str {
         self.base_url.as_str()
     }
 
-    pub fn api_key() -> std::result::Result<String, ClickUpClientError> {
-        FnoxFileSecretResolver::default_path_resolver()
-            .resolve_or_env("CLICKUP_API_KEY")
-            .ok_or(ClickUpClientError::MissingApiKey)
+    pub fn api_key(&self) -> &str {
+        self.api_key.as_str()
     }
 
     pub fn get(&self, path: &str, api_key: &str) -> reqwest::RequestBuilder {
@@ -168,4 +166,10 @@ pub fn resolve_base_url() -> String {
         .map(|raw| raw.trim().trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| BASE_URL.to_string())
+}
+
+fn resolve_api_key() -> std::result::Result<String, ClickUpClientError> {
+    FnoxFileSecretResolver::default_path_resolver()
+        .resolve_or_env("CLICKUP_API_KEY")
+        .ok_or(ClickUpClientError::MissingApiKey)
 }

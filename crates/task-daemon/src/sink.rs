@@ -15,8 +15,8 @@ use baml_rt_core::{
     AgentRouteKey,
     event_subscription::{PublishedEvent, subscriptions_match_published_event},
 };
-use integrations_clickup_client::ClickUpClient;
-use integrations_github_client::GitHubClient;
+use integrations_clickup_client::{ClickUpClient, ClickUpClientError};
+use integrations_github_client::{GitHubClient, GitHubClientError};
 use serde_json::json;
 use thiserror::Error;
 
@@ -94,6 +94,10 @@ pub enum SinkConstructorError {
     EmptyGithubOwner,
     #[error("github repo must not be empty")]
     EmptyGithubRepo,
+    #[error("loading CLICKUP_API_KEY for sink failed")]
+    ClickupClient(#[source] ClickUpClientError),
+    #[error("loading GITHUB_TOKEN for sink failed")]
+    GithubClient(#[source] GitHubClientError),
     #[error("agent host base URL must not be empty")]
     EmptyDispatchBaseUrl,
     #[error("agent host base URL is invalid: {raw}")]
@@ -121,19 +125,9 @@ pub enum SinkDeliveryError {
         "clickup sink cannot consume clickup-origin batches; configure a non-clickup sink for clickup source output"
     )]
     ClickupOriginUnsupported,
-    #[error("loading CLICKUP_API_KEY for sink failed: {source}")]
-    ClickupCredential {
-        #[source]
-        source: anyhow::Error,
-    },
     #[error("creating ClickUp task in list {list_id} failed: {source}")]
     ClickupCreateTask {
         list_id: String,
-        #[source]
-        source: anyhow::Error,
-    },
-    #[error("loading GITHUB_TOKEN for sink failed: {source}")]
-    GithubCredential {
         #[source]
         source: anyhow::Error,
     },
@@ -337,7 +331,7 @@ impl ClickUpSink {
         }
 
         Ok(Self {
-            client: ClickUpClient::new(),
+            client: ClickUpClient::new().map_err(SinkConstructorError::ClickupClient)?,
             list_id,
             mode,
         })
@@ -396,10 +390,7 @@ impl TaskSink for ClickUpSink {
             return Ok(());
         }
 
-        let api_key =
-            ClickUpClient::api_key().map_err(|source| SinkDeliveryError::ClickupCredential {
-                source: source.into(),
-            })?;
+        let api_key = self.client.api_key();
 
         for task in &batch.derived_tasks {
             let body = json!({
@@ -409,7 +400,7 @@ impl TaskSink for ClickUpSink {
 
             let request = self
                 .client
-                .post(&format!("/list/{}/task", self.list_id), &api_key)
+                .post(&format!("/list/{}/task", self.list_id), api_key)
                 .json(&body);
             self.client.send_json(request).await.map_err(|source| {
                 SinkDeliveryError::ClickupCreateTask {
@@ -455,7 +446,7 @@ impl GithubIssueSink {
         }
 
         Ok(Self {
-            client: GitHubClient::new(),
+            client: GitHubClient::new().map_err(SinkConstructorError::GithubClient)?,
             owner,
             repo,
             mode,
@@ -518,10 +509,7 @@ impl TaskSink for GithubIssueSink {
             return Ok(());
         }
 
-        let token =
-            GitHubClient::token().map_err(|source| SinkDeliveryError::GithubCredential {
-                source: source.into(),
-            })?;
+        let token = self.client.token();
 
         for task in &batch.derived_tasks {
             let body = json!({
@@ -537,7 +525,7 @@ impl TaskSink for GithubIssueSink {
                         owner = self.owner,
                         repo = self.repo
                     ),
-                    &token,
+                    token,
                 )
                 .json(&body);
             self.client
@@ -1086,13 +1074,50 @@ fn uuid_v4() -> String {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Arc,
+        Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicUsize, Ordering},
     };
 
     use serde_json::Value;
 
     use super::*;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Holds an env var override under a process-wide mutex for the test's lifetime,
+    /// restoring the original value (or absence) on drop.
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+            let original = std::env::var(key).ok();
+            // SAFETY: test-only mutation guarded by a process-wide mutex.
+            unsafe { std::env::set_var(key, value) };
+            Self {
+                key,
+                original,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: restoring test-only env state under the same mutex guard.
+            match &self.original {
+                Some(v) => unsafe { std::env::set_var(self.key, v) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
     use crate::{
         contract::{ContractSource, InterpretationRequestEvent},
         daemon::SourcePoll,
@@ -1341,6 +1366,7 @@ mod tests {
 
     #[tokio::test]
     async fn clickup_sink_rejects_clickup_origin_batches() {
+        let _guard = EnvVarGuard::set("CLICKUP_API_KEY", "test-clickup-key");
         let mut sink = ClickUpSink::new("901325431486".to_string(), SinkDeliveryMode::Live)
             .expect("clickup sink");
         let batch = TaskBatch {

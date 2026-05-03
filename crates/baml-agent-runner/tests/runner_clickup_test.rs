@@ -168,7 +168,9 @@ async fn setup_clickup_agent_with_provenance(
         .load_schema(built.to_str().expect("clickup built path utf8"))
         .expect("load clickup schema");
     manager
-        .register_tool(ClickUpTool::with_base_url(clickup_api_base_url))
+        .register_tool(
+            ClickUpTool::with_base_url(clickup_api_base_url).expect("construct clickup tool"),
+        )
         .await
         .expect("register clickup tool");
 
