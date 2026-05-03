@@ -43,9 +43,12 @@ impl GitHubClient {
     /// Resolves `GITHUB_TOKEN` from `fnox.toml` / process environment and caches it on the
     /// client so subsequent operations reuse the resolved value.
     pub fn new() -> std::result::Result<Self, GitHubClientError> {
+        let token = FnoxFileSecretResolver::default_path_resolver()
+            .resolve_or_env("GITHUB_TOKEN")
+            .ok_or(GitHubClientError::MissingToken)?;
         Ok(Self {
             client: reqwest::Client::new(),
-            token: resolve_token()?,
+            token,
             base_url: resolve_base_url(),
         })
     }
@@ -123,10 +126,4 @@ pub fn resolve_base_url() -> String {
         .map(|raw| raw.trim().trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| BASE_URL.to_string())
-}
-
-fn resolve_token() -> std::result::Result<String, GitHubClientError> {
-    FnoxFileSecretResolver::default_path_resolver()
-        .resolve_or_env("GITHUB_TOKEN")
-        .ok_or(GitHubClientError::MissingToken)
 }

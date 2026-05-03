@@ -40,21 +40,23 @@ impl ClickUpClient {
     /// Resolves `CLICKUP_API_KEY` from `fnox.toml` / process environment and caches it on the
     /// client so subsequent operations reuse the resolved value.
     pub fn new() -> std::result::Result<Self, ClickUpClientError> {
-        Ok(Self {
-            client: reqwest::Client::new(),
-            api_key: resolve_api_key()?,
-            base_url: resolve_base_url(),
-        })
+        Self::with_resolved_base_url(resolve_base_url())
     }
 
     /// Same as [`Self::new`] but targets a fixed API base (e.g. local fixture server). Trailing
     /// slashes are stripped.
     pub fn with_base_url(base: impl Into<String>) -> std::result::Result<Self, ClickUpClientError> {
         let raw = base.into();
-        let base_url = raw.trim().trim_end_matches('/').to_string();
+        Self::with_resolved_base_url(raw.trim().trim_end_matches('/').to_string())
+    }
+
+    fn with_resolved_base_url(base_url: String) -> std::result::Result<Self, ClickUpClientError> {
+        let api_key = FnoxFileSecretResolver::default_path_resolver()
+            .resolve_or_env("CLICKUP_API_KEY")
+            .ok_or(ClickUpClientError::MissingApiKey)?;
         Ok(Self {
             client: reqwest::Client::new(),
-            api_key: resolve_api_key()?,
+            api_key,
             base_url,
         })
     }
@@ -166,10 +168,4 @@ pub fn resolve_base_url() -> String {
         .map(|raw| raw.trim().trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| BASE_URL.to_string())
-}
-
-fn resolve_api_key() -> std::result::Result<String, ClickUpClientError> {
-    FnoxFileSecretResolver::default_path_resolver()
-        .resolve_or_env("CLICKUP_API_KEY")
-        .ok_or(ClickUpClientError::MissingApiKey)
 }
