@@ -1081,6 +1081,14 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+    use crate::{
+        contract::{ContractSource, InterpretationRequestEvent},
+        daemon::SourcePoll,
+        model::{
+            InvestigationTask, ProjectContext, ProjectInterpretation, SourceReference, TaskBatch,
+            TaskConfidence, TaskSourceKind,
+        },
+    };
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1118,14 +1126,6 @@ mod tests {
             }
         }
     }
-    use crate::{
-        contract::{ContractSource, InterpretationRequestEvent},
-        daemon::SourcePoll,
-        model::{
-            InvestigationTask, ProjectContext, ProjectInterpretation, SourceReference, TaskBatch,
-            TaskConfidence, TaskSourceKind,
-        },
-    };
 
     fn sample_batch() -> TaskBatch {
         TaskBatch {
