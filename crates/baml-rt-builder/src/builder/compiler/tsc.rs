@@ -21,14 +21,17 @@ use crate::builder::{
 /// `rootDir` is explicitly `"./src"` (must match the inferred common source path; see
 /// <https://aka.ms/ts6> migration notes).
 ///
-/// **`module` and `moduleResolution`** are both `NodeNext`: TypeScript requires
-/// `module: "NodeNext"` when `moduleResolution` is `nodenext` (TS5110).
+/// **`moduleResolution`** is `node` so `module: "ESNext"` emits script-friendly ESM
+/// instead of CommonJS `exports` assignments, which QuickJS script evaluation does not provide.
+/// `ignoreDeprecations` silences TS 6's warning about legacy node resolution until the
+/// QuickJS packaging path can use an ESM-aware resolver without changing emitted code shape.
 pub const TSCONFIG_JSON: &str = r#"{
   "compilerOptions": {
     "target": "ES2020",
     "lib": ["ES2020"],
-    "module": "NodeNext",
-    "moduleResolution": "nodenext",
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "ignoreDeprecations": "6.0",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

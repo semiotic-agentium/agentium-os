@@ -29,7 +29,6 @@ use baml_rt_tools::{
         DevModeResolver, EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleEvent,
         ExternalLifecycleRecorder, ExternalLockfileMode, ExternalToolsLockfile,
         resolver::SandboxRuntimeWiring,
-        sandbox::{SandboxProvider, fresh_runner_id, stock_wiring_with_bind_roots},
     },
     register_manifest_tools_with_fallback,
 };
@@ -584,7 +583,9 @@ fn build_sandbox_wiring(
 ) -> Result<Option<SandboxRuntimeWiring>> {
     #[cfg(feature = "sandbox-provider")]
     {
-        use baml_rt_tools::external_tools::sandbox::MicrosandboxProvider;
+        use baml_rt_tools::external_tools::sandbox::{
+            MicrosandboxProvider, SandboxProvider, fresh_runner_id, stock_wiring_with_bind_roots,
+        };
         let provider: Arc<dyn SandboxProvider> = Arc::new(MicrosandboxProvider::new()?);
         Ok(Some(stock_wiring_with_bind_roots(
             provider,
@@ -595,6 +596,9 @@ fn build_sandbox_wiring(
 
     #[cfg(all(not(feature = "sandbox-provider"), test))]
     {
+        use baml_rt_tools::external_tools::sandbox::{
+            SandboxProvider, fresh_runner_id, stock_wiring_with_bind_roots,
+        };
         let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::echo());
         Ok(Some(stock_wiring_with_bind_roots(
             provider,
