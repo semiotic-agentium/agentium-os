@@ -200,9 +200,10 @@ unknown = true
         .expect("write toml");
 
         let err = FileConfig::load(&path).expect_err("unknown field must error");
+        let err_text = format!("{err:#}");
         assert!(
-            err.to_string().contains("unknown") || err.to_string().contains("unknown field"),
-            "unexpected error: {err}"
+            err_text.contains("unknown") || err_text.contains("unknown field"),
+            "unexpected error: {err_text}"
         );
     }
 
