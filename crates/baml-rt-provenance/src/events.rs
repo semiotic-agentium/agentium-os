@@ -7,6 +7,7 @@ use std::{
 use baml_rt_core::{
     Citation, Outcome,
     bus::{PlanningSupersessionKind, SessionStepOp},
+    clock_events,
     ids::{
         ActivityAnchorId, AgentId, ArtifactId, ContextId, IntentId, MessageId, PlanId, PlanStepId,
         TaskId,
@@ -26,7 +27,7 @@ use serde_json::{Value, Value as JsonValue};
 static EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn now_millis() -> u64 {
-    baml_rt_core::now_unix_ms("provenance_event")
+    baml_rt_core::now_unix_ms(clock_events::PROVENANCE_EVENT)
 }
 
 fn seed_event_counter() -> u64 {

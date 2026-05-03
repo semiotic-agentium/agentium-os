@@ -3,6 +3,7 @@
 use std::{collections::HashMap, sync::OnceLock};
 
 use anyhow::{Result, anyhow};
+use baml_rt_core::clock_events;
 use regex::Regex;
 
 use crate::{
@@ -162,7 +163,7 @@ impl TaskExtractor {
         Ok(TaskBatch {
             source: TaskSourceKind::Slack,
             source_label: source_label.to_string(),
-            generated_at_unix: baml_rt_core::now_unix_secs("task_daemon_slack_batch"),
+            generated_at_unix: baml_rt_core::now_unix_secs(clock_events::TASK_DAEMON_BATCH),
             messages_scanned: messages.len(),
             project: project.clone(),
             interpretation,

@@ -16,6 +16,7 @@ use std::{
 use baml_rt_id::ExternalId;
 
 use crate::{
+    clock_events,
     error::Result,
     ids::{AgentId, ContextId, MessageId, TaskId},
 };
@@ -220,7 +221,8 @@ impl InvocationScope {
     /// Do not use in runtime request paths.
     pub fn synthetic_message(agent_id: AgentId) -> Self {
         let counter = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let context_id = ContextId::new(crate::now_unix_ms("synthetic_message"), counter);
+        let context_id =
+            ContextId::new(crate::now_unix_ms(clock_events::SYNTHETIC_MESSAGE), counter);
         let message_id = MessageId::from_external(ExternalId::new(format!("syn-msg-{}", counter)));
         Self(RuntimeScope::message_scope(
             context_id, agent_id, message_id,
@@ -231,7 +233,7 @@ impl InvocationScope {
     /// Do not use in runtime request paths.
     pub fn synthetic_task(agent_id: AgentId) -> Self {
         let counter = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let context_id = ContextId::new(crate::now_unix_ms("synthetic_task"), counter);
+        let context_id = ContextId::new(crate::now_unix_ms(clock_events::SYNTHETIC_TASK), counter);
         let message_id = MessageId::from_external(ExternalId::new(format!("syn-msg-{}", counter)));
         let task_id = TaskId::from_external(ExternalId::new(format!("syn-task-{}", counter)));
         Self(RuntimeScope::task_scope(
@@ -259,7 +261,7 @@ tokio::task_local! {
 static CONTEXT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub fn generate_context_id() -> ContextId {
-    let millis = crate::now_unix_ms("context_id_mint");
+    let millis = crate::now_unix_ms(clock_events::CONTEXT_ID_MINT);
     let counter = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
     ContextId::new(millis, counter)
 }

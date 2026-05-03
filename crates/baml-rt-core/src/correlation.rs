@@ -5,7 +5,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::ids::CorrelationId;
+use crate::{clock_events, ids::CorrelationId};
 
 tokio::task_local! {
     static CORRELATION_ID: CorrelationId;
@@ -14,7 +14,7 @@ tokio::task_local! {
 static CORRELATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub fn generate_correlation_id() -> CorrelationId {
-    let millis = crate::now_unix_ms("correlation_id_mint");
+    let millis = crate::now_unix_ms(clock_events::CORRELATION_ID_MINT);
     let counter = CORRELATION_COUNTER.fetch_add(1, Ordering::Relaxed);
     CorrelationId::new(millis, counter)
 }

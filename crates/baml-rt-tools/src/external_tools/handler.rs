@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, ClassifiedToolError, ErrorDisposition, Result};
+use baml_rt_core::{BamlRtError, ClassifiedToolError, ErrorDisposition, Result, clock_events};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -86,7 +86,7 @@ impl ProcessToolHandler {
             recorder(ExternalLifecycleEvent::QuarantineLifted {
                 tool_name: self.metadata.name.to_string(),
                 lifted_by: lifted_by.to_string(),
-                lifted_at_ms: baml_rt_core::now_unix_ms("external_quarantine_lift"),
+                lifted_at_ms: baml_rt_core::now_unix_ms(clock_events::EXTERNAL_QUARANTINE_LIFT),
             });
         }
     }
@@ -188,7 +188,7 @@ impl ToolSession for ProcessToolSession {
                         tool_name: self.tool_name.to_string(),
                         reason,
                         consecutive_failures,
-                        started_at_ms: baml_rt_core::now_unix_ms("external_quarantine"),
+                        started_at_ms: baml_rt_core::now_unix_ms(clock_events::EXTERNAL_QUARANTINE),
                     });
                 }
                 Err(with_backoff_retry_after(err, backoff).into())

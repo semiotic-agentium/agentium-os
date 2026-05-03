@@ -8,6 +8,7 @@ use baml_rt_core::{
     A2aJsChatHost, A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDispatchAck,
     AgentDispatchRequest, AgentInstanceId, AgentPackageName, BamlRtError, Citation, Result,
     bus::{BusStream, EffectEmitter},
+    clock_events,
     context::{self, InvocationScope, OutcomeInvocationContext, RequestScope},
     correlation,
     dispatch::invocation_scope_for_agent_dispatch,
@@ -80,7 +81,7 @@ struct SurrealRuntimeStore {
 
 impl SurrealRuntimeStore {
     fn now_millis() -> u64 {
-        baml_rt_core::now_unix_ms("a2a_transport")
+        baml_rt_core::now_unix_ms(clock_events::A2A_TRANSPORT)
     }
 
     /// Single construction point: one TaskSubgraphStore over the same provenance Arc,

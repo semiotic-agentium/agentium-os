@@ -7,6 +7,7 @@ pub mod agent_routing;
 pub mod backoff;
 pub mod bus;
 pub mod callback_store;
+pub mod clock_events;
 pub mod context;
 pub mod correlation;
 pub mod deferred;

@@ -13,7 +13,10 @@ use baml_rt_conversation::{
         ConversationItemContent, ProvenanceConversationContextItem, SessionStepOp, ToolOutcome,
     },
 };
-use baml_rt_core::ids::{AgentId, ContextId, TaskId, UuidId};
+use baml_rt_core::{
+    clock_events,
+    ids::{AgentId, ContextId, TaskId, UuidId},
+};
 use baml_rt_tools::{
     archive_read::{PageLimit, RenderedContent, format_session_read_body_from_rendered},
     archive_refs::RefTable,
@@ -149,7 +152,7 @@ impl EpisodeReader {
             }
             None => {
                 // For snapshots: use "in_progress" status and current time as terminal bound
-                let now_ms = baml_rt_core::now_unix_ms("episode_snapshot");
+                let now_ms = baml_rt_core::now_unix_ms(clock_events::EPISODE_SNAPSHOT);
                 ("in_progress".to_string(), now_ms)
             }
         };

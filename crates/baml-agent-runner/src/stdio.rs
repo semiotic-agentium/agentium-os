@@ -13,7 +13,7 @@ use baml_rt_a2a::{
     },
 };
 use baml_rt_core::{
-    BamlRtError, ContextId, Result, context,
+    BamlRtError, ContextId, Result, clock_events, context,
     ids::{DerivedId, ExternalId, TaskId},
 };
 use serde_json::Value;
@@ -145,5 +145,5 @@ pub(crate) fn map_a2a_error(id: Option<JSONRPCId>, err: BamlRtError) -> Value {
 }
 
 pub(crate) fn unix_timestamp_secs() -> String {
-    baml_rt_core::now_unix_secs("runner_timestamp").to_string()
+    baml_rt_core::now_unix_secs(clock_events::RUNNER_TIMESTAMP).to_string()
 }

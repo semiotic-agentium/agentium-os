@@ -6,6 +6,8 @@
 
 use std::sync::Arc;
 
+use baml_rt_core::clock_events;
+
 use crate::{
     commands::{ForkCommand, PublishCommand, PublishOrigin, PublishResult},
     entry::{NewEntry, RepositoryEntry, RepositoryEntryHeader, Tag, Timestamp},
@@ -323,7 +325,7 @@ impl RepositoryService {
 
 /// UTC timestamp in RFC 3339 format.
 pub(crate) fn chrono_now() -> Timestamp {
-    Timestamp::new(baml_rt_core::now_unix_secs("repository_timestamp").to_string())
+    Timestamp::new(baml_rt_core::now_unix_secs(clock_events::REPOSITORY_TIMESTAMP).to_string())
 }
 
 fn manifest_tags(source: &crate::entry::SourceBundle) -> Vec<Tag> {
