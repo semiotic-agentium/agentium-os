@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use integrations_clickup_client::{ClickUpClient, ClickUpClientError};
+use integrations_clickup_client::ClickUpClient;
 use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
@@ -243,8 +243,6 @@ impl From<ClickupPriority> for TaskConfidence {
 pub enum ClickupSourceConfigError {
     #[error("clickup source requires at least one list id")]
     MissingListIds,
-    #[error("loading CLICKUP_API_KEY for source failed")]
-    Client(#[source] ClickUpClientError),
 }
 
 #[derive(Debug, Clone)]
@@ -280,13 +278,13 @@ pub struct ClickupTaskSource {
 
 impl ClickupTaskSource {
     /// Creates a ClickUp source with the given configuration.
-    pub fn new(config: ClickupSourceConfig) -> std::result::Result<Self, ClickupSourceConfigError> {
+    pub fn new(
+        client: ClickUpClient,
+        config: ClickupSourceConfig,
+    ) -> std::result::Result<Self, ClickupSourceConfigError> {
         // Validate upfront so source errors are operational, not configuration mistakes.
         let list_ids = config.normalized_list_ids()?;
-        Ok(Self {
-            client: ClickUpClient::new().map_err(ClickupSourceConfigError::Client)?,
-            list_ids,
-        })
+        Ok(Self { client, list_ids })
     }
 
     fn source_key(list_ids: &[ClickupListId]) -> String {

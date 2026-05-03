@@ -50,15 +50,22 @@ impl ClickUpClient {
         Self::with_resolved_base_url(raw.trim().trim_end_matches('/').to_string())
     }
 
+    /// Builds a client with both an explicit API key and base URL. Skips `fnox.toml` /
+    /// environment lookup entirely; useful for fixture tests and callers that resolve
+    /// credentials themselves.
+    pub fn with_credentials(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_key: api_key.into(),
+            base_url: base_url.into(),
+        }
+    }
+
     fn with_resolved_base_url(base_url: String) -> std::result::Result<Self, ClickUpClientError> {
         let api_key = FnoxFileSecretResolver::default_path_resolver()
             .resolve_or_env("CLICKUP_API_KEY")
             .ok_or(ClickUpClientError::MissingApiKey)?;
-        Ok(Self {
-            client: reqwest::Client::new(),
-            api_key,
-            base_url,
-        })
+        Ok(Self::with_credentials(api_key, base_url))
     }
 
     pub fn base_url(&self) -> &str {

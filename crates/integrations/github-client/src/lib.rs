@@ -46,11 +46,18 @@ impl GitHubClient {
         let token = FnoxFileSecretResolver::default_path_resolver()
             .resolve_or_env("GITHUB_TOKEN")
             .ok_or(GitHubClientError::MissingToken)?;
-        Ok(Self {
+        Ok(Self::with_credentials(token, resolve_base_url()))
+    }
+
+    /// Builds a client with both an explicit token and base URL. Skips `fnox.toml` /
+    /// environment lookup entirely; useful for fixture tests and callers that resolve
+    /// credentials themselves.
+    pub fn with_credentials(token: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self {
             client: reqwest::Client::new(),
-            token,
-            base_url: resolve_base_url(),
-        })
+            token: token.into(),
+            base_url: base_url.into(),
+        }
     }
 
     pub fn base_url(&self) -> &str {

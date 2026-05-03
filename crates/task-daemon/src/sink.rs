@@ -15,8 +15,8 @@ use baml_rt_core::{
     AgentRouteKey,
     event_subscription::{PublishedEvent, subscriptions_match_published_event},
 };
-use integrations_clickup_client::{ClickUpClient, ClickUpClientError};
-use integrations_github_client::{GitHubClient, GitHubClientError};
+use integrations_clickup_client::ClickUpClient;
+use integrations_github_client::GitHubClient;
 use serde_json::json;
 use thiserror::Error;
 
@@ -94,10 +94,6 @@ pub enum SinkConstructorError {
     EmptyGithubOwner,
     #[error("github repo must not be empty")]
     EmptyGithubRepo,
-    #[error("loading CLICKUP_API_KEY for sink failed")]
-    ClickupClient(#[source] ClickUpClientError),
-    #[error("loading GITHUB_TOKEN for sink failed")]
-    GithubClient(#[source] GitHubClientError),
     #[error("agent host base URL must not be empty")]
     EmptyDispatchBaseUrl,
     #[error("agent host base URL is invalid: {raw}")]
@@ -322,6 +318,7 @@ impl ClickUpSink {
     ///
     /// `SinkDeliveryMode::DryRun` logs what would be written without calling the API.
     pub fn new(
+        client: ClickUpClient,
         list_id: String,
         mode: SinkDeliveryMode,
     ) -> std::result::Result<Self, SinkConstructorError> {
@@ -331,7 +328,7 @@ impl ClickUpSink {
         }
 
         Ok(Self {
-            client: ClickUpClient::new().map_err(SinkConstructorError::ClickupClient)?,
+            client,
             list_id,
             mode,
         })
@@ -432,6 +429,7 @@ impl GithubIssueSink {
     ///
     /// `SinkDeliveryMode::DryRun` logs what would be written without calling the API.
     pub fn new(
+        client: GitHubClient,
         owner: String,
         repo: String,
         mode: SinkDeliveryMode,
@@ -446,7 +444,7 @@ impl GithubIssueSink {
         }
 
         Ok(Self {
-            client: GitHubClient::new().map_err(SinkConstructorError::GithubClient)?,
+            client,
             owner,
             repo,
             mode,
@@ -1074,10 +1072,11 @@ fn uuid_v4() -> String {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Arc, Mutex, MutexGuard, OnceLock,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     };
 
+    use integrations_clickup_client::BASE_URL as CLICKUP_BASE_URL;
     use serde_json::Value;
 
     use super::*;
@@ -1089,43 +1088,6 @@ mod tests {
             TaskConfidence, TaskSourceKind,
         },
     };
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    /// Holds an env var override under a process-wide mutex for the test's lifetime,
-    /// restoring the original value (or absence) on drop.
-    struct EnvVarGuard {
-        key: &'static str,
-        original: Option<String>,
-        _lock: MutexGuard<'static, ()>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-            let original = std::env::var(key).ok();
-            // SAFETY: test-only mutation guarded by a process-wide mutex.
-            unsafe { std::env::set_var(key, value) };
-            Self {
-                key,
-                original,
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            // SAFETY: restoring test-only env state under the same mutex guard.
-            match &self.original {
-                Some(v) => unsafe { std::env::set_var(self.key, v) },
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
 
     fn sample_batch() -> TaskBatch {
         TaskBatch {
@@ -1366,8 +1328,8 @@ mod tests {
 
     #[tokio::test]
     async fn clickup_sink_rejects_clickup_origin_batches() {
-        let _guard = EnvVarGuard::set("CLICKUP_API_KEY", "test-clickup-key");
-        let mut sink = ClickUpSink::new("901325431486".to_string(), SinkDeliveryMode::Live)
+        let client = ClickUpClient::with_credentials("test-clickup-key", CLICKUP_BASE_URL);
+        let mut sink = ClickUpSink::new(client, "901325431486".to_string(), SinkDeliveryMode::Live)
             .expect("clickup sink");
         let batch = TaskBatch {
             source: TaskSourceKind::Clickup,
