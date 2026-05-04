@@ -278,13 +278,13 @@ pub struct ClickupTaskSource {
 
 impl ClickupTaskSource {
     /// Creates a ClickUp source with the given configuration.
-    pub fn new(config: ClickupSourceConfig) -> std::result::Result<Self, ClickupSourceConfigError> {
+    pub fn new(
+        client: ClickUpClient,
+        config: ClickupSourceConfig,
+    ) -> std::result::Result<Self, ClickupSourceConfigError> {
         // Validate upfront so source errors are operational, not configuration mistakes.
         let list_ids = config.normalized_list_ids()?;
-        Ok(Self {
-            client: ClickUpClient::new(),
-            list_ids,
-        })
+        Ok(Self { client, list_ids })
     }
 
     fn source_key(list_ids: &[ClickupListId]) -> String {
@@ -414,8 +414,7 @@ impl TaskSource for ClickupTaskSource {
         let source_key = Self::source_key(list_ids);
         let source_label = Self::source_label(list_ids);
 
-        // Resolve per poll so rotated credentials can take effect without restart.
-        let api_key = ClickUpClient::api_key().context("loading CLICKUP_API_KEY for source")?;
+        let api_key = self.client.api_key();
 
         let previous_source_state = state.source_state(&source_key).cloned().unwrap_or_default();
         let previous_snapshot = previous_source_state.clickup_task_snapshot;
@@ -425,7 +424,7 @@ impl TaskSource for ClickupTaskSource {
         let mut current_records: BTreeMap<String, ClickupTaskRecord> = BTreeMap::new();
 
         for list_id in list_ids {
-            for task in self.fetch_list_tasks(&api_key, list_id).await? {
+            for task in self.fetch_list_tasks(api_key, list_id).await? {
                 current_snapshot.insert(
                     task.id.clone(),
                     ClickupTaskSnapshot {
@@ -722,12 +721,13 @@ mod tests {
 
     #[test]
     fn source_key_uses_cached_normalized_list_ids() {
-        let source = ClickupTaskSource::new(ClickupSourceConfig {
+        let normalized = ClickupSourceConfig {
             list_ids: vec!["  L2 ".to_string(), "L1".to_string(), "L2".to_string()],
-        })
-        .expect("valid source config");
+        }
+        .normalized_list_ids()
+        .expect("valid list ids");
 
-        assert_eq!(source.source_key(), "clickup:L1,L2");
+        assert_eq!(ClickupTaskSource::source_key(&normalized), "clickup:L1,L2");
     }
 
     #[test]

@@ -8,6 +8,8 @@ use baml_task_daemon::{
     StdoutSink, TaskDaemon, TaskExtractor, TaskSink, TaskSource, TaskSourceKind,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use integrations_clickup_client::ClickUpClient;
+use integrations_github_client::GitHubClient;
 use integrations_slack_read::SlackAuthPreference;
 use reqwest::Url;
 use serde::Deserialize;
@@ -366,9 +368,12 @@ async fn run(args: RunArgs) -> Result<()> {
                         "ClickUp source selection requires a list id via --clickup-list-id, project config, or CLICKUP_TASK_DAEMON_LIST_ID"
                     )
                 })?;
-                let clickup_source = ClickupTaskSource::new(ClickupSourceConfig {
-                    list_ids: vec![list_id],
-                })?;
+                let clickup_source = ClickupTaskSource::new(
+                    ClickUpClient::new()?,
+                    ClickupSourceConfig {
+                        list_ids: vec![list_id],
+                    },
+                )?;
                 sources.push(Box::new(clickup_source));
             }
         }
@@ -401,6 +406,7 @@ async fn run(args: RunArgs) -> Result<()> {
         configured_sinks.push(ConfiguredSink::new(
             SinkKindArg::Clickup,
             Box::new(ClickUpSink::new(
+                ClickUpClient::new()?,
                 list_id,
                 SinkDeliveryMode::from_live_flag(args.clickup_live),
             )?),
@@ -411,6 +417,7 @@ async fn run(args: RunArgs) -> Result<()> {
         configured_sinks.push(ConfiguredSink::new(
             SinkKindArg::Github,
             Box::new(GithubIssueSink::new(
+                GitHubClient::new()?,
                 owner,
                 repo,
                 SinkDeliveryMode::from_live_flag(args.github_live),

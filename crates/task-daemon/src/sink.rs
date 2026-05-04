@@ -121,19 +121,9 @@ pub enum SinkDeliveryError {
         "clickup sink cannot consume clickup-origin batches; configure a non-clickup sink for clickup source output"
     )]
     ClickupOriginUnsupported,
-    #[error("loading CLICKUP_API_KEY for sink failed: {source}")]
-    ClickupCredential {
-        #[source]
-        source: anyhow::Error,
-    },
     #[error("creating ClickUp task in list {list_id} failed: {source}")]
     ClickupCreateTask {
         list_id: String,
-        #[source]
-        source: anyhow::Error,
-    },
-    #[error("loading GITHUB_TOKEN for sink failed: {source}")]
-    GithubCredential {
         #[source]
         source: anyhow::Error,
     },
@@ -328,6 +318,7 @@ impl ClickUpSink {
     ///
     /// `SinkDeliveryMode::DryRun` logs what would be written without calling the API.
     pub fn new(
+        client: ClickUpClient,
         list_id: String,
         mode: SinkDeliveryMode,
     ) -> std::result::Result<Self, SinkConstructorError> {
@@ -337,7 +328,7 @@ impl ClickUpSink {
         }
 
         Ok(Self {
-            client: ClickUpClient::new(),
+            client,
             list_id,
             mode,
         })
@@ -396,10 +387,7 @@ impl TaskSink for ClickUpSink {
             return Ok(());
         }
 
-        let api_key =
-            ClickUpClient::api_key().map_err(|source| SinkDeliveryError::ClickupCredential {
-                source: source.into(),
-            })?;
+        let api_key = self.client.api_key();
 
         for task in &batch.derived_tasks {
             let body = json!({
@@ -409,7 +397,7 @@ impl TaskSink for ClickUpSink {
 
             let request = self
                 .client
-                .post(&format!("/list/{}/task", self.list_id), &api_key)
+                .post(&format!("/list/{}/task", self.list_id), api_key)
                 .json(&body);
             self.client.send_json(request).await.map_err(|source| {
                 SinkDeliveryError::ClickupCreateTask {
@@ -441,6 +429,7 @@ impl GithubIssueSink {
     ///
     /// `SinkDeliveryMode::DryRun` logs what would be written without calling the API.
     pub fn new(
+        client: GitHubClient,
         owner: String,
         repo: String,
         mode: SinkDeliveryMode,
@@ -455,7 +444,7 @@ impl GithubIssueSink {
         }
 
         Ok(Self {
-            client: GitHubClient::new(),
+            client,
             owner,
             repo,
             mode,
@@ -518,10 +507,7 @@ impl TaskSink for GithubIssueSink {
             return Ok(());
         }
 
-        let token =
-            GitHubClient::token().map_err(|source| SinkDeliveryError::GithubCredential {
-                source: source.into(),
-            })?;
+        let token = self.client.token();
 
         for task in &batch.derived_tasks {
             let body = json!({
@@ -537,7 +523,7 @@ impl TaskSink for GithubIssueSink {
                         owner = self.owner,
                         repo = self.repo
                     ),
-                    &token,
+                    token,
                 )
                 .json(&body);
             self.client
@@ -1090,6 +1076,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
+    use integrations_clickup_client::BASE_URL as CLICKUP_BASE_URL;
     use serde_json::Value;
 
     use super::*;
@@ -1341,7 +1328,8 @@ mod tests {
 
     #[tokio::test]
     async fn clickup_sink_rejects_clickup_origin_batches() {
-        let mut sink = ClickUpSink::new("901325431486".to_string(), SinkDeliveryMode::Live)
+        let client = ClickUpClient::with_credentials("test-clickup-key", CLICKUP_BASE_URL);
+        let mut sink = ClickUpSink::new(client, "901325431486".to_string(), SinkDeliveryMode::Live)
             .expect("clickup sink");
         let batch = TaskBatch {
             source: TaskSourceKind::Clickup,
