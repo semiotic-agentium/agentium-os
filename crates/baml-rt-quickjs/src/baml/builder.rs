@@ -26,9 +26,17 @@ impl BamlRuntimeManagerBuilder {
     }
 
     pub fn with_fnox_llm_resolver(self, path: impl AsRef<Path>) -> Self {
-        let resolver = Arc::new(SecretResolverToLlmAdapter::new(Arc::new(
-            FnoxFileSecretResolver::from_path(Some(path.as_ref())),
-        )));
+        self.with_fnox_resolver_inner(FnoxFileSecretResolver::from_path(Some(path.as_ref())))
+    }
+
+    /// Configure a fnox-backed LLM secret resolver using fnox's default discovery
+    /// (`BAML_FNOX_CONFIG` env var, otherwise recursive search for `fnox.toml`).
+    pub fn with_default_fnox_llm_resolver(self) -> Self {
+        self.with_fnox_resolver_inner(FnoxFileSecretResolver::default_path_resolver())
+    }
+
+    fn with_fnox_resolver_inner(self, fnox: FnoxFileSecretResolver) -> Self {
+        let resolver = Arc::new(SecretResolverToLlmAdapter::new(Arc::new(fnox)));
         self.with_llm_secret_resolver(resolver)
     }
 
