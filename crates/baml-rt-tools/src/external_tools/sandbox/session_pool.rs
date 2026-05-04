@@ -118,6 +118,13 @@ enum EntryState {
     Live {
         session: PooledSessionId,
     },
+    /// Slot claimed by a checkout that hasn't finished `provider.create()`
+    /// yet. Counts against `count_active()` so a concurrent checkout can't
+    /// observe `count < cap` and start a duplicate boot. Promoted to `Live`
+    /// on success or removed on failure / cancellation.
+    Reserving {
+        id: PooledSessionId,
+    },
     /// Reserved for cap reduction and operator eviction (§6.3). Wired in a
     /// follow-up alongside the eviction loop.
     #[allow(dead_code)]
@@ -126,7 +133,10 @@ enum EntryState {
 
 #[derive(Debug)]
 struct PoolEntry {
-    handle: SandboxHandle,
+    /// `None` while the entry is `Reserving` (boot still in flight).
+    /// `Some` for `Idle` / `Live` / `Draining` — invariant enforced by the
+    /// state-transition sites.
+    handle: Option<SandboxHandle>,
     state: EntryState,
     last_idle_at: Instant,
 }
@@ -223,7 +233,10 @@ impl SessionPool {
                     entry.state = EntryState::Live {
                         session: session.clone(),
                     };
-                    let handle = entry.handle.clone();
+                    let handle = entry
+                        .handle
+                        .clone()
+                        .expect("Idle pool entry must carry a SandboxHandle");
                     debug!(
                         sandbox = %handle.name,
                         tool = %key.tool_name,
@@ -239,8 +252,22 @@ impl SessionPool {
                 }
 
                 if pool.count_active() < cap {
+                    // Claim the cap slot under the lock *before* paying boot
+                    // cost. Two checkouts that both observe `count < cap`
+                    // can't race here: the first push bumps `count` so the
+                    // second sees `count == cap` and falls into the waiter
+                    // queue. Cancellation / boot failure removes the
+                    // reservation via `ReservationGuard::Drop`.
+                    let reservation_id = PooledSessionId::new();
+                    pool.entries.push(PoolEntry {
+                        handle: None,
+                        state: EntryState::Reserving {
+                            id: reservation_id.clone(),
+                        },
+                        last_idle_at: Instant::now(),
+                    });
                     drop(guard);
-                    return self.cold_create(key).await;
+                    return self.cold_create(key, reservation_id).await;
                 }
 
                 let waiter = Arc::new(Notify::new());
@@ -274,20 +301,53 @@ impl SessionPool {
         }
     }
 
-    async fn cold_create(self: &Arc<Self>, key: &SandboxCacheKey) -> Result<PooledSandbox> {
+    /// Run the boot for a reservation slot already pushed by
+    /// [`Self::checkout`]. On any error path the [`ReservationGuard`] removes
+    /// the placeholder entry and notifies a waiter; on success we promote
+    /// `Reserving → Live` under the lock and disarm the guard.
+    async fn cold_create(
+        self: &Arc<Self>,
+        key: &SandboxCacheKey,
+        reservation_id: PooledSessionId,
+    ) -> Result<PooledSandbox> {
+        let mut guard =
+            ReservationGuard::new(Arc::clone(self), key.clone(), reservation_id.clone());
+
         let spec = (self.build_spec)(key)?;
         let handle = self.provider.create(spec).await?;
+        guard.set_handle(handle.clone());
+
         let session = PooledSessionId::new();
 
-        let mut guard = self.inner.lock().await;
-        let pool = guard.entry(key.clone()).or_default();
-        pool.entries.push(PoolEntry {
-            handle: handle.clone(),
-            state: EntryState::Live {
+        {
+            let mut pool_guard = self.inner.lock().await;
+            let Some(pool) = pool_guard.get_mut(key) else {
+                // Pool entry vanished — only happens if the key was drained.
+                // Guard's drop will tear down the booted handle.
+                return Err(BamlRtError::ToolExecution(format!(
+                    "session pool: key '{}' missing while completing reservation",
+                    key.tool_name
+                )));
+            };
+            let Some(idx) = pool.entries.iter().position(
+                |e| matches!(&e.state, EntryState::Reserving { id } if id == &reservation_id),
+            ) else {
+                // Reservation was removed (e.g. by an external cleanup).
+                // Guard's drop tears down the handle.
+                return Err(BamlRtError::ToolExecution(format!(
+                    "session pool: reservation lost for tool '{}'",
+                    key.tool_name
+                )));
+            };
+            let entry = &mut pool.entries[idx];
+            entry.state = EntryState::Live {
                 session: session.clone(),
-            },
-            last_idle_at: Instant::now(),
-        });
+            };
+            entry.handle = Some(handle.clone());
+            entry.last_idle_at = Instant::now();
+        }
+
+        guard.commit();
 
         Ok(PooledSandbox {
             pool: Arc::clone(self),
@@ -296,6 +356,37 @@ impl SessionPool {
             session,
             released: false,
         })
+    }
+
+    /// Cleanup path for a reservation that was never promoted to `Live`
+    /// (boot failure, future cancellation, lost pool entry). Removes the
+    /// placeholder entry, notifies a waiter so a queued checkout can take
+    /// the freed slot, and tears down any handle the booter managed to
+    /// produce.
+    async fn drop_reservation(
+        &self,
+        key: &SandboxCacheKey,
+        reservation_id: &PooledSessionId,
+        handle: Option<SandboxHandle>,
+    ) {
+        {
+            let mut pool_guard = self.inner.lock().await;
+            if let Some(pool) = pool_guard.get_mut(key) {
+                pool.entries.retain(
+                    |e| !matches!(&e.state, EntryState::Reserving { id } if id == reservation_id),
+                );
+                pool.notify_one_waiter();
+            }
+        }
+        if let Some(handle) = handle
+            && let Err(err) = self.provider.teardown(&handle).await
+        {
+            warn!(
+                sandbox = %handle.name,
+                error = %err,
+                "session pool: teardown of cancelled reservation failed"
+            );
+        }
     }
 
     async fn cancel_waiter(&self, key: &SandboxCacheKey, waiter: &Arc<Notify>) {
@@ -336,7 +427,11 @@ impl SessionPool {
                 Release::Destroy => {
                     let entry = pool.entries.swap_remove(idx);
                     pool.notify_one_waiter();
-                    Some(entry.handle)
+                    Some(
+                        entry
+                            .handle
+                            .expect("Live pool entry must carry a SandboxHandle"),
+                    )
                 }
             }
         };
@@ -348,6 +443,68 @@ impl SessionPool {
                 sandbox = %handle.name,
                 error = %err,
                 "session pool: teardown failed; sandbox abandoned"
+            );
+        }
+    }
+}
+
+/// RAII helper for a reservation slot held by [`SessionPool::cold_create`].
+/// Guarantees that any path which leaves the boot future without producing a
+/// [`PooledSandbox`] (boot error, lock-time invariant break, future
+/// cancellation) removes the placeholder entry, notifies a waiter, and tears
+/// down the booted handle if one was already produced.
+struct ReservationGuard {
+    pool: Arc<SessionPool>,
+    key: SandboxCacheKey,
+    id: PooledSessionId,
+    /// Populated once `provider.create()` returns successfully. Cleared by
+    /// [`Self::commit`] so the `Drop` no-op path doesn't double-teardown.
+    handle: Option<SandboxHandle>,
+    committed: bool,
+}
+
+impl ReservationGuard {
+    fn new(pool: Arc<SessionPool>, key: SandboxCacheKey, id: PooledSessionId) -> Self {
+        Self {
+            pool,
+            key,
+            id,
+            handle: None,
+            committed: false,
+        }
+    }
+
+    fn set_handle(&mut self, handle: SandboxHandle) {
+        self.handle = Some(handle);
+    }
+
+    /// Mark the reservation as successfully promoted to `Live`. Must be
+    /// called only after the lock-protected state transition has been
+    /// observed.
+    fn commit(mut self) {
+        self.committed = true;
+        self.handle = None;
+    }
+}
+
+impl Drop for ReservationGuard {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let pool = Arc::clone(&self.pool);
+        let key = self.key.clone();
+        let id = self.id.clone();
+        let handle = self.handle.take();
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                pool.drop_reservation(&key, &id, handle).await;
+            });
+        } else {
+            warn!(
+                tool = %self.key.tool_name,
+                "ReservationGuard dropped outside tokio runtime; \
+                 reservation slot leaked until process exit"
             );
         }
     }
@@ -410,6 +567,11 @@ impl PooledSandbox {
 
 impl Drop for PooledSandbox {
     fn drop(&mut self) {
+        debug_assert!(
+            self.released,
+            "PooledSandbox dropped without release_finish_idle/release_destroy; \
+             tests should always release explicitly so missed paths surface here"
+        );
         if self.released {
             return;
         }
@@ -547,7 +709,7 @@ mod tests {
         let pool = fixture(provider, 1);
         let key = sample_key("support/session_cap");
 
-        let _live = pool.checkout(&key).await.expect("live checkout");
+        let live = pool.checkout(&key).await.expect("live checkout");
         let err = match pool.checkout(&key).await {
             Ok(_) => panic!("second checkout must time out"),
             Err(err) => err,
@@ -560,5 +722,6 @@ mod tests {
             }
             other => panic!("expected ToolClassified, got {other:?}"),
         }
+        live.release_destroy().await;
     }
 }

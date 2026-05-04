@@ -402,11 +402,10 @@ async fn load_sandbox_tool_dir(
     })?;
 
     // Sandbox-kind tools don't ship a tool-server binary — the adapter lives
-    // inside the image. Digest comes from the image field (§8.4); runtime
-    // digest validation is Workstream C's schema job. For the resolver we
-    // synthesize a best-effort digest off the metadata until the full
-    // sandbox artifact digesting story lands.
-    let digest = format!("sandbox:{}", meta.name);
+    // inside the image. `compute_tool_digest` covers the sandbox branch
+    // (`baml-ext-tool-sandbox-v1\0` magic + canonical metadata bytes), so the
+    // lockfile sees schema/runtime changes instead of a name-only stub.
+    let digest = compute_tool_digest(dir)?;
     let mut metadata = build_tool_metadata(dir, &meta, &tool_name)?;
     metadata.digest = Some(digest.clone());
 
@@ -448,6 +447,20 @@ async fn load_sandbox_tool_dir(
             Arc::new(handler_builder)
         }
         InvocationMode::Session => {
+            // TODO(phase-4 sandbox-streaming §7.2/§9.4): wire per-tool
+            // configuration from metadata into the pool/invoker instead of
+            // using the type defaults below. Specifically:
+            //   - `meta.session_policy` (Strict / MultiSend) — should drive
+            //     `SandboxSessionInvokerConfig` once a corresponding field
+            //     exists; today every tool gets the same FSM enforcement.
+            //   - `meta.reuse_after_session` — must override
+            //     `SandboxSessionInvokerConfig::reuse_after_session`
+            //     (default `false`); right now opt-in reuse is dropped on
+            //     the floor so every finish destroys the sandbox.
+            //   - `SessionPoolConfig::default_pool_max` /
+            //     `pool_checkout_timeout` — should pull from a future
+            //     `meta.pool_*` block once Phase 4 lands; today every tool
+            //     shares the global default cap.
             let pool = Arc::new(SessionPool::new(
                 wiring.cache.runner_id().to_string(),
                 wiring.provider.clone(),

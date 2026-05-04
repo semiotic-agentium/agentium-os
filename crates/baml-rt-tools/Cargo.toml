@@ -18,6 +18,7 @@ serde = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 genco = { workspace = true }

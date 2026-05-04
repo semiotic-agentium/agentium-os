@@ -454,18 +454,16 @@ pub fn compute_tool_digest(dir: &Path) -> Result<String> {
         }
     })?;
     let canonical_metadata =
-        serde_json::to_string(&sort_json_keys(&metadata_json)).map_err(|e| {
-            BamlRtError::InvalidArgumentWithSource {
-                message: "failed to canonicalize external tool metadata JSON".to_string(),
-                source: Box::new(e),
-            }
+        serde_jcs::to_vec(&metadata_json).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+            message: "failed to canonicalize external tool metadata JSON".to_string(),
+            source: Box::new(e),
         })?;
 
     if matches!(metadata.runtime, Some(ToolRuntime::Sandbox(_))) {
         let mut hasher = Sha256::new();
         hasher.update(b"baml-ext-tool-sandbox-v1\0");
         hasher.update((canonical_metadata.len() as u64).to_le_bytes());
-        hasher.update(canonical_metadata.as_bytes());
+        hasher.update(&canonical_metadata);
         return Ok(format!("sha256:{:x}", hasher.finalize()));
     }
 
@@ -481,7 +479,7 @@ pub fn compute_tool_digest(dir: &Path) -> Result<String> {
     hasher.update((bin_bytes.len() as u64).to_le_bytes());
     hasher.update(&bin_bytes);
     hasher.update((canonical_metadata.len() as u64).to_le_bytes());
-    hasher.update(canonical_metadata.as_bytes());
+    hasher.update(&canonical_metadata);
     hasher.update(mode_bits.to_le_bytes());
 
     Ok(format!("sha256:{:x}", hasher.finalize()))
@@ -501,22 +499,6 @@ fn file_mode_bits(path: &Path) -> Result<u32> {
 #[cfg(not(unix))]
 fn file_mode_bits(_path: &Path) -> Result<u32> {
     Ok(0)
-}
-
-pub(crate) fn sort_json_keys(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut pairs: Vec<_> = map.iter().collect();
-            pairs.sort_by_key(|(ka, _)| *ka);
-            let sorted = pairs
-                .into_iter()
-                .map(|(k, v)| (k.clone(), sort_json_keys(v)))
-                .collect();
-            Value::Object(sorted)
-        }
-        Value::Array(values) => Value::Array(values.iter().map(sort_json_keys).collect()),
-        _ => value.clone(),
-    }
 }
 
 #[cfg(test)]

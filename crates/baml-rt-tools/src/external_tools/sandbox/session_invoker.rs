@@ -28,16 +28,17 @@ use baml_rt_core::{
     BamlRtError, ClassifiedToolError, ContextId, ErrorDisposition, Result, ids::AgentId,
 };
 use baml_sandbox_protocol::{
-    JsonRpcRequest, JsonRpcResponse, METHOD_SESSION_ABORT, METHOD_SESSION_FINISH,
-    METHOD_SESSION_OPEN, METHOD_SESSION_READ, METHOD_SESSION_RESET, METHOD_SESSION_SEND,
+    JsonRpcRequest, JsonRpcResponse, METHOD_SESSION_FINISH, METHOD_SESSION_OPEN,
+    METHOD_SESSION_READ, METHOD_SESSION_RESET, METHOD_SESSION_SEND,
     session::{
-        SessionAbortParams, SessionAbortResult, SessionFinishParams, SessionFinishResult,
-        SessionOpenParams, SessionOpenResult, SessionReadParams, SessionResetOutcome,
-        SessionResetParams, SessionResetResult, SessionSendParams, SessionSendResult, StepEnvelope,
+        SessionFinishParams, SessionFinishResult, SessionOpenParams, SessionOpenResult,
+        SessionReadParams, SessionResetOutcome, SessionResetParams, SessionResetResult,
+        SessionSendParams, SessionSendResult, StepEnvelope,
     },
 };
 use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::{
@@ -90,6 +91,11 @@ struct LiveSession {
     channel: Mutex<TsrpcChannel>,
     /// Enforces `SessionBusy` on concurrent `session_read` calls.
     read_inflight: AtomicBool,
+    /// Tripped by `session_abort` so an in-flight `session_read` waiting on
+    /// the adapter unblocks immediately instead of stalling behind
+    /// `chunk_timeout`. The abort path itself can then proceed without
+    /// queueing on the channel mutex.
+    cancel: CancellationToken,
     /// Session start time, useful for span attributes / max-duration eviction.
     #[allow(dead_code)]
     started_at: Instant,
@@ -190,6 +196,7 @@ impl SessionToolInvoker for SandboxSessionInvoker {
             pooled: Mutex::new(Some(pooled)),
             channel: Mutex::new(channel),
             read_inflight: AtomicBool::new(false),
+            cancel: CancellationToken::new(),
             started_at: Instant::now(),
             tool_name: req.tool_name.clone(),
         });
@@ -257,22 +264,46 @@ impl SessionToolInvoker for SandboxSessionInvoker {
             flag: &session.read_inflight,
         };
 
+        if session.cancel.is_cancelled() {
+            return Err(session_aborted_error(&req.session_id));
+        }
+
         let mut channel = session.channel.lock().await;
         let params = SessionReadParams {
             session_id: req.session_id.clone(),
         };
-        let envelope: StepEnvelope = call_one_rpc(
-            &session.tool_name,
-            &mut channel,
-            METHOD_SESSION_READ,
-            params,
-            req.chunk_timeout.min(self.config.default_rpc_timeout),
-        )
-        .await?;
+        let envelope: StepEnvelope = tokio::select! {
+            biased;
+            _ = session.cancel.cancelled() => {
+                return Err(session_aborted_error(&req.session_id));
+            }
+            res = call_one_rpc::<StepEnvelope>(
+                &session.tool_name,
+                &mut channel,
+                METHOD_SESSION_READ,
+                params,
+                req.chunk_timeout.min(self.config.default_rpc_timeout),
+            ) => res?,
+        };
         let (step, resume_token) = step_envelope_to_tool_step(envelope);
         Ok(SessionReadResponse { step, resume_token })
     }
 
+    /// Finalize a session along the cooperative path.
+    ///
+    /// `session_finish` is part of the normal serialized session flow:
+    /// callers reach it after observing a terminal step (`StepEnvelope::Done`
+    /// / `Error`) on `session_read`, so by contract no `session_read` should
+    /// be in flight when `session_finish` runs. The implementation reflects
+    /// that contract — it acquires the same `channel` mutex used by reads,
+    /// so a misbehaving caller that issues `session_finish` while a read is
+    /// still pending will block on the channel lock until that read
+    /// completes (bounded by `chunk_timeout`) or the read is cancelled.
+    ///
+    /// Callers that need to escape a hung or abandoned read must use
+    /// [`Self::session_abort`], which is intentionally out-of-band: it
+    /// cancels the in-flight read and tears the sandbox down without
+    /// queueing on the channel mutex.
     async fn session_finish(&self, req: SessionFinishRequest) -> Result<()> {
         let Some(session) = self.remove_session(&req.session_id).await else {
             return Err(unknown_session_error(&req.session_id));
@@ -334,33 +365,30 @@ impl SessionToolInvoker for SandboxSessionInvoker {
             return Err(unknown_session_error(&req.session_id));
         };
 
-        let abort_outcome = {
-            let mut channel = session.channel.lock().await;
-            let params = SessionAbortParams {
-                session_id: req.session_id.clone(),
-                reason: req.reason,
-            };
-            call_one_rpc::<SessionAbortResult>(
-                &session.tool_name,
-                &mut channel,
-                METHOD_SESSION_ABORT,
-                params,
-                req.timeout.min(self.config.default_rpc_timeout),
-            )
-            .await
-        };
+        // Abort is intentionally out-of-band and destroy-only. Trip the
+        // cancellation token so any in-flight `session_read` drops the channel
+        // lock immediately, then tear down the sandbox. We do *not* send a
+        // best-effort `tool/session_abort` RPC: if a read was cancelled after
+        // sending its request, the adapter may still write that read response,
+        // and a second RPC could consume the stale frame. Pool teardown is the
+        // authoritative cleanup boundary for abort.
+        //
+        // TODO(sandbox-streaming): explore opt-in cooperative adapter
+        // cancellation over a sideband/control path. It must never wait behind
+        // the session data channel or weaken abort's immediate teardown
+        // semantics.
+        session.cancel.cancel();
 
         if let Some(pooled) = session.pooled.lock().await.take() {
             pooled.release_destroy().await;
         }
 
-        if let Err(err) = abort_outcome {
-            warn!(
-                session_id = %req.session_id,
-                error = %err,
-                "session_abort RPC failed; sandbox destroyed via pool"
-            );
-        }
+        debug!(
+            session_id = %req.session_id,
+            reason = ?req.reason,
+            timeout = ?req.timeout,
+            "session aborted; sandbox destroyed via pool"
+        );
         Ok(())
     }
 }
@@ -395,6 +423,16 @@ fn unknown_session_error(session_id: &str) -> BamlRtError {
         code: baml_sandbox_protocol::session::error_code::UNKNOWN_SESSION.to_string(),
         disposition: ErrorDisposition::Fatal,
         message: format!("session '{session_id}' is not tracked by this invoker"),
+        hint: None,
+        retry_after_ms: None,
+    })
+}
+
+fn session_aborted_error(session_id: &str) -> BamlRtError {
+    BamlRtError::ToolClassified(ClassifiedToolError {
+        code: baml_sandbox_protocol::session::error_code::EVICTED_BY_OPERATOR.to_string(),
+        disposition: ErrorDisposition::Fatal,
+        message: format!("session '{session_id}' was aborted while session_read was in flight"),
         hint: None,
         retry_after_ms: None,
     })
@@ -545,10 +583,13 @@ fn step_envelope_to_tool_step(envelope: StepEnvelope) -> (ToolStep, Option<Strin
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
 
     use baml_rt_core::{
-        ContextId,
+        BamlRtError, ContextId,
         ids::{AgentId, UuidId},
     };
     use baml_sandbox_protocol::{
@@ -559,8 +600,8 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::{
-        SandboxSessionInvoker, SandboxSessionInvokerConfig, SessionOpenRequest, SessionReadRequest,
-        SessionSendRequest, SessionToolInvoker,
+        SandboxSessionInvoker, SandboxSessionInvokerConfig, SessionAbortRequest,
+        SessionOpenRequest, SessionReadRequest, SessionSendRequest, SessionToolInvoker,
     };
     use crate::{
         ToolName,
@@ -675,6 +716,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_abort_cancels_inflight_read_without_waiting_for_chunk_timeout() {
+        let adapter = hanging_read_adapter();
+        let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::new(adapter));
+
+        let tool_name = ToolName::parse("support/hanging_read").unwrap();
+        let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
+        let context_id = ContextId::new(10, 22);
+
+        let build_spec: SandboxSpecBuilder = Arc::new(|key| {
+            Ok(SandboxSpec::for_test(
+                format!("test-{}", key.tool_name),
+                "scratch:latest",
+            ))
+        });
+
+        let pool = Arc::new(SessionPool::new(
+            "runner-test",
+            provider,
+            build_spec,
+            SessionPoolConfig {
+                default_pool_max: 1,
+                pool_checkout_timeout: Duration::from_millis(200),
+            },
+        ));
+
+        let invoker = Arc::new(SandboxSessionInvoker::new(
+            pool,
+            agent_id,
+            context_id,
+            SandboxSessionInvokerConfig::default(),
+        ));
+
+        let open = invoker
+            .session_open(SessionOpenRequest {
+                tool_name,
+                invocation_id: "inv-hanging-read-1".to_string(),
+                open_input: Value::Null,
+                secrets: serde_json::Map::new(),
+                capabilities: Value::Null,
+                timeout: Duration::from_secs(2),
+            })
+            .await
+            .expect("session_open should succeed");
+
+        let read_invoker = Arc::clone(&invoker);
+        let read_session_id = open.session_id.clone();
+        let read_task = tokio::spawn(async move {
+            read_invoker
+                .session_read(SessionReadRequest {
+                    session_id: read_session_id,
+                    chunk_timeout: Duration::from_secs(30),
+                })
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let started = Instant::now();
+        invoker
+            .session_abort(SessionAbortRequest {
+                session_id: open.session_id.clone(),
+                reason: Some("test abort".to_string()),
+                timeout: Duration::from_secs(2),
+            })
+            .await
+            .expect("abort should destroy sandbox without waiting for read timeout");
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "abort waited behind in-flight read"
+        );
+
+        let read_err = read_task
+            .await
+            .expect("read task join")
+            .expect_err("read should abort");
+        match read_err {
+            BamlRtError::ToolClassified(classified) => {
+                assert_eq!(classified.code, error_code::EVICTED_BY_OPERATOR);
+            }
+            other => panic!("expected classified abort error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn session_error_step_maps_resume_token_mismatch_classification() {
         let adapter = resume_token_error_adapter();
         let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::new(adapter));
@@ -719,9 +843,10 @@ mod tests {
             .await
             .expect("session_open should succeed");
 
+        let session_id = open.session_id.clone();
         let step = invoker
             .session_read(SessionReadRequest {
-                session_id: open.session_id,
+                session_id: session_id.clone(),
                 chunk_timeout: Duration::from_secs(2),
             })
             .await
@@ -737,6 +862,69 @@ mod tests {
             }
             other => panic!("expected ToolStep::Error, got {other:?}"),
         }
+
+        invoker
+            .session_abort(super::SessionAbortRequest {
+                session_id,
+                reason: Some("test cleanup".to_string()),
+                timeout: Duration::from_secs(2),
+            })
+            .await
+            .expect("abort should release pooled sandbox");
+    }
+
+    fn hanging_read_adapter() -> ScriptedAdapter {
+        Arc::new(|stream| {
+            tokio::spawn(async move {
+                let (mut r, mut w) = tokio::io::split(stream);
+                loop {
+                    let mut len_buf = [0u8; 4];
+                    if r.read_exact(&mut len_buf).await.is_err() {
+                        break;
+                    }
+                    let len = u32::from_be_bytes(len_buf) as usize;
+                    let mut body = vec![0u8; len];
+                    if r.read_exact(&mut body).await.is_err() {
+                        break;
+                    }
+                    let req: Value = match serde_json::from_slice(&body) {
+                        Ok(v) => v,
+                        Err(_) => break,
+                    };
+                    let id = req.get("id").and_then(Value::as_u64).unwrap_or(1);
+                    let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+                    match method {
+                        "tool/session_open" => {
+                            let response = json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": { "session_id": "sess-hanging-read-1" }
+                            });
+                            let out = serde_json::to_vec(&response).unwrap();
+                            if w.write_all(&(out.len() as u32).to_be_bytes())
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            if w.write_all(&out).await.is_err() {
+                                break;
+                            }
+                            if w.flush().await.is_err() {
+                                break;
+                            }
+                        }
+                        "tool/session_read" => {
+                            // Simulate a hung adapter read: keep the channel open
+                            // but never write a response. `session_abort` should
+                            // cancel the host read and tear down the sandbox.
+                            futures_util::future::pending::<()>().await;
+                        }
+                        _ => break,
+                    }
+                }
+            })
+        })
     }
 
     fn streaming_meteo_adapter() -> ScriptedAdapter {

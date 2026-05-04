@@ -96,6 +96,16 @@ pub trait SessionToolInvoker: Send + Sync {
     async fn session_open(&self, req: SessionOpenRequest) -> Result<SessionOpenResponse>;
     async fn session_send(&self, req: SessionSendRequest) -> Result<()>;
     async fn session_read(&self, req: SessionReadRequest) -> Result<SessionReadResponse>;
+
+    /// Finish is part of the normal, serialized session flow: callers should
+    /// invoke it only after `session_read` has returned a terminal `Done` / error
+    /// step and no read is in flight. Implementations may share the session data
+    /// channel with reads, so finish-during-read can wait up to the read's
+    /// `chunk_timeout`. Use [`Self::session_abort`] as the only out-of-band escape
+    /// hatch for a hung or abandoned read.
     async fn session_finish(&self, req: SessionFinishRequest) -> Result<()>;
+
+    /// Abort is out-of-band: implementations should make a best effort to cancel
+    /// any in-flight read and release resources promptly.
     async fn session_abort(&self, req: SessionAbortRequest) -> Result<()>;
 }

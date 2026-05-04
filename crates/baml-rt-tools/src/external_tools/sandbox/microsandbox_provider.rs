@@ -87,28 +87,21 @@ pub struct MicrosandboxProvider {
     _unused: std::marker::PhantomData<()>,
 }
 
-/// Verify that the bind rootfs sidecar bundle at
-/// `/etc/agentium/tool-bundle.json` advertises the same `runtime_digest`
-/// the host metadata carries.
+/// Check that the bind rootfs sidecar at `/etc/agentium/tool-bundle.json`
+/// advertises the same `runtime_digest` as host metadata.
 ///
-/// ## What this catches
-/// Staleness: rootfs was materialized against older metadata and never
-/// re-synced with `sandbox-bind-sync`. This is the common failure mode
-/// (developer edits metadata, forgets to re-sync) and gives a clear error
-/// instead of a downstream tool/invoke timeout.
+/// **Freshness check, not a tamper check.** The sidecar embeds the digest
+/// it claims to satisfy, so an attacker who can rewrite rootfs contents can
+/// also rewrite the field. Trust anchor is `expected_digest` from host-side
+/// tool metadata; this is only as strong as that metadata's integrity.
 ///
-/// ## What this does NOT catch
-/// Tampering. The sidecar itself embeds the expected digest value, so an
-/// attacker who can rewrite rootfs contents can also rewrite the digest
-/// field to match whatever they want. The trust anchor is `expected_digest`
-/// — which comes from **host-side tool metadata**, not from the sidecar —
-/// so this check is only as strong as the host metadata's integrity.
+/// What it catches: developer edited metadata and forgot
+/// `sandbox-bind-sync`, so the rootfs bundle drifted from current schemas.
+/// Surfaces a clear error instead of a downstream tool/invoke timeout.
+///
 /// For tamper-resistance, sign the metadata or ship a signed sidecar.
 #[cfg(feature = "sandbox-provider")]
-fn verify_bind_sidecar_runtime_digest(
-    bind_root: &Path,
-    expected_digest: Option<&str>,
-) -> Result<()> {
+fn check_bind_sidecar_freshness(bind_root: &Path, expected_digest: Option<&str>) -> Result<()> {
     let Some(expected) = expected_digest else {
         return Ok(());
     };
@@ -203,7 +196,7 @@ impl SandboxProvider for MicrosandboxProvider {
                 builder.image(image.as_str())
             }
             SandboxImageSource::Bind(path) => {
-                verify_bind_sidecar_runtime_digest(path, runtime_digest.as_deref())?;
+                check_bind_sidecar_freshness(path, runtime_digest.as_deref())?;
                 info!(sandbox = %name, image_source = "bind", bind_path = %path.display(), "creating sandbox with bind rootfs");
                 builder.image(path.clone())
             }
