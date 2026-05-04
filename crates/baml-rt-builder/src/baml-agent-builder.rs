@@ -641,7 +641,9 @@ async fn load_agent_package(
                 baml_src.display()
             )
         })?;
-        let mut rm = BamlRuntimeManager::builder().build()?;
+        let mut rm = BamlRuntimeManager::builder()
+            .with_default_fnox_llm_resolver()
+            .build()?;
         rm.load_schema(baml_src_str)?;
 
         let tools = manifest_json
