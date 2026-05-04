@@ -224,9 +224,9 @@ Non-Docker alternatives: `skopeo copy oci:...` followed by manual layer flatten,
 
 Then:
 
-3. Point metadata `runtime.image` to `{"kind": "bind", "path": "/abs/path/to/rootfs"}`.
-4. Set/refresh `runtime_digest` (§4).
-5. Ensure the bind path is under `BAML_SANDBOX_BIND_ROOTS` before starting the runner (§6).
+3. Point source metadata `runtime.image` to a portable relative path such as `{"kind": "bind", "path": "./.tmp/my-tool-rootfs"}`.
+4. Run `sandbox-bind-sync` (§4) to write the local `tool-metadata.lock.json` with the canonical absolute path + `runtime_digest`.
+5. Ensure the resolved bind path is under `BAML_SANDBOX_BIND_ROOTS` before starting the runner (§6).
 
 Reference runnable example:
 - `examples/external-tools/dev_echo_sandbox/README.md` (includes an `export_rootfs.sh` helper that wraps the steps above)
@@ -240,9 +240,9 @@ Reference runnable example:
 ### When digest is automatic
 
 - `new-tool --runtime sandbox --sandbox-source oci --sandbox-image <...@sha256:...>`: digest derives from image ref suffix.
-- `new-tool --runtime sandbox --sandbox-source bind`: scaffold emits placeholder bind path (`"<rootfs-path>"`) and placeholder digest; set real path + recompute digest after rootfs materialization.
+- `new-tool --runtime sandbox --sandbox-source bind`: scaffold emits a portable tool-relative bind path and no source `runtime_digest`; run `sandbox-bind-sync` after rootfs materialization to generate the local lock sidecar.
   - default mode emits metadata only (no setup script)
-  - adding `--generate-docker` emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh` wrapper for Docker build/export + metadata sync/validation
+  - adding `--generate-docker` emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh` wrapper for Docker build/export + runtime lock/sidecar sync/validation
 
 `setup_bind_sandbox.sh` resolves the SDK CLI command in this order:
 1. `AGENT_PLATFORM_CMD` (if set)
@@ -253,24 +253,19 @@ This avoids stale installed-plugin mismatches.
 
 ### Preferred bind sync command
 
-Use `sandbox-bind-sync` to refresh bind path + digest, generate adapter sidecar bundle
-(`/etc/agentium/tool-bundle.json`), and optionally validate metadata. Relative
-`--rootfs` and `--dockerfile` paths resolve against `--tool-dir`:
+Use `sandbox-bind-sync` to write the local `tool-metadata.lock.json` with the resolved bind path + digest, generate the adapter sidecar bundle (`/etc/agentium/tool-bundle.json`), and optionally validate metadata. It never mutates committed `tool-metadata.json`. Relative `--rootfs` and `--dockerfile` paths resolve against `--tool-dir`; if `--rootfs` is omitted, it defaults to the source metadata `runtime.image.path`.
 
 ```bash
 cargo agent-platform sandbox-bind-sync \
   --tool-dir ./examples/external-tools/my_tool \
-  --rootfs /abs/path/to/rootfs \
   --check
 ```
 
-Docker-assisted mode (build + export + sync + validate):
+Docker-assisted mode (build + export + sync + validate). `--image` is explicit; when it is provided, `--dockerfile` defaults to `adapter/Dockerfile`:
 
 ```bash
 cargo agent-platform sandbox-bind-sync \
   --tool-dir ./examples/external-tools/my_tool \
-  --rootfs ./.tmp/my-tool-rootfs \
-  --dockerfile adapter/Dockerfile \
   --image support-my-tool-sandbox:local \
   --force \
   --check
@@ -312,8 +307,7 @@ This validates:
 2. runtime typed parse,
 3. sandbox source consistency:
    - OCI digest pin + match against `runtime_digest`,
-   - Bind path canonicalises, is a directory, and recomputed digest matches `runtime_digest`,
-   - `runtime_source_kind` in lock (when present) agrees with metadata.
+   - Bind source metadata is portable, `tool-metadata.lock.json` resolves to a directory, and recomputed bind digest matches the locked `runtime_digest`.
 
 ---
 
@@ -421,18 +415,17 @@ cargo agent-platform chat --agent my-agent
 After adapter/rootfs changes in bind mode, run:
 
 1. rebuild/export rootfs (or materialize it via your own pipeline)
-2. sync metadata + digest:
+2. sync runtime lock + digest:
 
    ```bash
    cargo agent-platform sandbox-bind-sync \
      --tool-dir /path/to/tool \
-     --rootfs /path/to/rootfs \
      --check
    ```
 
 3. restart runner (no hot reload) and re-publish + re-deploy agent
 
-If you skip digest refresh after rootfs mutation, metadata identity is stale and the running agent boots from drifted content.
+If you skip digest refresh after rootfs mutation, the local runtime lock is stale and the running agent boots from drifted content.
 
 ---
 
@@ -489,7 +482,7 @@ Use the shipped inspector to test adapter protocol directly (outside microVM):
 - **`bind path is not a directory: <path>`**
   - pointed at a file; bind sources must be directories
 - **`runtime_digest mismatch for bind source: metadata runtime_digest=... but computed=...`**
-  - rootfs mutated since the last digest; rerun `sandbox-digest`, patch metadata, validate
+  - rootfs mutated since the last sync; rerun `sandbox-bind-sync` to refresh `tool-metadata.lock.json` + sidecar bundle
 - **`pull_policy=always is invalid for bind sandbox images`**
   - `PullPolicy::Always` applies only to OCI; drop it or switch source to `oci`
 - **`unable to find library -lcap-ng`**

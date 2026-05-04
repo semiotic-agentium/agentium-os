@@ -71,8 +71,6 @@ printf '{"jsonrpc":"2.0","id":1,"method":"tool/describe","params":{"tool_name":"
 ```bash
 cargo run -p cargo-agent-platform -- sandbox-bind-sync \
   --tool-dir examples/external-tools/meteo-tool \
-  --rootfs .tmp/dev-meteo-rootfs \
-  --dockerfile adapter/Dockerfile \
   --image dev-meteo-sandbox:local \
   --force \
   --check
@@ -88,8 +86,9 @@ cargo run -p cargo-agent-platform -- sandbox-bind-sync \
 ```
 
 Notes:
-- Relative `--rootfs` / `--dockerfile` paths resolve against `--tool-dir`.
-- This command computes digest, patches metadata (`runtime.image.path` + `runtime_digest`), and validates with `check-external-tool` when `--check` is set.
+- `--rootfs` defaults to source metadata `runtime.image.path`; relative `--rootfs` / `--dockerfile` paths resolve against `--tool-dir`.
+- When `--image` is provided, `--dockerfile` defaults to `adapter/Dockerfile`.
+- This command computes the digest, writes gitignored `tool-metadata.lock.json`, materializes the rootfs sidecar bundle, and validates with `check-external-tool` when `--check` is set.
 
 ---
 

@@ -148,8 +148,8 @@ fn bind_setup_section(ctx: &ScaffoldContext<'_>) -> String {
 
 These notes apply to both bind modes:
 
-- metadata starts with a placeholder bind path and placeholder digest,
-- real `runtime.image.path` + `runtime_digest` must be patched after rootfs exists,
+- metadata starts with a portable tool-relative bind path and no source `runtime_digest`,
+- host-resolved bind path + digest live in gitignored `tool-metadata.lock.json` after sync,
 - `check-external-tool` should pass before running the runner,
 - sandbox adapters should support TSRPC-framed JSON-RPC for parity with sandbox execution.
 
@@ -177,8 +177,8 @@ Helper scripts are scaffolded at:
 ```
 
 This script wraps `sandbox-bind-sync` to build `adapter/Dockerfile`, export bind
-rootfs, patch metadata, materialize adapter sidecar bundle (`/etc/agentium/tool-bundle.json`),
-and run `check-external-tool`.
+rootfs, write `tool-metadata.lock.json`, materialize adapter sidecar bundle
+(`/etc/agentium/tool-bundle.json`), and run `check-external-tool`.
 
 > Bind rootfs mode copies filesystem contents only. Docker image config
 > (like `ENV TOOL_CMD=...`) is not guaranteed at runtime. The generated
@@ -189,8 +189,6 @@ You can also call the command directly:
 ```bash
 cargo run -q -p cargo-agent-platform -- sandbox-bind-sync \
   --tool-dir . \
-  --rootfs ./.tmp/bind-rootfs \
-  --dockerfile adapter/Dockerfile \
   --image local-sandbox:latest \
   --force \
   --check
@@ -218,7 +216,7 @@ fn bind_setup_manual_mode() -> String {
 
 No Docker/setup script is generated in this mode.
 
-Materialize bind rootfs externally, then sync metadata + digest:
+Materialize bind rootfs externally, then sync the local runtime lock + digest:
 
 ```bash
 ROOTFS=/abs/path/to/rootfs

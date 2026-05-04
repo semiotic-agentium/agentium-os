@@ -348,17 +348,19 @@ enum Commands {
         tool_dir: String,
 
         /// Bind rootfs path. Relative paths resolve against --tool-dir.
+        /// Defaults to runtime.image.path from tool-metadata.json.
         #[arg(long)]
-        rootfs: String,
+        rootfs: Option<String>,
 
         /// Optional Dockerfile path for Docker-assisted build/export mode.
-        /// Relative paths resolve against --tool-dir.
-        /// Must be provided together with --image.
+        /// Relative paths resolve against --tool-dir. When --image is provided
+        /// and --dockerfile is omitted, defaults to adapter/Dockerfile.
         #[arg(long)]
         dockerfile: Option<String>,
 
         /// Optional Docker image tag/name for Docker-assisted build/export mode.
-        /// Must be provided together with --dockerfile.
+        /// Required to build/export from Docker; kept explicit to avoid using
+        /// an unintended local image tag.
         #[arg(long)]
         image: Option<String>,
 
@@ -794,7 +796,7 @@ fn main() -> anyhow::Result<()> {
         } => {
             commands::sandbox_bind_sync::run(commands::sandbox_bind_sync::SandboxBindSyncRunArgs {
                 tool_dir: &tool_dir,
-                rootfs: &rootfs,
+                rootfs: rootfs.as_deref(),
                 dockerfile: dockerfile.as_deref(),
                 image: image.as_deref(),
                 force,

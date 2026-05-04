@@ -18,7 +18,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use baml_rt_tools::external_tools::{
-    SIDECAR_BUNDLE_REL_PATH, ToolRuntime, ToolRuntimeLock, read_external_metadata,
+    SIDECAR_BUNDLE_REL_PATH, SandboxImageRef, ToolRuntime, ToolRuntimeLock, read_external_metadata,
     read_runtime_external_metadata, read_sidecar_bundle, render_sidecar_bundle,
     sandbox_runtime_digest_for_bind, verify_runtime_digest,
 };
@@ -38,7 +38,7 @@ struct SyncSummary {
 #[derive(Debug, Clone, Copy)]
 pub struct SandboxBindSyncRunArgs<'a> {
     pub tool_dir: &'a str,
-    pub rootfs: &'a str,
+    pub rootfs: Option<&'a str>,
     pub dockerfile: Option<&'a str>,
     pub image: Option<&'a str>,
     pub force: bool,
@@ -63,9 +63,8 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
         bail!("--check cannot be combined with --dry-run (no metadata changes are written)");
     }
 
-    let docker_mode = dockerfile.is_some() || image.is_some();
-    if docker_mode && (dockerfile.is_none() || image.is_none()) {
-        bail!("--dockerfile and --image must be provided together");
+    if dockerfile.is_some() && image.is_none() {
+        bail!("--dockerfile requires --image");
     }
 
     let tool_dir = Path::new(tool_dir);
@@ -84,12 +83,37 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
         bail!("missing tool metadata: {}", metadata_path.display());
     }
 
-    let rootfs = resolve_path_from_tool_dir(&tool_dir, rootfs);
+    // Validate source portability up-front so `--dry-run` catches the same
+    // pollution a real run would reject. The returned metadata path also lets
+    // --rootfs default to the authored bind path.
+    let source_rootfs = validate_bind_source(&tool_dir)?;
+    let source_rootfs_resolved = resolve_tool_relative_path(&tool_dir, &source_rootfs);
+    let rootfs = match rootfs {
+        Some(raw) => {
+            let resolved = resolve_path_from_tool_dir(&tool_dir, raw);
+            if lexical_normalize(&resolved) != lexical_normalize(&source_rootfs_resolved) {
+                eprintln!(
+                    "warning: --rootfs ({}) differs from source metadata runtime.image.path ({}); tool-metadata.lock.json will use --rootfs",
+                    resolved.display(),
+                    source_rootfs_resolved.display()
+                );
+            }
+            resolved
+        }
+        None => source_rootfs_resolved,
+    };
 
-    if docker_mode {
-        let dockerfile = dockerfile.expect("checked above");
-        let image = image.expect("checked above");
-        let dockerfile = resolve_path_from_tool_dir(&tool_dir, dockerfile);
+    let docker_mode = image.is_some();
+    if let Some(image) = image {
+        let dockerfile = dockerfile
+            .map(|raw| resolve_path_from_tool_dir(&tool_dir, raw))
+            .unwrap_or_else(|| tool_dir.join("adapter/Dockerfile"));
+        if !dockerfile.is_file() {
+            bail!(
+                "Docker-assisted bind sync requires a Dockerfile at {}. Pass --dockerfile to override the default adapter/Dockerfile.",
+                dockerfile.display()
+            );
+        }
         build_and_export_rootfs(&tool_dir, &dockerfile, image, &rootfs, force, dry_run)?;
     } else {
         validate_existing_rootfs(&rootfs)?;
@@ -103,10 +127,6 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
             canonical_rootfs.display()
         );
     }
-
-    // Validate source portability up-front so `--dry-run` catches the same
-    // pollution a real run would reject. The writer no longer re-validates.
-    validate_bind_source(&tool_dir)?;
 
     let digest = sandbox_runtime_digest_for_bind(&canonical_rootfs)?;
 
@@ -157,8 +177,31 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
 }
 
 fn resolve_path_from_tool_dir(tool_dir: &Path, raw: &str) -> PathBuf {
-    let p = PathBuf::from(raw);
-    if p.is_absolute() { p } else { tool_dir.join(p) }
+    resolve_tool_relative_path(tool_dir, &PathBuf::from(raw))
+}
+
+fn resolve_tool_relative_path(tool_dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        tool_dir.join(path)
+    }
+}
+
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push(component.as_os_str());
+                }
+            }
+            _ => out.push(component.as_os_str()),
+        }
+    }
+    out
 }
 
 fn validate_existing_rootfs(rootfs: &Path) -> Result<()> {
@@ -255,14 +298,15 @@ fn build_and_export_rootfs(
 /// Validate that the source `tool-metadata.json` declares a portable bind
 /// sandbox runtime: kind=sandbox, image.kind=bind, relative path, no
 /// `runtime_digest`. Run before any writes so `--dry-run` catches the same
-/// errors a real sync would.
-fn validate_bind_source(tool_dir: &Path) -> Result<()> {
+/// errors a real sync would, and return the authored bind path so callers can
+/// default `--rootfs` to it.
+fn validate_bind_source(tool_dir: &Path) -> Result<PathBuf> {
     let source = read_external_metadata(tool_dir)
         .with_context(|| format!("failed to read source metadata in {}", tool_dir.display()))?;
 
-    match source.runtime.as_ref() {
+    let source_rootfs = match source.runtime.as_ref() {
         Some(ToolRuntime::Sandbox(spec)) => match &spec.image {
-            baml_rt_tools::external_tools::SandboxImageRef::Bind { path } => {
+            SandboxImageRef::Bind { path } => {
                 if path.is_absolute() {
                     bail!(
                         "source tool-metadata.json declares an absolute bind path ({}); \
@@ -271,6 +315,7 @@ fn validate_bind_source(tool_dir: &Path) -> Result<()> {
                         path.display()
                     );
                 }
+                path.clone()
             }
             other => bail!(
                 "sandbox-bind-sync requires runtime.image.kind = 'bind' in source metadata (got {other:?})"
@@ -286,7 +331,7 @@ fn validate_bind_source(tool_dir: &Path) -> Result<()> {
         None => bail!(
             "source tool-metadata.json has no runtime declaration; declare a sandbox/bind runtime first"
         ),
-    }
+    };
 
     if source.runtime_digest.is_some() {
         bail!(
@@ -295,7 +340,7 @@ fn validate_bind_source(tool_dir: &Path) -> Result<()> {
         );
     }
 
-    Ok(())
+    Ok(source_rootfs)
 }
 
 /// Write the per-tool runtime lock sidecar (`tool-metadata.lock.json`) next
@@ -474,6 +519,65 @@ mod tests {
     }
 
     #[test]
+    fn rootfs_defaults_to_source_metadata_path() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        std::fs::write(tmp.path().join("tool-metadata.json"), PORTABLE_SOURCE).expect("write");
+        std::fs::create_dir_all(tmp.path().join("rootfs")).expect("rootfs");
+
+        run(SandboxBindSyncRunArgs {
+            tool_dir: tmp.path().to_str().expect("utf8"),
+            rootfs: None,
+            dockerfile: None,
+            image: None,
+            force: false,
+            check: false,
+            dry_run: true,
+            as_json: false,
+        })
+        .expect("dry-run should use metadata runtime.image.path as rootfs default");
+    }
+
+    #[test]
+    fn dockerfile_without_image_is_rejected() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        std::fs::write(tmp.path().join("tool-metadata.json"), PORTABLE_SOURCE).expect("write");
+
+        let err = run(SandboxBindSyncRunArgs {
+            tool_dir: tmp.path().to_str().expect("utf8"),
+            rootfs: None,
+            dockerfile: Some("adapter/Dockerfile"),
+            image: None,
+            force: false,
+            check: false,
+            dry_run: false,
+            as_json: false,
+        })
+        .expect_err("must reject");
+
+        assert!(err.to_string().contains("--dockerfile requires --image"));
+    }
+
+    #[test]
+    fn image_defaults_to_adapter_dockerfile_and_errors_when_missing() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        std::fs::write(tmp.path().join("tool-metadata.json"), PORTABLE_SOURCE).expect("write");
+
+        let err = run(SandboxBindSyncRunArgs {
+            tool_dir: tmp.path().to_str().expect("utf8"),
+            rootfs: None,
+            dockerfile: None,
+            image: Some("dev-echo-sandbox:local"),
+            force: false,
+            check: false,
+            dry_run: true,
+            as_json: false,
+        })
+        .expect_err("missing default Dockerfile should fail before invoking docker");
+
+        assert!(err.to_string().contains("adapter/Dockerfile"), "got: {err}");
+    }
+
+    #[test]
     #[ignore = "sandbox-lane-only"]
     fn write_runtime_sidecars_materializes_expected_files() {
         let tmp = tempfile::tempdir().expect("tmp");
@@ -611,7 +715,7 @@ mod tests {
     fn dry_run_with_check_is_rejected() {
         let err = run(SandboxBindSyncRunArgs {
             tool_dir: ".",
-            rootfs: ".",
+            rootfs: Some("."),
             dockerfile: None,
             image: None,
             force: false,
