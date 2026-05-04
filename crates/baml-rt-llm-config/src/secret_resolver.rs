@@ -127,13 +127,18 @@ impl std::fmt::Debug for SecretValue {
     }
 }
 
+/// Strip a recognised secret-placeholder prefix (`vault:` or `env.`) from `value`,
+/// returning the bare store-key. Returns `None` when no prefix matched. Trims
+/// surrounding whitespace before checking.
+pub fn strip_placeholder_prefix(value: &str) -> Option<&str> {
+    let s = value.trim();
+    s.strip_prefix("vault:").or_else(|| s.strip_prefix("env."))
+}
+
 /// Map placeholder to secret-store key: `"vault:KEY"` → `KEY`, `"env.VAR"` → `VAR` (for compat),
-/// else as-is.
-fn placeholder_to_key(placeholder: &str) -> &str {
-    let s = placeholder.trim();
-    s.strip_prefix("vault:")
-        .or_else(|| s.strip_prefix("env."))
-        .unwrap_or(s)
+/// else trimmed value as-is.
+pub fn placeholder_to_key(placeholder: &str) -> &str {
+    strip_placeholder_prefix(placeholder).unwrap_or_else(|| placeholder.trim())
 }
 
 /// Resolves secret placeholders (e.g. `env.OPENROUTER_API_KEY` or vault keys) to actual values.
@@ -201,7 +206,7 @@ impl SecretSourcePolicy {
 /// Secret resolver backed by the **fnox** crate (fnox.toml). Loads config via fnox's discovery
 /// (or `BAML_FNOX_CONFIG` path), resolves all secrets for the profile at construction time
 /// using fnox's `resolve_secret`, and serves them synchronously.
-/// Placeholders: `env.VAR_NAME` → key `VAR_NAME`; others → key as-is.
+/// Placeholders: `vault:KEY` → key `KEY`, `env.VAR_NAME` → key `VAR_NAME`; others → key as-is.
 #[derive(Clone)]
 pub struct FnoxFileSecretResolver {
     /// Pre-resolved store key → value from fnox.
@@ -610,5 +615,22 @@ mod tests {
     #[test]
     fn placeholder_to_key_only_strips_first_match() {
         assert_eq!(placeholder_to_key("vault:env.KEY"), "env.KEY");
+    }
+
+    // ── strip_placeholder_prefix ─────────────────────────────────────────
+
+    #[test]
+    fn strip_placeholder_prefix_returns_some_for_recognised_prefixes() {
+        assert_eq!(strip_placeholder_prefix("vault:KEY"), Some("KEY"));
+        assert_eq!(strip_placeholder_prefix("env.VAR"), Some("VAR"));
+        assert_eq!(strip_placeholder_prefix("  vault:KEY  "), Some("KEY"));
+        assert_eq!(strip_placeholder_prefix("\tenv.VAR\n"), Some("VAR"));
+    }
+
+    #[test]
+    fn strip_placeholder_prefix_returns_none_for_plain_values() {
+        assert_eq!(strip_placeholder_prefix("KEY"), None);
+        assert_eq!(strip_placeholder_prefix("plain-value"), None);
+        assert_eq!(strip_placeholder_prefix(""), None);
     }
 }

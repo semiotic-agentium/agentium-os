@@ -7,7 +7,7 @@ use internal_llm_client::ClientProvider;
 
 use crate::{
     config::{LlmClientConfig, LlmProvider},
-    secret_resolver::SecretResolver,
+    secret_resolver::{SecretResolver, strip_placeholder_prefix},
 };
 
 /// Build a ClientRegistry from config with the given primary client.
@@ -24,8 +24,7 @@ pub fn build_client_registry(
 
         let mut options = BamlMap::new();
         for (k, v) in &client.options {
-            let is_secret_ref = v.starts_with("env.") || v.starts_with("vault:");
-            let value = if is_secret_ref {
+            let value = if strip_placeholder_prefix(v).is_some() {
                 match secret_resolver.resolve(v) {
                     Some(s) => BamlValue::String(s.into_string()),
                     None => {
