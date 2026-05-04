@@ -9,7 +9,7 @@ use baml_rt_config::{InternalConfigReader, InternalConfigWriter};
 use baml_rt_llm_config::{
     LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, LlmProvider, RuntimeSecretStore,
     SECRET_LINKS_CONFIG_KEY, SecretLinksState, SecretRequestName, SecretSourcePolicy, SecretValue,
-    StoreKey, apply_secret_links_state,
+    StoreKey, apply_secret_links_state, strip_placeholder_prefix,
 };
 use baml_rt_tools::{BundleName, ToolName};
 use http_api_problem::HttpApiProblem;
@@ -132,11 +132,9 @@ async fn sync_secret_links(state: &crate::router::ApiState) {
 }
 
 /// Extract secret key from an option value (placeholder prefix stripped; key used for lookup).
+/// Returns `None` when the value carries no recognised placeholder prefix.
 fn secret_name_from_option_value(v: &str) -> Option<String> {
-    let v = v.trim();
-    v.strip_prefix("vault:")
-        .or_else(|| v.strip_prefix("env."))
-        .map(|s| s.to_string())
+    strip_placeholder_prefix(v).map(str::to_string)
 }
 
 /// List all required secrets with M:N consumers: tools and LLM clients (GET /config/secrets-overview).

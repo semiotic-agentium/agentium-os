@@ -14,7 +14,9 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use baml_rt_llm_config::{DEFAULT_OPENROUTER_BASE_URL, require_base_url_if_required};
+use baml_rt_llm_config::{
+    DEFAULT_OPENROUTER_BASE_URL, placeholder_to_key, require_base_url_if_required,
+};
 use baml_runtime::{
     BamlRuntime, InternalRuntimeInterface,
     client_registry::{ClientProperty, ClientRegistry},
@@ -197,10 +199,11 @@ pub fn build_llm_client_registry(
         let required_env_vars = client.required_env_vars();
 
         // Resolve first LLM secret we have a mapping for (one api_key per client).
-        // BAML IR may expose placeholders as "env.OPENROUTER_API_KEY"; normalize to "OPENROUTER_API_KEY" for lookup.
+        // BAML IR may expose placeholders as "env.OPENROUTER_API_KEY" or "vault:OPENROUTER_API_KEY";
+        // normalise to the bare key for lookup.
         let mut api_key_value: Option<String> = None;
         for key in required_env_vars.iter() {
-            let key_for_check = key.strip_prefix("env.").unwrap_or(key.as_str());
+            let key_for_check = placeholder_to_key(key.as_str());
             if LLM_SECRET_KEYS.contains(&key_for_check)
                 && let Some((value, registered_key)) =
                     resolver.resolve_llm_api_key(scope_id, key_for_check)
