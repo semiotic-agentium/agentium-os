@@ -9,7 +9,7 @@
 //! [`SecretRequestName`] = name of a secret request (what tools/LLM need). Linking maps
 //! request → store key (M:N).
 
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{borrow::Borrow, collections::HashMap, path::Path, sync::Arc};
 
 use fnox::config::Config;
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,16 @@ impl StoreKey {
 impl From<&str> for StoreKey {
     fn from(s: &str) -> Self {
         Self::new(s)
+    }
+}
+
+/// Borrow as `&str` so `HashMap<StoreKey, _>::get` can accept a borrowed,
+/// already-trimmed key without allocating. `StoreKey::new` trims at
+/// construction, so callers must pass a trimmed string (e.g. via
+/// `placeholder_to_key`) to maintain `Hash`/`Eq` consistency.
+impl Borrow<str> for StoreKey {
+    fn borrow(&self) -> &str {
+        &self.0
     }
 }
 
@@ -62,6 +72,15 @@ impl SecretRequestName {
 impl From<&str> for SecretRequestName {
     fn from(s: &str) -> Self {
         Self::new(s)
+    }
+}
+
+/// Borrow as `&str` so `HashMap<SecretRequestName, _>::get` can accept a
+/// borrowed, already-trimmed key without allocating. See `StoreKey`'s
+/// `Borrow<str>` impl for the trim invariant.
+impl Borrow<str> for SecretRequestName {
+    fn borrow(&self) -> &str {
+        &self.0
     }
 }
 
@@ -359,8 +378,7 @@ impl FnoxFileSecretResolver {
 
 impl SecretResolver for FnoxFileSecretResolver {
     fn resolve(&self, placeholder: &str) -> Option<SecretValue> {
-        let key = StoreKey::from(placeholder_to_key(placeholder));
-        self.cache.get(&key).cloned()
+        self.cache.get(placeholder_to_key(placeholder)).cloned()
     }
 
     fn resolve_from_store(&self, key: &StoreKey) -> Option<SecretValue> {
@@ -393,7 +411,7 @@ impl OverlaySecretResolver {
 
 impl SecretResolver for OverlaySecretResolver {
     fn resolve(&self, placeholder: &str) -> Option<SecretValue> {
-        let request = SecretRequestName::from(placeholder_to_key(placeholder));
+        let request = placeholder_to_key(placeholder);
         let overlay_result = {
             let guard = match self.overlay.read() {
                 Ok(g) => g,
@@ -402,7 +420,7 @@ impl SecretResolver for OverlaySecretResolver {
                     return self.backend.resolve(placeholder);
                 }
             };
-            guard.get(&request).cloned()
+            guard.get(request).cloned()
         };
         match overlay_result {
             Some(Some(v)) => Some(v),
@@ -632,5 +650,28 @@ mod tests {
         assert_eq!(strip_placeholder_prefix("KEY"), None);
         assert_eq!(strip_placeholder_prefix("plain-value"), None);
         assert_eq!(strip_placeholder_prefix(""), None);
+    }
+
+    // ── Borrow<str> lookup parity ────────────────────────────────────────
+
+    #[test]
+    fn store_key_borrow_lookup_matches_owned() {
+        let mut map: HashMap<StoreKey, u32> = HashMap::new();
+        map.insert(StoreKey::new("OPENROUTER_API_KEY"), 1);
+        assert_eq!(map.get("OPENROUTER_API_KEY"), Some(&1));
+        assert_eq!(map.get(&StoreKey::new("OPENROUTER_API_KEY")), Some(&1));
+        assert_eq!(map.get("MISSING"), None);
+    }
+
+    #[test]
+    fn secret_request_name_borrow_lookup_matches_owned() {
+        let mut map: HashMap<SecretRequestName, u32> = HashMap::new();
+        map.insert(SecretRequestName::new("CLICKUP_API_KEY"), 7);
+        assert_eq!(map.get("CLICKUP_API_KEY"), Some(&7));
+        assert_eq!(
+            map.get(&SecretRequestName::new("CLICKUP_API_KEY")),
+            Some(&7)
+        );
+        assert_eq!(map.get("MISSING"), None);
     }
 }
