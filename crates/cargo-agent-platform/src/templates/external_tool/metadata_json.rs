@@ -89,16 +89,17 @@ pub fn build_metadata(ctx: &ScaffoldContext<'_>) -> ExternalToolMetadata {
                 .sandbox_image
                 .clone()
                 .expect("sandbox runtime requires sandbox_image in scaffold context");
-            let runtime_digest = ctx
-                .runtime_digest
-                .clone()
-                .expect("sandbox runtime requires runtime_digest in scaffold context");
             meta.runtime = Some(ToolRuntime::Sandbox(SandboxRuntimeSpec {
                 image,
                 entrypoint: ctx.sandbox_entrypoint.clone(),
                 adapter: Some(default_adapter_spec(ctx.language)),
             }));
-            meta.runtime_digest = Some(runtime_digest);
+            // Bind sandboxes carry no `runtime_digest` in source — it lives in
+            // the host-resolved `tool-metadata.lock.json` written by
+            // `sandbox-bind-sync`. OCI sandboxes embed the digest in the image
+            // ref; the explicit `runtime_digest` field is optional and only set
+            // when the caller passed `--runtime-digest`.
+            meta.runtime_digest = ctx.runtime_digest.clone();
         }
     }
 

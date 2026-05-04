@@ -343,7 +343,7 @@
     "kind": "sandbox",
     "image": {
       "kind": "bind",
-      "path": "/home/neithanmo/Documents/Work/Semiotic/agent-platform-notify/examples/external-tools/claude-ext/.tmp/dev-claude-ext-rootfs"
+      "path": "./.tmp/dev-claude-ext-rootfs"
     },
     "adapter": {
       "schema_version": 1,
@@ -353,6 +353,5 @@
       ],
       "workdir": "/"
     }
-  },
-  "runtime_digest": "sha256:f204a5aace322fdd8a1ba2f676c7dce0d9944f12ed4d5ffb98178118953bd4b3"
+  }
 }

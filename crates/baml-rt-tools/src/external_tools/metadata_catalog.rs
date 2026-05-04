@@ -134,6 +134,10 @@ impl ToolCatalog for ExternalMetadataCatalog {
 }
 
 fn load_metadata(dir: &Path) -> Result<ToolFunctionMetadata> {
+    // Builder/codegen path: read the committed source only. The host-resolved
+    // `tool-metadata.lock.json` carries runtime-launch state (bind path,
+    // runtime_digest) that this layer never needs — letting it influence
+    // codegen would mean a malformed local lock could break `cargo build`.
     let meta = read_external_metadata(dir)?;
     let tool_name = ToolName::parse(&meta.name)?;
     build_tool_metadata(dir, &meta, &tool_name)

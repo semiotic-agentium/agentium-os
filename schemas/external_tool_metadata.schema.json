@@ -238,7 +238,7 @@
     "runtime_digest": {
       "type": "string",
       "pattern": "^sha256:[a-f0-9]{64}$",
-      "description": "runtime identity digest (required for sandbox runtime)"
+      "description": "DEPRECATED in source files: do not commit. Bind sandbox digests live in the per-tool lock sidecar (tool-metadata.lock.json) written by sandbox-bind-sync; OCI sandbox digests are pinned in image.ref. Field kept for back-compat parsing only."
     },
     "coordination": {
       "type": "object",
@@ -254,24 +254,5 @@
       "additionalProperties": false
     }
   },
-  "allOf": [
-    {
-      "if": {
-        "required": ["runtime"],
-        "properties": {
-          "runtime": {
-            "type": "object",
-            "required": ["kind"],
-            "properties": {
-              "kind": { "const": "sandbox" }
-            }
-          }
-        }
-      },
-      "then": {
-        "required": ["runtime_digest"]
-      }
-    }
-  ],
   "additionalProperties": false
 }

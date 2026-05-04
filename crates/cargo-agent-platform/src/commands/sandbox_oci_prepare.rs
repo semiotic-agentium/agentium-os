@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use baml_rt_tools::external_tools::{
-    SIDECAR_BUNDLE_REL_PATH, SandboxImageRef, ToolRuntime, read_external_metadata,
+    SIDECAR_BUNDLE_REL_PATH, SandboxImageRef, ToolRuntime, read_runtime_external_metadata,
     render_sidecar_bundle,
 };
 use console::style;
@@ -50,7 +50,7 @@ pub fn run(args: SandboxOciPrepareRunArgs<'_>) -> Result<()> {
         bail!("missing tool-metadata.json at {}", metadata_path.display());
     }
 
-    let metadata = read_external_metadata(&tool_dir)?;
+    let metadata = read_runtime_external_metadata(&tool_dir)?;
     let runtime_digest = metadata
         .runtime_digest
         .as_deref()

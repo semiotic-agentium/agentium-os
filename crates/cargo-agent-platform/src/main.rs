@@ -107,8 +107,9 @@ enum Commands {
         #[arg(long)]
         sandbox_image: Option<String>,
 
-        /// Runtime identity digest (`sha256:...`) when --runtime sandbox.
-        /// Optional for oci (defaults to image digest) and bind (defaults to scaffold placeholder digest).
+        /// Runtime identity digest (`sha256:...`) when --runtime sandbox --sandbox-source oci.
+        /// Optional: defaults to the image digest. Not accepted with --sandbox-source bind —
+        /// bind digests are written into tool-metadata.lock.json by `sandbox-bind-sync`.
         #[arg(long)]
         runtime_digest: Option<String>,
 

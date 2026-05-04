@@ -24,7 +24,7 @@ use super::{
     lockfile::{ExternalLockfileMode, ExternalToolsLockfile},
     metadata::{
         ExternalToolMetadata, InvocationMode, build_tool_metadata, compute_tool_digest,
-        metadata_schema_digest, read_external_metadata,
+        metadata_schema_digest, read_runtime_external_metadata,
     },
     policy::{DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT},
     protocol::{METHOD_INVOKE, PROTOCOL_VERSION},
@@ -295,7 +295,7 @@ async fn load_tool_dir(
         )));
     }
 
-    let meta = read_external_metadata(dir)?;
+    let meta = read_runtime_external_metadata(dir)?;
     let tool_name = ToolName::parse(&meta.name)?;
     let runtime_kind = meta.runtime.as_ref().map(ToolRuntime::kind);
 

@@ -1,8 +1,14 @@
 //! `sandbox-bind-sync` subcommand implementation.
 //!
-//! Synchronises bind sandbox metadata (`runtime.image.path` + `runtime_digest`)
-//! with a concrete rootfs directory. Optionally builds/exports rootfs from a
-//! Docker image first.
+//! Materializes host-resolved bind state next to a hand-written
+//! `tool-metadata.json`:
+//! - writes a sibling `tool-metadata.lock.json` carrying the canonical
+//!   absolute rootfs path and computed `runtime_digest`;
+//! - writes the in-rootfs sidecar bundle at `etc/agentium/tool-bundle.json`.
+//!
+//! The committed source `tool-metadata.json` is **never** mutated, so example
+//! tools stay portable across contributors. Optionally builds/exports the
+//! rootfs from a Docker image first.
 
 use std::{
     fs,
@@ -12,11 +18,11 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use baml_rt_tools::external_tools::{
-    SIDECAR_BUNDLE_REL_PATH, read_external_metadata, read_sidecar_bundle, render_sidecar_bundle,
+    SIDECAR_BUNDLE_REL_PATH, ToolRuntime, ToolRuntimeLock, read_external_metadata,
+    read_runtime_external_metadata, read_sidecar_bundle, render_sidecar_bundle,
     sandbox_runtime_digest_for_bind, verify_runtime_digest,
 };
 use serde::Serialize;
-use serde_json::{Value, json};
 
 #[derive(Debug, Serialize)]
 struct SyncSummary {
@@ -98,10 +104,14 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
         );
     }
 
+    // Validate source portability up-front so `--dry-run` catches the same
+    // pollution a real run would reject. The writer no longer re-validates.
+    validate_bind_source(&tool_dir)?;
+
     let digest = sandbox_runtime_digest_for_bind(&canonical_rootfs)?;
 
     if !dry_run {
-        patch_metadata(&metadata_path, &canonical_rootfs, &digest)?;
+        write_runtime_lock(&tool_dir, &canonical_rootfs, &digest)?;
         write_runtime_sidecars(&metadata_path, &canonical_rootfs, &digest)?;
         verify_runtime_sidecar_digest(&canonical_rootfs, &digest)?;
     }
@@ -130,7 +140,7 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
         if dry_run {
             println!("Dry run successful (no files changed).");
         } else {
-            println!("Bind metadata patched.");
+            println!("Bind runtime lock written (tool-metadata.lock.json).");
         }
         println!("  tool dir:       {}", summary.tool_dir);
         println!("  metadata:       {}", summary.metadata_path);
@@ -242,45 +252,58 @@ fn build_and_export_rootfs(
     Ok(())
 }
 
-fn patch_metadata(metadata_path: &Path, bind_path: &Path, digest: &str) -> Result<()> {
-    let raw = fs::read_to_string(metadata_path)
-        .with_context(|| format!("failed to read {}", metadata_path.display()))?;
-    let mut metadata: Value = serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse {} as JSON", metadata_path.display()))?;
+/// Validate that the source `tool-metadata.json` declares a portable bind
+/// sandbox runtime: kind=sandbox, image.kind=bind, relative path, no
+/// `runtime_digest`. Run before any writes so `--dry-run` catches the same
+/// errors a real sync would.
+fn validate_bind_source(tool_dir: &Path) -> Result<()> {
+    let source = read_external_metadata(tool_dir)
+        .with_context(|| format!("failed to read source metadata in {}", tool_dir.display()))?;
 
-    let obj = metadata
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("metadata root is not a JSON object"))?;
-
-    let runtime = obj.entry("runtime").or_insert_with(|| json!({}));
-    let runtime_obj = runtime
-        .as_object_mut()
-        .ok_or_else(|| anyhow!("metadata.runtime must be a JSON object"))?;
-
-    if let Some(kind) = runtime_obj.get("kind").and_then(Value::as_str)
-        && kind != "sandbox"
-    {
-        bail!("metadata.runtime.kind must be 'sandbox' for bind sync (got '{kind}')");
+    match source.runtime.as_ref() {
+        Some(ToolRuntime::Sandbox(spec)) => match &spec.image {
+            baml_rt_tools::external_tools::SandboxImageRef::Bind { path } => {
+                if path.is_absolute() {
+                    bail!(
+                        "source tool-metadata.json declares an absolute bind path ({}); \
+                         use a relative path like \"./rootfs\" — host-resolved paths belong \
+                         in tool-metadata.lock.json",
+                        path.display()
+                    );
+                }
+            }
+            other => bail!(
+                "sandbox-bind-sync requires runtime.image.kind = 'bind' in source metadata (got {other:?})"
+            ),
+        },
+        Some(other) => bail!(
+            "sandbox-bind-sync requires runtime.kind = 'sandbox' in source metadata (got '{}')",
+            match other {
+                ToolRuntime::Process(_) => "process",
+                ToolRuntime::Sandbox(_) => unreachable!(),
+            }
+        ),
+        None => bail!(
+            "source tool-metadata.json has no runtime declaration; declare a sandbox/bind runtime first"
+        ),
     }
 
-    runtime_obj.insert("kind".to_string(), Value::String("sandbox".to_string()));
-    runtime_obj.insert(
-        "image".to_string(),
-        json!({
-            "kind": "bind",
-            "path": bind_path.display().to_string(),
-        }),
-    );
+    if source.runtime_digest.is_some() {
+        bail!(
+            "source tool-metadata.json contains 'runtime_digest'; remove it — \
+             the digest belongs in tool-metadata.lock.json"
+        );
+    }
 
-    obj.insert(
-        "runtime_digest".to_string(),
-        Value::String(digest.to_string()),
-    );
+    Ok(())
+}
 
-    let patched = serde_json::to_string_pretty(&metadata)? + "\n";
-    fs::write(metadata_path, patched)
-        .with_context(|| format!("failed to write {}", metadata_path.display()))?;
-
+/// Write the per-tool runtime lock sidecar (`tool-metadata.lock.json`) next
+/// to the source `tool-metadata.json`. Pure writer — callers must invoke
+/// [`validate_bind_source`] first.
+fn write_runtime_lock(tool_dir: &Path, bind_path: &Path, digest: &str) -> Result<()> {
+    let lock = ToolRuntimeLock::new_bind(bind_path.to_path_buf(), digest.to_string());
+    lock.write_to_dir(tool_dir).map_err(|e| anyhow!("{e}"))?;
     Ok(())
 }
 
@@ -288,7 +311,7 @@ fn write_runtime_sidecars(metadata_path: &Path, rootfs: &Path, runtime_digest: &
     let tool_dir = metadata_path
         .parent()
         .ok_or_else(|| anyhow!("metadata path has no parent: {}", metadata_path.display()))?;
-    let metadata = read_external_metadata(tool_dir)?;
+    let metadata = read_runtime_external_metadata(tool_dir)?;
     let bundle = render_sidecar_bundle(&metadata, runtime_digest)
         .map_err(|e| anyhow!("failed to render sidecar bundle: {e}"))?;
 
@@ -358,57 +381,96 @@ fn command_output(cmd: &mut Command, label: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use baml_rt_tools::external_tools::{RUNTIME_LOCK_FILE_NAME, read_runtime_lock};
+    use serde_json::Value;
+
     use super::*;
 
-    #[test]
-    fn patch_metadata_sets_bind_image_and_digest() {
-        let tmp = tempfile::tempdir().expect("tmp");
-        let metadata_path = tmp.path().join("tool-metadata.json");
-        std::fs::write(
-            &metadata_path,
-            r#"{
-  "name": "support/echo",
+    const PORTABLE_SOURCE: &str = r#"{
+  "tool_abi_version": "1",
+  "name": "dev/echo",
+  "description": "echo",
+  "bundle": "dev",
+  "local_name": "echo",
+  "access_level": "read",
+  "tags": [],
+  "invocation_mode": "single_shot",
+  "session_policy": "strict",
+  "schemas": {"input": {"type":"object"}, "output": {"type":"object"}},
+  "secrets": [],
+  "capabilities": {},
   "runtime": {
     "kind": "sandbox",
-    "image": {"kind":"bind","path":"<rootfs-path>"},
-    "entrypoint": ["/tool-adapter"]
-  },
-  "runtime_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    "image": {"kind":"bind","path":"./rootfs"},
+    "entrypoint": ["/tool-adapter"],
+    "adapter": {
+      "schema_version": 1,
+      "protocol": "jsonrpc-stdio",
+      "command": ["/tool-adapter"],
+      "workdir": "/"
+    }
+  }
 }
-"#,
-        )
-        .expect("write");
+"#;
+
+    #[test]
+    fn write_runtime_lock_writes_sidecar_and_leaves_source_intact() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let metadata_path = tmp.path().join("tool-metadata.json");
+        std::fs::write(&metadata_path, PORTABLE_SOURCE).expect("write source");
 
         let bind_path = tmp.path().join("rootfs");
         std::fs::create_dir_all(&bind_path).expect("rootfs");
 
         let digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
-        patch_metadata(&metadata_path, &bind_path, digest).expect("patch");
+        write_runtime_lock(tmp.path(), &bind_path, digest).expect("write lock");
 
-        let raw = std::fs::read_to_string(&metadata_path).expect("read");
-        let parsed: Value = serde_json::from_str(&raw).expect("json");
+        // Source file untouched.
+        let source_after = std::fs::read_to_string(&metadata_path).expect("read source");
+        assert_eq!(source_after, PORTABLE_SOURCE);
 
-        assert_eq!(
-            parsed
-                .get("runtime")
-                .and_then(|v| v.get("image"))
-                .and_then(|v| v.get("kind"))
-                .and_then(Value::as_str),
-            Some("bind")
+        // Lock sidecar present and carries our values.
+        let lock_path = tmp.path().join(RUNTIME_LOCK_FILE_NAME);
+        assert!(lock_path.exists(), "lock sidecar must exist");
+        let lock = read_runtime_lock(tmp.path())
+            .expect("read lock")
+            .expect("lock present");
+        assert_eq!(lock.runtime_digest.as_deref(), Some(digest));
+        assert_eq!(lock.image_path_abs.as_deref(), Some(bind_path.as_path()));
+    }
+
+    #[test]
+    fn validate_bind_source_rejects_absolute_path() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let polluted =
+            PORTABLE_SOURCE.replace(r#""path":"./rootfs""#, r#""path":"/abs/leaked/path""#);
+        std::fs::write(tmp.path().join("tool-metadata.json"), polluted).expect("write");
+
+        let err = validate_bind_source(tmp.path()).expect_err("must reject");
+        assert!(
+            err.to_string().contains("absolute bind path"),
+            "unexpected error: {err}"
         );
-        let bind_path_str = bind_path.display().to_string();
-        assert_eq!(
-            parsed
-                .get("runtime")
-                .and_then(|v| v.get("image"))
-                .and_then(|v| v.get("path"))
-                .and_then(Value::as_str),
-            Some(bind_path_str.as_str())
+    }
+
+    #[test]
+    fn validate_bind_source_rejects_runtime_digest() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let polluted = PORTABLE_SOURCE.replace(
+            r#""capabilities": {},"#,
+            r#""capabilities": {}, "runtime_digest": "sha256:dead", "#,
         );
-        assert_eq!(
-            parsed.get("runtime_digest").and_then(Value::as_str),
-            Some(digest)
-        );
+        std::fs::write(tmp.path().join("tool-metadata.json"), polluted).expect("write");
+
+        let err = validate_bind_source(tmp.path()).expect_err("must reject");
+        assert!(err.to_string().contains("runtime_digest"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_bind_source_accepts_portable_source() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        std::fs::write(tmp.path().join("tool-metadata.json"), PORTABLE_SOURCE).expect("write");
+        validate_bind_source(tmp.path()).expect("portable source must validate");
     }
 
     #[test]

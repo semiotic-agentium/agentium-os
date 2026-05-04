@@ -39,7 +39,7 @@ set -euo pipefail
 #   1) builds adapter image from adapter/Dockerfile
 #   2) exports image filesystem into a bind rootfs directory
 #   3) computes runtime_digest from rootfs contents
-#   4) patches tool-metadata.json with bind path + digest
+#   4) writes tool-metadata.lock.json (gitignored) with bind path + digest
 #   5) validates metadata via `check-external-tool` (with --check)
 
 run_agent_platform() {{
@@ -149,7 +149,7 @@ fi
 
 run_agent_platform "${{args[@]}}"
 
-echo "Bind metadata patched and validated."
+echo "Bind runtime lock written and validated."
 echo "  tool:           {tool_id}"
 echo "  image:          $IMAGE"
 echo "  bind path:      $ROOTFS"

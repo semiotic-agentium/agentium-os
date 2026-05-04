@@ -9,6 +9,7 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result, bail};
 use baml_rt_tools::external_tools::{
     SandboxImageRef, ToolRuntime, canonical_bind_digest, read_external_metadata,
+    read_runtime_external_metadata,
 };
 use console::style;
 use jsonschema::JSONSchema;
@@ -46,7 +47,33 @@ pub fn run(path: &str) -> Result<()> {
         bail!("external tool metadata failed schema validation");
     }
 
-    let typed = read_external_metadata(tool_dir)?;
+    // Source-pollution lint: catch contributors who hand-edited absolute bind
+    // paths or `runtime_digest` into the committed `tool-metadata.json`. These
+    // belong in the gitignored `tool-metadata.lock.json` written by
+    // `sandbox-bind-sync`. Run against the unmerged source — the resolved view
+    // would mask abs paths that the lock happened to override.
+    let source = read_external_metadata(tool_dir)?;
+    if let Some(ToolRuntime::Sandbox(spec)) = &source.runtime
+        && let SandboxImageRef::Bind { path } = &spec.image
+        && path.is_absolute()
+    {
+        bail!(
+            "source tool-metadata.json declares an absolute bind path ({}); use a relative path \
+             like \"./.tmp/<rootfs>\" — host-resolved paths belong in tool-metadata.lock.json",
+            path.display()
+        );
+    }
+    if let Some(ToolRuntime::Sandbox(spec)) = &source.runtime
+        && matches!(spec.image, SandboxImageRef::Bind { .. })
+        && source.runtime_digest.is_some()
+    {
+        bail!(
+            "source tool-metadata.json contains 'runtime_digest' for a bind sandbox; remove it — \
+             the digest belongs in tool-metadata.lock.json (regenerate via `sandbox-bind-sync`)"
+        );
+    }
+
+    let typed = read_runtime_external_metadata(tool_dir)?;
     if let Some(ToolRuntime::Sandbox(runtime)) = &typed.runtime {
         let adapter = runtime.adapter.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
@@ -70,7 +97,10 @@ pub fn run(path: &str) -> Result<()> {
 
         let runtime_digest = typed.runtime_digest.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
-                "sandbox runtime requires runtime_digest in tool-metadata.json (tool: {})",
+                "sandbox runtime requires a runtime_digest for tool '{}'. \
+                 For bind sandboxes run `cargo agent-platform sandbox-bind-sync` \
+                 to generate tool-metadata.lock.json; for OCI sandboxes pin the \
+                 digest in runtime.image.ref",
                 typed.name
             )
         })?;

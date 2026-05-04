@@ -106,6 +106,8 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
     validate_invocation_mode(runtime, invocation_mode)?;
 
     let (sandbox_image, runtime_digest) = validate_runtime_options(
+        name,
+        bundle,
         runtime,
         sandbox_source,
         sandbox_image,
@@ -260,6 +262,11 @@ pub fn build_file_set(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
     if ctx.runtime == Runtime::Sandbox && ctx.sandbox_source == Some(SandboxSource::Bind) {
         files.extend(crate::templates::external_tool::bind_sandbox::files(ctx));
         ensure_gitignore_entry(&mut files, ".tmp/");
+        // The host-resolved bind sidecar (written by `sandbox-bind-sync`) is
+        // per-machine and must never be committed. Keeping the rule next to
+        // the tool means it travels with the tool if the package is moved or
+        // published, instead of relying on a workspace-level wildcard.
+        ensure_gitignore_entry(&mut files, "tool-metadata.lock.json");
     }
     files
 }
@@ -332,11 +339,17 @@ fn validate_tool_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-const BIND_ROOTFS_PLACEHOLDER: &str = "<rootfs-path>";
-const ZERO_RUNTIME_DIGEST: &str =
-    "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+/// Build the conventional bind rootfs path scaffolds advertise in source
+/// metadata: a tool-relative `./.tmp/<bundle>-<safe_name>-rootfs`. Matches
+/// the rootfs dir the setup script writes to (see `bind_sandbox.rs`).
+fn default_bind_rootfs_path(name: &str, bundle: &str) -> PathBuf {
+    let safe_name = name.replace('_', "-");
+    PathBuf::from(format!("./.tmp/{bundle}-{safe_name}-rootfs"))
+}
 
 fn validate_runtime_options(
+    name: &str,
+    bundle: &str,
     runtime: Runtime,
     sandbox_source: SandboxSource,
     sandbox_image: Option<&str>,
@@ -376,13 +389,18 @@ fn validate_runtime_options(
                 ))
             }
             SandboxSource::Bind => {
-                let digest = runtime_digest.unwrap_or(ZERO_RUNTIME_DIGEST);
-                validate_runtime_digest(digest)?;
+                if runtime_digest.is_some() {
+                    bail!(
+                        "Error: --runtime-digest is not supported with --sandbox-source bind. \
+                         Bind digests are computed and stored in tool-metadata.lock.json by \
+                         `cargo agent-platform sandbox-bind-sync`."
+                    );
+                }
                 Ok((
                     Some(SandboxImageRef::Bind {
-                        path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+                        path: default_bind_rootfs_path(name, bundle),
                     }),
-                    Some(digest.to_string()),
+                    None,
                 ))
             }
         },
@@ -631,19 +649,48 @@ mod tests {
     }
 
     #[test]
-    fn bind_sandbox_defaults_to_placeholder_path_and_zero_digest() {
-        let (image, digest) =
-            validate_runtime_options(Runtime::Sandbox, SandboxSource::Bind, None, None, &[])
-                .expect("bind scaffolding defaults should be valid");
+    fn bind_sandbox_defaults_to_tool_relative_rootfs_and_no_digest() {
+        let (image, digest) = validate_runtime_options(
+            "echo",
+            "dev",
+            Runtime::Sandbox,
+            SandboxSource::Bind,
+            None,
+            None,
+            &[],
+        )
+        .expect("bind scaffolding defaults should be valid");
 
         match image {
             Some(SandboxImageRef::Bind { path }) => {
-                assert_eq!(path, PathBuf::from(BIND_ROOTFS_PLACEHOLDER));
+                assert_eq!(path, PathBuf::from("./.tmp/dev-echo-rootfs"));
             }
             other => panic!("expected bind image, got {other:?}"),
         }
 
-        assert_eq!(digest.as_deref(), Some(ZERO_RUNTIME_DIGEST));
+        assert!(
+            digest.is_none(),
+            "bind source must not carry runtime_digest; got {digest:?}"
+        );
+    }
+
+    #[test]
+    fn bind_sandbox_rejects_runtime_digest_flag() {
+        let err = validate_runtime_options(
+            "echo",
+            "dev",
+            Runtime::Sandbox,
+            SandboxSource::Bind,
+            None,
+            Some("sha256:1111111111111111111111111111111111111111111111111111111111111111"),
+            &[],
+        )
+        .expect_err("bind + --runtime-digest must be rejected");
+        assert!(
+            err.to_string()
+                .contains("not supported with --sandbox-source bind"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -652,9 +699,9 @@ mod tests {
         bind_ctx.runtime = Runtime::Sandbox;
         bind_ctx.sandbox_source = Some(SandboxSource::Bind);
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+        bind_ctx.runtime_digest = None;
 
         let files = build_file_set(&bind_ctx);
         assert!(
@@ -683,9 +730,9 @@ mod tests {
         bind_ctx.runtime = Runtime::Sandbox;
         bind_ctx.sandbox_source = Some(SandboxSource::Bind);
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+        bind_ctx.runtime_digest = None;
         bind_ctx.generate_docker = true;
 
         let files = build_file_set(&bind_ctx);
@@ -760,9 +807,9 @@ mod tests {
         bind_ctx.runtime = Runtime::Sandbox;
         bind_ctx.sandbox_source = Some(SandboxSource::Bind);
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+        bind_ctx.runtime_digest = None;
         bind_ctx.generate_docker = true;
 
         let files = build_file_set(&bind_ctx);
@@ -782,14 +829,39 @@ mod tests {
     }
 
     #[test]
+    fn bind_scaffold_gitignore_ignores_runtime_lock_sidecar() {
+        let mut bind_ctx = ctx(Language::Python);
+        bind_ctx.runtime = Runtime::Sandbox;
+        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
+        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
+            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
+        });
+        bind_ctx.runtime_digest = None;
+
+        let files = build_file_set(&bind_ctx);
+        let gitignore = files
+            .iter()
+            .find(|f| f.relative_path == ".gitignore")
+            .expect(".gitignore emitted");
+
+        assert!(
+            gitignore
+                .content
+                .lines()
+                .any(|line| line.trim() == "tool-metadata.lock.json"),
+            ".gitignore should ignore tool-metadata.lock.json"
+        );
+    }
+
+    #[test]
     fn bind_scaffold_gitignore_ignores_tmp_rootfs() {
         let mut bind_ctx = ctx(Language::Python);
         bind_ctx.runtime = Runtime::Sandbox;
         bind_ctx.sandbox_source = Some(SandboxSource::Bind);
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+        bind_ctx.runtime_digest = None;
 
         let files = build_file_set(&bind_ctx);
         let gitignore = files
@@ -809,9 +881,9 @@ mod tests {
         bind_ctx.runtime = Runtime::Sandbox;
         bind_ctx.sandbox_source = Some(SandboxSource::Bind);
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
+        bind_ctx.runtime_digest = None;
 
         let files = build_file_set(&bind_ctx);
         let gitignore = files
@@ -819,6 +891,11 @@ mod tests {
             .find(|f| f.relative_path == ".gitignore")
             .expect(".gitignore emitted for bash bind scaffold");
 
-        assert_eq!(gitignore.content, ".tmp/\n");
+        let lines: Vec<&str> = gitignore.content.lines().collect();
+        assert!(lines.contains(&".tmp/"), "expected .tmp/, got {lines:?}");
+        assert!(
+            lines.contains(&"tool-metadata.lock.json"),
+            "expected tool-metadata.lock.json, got {lines:?}"
+        );
     }
 }

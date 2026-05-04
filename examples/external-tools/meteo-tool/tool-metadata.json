@@ -228,7 +228,7 @@
     "kind": "sandbox",
     "image": {
       "kind": "bind",
-      "path": "/home/neithanmo/Documents/Work/Semiotic/agent-platform-notify/examples/external-tools/meteo-tool/.tmp/dev-meteo-tool-rootfs"
+      "path": "./.tmp/dev-meteo-tool-rootfs"
     },
     "adapter": {
       "schema_version": 1,
@@ -239,6 +239,5 @@
       ],
       "workdir": "/opt/tool"
     }
-  },
-  "runtime_digest": "sha256:1c091644ce74f40bec1113f8796f6263d1b70b80eff4d006aede5f45a55a73a5"
+  }
 }

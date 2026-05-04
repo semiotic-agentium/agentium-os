@@ -15,6 +15,7 @@ pub mod policy;
 pub mod protocol;
 pub mod resolver;
 pub mod runtime;
+pub mod runtime_lock;
 pub mod sandbox;
 pub mod session_handler;
 pub mod session_invoker;
@@ -34,6 +35,7 @@ pub use lockfile::{
 pub use metadata::{
     CoordinationSpec, ExternalSecretScope, ExternalSessionPolicy, ExternalToolMetadata,
     InvocationMode, MetadataSchemas, compute_tool_digest, read_external_metadata,
+    read_runtime_external_metadata,
 };
 pub use metadata_catalog::{
     BUILDER_EXTERNAL_TOOLS_ENV, ExternalMetadataCatalog, build_builder_catalog,
@@ -56,6 +58,7 @@ pub use runtime::{
     DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxAdapterRuntimeSpec, SandboxImageRef,
     SandboxRuntimeSpec, ToolRuntime, ToolRuntimeKind,
 };
+pub use runtime_lock::{RUNTIME_LOCK_FILE_NAME, ToolRuntimeLock, read_runtime_lock};
 pub use sandbox::canonical_bind_digest;
 pub use session_handler::{ExternalSessionToolHandler, ExternalSessionToolSession};
 pub use session_invoker::{

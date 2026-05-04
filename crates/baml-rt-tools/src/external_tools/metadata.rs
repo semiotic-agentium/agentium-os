@@ -18,7 +18,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{protocol::PROTOCOL_VERSION, runtime::ToolRuntime};
+use super::{
+    protocol::PROTOCOL_VERSION,
+    runtime::{SandboxImageRef, ToolRuntime},
+    runtime_lock::read_runtime_lock,
+};
 use crate::{
     ToolName,
     tools::{
@@ -209,7 +213,11 @@ pub struct MetadataSchemas {
     pub output: Value,
 }
 
-/// Read + validate `<dir>/tool-metadata.json` into the typed model.
+/// Read + validate the authored `<dir>/tool-metadata.json` source only.
+///
+/// This does not resolve bind paths and does not read/merge the local
+/// `tool-metadata.lock.json` sidecar. Use it for builder/codegen, source
+/// validation, and any workflow that needs the portable committed metadata.
 ///
 /// Typed deserialization rejects malformed enums (e.g. an unknown
 /// `access_level`) before the runtime sees them, so there's no extra manual
@@ -238,12 +246,55 @@ pub fn read_external_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
     Ok(parsed)
 }
 
-/// Deprecated alias kept for the old call sites still in migration.
-/// Remove once every caller points at [`read_external_metadata`].
-#[deprecated(note = "use read_external_metadata")]
-#[allow(dead_code)]
-pub(crate) fn read_raw_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
-    read_external_metadata(dir)
+/// Read authored metadata and resolve it into the launch-ready runtime view.
+///
+/// The committed source file stays portable (relative bind paths, no
+/// `runtime_digest`); the lock — written by `sandbox-bind-sync` and gitignored
+/// — supplies the canonical absolute bind path and bind digest.
+///
+/// Behavior per runtime kind:
+/// - `Sandbox { image: Bind { path } }`: relative `path` is resolved against
+///   `dir` so the runtime never sees a relative bind path. If a lock with
+///   `image_path_abs` is present it overrides the resolved path.
+/// - Bind `runtime_digest` from the lock overrides the source value.
+/// - `Process` and OCI: lock is ignored.
+pub fn read_runtime_external_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
+    let mut parsed = read_external_metadata(dir)?;
+    apply_runtime_lock(dir, &mut parsed)?;
+    Ok(parsed)
+}
+
+fn apply_runtime_lock(dir: &Path, meta: &mut ExternalToolMetadata) -> Result<()> {
+    let lock = read_runtime_lock(dir)?;
+
+    // Lock semantics are bind-scoped: it carries host-resolved fields that only
+    // make sense for `Sandbox::Bind`. OCI sandboxes and process tools must not
+    // be influenced by a locally-written lock — their digests live elsewhere
+    // (image ref / process binary digest).
+    if let Some(ToolRuntime::Sandbox(spec)) = meta.runtime.as_mut()
+        && let SandboxImageRef::Bind { path } = &mut spec.image
+    {
+        // Resolve relative bind paths against the metadata directory so
+        // runtime callers never see "./rootfs"-style values, even when
+        // the lock is missing.
+        if path.is_relative() {
+            *path = dir.join(&path);
+        }
+        if let Some(lock) = &lock {
+            if let Some(abs) = &lock.image_path_abs {
+                *path = abs.clone();
+            }
+            // Lock is the source of truth for bind digests. Always override —
+            // a stale `runtime_digest` smuggled into committed source must not
+            // shadow a fresh sync. Source pollution is caught separately by
+            // `check-external-tool` lint and `sandbox-bind-sync` validation.
+            if let Some(digest) = &lock.runtime_digest {
+                meta.runtime_digest = Some(digest.clone());
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Project parsed metadata into the runtime [`ToolFunctionMetadata`] shape.
