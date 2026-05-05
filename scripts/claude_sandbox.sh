@@ -7,6 +7,7 @@ TOOL_DIR="$ROOT/examples/external-tools/claude-ext"
 TOOL_TMP_DIR="$TOOL_DIR/.tmp"
 AGENT_DIR="examples/agents/claude-agent"
 AGENT_NAME="claude-agent"
+SANDBOX_IMAGE="dev-claude-ext-sandbox:local"
 
 export BAML_EXTERNAL_TOOLS_DIR="$TOOL_DIR"
 # Allow bind/rootfs images materialized by `setup_bind_sandbox.sh`.
@@ -51,9 +52,17 @@ log_step() {
 
 prepare() {
     log_step "Preparing Claude sandbox bind rootfs"
-    log_step "Removing previous dev image if present: dev-claude-ext-sandbox:local"
-    if docker image inspect dev-claude-ext-sandbox:local >/dev/null 2>&1; then
-        docker image rm dev-claude-ext-sandbox:local
+    log_step "Removing previous dev image if present: $SANDBOX_IMAGE"
+    if docker image inspect "$SANDBOX_IMAGE" >/dev/null 2>&1; then
+        # Preserve the previous helper's behavior: attempt to remove the old
+        # image before rebuilding, but do not make this cleanup fatal. `-f`
+        # handles stopped containers that still reference the image; Docker may
+        # still refuse if a running container is actively using it.
+        if docker image rm -f "$SANDBOX_IMAGE"; then
+            echo "    removed image"
+        else
+            echo "    warning: could not remove image; continuing with setup" >&2
+        fi
     else
         echo "    image not present; skipping removal"
     fi
