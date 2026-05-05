@@ -67,6 +67,12 @@ body: string;
 
 export interface SessionContext { contract_version: string;
 session_open: boolean;
+status: string;
+last_step_op: string | null;
+last_step_status: string | null;
+last_archive_ref: string | null;
+last_output_header: string | null;
+last_completion: string | null;
  }
 
 export interface SupportCrmAbortStep { op: "Abort";
@@ -460,8 +466,14 @@ export interface ToolFailure {
 export type StepExecutorFunctionName = "ExecuteStep" | "ExecuteStep__act__support_crm" | "ExecuteStep__act__support_email" | "ExecuteStep__continue__support_crm" | "ExecuteStep__continue__support_email" | "ExecuteStep__select";
 
 export interface SessionContext {
-    contract_version: "session_context";
+    contract_version: "session_context_v2";
     session_open: boolean;
+    status: "awaiting_open" | "just_opened" | "done";
+    last_step_op?: "open" | "send" | "read" | "finish" | "abort";
+    last_step_status?: "open" | "done" | "finished" | "aborted";
+    last_archive_ref?: string;
+    last_output_header?: string;
+    last_completion?: string;
 }
 
 /** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
