@@ -152,27 +152,129 @@ impl Phase {
     }
 }
 
+/// Coarse FSM status injected into step-executor BAML args.
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum SessionStatus {
+    AwaitingOpen,
+    JustOpened,
+    Done,
+}
+
+/// Compact metadata about the previous step, injected into the next BAML hop.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LastStepContext {
+    op: Option<&'static str>,
+    status: Option<&'static str>,
+    archive_ref: Option<String>,
+    output_header: Option<String>,
+    completion: Option<String>,
+}
+
 /// JSON shape for `session_context` injected into step-executor BAML args (matches prelude `SessionContext`).
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 struct SessionContextWire {
     contract_version: &'static str,
     session_open: bool,
+    status: SessionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_step_op: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_step_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_archive_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_output_header: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_completion: Option<String>,
 }
 
 /// Stable id for the `session_context` object shape injected into step-executor BAML args;
 /// must match generated prelude `SessionContext.contract_version` in agent packages.
-const SESSION_CONTEXT_CONTRACT_VERSION: &str = "session_context";
+const SESSION_CONTEXT_CONTRACT_VERSION: &str = "session_context_v2";
+
+fn session_status_for_phase(phase: &Phase) -> SessionStatus {
+    match phase {
+        Phase::AwaitingOpen => SessionStatus::AwaitingOpen,
+        Phase::Bound {
+            status: OpenStatus::JustOpened,
+            ..
+        } => SessionStatus::JustOpened,
+        Phase::Bound {
+            status: OpenStatus::Done,
+            ..
+        }
+        | Phase::Terminal(_) => SessionStatus::Done,
+    }
+}
 
 /// Build the `session_context` JSON injected into BAML function args.
 ///
 /// FSM facts only — which operation is legal is expressed by the **per-phase**
 /// BAML function's narrowed return type (`ExecuteStep__select`, `__act__`, …).
-fn build_session_context(phase: &Phase) -> Value {
+fn build_session_context(phase: &Phase, last_step: &LastStepContext) -> Value {
     let wire = SessionContextWire {
         contract_version: SESSION_CONTEXT_CONTRACT_VERSION,
         session_open: phase.is_session_open(),
+        status: session_status_for_phase(phase),
+        last_step_op: last_step.op,
+        last_step_status: last_step.status,
+        last_archive_ref: last_step.archive_ref.clone(),
+        last_output_header: last_step.output_header.clone(),
+        last_completion: last_step.completion.clone(),
     };
     serde_json::to_value(wire).unwrap_or(Value::Null)
+}
+
+fn infer_last_step_context(
+    phase_before_hop: &Phase,
+    status: StepStatus,
+    result: &Value,
+) -> LastStepContext {
+    let op = match phase_before_hop {
+        Phase::AwaitingOpen => Some("open"),
+        Phase::Bound {
+            status: OpenStatus::JustOpened,
+            ..
+        } => {
+            if result.get("archive_ref").is_some() {
+                Some("send")
+            } else if result.get("has_more").is_some() {
+                Some("read")
+            } else {
+                None
+            }
+        }
+        Phase::Bound {
+            status: OpenStatus::Done,
+            ..
+        } => match status {
+            StepStatus::Finished => Some("finish"),
+            StepStatus::Aborted => Some("abort"),
+            _ if result.get("archive_ref").is_some() => Some("send"),
+            _ if result.get("has_more").is_some() => Some("read"),
+            _ => None,
+        },
+        Phase::Terminal(_) => None,
+    };
+
+    LastStepContext {
+        op,
+        status: Some(status.as_str()),
+        archive_ref: result
+            .get("archive_ref")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        output_header: result
+            .get("output")
+            .and_then(Value::as_str)
+            .map(|s| s.lines().next().unwrap_or(s).to_string()),
+        completion: result
+            .get("result")
+            .and_then(|r| r.get("completion"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+    }
 }
 
 /// Extract the status string from a tool execution result.
@@ -306,6 +408,7 @@ pub async fn run_step_executor_loop(
     let mut steps: Vec<Value> = Vec::new();
     let mut last = Value::Null;
     let mut step_intra_supplement: Vec<Value> = Vec::new();
+    let mut last_step_context = LastStepContext::default();
     // Carries the prior hop's terminal provider snapshot so we do not re-read the graph
     // at the start of the next hop. A fresh read can race async provenance / projection
     // and disagree with the previous hop's `p_after`, breaking strict prefix extension.
@@ -334,7 +437,7 @@ pub async fn run_step_executor_loop(
         }
         let current_function = candidate.clone();
 
-        let session_context = build_session_context(&phase);
+        let session_context = build_session_context(&phase, &last_step_context);
 
         let mut args = match base_args.as_object() {
             Some(obj) => Value::Object(obj.clone()),
@@ -403,6 +506,16 @@ pub async fn run_step_executor_loop(
             phase = Phase::Terminal(TerminalReason::MissingStatus);
             break;
         };
+        let mut next_step_context = infer_last_step_context(&phase, status, &result);
+        if next_step_context.op == Some("read") {
+            if next_step_context.archive_ref.is_none() {
+                next_step_context.archive_ref = last_step_context.archive_ref.clone();
+            }
+            if next_step_context.completion.is_none() {
+                next_step_context.completion = last_step_context.completion.clone();
+            }
+        }
+        last_step_context = next_step_context;
 
         // Advance FSM based on current phase + status.
         phase = match phase {
@@ -456,7 +569,7 @@ pub async fn run_step_executor_loop(
         phase = Phase::Terminal(TerminalReason::MaxStepsExhausted);
     }
 
-    let session_context = build_session_context(&phase);
+    let session_context = build_session_context(&phase, &last_step_context);
     let selected_tool = phase.selected_tool().cloned();
 
     Ok(StepExecutorResult {
@@ -469,16 +582,25 @@ pub async fn run_step_executor_loop(
 
 #[cfg(test)]
 mod session_context_wire_tests {
-    use super::{SESSION_CONTEXT_CONTRACT_VERSION, SessionContextWire};
+    use super::{SESSION_CONTEXT_CONTRACT_VERSION, SessionContextWire, SessionStatus};
 
     #[test]
     fn session_context_wire_json_stable() {
         let v = serde_json::to_value(SessionContextWire {
             contract_version: SESSION_CONTEXT_CONTRACT_VERSION,
             session_open: true,
+            status: SessionStatus::Done,
+            last_step_op: Some("send"),
+            last_step_status: Some("done"),
+            last_archive_ref: Some("@1".to_string()),
+            last_output_header: Some("@1 · \"tool: Send\" · 1L · 10B".to_string()),
+            last_completion: Some("DONE".to_string()),
         })
         .expect("serialize session_context");
-        assert_eq!(v["contract_version"], "session_context");
+        assert_eq!(v["contract_version"], "session_context_v2");
         assert_eq!(v["session_open"], true);
+        assert_eq!(v["status"], "done");
+        assert_eq!(v["last_step_op"], "send");
+        assert_eq!(v["last_completion"], "DONE");
     }
 }
