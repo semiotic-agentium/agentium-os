@@ -20,10 +20,6 @@ limit: number | null;
 export interface DevClaudeExtAbortStep { op: "Abort";
  }
 
-export interface DevClaudeExtAskUser { action: string;
-prompt: string;
- }
-
 export interface DevClaudeExtFinishStep { op: "Finish";
  }
 
@@ -48,10 +44,6 @@ export interface DevClaudeExtPageReadStep { op: "PageRead";
 input: ArchivePageReadInput;
  }
 
-export interface DevClaudeExtReport { action: string;
-message: string;
- }
-
 export interface DevClaudeExtSearchReadStep { op: "SearchRead";
 input: ArchiveSearchReadInput;
  }
@@ -65,32 +57,11 @@ export interface DevClaudeExtSessionPlan { step: DevClaudeExtOpenStep | DevClaud
 citations: string[];
  }
 
-export interface NeedMoreInput { question: string;
- }
-
-export interface RequirementsReady { summary: string;
-requirements: string[];
- }
-
-export interface SessionContext { contract_version: string;
-session_open: boolean;
- }
-
-export interface Spec { specification_text: string;
-validation_criteria: string[];
- }
-
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
-declare function ChooseDevClaudeExtAction(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<DevClaudeExtReport | DevClaudeExtAskUser | DevClaudeExtSessionPlan>;
-
-declare function ProduceSpec(args: { requirements_summary: string } & { __baml_invocation_token?: string }): Promise<Spec>;
-
-declare function RequirementsPhase(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedMoreInput | RequirementsReady>;
-
-declare function SummarizeDevWorkInPersonality(args: { session_report: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
+declare function ChooseDevClaudeExtAction(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<DevClaudeExtSessionPlan>;
 
 }
 
@@ -419,8 +390,14 @@ export interface ToolFailure {
 export type StepExecutorFunctionName = "ChooseDevClaudeExtAction" | "ChooseDevClaudeExtAction__act__dev_claude_ext" | "ChooseDevClaudeExtAction__continue__dev_claude_ext" | "ChooseDevClaudeExtAction__select";
 
 export interface SessionContext {
-    contract_version: "session_context";
+    contract_version: "session_context_v2";
     session_open: boolean;
+    status: "awaiting_open" | "just_opened" | "done";
+    last_step_op?: "open" | "send" | "read" | "finish" | "abort";
+    last_step_status?: "open" | "done" | "finished" | "aborted";
+    last_archive_ref?: string;
+    last_output_header?: string;
+    last_completion?: string;
 }
 
 /** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
