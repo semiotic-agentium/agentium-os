@@ -482,15 +482,44 @@ pub async fn run_step_executor_loop(
 
         let result = result?;
 
-        let p_after =
+        let Some(status) = extract_status(&result) else {
+            phase = Phase::Terminal(TerminalReason::MissingStatus);
+            break;
+        };
+
+        let p_after = if status == StepStatus::Open {
+            // Open is an acknowledged FSM transition, not a content-bearing result the
+            // next hop needs from graph-backed conversation history. The local FSM has
+            // the authoritative session/tool binding, so do not pay the strict-growth
+            // timeout when Open is not projected into conversation_context.
+            let guard = manager.read().await;
+            guard.read_provider_conversation_array(scope).await?
+        } else {
             await_provider_conversation_strict_growth(manager, scope, &p_before, &current_function)
-                .await?;
-        append_step_intra_deltas(
-            &mut step_intra_supplement,
-            &p_before,
-            &p_after,
-            &current_function,
-        )?;
+                .await?
+        };
+        if status == StepStatus::Open {
+            if let Err(err) = append_step_intra_deltas(
+                &mut step_intra_supplement,
+                &p_before,
+                &p_after,
+                &current_function,
+            ) {
+                tracing::debug!(
+                    hop = hop_idx,
+                    function = %current_function,
+                    error = %err,
+                    "step_executor_loop: ignoring non-strict provider delta after Open"
+                );
+            }
+        } else {
+            append_step_intra_deltas(
+                &mut step_intra_supplement,
+                &p_before,
+                &p_after,
+                &current_function,
+            )?;
+        }
         prev_hop_graph_lines = Some(p_after);
 
         // Capture the last result with meaningful output (Done has output,
@@ -501,11 +530,6 @@ pub async fn run_step_executor_loop(
             last = result.clone();
         }
         steps.push(result.clone());
-
-        let Some(status) = extract_status(&result) else {
-            phase = Phase::Terminal(TerminalReason::MissingStatus);
-            break;
-        };
         let mut next_step_context = infer_last_step_context(&phase, status, &result);
         if next_step_context.op == Some("read") {
             if next_step_context.archive_ref.is_none() {
