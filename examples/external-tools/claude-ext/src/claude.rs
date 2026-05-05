@@ -293,6 +293,12 @@ impl ClaudeEngine for SdkClaudeEngine {
                 cmd.env(key, v);
             }
         }
+        // Bind-rootfs/microsandbox execution does not reliably preserve Docker
+        // image ENV. Force Node to prefer IPv4 here as well as in the wrapper;
+        // otherwise Claude Code may pick the AAAA address first and spend ~2m
+        // in api_retry backoff on sandbox IPv6 egress failures.
+        cmd.env("NODE_OPTIONS", claude_node_options());
+
         // Forced disable of non-essential traffic (telemetry, auto-update,
         // sentry, statsig). claude-code 2.x hangs ~30s in restricted-network
         // sandboxes waiting on these calls then exits 0 silently in
@@ -842,6 +848,24 @@ pub fn build_output(hop: u64, events: &[Value], completion: Option<&str>, status
             }
         }
     })
+}
+
+#[cfg(feature = "sdk-engine")]
+fn claude_node_options() -> String {
+    const IPV4_FIRST: &str = "--dns-result-order=ipv4first";
+    const DNS_RESULT_ORDER_PREFIX: &str = "--dns-result-order";
+
+    match std::env::var("NODE_OPTIONS") {
+        Ok(existing)
+            if existing
+                .split_whitespace()
+                .any(|opt| opt.starts_with(DNS_RESULT_ORDER_PREFIX)) =>
+        {
+            existing
+        }
+        Ok(existing) if !existing.trim().is_empty() => format!("{} {IPV4_FIRST}", existing.trim()),
+        _ => IPV4_FIRST.to_string(),
+    }
 }
 
 fn shlex_quote(text: &str) -> String {
