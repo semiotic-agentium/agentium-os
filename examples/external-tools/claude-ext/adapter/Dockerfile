@@ -55,6 +55,7 @@ RUN groupadd --system --gid "${SANDBOX_GID}" sandbox \
 
 ENV NODE_ENV=production \
     NODE_OPTIONS=--dns-result-order=ipv4first \
+    BUN_FEATURE_FLAG_DISABLE_IPV6=1 \
     NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     SSL_CERT_DIR=/etc/ssl/certs \
@@ -90,7 +91,7 @@ RUN chmod +x /tool-adapter-bin
 # Dockerfile ENTRYPOINT. The wrapper drops privs to ${SANDBOX_UID}:${SANDBOX_GID}
 # then execs the real binary at `/tool-adapter-bin`. claude-code accepts
 # `--dangerously-skip-permissions` once the process is non-root.
-RUN printf '#!/bin/sh\nset -eu\nmkdir -p /home/sandbox/.claude/session-env /home/sandbox/.config /home/sandbox/.cache /home/sandbox/workspace\nchown -R %s:%s /home/sandbox 2>/dev/null || true\nchmod -R u+rwX /home/sandbox 2>/dev/null || true\ncase " ${NODE_OPTIONS:-} " in\n  *" --dns-result-order"*) ;;\n  "  ") export NODE_OPTIONS="--dns-result-order=ipv4first" ;;\n  *) export NODE_OPTIONS="${NODE_OPTIONS} --dns-result-order=ipv4first" ;;\nesac\nexec setpriv --reuid=%s --regid=%s --clear-groups --no-new-privs /tool-adapter-bin "$@"\n' \
+RUN printf '#!/bin/sh\nset -eu\nmkdir -p /home/sandbox/.claude/session-env /home/sandbox/.config /home/sandbox/.cache /home/sandbox/workspace\nchown -R %s:%s /home/sandbox 2>/dev/null || true\nchmod -R u+rwX /home/sandbox 2>/dev/null || true\nexport SSL_CERT_FILE="${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}"\nexport SSL_CERT_DIR="${SSL_CERT_DIR:-/etc/ssl/certs}"\nexport NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-/etc/ssl/certs/ca-certificates.crt}"\nexport BUN_FEATURE_FLAG_DISABLE_IPV6="${BUN_FEATURE_FLAG_DISABLE_IPV6:-1}"\ncase " ${NODE_OPTIONS:-} " in\n  *" --dns-result-order"*) ;;\n  "  ") export NODE_OPTIONS="--dns-result-order=ipv4first" ;;\n  *) export NODE_OPTIONS="${NODE_OPTIONS} --dns-result-order=ipv4first" ;;\nesac\nexec setpriv --reuid=%s --regid=%s --clear-groups --no-new-privs /tool-adapter-bin "$@"\n' \
         "${SANDBOX_UID}" "${SANDBOX_GID}" "${SANDBOX_UID}" "${SANDBOX_GID}" > /tool-adapter \
     && chmod +x /tool-adapter
 

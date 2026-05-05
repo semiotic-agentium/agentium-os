@@ -104,8 +104,50 @@ rootfs, patch metadata, materialize adapter sidecar bundle (`/etc/agentium/tool-
 and run `check-external-tool`.
 
 > Bind rootfs mode copies filesystem contents only. Docker image config
-> (like `ENV TOOL_CMD=...`) is not guaranteed at runtime. The generated
-> adapter resolves a default tool command without requiring env vars.
+> (like `ENV TOOL_CMD=...`) is not guaranteed at runtime. The adapter wrapper
+> and Rust launcher therefore re-assert the Claude/Bun networking and TLS
+> defaults documented below.
+
+### Claude Code networking and CA hardening
+
+Claude Code 2.x is installed from `@anthropic-ai/claude-code`, but the runtime
+entrypoint in this image is a Bun-compiled native binary (`bin/claude.exe`). In
+bind-rootfs/microsandbox mode, do not rely on Docker image `ENV` being preserved;
+set important variables in both places that actually execute:
+
+1. `/tool-adapter` wrapper in `adapter/Dockerfile`, before `setpriv` drops to the
+   `sandbox` user.
+2. The Rust `Command` that spawns `claude` in `src/claude.rs`.
+
+The current required defaults are:
+
+| Variable | Default | Why |
+| --- | --- | --- |
+| `BUN_FEATURE_FLAG_DISABLE_IPV6` | `1` | Forces Claude Code/Bun away from sandbox IPv6 egress. `NODE_OPTIONS=--dns-result-order=ipv4first` is kept for Node probes, but is not sufficient for the Bun-compiled Claude binary. Without this, Claude can emit `api_retry` storms with `error_status=null`, `error="unknown"` before eventually succeeding or failing. |
+| `SSL_CERT_FILE` | `/etc/ssl/certs/ca-certificates.crt` | Points OpenSSL/Bun/Node-compatible TLS stacks at the Debian CA bundle in the rootfs. |
+| `SSL_CERT_DIR` | `/etc/ssl/certs` | Points TLS stacks at the hashed certificate directory. |
+| `NODE_EXTRA_CA_CERTS` | `/etc/ssl/certs/ca-certificates.crt` | Ensures Node-based probes and any Node-compatible code path see the same CA bundle. |
+| `NODE_OPTIONS` | `--dns-result-order=ipv4first` | Useful for Node probes and any Node subprocesses; not the primary Claude Code DNS knob. |
+
+The adapter runs a fast Node TLS preflight to `api.anthropic.com:443` before
+launching Claude. A healthy log looks like:
+
+```text
+[tls/preflight] authorized=true authorizationError= subjectCN=api.anthropic.com issuerCN=WE1
+[cli/env] NODE_OPTIONS=... BUN_FEATURE_FLAG_DISABLE_IPV6=1 NODE_EXTRA_CA_CERTS=... SSL_CERT_FILE=... SSL_CERT_DIR=...
+```
+
+If Claude fails with `UNKNOWN_CERTIFICATE_VERIFICATION_ERROR`, add the required
+corporate/MITM root CA to the image/rootfs, then rerun:
+
+```bash
+./setup_bind_sandbox.sh --force
+```
+
+If Claude emits repeated `api_retry` events with `error_status=null` and
+`error="unknown"`, first verify `BUN_FEATURE_FLAG_DISABLE_IPV6=1` appears in the
+`[cli/env]` line from the sandbox logs, then rebuild the bind rootfs and restart
+the runner.
 
 You can also call the command directly:
 

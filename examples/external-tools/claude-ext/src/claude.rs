@@ -182,6 +182,8 @@ impl ClaudeEngine for SdkClaudeEngine {
 
         let resume_id = self.claude_session_id.lock().await.clone();
 
+        run_tls_preflight(&self.cwd).await?;
+
         // Build claude argv. --resume <id> chains into prior turns when present.
         let mut argv = vec![
             "--bare".to_string(),
@@ -281,6 +283,7 @@ impl ClaudeEngine for SdkClaudeEngine {
             "USER",
             "PATH",
             "NODE_OPTIONS",
+            "BUN_FEATURE_FLAG_DISABLE_IPV6",
             "TERM",
             "LANG",
             "LC_ALL",
@@ -288,16 +291,29 @@ impl ClaudeEngine for SdkClaudeEngine {
             "XDG_CONFIG_HOME",
             "XDG_CACHE_HOME",
             "TMPDIR",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "NODE_EXTRA_CA_CERTS",
         ] {
             if let Ok(v) = std::env::var(key) {
                 cmd.env(key, v);
             }
         }
         // Bind-rootfs/microsandbox execution does not reliably preserve Docker
-        // image ENV. Force Node to prefer IPv4 here as well as in the wrapper;
-        // otherwise Claude Code may pick the AAAA address first and spend ~2m
-        // in api_retry backoff on sandbox IPv6 egress failures.
-        cmd.env("NODE_OPTIONS", claude_node_options());
+        // image ENV. Force Claude/Bun TLS and DNS defaults here as well as in
+        // the wrapper; otherwise failures surface only after Claude Code's long
+        // api_retry backoff loop. Claude Code 2.x is a Bun-compiled native
+        // executable, so NODE_OPTIONS alone is not sufficient for DNS family
+        // selection; BUN_FEATURE_FLAG_DISABLE_IPV6 is the load-bearing knob.
+        apply_claude_process_env(&mut cmd);
+        eprintln!(
+            "[cli/env] NODE_OPTIONS={} BUN_FEATURE_FLAG_DISABLE_IPV6={} NODE_EXTRA_CA_CERTS={} SSL_CERT_FILE={} SSL_CERT_DIR={}",
+            std::env::var("NODE_OPTIONS").unwrap_or_else(|_| "<unset>".to_string()),
+            std::env::var("BUN_FEATURE_FLAG_DISABLE_IPV6").unwrap_or_else(|_| "1".to_string()),
+            std::env::var("NODE_EXTRA_CA_CERTS").unwrap_or_else(|_| DEFAULT_CA_BUNDLE.to_string()),
+            std::env::var("SSL_CERT_FILE").unwrap_or_else(|_| DEFAULT_CA_BUNDLE.to_string()),
+            std::env::var("SSL_CERT_DIR").unwrap_or_else(|_| DEFAULT_CA_DIR.to_string()),
+        );
 
         // Forced disable of non-essential traffic (telemetry, auto-update,
         // sentry, statsig). claude-code 2.x hangs ~30s in restricted-network
@@ -769,6 +785,10 @@ fn classify_cli_error(message: &str) -> String {
         || lowered.contains("network")
         || lowered.contains("connection")
         || lowered.contains("temporarily unavailable")
+        || lowered.contains("certificate")
+        || lowered.contains("tls")
+        || lowered.contains("unable_to_verify")
+        || lowered.contains("unknown_certificate")
     {
         return format!("UNAVAILABLE: {message}");
     }
@@ -848,6 +868,111 @@ pub fn build_output(hop: u64, events: &[Value], completion: Option<&str>, status
             }
         }
     })
+}
+
+#[cfg(feature = "sdk-engine")]
+async fn run_tls_preflight(cwd: &std::path::Path) -> Result<(), String> {
+    use std::process::Stdio;
+
+    const HOST: &str = "api.anthropic.com";
+    const SCRIPT: &str = r#"
+const tls = require('tls');
+const host = 'api.anthropic.com';
+const socket = tls.connect({ host, port: 443, servername: host, timeout: 5000 }, () => {
+  const cert = socket.getPeerCertificate();
+  console.error(`[tls/preflight] authorized=${socket.authorized} authorizationError=${socket.authorizationError || ''} subjectCN=${cert && cert.subject ? cert.subject.CN || '' : ''} issuerCN=${cert && cert.issuer ? cert.issuer.CN || '' : ''}`);
+  socket.end();
+  process.exit(socket.authorized ? 0 : 2);
+});
+socket.on('error', (err) => {
+  console.error(`[tls/preflight] error code=${err.code || ''} message=${err.message || err}`);
+  process.exit(3);
+});
+socket.on('timeout', () => {
+  console.error('[tls/preflight] timeout');
+  socket.destroy();
+  process.exit(4);
+});
+"#;
+
+    let mut cmd = Command::new("node");
+    cmd.arg("-e")
+        .arg(SCRIPT)
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for key in [
+        "PATH",
+        "HOME",
+        "USER",
+        "NODE_OPTIONS",
+        "BUN_FEATURE_FLAG_DISABLE_IPV6",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "NODE_EXTRA_CA_CERTS",
+    ] {
+        if let Ok(v) = std::env::var(key) {
+            cmd.env(key, v);
+        }
+    }
+    apply_claude_process_env(&mut cmd);
+
+    let output = tokio::time::timeout(Duration::from_secs(8), cmd.output())
+        .await
+        .map_err(|_| classify_cli_error(&format!("TLS preflight to {HOST} timed out after 8s")))?
+        .map_err(|e| classify_cli_error(&format!("TLS preflight spawn failed: {e}")))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.success() {
+        eprintln!(
+            "[tls/preflight] ok stderr={}",
+            truncate_for_echo(&stderr, 500)
+        );
+        return Ok(());
+    }
+
+    let cert_file =
+        std::env::var("SSL_CERT_FILE").unwrap_or_else(|_| DEFAULT_CA_BUNDLE.to_string());
+    let cert_dir = std::env::var("SSL_CERT_DIR").unwrap_or_else(|_| DEFAULT_CA_DIR.to_string());
+    let node_extra =
+        std::env::var("NODE_EXTRA_CA_CERTS").unwrap_or_else(|_| DEFAULT_CA_BUNDLE.to_string());
+    Err(classify_cli_error(&format!(
+        "TLS preflight to {HOST} failed before launching Claude (status={}): stderr={} stdout={} SSL_CERT_FILE={} SSL_CERT_DIR={} NODE_EXTRA_CA_CERTS={}. The sandbox rootfs may be missing CA certificates or a corporate MITM root; rebuild with setup_bind_sandbox.sh after adding the required CA to the image/rootfs.",
+        output.status,
+        truncate_for_echo(&stderr, 900),
+        truncate_for_echo(&stdout, 300),
+        cert_file,
+        cert_dir,
+        node_extra,
+    )))
+}
+
+#[cfg(feature = "sdk-engine")]
+const DEFAULT_CA_BUNDLE: &str = "/etc/ssl/certs/ca-certificates.crt";
+#[cfg(feature = "sdk-engine")]
+const DEFAULT_CA_DIR: &str = "/etc/ssl/certs";
+
+#[cfg(feature = "sdk-engine")]
+fn apply_claude_process_env(cmd: &mut Command) {
+    cmd.env("NODE_OPTIONS", claude_node_options())
+        .env(
+            "BUN_FEATURE_FLAG_DISABLE_IPV6",
+            std::env::var("BUN_FEATURE_FLAG_DISABLE_IPV6").unwrap_or_else(|_| "1".to_string()),
+        )
+        .env(
+            "SSL_CERT_FILE",
+            std::env::var("SSL_CERT_FILE").unwrap_or_else(|_| DEFAULT_CA_BUNDLE.to_string()),
+        )
+        .env(
+            "SSL_CERT_DIR",
+            std::env::var("SSL_CERT_DIR").unwrap_or_else(|_| DEFAULT_CA_DIR.to_string()),
+        )
+        .env(
+            "NODE_EXTRA_CA_CERTS",
+            std::env::var("NODE_EXTRA_CA_CERTS").unwrap_or_else(|_| DEFAULT_CA_BUNDLE.to_string()),
+        );
 }
 
 #[cfg(feature = "sdk-engine")]
