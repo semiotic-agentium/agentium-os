@@ -58,7 +58,35 @@ Or directly:
 ```
 
 Flags: `--no-build`, `--keep-cluster`, `--image-strategy`,
-`--image-repository`, `--image-tag`, `--local-port`. See `--help`.
+`--image-repository`, `--image-tag`, `--local-port`, `--values`. See
+`--help`.
+
+#### Image strategies
+
+`verify-k8s-pilot-package.sh` supports two strategies for getting the
+runner image into the cluster:
+
+- `local-k3d-import` (default): `docker save` + `k3d image import`; the
+  runner manifest installs with `pullPolicy: Never`. Fast dev fallback
+  that bypasses the kubelet pull path.
+- `registry`: `docker push` to a local `registry:2` container
+  (`k3d-agentium-registry`) started by the bringup helper and attached to
+  the cluster's docker network. `deploy/k3d/cluster.yaml` injects the
+  matching containerd mirror block. Runner pods pull from
+  `k3d-agentium-registry:5000`, mirroring the design-partner install
+  contract. Confirm by inspecting `kubectl describe pod` events:
+
+  ```text
+  Successfully pulled image "k3d-agentium-registry:5000/agentium-runner:demo"
+  ```
+
+`--image-repository` accepts a bare image name only when used with
+`--image-strategy=registry`; the registry prefix is added automatically.
+External registries (GHCR, ECR, …) are tracked in
+[#307](https://github.com/semiotic-agentium/agent-platform/issues/307).
+
+The validator's invariants — Helm install, runner readyz, smoke,
+`cluster_runners` count = 2 — are identical for both strategies.
 
 ### Richer scenario suite
 
@@ -174,6 +202,11 @@ If the harness crashes without running its trap handler (e.g. `kill -9`), clean 
 
 ```bash
 k3d cluster delete agentium
+
+# Optional: also remove the local registry container (persists across runs
+# with --restart=unless-stopped so it stays available for future
+# --image-strategy registry runs).
+docker rm -f k3d-agentium-registry
 ```
 
 Check for orphaned port-forwards:

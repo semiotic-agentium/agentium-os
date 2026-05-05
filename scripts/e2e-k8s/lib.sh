@@ -21,6 +21,20 @@ RUNNER_CONTAINER_PORT=18080             # chart value runner.service.headless.po
 HELM_VALUES_FILE="deploy/helm/agentium-os/examples/k3d-values.yaml"
 RUNNER_IMAGE_STRATEGY="${RUNNER_IMAGE_STRATEGY:-local-k3d-import}"
 
+# k3d-managed local registry contract (see deploy/k3d/cluster.yaml).
+# The cluster pulls images from k3d-agentium-registry:5000; the host
+# pushes to localhost:5400. ensure_runner_image_available wires both.
+REGISTRY_NAME="agentium-registry"
+REGISTRY_CONTAINER_HOST="k3d-${REGISTRY_NAME}"
+REGISTRY_CONTAINER_PORT="5000"
+REGISTRY_HOST_PORT="5400"
+
+# Image reference passed to `helm install --set runner.image.repository=`.
+# Both image strategies overwrite this in ensure_runner_image_available
+# before install_pilot_chart runs; the source-time default exists so the
+# variable is always defined for callers that introspect it.
+IMAGE_REPOSITORY_FOR_INSTALL="$IMAGE_NAME"
+
 # Populated at runtime by resolve_chart_names (after helm install)
 RUNNER_FULLNAME=""      # e.g. agentium-agentium-os-runner
 SURREAL_FULLNAME=""     # e.g. agentium-agentium-os-surrealdb
@@ -419,8 +433,74 @@ has_llm_keys() {
 # that run afterwards differs.
 # ---------------------------------------------------------------------------
 
+# values_file_for_strategy <strategy>
+#
+# Echo the path (relative to repo root) of the Helm values file that
+# matches the given image strategy. Returns non-zero on unknown input so
+# callers can surface their own error message.
+values_file_for_strategy() {
+  case "$1" in
+    local-k3d-import) echo "deploy/helm/agentium-os/examples/k3d-values.yaml" ;;
+    registry)         echo "deploy/helm/agentium-os/examples/k3d-registry-values.yaml" ;;
+    *) return 1 ;;
+  esac
+}
+
+# ensure_k3d_registry — start (or reuse) a plain `registry:2` container
+# named ${REGISTRY_CONTAINER_HOST} that the cluster will pull from.
+#
+# Used in place of k3d's `registries.create`, which is not portable across
+# Docker and Podman (it tries to attach the registry to a `bridge` network
+# that does not exist under rootful Podman). The container persists across
+# k3d cluster runs; cleanup is via `docker rm -f ${REGISTRY_CONTAINER_HOST}`.
+ensure_k3d_registry() {
+  local state
+  state="$(docker inspect "${REGISTRY_CONTAINER_HOST}" --format '{{.State.Status}}' 2>/dev/null || true)"
+  if [[ -z "$state" ]]; then
+    log_step "Starting registry '${REGISTRY_CONTAINER_HOST}' on host port ${REGISTRY_HOST_PORT}"
+    docker run -d \
+      --name "${REGISTRY_CONTAINER_HOST}" \
+      --restart=unless-stopped \
+      -p "${REGISTRY_HOST_PORT}:${REGISTRY_CONTAINER_PORT}" \
+      docker.io/library/registry:2 >/dev/null
+  elif [[ "$state" != "running" ]]; then
+    log_info "Restarting registry '${REGISTRY_CONTAINER_HOST}'"
+    docker start "${REGISTRY_CONTAINER_HOST}" >/dev/null
+  else
+    log_info "Reusing running registry '${REGISTRY_CONTAINER_HOST}'"
+  fi
+}
+
+# connect_registry_to_cluster — attach ${REGISTRY_CONTAINER_HOST} to the
+# k3d cluster's docker network so containerd inside the k3s nodes can
+# resolve the registry hostname. The mirror config in
+# deploy/k3d/cluster.yaml points containerd at this in-cluster name.
+#
+# Idempotent: skipping when already connected.
+connect_registry_to_cluster() {
+  local network="k3d-${CLUSTER_NAME}"
+  # Use a pure-bash substring match instead of `... | grep -q`: under
+  # `pipefail`, grep matching early triggers SIGPIPE on the upstream
+  # producer and the whole pipeline returns 141, which would silently
+  # take the "not attached" branch on a re-run with --keep-cluster.
+  local containers
+  containers="$(docker network inspect "$network" \
+      --format '{{range .Containers}} {{.Name}} {{end}}' 2>/dev/null || true)"
+  if [[ "$containers" == *" ${REGISTRY_CONTAINER_HOST} "* ]]; then
+    log_info "Registry already attached to network '${network}'"
+    return 0
+  fi
+  log_info "Attaching registry '${REGISTRY_CONTAINER_HOST}' to network '${network}'"
+  docker network connect "$network" "${REGISTRY_CONTAINER_HOST}"
+}
+
 # ensure_runner_image_available — make ${IMAGE_NAME}:${IMAGE_TAG} reachable
 # from the cluster. Strategy selected by $RUNNER_IMAGE_STRATEGY.
+#
+# Each strategy writes three outputs read by install_pilot_chart:
+#   IMAGE_PULL_POLICY            — runner.image.pullPolicy override
+#   HELM_VALUES_FILE             — base values file matching the contract
+#   IMAGE_REPOSITORY_FOR_INSTALL — runner.image.repository override
 ensure_runner_image_available() {
   case "$RUNNER_IMAGE_STRATEGY" in
     local-k3d-import)
@@ -441,13 +521,63 @@ ensure_runner_image_available() {
       k3d image import "$import_tar" -c "$CLUSTER_NAME"
       rm -f "$import_tar"
       IMAGE_PULL_POLICY="Never"
+      HELM_VALUES_FILE="$(values_file_for_strategy local-k3d-import)"
+      IMAGE_REPOSITORY_FOR_INSTALL="$IMAGE_NAME"
       ;;
     registry)
-      log_fail "RUNNER_IMAGE_STRATEGY=registry is not wired in this repo yet."
-      echo "  Build and push the runner image to a cluster-reachable registry,"
-      echo "  then pass --image-repository / --image-tag to the caller and use"
-      echo "  deploy/helm/agentium-os/examples/design-partner-values.yaml."
-      return 1
+      # Registry strategy owns the registry prefix; reject fully-qualified
+      # inputs so users don't accidentally route to an external registry.
+      # External registries are tracked in #307.
+      if [[ "$IMAGE_NAME" == *"/"* || "$IMAGE_NAME" == *":"* ]]; then
+        log_fail "--image-strategy=registry expects a bare --image-repository (got '${IMAGE_NAME}')."
+        echo "  The local registry prefix is added automatically." >&2
+        echo "  External registries are out of scope here (tracked in #307)." >&2
+        return 1
+      fi
+
+      ensure_k3d_registry
+      connect_registry_to_cluster
+
+      log_step "Publishing runner image to local registry (${REGISTRY_CONTAINER_HOST})"
+
+      local host_ref="localhost:${REGISTRY_HOST_PORT}/${IMAGE_NAME}:${IMAGE_TAG}"
+      local cluster_repo="${REGISTRY_CONTAINER_HOST}:${REGISTRY_CONTAINER_PORT}/${IMAGE_NAME}"
+
+      # Distribution needs a beat after `docker run` on slow machines.
+      # Probe /v2/ before pushing so a transient race surfaces as a clear
+      # error, not a docker push retry loop.
+      local deadline=$((SECONDS + 30))
+      local probed=0
+      while (( SECONDS < deadline )); do
+        if curl -sf -o /dev/null --connect-timeout 2 \
+            "http://localhost:${REGISTRY_HOST_PORT}/v2/"; then
+          probed=1
+          break
+        fi
+        sleep 0.5
+      done
+      if (( probed == 0 )); then
+        log_fail "Local registry not reachable at localhost:${REGISTRY_HOST_PORT}"
+        echo "  Verify container: docker ps --filter name=${REGISTRY_CONTAINER_HOST}" >&2
+        echo "  Inspect logs:     docker logs ${REGISTRY_CONTAINER_HOST}" >&2
+        return 1
+      fi
+
+      docker tag "${IMAGE_NAME}:${IMAGE_TAG}" "$host_ref"
+
+      # Real Docker treats localhost as an insecure registry by default;
+      # Podman defaults to HTTPS and requires `--tls-verify=false` for
+      # plaintext pushes. Detect Podman from the version banner — both
+      # native podman and the podman-docker shim self-identify there.
+      local -a push_args=()
+      if docker --version 2>&1 | grep -qi podman; then
+        push_args+=("--tls-verify=false")
+      fi
+      docker push "${push_args[@]}" "$host_ref"
+
+      IMAGE_PULL_POLICY="IfNotPresent"
+      HELM_VALUES_FILE="$(values_file_for_strategy registry)"
+      IMAGE_REPOSITORY_FOR_INSTALL="$cluster_repo"
       ;;
     *)
       log_fail "Unknown RUNNER_IMAGE_STRATEGY: '$RUNNER_IMAGE_STRATEGY' (expected local-k3d-import|registry)"
@@ -513,16 +643,17 @@ rustlog_override() {
 
 # install_pilot_chart [extra helm args]...
 #
-# `helm upgrade --install` using the k3d values file, overriding image
-# fields. Image-strategy choice is resolved beforehand by
-# ensure_runner_image_available.
+# `helm upgrade --install` using the strategy-selected values file,
+# overriding image fields. Image-strategy choice is resolved beforehand
+# by ensure_runner_image_available, which writes HELM_VALUES_FILE,
+# IMAGE_REPOSITORY_FOR_INSTALL, and IMAGE_PULL_POLICY.
 install_pilot_chart() {
   log_step "Installing Helm chart ${RELEASE_NAME} (namespace ${NAMESPACE})"
   helm upgrade --install "$RELEASE_NAME" \
     "${REPO_ROOT}/deploy/helm/agentium-os/" \
     --namespace "$NAMESPACE" \
     -f "${REPO_ROOT}/${HELM_VALUES_FILE}" \
-    --set-string "runner.image.repository=${IMAGE_NAME}" \
+    --set-string "runner.image.repository=${IMAGE_REPOSITORY_FOR_INSTALL}" \
     --set-string "runner.image.tag=${IMAGE_TAG}" \
     --set-string "runner.image.pullPolicy=${IMAGE_PULL_POLICY}" \
     "$@"
