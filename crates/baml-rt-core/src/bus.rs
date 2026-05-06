@@ -866,3 +866,132 @@ impl EffectLiveness for BusWithEffects {
         counts.get(context_id).copied().unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+
+    use async_trait::async_trait;
+    use serde_json::json;
+
+    use super::{
+        BusWithEffects, EffectEmitter, EffectEvent, EffectSubscriber, LlmEffectMetadata, Outcome,
+        ToolNameResolution,
+    };
+    use crate::ids::ContextId;
+
+    struct DelayedFlagSubscriber {
+        delay: Duration,
+        flag: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl EffectSubscriber for DelayedFlagSubscriber {
+        async fn on_effect(&self, _event: &EffectEvent) -> crate::Result<()> {
+            tokio::time::sleep(self.delay).await;
+            self.flag.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    fn llm_metadata() -> LlmEffectMetadata {
+        LlmEffectMetadata {
+            client: "test".to_string(),
+            model: "test-model".to_string(),
+            function_name: "TestFn".to_string(),
+            prompt: json!(null),
+            metadata: json!({}),
+            tool_name: ToolNameResolution::NotApplicable,
+        }
+    }
+
+    fn llm_completed_event() -> EffectEvent {
+        EffectEvent::LlmCompleted {
+            context_id: ContextId::new(0, 0),
+            metadata: llm_metadata(),
+            usage: None,
+            result_payload: None,
+            duration_ms: 0,
+            outcome: Outcome::Success,
+            rejection_reason: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn llm_completed_awaits_subscriber_before_returning() {
+        let bus = BusWithEffects::new();
+        let flag = Arc::new(AtomicBool::new(false));
+        let subscriber = Arc::new(DelayedFlagSubscriber {
+            delay: Duration::from_millis(50),
+            flag: Arc::clone(&flag),
+        });
+        bus.subscribe_effect(subscriber).await;
+
+        EffectEmitter::emit(&bus, llm_completed_event())
+            .await
+            .expect("emit should succeed");
+
+        assert!(flag.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn non_llm_completed_awaits_subscriber_before_returning() {
+        let bus = BusWithEffects::new();
+        let flag = Arc::new(AtomicBool::new(false));
+        let subscriber = Arc::new(DelayedFlagSubscriber {
+            delay: Duration::from_millis(50),
+            flag: Arc::clone(&flag),
+        });
+        bus.subscribe_effect(subscriber).await;
+
+        let event = EffectEvent::ToolStreamChunk {
+            context_id: ContextId::new(0, 0),
+            chunk: json!({"kind": "test"}),
+        };
+        EffectEmitter::emit(&bus, event)
+            .await
+            .expect("emit should succeed");
+
+        assert!(flag.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn llm_completed_subscribers_run_concurrently() {
+        let bus = BusWithEffects::new();
+        let flags: Vec<Arc<AtomicBool>> =
+            (0..3).map(|_| Arc::new(AtomicBool::new(false))).collect();
+        let subscriber_delay = Duration::from_millis(200);
+        for flag in &flags {
+            bus.subscribe_effect(Arc::new(DelayedFlagSubscriber {
+                delay: subscriber_delay,
+                flag: Arc::clone(flag),
+            }))
+            .await;
+        }
+
+        let started = Instant::now();
+        EffectEmitter::emit(&bus, llm_completed_event())
+            .await
+            .expect("emit should succeed");
+        let elapsed = started.elapsed();
+
+        for (idx, flag) in flags.iter().enumerate() {
+            assert!(
+                flag.load(Ordering::Relaxed),
+                "subscriber {idx} did not complete before emit returned"
+            );
+        }
+        // ~delay (concurrent), not 3·delay (sequential).
+        let upper_bound = subscriber_delay * 2;
+        assert!(
+            elapsed < upper_bound,
+            "expected concurrent fan-out (~{subscriber_delay:?}), got {elapsed:?}"
+        );
+    }
+}
