@@ -620,6 +620,24 @@ pub enum EffectSubscriberTier {
     Background,
 }
 
+impl EffectSubscriberTier {
+    /// Value emitted for the `dispatch.mode` attribute on the
+    /// `baml_rt_core.effect_emit.subscriber_*` metrics and the matching span
+    /// fields when the subscriber runs on the tier-partitioned `LlmCompleted`
+    /// path. Non-`LlmCompleted` events use [`DISPATCH_MODE_SEQUENTIAL`].
+    pub fn dispatch_label(self) -> &'static str {
+        match self {
+            Self::Awaitable => "awaitable",
+            Self::Background => "background",
+        }
+    }
+}
+
+/// `dispatch.mode` attribute for non-`LlmCompleted` events, where the bus runs
+/// every subscriber in registration order on the caller's task. Pairs with
+/// [`EffectSubscriberTier::dispatch_label`] for the tier-partitioned path.
+pub const DISPATCH_MODE_SEQUENTIAL: &str = "sequential";
+
 #[async_trait]
 pub trait EffectSubscriber: Send + Sync {
     /// Stable, low-cardinality identity used as the `subscriber` attribute on
@@ -781,7 +799,7 @@ impl BusWithEffects {
         let event_variant = event.variant_name();
         let process_started = Instant::now();
         let context_id = event.context_id().clone();
-        let parent_span = effect_emit_process(event_variant, &format!("{context_id:?}"));
+        let parent_span = effect_emit_process(event_variant, context_id.as_str());
         self.process_effect_inner(event, event_variant, context_id, &parent_span)
             .instrument(parent_span.clone())
             .await?;
@@ -888,6 +906,8 @@ impl BusWithEffects {
             let (awaitable, background): (Vec<_>, Vec<_>) = cloned
                 .into_iter()
                 .partition(|sub| sub.tier() == EffectSubscriberTier::Awaitable);
+            let awaitable_label = EffectSubscriberTier::Awaitable.dispatch_label();
+            let background_label = EffectSubscriberTier::Background.dispatch_label();
             let event = Arc::new(event);
             for sub in background {
                 let event = Arc::clone(&event);
@@ -895,7 +915,7 @@ impl BusWithEffects {
                     parent_span,
                     sub.name(),
                     event_variant,
-                    "background",
+                    background_label,
                 );
                 tokio::spawn(
                     async move {
@@ -905,7 +925,7 @@ impl BusWithEffects {
                         let result_label = if res.is_ok() { "ok" } else { "error" };
                         record_effect_subscriber(
                             event_variant,
-                            "background",
+                            background_label,
                             sub.name(),
                             result_label,
                             elapsed,
@@ -913,7 +933,7 @@ impl BusWithEffects {
                         if let Err(e) = res {
                             tracing::warn!(
                                 subscriber = sub.name(),
-                                event_variant,
+                                event.variant = event_variant,
                                 tier = ?EffectSubscriberTier::Background,
                                 error = ?e,
                                 "Effect subscriber failed"
@@ -929,7 +949,7 @@ impl BusWithEffects {
                     parent_span,
                     sub.name(),
                     event_variant,
-                    "awaitable",
+                    awaitable_label,
                 );
                 async move {
                     let started = Instant::now();
@@ -943,7 +963,7 @@ impl BusWithEffects {
                 let result_label = if res.is_ok() { "ok" } else { "error" };
                 record_effect_subscriber(
                     event_variant,
-                    "awaitable",
+                    awaitable_label,
                     sub.name(),
                     result_label,
                     elapsed,
@@ -951,7 +971,7 @@ impl BusWithEffects {
                 if let Err(e) = res {
                     tracing::warn!(
                         subscriber = sub.name(),
-                        event_variant,
+                        event.variant = event_variant,
                         tier = ?EffectSubscriberTier::Awaitable,
                         error = ?e,
                         "Effect subscriber failed"
@@ -964,7 +984,7 @@ impl BusWithEffects {
                     parent_span,
                     sub.name(),
                     event_variant,
-                    "sequential",
+                    DISPATCH_MODE_SEQUENTIAL,
                 );
                 let started = Instant::now();
                 let res = sub.on_effect(&event).instrument(span).await;
@@ -972,7 +992,7 @@ impl BusWithEffects {
                 let result_label = if res.is_ok() { "ok" } else { "error" };
                 record_effect_subscriber(
                     event_variant,
-                    "sequential",
+                    DISPATCH_MODE_SEQUENTIAL,
                     sub.name(),
                     result_label,
                     elapsed,
@@ -980,7 +1000,7 @@ impl BusWithEffects {
                 if let Err(e) = res {
                     tracing::warn!(
                         subscriber = sub.name(),
-                        event_variant,
+                        event.variant = event_variant,
                         error = ?e,
                         "Effect subscriber failed"
                     );
@@ -1323,21 +1343,192 @@ mod tests {
         assert!(success_flag.load(Ordering::Relaxed));
     }
 
+    #[tokio::test]
+    async fn llm_completed_background_subscriber_failure_runs_and_does_not_propagate() {
+        // Background subscribers run detached on `LlmCompleted`. Their failures must
+        // still be reachable via the same warn + metric contract — verify the
+        // subscriber actually runs and returns Err past the spawn delay (the metric
+        // increment happens inside the spawned task; we observe it indirectly via
+        // the recorded `invocations`).
+        let bus = BusWithEffects::new();
+        let invocations = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        bus.subscribe_effect(Arc::new(FailingSubscriber {
+            name: "test_failing_background",
+            tier: EffectSubscriberTier::Background,
+            invocations: Arc::clone(&invocations),
+        }))
+        .await;
+
+        EffectEmitter::emit(&bus, llm_completed_event())
+            .await
+            .expect("emit returns Ok despite background subscriber failure");
+
+        assert!(
+            invocations.lock().await.is_empty(),
+            "Background subscriber must not have run before emit returned"
+        );
+
+        // Yield to the runtime so the spawned task gets a turn.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let invocations = invocations.lock().await;
+        assert_eq!(invocations.as_slice(), &["llm_completed"]);
+    }
+
+    #[test]
+    fn dispatch_label_round_trip() {
+        assert_eq!(
+            EffectSubscriberTier::Awaitable.dispatch_label(),
+            "awaitable"
+        );
+        assert_eq!(
+            EffectSubscriberTier::Background.dispatch_label(),
+            "background"
+        );
+        assert_eq!(super::DISPATCH_MODE_SEQUENTIAL, "sequential");
+    }
+
     #[test]
     fn variant_name_is_stable_for_every_event() {
-        // `variant_name` is the `event.variant` attribute on every effect-bus metric and
-        // span — keep this exhaustive so a new variant can't slip past telemetry.
-        let cases: &[(&'static str, EffectEvent)] = &[
+        // `variant_name` is the `event.variant` attribute on every effect-bus metric
+        // and span. The compiler enforces an arm per variant via the exhaustive match
+        // inside `variant_name`; this test pins the produced strings so a typo or
+        // rename in any arm fails CI.
+        use baml_rt_id::{ExternalId, UuidId};
+        const NIL_UUID: &str = "00000000-0000-0000-0000-000000000000";
+
+        use super::{
+            A2aEffectMetadata, A2aLivenessRole, SessionStepOp, ToolEffectMetadata,
+            ToolNameResolution,
+        };
+        use crate::ids::{AgentId, IntentId, PlanId, PlanStepId, TaskId};
+
+        let ctx = || ContextId::new(0, 0);
+        let tool_metadata = || ToolEffectMetadata {
+            tool_name: "t".into(),
+            function_name: None,
+            args: json!({}),
+            metadata: json!({}),
+            delegation_target: None,
+            tool_backend: None,
+            tool_digest: None,
+        };
+        let agent_id = || AgentId::from_uuid(UuidId::parse_str(NIL_UUID).unwrap());
+        let a2a_metadata = || A2aEffectMetadata {
+            agent_id: agent_id(),
+            method: "m".into(),
+            request_id: None,
+            liveness_role: A2aLivenessRole::Effect,
+            metadata: json!({}),
+        };
+        let llm_metadata = || LlmEffectMetadata {
+            client: "c".into(),
+            model: "m".into(),
+            function_name: "f".into(),
+            prompt: json!(null),
+            metadata: json!({}),
+            tool_name: ToolNameResolution::NotApplicable,
+        };
+
+        let cases: Vec<(&'static str, EffectEvent)> = vec![
+            (
+                "tool_started",
+                EffectEvent::ToolStarted {
+                    context_id: ctx(),
+                    metadata: tool_metadata(),
+                },
+            ),
+            (
+                "tool_completed",
+                EffectEvent::ToolCompleted {
+                    context_id: ctx(),
+                    metadata: tool_metadata(),
+                    duration_ms: 0,
+                    outcome: Outcome::Success,
+                    result: None,
+                },
+            ),
             (
                 "tool_stream_chunk",
                 EffectEvent::ToolStreamChunk {
-                    context_id: ContextId::new(0, 0),
+                    context_id: ctx(),
                     chunk: json!({}),
                 },
             ),
+            (
+                "tool_session_step",
+                EffectEvent::ToolSessionStep {
+                    context_id: ctx(),
+                    tool_name: "t".into(),
+                    session_id: "s".into(),
+                    op: SessionStepOp::Open,
+                    task_id: None,
+                },
+            ),
+            (
+                "llm_started",
+                EffectEvent::LlmStarted {
+                    context_id: ctx(),
+                    metadata: llm_metadata(),
+                },
+            ),
             ("llm_completed", llm_completed_event()),
+            (
+                "a2a_started",
+                EffectEvent::A2aStarted {
+                    context_id: ctx(),
+                    metadata: a2a_metadata(),
+                },
+            ),
+            (
+                "a2a_completed",
+                EffectEvent::A2aCompleted {
+                    context_id: ctx(),
+                    metadata: a2a_metadata(),
+                    duration_ms: 0,
+                    outcome: Outcome::Success,
+                },
+            ),
+            (
+                "intent_resolved",
+                EffectEvent::IntentResolved {
+                    context_id: ctx(),
+                    task_id: TaskId::from_external(ExternalId::new("t")),
+                    intent_id: IntentId::from("i"),
+                    description: "d".into(),
+                    citations: Vec::new(),
+                    supersession: None,
+                    epoch: None,
+                },
+            ),
+            (
+                "plan_generated",
+                EffectEvent::PlanGenerated {
+                    context_id: ctx(),
+                    task_id: TaskId::from_external(ExternalId::new("t")),
+                    intent_id: IntentId::from("i"),
+                    plan_id: PlanId::from("p"),
+                    steps: json!([]),
+                    supersession: None,
+                    epoch: None,
+                },
+            ),
+            (
+                "plan_step_status_changed",
+                EffectEvent::PlanStepStatusChanged {
+                    context_id: ctx(),
+                    task_id: TaskId::from_external(ExternalId::new("t")),
+                    intent_id: IntentId::from("i"),
+                    plan_id: PlanId::from("p"),
+                    step_id: PlanStepId::from("s"),
+                    old_status: None,
+                    new_status: "n".into(),
+                    citations: Vec::new(),
+                    epoch: None,
+                },
+            ),
         ];
-        for (expected, event) in cases {
+        for (expected, event) in &cases {
             assert_eq!(event.variant_name(), *expected);
         }
     }

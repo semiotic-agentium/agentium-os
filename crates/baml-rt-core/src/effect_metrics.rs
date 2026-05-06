@@ -15,7 +15,6 @@ const METER_NAME: &str = "baml_rt_core";
 static EFFECT_PROCESS_MS: OnceLock<Histogram<f64>> = OnceLock::new();
 static EFFECT_SUBSCRIBER_MS: OnceLock<Histogram<f64>> = OnceLock::new();
 static EFFECT_SUBSCRIBER_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
-static BUS_ENVELOPE_MS: OnceLock<Histogram<f64>> = OnceLock::new();
 
 fn effect_process_ms() -> &'static Histogram<f64> {
     EFFECT_PROCESS_MS.get_or_init(|| {
@@ -37,14 +36,6 @@ fn effect_subscriber_total() -> &'static Counter<u64> {
     EFFECT_SUBSCRIBER_TOTAL.get_or_init(|| {
         global::meter(METER_NAME)
             .u64_counter("baml_rt_core.effect_emit.subscriber_notify_total")
-            .init()
-    })
-}
-
-fn bus_envelope_ms() -> &'static Histogram<f64> {
-    BUS_ENVELOPE_MS.get_or_init(|| {
-        global::meter(METER_NAME)
-            .f64_histogram("baml_rt_core.bus.emit_envelope_duration_ms")
             .init()
     })
 }
@@ -77,13 +68,4 @@ pub fn record_effect_subscriber(
     ];
     effect_subscriber_total().add(1, attrs);
     effect_subscriber_ms().record(duration.as_millis() as f64, attrs);
-}
-
-/// `Bus::emit` fan-out to registered subscribers and stream sinks.
-pub fn record_bus_emit_envelope(subscriber_bucket: &'static str, duration: Duration) {
-    let attrs = &[KeyValue::new(
-        "envelope.subscriber_bucket",
-        subscriber_bucket,
-    )];
-    bus_envelope_ms().record(duration.as_millis() as f64, attrs);
 }
