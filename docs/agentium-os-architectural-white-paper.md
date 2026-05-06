@@ -542,23 +542,21 @@ promote, and reason about across teams and organizations.
 - **Operational clarity:** Kubernetes installs and observability defaults align runtime identity,
 routing, and telemetry into a coordinated agent-runtime operations model.
 
-## Messaging Lock
-
-Use this sentence as the single elevator pitch:
+## Summary
 
 **Agentium OS is a deployable agent runtime that executes declarative agents with host-mediated
 effects, graph-first provenance, and cluster-aware conversation continuity—so operators run agents
 with audit-grade visibility without rebuilding agent infrastructure as bespoke application code.**
 
-Vocabulary lock for web, decks, and design-partner conversations:
+Terminology used throughout this paper:
 
-| Term | Usage |
+| Term | Meaning |
 |------|--------|
 | **Agent runtime** | The categorical noun for the class of systems (execution boundary + semantics + operations). |
-| **Agentium OS** | The product name only. |
-| **Host-mediated** | Adjective for LLM calls, tools, A2A, tasks, artefacts, and provenance crossings. |
-| **Substrate** | Sparingly: the operational layer (packaging, placement, routing, day-two ops)—not a synonym for the whole product. |
-| **Framework** | Use only when contrasting library-first embedding with a deployable agent runtime; frameworks remain the right choice for many teams. |
+| **Agentium OS** | The product described in this paper. |
+| **Host-mediated** | Describes LLM calls, tools, A2A, tasks, artefacts, and provenance crossings that pass through runtime machinery. |
+| **Substrate** | The operational layer (packaging, placement, routing, day-two ops)—not a synonym for the whole product. |
+| **Framework** | A library-first embedding model, contrasted here with a deployable agent runtime; frameworks remain the right choice for many teams. |
 
 ## Glossary
 
@@ -585,55 +583,3 @@ agents.
 translated into message-oriented runtime work behind that edge.
 - **Content-addressed identity:** the canonical hash binding an agent's declarative source
 bundle to an immutable artefact identity.
-
-## Page-Budget Plan
-
-### 9-Page Version
-
-- Executive thesis, framework positioning, and design goals: 2 pages.
-- Context and solution strategy: 2 pages.
-- Static architecture: 1.5 pages.
-- Runtime flows: 1.5 pages.
-- Operations, cross-cutting concepts, and partner outcomes: 2 pages.
-- Diagrams: context, container, enforced planning flow.
-- Omit or compress: ADR entries, detailed deployment topology, router-held conversation
-sequence.
-
-### 12-Page Version
-
-- Executive thesis and framework positioning: 1 page.
-- Design goals and drivers: 2 pages.
-- Context and solution strategy: 2 pages.
-- Static architecture: 2 pages.
-- Runtime flows: 2 pages.
-- Deployment and cross-cutting concepts (including threat model): 2 pages.
-- Landscape, commitments, partner outcomes, messaging lock: 1 page.
-- Diagrams: context, container, enforced planning flow, cluster forwarding.
-
-### 15-Page Version
-
-- Executive thesis and framework positioning: 1 page.
-- Design goals and drivers: 2 pages.
-- Context and solution strategy: 2 pages.
-- Static architecture: 2.5 pages.
-- Runtime flows: 3 pages.
-- Deployment and operations: 1.5 pages.
-- Cross-cutting concepts (including threat model): 1.5 pages.
-- Landscape, commitments, partner outcomes, messaging lock, glossary, further reading: 1.5 pages.
-- Diagrams: context, container, enforced planning, tool session, cluster forwarding,
-router-held stateful conversations.
-
-The recommended default is the 12-page version. It gives enough room for the agent-runtime
-argument and the router continuity commitment without becoming a reference manual.
-
-## Further Reading
-
-External architecture documentation patterns that complement this style of systems narrative:
-
-- arc42 overview: [https://arc42.org/overview](https://arc42.org/overview)
-- arc42 quality requirements: [https://docs.arc42.org/section-10/](https://docs.arc42.org/section-10/)
-- arc42 architecture decisions: [https://docs.arc42.org/section-9/](https://docs.arc42.org/section-9/)
-- C4 model introduction: [https://c4model.com/introduction](https://c4model.com/introduction)
-- C4 notation guidance: [https://c4model.com/diagrams/notation](https://c4model.com/diagrams/notation)
-- NASA software architecture description guidance:
-[https://swehb.nasa.gov/display/SWEHBVB/7.7+-+Software+Architecture+Description](https://swehb.nasa.gov/display/SWEHBVB/7.7+-+Software+Architecture+Description)
