@@ -1,0 +1,48 @@
+# Local k3d + k3d-managed registry validation values.
+#
+# Companion to k3d-values.yaml. Used by
+# scripts/verify-k8s-pilot-package.sh --image-strategy registry,
+# where the runner image is pushed to the cluster's local registry
+# (deploy/k3d/cluster.yaml -> registries.create) instead of being
+# imported into the cluster via `k3d image import`.
+#
+# `runner.image.repository` uses the in-cluster registry hostname k3d
+# injects into the containerd mirror config (k3d-agentium-registry:5000).
+# `pullPolicy: IfNotPresent` exercises a real kubelet pull, which is the
+# property this strategy is meant to verify.
+#
+# scripts/e2e-k8s/lib.sh re-applies `runner.image.repository`,
+# `runner.image.tag`, and `runner.image.pullPolicy` via `--set-string`
+# during `helm install`. The values here document the install contract a
+# human reads; if `--image-tag` is passed with a non-default value, the
+# `--set-string` override wins and the rendered chart will diverge from
+# the literal `tag:` below.
+#
+# Install (normally driven by lib.sh, not by hand):
+#   helm upgrade --install agentium deploy/helm/agentium-os/ \
+#     --namespace agentium --create-namespace \
+#     -f deploy/helm/agentium-os/examples/k3d-registry-values.yaml
+
+global:
+  environment: development
+
+runner:
+  image:
+    repository: k3d-agentium-registry:5000/agentium-runner
+    tag: demo
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  auth:
+    existingSecret: runner-token
+  persistence:
+    size: 1Gi
+
+surrealdb:
+  auth:
+    existingSecret: surrealdb-credentials
+  persistence:
+    size: 1Gi
+
+fnox:
+  config:
+    existingConfigMap: fnox-config

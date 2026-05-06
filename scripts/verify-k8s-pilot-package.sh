@@ -46,12 +46,20 @@ Usage:
 Options:
   --no-build            Skip the `docker build` step (reuse cached image)
   --keep-cluster        Do not delete the k3d cluster on exit
-  --image-strategy <s>  local-k3d-import (default) | registry
-                        registry is a documented but not-yet-wired extension
-                        seam; use it by building and pushing to a cluster-
-                        reachable registry, then setting --image-repository
-                        and --image-tag.
-  --image-repository <r>  Override IMAGE_NAME (default: agentium-runner)
+  --image-strategy <s>  How the cluster gets the runner image. Choices:
+                          local-k3d-import (default)
+                              docker save + k3d image import; pullPolicy=Never.
+                              Fast dev fallback that bypasses the kubelet pull path.
+                          registry
+                              docker push to a local registry container
+                              started by the bringup helper; kubelet pulls
+                              from k3d-agentium-registry:5000 via the
+                              containerd mirror in deploy/k3d/cluster.yaml.
+                              Mirrors the design-partner install contract.
+  --image-repository <r>  Bare image name (default: agentium-runner). For
+                          --image-strategy=registry the in-cluster registry
+                          prefix is added automatically; pass a bare name only.
+                          External registries are tracked in #307.
   --image-tag <t>       Override IMAGE_TAG (default: demo)
   --local-port <port>   Local port for the smoke port-forward (default: 18080)
   --values <path>       Extra Helm values file layered on top of the default
@@ -91,6 +99,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Reject fully-qualified --image-repository for the registry strategy at the
+# entry point so users see the error before docker build / cluster bringup.
+# ensure_runner_image_available repeats the check for callers that source
+# lib.sh directly.
+if [[ "$RUNNER_IMAGE_STRATEGY" == "registry" \
+   && ( "$IMAGE_NAME" == *"/"* || "$IMAGE_NAME" == *":"* ) ]]; then
+  log_fail "--image-strategy=registry expects a bare --image-repository (got '${IMAGE_NAME}')."
+  echo "  The local registry prefix is added automatically." >&2
+  echo "  External registries are out of scope here (tracked in #307)." >&2
+  exit 1
+fi
+
 cleanup() {
   local code=$?
   if (( HAS_FAILURE )) || (( code != 0 )); then
@@ -118,8 +138,17 @@ preflight() {
     log_fail "Missing required tools: ${missing[*]}"
     exit 1
   fi
-  if [[ ! -f "${REPO_ROOT}/${HELM_VALUES_FILE}" ]]; then
-    log_fail "Helm values file missing: ${HELM_VALUES_FILE}"
+
+  # The values file is selected by RUNNER_IMAGE_STRATEGY (resolved later in
+  # ensure_runner_image_available). Surface a missing file here rather than
+  # via a noisy helm install.
+  local expected_values_file
+  if ! expected_values_file="$(values_file_for_strategy "$RUNNER_IMAGE_STRATEGY")"; then
+    log_fail "Unknown --image-strategy: '$RUNNER_IMAGE_STRATEGY' (expected local-k3d-import|registry)"
+    exit 1
+  fi
+  if [[ ! -f "${REPO_ROOT}/${expected_values_file}" ]]; then
+    log_fail "Helm values file missing: ${expected_values_file}"
     exit 1
   fi
   log_info "All preflight checks passed."

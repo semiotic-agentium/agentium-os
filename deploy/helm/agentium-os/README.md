@@ -37,7 +37,30 @@ helm upgrade --install agentium deploy/helm/agentium-os/ \
   -f deploy/helm/agentium-os/examples/design-partner-values.yaml
 ```
 
-For local k3d development, build the runner image and import it into the k3d cluster, then install with the k3d example values:
+### Local k3d (k3d-managed registry)
+
+`scripts/verify-k8s-pilot-package.sh --image-strategy registry` exercises
+the same kubelet pull contract as a real registry-backed install by
+pushing the runner image to a k3d-managed local registry encoded in
+`deploy/k3d/cluster.yaml`:
+
+```bash
+docker build -t agentium-runner:demo .
+./scripts/verify-k8s-pilot-package.sh \
+  --image-strategy registry \
+  --image-repository agentium-runner --image-tag demo
+```
+
+The host pushes to `localhost:5400` and the cluster pulls from
+`k3d-agentium-registry:5000`. No external registry is required. The
+chart is installed with
+[`examples/k3d-registry-values.yaml`](examples/k3d-registry-values.yaml).
+
+### Local k3d (image import — fast dev fallback)
+
+For quick iteration without exercising the kubelet pull path, build the
+runner image and import it into the k3d cluster, then install with the
+k3d example values:
 
 ```bash
 # Build the runner image (from repo root)
@@ -77,7 +100,7 @@ docker build -t your-registry.example.com/agentium-runner:0.1.0 .
 docker push your-registry.example.com/agentium-runner:0.1.0
 ```
 
-For any real design-partner or shared-cluster install, that means supplying a cluster-reachable OCI image reference, typically via a private registry. The `k3d image import` flow above is a local-development exception only.
+For any real design-partner or shared-cluster install, that means supplying a cluster-reachable OCI image reference, typically via a private registry. The `k3d image import` flow above is a fast dev fallback for local iteration; the k3d-managed-registry flow above mirrors the real install contract end-to-end.
 
 ## Next step
 

@@ -26,7 +26,7 @@ The supported install surface is the Helm chart at [`deploy/helm/agentium-os/`](
 
 The Agentium runner image is not published to a public registry. Operators build and push their own image.
 
-For any real design-partner or shared-cluster install, that means supplying a cluster-reachable OCI image reference, typically via a private registry. The `k3d image import` path below is a local-development exception only; it is not the long-term pilot install contract.
+For any real design-partner or shared-cluster install, that means supplying a cluster-reachable OCI image reference, typically via a private registry. The `k3d image import` path below is a fast dev fallback for local iteration; it is not the long-term pilot install contract. For end-to-end validation of the registry-backed path on a local k3d cluster, use `scripts/verify-k8s-pilot-package.sh --image-strategy registry` (see [`docs/testing/e2e-k8s.md`](testing/e2e-k8s.md#image-strategies)).
 
 ## Step 1 — Build and push the runner image
 
@@ -38,12 +38,19 @@ docker build -t your-registry.example.com/agentium-runner:0.1.0 .
 docker push your-registry.example.com/agentium-runner:0.1.0
 ```
 
-For local k3d development you can skip the push and import the image directly into the cluster:
+For local k3d development you can either:
 
-```bash
-docker build -t agentium-runner:demo .
-k3d image import agentium-runner:demo -c <your-k3d-cluster-name>
-```
+- **Push to the cluster's k3d-managed local registry** (mirrors the real
+  install contract; requires `deploy/k3d/cluster.yaml` cluster bring-up,
+  which `scripts/verify-k8s-pilot-package.sh --image-strategy registry`
+  handles end-to-end), or
+- **Skip the push and import the image directly into the cluster** as a
+  fast dev fallback:
+
+  ```bash
+  docker build -t agentium-runner:demo .
+  k3d image import agentium-runner:demo -c <your-k3d-cluster-name>
+  ```
 
 ## Step 2 — Create the three required objects
 
@@ -266,7 +273,7 @@ If `observability.enabled` is `true` and `observability.otlpEndpoint` points at 
 | Symptom | What to check | What to do |
 |---|---|---|
 | Pods stuck in `Pending` | `kubectl -n agentium describe pod <name>` | Default `StorageClass` missing, or PVC cannot be satisfied. Set `runner.persistence.storageClass` / `surrealdb.persistence.storageClass`. |
-| Pods in `ImagePullBackOff` | `kubectl -n agentium describe pod <name>` | `runner.image.repository`/`tag` wrong for the cluster's registry reachability. For k3d, confirm `pullPolicy: Never` and that `k3d image import` succeeded. |
+| Pods in `ImagePullBackOff` | `kubectl -n agentium describe pod <name>` | `runner.image.repository`/`tag` wrong for the cluster's registry reachability. For local k3d image-import flows, confirm `pullPolicy: Never` and that `k3d image import` succeeded. For local k3d-managed-registry flows, confirm the push reached the registry: `docker logs k3d-agentium-registry`. |
 | `readyz` returns 503 for more than a minute | `kubectl -n agentium logs statefulset/agentium-agentium-os-runner` | SurrealDB not up, or runner cannot reach it. Verify `surrealdb-credentials` keys match `values.yaml` (`username`/`password`). |
 | `401 authentication required` from publish/deploy | `kubectl -n agentium get secret runner-token -o yaml` | `RUNNER_TOKEN` missing or wrong. Re-export from the secret (see Step 2). |
 | `400 routing_key must be non-empty` on dispatch | request body | Ensure `routing_key` and `message_type` are present and non-empty strings. |
@@ -297,7 +304,7 @@ Deferred to follow-on pilot issues:
 
 - Authoritative package validation on top of this smoke flow — [#225](https://github.com/semiotic-agentium/agent-platform/issues/225).
 - Load-test baseline and performance SLOs — [#226](https://github.com/semiotic-agentium/agent-platform/issues/226).
-- Published runner image. Until then, operators build and push their own cluster-reachable image, typically via a private registry. `k3d image import` is a local-development exception only.
+- Published runner image. Until then, operators build and push their own cluster-reachable image, typically via a private registry. `k3d image import` is a local-development fast-path; the equivalent registry-backed path on a local k3d cluster is exercised by `scripts/verify-k8s-pilot-package.sh --image-strategy registry`.
 - Ingress / TLS termination. Operators front the API service with their own ingress controller if needed.
 - Multi-node SurrealDB HA. The pilot ships a single SurrealDB replica.
 - Deterministic conversational smoke coverage on the pilot path. The dispatch smoke remains the stable first-run check; the Cleese/Chapman validation above is supported, but still intentionally depends on a live LLM call.

@@ -8,6 +8,29 @@ ports:
   - port: 8080:80
     nodeFilters:
       - loadbalancer
+# Local registry contract powering `--image-strategy registry` in
+# scripts/verify-k8s-pilot-package.sh: a `registry:2` container named
+# `k3d-agentium-registry` is started (and attached to this cluster's
+# docker network) by the bringup helpers in scripts/e2e-k8s/lib.sh.
+# The host pushes to localhost:5400; kubelet inside the cluster pulls
+# from k3d-agentium-registry:5000, resolved via the containerd mirror
+# block injected below. hostPort 5400 avoids the macOS AirPlay Receiver
+# default on port 5000.
+#
+# Plain `docker run` is used instead of `registries.create` because k3d's
+# managed registry path is not portable across Docker and Podman: it
+# attaches the registry container to a `bridge` network that does not
+# exist under rootful Podman (where `bridge` is a reserved network mode
+# keyword and cannot be created).
+#
+# KEEP IN SYNC WITH scripts/e2e-k8s/lib.sh: the mirror key and endpoint
+# hostname below must match `k3d-${REGISTRY_NAME}:${REGISTRY_CONTAINER_PORT}`.
+registries:
+  config: |
+    mirrors:
+      "k3d-agentium-registry:5000":
+        endpoint:
+          - "http://k3d-agentium-registry:5000"
 options:
   k3s:
     extraArgs:
