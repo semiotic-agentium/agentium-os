@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Instant};
 use async_trait::async_trait;
 use baml_rt_conversation::view::{ConversationItemContent, ProvenanceConversationContextItem};
 use baml_rt_core::{
-    bus::{EffectEvent, EffectSubscriber},
+    bus::{EffectEvent, EffectSubscriber, EffectSubscriberTier},
     ids::{ActivityAnchorId, ContextId, ExternalId, MessageId, TaskId},
 };
 use baml_rt_embedding::{
@@ -1667,6 +1667,15 @@ impl ProvenanceEffectSubscriber {
 
 #[async_trait]
 impl EffectSubscriber for ProvenanceEffectSubscriber {
+    /// Awaited because the next `conversation_context` read structurally
+    /// depends on this subscriber's Surreal write being committed. Drift
+    /// scoring rides along inside the same handler and is therefore still on
+    /// the user-facing critical path; reducing that further requires
+    /// separating the row write from the drift attachment.
+    fn tier(&self) -> EffectSubscriberTier {
+        EffectSubscriberTier::Awaitable
+    }
+
     async fn on_effect(&self, event: &EffectEvent) -> baml_rt_core::Result<()> {
         let prov_event = match event {
             EffectEvent::ToolStarted {

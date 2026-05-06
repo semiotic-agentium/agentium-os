@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use baml_rt::{A2aAgent, QuickJSConfig, baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
 use baml_rt_core::bus::{
     BusWithEffects, EffectEmitter, EffectEvent, EffectLiveness, EffectSubscriber,
+    EffectSubscriberTier,
 };
 use baml_rt_provenance::SurrealStoreBuilder;
 pub use test_tools::{
@@ -68,6 +69,12 @@ impl EffectSubscriber for CapturingEffectSubscriber {
     async fn on_effect(&self, event: &EffectEvent) -> baml_rt_core::Result<()> {
         self.events.lock().await.push(event.clone());
         Ok(())
+    }
+
+    /// Tests assert directly after `emit().await` returns; awaiting the
+    /// capture preserves the pre-tier ordering for those assertions.
+    fn tier(&self) -> EffectSubscriberTier {
+        EffectSubscriberTier::Awaitable
     }
 }
 

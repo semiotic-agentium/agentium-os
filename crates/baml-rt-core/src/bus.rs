@@ -581,9 +581,35 @@ impl InFlightCounts {
     }
 }
 
+/// Whether `EffectEmitter::emit` should await an `EffectSubscriber` before
+/// returning, or run it detached.
+///
+/// `Awaitable` is the contract that downstream reads depend on. The canonical
+/// example is `ProvenanceEffectSubscriber`: its Surreal write must be
+/// committed before the next `conversation_context` read fires, so `emit()`
+/// has to await it.
+///
+/// `Background` is for pure observability work (drift scoring, status
+/// updates, SSE relays) where no read path structurally depends on
+/// completion. Spawning these subscribers keeps their cost off the
+/// user-facing critical path of an LLM hop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectSubscriberTier {
+    Awaitable,
+    Background,
+}
+
 #[async_trait]
 pub trait EffectSubscriber: Send + Sync {
     async fn on_effect(&self, event: &EffectEvent) -> crate::Result<()>;
+
+    /// Defaults to `Background` so adding a new subscriber does not silently
+    /// drag observability work onto the user-facing critical path of an LLM
+    /// completion. Override to `Awaitable` only when downstream reads
+    /// structurally depend on this subscriber's work being visible.
+    fn tier(&self) -> EffectSubscriberTier {
+        EffectSubscriberTier::Background
+    }
 }
 
 /// Transport-agnostic command envelope payload.
@@ -798,18 +824,38 @@ impl BusWithEffects {
 
         let is_llm_completed = matches!(event, EffectEvent::LlmCompleted { .. });
         if is_llm_completed {
-            // `LlmCompleted` subscribers do drift scoring (embedding inference, 100–500ms per call)
-            // and FastEmbed cold-start (~2s on first call). Run them concurrently but **await**
-            // completion before returning so callers see provenance-backed reads (e.g.
-            // `conversation_context`) without wall-clock polling.
-            let results = join_all(cloned.into_iter().map(|sub| {
+            // Awaitable subscribers (e.g. `ProvenanceEffectSubscriber`) finish before
+            // `emit` returns so causal-completeness contracts hold for downstream
+            // reads such as `conversation_context`. Background subscribers run
+            // detached: drift scoring (100–500 ms per call, ~2 s FastEmbed cold-start),
+            // status updates, and SSE relays never gate the user-facing critical path
+            // of an LLM hop.
+            let mut awaitable: Vec<Arc<dyn EffectSubscriber>> = Vec::new();
+            for sub in cloned {
+                match sub.tier() {
+                    EffectSubscriberTier::Awaitable => awaitable.push(sub),
+                    EffectSubscriberTier::Background => {
+                        let event_for_bg = event.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = sub.on_effect(&event_for_bg).await {
+                                tracing::warn!(
+                                    error = ?e,
+                                    tier = "background",
+                                    "Effect subscriber failed"
+                                );
+                            }
+                        });
+                    }
+                }
+            }
+            let results = join_all(awaitable.into_iter().map(|sub| {
                 let event = event.clone();
                 async move { sub.on_effect(&event).await }
             }))
             .await;
             for res in results {
                 if let Err(e) = res {
-                    tracing::warn!(error = ?e, "Effect subscriber failed");
+                    tracing::warn!(error = ?e, tier = "awaitable", "Effect subscriber failed");
                 }
             }
         } else {
@@ -881,14 +927,33 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BusWithEffects, EffectEmitter, EffectEvent, EffectSubscriber, LlmEffectMetadata, Outcome,
-        ToolNameResolution,
+        BusWithEffects, EffectEmitter, EffectEvent, EffectSubscriber, EffectSubscriberTier,
+        LlmEffectMetadata, Outcome, ToolNameResolution,
     };
     use crate::ids::ContextId;
 
     struct DelayedFlagSubscriber {
         delay: Duration,
         flag: Arc<AtomicBool>,
+        tier: EffectSubscriberTier,
+    }
+
+    impl DelayedFlagSubscriber {
+        fn awaitable(delay: Duration, flag: Arc<AtomicBool>) -> Self {
+            Self {
+                delay,
+                flag,
+                tier: EffectSubscriberTier::Awaitable,
+            }
+        }
+
+        fn background(delay: Duration, flag: Arc<AtomicBool>) -> Self {
+            Self {
+                delay,
+                flag,
+                tier: EffectSubscriberTier::Background,
+            }
+        }
     }
 
     #[async_trait]
@@ -897,6 +962,10 @@ mod tests {
             tokio::time::sleep(self.delay).await;
             self.flag.store(true, Ordering::Relaxed);
             Ok(())
+        }
+
+        fn tier(&self) -> EffectSubscriberTier {
+            self.tier
         }
     }
 
@@ -924,13 +993,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn llm_completed_awaits_subscriber_before_returning() {
+    async fn llm_completed_awaits_awaitable_subscriber_before_returning() {
         let bus = BusWithEffects::new();
         let flag = Arc::new(AtomicBool::new(false));
-        let subscriber = Arc::new(DelayedFlagSubscriber {
-            delay: Duration::from_millis(50),
-            flag: Arc::clone(&flag),
-        });
+        let subscriber = Arc::new(DelayedFlagSubscriber::awaitable(
+            Duration::from_millis(50),
+            Arc::clone(&flag),
+        ));
         bus.subscribe_effect(subscriber).await;
 
         EffectEmitter::emit(&bus, llm_completed_event())
@@ -941,13 +1010,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn llm_completed_does_not_await_background_subscriber() {
+        let bus = BusWithEffects::new();
+        let flag = Arc::new(AtomicBool::new(false));
+        let subscriber_delay = Duration::from_millis(200);
+        bus.subscribe_effect(Arc::new(DelayedFlagSubscriber::background(
+            subscriber_delay,
+            Arc::clone(&flag),
+        )))
+        .await;
+
+        let started = Instant::now();
+        EffectEmitter::emit(&bus, llm_completed_event())
+            .await
+            .expect("emit should succeed");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < subscriber_delay / 2,
+            "Background subscriber blocked emit: elapsed {elapsed:?} ≥ half of {subscriber_delay:?}"
+        );
+        assert!(
+            !flag.load(Ordering::Relaxed),
+            "Background subscriber should still be running when emit returns"
+        );
+
+        tokio::time::sleep(subscriber_delay * 2).await;
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "Background subscriber must still execute after emit returns"
+        );
+    }
+
+    #[tokio::test]
+    async fn llm_completed_only_awaits_awaitable_when_mixed() {
+        let bus = BusWithEffects::new();
+        let awaitable_flag = Arc::new(AtomicBool::new(false));
+        let background_flag = Arc::new(AtomicBool::new(false));
+        let awaitable_delay = Duration::from_millis(50);
+        let background_delay = Duration::from_millis(500);
+
+        bus.subscribe_effect(Arc::new(DelayedFlagSubscriber::awaitable(
+            awaitable_delay,
+            Arc::clone(&awaitable_flag),
+        )))
+        .await;
+        bus.subscribe_effect(Arc::new(DelayedFlagSubscriber::background(
+            background_delay,
+            Arc::clone(&background_flag),
+        )))
+        .await;
+
+        let started = Instant::now();
+        EffectEmitter::emit(&bus, llm_completed_event())
+            .await
+            .expect("emit should succeed");
+        let elapsed = started.elapsed();
+
+        assert!(awaitable_flag.load(Ordering::Relaxed));
+        assert!(!background_flag.load(Ordering::Relaxed));
+        assert!(
+            elapsed < background_delay / 2,
+            "Background subscriber dragged onto hot path: elapsed {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn non_llm_completed_awaits_subscriber_before_returning() {
         let bus = BusWithEffects::new();
         let flag = Arc::new(AtomicBool::new(false));
-        let subscriber = Arc::new(DelayedFlagSubscriber {
-            delay: Duration::from_millis(50),
-            flag: Arc::clone(&flag),
-        });
+        let subscriber = Arc::new(DelayedFlagSubscriber::background(
+            Duration::from_millis(50),
+            Arc::clone(&flag),
+        ));
         bus.subscribe_effect(subscriber).await;
 
         let event = EffectEvent::ToolStreamChunk {
@@ -962,16 +1097,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn llm_completed_subscribers_run_concurrently() {
+    async fn llm_completed_awaitable_subscribers_run_concurrently() {
         let bus = BusWithEffects::new();
         let flags: Vec<Arc<AtomicBool>> =
             (0..3).map(|_| Arc::new(AtomicBool::new(false))).collect();
         let subscriber_delay = Duration::from_millis(200);
         for flag in &flags {
-            bus.subscribe_effect(Arc::new(DelayedFlagSubscriber {
-                delay: subscriber_delay,
-                flag: Arc::clone(flag),
-            }))
+            bus.subscribe_effect(Arc::new(DelayedFlagSubscriber::awaitable(
+                subscriber_delay,
+                Arc::clone(flag),
+            )))
             .await;
         }
 
@@ -987,7 +1122,6 @@ mod tests {
                 "subscriber {idx} did not complete before emit returned"
             );
         }
-        // ~delay (concurrent), not 3·delay (sequential).
         let upper_bound = subscriber_delay * 2;
         assert!(
             elapsed < upper_bound,

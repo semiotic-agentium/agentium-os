@@ -112,11 +112,14 @@ fn hop_lines_from_provider_delta(
 /// Reads graph-backed `conversation_context` once after a hop and validates it against `p_before`
 /// for [`hop_lines_from_provider_delta`] (strict prefix extension or multiset delta).
 ///
-/// [`BusWithEffects`](baml_rt_core::bus::BusWithEffects) awaits all `EffectEvent::LlmCompleted`
-/// subscribers (including provenance drift scoring and persistence) before
+/// [`BusWithEffects`](baml_rt_core::bus::BusWithEffects) awaits
+/// [`EffectSubscriberTier::Awaitable`](baml_rt_core::bus::EffectSubscriberTier::Awaitable)
+/// subscribers — notably `ProvenanceEffectSubscriber`, which persists the LLM completion row
+/// that conversation projection consumes — before
 /// [`EffectEmitter::emit`](baml_rt_core::bus::EffectEmitter::emit) returns, so the provider read
 /// after each [`invoke_function_with_intra`](BamlRuntimeManager::invoke_function_with_intra) sees
-/// LLM-backed projection without wall-clock polling.
+/// LLM-backed projection without wall-clock polling. Background subscribers (status updates,
+/// SSE relays) run detached and don't gate this read.
 ///
 /// [`crate::step_executor_loop::run_step_executor_loop`] still merges a loop-local supplement at
 /// each invoke via [`BamlRuntimeManager::invoke_function_with_intra`] when line-level merge needs
