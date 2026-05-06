@@ -12,8 +12,11 @@ on:
 
 permissions:
   contents: read
-  actions: write
   pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -63,6 +66,11 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       needs.changes.outputs.pilot == 'true'
     timeout-minutes: 60
+    permissions:
+      # rust-cache needs write to save cache entries; the changes job
+      # only runs paths-filter and inherits read-only.
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
