@@ -566,11 +566,13 @@ ensure_runner_image_available() {
       docker tag "${IMAGE_NAME}:${IMAGE_TAG}" "$host_ref"
 
       # Real Docker treats localhost as an insecure registry by default;
-      # Podman defaults to HTTPS and requires `--tls-verify=false` for
-      # plaintext pushes. Detect Podman from the version banner — both
-      # native podman and the podman-docker shim self-identify there.
+      # Podman defaults to HTTPS and requires `--tls-verify=false`. Detect
+      # by probing the binary's --help output for the flag itself: this is
+      # the direct test of the capability we use, and it correctly
+      # identifies the `podman-docker` shim (which self-reports as
+      # "docker version" in --version but accepts --tls-verify).
       local -a push_args=()
-      if docker --version 2>&1 | grep -qi podman; then
+      if docker push --help 2>&1 | grep -q -- "--tls-verify"; then
         push_args+=("--tls-verify=false")
       fi
       docker push "${push_args[@]}" "$host_ref"
