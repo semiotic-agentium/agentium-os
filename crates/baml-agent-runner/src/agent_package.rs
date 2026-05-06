@@ -101,6 +101,8 @@ pub(crate) struct AgentPackageBootArgs<'a> {
     pub(crate) sandbox_bind_roots: &'a [PathBuf],
     /// Meter to register the agent's JS-event-loop progress probe with.
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
+    pub(crate) conversation_history_notify:
+        Option<tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>>,
 }
 
 impl AgentPackage {
@@ -268,6 +270,9 @@ impl AgentPackage {
         registered: ToolsRegistered,
         provenance_config: &ProvenanceConfig,
         stream_idle_secs: Option<u64>,
+        conversation_history_notify: Option<
+            tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>,
+        >,
     ) -> Result<JsInitialized> {
         use baml_rt_quickjs::QuickJSConfig;
 
@@ -327,8 +332,12 @@ impl AgentPackage {
             .with_quickjs_config(quickjs_config)
             .with_baml_helpers(true)
             .with_agent_identity(agent_package, agent_instance_id)
-            .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
-        agent_builder = agent_builder.with_surreal_store(provenance_config.store().clone());
+            .with_surreal_store(provenance_config.store().clone());
+        if let Some(tx) = conversation_history_notify.clone() {
+            agent_builder = agent_builder.with_conversation_history_notify(tx);
+        }
+        let agent_builder =
+            agent_builder.with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
         info!(
             agent = %self.manifest.name,
             "building QuickJS runtime and A2a bridge (often the longest boot step)"
@@ -395,7 +404,12 @@ impl AgentPackage {
                 )
                 .await?;
             let built = self
-                .build_agent_phase(registered, args.provenance_config, args.stream_idle_secs)
+                .build_agent_phase(
+                    registered,
+                    args.provenance_config,
+                    args.stream_idle_secs,
+                    args.conversation_history_notify.clone(),
+                )
                 .await?;
             // Register before `initialize_js_phase`: a CPU-bound JS top-level
             // is the worst-case peg the meter must observe, and it runs inside

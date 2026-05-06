@@ -11,6 +11,7 @@ pub(crate) mod bus_spans;
 pub mod callback_store;
 pub mod clock_events;
 pub mod context;
+pub mod conversation_history;
 pub mod correlation;
 pub mod deferred;
 pub mod deployment;
@@ -57,6 +58,7 @@ pub use context::{
     InvocationContext, InvocationScope, OutcomeInvocationContext, RequestScope, RuntimeScope,
     Scoped,
 };
+pub use conversation_history::ConversationHistoryUpdate;
 pub use deferred::DeferredHolder;
 pub use deployment::{
     DeployResult, DeploymentContentHash, DeploymentManager, DeploymentRecord, DeploymentStatus,

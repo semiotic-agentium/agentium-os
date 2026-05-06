@@ -17,10 +17,10 @@ use axum::{
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_api::{
     ApiServerConfig, ClusterMode, ContextIndexError, ContextIndexRequest, ContextIndexService,
-    ContextPickerPageDto, ConversationHistoryError, ConversationHistoryPageDto,
-    ConversationHistoryProfile, ConversationHistoryRequest, ConversationHistoryService,
-    MermaidError, MermaidService, ProvenanceOpsError, ProvenanceOpsService, api_router,
-    api_router_with_services_and_deploy,
+    ContextPickerPageDto, ConversationHistoryContentDto, ConversationHistoryError,
+    ConversationHistoryPageDto, ConversationHistoryProfile, ConversationHistoryQueryParams,
+    ConversationHistoryRequest, ConversationHistoryService, MermaidError, MermaidService,
+    ProvenanceOpsError, ProvenanceOpsService, api_router, api_router_with_services_and_deploy,
 };
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
@@ -28,6 +28,7 @@ use baml_rt_core::{
     BamlRtError, BusStream, DeployResult, DeploymentContentHash, DeploymentManager,
     DeploymentRecord, EventSchemaVersion, EventSourceKind, EventSubscription, Outcome, Result,
     UndeployResult,
+    bus::SessionStepOp,
     event_subscription::{EventSourceKey, EventSourceKeyPrefix},
     ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, UuidId},
 };
@@ -458,7 +459,11 @@ impl ConversationHistoryService for RealConversationHistory {
                 .map(|item| baml_rt_api::profile_filter(item, request.profile))
                 .collect();
         }
-        let max_event_order = items.last().map(|item| item.timestamp_ms).unwrap_or(0);
+        let max_event_order = items
+            .iter()
+            .map(|item| item.timestamp_ms)
+            .max()
+            .unwrap_or(0);
         let version = baml_rt_api::page_version(&items, &[], None, false, None);
         Ok(ConversationHistoryPageDto {
             context_id: request.context_id.as_str().to_string(),
@@ -473,6 +478,75 @@ impl ConversationHistoryService for RealConversationHistory {
             input_required_prompt: None,
         })
     }
+}
+
+#[tokio::test]
+async fn conversation_history_retains_user_message_when_session_steps_follow() {
+    let store = Arc::new(
+        SurrealStoreBuilder::in_memory_isolated()
+            .build()
+            .await
+            .expect("store"),
+    );
+    let context_id = ContextId::new(901, 42);
+    let agent = AgentId::from_uuid(
+        UuidId::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").expect("uuid"),
+    );
+    let msg_id = MessageId::from_external(ExternalId::new("user-turn-1"));
+    store
+        .add_event(ProvEvent::message_received_global(
+            context_id.clone(),
+            msg_id.clone(),
+            "ROLE_USER".into(),
+            vec!["hiya".into()],
+            None,
+            agent.clone(),
+            1,
+        ))
+        .await
+        .expect("user message");
+    store
+        .add_event(ProvEvent::tool_session_step(
+            context_id.clone(),
+            CallScope::Message {
+                message_id: msg_id.clone(),
+            },
+            "a2a/execution_session_step".into(),
+            "sess-test".into(),
+            &SessionStepOp::Open,
+        ))
+        .await
+        .expect("session step");
+
+    let svc = RealConversationHistory {
+        store: Arc::clone(&store),
+    };
+    let request = ConversationHistoryRequest::from_parts(
+        context_id.as_str(),
+        ConversationHistoryQueryParams {
+            task_id: None,
+            limit: Some(100),
+            cursor: None,
+            profile: None,
+            format: None,
+        },
+    )
+    .expect("history request");
+    let page = svc.page(&request).await.expect("page");
+    let user_lines: Vec<&str> = page
+        .items
+        .iter()
+        .filter(|i| i.role.eq_ignore_ascii_case("user"))
+        .filter_map(|i| match &i.content {
+            ConversationHistoryContentDto::Message { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        user_lines.iter().any(|t| *t == "hiya"),
+        "user transcript line missing after session_step; got user_lines={user_lines:?} items_len={}",
+        page.items.len(),
+    );
 }
 
 #[async_trait]

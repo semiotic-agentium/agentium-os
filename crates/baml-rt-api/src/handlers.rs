@@ -38,7 +38,7 @@ use crate::{
     conversation_history::{
         ConversationHistoryDeltaRequest, ConversationHistoryPageDto,
         ConversationHistoryQueryParams, ConversationHistoryRequest,
-        ConversationHistoryRequestParseError,
+        ConversationHistoryRequestParseError, merge_conversation_history_pages,
     },
     episode::EpisodeSnapshotDto,
     mermaid::MermaidError,
@@ -1573,7 +1573,7 @@ pub async fn get_context_index(
     params(
         ("context_id" = String, Path, description = "Provenance context ID"),
         ("taskId" = Option<String>, Query, description = "Optional task scope"),
-        ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 100"),
+        ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 50"),
         ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
         ("profile" = Option<String>, Query, description = "Payload profile: full or compact"),
         ("format" = Option<String>, Query, description = "Response format: full")
@@ -1616,7 +1616,7 @@ pub async fn get_conversation_history(
     params(
         ("context_id" = String, Path, description = "Provenance context ID"),
         ("taskId" = Option<String>, Query, description = "Optional task scope"),
-        ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 100"),
+        ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 50"),
         ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
         ("profile" = Option<String>, Query, description = "Payload profile: full or compact"),
         ("format" = Option<String>, Query, description = "Response format: full")
@@ -1665,7 +1665,7 @@ pub async fn get_conversation_history_stream(
     let initial = match service_result_to_http(
         "get_conversation_history_stream",
         start,
-        svc.page(&req).await,
+        merge_conversation_history_pages(svc.as_ref(), &req).await,
     ) {
         Ok(axum::Json(s)) => s,
         Err(e) => return Err(e),

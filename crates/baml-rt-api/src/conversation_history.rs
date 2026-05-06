@@ -6,7 +6,7 @@
 //! `ConversationHistoryPageRequest` rather than a cross-route `Option` bag.
 
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{HashSet, hash_map::DefaultHasher},
     error::Error,
     fmt,
     hash::{Hash, Hasher},
@@ -29,14 +29,13 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Default page size when the client omits `limit` on conversation-history routes.
+pub const DEFAULT_CONVERSATION_HISTORY_LIMIT: u32 = 50;
+
 /// Service errors for conversation-history reads.
 pub type ConversationHistoryError = crate::service_error::ServiceError;
 
-#[derive(Debug, Clone)]
-pub struct ConversationHistoryUpdate {
-    pub context_id: String,
-    pub task_id: Option<String>,
-}
+pub use baml_rt_core::ConversationHistoryUpdate;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversationHistoryProfile {
@@ -239,7 +238,7 @@ impl ConversationHistoryRequest {
             return Err(ConversationHistoryRequestParseError::InvalidTaskId);
         }
 
-        let raw_limit = params.limit.unwrap_or(100);
+        let raw_limit = params.limit.unwrap_or(DEFAULT_CONVERSATION_HISTORY_LIMIT);
         if !(1..=500).contains(&raw_limit) {
             return Err(ConversationHistoryRequestParseError::InvalidLimit(
                 raw_limit,
@@ -481,6 +480,66 @@ impl From<ProvenanceConversationContextItem> for ConversationHistoryItemDto {
     }
 }
 
+/// Loads every page for `request` (same `limit` per chunk), merges items and prompt-operation rows,
+/// clears `next_cursor`, and recomputes [`page_version`] for the merged transcript.
+pub async fn merge_conversation_history_pages(
+    svc: &dyn ConversationHistoryService,
+    request: &ConversationHistoryRequest,
+) -> Result<ConversationHistoryPageDto, ConversationHistoryError> {
+    let limit = request.page.limit();
+    let mut merged_items: Vec<ConversationHistoryItemDto> = Vec::new();
+    let mut merged_ops: Vec<LlmPromptOperationDto> = Vec::new();
+    let mut seen_ops: HashSet<(String, u64)> = HashSet::new();
+    let mut max_event_order: u64 = 0;
+    let mut req = request.clone();
+
+    let mut page = svc.page(&req).await?;
+    loop {
+        max_event_order = max_event_order.max(page.max_event_order);
+        for op in &page.llm_prompt_operations {
+            let key = (op.activity_anchor.clone(), op.event_order);
+            if seen_ops.insert(key) {
+                merged_ops.push(op.clone());
+            }
+        }
+        merged_items.append(&mut page.items);
+
+        let Some(cursor) = page.next_cursor.take() else {
+            page.items = merged_items;
+            merged_ops.sort_by_key(|op| op.event_order);
+            page.llm_prompt_operations = merged_ops;
+            page.next_cursor = None;
+            page.max_event_order = max_event_order.max(
+                page.items
+                    .iter()
+                    .map(|item| item.timestamp_ms)
+                    .max()
+                    .unwrap_or(0),
+            );
+            page.version = page_version(
+                &page.items,
+                &page.llm_prompt_operations,
+                page.prompt_context_bytes_session_current,
+                page.awaiting_input,
+                page.input_required_prompt.as_deref(),
+            );
+            return Ok(page);
+        };
+
+        req = ConversationHistoryRequest {
+            context_id: request.context_id.clone(),
+            task_id: request.task_id.clone(),
+            page: ConversationHistoryPageRequest::Next {
+                limit,
+                cursor: CursorToken(cursor),
+            },
+            profile: request.profile,
+            format: request.format,
+        };
+        page = svc.page(&req).await?;
+    }
+}
+
 #[async_trait]
 pub trait ConversationHistoryService: Send + Sync {
     async fn page(
@@ -614,6 +673,33 @@ pub fn profile_filter(
                 ..item
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ConversationHistoryQueryParams, ConversationHistoryRequest,
+        DEFAULT_CONVERSATION_HISTORY_LIMIT,
+    };
+
+    #[test]
+    fn conversation_history_default_limit_matches_constant() {
+        let req = ConversationHistoryRequest::from_parts(
+            "ctx-scope-test",
+            ConversationHistoryQueryParams {
+                task_id: None,
+                limit: None,
+                cursor: None,
+                profile: None,
+                format: None,
+            },
+        )
+        .expect("valid request");
+        assert_eq!(
+            req.page.limit(),
+            DEFAULT_CONVERSATION_HISTORY_LIMIT as usize
+        );
     }
 }
 

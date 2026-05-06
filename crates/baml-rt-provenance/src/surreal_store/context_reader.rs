@@ -132,6 +132,17 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
     }
 }
 
+fn warn_conversation_context_row_skip(context_id: &ContextId, row: &Value, reason: &'static str) {
+    tracing::warn!(
+        target: "baml_rt_provenance::conversation_context",
+        context_id = %context_id.as_str(),
+        node_id = row.get("node_id").and_then(serde_json::Value::as_str).unwrap_or(""),
+        label = row.get("label").and_then(serde_json::Value::as_str).unwrap_or(""),
+        reason,
+        "skipping graph row for conversation_context export"
+    );
+}
+
 impl SurrealProvenanceStore {
     pub(super) async fn conversation_context_filtered(
         &self,
@@ -347,7 +358,10 @@ impl SurrealProvenanceStore {
             let label = row.get("label").and_then(Value::as_str).unwrap_or_default();
             let props = match row.get("props") {
                 Some(p) => p,
-                None => continue,
+                None => {
+                    warn_conversation_context_row_skip(context_id, row, "missing_props");
+                    continue;
+                }
             };
 
             match label {
@@ -358,7 +372,14 @@ impl SurrealProvenanceStore {
                         .unwrap_or_default();
                     let event_id = match props.get("a2a_activity_anchor").and_then(Value::as_str) {
                         Some(id) if !id.is_empty() => id,
-                        _ => continue,
+                        _ => {
+                            warn_conversation_context_row_skip(
+                                context_id,
+                                row,
+                                "message_missing_activity_anchor",
+                            );
+                            continue;
+                        }
                     };
                     let role = props
                         .get("a2a_role")
@@ -368,6 +389,7 @@ impl SurrealProvenanceStore {
                     let content_value = json_value_from_embedded_string(&content_raw);
                     let text = normalize_message_content(&content_value);
                     if text.trim().is_empty() {
+                        warn_conversation_context_row_skip(context_id, row, "message_empty_text");
                         continue;
                     }
                     // Look up CITED edges for this Message node to get citations.
@@ -393,11 +415,25 @@ impl SurrealProvenanceStore {
                     let event_id_str =
                         match props.get("a2a_activity_anchor").and_then(Value::as_str) {
                             Some(id) if !id.is_empty() => id,
-                            _ => continue,
+                            _ => {
+                                warn_conversation_context_row_skip(
+                                    context_id,
+                                    row,
+                                    "tool_call_missing_activity_anchor",
+                                );
+                                continue;
+                            }
                         };
                     let tool_name = match props.get("a2a_tool_name").and_then(Value::as_str) {
                         Some(name) if !name.is_empty() => name.to_string(),
-                        _ => continue,
+                        _ => {
+                            warn_conversation_context_row_skip(
+                                context_id,
+                                row,
+                                "tool_call_missing_tool_name",
+                            );
+                            continue;
+                        }
                     };
 
                     // Validate ToolCall-ToolArgs edge topology contract.
@@ -405,9 +441,19 @@ impl SurrealProvenanceStore {
                         let role_ok = prov_role.is_empty() || prov_role == "a2a:args";
                         let type_ok = prov_type.is_empty() || prov_type == "a2a:ToolArgs";
                         if !role_ok || !type_ok {
+                            warn_conversation_context_row_skip(
+                                context_id,
+                                row,
+                                "tool_call_invalid_tool_args_edge",
+                            );
                             continue;
                         }
                     } else {
+                        warn_conversation_context_row_skip(
+                            context_id,
+                            row,
+                            "tool_call_missing_tool_args_edge",
+                        );
                         continue;
                     }
 
@@ -508,7 +554,14 @@ impl SurrealProvenanceStore {
                 "SessionStep" => {
                     let event_id = match props.get("a2a_activity_anchor").and_then(Value::as_str) {
                         Some(id) if !id.is_empty() => id.to_string(),
-                        _ => continue,
+                        _ => {
+                            warn_conversation_context_row_skip(
+                                context_id,
+                                row,
+                                "session_step_missing_activity_anchor",
+                            );
+                            continue;
+                        }
                     };
                     let tool_name = props
                         .get("a2a_tool_name")
@@ -520,6 +573,11 @@ impl SurrealProvenanceStore {
                         .and_then(Value::as_str)
                         .unwrap_or_default();
                     let Some(op_kind) = ToolSessionStepOpKind::parse_graph(op_kind_raw) else {
+                        warn_conversation_context_row_skip(
+                            context_id,
+                            row,
+                            "session_step_unknown_op_kind",
+                        );
                         continue;
                     };
                     let header = props
@@ -553,7 +611,14 @@ impl SurrealProvenanceStore {
                                     informed_by,
                                 }
                             }
-                            _ => continue,
+                            _ => {
+                                warn_conversation_context_row_skip(
+                                    context_id,
+                                    row,
+                                    "session_step_send_done_incomplete",
+                                );
+                                continue;
+                            }
                         },
                         ToolSessionStepOpKind::SearchRead => match archive_ref {
                             Some(r) => {
@@ -566,6 +631,11 @@ impl SurrealProvenanceStore {
                                     .unwrap_or(DEFAULT_SESSION_READ_LINE_LIMIT as u64)
                                     as usize;
                                 let Some(grep_pat) = grep else {
+                                    warn_conversation_context_row_skip(
+                                        context_id,
+                                        row,
+                                        "session_step_search_read_missing_grep",
+                                    );
                                     continue;
                                 };
                                 SessionStepOp::SearchRead {
@@ -575,7 +645,14 @@ impl SurrealProvenanceStore {
                                     limit,
                                 }
                             }
-                            None => continue,
+                            None => {
+                                warn_conversation_context_row_skip(
+                                    context_id,
+                                    row,
+                                    "session_step_search_read_missing_archive_ref",
+                                );
+                                continue;
+                            }
                         },
                         ToolSessionStepOpKind::PageRead => match archive_ref {
                             Some(r) => {
@@ -593,7 +670,14 @@ impl SurrealProvenanceStore {
                                     limit,
                                 }
                             }
-                            None => continue,
+                            None => {
+                                warn_conversation_context_row_skip(
+                                    context_id,
+                                    row,
+                                    "session_step_page_read_missing_archive_ref",
+                                );
+                                continue;
+                            }
                         },
                         // Legacy graphs from before SearchRead/PageRead split.
                         ToolSessionStepOpKind::Read => match archive_ref {
@@ -613,7 +697,14 @@ impl SurrealProvenanceStore {
                                     }
                                 }
                             }
-                            None => continue,
+                            None => {
+                                warn_conversation_context_row_skip(
+                                    context_id,
+                                    row,
+                                    "session_step_legacy_read_missing_archive_ref",
+                                );
+                                continue;
+                            }
                         },
                     };
 
@@ -632,7 +723,16 @@ impl SurrealProvenanceStore {
                         }),
                     });
                 }
-                _ => continue,
+                _ => {
+                    if !label.is_empty() {
+                        warn_conversation_context_row_skip(
+                            context_id,
+                            row,
+                            "unsupported_or_unknown_label",
+                        );
+                    }
+                    continue;
+                }
             }
         }
 

@@ -1,4 +1,7 @@
 import { ref, computed, type Ref } from "vue";
+
+/** Per-request page size for GET/stream conversation-history (must match server default chunking). */
+const CONVERSATION_HISTORY_PAGE_SIZE = 50;
 import {
   applyConversationHistoryDelta,
   applyConversationHistoryPage,
@@ -29,6 +32,7 @@ import type {
   AgentDiscoveryEntry,
   A2aMessage,
   ChatMessage,
+  ConversationHistoryItem,
   ConversationHistoryPage,
   ContextPickerPage,
   ContextMetricsResponse,
@@ -212,7 +216,7 @@ export function useA2aClient() {
 
     closeConversationHistoryStream();
     const params = new URLSearchParams();
-    params.set("limit", "500");
+    params.set("limit", String(CONVERSATION_HISTORY_PAGE_SIZE));
     const url = `/contexts/${_contextId.value}/conversation-history/stream?${params.toString()}`;
     const stream = new EventSource(url);
 
@@ -865,25 +869,68 @@ export function useA2aClient() {
       historyHydrateState.value = "loading";
     }
     try {
-      const params = new URLSearchParams();
-      params.set("limit", "500");
-      const response = await fetch(
-        `/contexts/${contextId}/conversation-history?${params.toString()}`,
-      );
-      if (!response.ok) {
+      const PAGE_LIMIT = CONVERSATION_HISTORY_PAGE_SIZE;
+      const allItems: ConversationHistoryItem[] = [];
+      const mergedPromptOps: NonNullable<
+        ConversationHistoryPage["llmPromptOperations"]
+      > = [];
+      let cursor: string | undefined;
+      let lastPage: ConversationHistoryPage | null = null;
+      let maxEventOrder = 0;
+      let fetchCount = 0;
+
+      for (;;) {
+        const params = new URLSearchParams();
+        params.set("limit", String(PAGE_LIMIT));
+        if (cursor) params.set("cursor", cursor);
+        const response = await fetch(
+          `/contexts/${contextId}/conversation-history?${params.toString()}`,
+        );
+        if (!response.ok) {
+          if (!options.quiet) {
+            historyHydrateState.value = "error";
+          }
+          return;
+        }
+
+        const page = (await response.json()) as ConversationHistoryPage;
+        if (!Array.isArray(page.items)) {
+          if (!options.quiet) {
+            historyHydrateState.value = "error";
+          }
+          return;
+        }
+        fetchCount += 1;
+        allItems.push(...page.items);
+        maxEventOrder = Math.max(maxEventOrder, page.maxEventOrder);
+        if (page.llmPromptOperations?.length) {
+          mergedPromptOps.push(...page.llmPromptOperations);
+        }
+        lastPage = page;
+        if (!page.nextCursor) break;
+        cursor = page.nextCursor;
+      }
+
+      if (!lastPage) {
         if (!options.quiet) {
           historyHydrateState.value = "error";
         }
         return;
       }
 
-      const page = (await response.json()) as ConversationHistoryPage;
-      if (!Array.isArray(page.items)) {
-        if (!options.quiet) {
-          historyHydrateState.value = "error";
-        }
-        return;
-      }
+      const page: ConversationHistoryPage = {
+        ...lastPage,
+        items: allItems,
+        maxEventOrder,
+        llmPromptOperations:
+          mergedPromptOps.length > 0 ? mergedPromptOps : lastPage.llmPromptOperations,
+        nextCursor: null,
+        version:
+          fetchCount <= 1
+            ? lastPage.version
+            : `merged:${allItems.length}:${maxEventOrder}:${lastPage.version}`,
+      };
+
       _taskId.value = page.taskId ?? null;
       if (liveAgentBubbleBlocksHistoryReplace(messages.value)) {
         if (!options.quiet) {

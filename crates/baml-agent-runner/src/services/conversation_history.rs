@@ -176,7 +176,11 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
                 .map(|item| baml_rt_api::profile_filter(item, request.profile))
                 .collect();
         }
-        let max_event_order = items.last().map(|item| item.timestamp_ms).unwrap_or(0);
+        let max_event_order = items
+            .iter()
+            .map(|item| item.timestamp_ms)
+            .max()
+            .unwrap_or(0);
 
         let mut page = baml_rt_api::ConversationHistoryPageDto {
             context_id: request.context_id.as_str().to_string(),

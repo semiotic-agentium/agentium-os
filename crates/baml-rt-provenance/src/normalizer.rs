@@ -2313,6 +2313,13 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
         }
         ProvEventData::MessageReceived { role, content, .. }
         | ProvEventData::MessageSent { role, content, .. } => {
+            if event.context_id_opt().is_none() {
+                return Err(ProvenanceError::InvalidEvent {
+                    activity_anchor: event.id().as_str().to_string(),
+                    reason: "message events must carry context_id (conversation transcript requires SCOPED_TO)"
+                        .to_string(),
+                });
+            }
             canonical_message_role(event, role)?;
             if content.iter().all(|line| line.trim().is_empty()) {
                 return Err(ProvenanceError::InvalidEvent {
@@ -2321,6 +2328,9 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
                         .to_string(),
                 });
             }
+        }
+        ProvEventData::ToolSessionStep { scope, .. } => {
+            validate_call_scope(event, scope, "tool session step")?;
         }
         ProvEventData::CallbackDispatchContextsLinked {
             dispatch_context_id,

@@ -1,3 +1,8 @@
+/**
+ * Transcript contract: the Primary pane renders **conversation-history** (GET hydrate + SSE
+ * snapshot/delta). A2A stream text is progressive decoration only — never treat it as canonical
+ * transcript content or merge it as a competing source of truth once hydration runs.
+ */
 import type { Ref } from "vue";
 import type {
   ChatMessage,

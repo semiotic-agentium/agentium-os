@@ -846,6 +846,9 @@ pub struct A2aAgentBuilder {
     agent_identity: AgentIdentityConfig,
     register_a2a_session_tool: RegistrationMode,
     a2a_session_route_mode: A2aSessionRouteMode,
+    /// When set, provenance commits notify this channel so transcript consumers refresh after graph writes.
+    conversation_history_notify:
+        Option<tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>>,
 }
 
 pub struct A2aAgentBuilderWithEffectEmitter {
@@ -861,6 +864,8 @@ pub struct A2aAgentBuilderWithEffectEmitter {
     register_a2a_session_tool: RegistrationMode,
     a2a_session_route_mode: A2aSessionRouteMode,
     effect_emitter: Arc<dyn EffectEmitter>, // REQUIRED - enforced by typestate
+    conversation_history_notify:
+        Option<tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>>,
 }
 
 /// Runtime configuration: either provided or default.
@@ -964,7 +969,17 @@ impl A2aAgentBuilder {
             agent_identity: AgentIdentityConfig::Default,
             register_a2a_session_tool: RegistrationMode::Skip,
             a2a_session_route_mode: A2aSessionRouteMode::SelfAgent,
+            conversation_history_notify: None,
         }
+    }
+
+    /// Notify this channel after each successful context-scoped provenance write (operator transcript SSE).
+    pub fn with_conversation_history_notify(
+        mut self,
+        tx: tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>,
+    ) -> Self {
+        self.conversation_history_notify = Some(tx);
+        self
     }
 
     /// Provide an existing runtime manager (overrides default).
@@ -1085,6 +1100,7 @@ impl A2aAgentBuilder {
             register_a2a_session_tool: self.register_a2a_session_tool,
             a2a_session_route_mode: self.a2a_session_route_mode,
             effect_emitter: emitter,
+            conversation_history_notify: self.conversation_history_notify,
         }
     }
 }
@@ -1145,6 +1161,15 @@ impl A2aAgentBuilderWithEffectEmitter {
         store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
     ) -> Self {
         self.provenance_writer = ProvenanceWriterConfig::Surreal(store);
+        self
+    }
+
+    /// Notify this channel after each successful context-scoped provenance write (operator transcript SSE).
+    pub fn with_conversation_history_notify(
+        mut self,
+        tx: tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>,
+    ) -> Self {
+        self.conversation_history_notify = Some(tx);
         self
     }
 
@@ -1382,7 +1407,13 @@ impl A2aAgentBuilderWithEffectEmitter {
             }
         };
 
-        let writer = provenance_writer.expect("build always mounts a ProvenanceWriter");
+        let base_writer = provenance_writer.expect("build always mounts a ProvenanceWriter");
+        let writer: Arc<dyn ProvenanceWriter> = match self.conversation_history_notify.clone() {
+            Some(tx) => Arc::new(
+                crate::provenance_notify_writer::NotifyingProvenanceWriter::new(base_writer, tx),
+            ),
+            None => base_writer,
+        };
         let archive_store: Option<Arc<SurrealProvenanceStore>> = surreal_for_archive;
 
         let emitter: Arc<dyn EventEmitter> =

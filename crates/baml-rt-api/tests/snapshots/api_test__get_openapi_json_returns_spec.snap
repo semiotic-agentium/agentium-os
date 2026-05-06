@@ -818,7 +818,7 @@ expression: snapshot
             {
               "name": "limit",
               "in": "query",
-              "description": "Page size in range [1, 500], default 100",
+              "description": "Page size in range [1, 500], default 50",
               "required": false,
               "schema": {
                 "type": "integer",
@@ -907,7 +907,7 @@ expression: snapshot
             {
               "name": "limit",
               "in": "query",
-              "description": "Page size in range [1, 500], default 100",
+              "description": "Page size in range [1, 500], default 50",
               "required": false,
               "schema": {
                 "type": "integer",

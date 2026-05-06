@@ -323,6 +323,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         external_tools_dirs: config.external_tools_dirs.clone(),
         sandbox_bind_roots: config.sandbox_bind_roots.clone(),
         runtime_progress: runtime_progress.clone(),
+        conversation_history_notify: None,
     })
     .map_err(|e| anyhow::anyhow!("runner builder init: {e}"))?;
 
@@ -514,6 +515,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             as Arc<dyn baml_rt_api::ConversationHistoryService>);
         let conversation_history_events = Some(Arc::new(ConversationHistoryEventServiceImpl::new(
             runner.clone(),
+            ready.conversation_history_tx(),
         ))
             as Arc<dyn baml_rt_api::ConversationHistoryEventService>);
         let context_index = Some(Arc::new(ContextIndexServiceImpl::new(
@@ -1033,6 +1035,7 @@ globalThis.onChatMessage = async function(_message) {
                 external_tools_dirs: Vec::new(),
                 sandbox_bind_roots: Vec::new(),
                 runtime_progress: baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
+                conversation_history_notify: None,
             })
             .expect("test runner construction"),
         );
