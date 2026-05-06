@@ -1,48 +1,56 @@
 # Agentium OS Architectural White Paper
 
-Agentium OS is presented here as an architectural thesis for design partners and early
-adopters. Agentium OS is a unified runtime and provenance substrate for declarative agents,
-distinct from application-framework-style agent stacks.
-
 ## Executive Thesis
 
-Agentium OS executes agents as declarative software artefacts on a shared runtime substrate. The
-runtime owns execution, planning, tool sessions, protocol boundaries, package identity, routing,
-and provenance capture. Because every agent action is mediated by the host, the runtime has perfect
-observability of agent behavior inside the runtime boundary.
+**Agentium OS** is an **agent runtime**: it executes declarative agent artefacts, owns execution and
+planning surfaces, orchestrates **host-mediated** tool sessions, and captures provenance for what
+occurred inside the boundary. Because effects are **host-mediated**, the runtime exhibits perfect
+observability of agent behavior within that boundary.
 
-External systems remain outside the runtime boundary. Agentium OS observes agent-mediated
-interactions as they cross host-visible surfaces: every agent-mediated LLM call, tool action,
-A2A interaction, task transition, message, artifact, and provenance event is mediated by the
-substrate and recorded at that boundary.
+External systems remain outside the boundary. What the runtime records is what crosses host-visible
+interfaces: every LLM call, tool hop, A2A interaction, task transition, message, artefact, and
+provenance event passes through runtime machinery and joins the semantic transcript.
 
-Agentium agents are ReAct-capable task actors with enforced planning and execution
-semantics: behavior is organized around tasks, plans, steps, and structured outcomes rather
-than open-ended chat transcripts with ad hoc tool calls. Plans, citations, lineage, step
-execution, tool-session phases, and structured replies are runtime concepts rather than
-informal prompt conventions.
+Agentium agents are ReAct-capable task actors with enforced planning and execution semantics:
+behavior is organized around tasks, plans, steps, and structured outcomes rather than open-ended
+chat transcripts with ad hoc tool calls. Plans, citations, lineage, step execution, tool-session
+phases, and structured replies are runtime concepts rather than informal prompt conventions.
 
-Agentium uses **BAML**, a **prompt runtime language**
-that combines typed prompt programs with a runtime that executes them against models.
-In plain language, it is the language and runtime used to define structured prompting,
-schemas, and typed outputs so LLM calls are expressed as explicit programs rather than
-unstructured strings.
+Agentium uses **BAML**, a **prompt runtime language** that combines typed prompt programs with a
+runtime that executes them against models. In plain language, it is the language and runtime used
+to define structured prompting, schemas, and typed outputs so LLM calls are expressed as explicit
+programs rather than unstructured strings.
 
-The agent artefact is also materially different from a conventional software package.
-The canonical shareable unit is a hashed, content-addressable source bundle: manifest,
-TypeScript agent source, and prompt-program definitions. It is declarative content executed by
-the trusted runtime as an immutable shareable unit without an external dependency graph of its
-own. Runtime components, external tools, container images, and operator environments still carry
-their own supply-chain inventories, but the agent itself is a higher-confidence artefact for
-sharing within and between organisations.
+The agent artefact is materially different from a conventional software package. The canonical
+shareable unit is a hashed, content-addressable source bundle: manifest, TypeScript agent source,
+and prompt-program definitions. It is declarative content executed by the trusted runtime as an
+immutable shareable unit without an external dependency graph of its own. Runtime components,
+external tools, container images, and operator environments still carry their own supply-chain
+inventories, but the agent itself is a higher-confidence artefact for sharing within and between
+organisations.
 
-For clustered deployments, Agentium OS has a core architectural commitment: router-held
-stateful conversations. The router holds client conversation continuity at the edge and
-translates it into message-oriented runtime communication for agent LLM, tool, and A2A
-calls. The result is runtime rebalancing and rolling agent updates without dropping
-conversations. Cluster placement, shared state, cross-pod A2A forwarding, deployment
-lifecycle APIs, and channel-oriented runtime design are the substrate mechanics that make
-this continuity model coherent.
+For clustered deployments, Agentium OS commits to **router-held stateful conversations**. The router
+holds client conversation continuity at the edge and translates it into message-oriented runtime
+communication for agent LLM, tool, and A2A work. The result is rebalancing and rolling agent
+updates without dropping conversations. Placement, shared stores, cross-pod A2A forwarding,
+deployment lifecycle APIs, and channel-oriented runtime design are the operational substrate that
+makes this continuity model coherent.
+
+## Why This Is Not a Framework
+
+Application **frameworks** remain the right answer for many deployments. Teams that embed agents
+inside their own services, already own the surrounding application architecture, and want library
+first composition will continue to choose frameworks—and should.
+
+**Agentium OS** occupies a different category: a deployable **agent runtime** product that owns the
+execution boundary end-to-end—planning primitives, **host-mediated** effects, provenance as
+transcript of record, repository-backed agent identity, and cluster-aware conversation
+continuity—so operators run agents as managed runtime tenants rather than as bespoke application
+internals.
+
+The distinction is categorical, not pejorative. When the goal is a shared runtime with enforced
+semantics and audit-grade visibility across agents, an agent-runtime deployment model fits. When
+the goal is maximal in-process control inside one application, a **framework** often fits better.
 
 ## Design Goals And Architectural Drivers
 
@@ -63,9 +71,9 @@ The authoring surface is intentionally small and composable: manifest, TypeScrip
 orchestration, prompt-program definitions, generated typing for prompts and tools, and
 packaged deployment artefacts. The build pipeline compiles TypeScript, generates
 prompt-runtime types from compiled prompt-program definitions, emits runtime typings, and
-packages the agent for operator deployment. The runner loads packaged agents, executes them
-on the substrate, and exposes operator and conversational surfaces through declared orchestration
-and prompt-program entry surfaces.
+packages the agent for operator deployment. The runner loads packaged agents, executes them on the
+agent runtime, and exposes operator and conversational surfaces through declared orchestration and
+prompt-program entry surfaces.
 
 ### 2. Perfect Observability Of Agent Behavior
 
@@ -77,8 +85,8 @@ by the host.
 
 Agent-mediated contact with external systems is recorded where it crosses host-visible surfaces:
 when the agent requests an LLM completion, calls a host tool, delegates through A2A, emits an
-artifact, or advances a task, that action passes through runtime machinery and becomes part of
-the substrate transcript.
+artifact, or advances a task, that action passes through runtime machinery and becomes part of the
+host-visible semantic transcript.
 
 Provenance records typed runtime events into a graph-normalized model persisted in SurrealDB.
 Conversation projection reconstructs agent-visible history from that graph and keeps
@@ -136,7 +144,7 @@ standard I/O.
 launches a guest **adapter** that speaks the protocol from inside the sandbox while the runner
 applies network posture, secrets binding, and lifecycle limits at the isolation boundary.
 
-All paths converge on one substrate rule: the agent receives typed observations only after host
+All paths converge on one agent-runtime rule: the agent receives typed observations only after host
 mediation. Coordinator-level planning artifacts use distinct shapes from executable tool-session
 fragments so strategic orchestration stays explicitly layered above tactical tool execution.
 
@@ -169,7 +177,7 @@ to drop.
 Cluster deployments use multiple runners backed by shared SurrealDB state, cluster runner
 registration, agent placement, heartbeat-based liveness, cross-pod A2A forwarding driven by
 placement resolution, validated forwarding paths, migration controls, and channel-oriented
-runtime design. Together these substrate mechanics realize clustered continuity without tying
+runtime design. Together these operational mechanics realize clustered continuity without tying
 client conversations to a single execution pod. Kubernetes installs ship as a Helm chart as
 the supported operator surface. Forwarding, migration controls, heartbeat-driven runner
 liveness, and multi-agent routing are first-class cluster behaviors. Continuity is layered: the
@@ -215,7 +223,7 @@ operator APIs.
 
 The solution strategy has seven pillars:
 
-- **Unified runtime substrate:** agent behavior executes through explicit host surfaces with
+- **Unified agent runtime:** agent behavior executes through explicit host surfaces with
 protocol-visible transitions.
 - **Planning as protocol:** intent, plan, step, finish, citation, and supersession are
 runtime concepts.
@@ -225,7 +233,7 @@ cross host-visible boundaries.
 edges anchored to runtime-derived identities.
 - **Content-addressed distribution:** agent source bundles are hashed and deployed by
 identity.
-- **Cluster as substrate:** placement, forwarding, shared state, and router-held
+- **Operational cluster layer:** placement, forwarding, shared state, and router-held
 conversations together define uninterrupted clustered operation.
 - **Operator separation:** public A2A routes and token-authenticated operator routes have
 different trust boundaries.
@@ -254,7 +262,7 @@ flowchart TD
         A2aCrate["A2A Runtime"]
     end
 
-    subgraph substrate["Substrate Services"]
+    subgraph operationalLayer["Operational Layer Services"]
         ProvenanceCrate["Provenance Store"]
         ConversationCrate["Conversation Projection"]
         ObservabilityCrate["Observability Layer"]
@@ -282,8 +290,8 @@ flowchart TD
 
 Authoring and packaging services establish the agent as a content-addressed source bundle.
 Runtime execution services host JavaScript orchestration, prompt-runtime execution, A2A, and
-tools. Substrate services provide provenance, conversation projection, observability, HTTP API
-boundaries, and cluster routing helpers.
+tools. Operational-layer services provide provenance, conversation projection, observability, HTTP
+API boundaries, and cluster routing helpers.
 
 ## Runtime Flows
 
@@ -409,13 +417,42 @@ work relocates cleanly while clients keep a single conversational attachment poi
 
 ## Cross-Cutting Concepts
 
-### Security
+### Threat Model
 
-Security is expressed as enforceable runtime boundaries. Effects require host mediation: tools are
-host-orchestrated and manifest-allowlisted, and privileged operator APIs are token-authenticated in
-cluster mode. Sandbox-mode tools add microVM isolation and host-defined network posture around the
-guest adapter. Cross-runner communication is designed for validated forwarding within isolated
-cluster networks, with SSRF protections on control-plane targets.
+This subsection states trust boundaries, protected assets, and the architectural controls that keep
+the **agent runtime** posture predictable for operators.
+
+**Trust boundaries.**
+
+- **Agent code versus host.** JavaScript orchestration proposes work; the Rust host interprets
+  planning mutations, executes tool-session finite-state transitions, and performs **host-mediated**
+  LLM, tool, A2A, task, message, and artefact actions.
+- **Public conversational surfaces versus operator APIs.** End-user A2A ingress is distinct from
+  token-authenticated operator routes in cluster mode; network isolation policies surround what is
+  exposed where.
+- **Runner cluster versus external networks.** Cross-runner forwarding is validated and intended
+  for isolated cluster fabrics; control-plane targets carry SSRF protections.
+- **Guest tool adapters versus host policy.** External tools may run as subprocesses or inside
+  microVM guests; either way the host retains session ownership, manifest allowlists, and—for
+  sandbox mode—network posture and lifecycle limits at the isolation boundary.
+
+**Protected assets.**
+
+- Operator secrets and configuration surfaced only through declared resolver paths.
+- Repository and deployment integrity tied to content-addressed agent identity.
+- Provenance graph as audit-grade semantic transcript; conversation projection derived from graph
+  structure rather than ad hoc joins.
+- End-user conversational continuity at the router edge during cluster churn.
+
+**Controls (architecture-level).**
+
+- **Host-mediated effects** as the default: no alternate path for tools or LLM calls that bypasses the
+  runtime boundary relevant to observability.
+- **Manifest allowlists** and generated typing that bind prompt programs to named tool capabilities.
+- **Selectable tool backends** (in-process, external process, microVM sandbox) without weakening the
+  session FSM or provenance capture at the host.
+- **Token-authenticated operator routes** and **validated cluster forwarding** so lateral movement
+  does not rely on implicit network trust alone.
 
 ### Provenance
 
@@ -436,15 +473,44 @@ Extensibility comes through declarative agent packages, prompt-program schemas a
 functions (BAML), generated
 runtime types, platform-built tools, independently packaged external tools (subprocess or
 microVM sandbox adapters), event dispatch, A2A, and repository
-lineage. Every extension point remains substrate-visible: agents extend capability through
+lineage. Every extension point remains runtime-visible: agents extend capability through
 declarations and host-mediated execution surfaces with explicit contracts.
+
+## Position In The Landscape
+
+The market vocabulary for **agent runtimes** is stabilizing. **Amazon Bedrock AgentCore**
+deserves explicit mention: it is a prominent managed offering that helps validate the category—teams
+want execution boundaries, lifecycle tooling, and operational packaging around agents rather than
+only ad hoc orchestration code.
+
+**Agentium OS** draws a sharp line from that validation without implying superiority of one shape
+over another:
+
+- **Deployment stance.** Agentium OS targets operators running the runtime under their own
+  Kubernetes and tenancy controls—repository-backed promotion, deploy-by-hash semantics, and Helm
+  as the supported install surface—rather than a proprietary hyperscaler control plane.
+- **Semantic transcript.** Graph-first **provenance** is the architectural transcript of record for
+  host-mediated behavior; conversation reconstruction and citations trace runtime-derived anchors,
+  not informal logs assembled outside the graph.
+- **Agent artefact model.** Content-addressed declarative **source bundles** define canonical agent
+  identity separately from container and runtime supply-chain inventories.
+- **Cluster continuity.** Router-held **stateful conversations** pair edge attachment with shared
+  placement and persistence so client streams survive rebalance and rolling updates.
+- **Prompt runtime language.** **BAML** is embedded as the typed prompt-program surface agents and
+  operators reason about inside this runtime.
+- **Independent tools.** Standalone external tools—subprocess or microVM sandbox adapters—extend the
+  runtime without collapsing effect mediation back into agent JavaScript.
+
+Taken together, AgentCore and Agentium OS **co-validate** the **agent runtime** category while
+occupying different operational and packaging commitments; partners choose based on control-plane
+ownership, transcript semantics, and tenancy—not on which approach is more advanced in the abstract.
 
 ## Architectural Commitments
 
 The architecture is summarized as a compact set of definitional commitments:
 
 - Declarative agents as compact, inspectable runtime-bound packages.
-- A unified runtime substrate for planning, tools, A2A, and provenance.
+- A unified agent runtime for planning, tools, A2A, and provenance.
 - Enforced planning with explicit protocol primitives and host-visible lineage.
 - ReAct-capable task actors producing structured, operator-visible outcomes.
 - Rust host ownership of tool sessions, effect mediation, and selectable backends (in-process,
@@ -457,7 +523,7 @@ external process, microVM sandbox).
 - Helm chart as the supported Kubernetes install surface.
 
 These commitments align incentives for partners: agents stay small and declarative, while the
-substrate supplies enforcement, observability, auditability, and operational control at scale.
+agent runtime supplies enforcement, observability, auditability, and operational control at scale.
 
 ## Partner Outcomes
 
@@ -474,18 +540,33 @@ that run as subprocesses or inside microVM sandboxes without weakening host medi
 - **Shareable agent artefacts:** content-addressed source bundles make agents easy to publish,
 promote, and reason about across teams and organizations.
 - **Operational clarity:** Kubernetes installs and observability defaults align runtime identity,
-routing, and telemetry into a coordinated substrate operations model.
+routing, and telemetry into a coordinated agent-runtime operations model.
 
-### A2A Transport Shape
+## Messaging Lock
 
-A2A supports multiple client-facing streaming shapes to fit different integration styles. Partner
-deployments standardize ingress buffering and timeouts so streaming remains smooth across proxies
-and load balancers while preserving the same underlying task semantics.
+Use this sentence as the single elevator pitch:
+
+**Agentium OS is a deployable agent runtime that executes declarative agents with host-mediated
+effects, graph-first provenance, and cluster-aware conversation continuity—so operators run agents
+with audit-grade visibility without rebuilding agent infrastructure as bespoke application code.**
+
+Vocabulary lock for web, decks, and design-partner conversations:
+
+| Term | Usage |
+|------|--------|
+| **Agent runtime** | The categorical noun for the class of systems (execution boundary + semantics + operations). |
+| **Agentium OS** | The product name only. |
+| **Host-mediated** | Adjective for LLM calls, tools, A2A, tasks, artefacts, and provenance crossings. |
+| **Substrate** | Sparingly: the operational layer (packaging, placement, routing, day-two ops)—not a synonym for the whole product. |
+| **Framework** | Use only when contrasting library-first embedding with a deployable agent runtime; frameworks remain the right choice for many teams. |
 
 ## Glossary
 
-- **Agentium OS:** the unified runtime and provenance substrate that executes declarative
-agents.
+- **Agent runtime:** the class of execution environments that run declarative agents with
+host-mediated effects and operator-visible semantics; **Agentium OS** is one product instance.
+- **Agentium OS:** the deployable agent runtime product described in this paper.
+- **Amazon Bedrock AgentCore (AgentCore):** AWS managed agent-runtime offering cited here as a
+category co-validator for **agent runtime** alongside Agentium OS.
 - **Declarative agent artefact:** the manifest, TypeScript orchestration, prompt-program
 definitions, generated typing, and packaged outputs treated as one deployable unit.
 - **BAML:** the prompt runtime language embedded in Agentium OS for typed prompting programs and
@@ -509,7 +590,7 @@ bundle to an immutable artefact identity.
 
 ### 9-Page Version
 
-- Executive thesis and design goals: 2 pages.
+- Executive thesis, framework positioning, and design goals: 2 pages.
 - Context and solution strategy: 2 pages.
 - Static architecture: 1.5 pages.
 - Runtime flows: 1.5 pages.
@@ -520,29 +601,29 @@ sequence.
 
 ### 12-Page Version
 
-- Executive thesis: 1 page.
+- Executive thesis and framework positioning: 1 page.
 - Design goals and drivers: 2 pages.
 - Context and solution strategy: 2 pages.
 - Static architecture: 2 pages.
 - Runtime flows: 2 pages.
-- Deployment and cross-cutting concepts: 2 pages.
-- Commitments and partner outcomes: 1 page.
+- Deployment and cross-cutting concepts (including threat model): 2 pages.
+- Landscape, commitments, partner outcomes, messaging lock: 1 page.
 - Diagrams: context, container, enforced planning flow, cluster forwarding.
 
 ### 15-Page Version
 
-- Executive thesis: 1 page.
+- Executive thesis and framework positioning: 1 page.
 - Design goals and drivers: 2 pages.
 - Context and solution strategy: 2 pages.
 - Static architecture: 2.5 pages.
 - Runtime flows: 3 pages.
 - Deployment and operations: 1.5 pages.
-- Cross-cutting concepts: 1.5 pages.
-- Commitments, partner outcomes, glossary, further reading: 1.5 pages.
+- Cross-cutting concepts (including threat model): 1.5 pages.
+- Landscape, commitments, partner outcomes, messaging lock, glossary, further reading: 1.5 pages.
 - Diagrams: context, container, enforced planning, tool session, cluster forwarding,
 router-held stateful conversations.
 
-The recommended default is the 12-page version. It gives enough room for the substrate
+The recommended default is the 12-page version. It gives enough room for the agent-runtime
 argument and the router continuity commitment without becoming a reference manual.
 
 ## Further Reading
