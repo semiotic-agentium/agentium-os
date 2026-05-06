@@ -70,13 +70,13 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-tools** — Tool trait, registry/executor, session FSM (`ToolSessionPlan` with Open/Send/Read/Finish/Abort ops)
 - **baml-rt-interceptor** — Interceptor trait + pipeline (pre/post execution hooks)
 - **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics; `init_tracing()` uses per-layer filters (`RUST_LOG_FMT`, `RUST_LOG_OTEL`); central `spans.rs` keeps A2A ingress at `info` and agent execution spans at `debug` (see `docs/otel-trace-instrumentation-guide.md`); exported OTLP metric names: `docs/metrics-inventory.md`; runner identity foundation for K8s pilot with service.instance.id and deployment.environment resource attributes; distributed tracing support for cross-pod A2A forwarding
-- **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations
+- **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations, provenance error mapping
 - **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling
 - **baml-rt-conversation** — Agent-visible conversation history projection and episode types; pure computation (no I/O); see `docs/agent-conversation-crate.md` and normative spec `docs/baml-rt-conversation-spec.md`
-- **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence
+- **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence, cluster-safe archive refs with activity-anchor idempotency
 - **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search
 - **baml-rt-router** — Cluster routing, SSRF validation, token auth, cross-pod A2A forwarding with distributed trace propagation
-- **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors, operator auth boundary, OpenTelemetry middleware for distributed tracing
+- **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors, operator auth boundary, OpenTelemetry middleware for distributed tracing, conversation history endpoints, context metrics
 
 **Derive macros**
 - **baml-derive-core** — Core types and rendering for derive macro (`BamlType` trait)
@@ -103,7 +103,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 **Top-level binaries and facades**
 - **baml-rt** — Facade crate re-exporting subcrates via feature flags (default: all enabled)
 - **baml-rt-builder** — Agent build pipeline: BAML type generation, tar.gz packaging. Binary: `baml-agent-builder`
-- **baml-agent-runner** — A2A host (stdio and/or HTTP); embedded agent repository and deploy-by-hash. Binary: `baml-agent-runner`
+- **baml-agent-runner** — A2A host (stdio and/or HTTP); embedded agent repository and deploy-by-hash; deployment restore, conversation history/metrics. Binary: `baml-agent-runner`
 - **task-daemon** — Local polling daemon substrate for extracting actionable tasks from sources (Slack, etc.)
 
 **Test**
