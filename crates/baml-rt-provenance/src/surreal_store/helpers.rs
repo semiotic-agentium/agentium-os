@@ -36,6 +36,18 @@ pub(crate) fn check_and_take_zero<E>(
     checked.take(0).map_err(map_err)
 }
 
+/// Deserialize statement `0` of a borrowed [`surrealdb::IndexedResults`] as JSON object rows.
+///
+/// Use when the surrounding flow needs to retain the response (e.g. to retry on conflict)
+/// rather than consume it as [`check_and_take_zero`] does.
+#[inline]
+pub(crate) fn query_take_zero<E>(
+    response: &mut surrealdb::IndexedResults,
+    map_err: impl Fn(surrealdb::Error) -> E,
+) -> std::result::Result<Vec<Value>, E> {
+    response.take(0).map_err(map_err)
+}
+
 pub(super) fn normalize_message_content(value: &Value) -> String {
     match value {
         Value::Array(items) => items
