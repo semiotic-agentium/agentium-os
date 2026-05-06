@@ -886,9 +886,6 @@ mod tests {
     };
     use crate::ids::ContextId;
 
-    /// Subscriber that sleeps for `delay`, then sets `flag` to true.
-    /// Used to assert that `BusWithEffects::process_effect` awaits subscriber
-    /// completion before returning.
     struct DelayedFlagSubscriber {
         delay: Duration,
         flag: Arc<AtomicBool>,
@@ -898,7 +895,7 @@ mod tests {
     impl EffectSubscriber for DelayedFlagSubscriber {
         async fn on_effect(&self, _event: &EffectEvent) -> crate::Result<()> {
             tokio::time::sleep(self.delay).await;
-            self.flag.store(true, Ordering::SeqCst);
+            self.flag.store(true, Ordering::Relaxed);
             Ok(())
         }
     }
@@ -926,12 +923,6 @@ mod tests {
         }
     }
 
-    /// Locks in the central ordering contract: `BusWithEffects::emit` must await
-    /// every `LlmCompleted` subscriber before returning. The QuickJS step executor
-    /// (see `intra_turn.rs`) relies on this — it removed its polling fallback in
-    /// favour of this synchronous guarantee, so a future change that fans out
-    /// subscribers via `tokio::spawn` would silently re-introduce a race against
-    /// `conversation_context` reads.
     #[tokio::test]
     async fn llm_completed_awaits_subscriber_before_returning() {
         let bus = BusWithEffects::new();
@@ -946,15 +937,9 @@ mod tests {
             .await
             .expect("emit should succeed");
 
-        assert!(
-            flag.load(Ordering::SeqCst),
-            "subscriber must have run to completion before emit returned"
-        );
+        assert!(flag.load(Ordering::Relaxed));
     }
 
-    /// The await-before-return contract also covers non-`LlmCompleted` variants:
-    /// they go through the sequential-await branch of `process_effect`, and
-    /// callers must observe their effects on return.
     #[tokio::test]
     async fn non_llm_completed_awaits_subscriber_before_returning() {
         let bus = BusWithEffects::new();
@@ -973,22 +958,15 @@ mod tests {
             .await
             .expect("emit should succeed");
 
-        assert!(
-            flag.load(Ordering::SeqCst),
-            "subscriber must have run to completion before emit returned"
-        );
+        assert!(flag.load(Ordering::Relaxed));
     }
 
-    /// `LlmCompleted` subscribers fan out concurrently via `join_all`: with N
-    /// subscribers each sleeping `D`, wall-clock time should be ~`D`, not ~`N·D`.
-    /// This guards against a regression to a sequential await loop, which would
-    /// linearise drift scoring across subscribers.
     #[tokio::test]
     async fn llm_completed_subscribers_run_concurrently() {
         let bus = BusWithEffects::new();
         let flags: Vec<Arc<AtomicBool>> =
             (0..3).map(|_| Arc::new(AtomicBool::new(false))).collect();
-        let subscriber_delay = Duration::from_millis(150);
+        let subscriber_delay = Duration::from_millis(200);
         for flag in &flags {
             bus.subscribe_effect(Arc::new(DelayedFlagSubscriber {
                 delay: subscriber_delay,
@@ -1005,14 +983,12 @@ mod tests {
 
         for (idx, flag) in flags.iter().enumerate() {
             assert!(
-                flag.load(Ordering::SeqCst),
+                flag.load(Ordering::Relaxed),
                 "subscriber {idx} did not complete before emit returned"
             );
         }
-        // Concurrent fan-out: bound is max(delay) plus generous slack for
-        // scheduling, well under the sum (3·150ms = 450ms) a sequential loop
-        // would produce.
-        let upper_bound = subscriber_delay + Duration::from_millis(150);
+        // ~delay (concurrent), not 3·delay (sequential).
+        let upper_bound = subscriber_delay * 2;
         assert!(
             elapsed < upper_bound,
             "expected concurrent fan-out (~{subscriber_delay:?}), got {elapsed:?}"
