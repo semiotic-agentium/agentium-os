@@ -638,6 +638,14 @@ impl EffectSubscriberTier {
 /// [`EffectSubscriberTier::dispatch_label`] for the tier-partitioned path.
 pub const DISPATCH_MODE_SEQUENTIAL: &str = "sequential";
 
+/// Value emitted for the `result` attribute on the
+/// `baml_rt_core.effect_emit.subscriber_*` metrics. Centralised so the two
+/// arms of the `result` cardinality (`"ok"` / `"error"`) cannot drift between
+/// dispatch sites.
+fn subscriber_result_label(ok: bool) -> &'static str {
+    if ok { "ok" } else { "error" }
+}
+
 #[async_trait]
 pub trait EffectSubscriber: Send + Sync {
     /// Stable, low-cardinality identity used as the `subscriber` attribute on
@@ -922,19 +930,18 @@ impl BusWithEffects {
                         let started = Instant::now();
                         let res = sub.on_effect(&event).await;
                         let elapsed = started.elapsed();
-                        let result_label = if res.is_ok() { "ok" } else { "error" };
                         record_effect_subscriber(
                             event_variant,
                             background_label,
                             sub.name(),
-                            result_label,
+                            subscriber_result_label(res.is_ok()),
                             elapsed,
                         );
                         if let Err(e) = res {
                             tracing::warn!(
                                 subscriber = sub.name(),
                                 event.variant = event_variant,
-                                tier = ?EffectSubscriberTier::Background,
+                                dispatch.mode = background_label,
                                 error = ?e,
                                 "Effect subscriber failed"
                             );
@@ -960,19 +967,18 @@ impl BusWithEffects {
             }))
             .await;
             for (sub, res, elapsed) in results {
-                let result_label = if res.is_ok() { "ok" } else { "error" };
                 record_effect_subscriber(
                     event_variant,
                     awaitable_label,
                     sub.name(),
-                    result_label,
+                    subscriber_result_label(res.is_ok()),
                     elapsed,
                 );
                 if let Err(e) = res {
                     tracing::warn!(
                         subscriber = sub.name(),
                         event.variant = event_variant,
-                        tier = ?EffectSubscriberTier::Awaitable,
+                        dispatch.mode = awaitable_label,
                         error = ?e,
                         "Effect subscriber failed"
                     );
@@ -989,18 +995,18 @@ impl BusWithEffects {
                 let started = Instant::now();
                 let res = sub.on_effect(&event).instrument(span).await;
                 let elapsed = started.elapsed();
-                let result_label = if res.is_ok() { "ok" } else { "error" };
                 record_effect_subscriber(
                     event_variant,
                     DISPATCH_MODE_SEQUENTIAL,
                     sub.name(),
-                    result_label,
+                    subscriber_result_label(res.is_ok()),
                     elapsed,
                 );
                 if let Err(e) = res {
                     tracing::warn!(
                         subscriber = sub.name(),
                         event.variant = event_variant,
+                        dispatch.mode = DISPATCH_MODE_SEQUENTIAL,
                         error = ?e,
                         "Effect subscriber failed"
                     );
@@ -1368,8 +1374,20 @@ mod tests {
             "Background subscriber must not have run before emit returned"
         );
 
-        // Yield to the runtime so the spawned task gets a turn.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Cooperatively yield until the spawned task records its invocation. Bounded
+        // by an absolute deadline so a regression that drops the spawned future fails
+        // loudly instead of hanging.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            tokio::task::yield_now().await;
+            if !invocations.lock().await.is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Background subscriber did not run within 2s"
+            );
+        }
 
         let invocations = invocations.lock().await;
         assert_eq!(invocations.as_slice(), &["llm_completed"]);
