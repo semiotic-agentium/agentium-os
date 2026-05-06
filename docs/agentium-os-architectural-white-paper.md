@@ -583,15 +583,3 @@ agents.
 translated into message-oriented runtime work behind that edge.
 - **Content-addressed identity:** the canonical hash binding an agent's declarative source
 bundle to an immutable artefact identity.
-
-## Further Reading
-
-External architecture documentation references:
-
-- arc42 overview: [https://arc42.org/overview](https://arc42.org/overview)
-- arc42 quality requirements: [https://docs.arc42.org/section-10/](https://docs.arc42.org/section-10/)
-- arc42 architecture decisions: [https://docs.arc42.org/section-9/](https://docs.arc42.org/section-9/)
-- C4 model introduction: [https://c4model.com/introduction](https://c4model.com/introduction)
-- C4 notation guidance: [https://c4model.com/diagrams/notation](https://c4model.com/diagrams/notation)
-- NASA software architecture description guidance:
-[https://swehb.nasa.gov/display/SWEHBVB/7.7+-+Software+Architecture+Description](https://swehb.nasa.gov/display/SWEHBVB/7.7+-+Software+Architecture+Description)
