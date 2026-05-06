@@ -7,7 +7,6 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
-    time::{Duration, Instant},
 };
 
 use baml_rt_core::{Result, context};
@@ -18,11 +17,6 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use super::BamlRuntimeManager;
-
-const CONVERSATION_GROWTH_POLL_SLICE: Duration = Duration::from_millis(5);
-/// Per-hop tail can include drift/embedding in [`ProvenanceEffectSubscriber`]
-/// (still run in a `tokio::spawn` after the LLM call returns to the step loop).
-const CONVERSATION_GROWTH_MAX_WAIT: Duration = Duration::from_secs(20);
 
 /// True when `p_after` is `p_before` plus a suffix (line-wise equality on [`Value`].
 fn take_prefix_growth(p_before: &[Value], p_after: &[Value]) -> Option<Vec<Value>> {
@@ -42,7 +36,7 @@ fn take_prefix_growth(p_before: &[Value], p_after: &[Value]) -> Option<Vec<Value
 ///
 /// The graph row is authoritative: when the provider read catches up, the same
 /// `Value` must not appear again from the supplement (same object may sit in the
-/// supplement until the next invoke while `LlmCompleted` lags; merge **elides** that
+/// supplement until the next invoke if reads transiently lag the writer; merge **elides** that
 /// overlap, not "dedup two arbitrary sources" in the ad‑hoc sense).
 /// Then tail to [`DEFAULT_LLM_CONTEXT_ITEM_CAP`].
 pub(crate) fn append_intra_lines_to_provider_then_cap(
@@ -115,52 +109,30 @@ fn hop_lines_from_provider_delta(
     }
 }
 
-/// Re-reads graph-backed `conversation_context` after a step-executor hop until
-/// the provider is a **strict** prefix extension of `p_before` with a non-empty
-/// suffix, or a bounded wait expires.
+/// Reads graph-backed `conversation_context` once after a hop and validates it against `p_before`
+/// for [`hop_lines_from_provider_delta`] (strict prefix extension or multiset delta).
 ///
-/// Necessary because [`baml_rt_core::bus::BusWithEffects`] processes
-/// `EffectEvent::LlmCompleted` in a **background** task, so a single immediate
-/// read can still see a stale `p_before` snapshot. Tool completion effects
-/// (non-`LlmCompleted`) are still awaited in-process.
+/// [`BusWithEffects`](baml_rt_core::bus::BusWithEffects) awaits all `EffectEvent::LlmCompleted`
+/// subscribers (including provenance drift scoring and persistence) before
+/// [`EffectEmitter::emit`](baml_rt_core::bus::EffectEmitter::emit) returns, so the provider read
+/// after each [`invoke_function_with_intra`](BamlRuntimeManager::invoke_function_with_intra) sees
+/// LLM-backed projection without wall-clock polling.
 ///
-/// **Optional follow-up:** if `LlmCompleted` (and provenance) were applied
-/// **before** the next BAML `invoke` on the step-executor path, the
-/// `run_step_executor_loop` local supplement `Vec` could be dropped entirely; until
-/// then, [`crate::step_executor_loop::run_step_executor_loop`] merges a loop-local
-/// list with the graph at each `invoke` via
-/// [`BamlRuntimeManager::invoke_function_with_intra`].
+/// [`crate::step_executor_loop::run_step_executor_loop`] still merges a loop-local supplement at
+/// each invoke via [`BamlRuntimeManager::invoke_function_with_intra`] when line-level merge needs
+/// rows before the next graph round-trip.
 pub(crate) async fn await_provider_conversation_strict_growth(
     manager: &Arc<RwLock<BamlRuntimeManager>>,
     scope: &context::RuntimeScope,
     p_before: &[Value],
     phase_function: &str,
 ) -> baml_rt_core::Result<Vec<Value>> {
-    let start = Instant::now();
-    loop {
-        if start.elapsed() > CONVERSATION_GROWTH_MAX_WAIT {
-            let p_after = {
-                let g = manager.read().await;
-                g.read_provider_conversation_array(scope).await?
-            };
-            return hop_lines_from_provider_delta(p_before, &p_after, phase_function)
-                .map(|_| p_after);
-        }
-        let p_after = {
-            let g = manager.read().await;
-            g.read_provider_conversation_array(scope).await?
-        };
-        match take_prefix_growth(p_before, &p_after) {
-            // Transient non-prefix (projection still settling, or ordering catch-up): poll.
-            None => {
-                tokio::time::sleep(CONVERSATION_GROWTH_POLL_SLICE).await;
-            }
-            Some(suf) if !suf.is_empty() => return Ok(p_after),
-            Some(_) => {
-                tokio::time::sleep(CONVERSATION_GROWTH_POLL_SLICE).await;
-            }
-        }
-    }
+    let p_after = {
+        let g = manager.read().await;
+        g.read_provider_conversation_array(scope).await?
+    };
+    let _ = hop_lines_from_provider_delta(p_before, &p_after, phase_function)?;
+    Ok(p_after)
 }
 
 impl BamlRuntimeManager {

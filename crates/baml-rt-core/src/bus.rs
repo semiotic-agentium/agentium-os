@@ -22,7 +22,7 @@ use std::{collections::HashMap, marker::PhantomData, pin::Pin, sync::Arc};
 
 use async_channel::{Receiver, Sender};
 use async_trait::async_trait;
-use futures_util::stream::Stream;
+use futures_util::{future::join_all, stream::Stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -793,25 +793,27 @@ impl BusWithEffects {
         }
 
         let subs = self.effect_subscribers.read().await;
+        let cloned: Vec<Arc<dyn EffectSubscriber>> = subs.iter().cloned().collect();
+        drop(subs);
+
         let is_llm_completed = matches!(event, EffectEvent::LlmCompleted { .. });
         if is_llm_completed {
-            // LlmCompleted carries the most expensive subscriber work:
-            // drift scoring (embedding inference, 100–500ms per call) and
-            // the FastEmbed cold-start (~2s on the first call).
-            // Spawn as a background Tokio task so the LLM completion
-            // notification returns immediately to the QuickJS bridge,
-            // unblocking the next hop in the ReAct loop.
-            for sub in subs.iter() {
-                let sub = sub.clone();
+            // `LlmCompleted` subscribers do drift scoring (embedding inference, 100–500ms per call)
+            // and FastEmbed cold-start (~2s on first call). Run them concurrently but **await**
+            // completion before returning so callers see provenance-backed reads (e.g.
+            // `conversation_context`) without wall-clock polling.
+            let results = join_all(cloned.into_iter().map(|sub| {
                 let event = event.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = sub.on_effect(&event).await {
-                        tracing::warn!(error = ?e, "Effect subscriber background LlmCompleted error");
-                    }
-                });
+                async move { sub.on_effect(&event).await }
+            }))
+            .await;
+            for res in results {
+                if let Err(e) = res {
+                    tracing::warn!(error = ?e, "Effect subscriber failed");
+                }
             }
         } else {
-            for sub in subs.iter() {
+            for sub in cloned {
                 if let Err(e) = sub.on_effect(&event).await {
                     tracing::warn!(error = ?e, "Effect subscriber failed");
                 }

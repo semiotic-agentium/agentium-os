@@ -15,7 +15,7 @@ pub(crate) fn effect_emit_process(event_variant: &'static str, context_id: &str)
     )
 }
 
-/// Child span: synchronous `EffectSubscriber::on_effect` (non–`LlmCompleted` path).
+/// Child span: per-subscriber `EffectSubscriber::on_effect` notify (when tracing wraps fan-out).
 #[inline]
 pub(crate) fn effect_emit_subscriber_notify(
     parent: &Span,

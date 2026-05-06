@@ -287,9 +287,8 @@ fn extract_tool_binding(result: &Value) -> Option<ToolBinding> {
 /// (`__execution_session_invoke`, `__baml_invoke`) can interleave. Each hop:
 /// lock -> `invoke_function_with_intra` -> unlock -> advance FSM.
 ///
-/// The loop holds a local `Vec` of **graph** line values not yet visible from the
-/// provider (when `EffectEvent::LlmCompleted` is still on the bus). Merged with the
-/// provider at each `invoke` only. When `step_intra_supplement_mirror` is
+/// The loop holds a local `Vec` of **graph** line values not yet merged into the provider read
+/// used for the next hop’s tags (see [`BamlRuntimeManager::invoke_function_with_intra`]). When `step_intra_supplement_mirror` is
 /// `Some(s)`, `s` is set before each `invoke` to the supplement used for that hop
 /// (tests: share with an interceptor that calls
 /// [`BamlRuntimeManager::merged_conversation_history_lines_json`] with the same slice).
