@@ -1,0 +1,192 @@
+name: K8s Pilot Validation
+
+# Runs the authoritative Kubernetes pilot package validator
+# (scripts/verify-k8s-pilot-package.sh) end-to-end pre-merge:
+# Docker build of the runner image, k3d bringup, push to the local
+# k3d-managed registry, helm install of deploy/helm/agentium-os/,
+# scripts/k8s-pilot-smoke.sh, and a cluster_runners count check.
+#
+# The lane uses --image-strategy registry, mirroring the supported
+# design-partner install contract. local-k3d-import remains a
+# developer-only fallback.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+  pull-requests: read
+  checks: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_INCREMENTAL: "false"
+  CARGO_PROFILE_TEST_INCREMENTAL: "false"
+  OTEL_SDK_DISABLED: "true"
+  OTEL_TRACES_EXPORTER: "none"
+  OTEL_METRICS_EXPORTER: "none"
+  OTEL_LOGS_EXPORTER: "none"
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+
+jobs:
+  changes:
+    name: Detect pilot lane changes
+    runs-on: arc-runner-set
+    outputs:
+      pilot: ${{ steps.filter.outputs.pilot }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            pilot:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Dockerfile'
+              - 'rust-toolchain.toml'
+              - 'crates/**'
+              - 'tests/fixtures/agents/dispatch-echo/**'
+              - 'deploy/helm/**'
+              - 'deploy/k3d/**'
+              - 'scripts/verify-k8s-pilot-package.sh'
+              - 'scripts/k8s-pilot-smoke.sh'
+              - 'scripts/e2e-k8s/lib.sh'
+              - '.github/workflows/k8s-pilot-validation.yml'
+
+  validate:
+    name: Helm install + registry-backed package validation
+    runs-on: arc-runner-set
+    needs: changes
+    # Run on push to main and on workflow_dispatch unconditionally; on
+    # pull_request only when files that can plausibly affect the install
+    # contract changed. paths-filter mirrors the sandbox-adapter pattern
+    # in rust-ci.yml.
+    if: |
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      needs.changes.outputs.pilot == 'true'
+    timeout-minutes: 60
+    env:
+      # Belt-and-braces with --image-strategy on the CLI, in case anyone
+      # later runs the same script body without flags.
+      RUNNER_IMAGE_STRATEGY: registry
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refresh apt indices (retry; mitigates mirror sync races)
+        run: bash scripts/ci/apt-update-retry.sh
+
+      - name: Install OS deps
+        # build-essential / pkg-config / libssl-dev / libclang-dev / lld
+        # are needed by `cargo run -p cargo-agent-platform` during the
+        # smoke step. zstd + git-lfs hydrate the embedded ONNX models the
+        # Dockerfile copies into the runtime image.
+        run: |
+          sudo apt-get install -y \
+            build-essential pkg-config libssl-dev libclang-dev lld \
+            curl jq ca-certificates git-lfs zstd
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Distinct from ci-nextest / ci-doctor: this job compiles
+          # cargo-agent-platform host-side via `cargo run` during smoke,
+          # producing a different feature graph than the workspace
+          # nextest invocation.
+          shared-key: "ci-k8s-pilot"
+          cache-on-failure: true
+          cache-targets: "true"
+          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+
+      - name: Install Node.js and TypeScript
+        # cargo-agent-platform compiles the dispatch-echo fixture's
+        # TypeScript during `push`, so the host runner needs node + tsc.
+        # Pin TS 6.x to match the rest of CI (rust-ci.yml nextest).
+        run: |
+          if ! command -v node &>/dev/null; then
+            for attempt in $(seq 1 5); do
+              if curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - \
+                && sudo apt-get install -y nodejs; then
+                break
+              fi
+              echo "NodeSource install failed (attempt ${attempt}/5); sleeping 30s before retry..." >&2
+              if [ "$attempt" -eq 5 ]; then
+                exit 1
+              fi
+              sleep 30
+              bash scripts/ci/apt-update-retry.sh || true
+            done
+          fi
+          sudo npm install -g typescript@6
+          tsc --version
+          tsc --version | grep -qE '^Version 6\.' || {
+            echo "error: expected global tsc 6.x (got $(tsc --version))"
+            exit 1
+          }
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.30.4'
+
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.15.4'
+
+      - name: Install k3d
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh \
+            | TAG=v5.7.4 bash
+          k3d version
+
+      - name: Materialize ONNX model artifacts (git-lfs)
+        # The Dockerfile copies models/fastembed and fails the build if
+        # ONNX files are still LFS pointer stubs.
+        run: |
+          git lfs install --local
+          git lfs pull --include="models/fastembed/**"
+
+      - name: System info
+        run: |
+          echo "=== docker info ==="
+          docker info || true
+          echo "=== nproc ==="
+          nproc
+          echo "=== free -h ==="
+          free -h
+
+      - name: Run authoritative validator (registry strategy)
+        # Mirrors the supported design-partner install contract:
+        # docker push → k3d-agentium-registry:5000 → kubelet pull →
+        # helm upgrade --install → k8s-pilot-smoke → cluster_runners=2.
+        # No --image-tag override: the script's default ('demo') aligns
+        # with deploy/helm/agentium-os/examples/k3d-registry-values.yaml.
+        run: |
+          ./scripts/verify-k8s-pilot-package.sh \
+            --image-strategy registry \
+            --image-repository agentium-runner
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+      - name: Upload e2e-k8s logs on failure
+        # The script's cleanup trap dumps pod logs + cluster_runners
+        # JSON to ./e2e-k8s-logs/verify-<timestamp>/ before tearing
+        # down the cluster.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k8s-pilot-validation-logs-${{ github.run_id }}
+          path: e2e-k8s-logs/
+          if-no-files-found: ignore
+          retention-days: 14

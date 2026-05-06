@@ -90,8 +90,9 @@ runner image into the cluster:
 
 `--image-repository` accepts a bare image name only when used with
 `--image-strategy=registry`; the registry prefix is added automatically.
-External registries (GHCR, ECR, …) are tracked in
-[#307](https://github.com/semiotic-agentium/agent-platform/issues/307).
+External registries (GHCR, ECR, …) are out of scope for the in-repo
+validator — the supported install contract assumes operators bring their
+own cluster-reachable image source.
 
 The validator's invariants — Helm install, runner readyz, smoke,
 `cluster_runners` count = 2 — are identical for both strategies.
