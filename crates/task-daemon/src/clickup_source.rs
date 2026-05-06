@@ -414,7 +414,10 @@ impl TaskSource for ClickupTaskSource {
         let source_key = Self::source_key(list_ids);
         let source_label = Self::source_label(list_ids);
 
-        let api_key = self.client.api_key();
+        let api_key = self
+            .client
+            .resolve_api_key()
+            .context("resolve CLICKUP_API_KEY for ClickUp task source")?;
 
         let previous_source_state = state.source_state(&source_key).cloned().unwrap_or_default();
         let previous_snapshot = previous_source_state.clickup_task_snapshot;
@@ -424,7 +427,7 @@ impl TaskSource for ClickupTaskSource {
         let mut current_records: BTreeMap<String, ClickupTaskRecord> = BTreeMap::new();
 
         for list_id in list_ids {
-            for task in self.fetch_list_tasks(api_key, list_id).await? {
+            for task in self.fetch_list_tasks(api_key.as_str(), list_id).await? {
                 current_snapshot.insert(
                     task.id.clone(),
                     ClickupTaskSnapshot {

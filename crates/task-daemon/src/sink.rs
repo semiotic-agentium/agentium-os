@@ -387,7 +387,12 @@ impl TaskSink for ClickUpSink {
             return Ok(());
         }
 
-        let api_key = self.client.api_key();
+        let api_key = self.client.resolve_api_key().map_err(|source| {
+            SinkDeliveryError::ClickupCreateTask {
+                list_id: self.list_id.clone(),
+                source: anyhow::Error::new(source),
+            }
+        })?;
 
         for task in &batch.derived_tasks {
             let body = json!({
@@ -397,7 +402,7 @@ impl TaskSink for ClickUpSink {
 
             let request = self
                 .client
-                .post(&format!("/list/{}/task", self.list_id), api_key)
+                .post(&format!("/list/{}/task", self.list_id), api_key.as_str())
                 .json(&body);
             self.client.send_json(request).await.map_err(|source| {
                 SinkDeliveryError::ClickupCreateTask {

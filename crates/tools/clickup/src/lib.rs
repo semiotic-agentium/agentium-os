@@ -325,14 +325,14 @@ pub struct ClickUpTool {
 impl ClickUpTool {
     pub fn new() -> std::result::Result<Self, ClickUpError> {
         Ok(Self {
-            client: ClickUpClient::new().map_err(ClickUpError::Client)?,
+            client: ClickUpClient::new(),
         })
     }
 
     /// Same as [`Self::new`] but targets a custom ClickUp API base URL (fixture / proxy).
     pub fn with_base_url(base: impl Into<String>) -> std::result::Result<Self, ClickUpError> {
         Ok(Self {
-            client: ClickUpClient::with_base_url(base).map_err(ClickUpError::Client)?,
+            client: ClickUpClient::with_base_url(base),
         })
     }
 
@@ -677,16 +677,19 @@ impl BamlTool for ClickUpTool {
         let span = spans::execute(action);
 
         async {
-            let api_key = self.client.api_key();
+            let api_key = self
+                .client
+                .resolve_api_key()
+                .map_err(ClickUpError::Client)?;
             let mut output = match args {
-                ClickUpInput::ListTeams(_) => self.list_teams(api_key).await,
-                ClickUpInput::ListSpaces(input) => self.list_spaces(api_key, &input.team_id).await,
-                ClickUpInput::ListLists(input) => self.list_lists(api_key, &input.space_id).await,
-                ClickUpInput::ListTasks(input) => self.list_tasks(api_key, &input.list_id).await,
-                ClickUpInput::GetTask(input) => self.get_task(api_key, &input.task_id).await,
+                ClickUpInput::ListTeams(_) => self.list_teams(&api_key).await,
+                ClickUpInput::ListSpaces(input) => self.list_spaces(&api_key, &input.team_id).await,
+                ClickUpInput::ListLists(input) => self.list_lists(&api_key, &input.space_id).await,
+                ClickUpInput::ListTasks(input) => self.list_tasks(&api_key, &input.list_id).await,
+                ClickUpInput::GetTask(input) => self.get_task(&api_key, &input.task_id).await,
                 ClickUpInput::CreateTask(input) => {
                     self.create_task(
-                        api_key,
+                        &api_key,
                         &input.list_id,
                         &input.name,
                         input.description.as_deref(),
@@ -696,7 +699,7 @@ impl BamlTool for ClickUpTool {
                 }
                 ClickUpInput::UpdateTask(input) => {
                     self.update_task(
-                        api_key,
+                        &api_key,
                         &input.task_id,
                         input.status.as_deref(),
                         input.description.as_deref(),
@@ -716,7 +719,7 @@ impl BamlTool for ClickUpTool {
                             operation: Some(ClickUpOperation::DeleteTask),
                         })
                     } else {
-                        self.delete_task(api_key, &input.task_id).await
+                        self.delete_task(&api_key, &input.task_id).await
                     }
                 }
             }?;

@@ -369,7 +369,7 @@ async fn run(args: RunArgs) -> Result<()> {
                     )
                 })?;
                 let clickup_source = ClickupTaskSource::new(
-                    ClickUpClient::new()?,
+                    ClickUpClient::new(),
                     ClickupSourceConfig {
                         list_ids: vec![list_id],
                     },
@@ -406,7 +406,7 @@ async fn run(args: RunArgs) -> Result<()> {
         configured_sinks.push(ConfiguredSink::new(
             SinkKindArg::Clickup,
             Box::new(ClickUpSink::new(
-                ClickUpClient::new()?,
+                ClickUpClient::new(),
                 list_id,
                 SinkDeliveryMode::from_live_flag(args.clickup_live),
             )?),
