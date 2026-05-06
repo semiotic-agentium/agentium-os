@@ -866,3 +866,156 @@ impl EffectLiveness for BusWithEffects {
         counts.get(context_id).copied().unwrap_or_default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+
+    use async_trait::async_trait;
+    use serde_json::json;
+
+    use super::{
+        BusWithEffects, EffectEmitter, EffectEvent, EffectSubscriber, LlmEffectMetadata, Outcome,
+        ToolNameResolution,
+    };
+    use crate::ids::ContextId;
+
+    /// Subscriber that sleeps for `delay`, then sets `flag` to true.
+    /// Used to assert that `BusWithEffects::process_effect` awaits subscriber
+    /// completion before returning.
+    struct DelayedFlagSubscriber {
+        delay: Duration,
+        flag: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl EffectSubscriber for DelayedFlagSubscriber {
+        async fn on_effect(&self, _event: &EffectEvent) -> crate::Result<()> {
+            tokio::time::sleep(self.delay).await;
+            self.flag.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn llm_metadata() -> LlmEffectMetadata {
+        LlmEffectMetadata {
+            client: "test".to_string(),
+            model: "test-model".to_string(),
+            function_name: "TestFn".to_string(),
+            prompt: json!(null),
+            metadata: json!({}),
+            tool_name: ToolNameResolution::NotApplicable,
+        }
+    }
+
+    fn llm_completed_event() -> EffectEvent {
+        EffectEvent::LlmCompleted {
+            context_id: ContextId::new(0, 0),
+            metadata: llm_metadata(),
+            usage: None,
+            result_payload: None,
+            duration_ms: 0,
+            outcome: Outcome::Success,
+            rejection_reason: None,
+        }
+    }
+
+    /// Locks in the central ordering contract: `BusWithEffects::emit` must await
+    /// every `LlmCompleted` subscriber before returning. The QuickJS step executor
+    /// (see `intra_turn.rs`) relies on this — it removed its polling fallback in
+    /// favour of this synchronous guarantee, so a future change that fans out
+    /// subscribers via `tokio::spawn` would silently re-introduce a race against
+    /// `conversation_context` reads.
+    #[tokio::test]
+    async fn llm_completed_awaits_subscriber_before_returning() {
+        let bus = BusWithEffects::new();
+        let flag = Arc::new(AtomicBool::new(false));
+        let subscriber = Arc::new(DelayedFlagSubscriber {
+            delay: Duration::from_millis(50),
+            flag: Arc::clone(&flag),
+        });
+        bus.subscribe_effect(subscriber).await;
+
+        EffectEmitter::emit(&bus, llm_completed_event())
+            .await
+            .expect("emit should succeed");
+
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "subscriber must have run to completion before emit returned"
+        );
+    }
+
+    /// The await-before-return contract also covers non-`LlmCompleted` variants:
+    /// they go through the sequential-await branch of `process_effect`, and
+    /// callers must observe their effects on return.
+    #[tokio::test]
+    async fn non_llm_completed_awaits_subscriber_before_returning() {
+        let bus = BusWithEffects::new();
+        let flag = Arc::new(AtomicBool::new(false));
+        let subscriber = Arc::new(DelayedFlagSubscriber {
+            delay: Duration::from_millis(50),
+            flag: Arc::clone(&flag),
+        });
+        bus.subscribe_effect(subscriber).await;
+
+        let event = EffectEvent::ToolStreamChunk {
+            context_id: ContextId::new(0, 0),
+            chunk: json!({"kind": "test"}),
+        };
+        EffectEmitter::emit(&bus, event)
+            .await
+            .expect("emit should succeed");
+
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "subscriber must have run to completion before emit returned"
+        );
+    }
+
+    /// `LlmCompleted` subscribers fan out concurrently via `join_all`: with N
+    /// subscribers each sleeping `D`, wall-clock time should be ~`D`, not ~`N·D`.
+    /// This guards against a regression to a sequential await loop, which would
+    /// linearise drift scoring across subscribers.
+    #[tokio::test]
+    async fn llm_completed_subscribers_run_concurrently() {
+        let bus = BusWithEffects::new();
+        let flags: Vec<Arc<AtomicBool>> =
+            (0..3).map(|_| Arc::new(AtomicBool::new(false))).collect();
+        let subscriber_delay = Duration::from_millis(150);
+        for flag in &flags {
+            bus.subscribe_effect(Arc::new(DelayedFlagSubscriber {
+                delay: subscriber_delay,
+                flag: Arc::clone(flag),
+            }))
+            .await;
+        }
+
+        let started = Instant::now();
+        EffectEmitter::emit(&bus, llm_completed_event())
+            .await
+            .expect("emit should succeed");
+        let elapsed = started.elapsed();
+
+        for (idx, flag) in flags.iter().enumerate() {
+            assert!(
+                flag.load(Ordering::SeqCst),
+                "subscriber {idx} did not complete before emit returned"
+            );
+        }
+        // Concurrent fan-out: bound is max(delay) plus generous slack for
+        // scheduling, well under the sum (3·150ms = 450ms) a sequential loop
+        // would produce.
+        let upper_bound = subscriber_delay + Duration::from_millis(150);
+        assert!(
+            elapsed < upper_bound,
+            "expected concurrent fan-out (~{subscriber_delay:?}), got {elapsed:?}"
+        );
+    }
+}
