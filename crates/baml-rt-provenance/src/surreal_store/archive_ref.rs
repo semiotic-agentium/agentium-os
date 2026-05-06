@@ -13,7 +13,10 @@ use baml_rt_tools::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::{SurrealProvenanceStore, helpers::map_surreal_error};
+use super::{
+    SurrealProvenanceStore,
+    helpers::{check_and_take_zero, map_surreal_error},
+};
 use crate::{
     error::{ProvenanceError, Result},
     surreal_tables::{TBL_ARCHIVE_BODY, TBL_ARCHIVE_LOCAL_COUNTER, TBL_ARCHIVE_PREFIX_REGISTRY},
@@ -97,14 +100,14 @@ impl SurrealProvenanceStore {
             "SELECT archive_prefix, archive_local FROM {TBL_ARCHIVE_BODY} \
              WHERE context_id = $ctx AND activity_anchor = $anchor LIMIT 1"
         );
-        let mut response = self
+        let response = self
             .db()
             .query(&q)
             .bind(("ctx", ctx.to_string()))
             .bind(("anchor", activity_anchor.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = super::helpers::query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         let Some(row) = rows.first() else {
             return Ok(None);
         };
@@ -157,14 +160,14 @@ impl SurrealProvenanceStore {
             "SELECT archive_prefix FROM {TBL_ARCHIVE_PREFIX_REGISTRY} \
              WHERE context_id = $ctx AND agent_id = $aid LIMIT 1"
         );
-        let mut response = self
+        let response = self
             .db()
             .query(&sel)
             .bind(("ctx", ctx.to_string()))
             .bind(("aid", aid.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = super::helpers::query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         if let Some(p) = rows
             .first()
             .and_then(|row| row.get("archive_prefix"))
@@ -183,14 +186,13 @@ impl SurrealProvenanceStore {
                 "SELECT math::max(archive_prefix) AS m FROM {TBL_ARCHIVE_PREFIX_REGISTRY} \
                  WHERE context_id = $ctx"
             );
-            let mut max_resp = self
+            let max_resp = self
                 .db()
                 .query(&max_q)
                 .bind(("ctx", ctx.to_string()))
                 .await
                 .map_err(map_surreal_error)?;
-            let max_rows: Vec<Value> =
-                super::helpers::query_take_zero(&mut max_resp, map_surreal_error)?;
+            let max_rows: Vec<Value> = check_and_take_zero(max_resp, map_surreal_error)?;
             let next_p = match max_rows
                 .first()
                 .and_then(|r| r.get("m"))
@@ -227,8 +229,8 @@ impl SurrealProvenanceStore {
                 .await;
 
             match ins_res {
-                Ok(mut r) => {
-                    match super::helpers::query_take_zero(&mut r, map_surreal_error) {
+                Ok(r) => {
+                    match check_and_take_zero(r, map_surreal_error) {
                         Ok(out) => {
                             if let Some(p) = out
                                 .first()
@@ -248,15 +250,14 @@ impl SurrealProvenanceStore {
                         Err(_) => { /* duplicate / conflict — retry */ }
                     }
                     // Re-read after failed insert (another writer won the same p, or we raced).
-                    let mut reread = self
+                    let reread = self
                         .db()
                         .query(&sel)
                         .bind(("ctx", ctx.to_string()))
                         .bind(("aid", aid.to_string()))
                         .await
                         .map_err(map_surreal_error)?;
-                    let reread_rows: Vec<Value> =
-                        super::helpers::query_take_zero(&mut reread, map_surreal_error)?;
+                    let reread_rows: Vec<Value> = check_and_take_zero(reread, map_surreal_error)?;
                     if let Some(p) = reread_rows
                         .first()
                         .and_then(|row| row.get("archive_prefix"))
@@ -354,31 +355,27 @@ impl SurrealProvenanceStore {
                 .await;
 
             match cresp {
-                Ok(mut cresp) => {
-                    match super::helpers::query_take_zero(&mut cresp, std::convert::identity) {
-                        Ok(crs) => {
-                            if let Some(n) = crs
-                                .first()
-                                .and_then(|v| v.get("next_local"))
-                                .and_then(|x| x.as_u64())
-                            {
-                                return u32::try_from(n).map_err(|_| {
-                                    ProvenanceError::InvalidEvent {
-                                        activity_anchor: "archive_local".into(),
-                                        reason: format!("next_local overflow: {n}"),
-                                    }
-                                });
-                            }
-                        }
-                        Err(e)
-                            if super::is_transaction_conflict(&e)
-                                || super::is_duplicate_record_write(&e) =>
+                Ok(cresp) => match check_and_take_zero(cresp, std::convert::identity) {
+                    Ok(crs) => {
+                        if let Some(n) = crs
+                            .first()
+                            .and_then(|v| v.get("next_local"))
+                            .and_then(Value::as_u64)
                         {
-                            continue;
+                            return u32::try_from(n).map_err(|_| ProvenanceError::InvalidEvent {
+                                activity_anchor: "archive_local".into(),
+                                reason: format!("next_local overflow: {n}"),
+                            });
                         }
-                        Err(e) => return Err(map_surreal_error(e)),
                     }
-                }
+                    Err(e)
+                        if super::is_transaction_conflict(&e)
+                            || super::is_duplicate_record_write(&e) =>
+                    {
+                        continue;
+                    }
+                    Err(e) => return Err(map_surreal_error(e)),
+                },
                 Err(e)
                     if super::is_transaction_conflict(&e)
                         || super::is_duplicate_record_write(&e) =>
@@ -425,7 +422,7 @@ impl SurrealProvenanceStore {
                 entry: $entry
             }};"
         );
-        let mut response = self
+        let response = self
             .db()
             .query(&q)
             .bind(("body_id", body_id))
@@ -437,7 +434,7 @@ impl SurrealProvenanceStore {
             .bind(("entry", payload))
             .await
             .map_err(map_surreal_error)?;
-        let _: Vec<Value> = super::helpers::query_take_zero(&mut response, map_surreal_error)?;
+        let _: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         Ok(())
     }
 
@@ -452,7 +449,7 @@ impl SurrealProvenanceStore {
             "SELECT entry FROM {TBL_ARCHIVE_BODY} \
              WHERE context_id = $ctx AND archive_prefix = $pfx AND archive_local = $loc LIMIT 1"
         );
-        let mut response = self
+        let response = self
             .db()
             .query(&q)
             .bind(("ctx", ctx.to_string()))
@@ -460,10 +457,11 @@ impl SurrealProvenanceStore {
             .bind(("loc", archive_ref.local))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = super::helpers::query_take_zero(&mut response, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
         let Some(row) = rows.first() else {
             return Ok(None);
         };
+        let row: &Value = row;
         let Some(v) = row.get("entry") else {
             return Err(ProvenanceError::CorruptArchiveEntry {
                 reason: "archive_body row missing entry field".into(),

@@ -319,8 +319,8 @@ pub async fn session_prompt_context_tail(
         q = q.bind(("task_exec_id", task_execution_activity_id_string(tid)));
     }
 
-    let mut resp = q.await.map_err(surreal_err)?;
-    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+    let response = q.await.map_err(map_surreal_error)?;
+    let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
     Ok(rows.into_iter().next().and_then(|v| {
         v.as_object()
             .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
@@ -383,8 +383,8 @@ pub async fn llm_prompt_operations_for_context(
         q = q.bind(("task_exec_id", task_execution_activity_id_string(tid)));
     }
 
-    let mut resp = q.await.map_err(surreal_err)?;
-    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+    let response = q.await.map_err(map_surreal_error)?;
+    let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
     Ok(rows
         .into_iter()
         .filter_map(|v| {
