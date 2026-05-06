@@ -625,6 +625,7 @@ impl EffectSubscriberTier {
     /// `baml_rt_core.effect_emit.subscriber_*` metrics and the matching span
     /// fields when the subscriber runs on the tier-partitioned `LlmCompleted`
     /// path. Non-`LlmCompleted` events use [`DISPATCH_MODE_SEQUENTIAL`].
+    #[inline]
     pub fn dispatch_label(self) -> &'static str {
         match self {
             Self::Awaitable => "awaitable",
@@ -642,6 +643,7 @@ pub const DISPATCH_MODE_SEQUENTIAL: &str = "sequential";
 /// `baml_rt_core.effect_emit.subscriber_*` metrics. Centralised so the two
 /// arms of the `result` cardinality (`"ok"` / `"error"`) cannot drift between
 /// dispatch sites.
+#[inline]
 fn subscriber_result_label(ok: bool) -> &'static str {
     if ok { "ok" } else { "error" }
 }
@@ -1376,17 +1378,18 @@ mod tests {
 
         // Cooperatively yield until the spawned task records its invocation. Bounded
         // by an absolute deadline so a regression that drops the spawned future fails
-        // loudly instead of hanging.
+        // loudly instead of hanging. Deadline is checked **before** the next mutex
+        // acquire so a hung test fails at the deadline, not one scheduler turn later.
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             tokio::task::yield_now().await;
-            if !invocations.lock().await.is_empty() {
-                break;
-            }
             assert!(
                 Instant::now() < deadline,
                 "Background subscriber did not run within 2s"
             );
+            if !invocations.lock().await.is_empty() {
+                break;
+            }
         }
 
         let invocations = invocations.lock().await;
