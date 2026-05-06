@@ -822,40 +822,41 @@ impl BusWithEffects {
         let cloned: Vec<Arc<dyn EffectSubscriber>> = subs.iter().cloned().collect();
         drop(subs);
 
-        let is_llm_completed = matches!(event, EffectEvent::LlmCompleted { .. });
-        if is_llm_completed {
+        if matches!(event, EffectEvent::LlmCompleted { .. }) {
             // Awaitable subscribers (e.g. `ProvenanceEffectSubscriber`) finish before
             // `emit` returns so causal-completeness contracts hold for downstream
             // reads such as `conversation_context`. Background subscribers run
             // detached: drift scoring (100–500 ms per call, ~2 s FastEmbed cold-start),
             // status updates, and SSE relays never gate the user-facing critical path
             // of an LLM hop.
-            let mut awaitable: Vec<Arc<dyn EffectSubscriber>> = Vec::new();
-            for sub in cloned {
-                match sub.tier() {
-                    EffectSubscriberTier::Awaitable => awaitable.push(sub),
-                    EffectSubscriberTier::Background => {
-                        let event_for_bg = event.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = sub.on_effect(&event_for_bg).await {
-                                tracing::warn!(
-                                    error = ?e,
-                                    tier = "background",
-                                    "Effect subscriber failed"
-                                );
-                            }
-                        });
+            let (awaitable, background): (Vec<_>, Vec<_>) = cloned
+                .into_iter()
+                .partition(|sub| sub.tier() == EffectSubscriberTier::Awaitable);
+            let event = Arc::new(event);
+            for sub in background {
+                let event = Arc::clone(&event);
+                tokio::spawn(async move {
+                    if let Err(e) = sub.on_effect(&event).await {
+                        tracing::warn!(
+                            error = ?e,
+                            tier = ?EffectSubscriberTier::Background,
+                            "Effect subscriber failed"
+                        );
                     }
-                }
+                });
             }
             let results = join_all(awaitable.into_iter().map(|sub| {
-                let event = event.clone();
+                let event = Arc::clone(&event);
                 async move { sub.on_effect(&event).await }
             }))
             .await;
             for res in results {
                 if let Err(e) = res {
-                    tracing::warn!(error = ?e, tier = "awaitable", "Effect subscriber failed");
+                    tracing::warn!(
+                        error = ?e,
+                        tier = ?EffectSubscriberTier::Awaitable,
+                        "Effect subscriber failed"
+                    );
                 }
             }
         } else {

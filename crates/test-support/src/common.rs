@@ -71,8 +71,6 @@ impl EffectSubscriber for CapturingEffectSubscriber {
         Ok(())
     }
 
-    /// Tests assert directly after `emit().await` returns; awaiting the
-    /// capture preserves the pre-tier ordering for those assertions.
     fn tier(&self) -> EffectSubscriberTier {
         EffectSubscriberTier::Awaitable
     }

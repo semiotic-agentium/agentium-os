@@ -42,7 +42,8 @@ pub use baml_rt_citation::Citation;
 pub use bus::{
     A2aEffectMetadata, A2aKind, Bus, BusApi, BusStream, BusWithEffects, Command, DomainEvent,
     EffectEmitter, EffectEvent, EffectKind, EffectLiveness, EffectRuntime, EffectStartToken,
-    EffectSubscriber, Envelope, InFlightCounts, LlmEffectMetadata, LlmKind, LlmUsage, Payload,
+    EffectSubscriber, EffectSubscriberTier, Envelope, InFlightCounts, LlmEffectMetadata, LlmKind,
+    LlmUsage, Payload,
     Subscriber, ToolEffectMetadata, ToolKind,
 };
 pub use callback_store::{
