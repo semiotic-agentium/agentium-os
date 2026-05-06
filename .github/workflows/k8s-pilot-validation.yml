@@ -1,14 +1,8 @@
 name: K8s Pilot Validation
 
-# Runs the authoritative Kubernetes pilot package validator
-# (scripts/verify-k8s-pilot-package.sh) end-to-end pre-merge:
-# Docker build of the runner image, k3d bringup, push to the local
-# k3d-managed registry, helm install of deploy/helm/agentium-os/,
-# scripts/k8s-pilot-smoke.sh, and a cluster_runners count check.
-#
-# The lane uses --image-strategy registry, mirroring the supported
-# design-partner install contract. local-k3d-import remains a
-# developer-only fallback.
+# Pre-merge validator for the design-partner Helm install path:
+# scripts/verify-k8s-pilot-package.sh against k3d with --image-strategy
+# registry. local-k3d-import stays a dev-only fallback.
 
 on:
   push:
@@ -20,7 +14,6 @@ permissions:
   contents: read
   actions: write
   pull-requests: read
-  checks: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -52,6 +45,7 @@ jobs:
               - 'Dockerfile'
               - 'rust-toolchain.toml'
               - 'crates/**'
+              - 'models/fastembed/**'
               - 'tests/fixtures/agents/dispatch-echo/**'
               - 'deploy/helm/**'
               - 'deploy/k3d/**'
@@ -64,19 +58,11 @@ jobs:
     name: Helm install + registry-backed package validation
     runs-on: arc-runner-set
     needs: changes
-    # Run on push to main and on workflow_dispatch unconditionally; on
-    # pull_request only when files that can plausibly affect the install
-    # contract changed. paths-filter mirrors the sandbox-adapter pattern
-    # in rust-ci.yml.
     if: |
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
       needs.changes.outputs.pilot == 'true'
     timeout-minutes: 60
-    env:
-      # Belt-and-braces with --image-strategy on the CLI, in case anyone
-      # later runs the same script body without flags.
-      RUNNER_IMAGE_STRATEGY: registry
     steps:
       - uses: actions/checkout@v4
 
