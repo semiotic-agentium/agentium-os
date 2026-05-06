@@ -39,6 +39,10 @@ impl LiveStreamWorkingRelay {
 
 #[async_trait]
 impl EffectSubscriber for LiveStreamWorkingRelay {
+    fn name(&self) -> &'static str {
+        "live_stream_relay"
+    }
+
     async fn on_effect(&self, event: &EffectEvent) -> baml_rt_core::Result<()> {
         if let EffectEvent::ToolStreamChunk { context_id, chunk } = event {
             let view = StreamChunkView::new(chunk.clone());

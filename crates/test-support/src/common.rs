@@ -66,6 +66,10 @@ pub struct CapturingEffectSubscriber {
 
 #[async_trait]
 impl EffectSubscriber for CapturingEffectSubscriber {
+    fn name(&self) -> &'static str {
+        "test_capturing"
+    }
+
     async fn on_effect(&self, event: &EffectEvent) -> baml_rt_core::Result<()> {
         self.events.lock().await.push(event.clone());
         Ok(())

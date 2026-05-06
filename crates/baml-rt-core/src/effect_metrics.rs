@@ -55,17 +55,25 @@ pub fn record_effect_process(event_variant: &'static str, duration: Duration) {
     effect_process_ms().record(duration.as_millis() as f64, attrs);
 }
 
-/// One subscriber invocation (`on_effect`).
+/// One subscriber invocation (`on_effect`). Increments
+/// `baml_rt_core.effect_emit.subscriber_notify_total` and records latency on
+/// `baml_rt_core.effect_emit.subscriber_duration_ms` with the same attribute set.
+///
+/// The `subscriber` attribute carries the subscriber's stable, low-cardinality
+/// identity (e.g. `"provenance"`, `"auto_status"`) and is the canonical alert
+/// dimension for failures, paired with `result="error"` and `event.variant`.
 pub fn record_effect_subscriber(
     event_variant: &'static str,
     dispatch_mode: &'static str,
-    result: &str,
+    subscriber: &'static str,
+    result: &'static str,
     duration: Duration,
 ) {
     let attrs = &[
         KeyValue::new("event.variant", event_variant),
         KeyValue::new("dispatch.mode", dispatch_mode),
-        KeyValue::new("result", result.to_string()),
+        KeyValue::new("subscriber", subscriber),
+        KeyValue::new("result", result),
     ];
     effect_subscriber_total().add(1, attrs);
     effect_subscriber_ms().record(duration.as_millis() as f64, attrs);
