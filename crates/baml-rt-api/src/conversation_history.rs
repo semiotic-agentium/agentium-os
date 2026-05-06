@@ -25,6 +25,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// Service errors for conversation-history reads.
 pub type ConversationHistoryError = crate::service_error::ServiceError;
 
@@ -286,6 +290,27 @@ pub struct ConversationHistoryPageDto {
     pub items: Vec<ConversationHistoryItemDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// Latest LLM prompt JSON size in this scope (temporal tail).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_context_bytes_session_current: Option<u64>,
+    /// LLM prompt operations through `max_event_order` (delta may contain only new rows).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub llm_prompt_operations: Vec<LlmPromptOperationDto>,
+    /// True when `a2a_task.status_json` for the effective task is `TASK_STATE_INPUT_REQUIRED`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub awaiting_input: bool,
+    /// First text part from the status message when [Self::awaiting_input] is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_required_prompt: Option<String>,
+}
+
+/// One completed LLM call’s measured prompt JSON byte length (for UI / SSE merge).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmPromptOperationDto {
+    pub activity_anchor: String,
+    pub event_order: u64,
+    pub prompt_context_bytes_current: u64,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -469,7 +494,13 @@ pub trait ConversationHistoryService: Send + Sync {
     ) -> Result<ConversationHistoryPageDto, ConversationHistoryError>;
 }
 
-pub fn page_version(items: &[ConversationHistoryItemDto]) -> String {
+pub fn page_version(
+    items: &[ConversationHistoryItemDto],
+    llm_prompt_operations: &[LlmPromptOperationDto],
+    prompt_context_bytes_session_current: Option<u64>,
+    awaiting_input: bool,
+    input_required_prompt: Option<&str>,
+) -> String {
     let mut hasher = DefaultHasher::new();
     for item in items {
         item.timestamp_ms.hash(&mut hasher);
@@ -478,6 +509,14 @@ pub fn page_version(items: &[ConversationHistoryItemDto]) -> String {
         let content = serde_json::to_string(&item.content).unwrap_or_default();
         content.hash(&mut hasher);
     }
+    for op in llm_prompt_operations {
+        op.activity_anchor.hash(&mut hasher);
+        op.event_order.hash(&mut hasher);
+        op.prompt_context_bytes_current.hash(&mut hasher);
+    }
+    prompt_context_bytes_session_current.hash(&mut hasher);
+    awaiting_input.hash(&mut hasher);
+    input_required_prompt.hash(&mut hasher);
     format!("v1:{:x}", hasher.finish())
 }
 
@@ -515,7 +554,7 @@ pub fn paginate_items(
     };
     let items: Vec<ConversationHistoryItemDto> = page_rows.into_iter().map(Into::into).collect();
     let max_event_order = items.last().map(|item| item.timestamp_ms).unwrap_or(0);
-    let version = page_version(&items);
+    let version = page_version(&items, &[], None, false, None);
 
     Ok(ConversationHistoryPageDto {
         context_id: request.context_id.as_str().to_string(),
@@ -524,6 +563,10 @@ pub fn paginate_items(
         max_event_order,
         items,
         next_cursor,
+        prompt_context_bytes_session_current: None,
+        llm_prompt_operations: Vec::new(),
+        awaiting_input: false,
+        input_required_prompt: None,
     })
 }
 

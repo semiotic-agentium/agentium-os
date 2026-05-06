@@ -356,10 +356,8 @@ impl QuickJSBridge {
         self.register_baml_invoke_session_helper().await?;
         self.register_baml_stream_session_helper().await?;
 
-        for function_name in functions {
-            self.register_single_function(&function_name).await?;
-            self.register_single_stream_function(&function_name).await?;
-        }
+        baml_registration::register_baml_invoke_wrappers_batch(self, &functions).await?;
+        baml_registration::register_baml_stream_wrappers_batch(self, &functions).await?;
 
         // Register tool functions
         self.register_tool_functions().await?;
@@ -401,16 +399,6 @@ impl QuickJSBridge {
     /// Register `__baml_stream_session(session_id, function_name, args_json)`.
     async fn register_baml_stream_session_helper(&mut self) -> Result<()> {
         baml_registration::register_baml_stream_session_helper(self).await
-    }
-
-    /// Register a single BAML function with QuickJS (tokenless wrapper).
-    async fn register_single_function(&mut self, function_name: &str) -> Result<()> {
-        baml_registration::register_single_function(self, function_name).await
-    }
-
-    /// Register a streaming version of a single BAML function with QuickJS
-    async fn register_single_stream_function(&mut self, function_name: &str) -> Result<()> {
-        baml_registration::register_single_stream_function(self, function_name).await
     }
 
     /// Legacy: create token and register scope (used only for correlation map when needed).

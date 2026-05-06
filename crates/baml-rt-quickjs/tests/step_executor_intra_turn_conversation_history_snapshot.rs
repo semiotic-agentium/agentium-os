@@ -160,9 +160,14 @@ async fn step_executor_intra_turn_merged_conversation_grows_per_llm_hop() {
         .expect("in-memory provenance for step executor snapshot");
     m.set_effect_emitter(bus.clone());
     let manager = Arc::new(RwLock::new(m));
-    baml_rt::a2a_transport::install_provenance_conversation_wiring(store.clone(), &manager, &bus)
-        .await
-        .expect("provenance + conversation wiring");
+    baml_rt::a2a_transport::install_provenance_conversation_wiring(
+        store.clone(),
+        Some(store.clone()),
+        &manager,
+        &bus,
+    )
+    .await
+    .expect("provenance + conversation wiring");
 
     {
         let agent = scope.as_scope().agent_id().clone();

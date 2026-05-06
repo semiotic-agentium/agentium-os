@@ -1641,7 +1641,7 @@ pub async fn get_conversation_history_stream(
     let stream = async_stream::stream! {
         let mut latest = initial.clone();
         let mut last_event_order = latest.max_event_order;
-        let mut last_version = latest.version.clone();
+        let mut last_emitted_version: Option<String> = Some(initial.version.clone());
         let serialize_start = Instant::now();
         let data = serde_json::to_string(&initial).unwrap_or_else(|_| "{}".into());
         metrics::record_conversation_history_phase_duration("serialize_snapshot", serialize_start.elapsed());
@@ -1698,17 +1698,22 @@ pub async fn get_conversation_history_stream(
                         "delta_query",
                         delta_query_start.elapsed(),
                     );
-                    if page.items.is_empty() {
+                    if last_emitted_version.as_ref() == Some(&page.version) {
                         continue;
                     }
-                    if page.version == last_version {
-                        continue;
+                    last_emitted_version = Some(page.version.clone());
+                    if !page.items.is_empty() {
+                        latest.items.extend(page.items.clone());
                     }
-                    latest.items.extend(page.items.clone());
+                    latest.llm_prompt_operations
+                        .extend(page.llm_prompt_operations.clone());
+                    latest.prompt_context_bytes_session_current =
+                        page.prompt_context_bytes_session_current;
                     latest.max_event_order = page.max_event_order.max(latest.max_event_order);
+                    latest.awaiting_input = page.awaiting_input;
+                    latest.input_required_prompt = page.input_required_prompt.clone();
                     latest.version = page.version.clone();
                     last_event_order = latest.max_event_order;
-                    last_version = latest.version.clone();
                     let serialize_start = Instant::now();
                     let data = serde_json::to_string(&page).unwrap_or_else(|_| "{}".into());
                     metrics::record_conversation_history_phase_duration(

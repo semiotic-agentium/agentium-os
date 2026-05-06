@@ -2,8 +2,9 @@ import { ref, computed, type Ref } from "vue";
 import {
   applyConversationHistoryDelta,
   applyConversationHistoryPage,
-  chatMessagesHaveStreamedAgentBody,
-  conversationHistoryHasAssistantMessageText,
+  liveAgentBubbleBlocksHistoryReplace,
+  provenanceSnapshotLagsLiveChat,
+  shouldDeferProvenanceHistoryRebuild,
 } from "../chat/conversationHistoryHydration";
 import { normalizeEpochMs, normalizePreview } from "../chat/chatTime";
 import {
@@ -22,7 +23,8 @@ import {
   pushToolEventsDeduped,
   withSessionStepDetailEvents,
 } from "../chat/toolNotificationEvents";
-import { isChatStatusNoiseText } from "../chat/workflowUiFilters";
+import { isSyntheticInputRequiredPrompt } from "../chat/inputRequiredUi";
+import { shouldSuppressAgentTranscriptText } from "../chat/workflowUiFilters";
 import type {
   AgentDiscoveryEntry,
   A2aMessage,
@@ -36,6 +38,8 @@ import type {
   ToolEvent,
   WorkflowProgressState,
   ConversationHistoryOption,
+  HistoryHydrateState,
+  LlmPromptOperation,
 } from "../types/a2a";
 
 let counter = 0;
@@ -73,6 +77,22 @@ function parseA2aSseJsonRpcBody(body: string): JSONRPCResponse[] {
     out.push(JSON.parse(payload) as JSONRPCResponse);
   }
   return out;
+}
+
+function sortLlmPromptOperations(a: LlmPromptOperation, b: LlmPromptOperation): number {
+  return a.eventOrder - b.eventOrder || a.activityAnchor.localeCompare(b.activityAnchor);
+}
+
+function mergeLlmPromptOperations(
+  prev: LlmPromptOperation[],
+  incoming: LlmPromptOperation[] | undefined,
+): LlmPromptOperation[] {
+  if (!incoming?.length) return prev;
+  const m = new Map(prev.map((o) => [o.activityAnchor, o]));
+  for (const o of incoming) {
+    m.set(o.activityAnchor, o);
+  }
+  return [...m.values()].sort(sortLlmPromptOperations);
 }
 
 function updateMessage(
@@ -117,9 +137,14 @@ export function useA2aClient() {
 
   // Context metrics (fetched after each response)
   const contextMetrics = ref<ContextMetricsResponse | null>(null);
+  /** From conversation-history SSE/HTTP: temporal tail + per-LLM prompt JSON sizes */
+  const llmPromptOperations = ref<LlmPromptOperation[]>([]);
+  const promptContextBytesSessionCurrent = ref<number | null>(null);
   const conversationHistoryOptions = ref<ConversationHistoryOption[]>([]);
   const selectedHistoryContextId = ref<string | null>(null);
   const historyLoading = ref(false);
+  /** Primary transcript restore: loading / error / skipped vs ready (see ChatWindow empty states). */
+  const historyHydrateState = ref<HistoryHydrateState>("idle");
 
   // Workflow progress tracker (parsed from coordinator SSE progress messages)
   const workflowProgress = ref<WorkflowProgressState>({
@@ -138,6 +163,18 @@ export function useA2aClient() {
   const provenanceDiagram = ref<string>("");
   /** Monotonic id so slower diagram HTTP responses cannot overwrite newer ones */
   let diagramFetchSeq = 0;
+
+  function replaceLlmPromptStateFromPage(page: ConversationHistoryPage): void {
+    llmPromptOperations.value = [...(page.llmPromptOperations ?? [])].sort(sortLlmPromptOperations);
+    promptContextBytesSessionCurrent.value = page.promptContextBytesSessionCurrent ?? null;
+  }
+
+  function extendLlmPromptStateFromPage(page: ConversationHistoryPage): void {
+    llmPromptOperations.value = mergeLlmPromptOperations(llmPromptOperations.value, page.llmPromptOperations);
+    if (page.promptContextBytesSessionCurrent != null) {
+      promptContextBytesSessionCurrent.value = page.promptContextBytesSessionCurrent;
+    }
+  }
 
   /** Incremented (debounced) when SSE implies new provenance rows; ProvenancePane watches this */
   const traceRefreshGeneration = ref(0);
@@ -183,19 +220,12 @@ export function useA2aClient() {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
         if (page.version === _historyVersion) return;
-        // Full rebuild drops stream-only flags (e.g. TASK_STATE_INPUT_REQUIRED / awaitInput prompt).
-        if (messages.value.some((m) => m.role === "agent" && m.awaitingInput)) {
-          return;
-        }
-        if (
-          chatMessagesHaveStreamedAgentBody(messages.value) &&
-          !conversationHistoryHasAssistantMessageText(page)
-        ) {
-          return;
-        }
+        if (shouldDeferProvenanceHistoryRebuild(messages.value, page)) return;
         applyConversationHistoryPage(messages, page);
+        replaceLlmPromptStateFromPage(page);
         _historyVersion = page.version;
         selectedHistoryContextId.value = page.contextId;
+        historyHydrateState.value = "ready";
       } catch {
         // Ignore malformed stream event payloads.
       }
@@ -204,14 +234,12 @@ export function useA2aClient() {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
         if (page.version === _historyVersion) return;
-        // Do not merge provenance deltas while the live stream left an agent bubble awaiting resume;
-        // deltas can reorder or fork bubbles and drop stream-only INPUT_REQUIRED flags.
-        if (messages.value.some((m) => m.role === "agent" && m.awaitingInput)) {
-          return;
-        }
+        if (shouldDeferProvenanceHistoryRebuild(messages.value, page)) return;
         applyConversationHistoryDelta(messages, page);
+        extendLlmPromptStateFromPage(page);
         _historyVersion = page.version;
         selectedHistoryContextId.value = page.contextId;
+        historyHydrateState.value = "ready";
       } catch {
         // Ignore malformed stream event payloads.
       }
@@ -244,12 +272,31 @@ export function useA2aClient() {
   }
 
   async function fetchAgents(): Promise<void> {
-    const res = await fetch("/agents");
-    agents.value = await res.json();
-    if (agents.value.length > 0 && !selectedAgent.value) {
-      selectedAgent.value = agents.value[0] ?? null;
+    try {
+      const res = await fetch("/agents");
+      if (!res.ok) {
+        agents.value = [];
+        selectedAgent.value = null;
+        await fetchConversationHistoryOptions();
+        return;
+      }
+      const data: unknown = await res.json();
+      if (!Array.isArray(data)) {
+        agents.value = [];
+        selectedAgent.value = null;
+        await fetchConversationHistoryOptions();
+        return;
+      }
+      agents.value = data as AgentDiscoveryEntry[];
+      if (agents.value.length > 0 && !selectedAgent.value) {
+        selectedAgent.value = agents.value[0] ?? null;
+      }
+      await fetchConversationHistoryOptions();
+    } catch {
+      agents.value = [];
+      selectedAgent.value = null;
+      conversationHistoryOptions.value = [];
     }
-    await fetchConversationHistoryOptions();
   }
 
   async function fetchConversationHistoryOptions(): Promise<void> {
@@ -285,6 +332,7 @@ export function useA2aClient() {
 
   function selectAgent(agent: AgentDiscoveryEntry): void {
     selectedAgent.value = agent;
+    historyHydrateState.value = "idle";
     messages.value = [];
     _contextId.value = undefined;
     _taskId.value = null;
@@ -298,6 +346,8 @@ export function useA2aClient() {
     }
     closeConversationHistoryStream();
     _historyVersion = "";
+    llmPromptOperations.value = [];
+    promptContextBytesSessionCurrent.value = null;
     conversationHistoryOptions.value = [];
     selectedHistoryContextId.value = null;
     void fetchConversationHistoryOptions();
@@ -382,6 +432,7 @@ export function useA2aClient() {
     messages.value.push({
       id: nextId("user-msg"),
       role: "user",
+      speakerKind: "human",
       text: text.trim(),
       timestamp: new Date(),
     });
@@ -462,7 +513,9 @@ export function useA2aClient() {
       const awaitingResume =
         messages.value.find((m) => m.id === agentMsgId)?.awaitingInput === true;
       await Promise.all([
-        awaitingResume ? Promise.resolve() : hydrateMessagesFromConversationHistory(),
+        awaitingResume
+          ? Promise.resolve()
+          : hydrateMessagesFromConversationHistory(undefined, { quiet: true }),
         fetchProvenanceDiagram(),
         fetchContextMetrics(),
         fetchConversationHistoryOptions(),
@@ -589,7 +642,7 @@ export function useA2aClient() {
         if (direct?.trim()) {
           const dtrim = direct.trim();
           if (
-            !isChatStatusNoiseText(dtrim) &&
+            !shouldSuppressAgentTranscriptText(dtrim) &&
             !parseExecutionErrorText(dtrim)
           ) {
             updateMessage(messages, agentMsgId, (msg) => {
@@ -641,7 +694,7 @@ export function useA2aClient() {
 
         if (text) {
           const trimmed = text.trim();
-          if (trimmed && isChatStatusNoiseText(trimmed)) {
+          if (trimmed && shouldSuppressAgentTranscriptText(trimmed)) {
             updateWorkflowPhase(trimmed);
             sawProvenanceMutation = true;
           } else if (trimmed && parseExecutionErrorText(trimmed)) {
@@ -707,7 +760,6 @@ export function useA2aClient() {
     }
     // Input required: stream suspended (no final); agent waiting for user reply.
     if (state === "TASK_STATE_INPUT_REQUIRED") {
-      const DEFAULT_INPUT_REQUIRED_PROMPT = "Reply to continue.";
       updateMessage(messages, agentMsgId, (msg) => {
         msg.isStreaming = false;
         msg.awaitingInput = true;
@@ -715,16 +767,16 @@ export function useA2aClient() {
           extractTextFromStatusUpdate(chunk) ??
           extractText(chunk.statusUpdate?.status?.message) ??
           extractText(chunk.task?.status?.message);
-        const p = prompt?.trim() ? prompt.trim() : DEFAULT_INPUT_REQUIRED_PROMPT;
-        msg.inputRequiredPrompt = p;
-        // Shim `emit.awaitInput` sends INPUT_REQUIRED on statusUpdate.status.message (flat).
-        // Synthetic suspend chunks may only carry task.status.message — still surface readable text.
-        if (!msg.text?.trim()) {
+        const trimmed = prompt?.trim() ?? "";
+        const synth = isSyntheticInputRequiredPrompt(trimmed);
+        msg.inputRequiredPrompt = synth ? undefined : trimmed;
+        // Real awaitInput(prompt) becomes placeholder + may show in-bubble; wire shim copy is not transcript.
+        if (!synth && trimmed.length > 0 && !msg.text?.trim()) {
           if (msg.contentBlocks?.length) {
             ensureContentBlocks(msg);
-            pushTextBlock(msg, p);
+            pushTextBlock(msg, trimmed);
           } else {
-            msg.text = p;
+            msg.text = trimmed;
           }
         }
       });
@@ -803,23 +855,52 @@ export function useA2aClient() {
 
   async function hydrateMessagesFromConversationHistory(
     contextId: string = _contextId.value ?? "",
-    options: { allowRetry?: boolean } = {},
+    options: { allowRetry?: boolean; quiet?: boolean } = {},
   ): Promise<void> {
-    if (!contextId) return;
+    if (!contextId) {
+      historyHydrateState.value = "idle";
+      return;
+    }
+    if (!options.quiet) {
+      historyHydrateState.value = "loading";
+    }
     try {
       const params = new URLSearchParams();
       params.set("limit", "500");
       const response = await fetch(
         `/contexts/${contextId}/conversation-history?${params.toString()}`,
       );
-      if (!response.ok) return;
+      if (!response.ok) {
+        if (!options.quiet) {
+          historyHydrateState.value = "error";
+        }
+        return;
+      }
 
       const page = (await response.json()) as ConversationHistoryPage;
-      if (!Array.isArray(page.items)) return;
-      if (
-        chatMessagesHaveStreamedAgentBody(messages.value) &&
-        !conversationHistoryHasAssistantMessageText(page)
-      ) {
+      if (!Array.isArray(page.items)) {
+        if (!options.quiet) {
+          historyHydrateState.value = "error";
+        }
+        return;
+      }
+      _taskId.value = page.taskId ?? null;
+      if (liveAgentBubbleBlocksHistoryReplace(messages.value)) {
+        if (!options.quiet) {
+          historyHydrateState.value = "skipped";
+        }
+        if (options.allowRetry !== false && pendingHydrateRetryTimer === null) {
+          pendingHydrateRetryTimer = setTimeout(() => {
+            pendingHydrateRetryTimer = null;
+            void hydrateMessagesFromConversationHistory(contextId, { allowRetry: false });
+          }, 400);
+        }
+        return;
+      }
+      if (provenanceSnapshotLagsLiveChat(messages.value, page)) {
+        if (!options.quiet) {
+          historyHydrateState.value = "skipped";
+        }
         if (options.allowRetry !== false && pendingHydrateRetryTimer === null) {
           pendingHydrateRetryTimer = setTimeout(() => {
             pendingHydrateRetryTimer = null;
@@ -829,10 +910,14 @@ export function useA2aClient() {
         return;
       }
       applyConversationHistoryPage(messages, page);
+      replaceLlmPromptStateFromPage(page);
       _historyVersion = page.version;
       selectedHistoryContextId.value = page.contextId;
+      historyHydrateState.value = "ready";
     } catch {
-      // conversation-history endpoint not available; keep stream-derived chat
+      if (!options.quiet) {
+        historyHydrateState.value = "error";
+      }
     }
   }
 
@@ -845,12 +930,16 @@ export function useA2aClient() {
     }
     closeConversationHistoryStream();
     _historyVersion = "";
+    llmPromptOperations.value = [];
+    promptContextBytesSessionCurrent.value = null;
     _contextId.value = contextId;
     _taskId.value = null;
     workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
     lastSeenTaskState = undefined;
     isLoading.value = false;
     selectedHistoryContextId.value = contextId;
+    messages.value = [];
+    historyHydrateState.value = "loading";
     await Promise.all([
       hydrateMessagesFromConversationHistory(contextId),
       fetchProvenanceDiagram(),
@@ -905,9 +994,12 @@ export function useA2aClient() {
     provenanceDiagram,
     traceRefreshGeneration,
     contextMetrics,
+    llmPromptOperations,
+    promptContextBytesSessionCurrent,
     conversationHistoryOptions,
     selectedHistoryContextId,
     historyLoading,
+    historyHydrateState,
     workflowProgress,
     contextId: computed(() => _contextId.value),
     taskId: computed(() => _taskId.value),

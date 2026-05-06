@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use baml_rt_core::Result;
+use baml_rt_repository::RepositoryService;
 use baml_rt_tools::ToolAccessPolicy;
 use serde_json::Value;
 
@@ -35,6 +36,7 @@ impl RunnerBuilder<Loading> {
         stream_idle_secs: Option<u64>,
         claude_workspaces_base: Option<std::path::PathBuf>,
         repository_url: String,
+        embedded_repository: Option<Arc<RepositoryService>>,
     ) -> Result<Self> {
         let runner = Arc::new(AgentRunner::new(
             provenance_config,
@@ -43,6 +45,7 @@ impl RunnerBuilder<Loading> {
             stream_idle_secs,
             claude_workspaces_base,
             repository_url,
+            embedded_repository,
         )?);
         // Wire the internal A2A router to the runner for cross-agent dispatch.
         runner.internal_a2a_router().set_runner(Arc::clone(&runner));

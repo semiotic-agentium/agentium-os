@@ -446,9 +446,10 @@ async fn publish_agent(
     // Optionally deploy immediately using content_hash (not blob_hash).
     if let Some(runner_url) = deploy_url {
         println!("\n🚀 Deploying {content_hash} to {runner_url}...");
+        let deploy_body = serde_json::json!({ "hash": content_hash });
         let mut deploy_request = http
             .post(format!("{}/deploy", runner_url.trim_end_matches('/')))
-            .json(&serde_json::json!({ "hash": content_hash }));
+            .json(&deploy_body);
         if let Some(ref t) = token {
             deploy_request = deploy_request.header("X-Runner-Token", t.as_str());
         }

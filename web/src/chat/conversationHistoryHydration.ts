@@ -16,7 +16,22 @@ import {
   stableJsonSignature,
 } from "./toolNotificationEvents";
 import { stripLegacyStructuredPlaceholderLines } from "./legacyStructuredPlaceholders";
-import { isWorkflowStatusText } from "./workflowUiFilters";
+import { isSyntheticInputRequiredPrompt } from "./inputRequiredUi";
+import { isWorkflowStatusText, shouldSuppressAgentTranscriptText } from "./workflowUiFilters";
+
+/** Best-effort: relay / delegation user rows often carry distinctive activity anchors. */
+export function inferUserSpeakerKind(item: ConversationHistoryItem): "relay" | "human" {
+  const a = item.activityAnchor.toLowerCase();
+  if (
+    a.includes("relay") ||
+    a.includes("delegat") ||
+    a.includes("sub_agent") ||
+    a.includes("subagent")
+  ) {
+    return "relay";
+  }
+  return "human";
+}
 
 /** Non-user message entries with `type: message` and visible text (assistant output in provenance). */
 export function conversationHistoryHasAssistantMessageText(
@@ -38,6 +53,9 @@ export function conversationHistoryHasAssistantMessageText(
 export function chatMessagesHaveStreamedAgentBody(messages: ChatMessage[]): boolean {
   return messages.some((m) => {
     if (m.role !== "agent") return false;
+    // Empty placeholder bubble (text + blocks still blank) — provenance snapshot must not wipe it
+    // before INPUT_REQUIRED or first tokens arrive; otherwise stream chunks target a missing row.
+    if (m.isStreaming) return true;
     if (m.text?.trim()) return true;
     const blocks = m.contentBlocks;
     if (!blocks?.length) return false;
@@ -46,6 +64,59 @@ export function chatMessagesHaveStreamedAgentBody(messages: ChatMessage[]): bool
       return b.type === "tool";
     });
   });
+}
+
+/** Live assistant row is mid-stream or suspended for INPUT_REQUIRED — never replace from provenance. */
+export function liveAgentBubbleBlocksHistoryReplace(messages: ChatMessage[]): boolean {
+  return messages.some(
+    (m) => m.role === "agent" && (m.awaitingInput === true || m.isStreaming === true),
+  );
+}
+
+/** Provenance page has not caught up with assistant text already on the wire. */
+export function provenanceSnapshotLagsLiveChat(
+  messages: ChatMessage[],
+  page: ConversationHistoryPage,
+): boolean {
+  return (
+    chatMessagesHaveStreamedAgentBody(messages) &&
+    !conversationHistoryHasAssistantMessageText(page)
+  );
+}
+
+/** SSE snapshot/delta: skip rebuild/merge when the in-memory transcript must win. */
+export function shouldDeferProvenanceHistoryRebuild(
+  messages: ChatMessage[],
+  page?: ConversationHistoryPage,
+): boolean {
+  if (liveAgentBubbleBlocksHistoryReplace(messages)) return true;
+  if (page !== undefined && provenanceSnapshotLagsLiveChat(messages, page)) return true;
+  return false;
+}
+
+/** Apply page-level INPUT_REQUIRED hints to the last agent bubble (snapshot/delta from runner). */
+export function syncResumeHintsFromPage(
+  messages: Ref<ChatMessage[]>,
+  page: ConversationHistoryPage,
+): void {
+  for (const m of messages.value) {
+    if (m.role === "agent") {
+      m.awaitingInput = false;
+      m.inputRequiredPrompt = undefined;
+    }
+  }
+  if (!page.awaitingInput) return;
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const m = messages.value[i]!;
+    if (m.role === "agent") {
+      m.awaitingInput = true;
+      const p = page.inputRequiredPrompt;
+      const trimmed = typeof p === "string" ? p.trim() : "";
+      m.inputRequiredPrompt =
+        trimmed.length > 0 && !isSyntheticInputRequiredPrompt(trimmed) ? trimmed : undefined;
+      break;
+    }
+  }
 }
 
 export function applyConversationHistoryPage(
@@ -82,11 +153,13 @@ export function applyConversationHistoryPage(
       activeAgentMsg = null;
       sendDonePayloadSignaturesByTool = new Map<string, Set<string>>();
       const text = content.type === "message" ? content.text : "";
+      const sk = inferUserSpeakerKind(item);
       rebuilt.push({
         id: `prov-user-${item.activityAnchor}`,
         role: "user",
         text,
         timestamp: ts,
+        ...(sk === "relay" ? { speakerKind: "relay" as const } : {}),
       });
       continue;
     }
@@ -120,7 +193,12 @@ export function applyConversationHistoryPage(
         }
         if (content.text) {
           const cleaned = stripLegacyStructuredPlaceholderLines(content.text);
-          if (cleaned.trim().length > 0) {
+          const t = cleaned.trim();
+          if (
+            t.length > 0 &&
+            !shouldSuppressAgentTranscriptText(t) &&
+            !isSyntheticInputRequiredPrompt(t)
+          ) {
             pushTextBlock(msg, cleaned);
           }
         }
@@ -169,83 +247,93 @@ export function applyConversationHistoryPage(
   }
 
   messages.value = rebuilt;
+  syncResumeHintsFromPage(messages, page);
 }
 
 export function applyConversationHistoryDelta(
   messages: Ref<ChatMessage[]>,
   page: ConversationHistoryPage,
 ): void {
-  if (!Array.isArray(page.items) || page.items.length === 0) return;
-  const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
-  for (const item of sorted) {
-    const isUser = item.role.toLowerCase() === "user";
-    const ts = new Date(normalizeEpochMs(item.timestampMs));
-    const content = item.content;
-    if (isUser) {
-      const text = content.type === "message" ? content.text : "";
-      messages.value.push({
-        id: `prov-user-${item.activityAnchor}`,
-        role: "user",
-        text,
-        timestamp: ts,
-      });
-      continue;
-    }
+  if (Array.isArray(page.items) && page.items.length > 0) {
+    const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
+    for (const item of sorted) {
+      const isUser = item.role.toLowerCase() === "user";
+      const ts = new Date(normalizeEpochMs(item.timestampMs));
+      const content = item.content;
+      if (isUser) {
+        const text = content.type === "message" ? content.text : "";
+        const sk = inferUserSpeakerKind(item);
+        messages.value.push({
+          id: `prov-user-${item.activityAnchor}`,
+          role: "user",
+          text,
+          timestamp: ts,
+          ...(sk === "relay" ? { speakerKind: "relay" as const } : {}),
+        });
+        continue;
+      }
 
-    if (content.type === "message" && isWorkflowStatusText(content.text ?? "")) {
-      continue;
-    }
+      if (content.type === "message" && isWorkflowStatusText(content.text ?? "")) {
+        continue;
+      }
 
-    let msg = messages.value[messages.value.length - 1];
-    if (!msg || msg.role !== "agent") {
-      msg = {
-        id: `prov-agent-${item.activityAnchor}`,
-        role: "agent",
-        text: "",
-        timestamp: ts,
-        contentBlocks: [],
-      };
-      messages.value.push(msg);
-    }
-    ensureContentBlocks(msg);
+      let msg = messages.value[messages.value.length - 1];
+      if (!msg || msg.role !== "agent") {
+        msg = {
+          id: `prov-agent-${item.activityAnchor}`,
+          role: "agent",
+          text: "",
+          timestamp: ts,
+          contentBlocks: [],
+        };
+        messages.value.push(msg);
+      }
+      ensureContentBlocks(msg);
 
-    switch (content.type) {
-      case "message":
-        if (content.text && !appendExecutionErrorCard(msg, content.text)) {
-          const cleaned = stripLegacyStructuredPlaceholderLines(content.text);
-          if (cleaned.trim().length > 0) {
-            pushTextBlock(msg, cleaned);
+      switch (content.type) {
+        case "message":
+          if (content.text && !appendExecutionErrorCard(msg, content.text)) {
+            const cleaned = stripLegacyStructuredPlaceholderLines(content.text);
+            const t = cleaned.trim();
+            if (
+              t.length > 0 &&
+              !shouldSuppressAgentTranscriptText(t) &&
+              !isSyntheticInputRequiredPrompt(t)
+            ) {
+              pushTextBlock(msg, cleaned);
+            }
           }
+          break;
+        case "tool_call": {
+          const status = statusFromFsmPhase(content.fsm_phase);
+          const completion = completionFromStatus(status);
+          const block = getOrCreateToolBlockForAppend(msg, content.tool_name, "start");
+          block.events.push({ kind: "assistant_tool_use", name: content.tool_name, input: content.args });
+          pushSystemNoticeEvent(block, `FSM phase: ${content.fsm_phase}`, `FSM phase: ${content.fsm_phase}`);
+          if (completion) block.completion = completion;
+          block.status = deriveToolStatus(block);
+          break;
         }
-        break;
-      case "tool_call": {
-        const status = statusFromFsmPhase(content.fsm_phase);
-        const completion = completionFromStatus(status);
-        const block = getOrCreateToolBlockForAppend(msg, content.tool_name, "start");
-        block.events.push({ kind: "assistant_tool_use", name: content.tool_name, input: content.args });
-        pushSystemNoticeEvent(block, `FSM phase: ${content.fsm_phase}`, `FSM phase: ${content.fsm_phase}`);
-        if (completion) block.completion = completion;
-        block.status = deriveToolStatus(block);
-        break;
-      }
-      case "tool_result": {
-        const status = statusFromFsmPhase(content.fsm_phase);
-        const completion = completionFromStatus(status) ?? "DONE";
-        const block = getOrCreateToolBlockForAppend(msg, content.tool_name, "end");
-        pushSystemNoticeEvent(block, `FSM phase: ${content.fsm_phase}`, `FSM phase: ${content.fsm_phase}`);
-        pushTerminalResultEvent(
-          block,
-          "success",
-          typeof content.outcome === "string" ? content.outcome : JSON.stringify(content.outcome),
-        );
-        block.completion = completion;
-        block.status = deriveToolStatus(block);
-        break;
-      }
-      case "session_step": {
-        appendProvenanceSessionStepToMessage(msg, content);
-        break;
+        case "tool_result": {
+          const status = statusFromFsmPhase(content.fsm_phase);
+          const completion = completionFromStatus(status) ?? "DONE";
+          const block = getOrCreateToolBlockForAppend(msg, content.tool_name, "end");
+          pushSystemNoticeEvent(block, `FSM phase: ${content.fsm_phase}`, `FSM phase: ${content.fsm_phase}`);
+          pushTerminalResultEvent(
+            block,
+            "success",
+            typeof content.outcome === "string" ? content.outcome : JSON.stringify(content.outcome),
+          );
+          block.completion = completion;
+          block.status = deriveToolStatus(block);
+          break;
+        }
+        case "session_step": {
+          appendProvenanceSessionStepToMessage(msg, content);
+          break;
+        }
       }
     }
   }
+  syncResumeHintsFromPage(messages, page);
 }

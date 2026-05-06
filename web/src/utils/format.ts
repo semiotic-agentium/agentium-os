@@ -1,3 +1,11 @@
+/** Format raw UTF-8 byte counts as KiB/MiB for prompt JSON sizing. */
+export function formatKb(bytes: number | undefined | null): string {
+  if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return "—";
+  const kb = bytes / 1024;
+  if (kb >= 1024) return `${(kb / 1024).toFixed(2)} MiB`;
+  return `${kb.toFixed(1)} KiB`;
+}
+
 /** Format a token/number count compactly: 1234 → "1.2k", 1_500_000 → "1.5M". */
 export function formatCompact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -12,7 +20,8 @@ export function formatDuration(ms: number): string {
 }
 
 /** Truncate an ID string for display: "abcdef01-2345-6789..." → "abcdef01...6789". */
-export function shortId(id: string): string {
+export function shortId(id: string | undefined | null): string {
+  if (id == null || id === "") return "—";
   if (id.length <= 12) return id;
   return `${id.slice(0, 8)}...${id.slice(-4)}`;
 }

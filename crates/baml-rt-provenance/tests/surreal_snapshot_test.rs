@@ -17,7 +17,7 @@ use baml_rt_core::{
 use baml_rt_provenance::{
     AgentBootedEvent, AgentType, CallScope, LlmUsage, ProvEvent, ProvEventData,
     ProvenanceContextReader, ProvenanceOpsQuery, ProvenancePlanningQuery, ProvenanceQueryApi,
-    ProvenanceWriter, SurrealStoreBuilder, TaskScopedEvent,
+    ProvenanceWriter, SurrealStoreBuilder, TaskScopedEvent, serialized_prompt_utf8_len,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -398,6 +398,9 @@ async fn setup_failed_call_with_classification(store: &dyn SnapshotStore) {
                 drift: None,
                 citations: vec![],
                 resolved_citations: vec![],
+                prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(
+                    &serde_json::json!({"messages": [{"role": "user", "content": "test"}]}),
+                ),
             },
         }))
         .await

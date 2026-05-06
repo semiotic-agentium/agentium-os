@@ -658,6 +658,7 @@ fn normalize_event_with_registry(
             drift,
             citations,
             resolved_citations,
+            prompt_serialized_utf8_bytes,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
             let ordinal =
@@ -707,6 +708,10 @@ fn normalize_event_with_registry(
             attrs.insert(
                 a2a::LLM_RESULT_PAYLOAD_ID.to_string(),
                 Value::String(payload_id_for_event(event, "llm_result")),
+            );
+            attrs.insert(
+                a2a::PROMPT_SERIALIZED_UTF8_BYTES.to_string(),
+                Value::Number((*prompt_serialized_utf8_bytes).into()),
             );
             if let Some(result) = metadata_json_field(metadata, "result") {
                 attrs.insert(a2a::RESULT.to_string(), result);

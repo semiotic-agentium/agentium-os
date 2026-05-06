@@ -35,7 +35,8 @@ pub use conversation_history::{
     ConversationHistoryPageDto, ConversationHistoryPageRequest, ConversationHistoryProfile,
     ConversationHistoryQueryParams, ConversationHistoryRequest,
     ConversationHistoryRequestParseError, ConversationHistoryService, ConversationHistoryUpdate,
-    CursorToken, SessionStepOpDto, ToolOutcomeDto, page_version, paginate_items, profile_filter,
+    CursorToken, LlmPromptOperationDto, SessionStepOpDto, ToolOutcomeDto, page_version,
+    paginate_items, profile_filter,
 };
 pub use episode::{
     ArtifactSummaryDto, EpisodeContentDto, EpisodeDurationDto, EpisodeEntryDto, EpisodeError,

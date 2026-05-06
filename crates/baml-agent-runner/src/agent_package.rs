@@ -21,7 +21,8 @@ use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
 use baml_rt_tools::{
-    BundleRegistrar, ExternalToolResolver, ManifestToolNames, ToolAccessPolicy, ToolRegistry,
+    BundleRegistrar, ExternalToolResolver, ManifestToolNames, SharedContextRefStore,
+    ToolAccessPolicy, ToolRegistry,
     external_tools::{
         BUILDER_EXTERNAL_TOOLS_ENV, DevModeResolver, EXTERNAL_TOOLS_LOCKFILE_NAME,
         ExternalLifecycleEvent, ExternalLifecycleRecorder, ExternalLockfileMode,
@@ -60,6 +61,17 @@ pub(crate) struct JsInitialized {
     pub(crate) agent: A2aAgent,
 }
 
+/// Inputs for [`AgentPackage::boot`], grouped to satisfy clippy `too_many_arguments`.
+pub(crate) struct AgentPackageBootArgs<'a> {
+    pub(crate) shared_context_ref_store: SharedContextRefStore,
+    pub(crate) provenance_config: &'a ProvenanceConfig,
+    pub(crate) policy: &'a ToolAccessPolicy,
+    pub(crate) agent_list_catalogue: Arc<dyn AgentLister>,
+    pub(crate) a2a_handler: Arc<dyn A2aRequestHandler>,
+    pub(crate) stream_idle_secs: Option<u64>,
+    pub(crate) claude_workspaces_base: Option<&'a Path>,
+}
+
 impl AgentPackage {
     pub(crate) async fn load_from_file(package_path: &Path) -> Result<Self> {
         let (extract_dir, manifest) = crate::package::load_package(package_path).await?;
@@ -73,9 +85,12 @@ impl AgentPackage {
 
     async fn load_schema_phase(
         &self,
+        shared_context_ref_store: SharedContextRefStore,
         _provenance_config: &ProvenanceConfig,
     ) -> Result<SchemaLoaded> {
-        let mut runtime_manager = BamlRuntimeManager::builder().build()?;
+        let mut runtime_manager = BamlRuntimeManager::builder()
+            .with_shared_context_ref_store(shared_context_ref_store)
+            .build()?;
         let schema_span = spans::load_baml_schema(&self.baml_src);
         let _schema_guard = schema_span.enter();
         let baml_src_str = self.baml_src.to_str().ok_or_else(|| {
@@ -171,6 +186,12 @@ impl AgentPackage {
             .set_tool_allowlist(self.manifest.tools.iter().cloned().collect::<HashSet<_>>())
             .await?;
 
+        info!(
+            agent = %self.manifest.name,
+            manifest_tool_count = manifest_tool_names.len(),
+            "manifest tools registered; building A2a runtime next"
+        );
+
         Ok(ToolsRegistered { runtime_manager })
     }
 
@@ -240,7 +261,12 @@ impl AgentPackage {
             .with_agent_identity(agent_package, agent_instance_id)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
         agent_builder = agent_builder.with_surreal_store(provenance_config.store().clone());
+        info!(
+            agent = %self.manifest.name,
+            "building QuickJS runtime and A2a bridge (often the longest boot step)"
+        );
         let agent = agent_builder.build().await?;
+        info!(agent = %self.manifest.name, "QuickJS runtime and A2a bridge ready");
         Ok(JsInitialized {
             runtime_manager: runtime_manager_arc,
             agent,
@@ -277,29 +303,28 @@ impl AgentPackage {
         Ok(built)
     }
 
-    pub(crate) async fn boot(
-        &self,
-        provenance_config: &ProvenanceConfig,
-        policy: &ToolAccessPolicy,
-        agent_list_catalogue: Arc<dyn AgentLister>,
-        a2a_handler: Arc<dyn A2aRequestHandler>,
-        stream_idle_secs: Option<u64>,
-        claude_workspaces_base: Option<&std::path::Path>,
-    ) -> Result<(A2aAgent, AgentId)> {
+    pub(crate) async fn boot(&self, args: AgentPackageBootArgs<'_>) -> Result<(A2aAgent, AgentId)> {
         async {
-            let loaded = self.load_schema_phase(provenance_config).await?;
+            info!(
+                agent = %self.manifest.name,
+                extract_dir = %self.extract_dir.display(),
+                "agent package boot starting"
+            );
+            let loaded = self
+                .load_schema_phase(args.shared_context_ref_store, args.provenance_config)
+                .await?;
             let registered = self
                 .register_tools_phase(
                     loaded,
-                    policy,
-                    agent_list_catalogue,
-                    a2a_handler,
-                    provenance_config.store().clone(),
-                    claude_workspaces_base,
+                    args.policy,
+                    args.agent_list_catalogue,
+                    args.a2a_handler,
+                    args.provenance_config.store().clone(),
+                    args.claude_workspaces_base,
                 )
                 .await?;
             let built = self
-                .build_agent_phase(registered, provenance_config, stream_idle_secs)
+                .build_agent_phase(registered, args.provenance_config, args.stream_idle_secs)
                 .await?;
             let initialized = self.initialize_js_phase(built).await?;
             let agent = initialized.agent;
@@ -308,7 +333,8 @@ impl AgentPackage {
             {
                 let manager = runtime_manager_arc.read().await;
                 let tools = manager.export_tool_metadata().await;
-                if let Err(err) = index_tools(provenance_config.store().as_ref(), &tools).await {
+                if let Err(err) = index_tools(args.provenance_config.store().as_ref(), &tools).await
+                {
                     tracing::warn!(
                         error = %err,
                         "Failed to index tool metadata in provenance store"
@@ -319,7 +345,7 @@ impl AgentPackage {
             }
 
             let agent_id = agent.agent_id().clone();
-            let writer = provenance_config.store().clone() as Arc<dyn ProvenanceWriter>;
+            let writer = args.provenance_config.store().clone() as Arc<dyn ProvenanceWriter>;
             let archive_path = self.manifest.signature.clone();
             let agent_type_parsed =
                 AgentType::new(self.manifest.name.clone()).ok_or_else(|| {

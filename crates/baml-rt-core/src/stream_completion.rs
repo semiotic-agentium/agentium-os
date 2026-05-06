@@ -2,6 +2,11 @@
 //!
 //! Completion is no longer inferred from quiescence; it is carried as a
 //! first-class reason so transport and tests can enforce invariants.
+//!
+//! **Wire vs semantic:** [`StreamCompletion::InputRequired`] means the task is suspended for user
+//! input. It is **not** wire-final — formatters must keep `final: false` on stream chunks so clients
+//! can show `TASK_STATE_INPUT_REQUIRED` without treating the HTTP/SSE body as terminated. Use
+//! [`StreamCompletion::is_wire_final`] to decide `final: true` on the JSON-RPC envelope.
 
 use serde_json::Value;
 

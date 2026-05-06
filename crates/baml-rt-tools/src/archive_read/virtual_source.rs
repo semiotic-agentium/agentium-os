@@ -43,12 +43,12 @@ impl VirtualArchiveRow {
     }
 }
 
-/// Read-only view of session ref data keyed by raw index `N` (same as `#N` / `@N` on the wire).
+/// Read-only view of session ref data keyed by `#N` / `@N` (or `@p/k`) on the wire.
 pub trait VirtualArchiveSource {
     /// History namespace (`#N`).
     fn history_row(&self, n: u32) -> Option<VirtualHistoryRow>;
-    /// Archive namespace (`@N`).
-    fn archive_row(&self, n: u32) -> Option<VirtualArchiveRow>;
+    /// Archive namespace (`@N` or `@prefix/local`).
+    fn archive_row(&self, archive_ref: ShortRef) -> Option<VirtualArchiveRow>;
 }
 
 impl VirtualArchiveSource for RefTable {
@@ -63,9 +63,8 @@ impl VirtualArchiveSource for RefTable {
         })
     }
 
-    fn archive_row(&self, n: u32) -> Option<VirtualArchiveRow> {
-        let r = ShortRef::new(n);
-        let e = self.get(r)?;
+    fn archive_row(&self, archive_ref: ShortRef) -> Option<VirtualArchiveRow> {
+        let e = self.get(archive_ref)?;
         Some(VirtualArchiveRow {
             activity_anchor: e.activity_anchor.clone(),
             tool_name: e.tool_name.clone(),
@@ -80,7 +79,7 @@ impl<T: VirtualArchiveSource + ?Sized> VirtualArchiveSource for Arc<T> {
         (**self).history_row(n)
     }
 
-    fn archive_row(&self, n: u32) -> Option<VirtualArchiveRow> {
-        (**self).archive_row(n)
+    fn archive_row(&self, archive_ref: ShortRef) -> Option<VirtualArchiveRow> {
+        (**self).archive_row(archive_ref)
     }
 }

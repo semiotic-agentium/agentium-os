@@ -14,6 +14,8 @@ runner_http_bind := "127.0.0.1:18080"
 # Runner: options only — no positional packages. Agents load via `baml-agent-builder publish` + POST /deploy.
 runner_base_url := "http://" + runner_http_bind
 repository_url := runner_base_url + "/repository"
+# Seconds to wait for runner HTTP before publish/push (runner init + large restore can exceed 60s).
+runner_http_ready_secs := "180"
 # Embedded SurrealKV paths (explicit; same defaults the runner would use relative to cwd).
 runner_state_dir := ".runner-state"
 runner_repository_dir := ".repository"
@@ -232,10 +234,7 @@ clickup-agent: build-release
     [ -f .env ] && . ./.env
     set +a
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
@@ -249,10 +248,7 @@ clickup-agent-provenance: build-release
     [ -f .env ] && . ./.env
     set +a
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
@@ -266,10 +262,7 @@ notion-agent: build-release
     [ -f .env ] && . ./.env
     set +a
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
@@ -283,10 +276,7 @@ notion-agent-provenance: build-release
     [ -f .env ] && . ./.env
     set +a
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
@@ -300,10 +290,7 @@ slack-agent: build-release
     [ -f .env ] && . ./.env
     set +a
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{builder_bin}} publish --agent-dir agents/slack-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
@@ -317,10 +304,7 @@ slack-agent-provenance: build-release
     [ -f .env ] && . ./.env
     set +a
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{builder_bin}} publish --agent-dir agents/slack-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
@@ -334,10 +318,7 @@ coordinator-agent: build-release
     [ -f .env ] && . ./.env
     set +a
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
@@ -353,10 +334,7 @@ coordinator-agent-provenance: build-release
     [ -f .env ] && . ./.env
     set +a
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
@@ -374,10 +352,7 @@ claude-session-agent: build-release
     [ -f .env ] && . ./.env
     set +a
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
@@ -391,10 +366,7 @@ claude-session-agent-provenance: build-release
     [ -f .env ] && . ./.env
     set +a
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
@@ -410,10 +382,7 @@ persona-notion: web-build build-release
     {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --web-dir web/dist &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
-    for _ in $(seq 1 120); do
-      if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-      sleep 0.5
-    done
+    ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
     {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     wait "$runner_pid"
@@ -429,10 +398,7 @@ persona-claude-notion: web-build build-release
     {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_persona_claude_notion_db}} --web-dir web/dist &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
-    for _ in $(seq 1 120); do
-      if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-      sleep 0.5
-    done
+    ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
     {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
@@ -450,10 +416,7 @@ dev-all-agents: web-build build-release
     {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --web-dir web/dist &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
-    for _ in $(seq 1 120); do
-      if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-      sleep 0.5
-    done
+    ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
     {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
@@ -476,10 +439,7 @@ persona-claude-extrospection-clickup: build-release
     {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
-    for _ in $(seq 1 120); do
-      if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-      sleep 0.5
-    done
+    ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
     {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
@@ -496,10 +456,7 @@ persona-claude-extrospection: build-release
     [ -f .env ] && . ./.env
     set +a
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
@@ -516,10 +473,7 @@ persona-claude-extrospection-provenance: build-release
     [ -f .env ] && . ./.env
     set +a
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then break; fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
@@ -556,12 +510,7 @@ echo-sandbox-demo:
     echo
 
     (
-      for _ in $(seq 1 120); do
-        if curl -sf "{{runner_base_url}}/openapi.json" >/dev/null 2>&1; then
-          break
-        fi
-        sleep 0.5
-      done
+      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       echo "[echo-sandbox-demo] pushing agents/echo-agent..."
       cargo run -p cargo-agent-platform -- push --agents agents/echo-agent --url {{runner_base_url}}
       echo "[echo-sandbox-demo] push completed."

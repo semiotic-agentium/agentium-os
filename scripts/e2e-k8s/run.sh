@@ -382,7 +382,7 @@ scenario_06_token_enforcement() {
   assert_eq "$code_wrong" "401" "deploy with wrong token" || return 1
   log_info "Wrong token → 401"
 
-  # Correct token → 200 (undeploy first to avoid 409 from prior scenarios)
+  # Correct token → 200 (undeploy first so this scenario asserts a fresh deploy, not already_deployed)
   undeploy_package "dispatch-echo" "$RUNNER0_PORT" "$E2E_TOKEN"
   local code_ok
   code_ok=$(curl -s -o /dev/null -w '%{http_code}' -X POST \

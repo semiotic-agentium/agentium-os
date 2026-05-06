@@ -7,6 +7,7 @@ import { useTheme } from "../composables/useTheme";
 import {
   formatCompact as formatTokenCount,
   formatDuration,
+  formatKb,
   normalizeGroupValue,
   asDisplayIdentity,
 } from "../utils/format";
@@ -15,6 +16,8 @@ import InterpretationPanel from "./InterpretationPanel.vue";
 const props = defineProps<{
   agents: AgentDiscoveryEntry[];
   contextMetrics: ContextMetricsResponse | null;
+  /** From conversation-history SSE: temporal tail of serialized prompt JSON bytes */
+  promptContextBytesSessionCurrent?: number | null;
   provenanceDiagram: string;
   messages: ChatMessage[];
   contextId?: string;
@@ -112,6 +115,13 @@ const avgLatencyMs = computed(() => {
   const { llm_calls_total, llm_duration_ms_total } = props.contextMetrics.session;
   if (llm_calls_total === 0) return 0;
   return Math.round(llm_duration_ms_total / llm_calls_total);
+});
+
+/** Prefer live SSE tail when hydrated; else metrics API temporal tail. */
+const sessionPromptBytesCurrent = computed(() => {
+  const sse = props.promptContextBytesSessionCurrent;
+  if (sse != null) return sse;
+  return props.contextMetrics?.session.prompt_context_bytes_current ?? null;
 });
 
 const provenanceSuccessRate = computed(() => {
@@ -266,6 +276,30 @@ function shortToolName(tool: string): string {
         </div>
         <div class="stat-card-value stat-card-value--sm">{{ lastSyncTimestamp ? new Date(lastSyncTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—' }}</div>
         <div class="stat-card-sub">{{ lastSyncAgo }}</div>
+      </div>
+
+      <!-- Prompt JSON size (current invocation tail, not peak) -->
+      <div class="stat-card">
+        <div class="stat-card-label">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+          </svg>
+          Prompt JSON (current)
+        </div>
+        <div v-if="sessionPromptBytesCurrent != null" class="stat-card-value stat-card-value--sm">
+          {{ formatKb(sessionPromptBytesCurrent) }}
+        </div>
+        <div v-else class="stat-card-value" style="color: var(--text-muted)">&mdash;</div>
+        <div class="stat-card-sub">Latest LLM call prompt JSON (UTF-8)</div>
       </div>
 
       <!-- Token Usage -->
@@ -521,6 +555,12 @@ function shortToolName(tool: string): string {
                 <span class="sparkline-status-key">Tokens In</span>
                 <span class="sparkline-status-val">{{
                   formatTokenCount(contextMetrics.session.tokens_total.in)
+                }}</span>
+              </div>
+              <div class="sparkline-status-item">
+                <span class="sparkline-status-key">Prompt JSON</span>
+                <span class="sparkline-status-val">{{
+                  sessionPromptBytesCurrent != null ? formatKb(sessionPromptBytesCurrent) : "—"
                 }}</span>
               </div>
               <div class="sparkline-status-item">

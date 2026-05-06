@@ -30,6 +30,6 @@ pub use session_read_body::{
 };
 pub use types::{
     DEFAULT_TOOL_RESULT_INLINE_LINES, GrepPage, GrepPattern, HistoryRef, LineOffset,
-    LineWithPosition, PageLimit, SEND_DONE_HISTORY_INLINE_LINES, ShortRef,
+    LineWithPosition, PageLimit, SEND_DONE_HISTORY_INLINE_LINES, ShortRef, archive_cell_key,
 };
 pub use virtual_source::{VirtualArchiveRow, VirtualArchiveSource, VirtualHistoryRow};

@@ -24,3 +24,46 @@ pub(crate) fn build_token_args_wrapper(function_name: &str, invoke_expr: &str) -
         invoke_expr = invoke_expr
     )
 }
+
+/// Concatenate per-tool invoke wrappers into one script (single `eval` vs N× `eval`).
+pub(crate) fn build_tool_invoke_wrappers_batch(tool_names: &[String]) -> String {
+    tool_names
+        .iter()
+        .map(|tool_name| {
+            let escaped = tool_name.replace('\\', "\\\\").replace('"', "\\\"");
+            build_token_args_wrapper(
+                tool_name,
+                &format!("__tool_invoke(\"{escaped}\", JSON.stringify(argObj))"),
+            )
+        })
+        .collect()
+}
+
+/// Batch register `globalThis[name]` → `__baml_invoke(name, ...)`.
+pub(crate) fn build_baml_invoke_wrappers_batch(function_names: &[String]) -> String {
+    function_names
+        .iter()
+        .map(|function_name| {
+            let escaped = function_name.replace('\\', "\\\\").replace('"', "\\\"");
+            build_token_args_wrapper(
+                function_name,
+                &format!("__baml_invoke(\"{escaped}\", JSON.stringify(argObj))"),
+            )
+        })
+        .collect()
+}
+
+/// Batch register `globalThis[nameStream]` → `__baml_stream(name, ...)`.
+pub(crate) fn build_baml_stream_wrappers_batch(function_names: &[String]) -> String {
+    function_names
+        .iter()
+        .map(|function_name| {
+            let stream_function_name = format!("{}Stream", function_name);
+            let escaped = function_name.replace('\\', "\\\\").replace('"', "\\\"");
+            build_token_args_wrapper(
+                &stream_function_name,
+                &format!("__baml_stream(\"{escaped}\", JSON.stringify(argObj))"),
+            )
+        })
+        .collect()
+}

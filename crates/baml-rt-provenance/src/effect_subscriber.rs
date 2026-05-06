@@ -28,7 +28,7 @@ use crate::{
     events::{
         BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR, CallScope, LlmCitationDriftInfo,
         LlmCitationSimilarity, LlmDriftInfo, LlmPlanDriftInfo, LlmUsage, PlanStepSpec, ProvEvent,
-        ResolvedCitationTarget,
+        ProvEventData, ResolvedCitationTarget,
     },
     id_semantics::{SessionStepEntityId, SessionStepEntityInput},
     provenance_item_to_projection_item,
@@ -1880,18 +1880,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 } else {
                     "error"
                 };
-                let prompt_size = prompt_bytes(&metadata.prompt);
                 let (tokens_in, tokens_out) = usage_tokens(&prov_usage);
-                metrics::record_llm_call(&LlmCallMetrics {
-                    function_name: &metadata.function_name,
-                    client: &metadata.client,
-                    model: &metadata.model,
-                    result: result_label,
-                    duration: std::time::Duration::from_millis(*duration_ms),
-                    prompt_bytes: prompt_size,
-                    tokens_in,
-                    tokens_out,
-                });
                 let citation_strings = result_payload
                     .as_ref()
                     .map(extract_citation_strings_from_llm_result)
@@ -1973,6 +1962,23 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 ) else {
                     return Ok(()); // Skip on missing message_id
                 };
+                let prompt_bytes_for_metrics = match completed_event.data() {
+                    ProvEventData::LlmCallCompleted {
+                        prompt_serialized_utf8_bytes,
+                        ..
+                    } => *prompt_serialized_utf8_bytes as usize,
+                    _ => 0,
+                };
+                metrics::record_llm_call(&LlmCallMetrics {
+                    function_name: &metadata.function_name,
+                    client: &metadata.client,
+                    model: &metadata.model,
+                    result: result_label,
+                    duration: std::time::Duration::from_millis(*duration_ms),
+                    prompt_bytes: prompt_bytes_for_metrics,
+                    tokens_in,
+                    tokens_out,
+                });
                 let completed_id = completed_event.id().clone();
                 let client_alias = metadata
                     .metadata
@@ -2189,10 +2195,6 @@ fn task_id_from_metadata(metadata: &Value) -> Option<TaskId> {
         .get("task_id")
         .and_then(|value| value.as_str())
         .map(|value| TaskId::from_external(ExternalId::new(value.to_string())))
-}
-
-fn prompt_bytes(prompt: &Value) -> usize {
-    prompt.to_string().len()
 }
 
 fn usage_tokens(usage: &LlmUsage) -> (Option<u64>, Option<u64>) {

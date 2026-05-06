@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch } from "vue";
-import type { ChatMessage, WorkflowProgressState } from "../types/a2a";
+import type {
+  ChatMessage,
+  HistoryHydrateState,
+  WorkflowProgressState,
+} from "../types/a2a";
 import MessageBubble from "./MessageBubble.vue";
 import WorkflowProgress from "./WorkflowProgress.vue";
 
@@ -14,6 +18,10 @@ const props = defineProps<{
   inputRequiredPrompt?: string;
   /** Workflow progress state from coordinator SSE messages */
   workflowProgress?: WorkflowProgressState;
+  /** Conversation-history GET / SSE restore (Primary empty states). */
+  historyHydrateState?: HistoryHydrateState;
+  /** Selected provenance context id (toolbar), for empty-state copy. */
+  selectedContextId?: string | null;
 }>();
 
 const emit = defineEmits<{ send: [text: string]; cancel: [] }>();
@@ -32,7 +40,7 @@ function onMessagesScroll() {
 }
 
 function handleSend() {
-  if (input.value.trim() && !props.isLoading) {
+  if (input.value.trim() && !streamBusy.value) {
     userAtBottom.value = true;
     emit("send", input.value);
     input.value = "";
@@ -42,13 +50,47 @@ function handleSend() {
   }
 }
 
+/** Block input only while a stream is in flight, not when paused for INPUT_REQUIRED. */
+const streamBusy = computed(() => props.isLoading && !props.awaitingInput);
+
 const inputPlaceholder = computed(() => {
   if (props.awaitingInput) {
-    return props.inputRequiredPrompt?.trim() || "Reply to continue…";
+    const p = props.inputRequiredPrompt?.trim();
+    return p && p.length > 0 ? p : "Type your reply…";
   }
   if (props.disabled && !props.isLoading) return "Select an agent to start";
-  if (props.isLoading) return "Agent is responding…";
+  if (streamBusy.value) return "Agent is responding…";
   return "Type a message…";
+});
+
+const hydrateState = computed(() => props.historyHydrateState ?? "idle");
+
+const emptyStateTitle = computed(() => {
+  if (props.messages.length > 0) return "";
+  if (props.disabled) return "Select an agent";
+  const h = hydrateState.value;
+  if (h === "loading") return "Loading transcript…";
+  if (h === "error") return "Could not load history";
+  if (h === "skipped") return "Live transcript in progress";
+  if (h === "ready" && (props.selectedContextId ?? "").length > 0) {
+    return "No messages in this context yet";
+  }
+  return "Send a message to start";
+});
+
+const emptyStateSubtitle = computed(() => {
+  if (props.messages.length > 0) return "";
+  const h = hydrateState.value;
+  if (h === "error") {
+    return "Check the runner /contexts API or try refreshing the context list.";
+  }
+  if (h === "skipped") {
+    return "Provenance snapshot was deferred so streamed content is not overwritten. Send a message or wait for sync.";
+  }
+  if (h === "ready" && (props.selectedContextId ?? "").length > 0) {
+    return "This context is selected; the transcript is empty. Say something to begin.";
+  }
+  return "Choose a context above or send a message. Observe (right) shows traces and metrics for the active session.";
 });
 
 function handleKeydown(e: KeyboardEvent) {
@@ -65,6 +107,18 @@ function autoGrow() {
     el.style.height = el.scrollHeight + "px";
   }
 }
+
+watch(
+  () => props.awaitingInput,
+  (on) => {
+    if (on) {
+      void nextTick(() => {
+        textarea.value?.focus({ preventScroll: false });
+      });
+    }
+  },
+  { immediate: true },
+);
 
 // Auto-scroll to bottom when user is at bottom and content updates (messages, text, or tool/status events)
 watch(
@@ -112,23 +166,50 @@ watch(
         >
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
-        <span class="empty-state-text">Send a message to start chatting</span>
+        <span class="empty-state-text">{{ emptyStateTitle }}</span>
+        <span v-if="emptyStateSubtitle" class="empty-state-subtitle">{{ emptyStateSubtitle }}</span>
       </div>
       <MessageBubble v-for="msg in messages" :key="msg.id" :message="msg" />
     </div>
-    <div v-if="isLoading" class="working-indicator" role="status" aria-live="polite">
+    <div v-if="streamBusy" class="working-indicator" role="status" aria-live="polite">
       <span class="working-dots" aria-hidden="true"><span></span><span></span><span></span></span>
       <span class="working-text">Agent is responding…</span>
     </div>
     <form class="input-bar" @submit.prevent="handleSend">
-      <div class="input-wrapper">
+      <div
+        v-if="awaitingInput"
+        id="reply-needed-strip"
+        class="reply-needed-strip"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="reply-needed-strip__icon" aria-hidden="true">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+            <path d="M8 10h.01" />
+            <path d="M12 10h.01" />
+            <path d="M16 10h.01" />
+          </svg>
+        </span>
+        <span class="reply-needed-strip__text">Your reply is needed</span>
+      </div>
+      <div :class="['input-wrapper', { 'input-wrapper--awaiting': awaitingInput }]">
         <textarea
           ref="textarea"
           v-model="input"
           data-testid="message-input"
           rows="1"
           :placeholder="inputPlaceholder"
-          :disabled="disabled || isLoading"
+          :disabled="disabled || streamBusy"
+          :aria-describedby="awaitingInput ? 'reply-needed-strip' : undefined"
           autofocus
           @keydown="handleKeydown"
           @input="autoGrow"
@@ -136,7 +217,7 @@ watch(
         <span class="input-hint">Enter to send, Shift+Enter for newline</span>
       </div>
       <button
-        v-if="isLoading"
+        v-if="streamBusy"
         type="button"
         class="stop-btn"
         data-testid="stop-button"
@@ -151,7 +232,7 @@ watch(
         type="submit"
         class="send-btn"
         data-testid="send-button"
-        :disabled="disabled || !input.trim()"
+        :disabled="disabled || streamBusy || !input.trim()"
       >
         <!-- Send arrow icon -->
         <svg

@@ -56,6 +56,7 @@
 //! informational attributes for display/audit only; relationships are expressed as edges.
 
 mod a2a_store;
+mod archive_ref;
 mod builder;
 mod context_reader;
 mod conversation_context_pipeline;
@@ -101,7 +102,7 @@ use crate::{
 /// (single-flight on `agent_runtime_instance` / context entity per process) —
 /// not raising this constant. See `record_event_required` callers and the
 /// `concurrent_writes_test` regression coverage.
-const WRITE_CONFLICT_MAX_ATTEMPTS: u32 = 6;
+pub(super) const WRITE_CONFLICT_MAX_ATTEMPTS: u32 = 6;
 const WRITE_CONFLICT_BASE_DELAY: Duration = Duration::from_millis(2);
 const WRITE_CONFLICT_MAX_DELAY: Duration = Duration::from_millis(200);
 
@@ -109,8 +110,29 @@ const WRITE_CONFLICT_MAX_DELAY: Duration = Duration::from_millis(200);
 /// The error type carries no structured discriminator on the public boundary,
 /// so we match on the message prefix (`Transaction conflict: …. This transaction
 /// can be retried`, see `surrealdb-core`/`kvs/err.rs`).
-fn is_transaction_conflict(e: &surrealdb::Error) -> bool {
+pub(super) fn is_transaction_conflict(e: &surrealdb::Error) -> bool {
     e.message().contains("Transaction conflict")
+}
+
+/// True when `e` is SurrealDB's "record / unique index already exists" signal.
+///
+/// Used by `archive_ref.rs` (`archive_local_counter`): concurrent first-touch runs `UPDATE` then
+/// `CREATE`; losers of the `CREATE` race must retry `UPDATE` instead of surfacing `RecordExists` /
+/// `IndexExists` as a hard error.
+pub(super) fn is_duplicate_record_write(e: &surrealdb::Error) -> bool {
+    let m = e.message();
+    (m.contains("Database record") && m.contains("already exists"))
+        || (m.contains("Database index") && m.contains("already contains"))
+}
+
+/// True when `e` wraps a Surreal duplicate-record error (e.g. unique `activity_anchor`).
+pub(super) fn storage_err_is_duplicate_record_write(e: &ProvenanceError) -> bool {
+    match e {
+        ProvenanceError::Storage(boxed) => boxed
+            .downcast_ref::<surrealdb::Error>()
+            .is_some_and(is_duplicate_record_write),
+        _ => false,
+    }
 }
 
 /// Equal-jitter backoff: half the budget is fixed, half is randomised in
@@ -120,7 +142,7 @@ fn is_transaction_conflict(e: &surrealdb::Error) -> bool {
 ///
 /// Jitter source is `SystemTime::subsec_nanos` — decorrelation only, no crypto
 /// guarantees needed and no extra dependency.
-fn jittered_backoff(attempt: u32) -> Duration {
+pub(super) fn jittered_backoff(attempt: u32) -> Duration {
     let base =
         backoff_delay(WRITE_CONFLICT_BASE_DELAY, WRITE_CONFLICT_MAX_DELAY, attempt).as_nanos();
     let half = (base / 2) as u64;
@@ -142,6 +164,12 @@ pub struct SurrealProvenanceStore {
     /// Only [`crate::store::TaskAgentResolution::Resolved`] outcomes are stored so that a transient
     /// [`crate::store::TaskAgentResolution::NotLinked`] (edges not yet written) is never pinned.
     task_agent_id_cache: DashMap<TaskId, AgentId>,
+    /// Immutable after first successful `archive_ensure_prefix` in this process.
+    archive_prefix_cache: DashMap<(String, String), u32>,
+    /// Serializes `archive_next_local` per `(context_id, archive_prefix)` to cut MVCC/CREATE races.
+    archive_local_serializers: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// One in-flight allocate per `(context_id, activity_anchor)`; pairs with unique DB index.
+    archive_anchor_serializers: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl SurrealProvenanceStore {

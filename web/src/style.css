@@ -974,7 +974,8 @@ body {
 .provenance-pane {
   display: flex;
   flex-direction: row;
-  flex-shrink: 0;
+  flex-shrink: 1;
+  min-width: 0;
   background: var(--surface);
   border-left: 1px solid var(--border);
   position: relative;
@@ -982,13 +983,27 @@ body {
   isolation: isolate;
 }
 
+/* Closed: rail is toggle only. Open: cap width so Primary (chat) never starves on narrow hosts. */
+.provenance-pane:not(.open) {
+  flex: 0 0 auto;
+}
+
+.provenance-pane.open {
+  flex: 0 1 min(640px, 50%);
+  max-width: min(640px, 50%);
+  min-width: 0;
+}
+
 .provenance-pane-inner {
-  width: clamp(480px, 48vw, 640px);
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   position: relative;
   z-index: 1;
+  box-sizing: border-box;
   transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -2177,6 +2192,17 @@ body {
 
 .empty-state-text {
   font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.empty-state-subtitle {
+  font-size: 12px;
+  line-height: 1.45;
+  max-width: 28rem;
+  text-align: center;
+  color: var(--text-muted);
+  padding: 0 16px;
 }
 
 /* ── Message bubbles ── */
@@ -2189,6 +2215,24 @@ body {
 
 .message-row.user {
   flex-direction: row-reverse;
+}
+
+.message-row--relay .bubble.user {
+  border-left: 3px solid color-mix(in srgb, var(--text-muted) 70%, var(--primary));
+}
+
+.speaker-kind-badge {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
 }
 
 .message-avatar {
@@ -2278,6 +2322,16 @@ body {
   border-radius: 50%;
   background: var(--primary);
   animation: dotPulse 1.4s ease-in-out infinite;
+}
+
+.awaiting-input-hint--mark {
+  align-self: flex-start;
+  margin-top: 8px;
+  padding: 4px 8px;
+  width: auto;
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 
 /* ── Thinking dots ── */
@@ -2376,6 +2430,7 @@ body {
 
 .input-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 8px;
   padding: 16px 24px;
@@ -2384,11 +2439,49 @@ body {
   transition: background-color 0.25s ease;
 }
 
+.reply-needed-strip {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 4px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--primary-subtle) 0%, var(--surface) 100%);
+  border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 12%, transparent);
+  animation: slideIn 0.35s ease-out;
+}
+
+.reply-needed-strip__icon {
+  display: flex;
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.reply-needed-strip__icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.reply-needed-strip__text {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
 .input-wrapper {
   flex: 1;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+}
+
+.input-wrapper--awaiting textarea {
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
 }
 
 .input-wrapper textarea {
@@ -2633,6 +2726,122 @@ body {
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   transition: background-color 0.25s ease;
+}
+
+/* Session console: ties Primary (transcript) ↔ Observe (traces) for one agent/context */
+.chat-session-zones {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 20px;
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-session-zones .zone-pair {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.chat-session-zones .zone-pair--end {
+  justify-content: flex-end;
+}
+
+.chat-session-zones .zone-chip {
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--surface);
+}
+
+.chat-session-zones .zone-chip--primary {
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+  color: var(--primary);
+  background: var(--primary-subtle);
+}
+
+.chat-session-zones .zone-chip--observe {
+  border-color: color-mix(in srgb, var(--text-muted) 40%, var(--border));
+}
+
+.chat-session-zones .session-meta {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-session-zones .session-meta code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.chat-session-zones .zone-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Prompt JSON telemetry (Observe / Live tab), not transcript chrome */
+.prompt-ops-telemetry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.prompt-ops-telemetry .prompt-ops-label {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.prompt-ops-telemetry .prompt-op-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
+.prompt-ops-telemetry .prompt-op-order {
+  opacity: 0.75;
+}
+
+.prompt-ops-telemetry .prompt-op-anchor {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  max-width: 7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── Chat tabs ── */

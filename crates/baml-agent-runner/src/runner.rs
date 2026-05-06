@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    str::FromStr as _,
     sync::{Arc, RwLock, atomic::AtomicU8},
 };
 
@@ -19,13 +20,15 @@ use baml_rt_core::{
 };
 use baml_rt_observability::spans;
 use baml_rt_provenance::{ProvEvent, ProvenanceWriter};
-use baml_rt_tools::ToolAccessPolicy;
+use baml_rt_repository::{ContentHash, RepositoryService, manifest_package_name_from_tar_gz};
+use baml_rt_tools::{SharedContextRefStore, ToolAccessPolicy};
 use serde_json::Value;
 use tokio::{io::AsyncWriteExt, sync::broadcast};
 
 use crate::{
     agent_package::{
-        AgentLifecycleState, AgentPackage, BootedAgent, DeploymentProvenance, SnapshotAgentLister,
+        AgentLifecycleState, AgentPackage, AgentPackageBootArgs, BootedAgent, DeploymentProvenance,
+        SnapshotAgentLister,
     },
     config::ProvenanceConfig,
     routing::{InternalA2aRouter, LiveAgentLister, ScopedInternalA2aRouter, scope_from_request},
@@ -81,9 +84,13 @@ pub(crate) struct AgentRunner {
     pub(crate) stream_idle_secs: Option<u64>,
     pub(crate) claude_workspaces_base: Option<std::path::PathBuf>,
     pub(crate) repository_url: String,
+    /// Same persistence as `GET /repository/*`; satisfies deploy/restore without depending on HTTP.
+    pub(crate) embedded_repository: Option<Arc<RepositoryService>>,
     pub(crate) repository_http_client: reqwest::Client,
     /// Cluster manager for recording agent placements. Set after construction via `set_cluster_manager`.
     pub(crate) cluster_manager: std::sync::OnceLock<Arc<crate::cluster::ClusterManager>>,
+    /// One map for all deployed agents so `@N` survives internal A2A to another manager.
+    pub(crate) shared_context_ref_store: SharedContextRefStore,
 }
 
 impl AgentRunner {
@@ -94,6 +101,7 @@ impl AgentRunner {
         stream_idle_secs: Option<u64>,
         claude_workspaces_base: Option<std::path::PathBuf>,
         repository_url: String,
+        embedded_repository: Option<Arc<RepositoryService>>,
     ) -> baml_rt_core::Result<Self> {
         let routed_agents = std::sync::RwLock::new(HashMap::new());
         let internal_a2a_router = Arc::new(InternalA2aRouter::new());
@@ -107,8 +115,10 @@ impl AgentRunner {
             stream_idle_secs,
             claude_workspaces_base,
             repository_url,
+            embedded_repository,
             repository_http_client: reqwest::Client::new(),
             cluster_manager: std::sync::OnceLock::new(),
+            shared_context_ref_store: SharedContextRefStore::new(),
         })
     }
 
@@ -165,6 +175,31 @@ impl AgentRunner {
         &self,
         content_hash: &DeploymentContentHash,
     ) -> Result<Vec<u8>> {
+        if let Some(repo) = &self.embedded_repository {
+            let hash = ContentHash::from_str(content_hash.as_str()).map_err(|e| {
+                BamlRtError::Io(std::io::Error::other(format!(
+                    "embedded repository: invalid content hash: {e}"
+                )))
+            })?;
+            match repo.get_blob(&hash).await {
+                Ok(Some(bytes)) => {
+                    tracing::trace!(
+                        content_hash = content_hash.as_str(),
+                        bytes_len = bytes.len(),
+                        "repository blob read from embedded store"
+                    );
+                    return Ok(bytes);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(BamlRtError::Io(std::io::Error::other(format!(
+                        "embedded repository blob read failed for {}: {e}",
+                        content_hash.as_str()
+                    ))));
+                }
+            }
+        }
+
         let url = format!(
             "{}/blobs/{}",
             self.repository_url.trim_end_matches('/'),
@@ -205,6 +240,32 @@ impl AgentRunner {
         &self,
         content_hash: &DeploymentContentHash,
     ) -> Result<Option<u32>> {
+        if let Some(repo) = &self.embedded_repository {
+            let hash = ContentHash::from_str(content_hash.as_str()).map_err(|e| {
+                BamlRtError::Io(std::io::Error::other(format!(
+                    "embedded repository: invalid content hash: {e}"
+                )))
+            })?;
+            match repo.get_by_hash(&hash).await {
+                Ok(Some(entry)) => {
+                    let repository_version = entry.version_ref.version.as_u32();
+                    tracing::trace!(
+                        content_hash = content_hash.as_str(),
+                        repository_version,
+                        "repository entry read from embedded store"
+                    );
+                    return Ok(Some(repository_version));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    return Err(BamlRtError::Io(std::io::Error::other(format!(
+                        "embedded repository entry read failed for {}: {e}",
+                        content_hash.as_str()
+                    ))));
+                }
+            }
+        }
+
         let url = format!(
             "{}/entries/{}",
             self.repository_url.trim_end_matches('/'),
@@ -321,14 +382,15 @@ impl AgentRunner {
                 })
             };
         let (agent, _agent_id) = package
-            .boot(
-                self.provenance_config(),
-                self.access_policy(),
-                catalogue,
-                scoped_router,
-                self.stream_idle_secs(),
-                self.claude_workspaces_base.as_deref(),
-            )
+            .boot(AgentPackageBootArgs {
+                shared_context_ref_store: self.shared_context_ref_store.clone(),
+                provenance_config: self.provenance_config(),
+                policy: self.access_policy(),
+                agent_list_catalogue: catalogue,
+                a2a_handler: scoped_router,
+                stream_idle_secs: self.stream_idle_secs(),
+                claude_workspaces_base: self.claude_workspaces_base.as_deref(),
+            })
             .await?;
         let manifest = package.manifest().clone();
         let baml_functions: Vec<String> = {
@@ -757,6 +819,40 @@ impl DeploymentManager for AgentRunner {
         let bytes = self.fetch_blob_from_repository(content_hash).await?;
         AgentRunner::verify_artifact_integrity(content_hash, &bytes, repository_version)?;
 
+        let package_name = manifest_package_name_from_tar_gz(&bytes).map_err(|e| {
+            BamlRtError::InvalidArgument(format!(
+                "Failed to read agent package manifest from artifact: {e}"
+            ))
+        })?;
+
+        let mut old_hash_to_replace: Option<DeploymentContentHash> = None;
+        {
+            let agents = self.agents.read().expect("RwLock poison");
+            if let Some(existing) = agents.get(&package_name) {
+                match existing.content_hash() {
+                    Some(h) if h == content_hash => {
+                        return Ok(baml_rt_core::DeployResult {
+                            already_deployed: true,
+                        });
+                    }
+                    Some(h) => {
+                        old_hash_to_replace = Some(h.clone());
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        if let Some(ref old_hash) = old_hash_to_replace {
+            tracing::info!(
+                agent_package = %package_name,
+                prior_content_hash = %old_hash.as_str(),
+                new_content_hash = %content_hash.as_str(),
+                "superseding deployment: draining prior revision before boot (up to 30s if traffic in flight)"
+            );
+            self.undeploy_by_hash(old_hash).await?;
+        }
+
         let (name, route_key, booted) = self
             .boot_from_blob_bytes(&bytes, content_hash, repository_version)
             .await?;
@@ -775,7 +871,7 @@ impl DeploymentManager for AgentRunner {
                 && existing.content_hash() != Some(content_hash)
             {
                 return Err(BamlRtError::Conflict(format!(
-                    "Agent '{name}' is already loaded with a different content hash"
+                    "Agent '{name}' changed during deploy (concurrent deployment); retry"
                 )));
             }
             let mut routed = self.routed_agents.write().expect("RwLock poison");
@@ -810,6 +906,11 @@ impl DeploymentManager for AgentRunner {
             routed.remove(&route_key);
             return Err(e);
         }
+        tracing::info!(
+            agent = %name,
+            content_hash = %content_hash.as_str(),
+            "deployment record persisted; POST /deploy completing"
+        );
 
         // Record agent placement in cluster registry (if cluster mode is active).
         if let Some(cluster_mgr) = self.cluster_manager.get()
@@ -844,6 +945,12 @@ impl DeploymentManager for AgentRunner {
             (name.clone(), agent.clone())
         };
 
+        tracing::info!(
+            agent = %target_name,
+            content_hash = %content_hash.as_str(),
+            "undeploy: waiting for in-flight requests to finish (up to 30s)"
+        );
+
         // 2. Wait for in-flight turns to complete (with timeout).
         let drain_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
@@ -859,6 +966,8 @@ impl DeploymentManager for AgentRunner {
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+
+        tracing::info!(agent = %target_name, "undeploy: drain finished; removing from routing");
 
         // 3. Remove from both maps atomically to prevent dispatch to a
         //    destroyed agent between the two removals.

@@ -18,7 +18,7 @@ use baml_rt_core::{
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{
     A2aGraphStore, ProvEvent, ProvenanceContextReader, ProvenanceEffectSubscriber,
-    ProvenanceInterceptor, ProvenanceWriter,
+    ProvenanceInterceptor, ProvenanceWriter, SurrealProvenanceStore,
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, BridgeHandle, QuickJSBridge, QuickJSConfig,
@@ -497,6 +497,7 @@ struct ProvenanceWired {
 /// registered as a behavior-only hook point for future policy/gating interceptors.
 async fn wire_provenance_subsystems(
     writer: Arc<dyn ProvenanceWriter>,
+    archive_store: Option<Arc<SurrealProvenanceStore>>,
     runtime: &RwLock<BamlRuntimeManager>,
     effect_emitter: &dyn EffectEmitter,
 ) -> Result<ProvenanceWired> {
@@ -511,6 +512,11 @@ async fn wire_provenance_subsystems(
             guard.interceptor_registry(),
         )
     };
+
+    if let Some(store) = archive_store {
+        let mut guard = runtime.write().await;
+        guard.set_archive_ref_store(Some(store));
+    }
 
     // Subsystem 1: ProvenanceEffectSubscriber → effect bus.
     // Source of truth for LLM/tool completion events including drift scoring,
@@ -569,10 +575,17 @@ async fn wire_provenance_subsystems(
 /// re-applied when the executor is created (e.g. after `load_schema`).
 pub async fn install_provenance_conversation_wiring(
     writer: Arc<dyn ProvenanceWriter>,
+    archive_store: Option<Arc<SurrealProvenanceStore>>,
     runtime: &Arc<RwLock<BamlRuntimeManager>>,
     effect_emitter: &Arc<dyn EffectEmitter>,
 ) -> Result<()> {
-    wire_provenance_subsystems(writer, runtime.as_ref(), effect_emitter.as_ref()).await?;
+    wire_provenance_subsystems(
+        writer,
+        archive_store,
+        runtime.as_ref(),
+        effect_emitter.as_ref(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -1316,43 +1329,46 @@ impl A2aAgentBuilderWithEffectEmitter {
         // cardinality is one — the same Arc<dyn TaskStoreBackend> is used for repository,
         // live_result_pipeline, and request_router (create-stream writes and tasks.subscribe reads
         // see the same backend instance).
-        let (task_store, provenance_writer) = match (self.task_store, self.provenance_writer) {
+        let (task_store, provenance_writer, surreal_for_archive) = match (
+            self.task_store,
+            self.provenance_writer,
+        ) {
             (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Default) => {
                 return Err(BamlRtError::InvalidArgument(
-                    "A2aAgentBuilder: a provenance graph is required. \
+                        "A2aAgentBuilder: a provenance graph is required. \
                      With a custom task store you must call .with_provenance_writer(...) or .with_surreal_store(...); \
                      you cannot combine with_task_store_backend alone with the default writer."
-                        .into(),
-                ));
+                            .into(),
+                    ));
             }
             (TaskStoreConfig::Provided(task_store), ProvenanceWriterConfig::Provided(writer)) => {
-                (task_store, Some(writer))
+                (task_store, Some(writer), None)
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Provided(writer)) => {
                 let store: Arc<dyn TaskStoreBackend> =
                     Arc::new(ProvenanceTaskStore::new(writer.clone(), agent_id.clone()));
-                (store, Some(writer))
+                (store, Some(writer), None)
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Default) => {
                 let prov = baml_rt_provenance::SurrealStoreBuilder::in_memory_isolated()
-                    .build()
-                    .await
-                    .map_err(|e| {
-                        BamlRtError::InvalidArgument(format!(
-                            "A2aAgentBuilder: failed to open default in-memory provenance store: {e}"
-                        ))
-                    })?;
+                        .build()
+                        .await
+                        .map_err(|e| {
+                            BamlRtError::InvalidArgument(format!(
+                                "A2aAgentBuilder: failed to open default in-memory provenance store: {e}"
+                            ))
+                        })?;
+                let archive_src = Arc::clone(&prov);
                 let runtime_store = SurrealRuntimeStore::new(prov, agent_id.clone());
                 let w: Arc<dyn ProvenanceWriter> = runtime_store.clone();
                 let task_store: Arc<dyn TaskStoreBackend> = Arc::new(
                     ProvenanceTaskStore::with_backend(runtime_store, w.clone(), agent_id.clone()),
                 );
-                (task_store, Some(w))
+                (task_store, Some(w), Some(archive_src))
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Surreal(store))
             | (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Surreal(store)) => {
-                // Single construction: one SurrealRuntimeStore from the provided store Arc;
-                // same instance used as TaskStoreBackend and ProvenanceWriter for pipeline and handler.
+                let archive_src = Arc::clone(&store);
                 let runtime_store = SurrealRuntimeStore::new(store, agent_id.clone());
                 let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store.clone();
                 let task_store: Arc<dyn TaskStoreBackend> =
@@ -1361,11 +1377,12 @@ impl A2aAgentBuilderWithEffectEmitter {
                         provenance_writer.clone(),
                         agent_id.clone(),
                     ));
-                (task_store, Some(provenance_writer))
+                (task_store, Some(provenance_writer), Some(archive_src))
             }
         };
 
         let writer = provenance_writer.expect("build always mounts a ProvenanceWriter");
+        let archive_store: Option<Arc<SurrealProvenanceStore>> = surreal_for_archive;
 
         let emitter: Arc<dyn EventEmitter> =
             Arc::new(BroadcastEventEmitter::new(update_tx.clone()));
@@ -1406,7 +1423,8 @@ impl A2aAgentBuilderWithEffectEmitter {
         // Provenance: all subsystems (effect subscriber, tool interceptor, conversation
         // context) wired atomically. See `wire_provenance_subsystems` doc for the full list.
         let provenance =
-            wire_provenance_subsystems(writer, &runtime, effect_emitter.as_ref()).await?;
+            wire_provenance_subsystems(writer, archive_store, &runtime, effect_emitter.as_ref())
+                .await?;
         let request_router: Arc<dyn RequestRouter> = Arc::new(MethodBasedRouter::new(
             task_handler.clone(),
             js_invoker,
@@ -1597,6 +1615,32 @@ impl A2aRequestHandler for A2aAgent {
 }
 
 impl A2aJsChatHost for A2aAgent {}
+
+/// Wire chunk when the collector signals `InputRequired` completion with a null payload.
+/// Not wire-final (`final: false`); both `task.status` and `statusUpdate.status` carry
+/// `TASK_STATE_INPUT_REQUIRED` so clients (e.g. `getStateFromChunk`) stay aligned.
+fn synthetic_input_required_chunk_wire_value(task_id: String, context_id: &str) -> Value {
+    let prompt_msg = json!({
+        "parts": [{ "text": "Reply to continue the conversation." }]
+    });
+    json!({
+        "task": {
+            "id": task_id,
+            "contextId": context_id,
+            "status": {
+                "state": "TASK_STATE_INPUT_REQUIRED",
+                "message": prompt_msg.clone()
+            }
+        },
+        "statusUpdate": {
+            "status": {
+                "state": "TASK_STATE_INPUT_REQUIRED",
+                "message": prompt_msg
+            }
+        },
+        "final": false
+    })
+}
 
 /// Signals whether the outer turn loop should continue or break after an instrumented turn body.
 enum TurnAction {
@@ -2031,26 +2075,10 @@ impl A2aAgent {
                             .clone()
                             .or(session_task_id_str.clone())
                             .unwrap_or_else(|| format!("stream-{}", session_context_id));
-                        let prompt_msg = json!({
-                            "parts": [{ "text": "Reply to continue the conversation." }]
-                        });
-                        let input_required_chunk = json!({
-                            "task": {
-                                "id": tid,
-                                "contextId": session_context_id.as_str(),
-                                "status": {
-                                    "state": "TASK_STATE_INPUT_REQUIRED",
-                                    "message": prompt_msg.clone()
-                                }
-                            },
-                            "statusUpdate": {
-                                "status": {
-                                    "state": "TASK_STATE_INPUT_REQUIRED",
-                                    "message": prompt_msg
-                                }
-                            },
-                            "final": false
-                        });
+                        let input_required_chunk = synthetic_input_required_chunk_wire_value(
+                            tid,
+                            session_context_id.as_str(),
+                        );
                         let formatted = self.response_formatter.format_stream_chunk(
                             request_id.clone(),
                             input_required_chunk,
@@ -2186,10 +2214,33 @@ impl A2aAgent {
             }
             a2a::A2aOutcome::Stream(handle) => {
                 let mut rx = handle.receiver;
+                let synthetic_context = a2a::A2aRequest::from_value(request.clone())
+                    .ok()
+                    .map(|p| p.context_id().as_str().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "unknown-context".to_string());
+                let mut last_task_id: Option<String> = None;
                 // Stream in real time: receive → format → send immediately. No buffering.
                 while let Some((chunk, index, comp)) = rx.recv().await {
                     let view = StreamChunkView::new(chunk);
+                    if let Some(tid) = view.task_id() {
+                        last_task_id = Some(tid.as_str().to_string());
+                    }
                     if comp == Some(StreamCompletion::InputRequired) && view.is_null() {
+                        let tid = last_task_id
+                            .clone()
+                            .unwrap_or_else(|| format!("stream-{synthetic_context}"));
+                        let input_required_chunk = synthetic_input_required_chunk_wire_value(
+                            tid,
+                            synthetic_context.as_str(),
+                        );
+                        let formatted = self.response_formatter.format_stream_chunk(
+                            request_id.clone(),
+                            input_required_chunk,
+                            index,
+                            false,
+                        );
+                        let _ = stream_tx.send(formatted).await;
                         break;
                     }
                     let is_final = comp.is_some_and(StreamCompletion::is_wire_final);
@@ -2509,12 +2560,54 @@ mod tests {
         BamlRtError,
         context::InvocationScope,
         ids::{ContextId, ExternalId, MessageId, TaskId},
+        stream_completion::StreamCompletion,
     };
     use baml_rt_provenance::ProvenanceContextReader;
     use serde_json::json;
 
-    use super::{A2aAgent, SurrealRuntimeStore, TaskRepository, synthesized_live_task_id};
+    use super::{
+        A2aAgent, SurrealRuntimeStore, TaskRepository, synthesized_live_task_id,
+        synthetic_input_required_chunk_wire_value,
+    };
     use crate::a2a_types::{A2aMessageId, Message, MessageRole, Part};
+
+    #[test]
+    fn synthetic_input_required_chunk_wire_shape_and_not_wire_final() {
+        assert!(
+            !StreamCompletion::InputRequired.is_wire_final(),
+            "InputRequired must not set final: true on the wire"
+        );
+
+        let v = synthetic_input_required_chunk_wire_value("task-wire-test".to_string(), "ctx-9");
+        assert_eq!(v.get("final"), Some(&json!(false)));
+
+        let task = v.get("task").expect("task object");
+        assert_eq!(task.get("id"), Some(&json!("task-wire-test")));
+        assert_eq!(task.get("contextId"), Some(&json!("ctx-9")));
+        let task_status = task.get("status").expect("task.status");
+        assert_eq!(
+            task_status.get("state"),
+            Some(&json!("TASK_STATE_INPUT_REQUIRED"))
+        );
+        let task_msg = task_status.get("message").expect("task.status.message");
+        let parts = task_msg
+            .get("parts")
+            .and_then(|p| p.as_array())
+            .expect("message.parts array");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            parts[0].get("text").and_then(|t| t.as_str()),
+            Some("Reply to continue the conversation.")
+        );
+
+        let su = v.get("statusUpdate").expect("statusUpdate");
+        let su_status = su.get("status").expect("statusUpdate.status");
+        assert_eq!(
+            su_status.get("state"),
+            Some(&json!("TASK_STATE_INPUT_REQUIRED"))
+        );
+        assert!(su_status.get("message").is_some());
+    }
 
     #[test]
     fn synthesized_live_task_id_is_distinct_from_context_id() {

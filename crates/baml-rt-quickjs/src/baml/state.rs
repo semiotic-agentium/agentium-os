@@ -41,6 +41,8 @@ pub(in crate::baml) struct BamlRuntimeState {
     /// Latest read-phase tool completion anchor per session (pairs `SendDone` with graph `WAS_INFORMED_BY`).
     pub(in crate::baml) read_completion_tool_anchors: Arc<DashMap<ToolSessionId, ActivityAnchorId>>,
     pub(in crate::baml) archive_ref_tables: Arc<baml_rt_tools::archive_refs::ContextRefTables>,
+    /// Surreal-backed allocation / fetch for `@prefix/local` across runtimes (`None` = in-memory only).
+    pub(in crate::baml) archive_ref_store: Option<Arc<baml_rt_provenance::SurrealProvenanceStore>>,
     pub(in crate::baml) effect_emitter: Option<Arc<dyn EffectEmitter>>,
     pub(in crate::baml) conversation_context_provider: Option<Arc<dyn ConversationContextProvider>>,
     pub(in crate::baml) pending_parse_retry_policy: Option<ParseRetryPolicy>,
@@ -66,6 +68,7 @@ impl Default for BamlRuntimeState {
             tool_session_effect_tokens: Arc::new(DashMap::new()),
             read_completion_tool_anchors: Arc::new(DashMap::new()),
             archive_ref_tables: Arc::new(baml_rt_tools::archive_refs::ContextRefTables::new()),
+            archive_ref_store: None,
             effect_emitter: None,
             conversation_context_provider: None,
             pending_parse_retry_policy: None,

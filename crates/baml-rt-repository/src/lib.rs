@@ -59,7 +59,10 @@ pub use entry::{ChangeRationale, NewEntry, RepositoryEntry, RepositoryEntryHeade
 pub use error::{RepositoryError, Result};
 pub use ids::{AgentName, ContentHash, Generation, Version, VersionRef};
 pub use lineage::{LineageEdge, LineageKind, LineageSubgraph, Parentage};
-pub use package::{PackageExtractError, source_bundle_from_agent_dir, source_bundle_from_tar_gz};
+pub use package::{
+    PackageExtractError, manifest_package_name_from_tar_gz, source_bundle_from_agent_dir,
+    source_bundle_from_tar_gz,
+};
 pub use router::{
     repository_mutation_router, repository_read_router, repository_router,
     repository_router_without_publish,

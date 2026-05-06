@@ -17,6 +17,7 @@ import type { DrilldownFromAnomaly } from "./provenance/ProvenanceAnomaliesTab.v
 import ProvenanceDriftTab from "./provenance/ProvenanceDriftTab.vue";
 import ExploreTab from "./provenance/ExploreTab.vue";
 import type { DrilldownParams } from "./provenance/ExploreTab.vue";
+import type { LlmPromptOperation } from "../types/a2a";
 
 const props = defineProps<{
   contextId?: string;
@@ -26,6 +27,7 @@ const props = defineProps<{
   diagrams?: string[];
   /** Bumps when evented provenance signals new rows; edge-triggers Live refresh */
   traceRefreshTick?: number;
+  llmPromptOperations?: LlmPromptOperation[];
 }>();
 
 const isOpen = ref(typeof window !== "undefined" ? window.innerWidth >= 1280 : true);
@@ -341,6 +343,7 @@ watch(
             :task-id="props.taskId"
             :is-streaming="props.isStreaming"
             :all-task-ids="planningState.response?.allTaskIds ?? []"
+            :llm-prompt-operations="props.llmPromptOperations"
             @hotspot-drilldown="onHotspotDrilldown"
             @open-modal="openModal"
             @download-episode-text="downloadEpisodeText"

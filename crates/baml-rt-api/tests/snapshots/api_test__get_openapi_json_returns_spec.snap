@@ -1755,6 +1755,7 @@ expression: snapshot
             "user_prompts_total",
             "llm_calls_total",
             "llm_duration_ms_total",
+            "prompt_context_bytes_current",
             "tokens_total"
           ],
           "properties": {
@@ -1766,6 +1767,12 @@ expression: snapshot
             "llm_duration_ms_total": {
               "type": "integer",
               "format": "int64",
+              "minimum": 0
+            },
+            "prompt_context_bytes_current": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Serialized prompt JSON bytes for the **latest** LLM call in this context (temporal tail).",
               "minimum": 0
             },
             "tokens_total": {
@@ -1791,6 +1798,7 @@ expression: snapshot
             "user_prompt_count",
             "llm_call_count",
             "llm_duration_ms_total",
+            "prompt_context_bytes_current",
             "tokens"
           ],
           "properties": {
@@ -1806,6 +1814,12 @@ expression: snapshot
             },
             "message_id": {
               "type": "string"
+            },
+            "prompt_context_bytes_current": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Serialized prompt JSON bytes for the **latest** LLM call in this turn (`a2a_event_order` tail).",
+              "minimum": 0
             },
             "tokens": {
               "$ref": "#/components/schemas/TokenUsageDto"
@@ -1961,8 +1975,19 @@ expression: snapshot
             "items"
           ],
           "properties": {
+            "awaitingInput": {
+              "type": "boolean",
+              "description": "True when `a2a_task.status_json` for the effective task is `TASK_STATE_INPUT_REQUIRED`."
+            },
             "contextId": {
               "type": "string"
+            },
+            "inputRequiredPrompt": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "First text part from the status message when [Self::awaiting_input] is true."
             },
             "items": {
               "type": "array",
@@ -1970,12 +1995,28 @@ expression: snapshot
                 "$ref": "#/components/schemas/ConversationHistoryItemDto"
               }
             },
+            "llmPromptOperations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/LlmPromptOperationDto"
+              },
+              "description": "LLM prompt operations through `max_event_order` (delta may contain only new rows)."
+            },
             "maxEventOrder": "[a2a_event_order]",
             "nextCursor": {
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "promptContextBytesSessionCurrent": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "description": "Latest LLM prompt JSON size in this scope (temporal tail).",
+              "minimum": 0
             },
             "taskId": {
               "type": [
@@ -2593,6 +2634,30 @@ expression: snapshot
               ]
             },
             "timestamp_ms": "[timestamp_ms]"
+          }
+        },
+        "LlmPromptOperationDto": {
+          "type": "object",
+          "description": "One completed LLM call’s measured prompt JSON byte length (for UI / SSE merge).",
+          "required": [
+            "activityAnchor",
+            "eventOrder",
+            "promptContextBytesCurrent"
+          ],
+          "properties": {
+            "activityAnchor": {
+              "type": "string"
+            },
+            "eventOrder": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "promptContextBytesCurrent": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
           }
         },
         "MigrateRequestDto": {

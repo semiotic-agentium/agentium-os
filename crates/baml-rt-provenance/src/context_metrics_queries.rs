@@ -9,10 +9,10 @@ use serde_json::Value;
 
 use crate::{
     error::Result,
-    id_semantics::context_entity_id_string,
+    id_semantics::{context_entity_id_string, task_execution_activity_id_string},
     surreal_store::{SurrealProvenanceStore, check_and_take_zero, map_surreal_error},
     surreal_tables::{TBL_EDGE, TBL_NODE},
-    vocabulary::{context_scope, semantic_labels},
+    vocabulary::{a2a_relations, context_scope, semantic_labels, storage_safe},
 };
 
 pub type MetricsRow = HashMap<String, Value>;
@@ -122,7 +122,7 @@ pub async fn turn_totals_by_context(
             .db()
             .query(format!(
                 "SELECT node_id, props OMIT id FROM {TBL_NODE} \
-                 WHERE node_id = $nid AND props.a2a_usage_total_tokens IS NOT NULL LIMIT 1"
+                 WHERE node_id = $nid LIMIT 1"
             ))
             .bind(("nid", nid.clone()))
             .await
@@ -141,8 +141,21 @@ pub async fn turn_totals_by_context(
         })
         .collect();
 
+    #[derive(Default)]
+    struct TurnAccum {
+        tokens_in: i64,
+        tokens_out: i64,
+        tokens_total: i64,
+        llm_call_count: u64,
+        llm_duration_ms_total: i64,
+        first_activity_anchor: String,
+        tail_event_order: u64,
+        tail_anchor: String,
+        prompt_context_bytes_current: u64,
+    }
+
     // Join edges with node data to compute per-message aggregates
-    let mut by_message: HashMap<String, (i64, i64, i64, u64, i64, String)> = HashMap::new();
+    let mut by_message: HashMap<String, TurnAccum> = HashMap::new();
     for edge in &edge_rows {
         let from_id = edge
             .get("from_id")
@@ -160,47 +173,73 @@ pub async fn turn_totals_by_context(
             Some(p) => p,
             None => continue,
         };
-        let entry = by_message
-            .entry(message_id)
-            .or_insert((0, 0, 0, 0, 0, String::new()));
-        entry.0 += props
-            .get("a2a_usage_prompt_tokens")
+        let entry = by_message.entry(message_id).or_default();
+        entry.tokens_in += props
+            .get(storage_safe::A2A_USAGE_PROMPT_TOKENS)
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        entry.1 += props
-            .get("a2a_usage_completion_tokens")
+        entry.tokens_out += props
+            .get(storage_safe::A2A_USAGE_COMPLETION_TOKENS)
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        entry.2 += props
-            .get("a2a_usage_total_tokens")
+        entry.tokens_total += props
+            .get(storage_safe::A2A_USAGE_TOTAL_TOKENS)
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        entry.3 += 1;
-        entry.4 += props
-            .get("a2a_duration_ms")
+        entry.llm_call_count += 1;
+        entry.llm_duration_ms_total += props
+            .get(storage_safe::A2A_DURATION_MS)
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        let eid = props
-            .get("a2a_activity_anchor")
+        let anchor = props
+            .get(storage_safe::A2A_ACTIVITY_ANCHOR)
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if entry.5.is_empty() || eid < entry.5.as_str() {
-            entry.5 = eid.to_string();
+        if entry.first_activity_anchor.is_empty() || anchor < entry.first_activity_anchor.as_str() {
+            entry.first_activity_anchor = anchor.to_string();
+        }
+        let eo = props
+            .get(storage_safe::A2A_EVENT_ORDER)
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let pbytes = props
+            .get(storage_safe::A2A_PROMPT_SERIALIZED_UTF8_BYTES)
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if eo > entry.tail_event_order
+            || (eo == entry.tail_event_order && anchor > entry.tail_anchor.as_str())
+        {
+            entry.tail_event_order = eo;
+            entry.tail_anchor = anchor.to_string();
+            entry.prompt_context_bytes_current = pbytes;
         }
     }
 
     let mut results: Vec<(String, MetricsRow)> = by_message
         .into_iter()
-        .map(|(mid, (ti, to, tt, cc, dur, feid))| {
+        .map(|(mid, acc)| {
             let mut row = MetricsRow::new();
             row.insert("message_id".into(), Value::String(mid.clone()));
-            row.insert("tokens_in".into(), serde_json::json!(ti));
-            row.insert("tokens_out".into(), serde_json::json!(to));
-            row.insert("tokens_total".into(), serde_json::json!(tt));
-            row.insert("llm_call_count".into(), serde_json::json!(cc));
-            row.insert("llm_duration_ms_total".into(), serde_json::json!(dur));
-            row.insert("first_activity_anchor".into(), Value::String(feid.clone()));
-            (feid, row)
+            row.insert("tokens_in".into(), serde_json::json!(acc.tokens_in));
+            row.insert("tokens_out".into(), serde_json::json!(acc.tokens_out));
+            row.insert("tokens_total".into(), serde_json::json!(acc.tokens_total));
+            row.insert(
+                "llm_call_count".into(),
+                serde_json::json!(acc.llm_call_count),
+            );
+            row.insert(
+                "llm_duration_ms_total".into(),
+                serde_json::json!(acc.llm_duration_ms_total),
+            );
+            row.insert(
+                "first_activity_anchor".into(),
+                Value::String(acc.first_activity_anchor.clone()),
+            );
+            row.insert(
+                "prompt_context_bytes_current".into(),
+                serde_json::json!(acc.prompt_context_bytes_current),
+            );
+            (acc.first_activity_anchor.clone(), row)
         })
         .collect();
     results.sort_by(|a, b| a.0.cmp(&b.0));
@@ -230,6 +269,122 @@ pub async fn user_prompts_by_context(
         .await
         .map_err(map_surreal_error)?;
     let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|v| {
+            v.as_object()
+                .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        })
+        .collect())
+}
+
+/// Latest completed `LlmCall` in the context (optional task filter): temporal tail for prompt JSON bytes.
+pub async fn session_prompt_context_tail(
+    store: &SurrealProvenanceStore,
+    context_id: &str,
+    task_id: Option<&str>,
+) -> Result<Option<MetricsRow>> {
+    let ctx_node = context_entity_id_string(context_id);
+    let scoped = context_scope::SCOPED_TO;
+    let tc = a2a_relations::TASK_CALL;
+
+    let task_clause = match task_id {
+        None => String::new(),
+        Some(_) => format!(
+            " AND node_id IN (SELECT VALUE to_id FROM {TBL_EDGE} \
+               WHERE from_id = $task_exec_id AND rel_type = '{tc}')"
+        ),
+    };
+
+    let a_anchor = storage_safe::A2A_ACTIVITY_ANCHOR;
+    let a_eo = storage_safe::A2A_EVENT_ORDER;
+    let a_bytes = storage_safe::A2A_PROMPT_SERIALIZED_UTF8_BYTES;
+
+    let query = format!(
+        "SELECT \
+           props.{a_anchor} AS activity_anchor, \
+           props.{a_eo} AS event_order, \
+           props.{a_bytes} AS prompt_context_bytes_current \
+         FROM {TBL_NODE} \
+         WHERE label = 'LlmCall' \
+           AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
+             WHERE to_id = $ctx_node AND rel_type = '{scoped}' AND from_label = 'LlmCall') \
+         {task_clause} \
+         ORDER BY event_order DESC, activity_anchor DESC \
+         LIMIT 1",
+    );
+
+    let mut q = store.db().query(&query).bind(("ctx_node", ctx_node));
+    if let Some(tid) = task_id {
+        q = q.bind(("task_exec_id", task_execution_activity_id_string(tid)));
+    }
+
+    let mut resp = q.await.map_err(surreal_err)?;
+    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
+    Ok(rows.into_iter().next().and_then(|v| {
+        v.as_object()
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+    }))
+}
+
+/// Ordered LLM prompt operations through `max_event_order`, optionally after an exclusive lower bound.
+pub async fn llm_prompt_operations_for_context(
+    store: &SurrealProvenanceStore,
+    context_id: &str,
+    task_id: Option<&str>,
+    max_event_order: u64,
+    after_event_order_exclusive: Option<u64>,
+) -> Result<Vec<MetricsRow>> {
+    let ctx_node = context_entity_id_string(context_id);
+    let scoped = context_scope::SCOPED_TO;
+    let tc = a2a_relations::TASK_CALL;
+
+    let task_clause = match task_id {
+        None => String::new(),
+        Some(_) => format!(
+            " AND node_id IN (SELECT VALUE to_id FROM {TBL_EDGE} \
+               WHERE from_id = $task_exec_id AND rel_type = '{tc}')"
+        ),
+    };
+
+    let a_eo = storage_safe::A2A_EVENT_ORDER;
+    let after_clause = match after_event_order_exclusive {
+        None => String::new(),
+        Some(_) => format!(" AND props.{a_eo} > $after_eo"),
+    };
+
+    let a_anchor = storage_safe::A2A_ACTIVITY_ANCHOR;
+    let a_bytes = storage_safe::A2A_PROMPT_SERIALIZED_UTF8_BYTES;
+
+    let query = format!(
+        "SELECT \
+           props.{a_anchor} AS activity_anchor, \
+           props.{a_eo} AS event_order, \
+           props.{a_bytes} AS prompt_context_bytes_current \
+         FROM {TBL_NODE} \
+         WHERE label = 'LlmCall' \
+           AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
+             WHERE to_id = $ctx_node AND rel_type = '{scoped}' AND from_label = 'LlmCall') \
+           AND props.{a_eo} <= $max_eo \
+         {task_clause} \
+         {after_clause} \
+         ORDER BY event_order ASC, activity_anchor ASC",
+    );
+
+    let mut q = store
+        .db()
+        .query(&query)
+        .bind(("ctx_node", ctx_node))
+        .bind(("max_eo", max_event_order));
+    if let Some(after) = after_event_order_exclusive {
+        q = q.bind(("after_eo", after));
+    }
+    if let Some(tid) = task_id {
+        q = q.bind(("task_exec_id", task_execution_activity_id_string(tid)));
+    }
+
+    let mut resp = q.await.map_err(surreal_err)?;
+    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
     Ok(rows
         .into_iter()
         .filter_map(|v| {

@@ -9,6 +9,9 @@ pub(crate) const TBL_BLOB: &str = TBL_PAYLOAD_BLOB;
 pub(crate) const TBL_A2A_TASK: &str = "a2a_task";
 pub(crate) const TBL_A2A_MESSAGE: &str = "a2a_message";
 pub(crate) const TBL_A2A_UPDATE: &str = "a2a_update";
+pub(crate) const TBL_ARCHIVE_PREFIX_REGISTRY: &str = "archive_prefix_registry";
+pub(crate) const TBL_ARCHIVE_LOCAL_COUNTER: &str = "archive_local_counter";
+pub(crate) const TBL_ARCHIVE_BODY: &str = "archive_body";
 
 /// Column list for `PayloadRecord` round-trip SELECTs (must match serde fields).
 pub(crate) const PAYLOAD_ROW_SELECT: &str = "payload_id, activity_anchor_id, activity_id, payload_kind, payload_json, content_hash, storage_kind, file_key, search_text";

@@ -6,8 +6,8 @@ use super::helpers::map_surreal_error;
 use crate::{
     error::Result,
     surreal_tables::{
-        TBL_A2A_MESSAGE, TBL_A2A_TASK, TBL_A2A_UPDATE, TBL_EDGE, TBL_NODE, TBL_PAYLOAD,
-        TBL_PAYLOAD_BLOB,
+        TBL_A2A_MESSAGE, TBL_A2A_TASK, TBL_A2A_UPDATE, TBL_ARCHIVE_BODY, TBL_ARCHIVE_LOCAL_COUNTER,
+        TBL_ARCHIVE_PREFIX_REGISTRY, TBL_EDGE, TBL_NODE, TBL_PAYLOAD, TBL_PAYLOAD_BLOB,
     },
 };
 
@@ -45,6 +45,15 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         // A2A update table
         format!("DEFINE INDEX IF NOT EXISTS idx_a2a_upd_id ON {TBL_A2A_UPDATE} FIELDS update_id UNIQUE"),
         format!("DEFINE INDEX IF NOT EXISTS idx_a2a_upd_task ON {TBL_A2A_UPDATE} FIELDS task_id, seq"),
+        // Cluster-safe session archive refs: stable prefix per (context, agent), monotonic local per prefix.
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_ARCHIVE_PREFIX_REGISTRY}"),
+        format!("DEFINE INDEX IF NOT EXISTS idx_archive_prefix_ctx_agent ON {TBL_ARCHIVE_PREFIX_REGISTRY} FIELDS context_id, agent_id UNIQUE"),
+        format!("DEFINE INDEX IF NOT EXISTS idx_archive_prefix_ctx_pfx ON {TBL_ARCHIVE_PREFIX_REGISTRY} FIELDS context_id, archive_prefix UNIQUE"),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_ARCHIVE_LOCAL_COUNTER}"),
+        format!("DEFINE INDEX IF NOT EXISTS idx_archive_local_ctx_pfx ON {TBL_ARCHIVE_LOCAL_COUNTER} FIELDS context_id, archive_prefix UNIQUE"),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_ARCHIVE_BODY}"),
+        format!("DEFINE INDEX IF NOT EXISTS idx_archive_body_lookup ON {TBL_ARCHIVE_BODY} FIELDS context_id, archive_prefix, archive_local UNIQUE"),
+        format!("DEFINE INDEX IF NOT EXISTS idx_archive_body_anchor ON {TBL_ARCHIVE_BODY} FIELDS context_id, activity_anchor UNIQUE"),
         // Full-text search on denormalized search_text (blob-backed bodies are not indexed in-table)
         "DEFINE ANALYZER IF NOT EXISTS payload_analyzer TOKENIZERS blank, class FILTERS snowball(english)".to_string(),
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_search_fts ON {TBL_PAYLOAD} FIELDS search_text FULLTEXT ANALYZER payload_analyzer BM25"),

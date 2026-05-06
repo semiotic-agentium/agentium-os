@@ -45,6 +45,8 @@ pub struct ContextTurnMetricsDto {
     pub user_prompt_count: u64,
     pub llm_call_count: u64,
     pub llm_duration_ms_total: u64,
+    /// Serialized prompt JSON bytes for the **latest** LLM call in this turn (`a2a_event_order` tail).
+    pub prompt_context_bytes_current: u64,
     pub tokens: TokenUsageDto,
 }
 
@@ -55,6 +57,8 @@ pub struct ContextSessionMetricsDto {
     pub user_prompts_total: u64,
     pub llm_calls_total: u64,
     pub llm_duration_ms_total: u64,
+    /// Serialized prompt JSON bytes for the **latest** LLM call in this context (temporal tail).
+    pub prompt_context_bytes_current: u64,
     pub tokens_total: TokenUsageDto,
 }
 

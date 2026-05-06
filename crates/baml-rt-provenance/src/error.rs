@@ -30,6 +30,9 @@ pub enum ProvenanceError {
     MissingLabel { node_id: String, kind: String },
     #[error("corrupt provenance_payload row: {reason}")]
     CorruptPayloadRow { reason: String },
+    /// `archive_body.entry` JSON could not be decoded into `ArchiveEntry` (tools crate).
+    #[error("corrupt archive_body.entry: {reason}")]
+    CorruptArchiveEntry { reason: String },
     /// Another `Message` graph node already owns this activity anchor in the scoped context.
     /// Emission must be idempotent (same `node_id`); conflicting rows indicate a host/emitter bug.
     #[error(

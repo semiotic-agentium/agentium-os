@@ -24,6 +24,7 @@ use crate::{
         completion_error_from, extract_delegation_target_from_open_input, tool_session_trace,
         tool_session_trace_enabled,
     },
+    provenance_errors::map_archive_provenance_err,
     quickjs_bridge::stream_yield::emit_stream_chunk_static,
     tool_execution::{ToolExecutionContext, build_metadata_map_with_phase, resolve_planning_step},
 };
@@ -799,6 +800,18 @@ impl ToolSessionExecutionHandle {
                         .get(session_id)
                         .map(|s| s.tool_name.clone())
                         .unwrap_or_default();
+                    let informed_by_tool_activity_anchor = self
+                        .read_completion_tool_anchors
+                        .remove(session_id)
+                        .map(|(_, a)| a)
+                        .unwrap_or_else(|| {
+                            tracing::error!(
+                                session_id = %session_id,
+                                "SendResult: read_completion_tool_anchors had no entry; allocating fallback anchor"
+                            );
+                            ReservedAnchor::allocate().into_id()
+                        });
+                    let activity_anchor = informed_by_tool_activity_anchor.as_str().to_string();
                     // Prefer the semantic Send-input description (what was queried) as the
                     // archive summary — e.g. "discovering agents matching 'X'" is more
                     // meaningful than "tool result". Fall back to describe_result, then
@@ -823,25 +836,45 @@ impl ToolSessionExecutionHandle {
                         rendered,
                         tool_name,
                         summary,
-                        String::new(), // activity_anchor: wired when tool result is tied to graph a2a_activity_anchor
+                        activity_anchor,
                         "tool_result".to_string(),
                     );
                     let context_id = plan_scope.context_id().as_str().to_string();
                     let ref_table =
                         archive_refs::get_or_create_ref_table(archive_ref_tables, &context_id);
-                    let archive_ref = ref_table.insert(entry.clone());
-                    let header = entry.display_header(archive_ref);
-                    let informed_by_tool_activity_anchor = self
-                        .read_completion_tool_anchors
-                        .remove(session_id)
-                        .map(|(_, a)| a)
-                        .unwrap_or_else(|| {
-                            tracing::error!(
-                                session_id = %session_id,
-                                "SendResult: read_completion_tool_anchors had no entry; allocating fallback anchor"
-                            );
-                            ReservedAnchor::allocate().into_id()
-                        });
+                    let (archive_ref, header) =
+                        if let Some(store) = self.ctx.archive_ref_store.as_ref() {
+                            let archive_ref = store
+                                .archive_allocate_and_put(
+                                    plan_scope.context_id(),
+                                    plan_scope.agent_id(),
+                                    informed_by_tool_activity_anchor.as_str(),
+                                    entry.clone(),
+                                )
+                                .await
+                                .map_err(map_archive_provenance_err)?;
+                            ref_table.insert_at(archive_ref, entry);
+                            let header = ref_table
+                                .get(archive_ref)
+                                .map(|c| c.value().display_header(archive_ref))
+                                .ok_or_else(|| {
+                                    BamlRtError::InvalidArgument(
+                                        "archive insert failed after Surreal allocate".into(),
+                                    )
+                                })?;
+                            (archive_ref, header)
+                        } else {
+                            let archive_ref = ref_table.insert(entry);
+                            let header = ref_table
+                                .get(archive_ref)
+                                .map(|c| c.value().display_header(archive_ref))
+                                .ok_or_else(|| {
+                                    BamlRtError::InvalidArgument(
+                                        "archive insert failed (memory path)".into(),
+                                    )
+                                })?;
+                            (archive_ref, header)
+                        };
                     return Ok(ToolSessionSendBlockingOutcome::Completed(SendResult {
                         archive_ref,
                         header,

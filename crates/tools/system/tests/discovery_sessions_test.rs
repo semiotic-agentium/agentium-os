@@ -10,7 +10,7 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceWriter,
-    SurrealStoreBuilder,
+    SurrealStoreBuilder, serialized_prompt_utf8_len,
 };
 use baml_rt_tools::{ToolRegistry, ToolStep};
 use baml_tools_calculator::CalculatorTool;
@@ -191,6 +191,9 @@ async fn seeded_store_for_context(
                 drift: None,
                 citations: vec![],
                 resolved_citations: vec![],
+                prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(
+                    &json!({"input":"caller"}),
+                ),
             },
         }))
         .await
@@ -223,6 +226,9 @@ async fn seeded_store_for_context(
                 drift: None,
                 citations: vec![],
                 resolved_citations: vec![],
+                prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(
+                    &json!({"input":"caller-failed"}),
+                ),
             },
         }))
         .await
@@ -377,6 +383,7 @@ async fn seeded_store_for_context(
                 drift: None,
                 citations: vec![],
                 resolved_citations: vec![],
+                prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(&json!({"input":"other"})),
             },
         }))
         .await

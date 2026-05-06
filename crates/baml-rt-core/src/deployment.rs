@@ -60,6 +60,12 @@ pub struct DeploymentRecord {
     pub failure_count: u32,
 }
 
+/// Outcome of a deploy-by-hash request.
+///
+/// [`DeploymentManager::deploy_by_hash`] activates the requested artifact: if that exact
+/// `content_hash` is already running, the call succeeds with the `already_deployed` field set to
+/// `true` and makes no other changes. If another hash for the same agent package is active, that
+/// deployment is superseded so the requested hash becomes active (`already_deployed: false`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployResult {
     pub already_deployed: bool,
@@ -76,6 +82,10 @@ pub struct UndeployResult {
 /// are not `Send` across await points, so implementors are local-executor bound.
 #[async_trait(?Send)]
 pub trait DeploymentManager: Send + Sync {
+    /// Ensure the artifact identified by `content_hash` is active.
+    ///
+    /// Same hash already running → [`DeployResult::already_deployed`] is true. Same package name
+    /// with a different hash → that deployment is undeployed first, then this hash is booted.
     async fn deploy_by_hash(&self, content_hash: &DeploymentContentHash) -> Result<DeployResult>;
     async fn undeploy_by_hash(
         &self,

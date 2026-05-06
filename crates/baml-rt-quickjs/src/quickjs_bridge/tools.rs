@@ -75,8 +75,8 @@ impl QuickJSBridge {
         self.register_tool_session_wrapper().await?;
         tracing::debug!("register_tool_functions: register_tool_session_wrapper done");
 
-        // Register a JS-callable wrapper per tool so each tool name is available as a function
-        tracing::debug!("register_tool_functions: baml_manager lock start");
+        // Register JS-callable wrappers for each tool name (one batched eval).
+        tracing::debug!("register_tool_functions: fetching tool name list");
         let tool_names = timeout(Duration::from_secs(15), async {
             let manager = self.baml_manager.read().await;
             manager.list_tools().await
@@ -93,41 +93,28 @@ impl QuickJSBridge {
             "register_tool_functions: discovered tool names"
         );
 
-        for tool_name in tool_names {
-            tracing::debug!(tool = %tool_name, "register_tool_functions: register_single_tool start");
-            self.register_single_tool(&tool_name).await?;
-            tracing::debug!(tool = %tool_name, "register_tool_functions: register_single_tool done");
+        if !tool_names.is_empty() {
+            let js_code = wrappers::build_tool_invoke_wrappers_batch(&tool_names);
+            let script = Script::new("register_tools_batch.js", &js_code);
+            timeout(Duration::from_secs(15), self.runtime.eval(None, script))
+                .await
+                .map_err(|_| {
+                    BamlRtError::QuickJs(
+                        "register_tool_functions timed out while evaluating batched JS wrappers"
+                            .to_string(),
+                    )
+                })?
+                .map_err(|e| BamlRtError::QuickJsWithSource {
+                    context: "Failed to register tool functions (batch)".to_string(),
+                    source: Box::new(e),
+                })?;
+            tracing::debug!(
+                tool_count = tool_names.len(),
+                "register_tool_functions: registered tool wrappers (batch eval)"
+            );
         }
 
         tracing::debug!("Registering tool functions with QuickJS complete");
-        Ok(())
-    }
-
-    /// Register a single tool function with QuickJS (per-tool JS wrapper).
-    pub(crate) async fn register_single_tool(&mut self, tool_name: &str) -> Result<()> {
-        // Register a JavaScript wrapper function for the tool
-        let js_code = wrappers::build_token_args_wrapper(
-            tool_name,
-            &format!(
-                "__tool_invoke(\"{}\", JSON.stringify(argObj))",
-                tool_name.replace('\\', "\\\\").replace('"', "\\\"")
-            ),
-        );
-
-        let script = Script::new("register_tool.js", &js_code);
-        timeout(Duration::from_secs(15), self.runtime.eval(None, script))
-            .await
-            .map_err(|_| {
-                BamlRtError::QuickJs(
-                    "register_single_tool timed out while evaluating JS wrapper".to_string(),
-                )
-            })?
-            .map_err(|e| BamlRtError::QuickJsWithSource {
-                context: "Failed to register tool function".to_string(),
-                source: Box::new(e),
-            })?;
-
-        tracing::debug!(tool = tool_name, "Registered tool function with QuickJS");
         Ok(())
     }
 

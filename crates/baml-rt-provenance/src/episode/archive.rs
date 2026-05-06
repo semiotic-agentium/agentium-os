@@ -103,26 +103,38 @@ impl EpisodeArchiveSource {
     }
 }
 
-fn wire_archive_slot_from_ref(archive_ref: &str) -> Option<u32> {
+fn wire_archive_slot_from_ref(archive_ref: &str) -> Option<ShortRef> {
     let s = archive_ref.trim();
-    ShortRef::parse(s).map(|r| r.as_u32()).or_else(|| {
+    ShortRef::parse(s).or_else(|| {
         s.rfind('@').and_then(|i| {
             let tail = s[i..].strip_prefix('@')?;
+            if let Some((p, rest)) = tail.split_once('/') {
+                let prefix = p.parse().ok()?;
+                let end = rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                if end == 0 {
+                    return None;
+                }
+                let local = rest[..end].parse().ok()?;
+                return Some(ShortRef::new_prefixed(prefix, local));
+            }
             let end = tail
                 .find(|c: char| !c.is_ascii_digit())
                 .unwrap_or(tail.len());
             if end == 0 {
                 return None;
             }
-            tail[..end].parse().ok()
+            let local = tail[..end].parse().ok()?;
+            Some(ShortRef::new(local))
         })
     })
 }
 
 fn insert_virtual_for_wire(
     t: &RefTable,
-    wire_filled: &mut HashSet<u32>,
-    wire_n: u32,
+    wire_filled: &mut HashSet<u64>,
+    wire_r: ShortRef,
     tool_name: &str,
     v: &serde_json::Value,
     activity_anchor: &str,
@@ -136,8 +148,8 @@ fn insert_virtual_for_wire(
         activity_anchor.to_string(),
         "tool_result".into(),
     );
-    t.insert_virtual_archive(wire_n, entry);
-    wire_filled.insert(wire_n);
+    t.insert_virtual_archive_ref(wire_r, entry);
+    wire_filled.insert(wire_r.cell_key());
 }
 
 /// Graph-backed `SendDone` replay payloads (`send_done_replay_payload`) — same slots as
@@ -145,7 +157,7 @@ fn insert_virtual_for_wire(
 pub(crate) fn seed_replay_payload_slots_from_merged(
     t: &RefTable,
     merged: &[TimelineKind],
-    wire_filled: &mut HashSet<u32>,
+    wire_filled: &mut HashSet<u64>,
 ) {
     if merged.is_empty() {
         return;
@@ -156,13 +168,13 @@ pub(crate) fn seed_replay_payload_slots_from_merged(
         };
         if let ConversationItemContent::SessionStep(ss) = &item.content
             && let SessionStepOp::SendDone { archive_ref, .. } = &ss.op
-            && let Some(n) = wire_archive_slot_from_ref(archive_ref)
+            && let Some(wire_r) = wire_archive_slot_from_ref(archive_ref)
             && let Some(ref payload) = ss.send_done_replay_payload
         {
             insert_virtual_for_wire(
                 t,
                 wire_filled,
-                n,
+                wire_r,
                 ss.tool_name.as_str(),
                 payload,
                 item.activity_anchor.as_str(),
@@ -175,7 +187,7 @@ pub(crate) fn seed_replay_payload_slots_from_merged(
 /// session-history [`ArchiveReader`] aligned when the table is built incrementally.
 pub(crate) fn absorb_episode_entry_into_ref_table(
     t: &RefTable,
-    wire_filled: &mut HashSet<u32>,
+    wire_filled: &mut HashSet<u64>,
     e: &super::EpisodeEntry,
 ) {
     use super::EpisodeContent;
@@ -208,7 +220,8 @@ pub(crate) fn absorb_episode_entry_into_ref_table(
             lines,
             ..
         } => {
-            if wire_filled.contains(&n) {
+            let wire_key = ShortRef::new(n).cell_key();
+            if wire_filled.contains(&wire_key) {
                 return;
             }
             let rc = RenderedContent::from_lines(lines.iter().cloned());
@@ -279,7 +292,7 @@ pub fn episode_ref_table(ep: &Episode) -> RefTable {
 #[must_use]
 pub(crate) fn episode_ref_table_with_merged(ep: &Episode, merged: &[TimelineKind]) -> RefTable {
     let t = RefTable::new();
-    let mut wire_filled: HashSet<u32> = HashSet::new();
+    let mut wire_filled: HashSet<u64> = HashSet::new();
     seed_replay_payload_slots_from_merged(&t, merged, &mut wire_filled);
 
     let mut rows: Vec<_> = ep
@@ -398,7 +411,7 @@ mod tests {
 
         let rt = episode_ref_table_with_merged(&ep, &merged);
         let row = rt
-            .archive_row(8)
+            .archive_row(ShortRef::new(8))
             .expect("@8 must map to discover payload, not a2a");
         assert!(
             row.content.line_count() >= 2,
@@ -470,8 +483,8 @@ mod tests {
         };
         let rt = episode_ref_table(&ep);
         assert!(rt.history_row(1).is_some());
-        assert!(rt.archive_row(2).is_some());
-        assert!(rt.archive_row(1).is_none());
+        assert!(rt.archive_row(ShortRef::new(2)).is_some());
+        assert!(rt.archive_row(ShortRef::new(1)).is_none());
     }
 
     #[test]

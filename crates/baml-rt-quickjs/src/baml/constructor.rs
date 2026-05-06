@@ -43,6 +43,15 @@ impl BamlRuntimeManager {
         }
     }
 
+    /// Replace archive `@N` / `#N` tables (normally one `Arc` per manager). Use the same `Arc`
+    /// across managers when multiple agents share one provenance `context_id`.
+    pub fn set_archive_ref_tables(
+        &mut self,
+        tables: Arc<baml_rt_tools::archive_refs::ContextRefTables>,
+    ) {
+        self.state.archive_ref_tables = tables;
+    }
+
     /// Set the LLM client resolver for per-agent/per-prompt model overrides.
     /// When set, `execute_function` resolves which client to use from the host config
     /// instead of defaulting to the first BAML IR client. May be called before or after load_schema.
@@ -117,7 +126,16 @@ impl BamlRuntimeManager {
             effect_emitter: self.state.effect_emitter.clone(),
             execution_sessions: self.state.execution_sessions.clone(),
             archive_ref_tables: self.state.archive_ref_tables.clone(),
+            archive_ref_store: self.state.archive_ref_store.clone(),
         }
+    }
+
+    /// Wire Surreal-backed archive ref allocation (multi-runtime). Omit or `None` for memory-only tests.
+    pub fn set_archive_ref_store(
+        &mut self,
+        store: Option<Arc<baml_rt_provenance::SurrealProvenanceStore>>,
+    ) {
+        self.state.archive_ref_store = store;
     }
 
     /// Returns a handle for session operations. Use this to avoid holding the runtime lock across awaits.

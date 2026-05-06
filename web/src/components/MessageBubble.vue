@@ -79,10 +79,14 @@ const showGaps = ref(false);
 function displayTextBlockContent(raw: string | undefined): string {
   return stripLegacyStructuredPlaceholderLines(raw ?? "");
 }
+
+const isRelayUser = computed(
+  () => props.message.role === "user" && props.message.speakerKind === "relay",
+);
 </script>
 
 <template>
-  <div :class="['message-row', message.role]">
+  <div :class="['message-row', message.role, { 'message-row--relay': isRelayUser }]">
     <!-- Agent avatar -->
     <div v-if="message.role === 'agent'" class="message-avatar">
       <div class="avatar-icon">
@@ -104,6 +108,7 @@ function displayTextBlockContent(raw: string | undefined): string {
       </div>
     </div>
     <div class="message-content">
+      <div v-if="isRelayUser" class="speaker-kind-badge" role="note">A2A relay</div>
       <!-- Block-based content (agent with tool notifications) -->
       <template v-if="message.role === 'agent' && message.contentBlocks?.length">
         <template v-for="(block, idx) in message.contentBlocks" :key="idx">
@@ -154,9 +159,13 @@ function displayTextBlockContent(raw: string | undefined): string {
         <div v-if="showInlineStreamingDots && message.isStreaming" class="streaming-dots-row">
           <span class="thinking-dots"><span></span><span></span><span></span></span>
         </div>
-        <div v-if="message.awaitingInput" class="awaiting-input-hint" role="status">
+        <div
+          v-if="message.awaitingInput"
+          class="awaiting-input-hint awaiting-input-hint--mark"
+          role="status"
+          aria-label="Agent is waiting for your reply"
+        >
           <span class="awaiting-input-dot" aria-hidden="true"></span>
-          Waiting for your response
         </div>
       </template>
       <!-- Legacy single-text content -->
@@ -187,9 +196,13 @@ function displayTextBlockContent(raw: string | undefined): string {
               </span>
             </template>
           </div>
-          <div v-if="message.awaitingInput" class="awaiting-input-hint" role="status">
+          <div
+            v-if="message.awaitingInput"
+            class="awaiting-input-hint awaiting-input-hint--mark"
+            role="status"
+            aria-label="Agent is waiting for your reply"
+          >
             <span class="awaiting-input-dot" aria-hidden="true"></span>
-            Waiting for your response
           </div>
         </div>
       </template>

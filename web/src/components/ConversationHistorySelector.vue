@@ -33,6 +33,22 @@ function formatTimestamp(ms: number): string {
     minute: "2-digit",
   });
 }
+
+function shortContextId(contextId: string): string {
+  if (contextId.length <= 22) return contextId;
+  return `${contextId.slice(0, 10)}…${contextId.slice(-6)}`;
+}
+
+function optionLabel(history: {
+  contextId: string;
+  latestTimestampMs: number;
+  preview: string;
+}): string {
+  const preview = (history.preview ?? "").trim() || "(no preview)";
+  const ts = formatTimestamp(history.latestTimestampMs);
+  const id = shortContextId(history.contextId);
+  return `${preview} · ${ts} · ${id}`;
+}
 </script>
 
 <template>
@@ -57,7 +73,7 @@ function formatTimestamp(ms: number): string {
         :key="history.contextId"
         :value="history.contextId"
       >
-        {{ formatTimestamp(history.latestTimestampMs) }} · {{ history.contextId }} · {{ history.preview }}
+        {{ optionLabel(history) }}
       </option>
     </select>
     <button

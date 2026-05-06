@@ -32,6 +32,8 @@ export interface TurnMetrics {
   user_prompt_count: number;
   llm_call_count: number;
   llm_duration_ms_total: number;
+  /** Latest LLM call in turn: JSON-serialized prompt UTF-8 bytes */
+  prompt_context_bytes_current: number;
   tokens: TokenUsage;
 }
 
@@ -41,6 +43,8 @@ export interface SessionMetrics {
   user_prompts_total: number;
   llm_calls_total: number;
   llm_duration_ms_total: number;
+  /** Temporal tail: latest LLM prompt JSON UTF-8 bytes in context */
+  prompt_context_bytes_current: number;
   tokens_total: TokenUsage;
 }
 
@@ -51,6 +55,13 @@ export interface ContextMetricsResponse {
   session: SessionMetrics;
 }
 
+/** One LLM completion’s measured prompt JSON size (from provenance). */
+export interface LlmPromptOperation {
+  activityAnchor: string;
+  eventOrder: number;
+  promptContextBytesCurrent: number;
+}
+
 export interface ConversationHistoryPage {
   contextId: string;
   taskId?: string | null;
@@ -58,6 +69,11 @@ export interface ConversationHistoryPage {
   maxEventOrder: number;
   items: ConversationHistoryItem[];
   nextCursor?: string | null;
+  promptContextBytesSessionCurrent?: number | null;
+  llmPromptOperations?: LlmPromptOperation[];
+  /** From `a2a_task.status_json` when the task is TASK_STATE_INPUT_REQUIRED */
+  awaitingInput?: boolean;
+  inputRequiredPrompt?: string | null;
 }
 
 export interface ConversationHistoryItem {
@@ -66,6 +82,9 @@ export interface ConversationHistoryItem {
   role: string;
   content: ConversationHistoryContent;
 }
+
+/** Transcript restore from GET /conversation-history (Primary pane empty states). */
+export type HistoryHydrateState = "idle" | "loading" | "ready" | "error" | "skipped";
 
 export type SessionStepOp =
   | { kind: "open" }
@@ -241,12 +260,17 @@ export interface ToolNotificationBlock {
   completion?: ToolCompletion;
 }
 
+/** Who speaks in the transcript (trust / styling). Defaults implied from `role`. */
+export type ChatSpeakerKind = "human" | "agent" | "relay" | "system";
+
 /** Internal chat message for the UI */
 export interface ChatMessage {
   id: string;
   role: "user" | "agent";
   text: string;
   timestamp: Date;
+  /** Optional; when absent, UI infers human for `user` and agent for `agent`. */
+  speakerKind?: ChatSpeakerKind;
   isStreaming?: boolean;
   /** When set, UI renders blocks instead of single text (agent messages only). */
   contentBlocks?: ContentBlock[];

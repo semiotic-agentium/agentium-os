@@ -16,6 +16,7 @@ pub mod js_value_converter;
 pub mod llm_client_registry;
 pub mod llm_resolver_adapter;
 pub mod planning;
+pub(crate) mod provenance_errors;
 pub mod quickjs_bridge;
 pub mod runtime;
 pub mod step_executor_loop;

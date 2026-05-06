@@ -10,6 +10,7 @@ mod builder;
 mod callback_delivery;
 mod cluster;
 mod config;
+mod deployment_restore;
 mod deployment_state;
 mod package;
 mod routing;
@@ -242,10 +243,35 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         repository_store.clone() as Arc<dyn LineageStore>,
         repository_store as Arc<dyn SearchStore>,
     ));
-    let existing_deployments = deployment_state
+    let raw_deployments = deployment_state
         .list_deployments()
         .await
         .context("Failed to read runner deployment state records")?;
+    let (existing_deployments, superseded_hashes) =
+        deployment_restore::dedupe_deployments_for_restore(raw_deployments);
+    if !superseded_hashes.is_empty() {
+        info!(
+            removed = superseded_hashes.len(),
+            "Deduplicating deployment state: removing superseded records for the same agent package"
+        );
+        for hash in &superseded_hashes {
+            match deployment_state.remove_deployment(hash).await {
+                Ok(true) => info!(
+                    content_hash = %hash.as_str(),
+                    "Removed superseded deployment record"
+                ),
+                Ok(false) => warn!(
+                    content_hash = %hash.as_str(),
+                    "Superseded deployment record already absent"
+                ),
+                Err(e) => warn!(
+                    error = %e,
+                    content_hash = %hash.as_str(),
+                    "Failed to remove superseded deployment record"
+                ),
+            }
+        }
+    }
     info!(
         state_dir = %config.state_dir.display(),
         state_db = %state_db_path.display(),
@@ -276,6 +302,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         config.stream_idle_secs,
         config.claude_workspaces_base,
         config.repository_url.clone(),
+        Some(repository_service.clone()),
     )
     .map_err(|e| anyhow::anyhow!("runner builder init: {e}"))?;
 
@@ -384,6 +411,9 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
     }
 
     let ready = builder.build();
+    // Used by GET /readyz only; keep false until event-producer registration finishes.
+    let readyz = Arc::new(AtomicBool::new(false));
+
     install_callback_delivery_gate(Arc::new(RunnerCallbackDeliveryGate {
         runner: ready.runner(),
     }));
@@ -396,9 +426,6 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
     } else {
         None
     };
-
-    // Readyz probe: starts false, flipped to true once all init phases are done.
-    let readyz = Arc::new(AtomicBool::new(false));
 
     if let Some((agent_name, function_name, json_args)) = config.invoke {
         let args_value: Value =
@@ -422,6 +449,83 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             println!("  - {}", agent_name);
         }
     }
+
+    let http_handle = if let Some(bind) = config.serve_http.clone() {
+        let runner = ready.runner();
+        let prov_config = runner.provenance_config();
+        let store = prov_config.store().clone();
+        let config_service = prov_config.config_service();
+        let secret_resolver = prov_config.llm_secret_resolver();
+        let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> = Arc::new(InventoryCatalog::new());
+
+        let mermaid = Some(Arc::new(MermaidServiceImpl::new(
+            store.clone(),
+            prov_config.mermaid_cache(),
+        )) as Arc<dyn baml_rt_api::MermaidService>);
+        let context_metrics = Some(Arc::new(ContextMetricsServiceImpl::new(store.clone()))
+            as Arc<dyn baml_rt_api::ContextMetricsService>);
+        let provenance_ops = Some(Arc::new(ProvenanceOpsServiceImpl::new(store.clone()))
+            as Arc<dyn baml_rt_api::ProvenanceOpsService>);
+        let planning = Some(Arc::new(PlanningServiceImpl::new(store.clone()))
+            as Arc<dyn baml_rt_api::PlanningService>);
+        let registry_impl = ready.registry();
+        let episode =
+            Some(Arc::new(EpisodeServiceImpl::new(store)) as Arc<dyn baml_rt_api::EpisodeService>);
+        let conversation_history = Some(Arc::new(ConversationHistoryServiceImpl::new(
+            runner.provenance_config().store().clone(),
+        ))
+            as Arc<dyn baml_rt_api::ConversationHistoryService>);
+        let conversation_history_events = Some(Arc::new(ConversationHistoryEventServiceImpl::new(
+            runner.clone(),
+        ))
+            as Arc<dyn baml_rt_api::ConversationHistoryEventService>);
+        let context_index = Some(Arc::new(ContextIndexServiceImpl::new(
+            runner.provenance_config().store().clone(),
+        )) as Arc<dyn baml_rt_api::ContextIndexService>);
+        let web_dir = config.web_dir.clone();
+        info!(
+            bind = %bind,
+            web_dir = ?web_dir,
+            "HTTP API binding early (GET /healthz always OK; GET /readyz is 503 until event producers finish loading)"
+        );
+        let runtime_secret_store = prov_config.runtime_secret_store();
+        let readyz_for_http = readyz.clone();
+        let runner_token = config.runner_token.clone();
+        let cluster_mode = if cluster_mgr.is_some() {
+            baml_rt_api::ClusterMode::Cluster
+        } else {
+            baml_rt_api::ClusterMode::Standalone
+        };
+        Some(tokio::spawn(async move {
+            baml_rt_api::serve_with_services_and_deploy(
+                registry_impl,
+                &bind,
+                mermaid,
+                context_metrics,
+                provenance_ops,
+                planning,
+                episode,
+                conversation_history,
+                conversation_history_events,
+                context_index,
+                Some(runner.clone() as Arc<dyn DeploymentManager>),
+                Some(config.repository_url.clone()),
+                Some(repository_service.clone()),
+                tool_catalog,
+                config_service,
+                secret_resolver,
+                runtime_secret_store,
+                readyz_for_http,
+                runner_token,
+                cluster_mode,
+                web_dir.as_deref(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))
+        }))
+    } else {
+        None
+    };
 
     // --- Event producer poll loop ---
     //
@@ -492,86 +596,8 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         }
     };
 
-    // All init phases complete (restore, cluster, event producers); signal readyz.
     readyz.store(true, Ordering::Release);
-    tracing::info!("readyz probe: ready");
-
-    let http_handle = if let Some(bind) = config.serve_http.clone() {
-        let runner = ready.runner();
-        let prov_config = runner.provenance_config();
-        let store = prov_config.store().clone();
-        let config_service = prov_config.config_service();
-        let secret_resolver = prov_config.llm_secret_resolver();
-        let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> = Arc::new(InventoryCatalog::new());
-
-        let mermaid = Some(Arc::new(MermaidServiceImpl::new(
-            store.clone(),
-            prov_config.mermaid_cache(),
-        )) as Arc<dyn baml_rt_api::MermaidService>);
-        let context_metrics = Some(Arc::new(ContextMetricsServiceImpl::new(store.clone()))
-            as Arc<dyn baml_rt_api::ContextMetricsService>);
-        let provenance_ops = Some(Arc::new(ProvenanceOpsServiceImpl::new(store.clone()))
-            as Arc<dyn baml_rt_api::ProvenanceOpsService>);
-        let planning = Some(Arc::new(PlanningServiceImpl::new(store.clone()))
-            as Arc<dyn baml_rt_api::PlanningService>);
-        let registry_impl = ready.registry();
-        let episode =
-            Some(Arc::new(EpisodeServiceImpl::new(store)) as Arc<dyn baml_rt_api::EpisodeService>);
-        let conversation_history = Some(Arc::new(ConversationHistoryServiceImpl::new(
-            runner.provenance_config().store().clone(),
-        ))
-            as Arc<dyn baml_rt_api::ConversationHistoryService>);
-        let conversation_history_events = Some(Arc::new(ConversationHistoryEventServiceImpl::new(
-            runner.clone(),
-        ))
-            as Arc<dyn baml_rt_api::ConversationHistoryEventService>);
-        let context_index = Some(Arc::new(ContextIndexServiceImpl::new(
-            runner.provenance_config().store().clone(),
-        )) as Arc<dyn baml_rt_api::ContextIndexService>);
-        let web_dir = config.web_dir.clone();
-        info!(
-            bind = %bind,
-            web_dir = ?web_dir,
-            "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a, GET /config, GET /contexts/.../mermaid, GET /tasks/.../mermaid, GET /contexts/.../metrics, GET /provenance/..., GET /openapi.json)"
-        );
-        let runtime_secret_store = prov_config.runtime_secret_store();
-        let readyz_for_http = readyz.clone();
-        let runner_token = config.runner_token.clone();
-        let cluster_mode = if cluster_mgr.is_some() {
-            baml_rt_api::ClusterMode::Cluster
-        } else {
-            baml_rt_api::ClusterMode::Standalone
-        };
-        Some(tokio::spawn(async move {
-            baml_rt_api::serve_with_services_and_deploy(
-                registry_impl,
-                &bind,
-                mermaid,
-                context_metrics,
-                provenance_ops,
-                planning,
-                episode,
-                conversation_history,
-                conversation_history_events,
-                context_index,
-                Some(runner.clone() as Arc<dyn DeploymentManager>),
-                Some(config.repository_url.clone()),
-                Some(repository_service.clone()),
-                tool_catalog,
-                config_service,
-                secret_resolver,
-                runtime_secret_store,
-                readyz_for_http,
-                runner_token,
-                cluster_mode,
-                web_dir.as_deref(),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))
-        }))
-    } else {
-        None
-    };
+    tracing::info!("readyz probe: ready (event producers loaded)");
 
     match (config.a2a_stdio, http_handle) {
         (true, Some(mut handle)) => {
@@ -843,6 +869,7 @@ globalThis.onChatMessage = async function(_message) {
                 None,
                 None,
                 "http://127.0.0.1:18080/repository".to_string(),
+                None,
             )
             .expect("test runner construction"),
         );
@@ -1212,6 +1239,55 @@ globalThis.onChatMessage = async function(_message) {
             result.already_deployed,
             "deploy_by_hash must return already_deployed when agent is in memory"
         );
+    }
+
+    #[tokio::test]
+    async fn restore_dedupe_removes_superseded_deployment_row() {
+        use baml_rt_core::{DeploymentContentHash, DeploymentRecord, DeploymentStatus};
+
+        let (_dir, store) = test_deployment_state().await;
+        let h_old: DeploymentContentHash = "c".repeat(64).parse().expect("hash");
+        let h_new: DeploymentContentHash = "d".repeat(64).parse().expect("hash");
+
+        store
+            .save_deployment(&DeploymentRecord {
+                content_hash: h_old.clone(),
+                agent_name: "dup-agent".into(),
+                deployed_at: "100".into(),
+                status: DeploymentStatus::Active,
+                last_error: None,
+                last_attempt_at: None,
+                failure_count: 0,
+            })
+            .await
+            .expect("save old");
+        store
+            .save_deployment(&DeploymentRecord {
+                content_hash: h_new.clone(),
+                agent_name: "dup-agent".into(),
+                deployed_at: "200".into(),
+                status: DeploymentStatus::Active,
+                last_error: None,
+                last_attempt_at: None,
+                failure_count: 0,
+            })
+            .await
+            .expect("save new");
+
+        let raw = store.list_deployments().await.expect("list");
+        assert_eq!(raw.len(), 2);
+
+        let (winners, superseded) = crate::deployment_restore::dedupe_deployments_for_restore(raw);
+        assert_eq!(winners.len(), 1);
+        assert_eq!(superseded.len(), 1);
+        assert_eq!(winners[0].content_hash, h_new);
+
+        for h in &superseded {
+            store.remove_deployment(h).await.expect("remove superseded");
+        }
+        let left = store.list_deployments().await.expect("list after purge");
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].content_hash, h_new);
     }
 
     // ── runner prepare_a2a_request ────────────────────────────────────────────

@@ -16,7 +16,7 @@ import { useChatTabs } from "./composables/useChatTabs";
 import { useTheme } from "./composables/useTheme";
 import { useConfirm } from "./composables/useConfirm";
 import { parseMermaidBlocks } from "./utils/parseMermaid";
-import type { AgentDiscoveryEntry, ChatMessage } from "./types/a2a";
+import type { AgentDiscoveryEntry, ChatMessage, LlmPromptOperation } from "./types/a2a";
 
 /** First inline mermaid block in agent messages (stops at first hit). */
 function firstInlineMermaidDiagram(messages: ChatMessage[]): string | null {
@@ -46,6 +46,12 @@ const isLoading = computed(() => activeClient.value?.isLoading.value ?? false);
 const provenanceDiagram = computed(() => activeClient.value?.provenanceDiagram.value ?? "");
 const traceRefreshGeneration = computed(() => activeClient.value?.traceRefreshGeneration.value ?? 0);
 const contextMetrics = computed(() => activeClient.value?.contextMetrics.value ?? null);
+const promptContextBytesSessionCurrent = computed(
+  () => activeClient.value?.promptContextBytesSessionCurrent.value ?? null,
+);
+const llmPromptOperations = computed<LlmPromptOperation[]>(
+  () => activeClient.value?.llmPromptOperations.value ?? [],
+);
 const conversationHistoryOptions = computed(
   () => activeClient.value?.conversationHistoryOptions.value ?? [],
 );
@@ -53,6 +59,7 @@ const selectedHistoryContextId = computed(
   () => activeClient.value?.selectedHistoryContextId.value ?? null,
 );
 const historyLoading = computed(() => activeClient.value?.historyLoading.value ?? false);
+const historyHydrateState = computed(() => activeClient.value?.historyHydrateState.value ?? "idle");
 const contextId = computed(() => activeClient.value?.contextId.value ?? undefined);
 const taskId = computed(() => activeClient.value?.taskId.value ?? null);
 const workflowProgress = computed(() => activeClient.value?.workflowProgress.value ?? { phase: "idle" as const, nodes: [], completedNodes: [] });
@@ -320,6 +327,7 @@ watch(
           :agents="agents"
           :context-id="contextId"
           :context-metrics="contextMetrics"
+          :prompt-context-bytes-session-current="promptContextBytesSessionCurrent"
           :provenance-diagram="provenanceDiagram"
           :messages="messages"
           :provenance-summary="provenanceDashboardSummary"
@@ -348,6 +356,33 @@ watch(
           />
         </div>
 
+        <div class="chat-session-zones" aria-label="Session console layout">
+          <div class="zone-pair">
+            <span class="zone-chip zone-chip--primary">Primary</span>
+            <span class="zone-hint">Transcript &amp; compose</span>
+          </div>
+          <div class="session-meta" aria-live="polite">
+            <template v-if="selectedAgent">
+              <span>{{ selectedAgent.agent_package }}/{{ selectedAgent.agent_instance_id }}</span>
+            </template>
+            <template v-if="selectedHistoryContextId">
+              <span> · </span>
+              <code>{{ selectedHistoryContextId }}</code>
+            </template>
+            <template v-if="taskId">
+              <span> · task </span>
+              <code>{{ taskId }}</code>
+            </template>
+            <template v-if="!selectedAgent">
+              <span>Select an agent to bind a session.</span>
+            </template>
+          </div>
+          <div class="zone-pair zone-pair--end">
+            <span class="zone-hint">Traces &amp; metrics</span>
+            <span class="zone-chip zone-chip--observe">Observe</span>
+          </div>
+        </div>
+
         <div class="app-body">
           <ChatWindow
             :messages="messages"
@@ -356,6 +391,8 @@ watch(
             :awaiting-input="awaitingInput"
             :input-required-prompt="inputRequiredPrompt"
             :workflow-progress="workflowProgress"
+            :history-hydrate-state="historyHydrateState"
+            :selected-context-id="selectedHistoryContextId"
             @send="sendMessage"
             @cancel="cancelStream"
           />
@@ -366,6 +403,7 @@ watch(
             :is-streaming="isLoading"
             :diagrams="provenancePaneDiagrams"
             :trace-refresh-tick="traceRefreshGeneration"
+            :llm-prompt-operations="llmPromptOperations"
           />
         </div>
       </div>

@@ -4,21 +4,50 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Short archive ref (`@N`) from a previous tool result.
-/// Monotonic per conversation context, allocated by `RefAllocator`.
+/// Short archive ref: legacy flat `@N` (implicit prefix `1`) or composite `@prefix/local`
+/// for multi-agent / multi-runtime archive namespaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ShortRef(u32);
+pub struct ShortRef {
+    /// Agent-scoped archive namespace within a `context_id` (stable per `agent_id` in Surreal).
+    pub prefix: u32,
+    /// Monotonic index within `prefix`, allocated via the provenance archive store.
+    pub local: u32,
+}
+
+/// Stable key for in-memory [`crate::archive_refs::RefTable`] archive rows.
+#[inline]
+pub fn archive_cell_key(prefix: u32, local: u32) -> u64 {
+    ((prefix as u64) << 32) | (local as u64)
+}
 
 impl ShortRef {
-    pub fn new(n: u32) -> Self {
-        Self(n)
+    /// Legacy helper: prefix `1`, local `n` (flat `@n` on the wire).
+    pub fn new(local: u32) -> Self {
+        Self { prefix: 1, local }
+    }
+
+    pub fn new_prefixed(prefix: u32, local: u32) -> Self {
+        Self { prefix, local }
+    }
+
+    #[inline]
+    pub fn cell_key(self) -> u64 {
+        archive_cell_key(self.prefix, self.local)
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        s.strip_prefix('@')?.parse::<u32>().ok().map(Self)
+        let s = s.trim().strip_prefix('@')?;
+        if let Some((p, rest)) = s.split_once('/') {
+            let prefix = p.parse::<u32>().ok()?;
+            let local = rest.parse::<u32>().ok()?;
+            Some(Self { prefix, local })
+        } else {
+            let local = s.parse::<u32>().ok()?;
+            Some(Self { prefix: 1, local })
+        }
     }
 
-    /// Parse `@N`, or the last `@N` suffix (e.g. episode-prefixed `abcd@8` in display strings).
+    /// Parse `@N` or `@p/k`, or the last `@…` suffix (e.g. episode-prefixed `abcd@8` in display strings).
     pub fn parse_loose(s: &str) -> Option<Self> {
         Self::parse(s.trim()).or_else(|| {
             let t = s.trim();
@@ -27,14 +56,20 @@ impl ShortRef {
         })
     }
 
+    /// Local index only — meaningful for legacy prefix-1 refs and citations.
+    #[inline]
     pub fn as_u32(self) -> u32 {
-        self.0
+        self.local
     }
 }
 
 impl std::fmt::Display for ShortRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "@{}", self.0)
+        if self.prefix == 1 {
+            write!(f, "@{}", self.local)
+        } else {
+            write!(f, "@{}/{}", self.prefix, self.local)
+        }
     }
 }
 
@@ -48,7 +83,9 @@ impl<'de> Deserialize<'de> for ShortRef {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         ShortRef::parse(&s).ok_or_else(|| {
-            serde::de::Error::custom(format!("invalid archive ref: '{s}' (expected @N)"))
+            serde::de::Error::custom(format!(
+                "invalid archive ref: '{s}' (expected @N or @prefix/local)"
+            ))
         })
     }
 }
@@ -276,6 +313,19 @@ mod tests {
     #[test]
     fn short_ref_display() {
         assert_eq!(ShortRef::new(42).to_string(), "@42");
+        assert_eq!(
+            ShortRef::new_prefixed(2, 5).to_string(),
+            "@2/5",
+            "non-entrypoint prefix uses composite form"
+        );
+    }
+
+    #[test]
+    fn short_ref_parse_composite() {
+        let r = ShortRef::parse("@2/7").expect("composite");
+        assert_eq!(r.prefix, 2);
+        assert_eq!(r.local, 7);
+        assert_eq!(r.as_u32(), 7);
     }
 
     #[test]

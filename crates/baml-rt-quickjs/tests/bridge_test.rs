@@ -1046,9 +1046,14 @@ async fn test_step_executor_loop_drives_full_session_with_interceptor() {
         .expect("in-memory provenance for step executor e2e");
     manager.set_effect_emitter(bus.clone());
     let manager = Arc::new(RwLock::new(manager));
-    baml_rt::a2a_transport::install_provenance_conversation_wiring(store.clone(), &manager, &bus)
-        .await
-        .expect("provenance + conversation wiring");
+    baml_rt::a2a_transport::install_provenance_conversation_wiring(
+        store.clone(),
+        Some(store.clone()),
+        &manager,
+        &bus,
+    )
+    .await
+    .expect("provenance + conversation wiring");
 
     {
         let agent = scope.as_scope().agent_id().clone();

@@ -30,6 +30,7 @@ use baml_rt_core::{
 use baml_rt_provenance::{
     CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceOpsQueryRequest,
     ProvenanceOpsQueryResponse, ProvenanceWriter, SurrealStoreBuilder, events::LlmDriftInfo,
+    serialized_prompt_utf8_len,
 };
 use futures_util::stream;
 use opentelemetry::{global, trace::TracerProvider as _};
@@ -445,7 +446,7 @@ impl ConversationHistoryService for RealConversationHistory {
                 .collect();
         }
         let max_event_order = items.last().map(|item| item.timestamp_ms).unwrap_or(0);
-        let version = baml_rt_api::page_version(&items);
+        let version = baml_rt_api::page_version(&items, &[], None, false, None);
         Ok(ConversationHistoryPageDto {
             context_id: request.context_id.as_str().to_string(),
             task_id: request.task_id.as_ref().map(|id| id.as_str().to_string()),
@@ -453,6 +454,10 @@ impl ConversationHistoryService for RealConversationHistory {
             max_event_order,
             items,
             next_cursor: None,
+            prompt_context_bytes_session_current: None,
+            llm_prompt_operations: Vec::new(),
+            awaiting_input: false,
+            input_required_prompt: None,
         })
     }
 }
@@ -648,6 +653,9 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
                 drift: None,
                 citations: vec![],
                 resolved_citations: vec![],
+                prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(
+                    &serde_json::json!({"input":"world"}),
+                ),
             },
         }))
         .await

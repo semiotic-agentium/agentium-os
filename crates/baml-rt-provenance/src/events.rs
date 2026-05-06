@@ -469,6 +469,17 @@ pub struct PlanStepSpec {
     pub depends_on: Vec<PlanStepId>,
 }
 
+/// UTF-8 byte length of `serde_json::to_string(prompt)` — canonical serialized prompt size for telemetry and graph props.
+///
+/// Computed **once** when constructing [`ProvEventData::LlmCallCompleted`] (see [`ProvEvent::llm_call_completed_global_with_drift`] /
+/// [`ProvEvent::llm_call_completed_task_with_drift`]); downstream code copies the value — no second serialization.
+#[must_use]
+pub fn serialized_prompt_utf8_len(prompt: &Value) -> u64 {
+    serde_json::to_string(prompt)
+        .map(|s| s.len() as u64)
+        .unwrap_or(0)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ProvEventData {
     LlmCallStarted {
@@ -498,6 +509,9 @@ pub enum ProvEventData {
         /// The normalizer uses these to emit CITED graph edges without the ephemeral ref table.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         resolved_citations: Vec<ResolvedCitationTarget>,
+        /// Measured once at construction via [`serialized_prompt_utf8_len`] on `prompt`.
+        #[serde(default)]
+        prompt_serialized_utf8_bytes: u64,
     },
     ToolCallStarted {
         scope: CallScope,
@@ -876,6 +890,7 @@ impl ProvEvent {
         citations: Vec<String>,
         resolved_citations: Vec<ResolvedCitationTarget>,
     ) -> Self {
+        let prompt_serialized_utf8_bytes = serialized_prompt_utf8_len(&prompt);
         ProvEvent::Global(GlobalEvent {
             id: next_activity_anchor_id(),
             context_id,
@@ -893,6 +908,7 @@ impl ProvEvent {
                 drift,
                 citations,
                 resolved_citations,
+                prompt_serialized_utf8_bytes,
             },
         })
     }
@@ -943,6 +959,7 @@ impl ProvEvent {
         citations: Vec<String>,
         resolved_citations: Vec<ResolvedCitationTarget>,
     ) -> Self {
+        let prompt_serialized_utf8_bytes = serialized_prompt_utf8_len(&prompt);
         ProvEvent::Task(TaskScopedEvent {
             id: next_activity_anchor_id(),
             context_id,
@@ -961,6 +978,7 @@ impl ProvEvent {
                 drift,
                 citations,
                 resolved_citations,
+                prompt_serialized_utf8_bytes,
             },
         })
     }

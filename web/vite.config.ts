@@ -10,6 +10,9 @@ function runnerProxy(): ProxyOptions {
   return {
     target: RUNNER_ORIGIN,
     changeOrigin: true,
+    /** Long agent turns + buffered SSE responses can exceed default proxy/socket timeouts. */
+    timeout: 0,
+    proxyTimeout: 0,
     configure(proxy) {
       proxy.on("proxyReq", (proxyReq, req) => {
         const url = req.url ?? "";

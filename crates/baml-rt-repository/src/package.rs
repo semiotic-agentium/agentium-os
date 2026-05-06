@@ -49,6 +49,60 @@ pub enum PackageExtractError {
     FileRead { path: String, reason: String },
 }
 
+/// Strip leading `./` from tar entry paths for stable comparisons.
+fn normalize_tar_path(path: &str) -> &str {
+    path.strip_prefix("./").unwrap_or(path)
+}
+
+/// Read only `manifest.json` from a packaged `.tar.gz` and return the agent package `name` string.
+///
+/// Cheaper than [`source_bundle_from_tar_gz`] when only the package identifier is needed
+/// (e.g. deploy conflict checks before full runtime boot).
+pub fn manifest_package_name_from_tar_gz(
+    bytes: &[u8],
+) -> std::result::Result<String, PackageExtractError> {
+    let cursor = Cursor::new(bytes);
+    let decoder = GzDecoder::new(cursor);
+    let mut archive = Archive::new(decoder);
+
+    for entry_result in archive
+        .entries()
+        .map_err(|e| PackageExtractError::TarEntries(e.to_string()))?
+    {
+        let mut entry = entry_result.map_err(|e| PackageExtractError::TarEntry(e.to_string()))?;
+        let path = entry
+            .path()
+            .map_err(|e| PackageExtractError::TarEntryPath(e.to_string()))?
+            .to_string_lossy()
+            .to_string();
+
+        if path.ends_with('/') {
+            continue;
+        }
+
+        let normalized = normalize_tar_path(&path);
+        if normalized != "manifest.json" && !normalized.ends_with("/manifest.json") {
+            continue;
+        }
+
+        let mut content = String::new();
+        entry
+            .read_to_string(&mut content)
+            .map_err(|_| PackageExtractError::ManifestRead { path: path.clone() })?;
+        let manifest: Value = serde_json::from_str(&content)
+            .map_err(|e| PackageExtractError::ManifestParse(e.to_string()))?;
+        let name = manifest
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or(PackageExtractError::ManifestNameMissing)?;
+        name.parse::<AgentName>()
+            .map_err(|e| PackageExtractError::ManifestNameInvalid(e.to_string()))?;
+        return Ok(name.to_string());
+    }
+
+    Err(PackageExtractError::ManifestMissing)
+}
+
 /// Extract `(AgentName, SourceBundle)` from a packaged `.tar.gz` archive.
 ///
 /// Reads:
@@ -81,7 +135,8 @@ pub fn source_bundle_from_tar_gz(
             continue;
         }
 
-        if path == "manifest.json" {
+        let normalized = normalize_tar_path(&path);
+        if normalized == "manifest.json" {
             let mut content = String::new();
             entry
                 .read_to_string(&mut content)

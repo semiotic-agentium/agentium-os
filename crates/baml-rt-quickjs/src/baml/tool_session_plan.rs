@@ -4,7 +4,10 @@ use baml_rt_core::semantics::ErrorDisposition;
 use baml_rt_tools::{ToolFailure, should_host_retry, tool_failure_to_baml_tool_execution_error};
 
 use super::{BamlRuntimeManager, ToolSessionOp, ToolSessionPlan, manager_prelude::*, open_input};
-use crate::tool_session_handle::{SendResult, ToolSessionSendBlockingOutcome};
+use crate::{
+    provenance_errors::map_archive_provenance_err,
+    tool_session_handle::{SendResult, ToolSessionSendBlockingOutcome},
+};
 
 fn plan_send_tool_error_value(
     tool_name: &str,
@@ -68,6 +71,34 @@ impl BamlRuntimeManager {
                 },
             )),
         }
+    }
+
+    /// Live [`RefTable`] first; on miss, optional Surreal [`SurrealProvenanceStore`](baml_rt_provenance::SurrealProvenanceStore).
+    async fn resolve_archive_entry(
+        &self,
+        context_id: &baml_rt_core::ids::ContextId,
+        archive_ref: baml_rt_tools::archive_read::ShortRef,
+    ) -> Result<baml_rt_tools::archive_refs::ArchiveEntry> {
+        let ref_table = baml_rt_tools::archive_refs::get_or_create_ref_table(
+            &self.state.archive_ref_tables,
+            context_id.as_str(),
+        );
+        if let Some(cell) = ref_table.get(archive_ref) {
+            return Ok(cell.value().clone());
+        }
+        if let Some(store) = self.state.archive_ref_store.as_ref() {
+            let remote = store
+                .archive_get_body(context_id, archive_ref)
+                .await
+                .map_err(map_archive_provenance_err)?;
+            if let Some(e) = remote {
+                ref_table.insert_at(archive_ref, e.clone());
+                return Ok(e);
+            }
+        }
+        Err(BamlRtError::InvalidArgument(format!(
+            "archive ref {archive_ref} not found in session context"
+        )))
     }
 
     pub(in crate::baml) async fn execute_archive_read_plan(
@@ -136,18 +167,14 @@ impl BamlRuntimeManager {
             op = op_name,
             "FSM step: global archive read"
         );
-        let context_id = scope.context_id().as_str().to_string();
-        let ref_table = baml_rt_tools::archive_refs::get_or_create_ref_table(
-            &self.state.archive_ref_tables,
-            &context_id,
-        );
-        let entry = ref_table
-            .get(archive_ref)
-            .map(|entry| entry.clone())
-            .ok_or_else(|| {
-                BamlRtError::InvalidArgument(format!(
-                    "{op_name} step: archive ref {archive_ref} not found in session context"
-                ))
+        let entry = self
+            .resolve_archive_entry(scope.context_id(), archive_ref)
+            .await
+            .map_err(|e| match e {
+                BamlRtError::InvalidArgument(msg) => {
+                    BamlRtError::InvalidArgument(format!("{op_name} step: {msg}"))
+                }
+                other => other,
             })?;
         let archive_ref_str = archive_ref.to_string();
         let grep_raw = grep.as_ref().map(|g| g.pattern_text().to_string());
@@ -190,7 +217,7 @@ impl BamlRuntimeManager {
                 .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
                     context_id: scope.context_id().clone(),
                     tool_name: entry.tool_name.clone(),
-                    session_id: format!("global-archive-read:{context_id}"),
+                    session_id: format!("global-archive-read:{}", scope.context_id()),
                     op,
                     task_id: scope.task_id_opt().cloned(),
                 })
@@ -493,16 +520,15 @@ impl BamlRuntimeManager {
                         reason = ?reason,
                         "FSM step: SearchRead (archive line filter)"
                     );
-                    let context_id = plan_scope.context_id().as_str().to_string();
-                    let ref_table = baml_rt_tools::archive_refs::get_or_create_ref_table(
-                        &self.state.archive_ref_tables,
-                        &context_id,
-                    );
-                    let entry = ref_table.get(archive_ref).ok_or_else(|| {
-                        BamlRtError::InvalidArgument(format!(
-                            "SearchRead step: archive ref {archive_ref} not found in session context"
-                        ))
-                    })?;
+                    let entry = self
+                        .resolve_archive_entry(plan_scope.context_id(), archive_ref)
+                        .await
+                        .map_err(|e| match e {
+                            BamlRtError::InvalidArgument(msg) => {
+                                BamlRtError::InvalidArgument(format!("SearchRead step: {msg}"))
+                            }
+                            other => other,
+                        })?;
                     let page = baml_rt_tools::archive_read::grep_paginate(
                         &entry.content,
                         Some(&grep),
@@ -611,16 +637,15 @@ impl BamlRuntimeManager {
                         reason = ?reason,
                         "FSM step: PageRead (archive paging)"
                     );
-                    let context_id = plan_scope.context_id().as_str().to_string();
-                    let ref_table = baml_rt_tools::archive_refs::get_or_create_ref_table(
-                        &self.state.archive_ref_tables,
-                        &context_id,
-                    );
-                    let entry = ref_table.get(archive_ref).ok_or_else(|| {
-                        BamlRtError::InvalidArgument(format!(
-                            "PageRead step: archive ref {archive_ref} not found in session context"
-                        ))
-                    })?;
+                    let entry = self
+                        .resolve_archive_entry(plan_scope.context_id(), archive_ref)
+                        .await
+                        .map_err(|e| match e {
+                            BamlRtError::InvalidArgument(msg) => {
+                                BamlRtError::InvalidArgument(format!("PageRead step: {msg}"))
+                            }
+                            other => other,
+                        })?;
                     let page = baml_rt_tools::archive_read::grep_paginate(
                         &entry.content,
                         None,

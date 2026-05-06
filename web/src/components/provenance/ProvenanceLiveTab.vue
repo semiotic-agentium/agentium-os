@@ -3,6 +3,7 @@ import { computed } from "vue";
 import {
   formatCompact,
   formatDuration,
+  formatKb,
   shortId,
   groupValueAt,
   asDisplayIdentity,
@@ -25,6 +26,7 @@ import type {
   ContextPlanningTaskSnapshot,
   ProvenanceQueryResponse,
 } from "../../types/provenance";
+import type { LlmPromptOperation } from "../../types/a2a";
 
 const props = defineProps<{
   liveLlmResponse: ProvenanceQueryResponse | null;
@@ -37,6 +39,8 @@ const props = defineProps<{
   isStreaming: boolean;
   /** allTaskIds from the planning response, used to build episodeTaskIds. */
   allTaskIds: string[];
+  /** Prompt JSON telemetry (moved from Primary transcript column). */
+  llmPromptOperations?: LlmPromptOperation[];
 }>();
 
 const emit = defineEmits<{
@@ -211,6 +215,23 @@ function liveHotspotLabel(item: LiveHotspotItem): string {
   return `Tool · ${agentDisplay} · ${tool}`;
 }
 
+function sortLlmPromptOperations(a: LlmPromptOperation, b: LlmPromptOperation): number {
+  return a.eventOrder - b.eventOrder || a.activityAnchor.localeCompare(b.activityAnchor);
+}
+
+const promptOpsForDisplay = computed(() =>
+  [...(props.llmPromptOperations ?? [])]
+    .filter(
+      (op): op is LlmPromptOperation =>
+        !!op &&
+        typeof op.activityAnchor === "string" &&
+        op.activityAnchor.length > 0 &&
+        typeof op.eventOrder === "number" &&
+        Number.isFinite(op.eventOrder),
+    )
+    .sort(sortLlmPromptOperations),
+);
+
 function applyLiveHotspotDrilldown(item: LiveHotspotItem) {
   const agentId = groupValueAt(item.groupValues, item.groupKey, 0);
   const dim = groupValueAt(item.groupValues, item.groupKey, HOTSPOT_DIM_IDX);
@@ -228,6 +249,23 @@ function applyLiveHotspotDrilldown(item: LiveHotspotItem) {
 </script>
 
 <template>
+  <div
+    v-if="promptOpsForDisplay.length > 0"
+    class="prompt-ops-telemetry"
+    aria-label="Serialized prompt JSON size per LLM call"
+  >
+    <span class="prompt-ops-label">Prompt JSON</span>
+    <span
+      v-for="op in promptOpsForDisplay"
+      :key="op.activityAnchor"
+      class="prompt-op-chip"
+      :title="op.activityAnchor"
+    >
+      <span class="prompt-op-order">#{{ op.eventOrder }}</span>
+      <span class="prompt-op-kb">{{ formatKb(op.promptContextBytesCurrent) }}</span>
+      <span class="prompt-op-anchor">{{ shortId(op.activityAnchor) }}</span>
+    </span>
+  </div>
   <div class="provenance-card-grid" role="region" aria-label="Live aggregate counts">
     <article v-for="card in aggregateCards" :key="card.label" class="provenance-card">
       <div class="provenance-card-label">{{ card.label }}</div>

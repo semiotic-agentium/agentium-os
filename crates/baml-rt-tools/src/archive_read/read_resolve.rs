@@ -45,7 +45,7 @@ pub fn resolve_archive_for_read(
         });
     }
     let v = virtual_fallback?;
-    let row = v.archive_row(archive_ref.as_u32())?;
+    let row = v.archive_row(archive_ref)?;
     Some(ResolvedArchiveRead {
         content: Arc::clone(&row.content),
         header: row.display_header(archive_ref),

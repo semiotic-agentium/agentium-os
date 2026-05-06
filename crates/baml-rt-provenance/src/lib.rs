@@ -20,6 +20,7 @@ pub mod citation_queries;
 pub mod context_metrics_queries;
 /// Defaults for LLM conversation-context query limits.
 pub mod conversation_context_query;
+pub mod conversation_history_resume;
 pub mod document;
 pub mod effect_subscriber;
 pub mod episode;
@@ -57,6 +58,7 @@ pub use baml_rt_vocabulary::{
 };
 pub use bus_subscriber::ProvenanceBusSubscriber;
 pub use conversation_context_query::DEFAULT_LLM_CONTEXT_ITEM_CAP;
+pub use conversation_history_resume::{ConversationResumeUiHints, resolve_resume_ui_hints};
 pub use effect_subscriber::ProvenanceEffectSubscriber;
 pub use episode::{
     ArtifactSummary, CachedEpisode, Episode, EpisodeArchiveSource, EpisodeContent,
@@ -69,7 +71,7 @@ pub use error::ProvenanceError;
 pub use events::{
     AgentBootedEvent, AgentStoppedEvent, AgentType, CallScope, GlobalEvent, LlmUsage, PlanStepSpec,
     ProvEvent, ProvEventData, ReservedAnchor, TaskScopedEvent, ToolSessionStepOpKind,
-    allocate_activity_anchor,
+    allocate_activity_anchor, serialized_prompt_utf8_len,
 };
 pub use graph_export::{ExportScope, ExportedGraph, GraphExporter};
 pub use graph_model::{

@@ -116,7 +116,8 @@ impl HistoryEntry {
 #[derive(Debug)]
 pub struct RefTable {
     next: AtomicU32,
-    entries: DashMap<u32, ArchiveEntry>,
+    /// Archive bodies keyed by [`ShortRef::cell_key`] (`prefix` + `local`).
+    entries: DashMap<u64, ArchiveEntry>,
     history: DashMap<u32, HistoryEntry>,
     /// `(activity_anchor, source)` (see [`history_stable_key`]) -> allocated `#N` index.
     history_stable_key_to_n: DashMap<String, u32>,
@@ -148,12 +149,20 @@ impl Default for RefTable {
 }
 
 impl RefTable {
-    /// Store an archive entry and return its allocated `ShortRef` (`@N`).
+    /// Store an archive entry and return its allocated `ShortRef` (`@N`, implicit prefix `1`).
+    ///
+    /// Uses the shared counter with `#N` history so legacy single-agent sessions keep prior
+    /// interleaving semantics. Cluster-backed allocation should use [`Self::insert_at`] instead.
     pub fn insert(&self, entry: ArchiveEntry) -> ShortRef {
         let n = self.next.fetch_add(1, Ordering::Relaxed);
         let r = ShortRef::new(n);
-        self.entries.insert(n, entry);
+        self.entries.insert(r.cell_key(), entry);
         r
+    }
+
+    /// Insert at an explicit ref (e.g. Surreal-allocated `prefix` / `local`).
+    pub fn insert_at(&self, archive_ref: ShortRef, entry: ArchiveEntry) {
+        self.entries.insert(archive_ref.cell_key(), entry);
     }
 
     /// Store a `#N` mapping: [`HistoryEntry`] (identity) plus authoritative `content` keyed by `entry.activity_anchor`.
@@ -192,9 +201,9 @@ impl RefTable {
             .map(|r| Arc::clone(r.value()))
     }
 
-    /// Resolve a `ShortRef` (`@N`) to its `ArchiveEntry`, if present.
-    pub fn get(&self, r: ShortRef) -> Option<dashmap::mapref::one::Ref<'_, u32, ArchiveEntry>> {
-        self.entries.get(&r.as_u32())
+    /// Resolve a `ShortRef` (`@N` or `@p/k`) to its `ArchiveEntry`, if present.
+    pub fn get(&self, r: ShortRef) -> Option<dashmap::mapref::one::Ref<'_, u64, ArchiveEntry>> {
+        self.entries.get(&r.cell_key())
     }
 
     /// Resolve a `HistoryRef` (`#N`) to its `HistoryEntry`, if present.
@@ -205,14 +214,21 @@ impl RefTable {
         self.history.get(&r.as_u32())
     }
 
-    /// Insert an archive entry at an explicit `@N` index (historic replay, episodes).
+    /// Insert an archive entry at an explicit legacy `@N` (prefix `1`, local `n`) for replay / episodes.
     ///
-    /// Does not allocate a new number; bumps the shared counter so later [`insert`](Self::insert)
-    /// calls never reuse `n`.
+    /// Bumps the shared counter so later [`insert`](Self::insert) never reuses that local slot
+    /// under prefix `1`.
     pub fn insert_virtual_archive(&self, n: u32, entry: ArchiveEntry) {
         debug_assert!(n > 0, "ref indices start at 1");
-        self.entries.insert(n, entry);
+        let r = ShortRef::new(n);
+        self.entries.insert(r.cell_key(), entry);
         self.next.fetch_max(n.saturating_add(1), Ordering::Relaxed);
+    }
+
+    /// Insert at a composite ref (multi-agent archive namespace).
+    pub fn insert_virtual_archive_ref(&self, archive_ref: ShortRef, entry: ArchiveEntry) {
+        debug_assert!(archive_ref.local > 0, "ref local indices start at 1");
+        self.entries.insert(archive_ref.cell_key(), entry);
     }
 
     /// Insert a history entry at an explicit `#N` index (historic replay, episodes).
@@ -240,7 +256,48 @@ impl RefTable {
 }
 
 /// Convenience: shared `RefTable` per context, created on first use.
+///
+/// Each BAML runtime manager (QuickJS host) normally holds its own `Arc<ContextRefTables>`.
+/// For multiple managers that share one provenance `context_id` (e.g. coordinator and
+/// internal-A2A callee **in the same OS process**), use one [`SharedContextRefStore`] and inject
+/// the same `Arc` into every manager so archive refs resolve across those managers without
+/// hitting the database on every read.
 pub type ContextRefTables = DashMap<String, Arc<RefTable>>;
+
+/// Process-scoped [`ContextRefTables`] shared across several BAML runtime manager instances for
+/// the same logical conversation (matching provenance `context_id`).
+///
+/// **Single-host only:** this is in-process RAM. It does **not** synchronize archive bodies
+/// across runner pods or machines. For cluster / multi-runtime correctness, wire the Surreal-backed
+/// `SurrealProvenanceStore` from the `baml-rt-provenance` crate on the runtime; this map is at most a
+/// same-process cache layered on that backing.
+///
+/// Clone is cheap (`Arc` inner). The agent runner keeps one store per process and passes it
+/// into each deployed agent's runtime build.
+#[derive(Clone, Debug)]
+pub struct SharedContextRefStore(Arc<ContextRefTables>);
+
+impl SharedContextRefStore {
+    pub fn new() -> Self {
+        Self(Arc::new(ContextRefTables::new()))
+    }
+
+    /// Map passed to [`get_or_create_ref_table`] and tool-session archive paths.
+    pub fn tables(&self) -> Arc<ContextRefTables> {
+        Arc::clone(&self.0)
+    }
+
+    /// Borrow the inner map without incrementing the `Arc` reference count.
+    pub fn as_ref_tables(&self) -> &ContextRefTables {
+        &self.0
+    }
+}
+
+impl Default for SharedContextRefStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Get or create the `RefTable` for a context ID.
 pub fn get_or_create_ref_table(tables: &ContextRefTables, context_id: &str) -> Arc<RefTable> {
@@ -355,6 +412,13 @@ mod tests {
         let t3 = get_or_create_ref_table(&tables, "ctx-2");
         assert!(Arc::ptr_eq(&t1, &t2));
         assert!(!Arc::ptr_eq(&t1, &t3));
+    }
+
+    #[test]
+    fn shared_context_ref_store_clones_share_arc() {
+        let a = SharedContextRefStore::new();
+        let b = a.clone();
+        assert!(Arc::ptr_eq(&a.tables(), &b.tables()));
     }
 
     /// Same `(activity_anchor, source)` reuses `#N` across reprojection (no counter churn).

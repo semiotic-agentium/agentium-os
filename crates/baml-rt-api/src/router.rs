@@ -61,7 +61,8 @@ pub struct ApiState {
     pub config_service: Arc<dyn ConfigService>,
     pub secret_resolver: Arc<dyn SecretResolver>,
     pub runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
-    /// Readiness flag: set to `true` after deployment restore completes.
+    /// Readiness flag: `true` once event producers are registered (and poll loop spawned if configured).
+    /// HTTP may already be listening; use `/healthz` vs `/readyz` for liveness vs this gate.
     pub ready: Arc<AtomicBool>,
     /// Shared secret for authenticating control-plane requests (e.g. `/control/migrate`).
     pub runner_token: Option<String>,

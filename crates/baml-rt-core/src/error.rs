@@ -278,6 +278,7 @@ fn code_for_classified(err: &BamlRtError, disposition: ErrorDisposition) -> Stri
         BamlRtError::Io(_) => "io_error".to_string(),
         BamlRtError::QuickJs(_) | BamlRtError::QuickJsWithSource { .. } => "quickjs".to_string(),
         BamlRtError::SessionLifecycle(_) => "session_lifecycle".to_string(),
+        BamlRtError::Conflict(_) => "conflict".to_string(),
         _ => "runtime_error".to_string(),
     }
 }

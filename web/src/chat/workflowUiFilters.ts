@@ -15,5 +15,15 @@ export function isWorkflowStatusText(text: string): boolean {
 export function isChatStatusNoiseText(text: string): boolean {
   const t = text.trim();
   if (isWorkflowStatusText(t)) return true;
-  return /^Calling model:/i.test(t) || /^Invoking tool:/i.test(t);
+  return (
+    /^Calling model:/i.test(t) ||
+    /^Invoking tool:/i.test(t) ||
+    /^Coordinator\b/i.test(t) ||
+    /^Delegat(?:e|ing)\b/i.test(t)
+  );
+}
+
+/** Agent transcript lines (stream + provenance restore) that belong in WorkflowProgress / tool UI only. */
+export function shouldSuppressAgentTranscriptText(text: string): boolean {
+  return isChatStatusNoiseText(text);
 }

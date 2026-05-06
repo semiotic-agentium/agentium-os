@@ -304,6 +304,9 @@ async fn init_store_in_namespace(
         normalizer: Arc::new(DefaultProvNormalizer::default()),
         mermaid_cache,
         task_agent_id_cache: dashmap::DashMap::new(),
+        archive_prefix_cache: dashmap::DashMap::new(),
+        archive_local_serializers: dashmap::DashMap::new(),
+        archive_anchor_serializers: dashmap::DashMap::new(),
     };
     Ok(Arc::new(store))
 }

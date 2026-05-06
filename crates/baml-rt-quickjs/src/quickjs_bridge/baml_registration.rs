@@ -1,7 +1,7 @@
 //! BAML and await/stream registration with QuickJS.
 //!
 //! All __baml_invoke, __baml_stream, __set_eval_result, await helpers, and
-//! per-function registration live here so the main bridge focuses on coordination.
+//! batched per-function wrapper registration live here so the main bridge focuses on coordination.
 //!
 //! ## Execution Session Invariants
 //!
@@ -1416,61 +1416,56 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
     Ok(())
 }
 
-/// Register a single BAML function with QuickJS (tokenless wrapper).
-pub(super) async fn register_single_function(
+/// Register all `globalThis[fn]` → `__baml_invoke` wrappers in one eval.
+pub(super) async fn register_baml_invoke_wrappers_batch(
     bridge: &QuickJSBridge,
-    function_name: &str,
+    function_names: &[String],
 ) -> Result<()> {
-    let js_code = wrappers::build_token_args_wrapper(
-        function_name,
-        &format!(
-            "__baml_invoke(\"{}\", JSON.stringify(argObj))",
-            function_name.replace('\\', "\\\\").replace('"', "\\\"")
-        ),
-    );
+    if function_names.is_empty() {
+        return Ok(());
+    }
 
-    let script = Script::new("register_function.js", &js_code);
+    let js_code = wrappers::build_baml_invoke_wrappers_batch(function_names);
+    let script = Script::new("register_functions_batch.js", &js_code);
     bridge
         .runtime()
         .eval(None, script)
         .await
         .map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to register function".to_string(),
-            source: Box::new(e),
-        })?;
-
-    tracing::debug!(function = function_name, "Registered function with QuickJS");
-    Ok(())
-}
-
-/// Register a streaming version of a single BAML function with QuickJS.
-pub(super) async fn register_single_stream_function(
-    bridge: &QuickJSBridge,
-    function_name: &str,
-) -> Result<()> {
-    let stream_function_name = format!("{}Stream", function_name);
-    let js_code = wrappers::build_token_args_wrapper(
-        &stream_function_name,
-        &format!(
-            "__baml_stream(\"{}\", JSON.stringify(argObj))",
-            function_name.replace('\\', "\\\\").replace('"', "\\\"")
-        ),
-    );
-
-    let script = Script::new("register_stream_function.js", &js_code);
-    bridge
-        .runtime()
-        .eval(None, script)
-        .await
-        .map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to register stream function".to_string(),
+            context: "Failed to register BAML functions (batch)".to_string(),
             source: Box::new(e),
         })?;
 
     tracing::debug!(
-        function = function_name,
-        stream_function = stream_function_name,
-        "Registered streaming function with QuickJS"
+        function_count = function_names.len(),
+        "Registered BAML invoke wrappers with QuickJS (batch eval)"
+    );
+    Ok(())
+}
+
+/// Register all `globalThis[fnStream]` → `__baml_stream` wrappers in one eval.
+pub(super) async fn register_baml_stream_wrappers_batch(
+    bridge: &QuickJSBridge,
+    function_names: &[String],
+) -> Result<()> {
+    if function_names.is_empty() {
+        return Ok(());
+    }
+
+    let js_code = wrappers::build_baml_stream_wrappers_batch(function_names);
+    let script = Script::new("register_stream_functions_batch.js", &js_code);
+    bridge
+        .runtime()
+        .eval(None, script)
+        .await
+        .map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register BAML stream functions (batch)".to_string(),
+            source: Box::new(e),
+        })?;
+
+    tracing::debug!(
+        function_count = function_names.len(),
+        "Registered BAML stream wrappers with QuickJS (batch eval)"
     );
     Ok(())
 }
