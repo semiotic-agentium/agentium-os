@@ -32,22 +32,34 @@ pub enum ClickUpClientError {
 #[derive(Clone)]
 pub struct ClickUpClient {
     client: reqwest::Client,
-    api_key: String,
+    /// When `None`, [`Self::resolve_api_key`] reads fnox / env when needed (deploy-time tool
+    /// registration does not require credentials).
+    explicit_api_key: Option<String>,
     base_url: String,
 }
 
+impl Default for ClickUpClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClickUpClient {
-    /// Resolves `CLICKUP_API_KEY` from `fnox.toml` / process environment and caches it on the
-    /// client so subsequent operations reuse the resolved value.
-    pub fn new() -> std::result::Result<Self, ClickUpClientError> {
-        Self::with_resolved_base_url(resolve_base_url())
+    /// HTTP client with default production base URL; resolves `CLICKUP_API_KEY` from fnox /
+    /// environment on [`Self::resolve_api_key`], unless [`Self::with_credentials`] supplied a key.
+    pub fn new() -> Self {
+        Self::with_base_url(resolve_base_url())
     }
 
     /// Same as [`Self::new`] but targets a fixed API base (e.g. local fixture server). Trailing
     /// slashes are stripped.
-    pub fn with_base_url(base: impl Into<String>) -> std::result::Result<Self, ClickUpClientError> {
+    pub fn with_base_url(base: impl Into<String>) -> Self {
         let raw = base.into();
-        Self::with_resolved_base_url(raw.trim().trim_end_matches('/').to_string())
+        Self {
+            client: reqwest::Client::new(),
+            explicit_api_key: None,
+            base_url: raw.trim().trim_end_matches('/').to_string(),
+        }
     }
 
     /// Builds a client with both an explicit API key and base URL. Skips `fnox.toml` /
@@ -56,24 +68,23 @@ impl ClickUpClient {
     pub fn with_credentials(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
-            api_key: api_key.into(),
+            explicit_api_key: Some(api_key.into()),
             base_url: base_url.into(),
         }
     }
 
-    fn with_resolved_base_url(base_url: String) -> std::result::Result<Self, ClickUpClientError> {
-        let api_key = FnoxFileSecretResolver::default_path_resolver()
+    /// Returns the configured API key, or resolves `CLICKUP_API_KEY` from fnox.toml / process env.
+    pub fn resolve_api_key(&self) -> std::result::Result<String, ClickUpClientError> {
+        if let Some(key) = &self.explicit_api_key {
+            return Ok(key.clone());
+        }
+        FnoxFileSecretResolver::default_path_resolver()
             .resolve_or_env("CLICKUP_API_KEY")
-            .ok_or(ClickUpClientError::MissingApiKey)?;
-        Ok(Self::with_credentials(api_key, base_url))
+            .ok_or(ClickUpClientError::MissingApiKey)
     }
 
     pub fn base_url(&self) -> &str {
         self.base_url.as_str()
-    }
-
-    pub fn api_key(&self) -> &str {
-        self.api_key.as_str()
     }
 
     pub fn get(&self, path: &str, api_key: &str) -> reqwest::RequestBuilder {
