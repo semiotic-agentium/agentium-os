@@ -24,11 +24,9 @@
 //!
 //! ## Reattach metadata stash (§9.4)
 //!
-//! `runtime_digest` and `policy_hash` must survive a cache rebuild so the
-//! §9.4 validation checklist can run. We stash them as guest env vars at
-//! create time:
+//! `policy_hash` must survive a cache rebuild so the §9.4 validation checklist
+//! can run. We stash it as a guest env var at create time:
 //!
-//! - `BAML_RUNTIME_DIGEST`
 //! - `BAML_POLICY_HASH`
 //! - `BAML_MAX_DURATION_SECS`
 //!
@@ -62,8 +60,6 @@ use super::{
 
 /// Env-var names used to stash reattach metadata inside the guest. Chosen
 /// under the `BAML_` prefix so they don't collide with tool-author vars.
-#[cfg(feature = "sandbox-provider")]
-const STASH_RUNTIME_DIGEST: &str = "BAML_RUNTIME_DIGEST";
 #[cfg(feature = "sandbox-provider")]
 const STASH_POLICY_HASH: &str = "BAML_POLICY_HASH";
 #[cfg(feature = "sandbox-provider")]
@@ -138,7 +134,6 @@ impl SandboxProvider for MicrosandboxProvider {
         let name = spec.name.clone();
         let max_duration = spec.max_duration;
         let guest_workdir = spec.guest_workdir.clone();
-        let runtime_digest = spec.runtime_digest.clone();
         let policy_hash = spec.policy_hash.clone();
 
         if matches!(
@@ -190,11 +185,7 @@ impl SandboxProvider for MicrosandboxProvider {
             }
         }
 
-        // Reattach-metadata stash (§9.4 — runtime_digest / policy_hash /
-        // max_duration recovered via env inside the guest on reattach).
-        if let Some(digest) = &runtime_digest {
-            builder = builder.env(STASH_RUNTIME_DIGEST, digest);
-        }
+        // Reattach-metadata stash (§9.4 — policy_hash / max_duration recovered via env inside the guest on reattach).
         if let Some(hash) = &policy_hash {
             builder = builder.env(STASH_POLICY_HASH, hash);
         }
@@ -255,7 +246,6 @@ impl SandboxProvider for MicrosandboxProvider {
             name,
             created_at: SystemTime::now(),
             guest_workdir,
-            runtime_digest,
             policy_hash,
             max_duration,
         })
@@ -377,7 +367,6 @@ impl SandboxProvider for MicrosandboxProvider {
                 // Metadata stash recovery is done lazily on reattach(); list
                 // returns name-only handles.
                 guest_workdir: "/".to_string(),
-                runtime_digest: None,
                 policy_hash: None,
                 max_duration: Duration::from_secs(0),
             })
@@ -394,14 +383,12 @@ impl SandboxProvider for MicrosandboxProvider {
 
         // Recover stashed metadata by running `printenv` on the guest. One
         // exec, parse the block, bail gracefully if anything is missing.
-        let (runtime_digest, policy_hash, max_duration, guest_workdir) = recover_reattach_metadata(
-            &sandbox,
-        )
-        .await
-        .unwrap_or_else(|e| {
-            debug!(?e, sandbox = %name, "reattach metadata recovery failed; using defaults");
-            (None, None, Duration::from_secs(0), "/".to_string())
-        });
+        let (policy_hash, max_duration, guest_workdir) = recover_reattach_metadata(&sandbox)
+            .await
+            .unwrap_or_else(|e| {
+                debug!(?e, sandbox = %name, "reattach metadata recovery failed; using defaults");
+                (None, Duration::from_secs(0), "/".to_string())
+            });
 
         self.live.insert(name.to_string(), sandbox);
 
@@ -412,7 +399,6 @@ impl SandboxProvider for MicrosandboxProvider {
             // callers need it later; §9.4 age check uses max_duration anyway.
             created_at: SystemTime::now(),
             guest_workdir,
-            runtime_digest,
             policy_hash,
             max_duration,
         })
@@ -425,7 +411,7 @@ impl SandboxProvider for MicrosandboxProvider {
 #[cfg(feature = "sandbox-provider")]
 async fn recover_reattach_metadata(
     sandbox: &microsandbox::Sandbox,
-) -> Result<(Option<String>, Option<String>, Duration, String)> {
+) -> Result<(Option<String>, Duration, String)> {
     let output = sandbox
         .exec("printenv", std::iter::empty::<&str>())
         .await
@@ -434,17 +420,12 @@ async fn recover_reattach_metadata(
         .stdout()
         .map_err(|e| to_rt_err("printenv stdout not valid utf-8", e))?;
 
-    let mut runtime_digest = None;
     let mut policy_hash = None;
     let mut max_duration_secs: u64 = 0;
     let mut guest_workdir = "/".to_string();
 
     for line in stdout.lines() {
-        if let Some(v) = line.strip_prefix(&format!("{STASH_RUNTIME_DIGEST}="))
-            && !v.is_empty()
-        {
-            runtime_digest = Some(v.to_string());
-        } else if let Some(v) = line.strip_prefix(&format!("{STASH_POLICY_HASH}="))
+        if let Some(v) = line.strip_prefix(&format!("{STASH_POLICY_HASH}="))
             && !v.is_empty()
         {
             policy_hash = Some(v.to_string());
@@ -460,7 +441,6 @@ async fn recover_reattach_metadata(
     }
 
     Ok((
-        runtime_digest,
         policy_hash,
         Duration::from_secs(max_duration_secs),
         guest_workdir,

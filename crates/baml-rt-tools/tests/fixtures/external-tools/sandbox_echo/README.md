@@ -27,6 +27,6 @@ cargo run -p baml-agent-runner --features sandbox-provider
   echo adapter image isn't built here — publishing the image is a separate
   ops task tracked under Workstream F.
 - OCI identity is the digest-pinned image reference itself; no separate
-  `runtime_digest` field is used.
+  runtime digest field is used.
 - Schema matches the process-backed `e2e_echo` sibling so the same BAML
   contract can be swapped between backends without agent changes.

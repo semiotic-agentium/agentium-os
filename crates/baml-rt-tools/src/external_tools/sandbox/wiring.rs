@@ -138,7 +138,6 @@ fn build_stock_spec(
         detached: true,
         pull_policy: PullPolicy::IfMissing,
         entrypoint: entrypoint.to_vec(),
-        runtime_digest: None,
         policy_hash: None,
     }
 }

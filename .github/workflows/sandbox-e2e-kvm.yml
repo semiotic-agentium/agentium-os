@@ -170,12 +170,7 @@ jobs:
       - name: Materialize CI-local bind metadata
         run: |
           ROOTFS_DIR="${RUNNER_TEMP}/sandbox-echo-rootfs-extract/sandbox-echo-rootfs"
-          DIGEST=$(cargo run -q -p cargo-agent-platform -- sandbox-digest --source bind "${ROOTFS_DIR}" | tail -n1)
-          if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "error: sandbox-digest did not emit canonical sha256:<64-hex>; got: '${DIGEST}'" >&2
-            exit 1
-          fi
-          export ROOTFS_DIR DIGEST
+          export ROOTFS_DIR
 
           python - <<'PY'
           import json
@@ -185,13 +180,11 @@ jobs:
           src = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
           dst = Path(os.environ["RUNNER_TEMP"]) / "sandbox_echo.tool-metadata.ci.json"
           rootfs_dir = Path(os.environ["ROOTFS_DIR"]).resolve()
-          digest = os.environ["DIGEST"]
 
           with src.open("r", encoding="utf-8") as f:
             doc = json.load(f)
 
           doc["runtime"]["image"] = {"kind": "bind", "path": str(rootfs_dir)}
-          doc["runtime_digest"] = digest
 
           with dst.open("w", encoding="utf-8") as f:
             json.dump(doc, f, indent=2)

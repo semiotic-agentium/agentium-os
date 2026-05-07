@@ -587,7 +587,6 @@ mod tests {
             runtime_json.get("tool_id").and_then(Value::as_str),
             Some("dev/meteo-tool")
         );
-        assert!(runtime_json.get("runtime_digest").is_none());
         assert_eq!(
             runtime_json.get("protocol").and_then(Value::as_str),
             Some("jsonrpc-stdio")

@@ -204,7 +204,7 @@ docker build -t ghcr.io/acme/my-tool:latest -f <Dockerfile> .
 # push + obtain digest, then use ghcr.io/acme/my-tool@sha256:...
 ```
 
-Set metadata `runtime.image.ref` to the digest-pinned OCI ref. No separate `runtime_digest` field is used.
+Set metadata `runtime.image.ref` to the digest-pinned OCI ref.
 
 ## 3.2 Bind source
 
@@ -240,7 +240,7 @@ Reference runnable example:
 
 Sandbox runtime identity is source-specific:
 
-- **OCI** is the distributable runtime format. Identity is the digest-pinned image ref in metadata: `repo@sha256:<64hex>`. No separate `runtime_digest` field is used.
+- **OCI** is the distributable runtime format. Identity is the digest-pinned image ref in metadata: `repo@sha256:<64hex>`.
 - **Bind** is a local development convenience. It points at a host rootfs directory and is not treated as a distributable verified artifact. `sandbox-bind-sync` records only the host-resolved path in `tool-metadata.lock.json` and writes the compatibility sidecar bundle when needed.
 
 ### Bind sync command

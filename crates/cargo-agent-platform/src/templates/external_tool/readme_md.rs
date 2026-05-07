@@ -168,8 +168,8 @@ fn bind_setup_section(ctx: &ScaffoldContext<'_>) -> String {
 
 These notes apply to both bind modes:
 
-- metadata starts with a portable tool-relative bind path and no source `runtime_digest`,
-- host-resolved bind path + digest live in gitignored `tool-metadata.lock.json` after sync,
+- metadata starts with a portable tool-relative bind path,
+- host-resolved bind path lives in gitignored `tool-metadata.lock.json` after sync,
 - `check-external-tool` should pass before running the runner,
 - sandbox adapters should support TSRPC-framed JSON-RPC for parity with sandbox execution.
 

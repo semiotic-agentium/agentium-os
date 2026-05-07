@@ -225,7 +225,6 @@ mod tests {
 
         let raw = fs::read_to_string(out).expect("read sidecar");
         let v: serde_json::Value = serde_json::from_str(&raw).expect("parse sidecar");
-        assert!(v["runtime"].get("runtime_digest").is_none());
         assert!(
             v["manifest"]["supported_methods"]
                 .as_array()

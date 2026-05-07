@@ -40,18 +40,12 @@ pub struct ToolRuntimeLock {
     /// runtimes). Other runtime kinds may omit this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_path_abs: Option<PathBuf>,
-    /// Deprecated legacy field accepted when reading older local locks. New
-    /// locks do not write a bind runtime digest; bind is a dev-only path and
-    /// OCI identity is the digest-pinned image ref.
-    #[serde(default, skip_serializing)]
-    pub runtime_digest: Option<String>,
 }
 
 impl ToolRuntimeLock {
     pub fn new_bind(image_path_abs: PathBuf) -> Self {
         Self {
             image_path_abs: Some(image_path_abs),
-            runtime_digest: None,
         }
     }
 
@@ -105,13 +99,12 @@ mod tests {
     #[test]
     fn round_trip_bind_lock() {
         let tmp = unique_tmp("runtime-lock-rt");
-        let lock = ToolRuntimeLock::new_bind(tmp.join("rootfs"), "sha256:abcd".to_string());
+        let lock = ToolRuntimeLock::new_bind(tmp.join("rootfs"));
         lock.write_to_dir(&tmp).expect("write");
 
         let read = read_runtime_lock(&tmp)
             .expect("read")
             .expect("lock present");
-        assert_eq!(read.runtime_digest.as_deref(), Some("sha256:abcd"));
         assert_eq!(read.image_path_abs.unwrap(), tmp.join("rootfs"));
 
         let _ = fs::remove_dir_all(&tmp);
@@ -129,7 +122,7 @@ mod tests {
         let tmp = unique_tmp("runtime-lock-unknown");
         fs::write(
             lock_path(&tmp),
-            r#"{"runtime_digest":"sha256:abcd","unknown":"x"}"#,
+            r#"{"legacy_digest":"sha256:abcd","unknown":"x"}"#,
         )
         .unwrap();
         let err = read_runtime_lock(&tmp).expect_err("must reject unknown field");

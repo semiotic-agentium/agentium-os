@@ -12,8 +12,6 @@ use serde_json::{Value, json};
 use tokio::time::timeout;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(120);
-const PLACEHOLDER_DIGEST: &str =
-    "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
 #[tokio::test]
 async fn microsandbox_e2e_happy_teardown_reattach() {
@@ -41,19 +39,9 @@ async fn run_required_scenarios() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let runtime_digest = metadata
-        .runtime_digest
-        .as_deref()
-        .ok_or("metadata missing runtime_digest")?;
-    if runtime_digest == PLACEHOLDER_DIGEST {
-        if env::var("BAML_SANDBOX_E2E_METADATA").is_ok() {
-            return Err(
-                "metadata resolves to placeholder digest; point BAML_SANDBOX_E2E_METADATA at CI-generated artifact"
-                    .into(),
-            );
-        }
+    if env::var("BAML_SANDBOX_E2E_METADATA").is_err() {
         eprintln!(
-            "skipping sandbox_microsandbox_e2e: fixture metadata uses placeholder digest; set BAML_SANDBOX_E2E_METADATA to a materialized bind/oci metadata artifact"
+            "skipping sandbox_microsandbox_e2e: set BAML_SANDBOX_E2E_METADATA to a materialized bind/oci metadata artifact"
         );
         return Ok(());
     }
@@ -65,7 +53,6 @@ async fn run_required_scenarios() -> Result<(), Box<dyn std::error::Error>> {
     let mut happy_spec = SandboxSpec::for_test(happy_name, "unused:test-image");
     happy_spec.image = image.clone();
     happy_spec.entrypoint = entrypoint.clone();
-    happy_spec.runtime_digest = Some(runtime_digest.to_string());
     happy_spec.max_duration = Duration::from_secs(300);
     happy_spec.idle_timeout = Duration::from_secs(60);
 
@@ -86,7 +73,6 @@ async fn run_required_scenarios() -> Result<(), Box<dyn std::error::Error>> {
     let mut reattach_spec = SandboxSpec::for_test(reattach_name.clone(), "unused:test-image");
     reattach_spec.image = image;
     reattach_spec.entrypoint = entrypoint;
-    reattach_spec.runtime_digest = Some(runtime_digest.to_string());
     reattach_spec.max_duration = Duration::from_secs(300);
     reattach_spec.idle_timeout = Duration::from_secs(60);
 

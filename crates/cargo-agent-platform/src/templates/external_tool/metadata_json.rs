@@ -82,7 +82,6 @@ pub fn build_metadata(ctx: &ScaffoldContext<'_>) -> ExternalToolMetadata {
     match ctx.runtime {
         Runtime::Process => {
             meta.runtime = Some(ToolRuntime::default());
-            meta.runtime_digest = None;
         }
         Runtime::Sandbox => {
             let image = ctx
@@ -94,10 +93,6 @@ pub fn build_metadata(ctx: &ScaffoldContext<'_>) -> ExternalToolMetadata {
                 entrypoint: ctx.sandbox_entrypoint.clone(),
                 adapter: Some(default_adapter_spec(ctx.language)),
             }));
-            // Sandbox artifact identity is source-specific and never emitted
-            // as a separate `runtime_digest`: OCI uses the digest-pinned image
-            // ref, while bind is a local development path.
-            meta.runtime_digest = None;
         }
     }
 

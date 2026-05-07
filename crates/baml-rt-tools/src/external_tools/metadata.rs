@@ -76,11 +76,6 @@ pub struct ExternalToolMetadata {
     /// the wrapper default (§4.2 of `tool_sandbox.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<ToolRuntime>,
-    /// Deprecated legacy runtime digest field. New metadata must not use this:
-    /// OCI identity is `runtime.image.ref` (`repo@sha256:...`) and bind is a
-    /// local development path without distributable artifact identity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_digest: Option<String>,
     /// Optional session-coordination BAML declaration. When set, the builder
     /// reads the referenced file from the tool directory and merges its
     /// contents into the agent's generated BAML prelude — equivalent to an
@@ -140,7 +135,6 @@ impl ExternalToolMetadata {
             capabilities: Value::Object(Default::default()),
             config_bundle: None,
             runtime: None,
-            runtime_digest: None,
             coordination: None,
         }
     }
@@ -416,8 +410,7 @@ pub(crate) fn metadata_schema_digest(meta: &ExternalToolMetadata) -> String {
 /// - canonicalized metadata bytes prefixed by u64 little-endian length
 ///
 /// Sandbox tools intentionally do not require a local `tool-server` binary:
-/// runtime identity is declared by sandbox metadata (`runtime.image`,
-/// `runtime_digest`) rather than host executable bytes.
+/// runtime identity is declared by sandbox metadata (`runtime.image`) rather than host executable bytes.
 pub fn compute_tool_digest(dir: &Path) -> Result<String> {
     let metadata_path = dir.join("tool-metadata.json");
     let metadata_raw =
@@ -524,7 +517,6 @@ mod tests {
         let parsed: ExternalToolMetadata =
             serde_json::from_value(raw).expect("legacy metadata should parse");
         assert!(parsed.runtime.is_none());
-        assert!(parsed.runtime_digest.is_none());
         assert_eq!(parsed.secret_scope, ExternalSecretScope::Send);
     }
 
@@ -551,8 +543,7 @@ mod tests {
                     "ref": "ghcr.io/org/tool@sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 },
                 "entrypoint": ["/app/tool-adapter"]
-            },
-            "runtime_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
         });
 
         let parsed: ExternalToolMetadata =
@@ -569,11 +560,6 @@ mod tests {
             }
             other => panic!("expected sandbox runtime, got {other:?}"),
         }
-
-        assert_eq!(
-            parsed.runtime_digest.as_deref(),
-            Some("sha256:2222222222222222222222222222222222222222222222222222222222222222")
-        );
     }
 
     #[test]
@@ -630,8 +616,7 @@ mod tests {
                     "path": "/tmp/sandbox-rootfs"
                 },
                 "entrypoint": ["/tool-adapter"]
-            },
-            "runtime_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            }
         });
 
         fs::write(

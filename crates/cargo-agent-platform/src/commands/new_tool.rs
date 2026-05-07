@@ -613,7 +613,6 @@ mod tests {
             }
             other => panic!("expected explicit process runtime, got {other:?}"),
         }
-        assert!(parsed.runtime_digest.is_none());
     }
 
     #[test]
@@ -647,7 +646,6 @@ mod tests {
             }
             other => panic!("expected sandbox runtime, got {other:?}"),
         }
-        assert!(parsed.runtime_digest.is_none());
         assert!(matches!(
             parsed.invocation_mode,
             baml_rt_tools::external_tools::InvocationMode::Session

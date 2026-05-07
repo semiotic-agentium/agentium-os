@@ -125,8 +125,7 @@ async fn external_sandbox_session_tool_resolver_path_supports_suspend_resume() {
                 "command": ["python3", "/opt/tool/main.py"],
                 "workdir": "/opt/tool"
             }
-        },
-        "runtime_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
     });
 
     fs::write(
