@@ -234,7 +234,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct CapturedHeaders(Arc<Mutex<Option<HeaderMap>>>);
 
-    #[derive(Serialize, Deserialize)]
+    #[derive(Debug, Serialize, Deserialize)]
     struct Echo {
         ok: bool,
     }
@@ -301,5 +301,34 @@ mod tests {
         let headers = rt.block_on(async { captured.0.lock().await.clone() });
         let headers = headers.expect("headers should be captured");
         assert!(headers.get("X-Runner-Token").is_none());
+    }
+
+    /// Regression for issue #326: `{err:#}` must walk the anyhow source chain
+    /// so HTTP transport failures surface the underlying reqwest cause.
+    #[test]
+    fn test_post_json_preserves_source_chain_on_connect_failure() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let url = format!("http://127.0.0.1:{port}/test");
+
+        let platform = AgentPlatform::new(None).unwrap();
+        let payload = serde_json::json!({"hello": "world"});
+        let err = platform
+            .post_json::<_, Echo>(&url, &payload, "Test")
+            .unwrap_err();
+
+        let chained = format!("{err:#}");
+        let single = format!("{err}");
+
+        assert!(
+            chained.contains("Failed to POST Test to"),
+            "outer wrap missing from chained render: {chained}"
+        );
+        assert!(
+            chained.len() > single.len(),
+            "chained render ({chained}) is not longer than single render ({single}); \
+             source chain was not walked"
+        );
     }
 }

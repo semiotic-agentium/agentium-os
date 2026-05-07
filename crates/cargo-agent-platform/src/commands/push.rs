@@ -105,7 +105,7 @@ pub fn run(
         let published = match http.publish_agent(agent_dir, repository_url, rationale, origin) {
             Ok(result) => result,
             Err(err) => {
-                let msg = format!("publish failed for {agent_dir}: {err}");
+                let msg = format!("publish failed for {agent_dir}: {err:#}");
                 println!("  {} {}", style("error:").red().bold(), msg);
                 failures.push(msg);
                 println!();
@@ -148,7 +148,7 @@ pub fn run(
                 };
                 let msg = format!(
                     "deploy failed after successful publish for {version} (hash: {hash}). \
-                     Cause: {err}. Published artifact was NOT rolled back. \
+                     Cause: {err:#}. Published artifact was NOT rolled back. \
                      Retry deploy with: {retry_cmd}"
                 );
                 println!("  {} {}", style("error:").red().bold(), msg);
