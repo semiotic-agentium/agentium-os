@@ -66,6 +66,11 @@ type HttpResult<T> = Result<T, HttpApiProblem>;
 /// `DeploymentManager` trait is `?Send` (boot internals are not `Send` across
 /// await points), so the builder constructs the future inside the blocking
 /// task and `Handle::current().block_on` drives it on the same blocking thread.
+///
+/// Cancellation: `spawn_blocking` tasks are not aborted when their `JoinHandle`
+/// is dropped. If the request handler future is cancelled (client disconnect),
+/// the deploy continues to completion — the durable preference for partial-
+/// state-bad operations like deploy.
 async fn run_off_worker<C, F, T>(label: &'static str, builder: C) -> HttpResult<T>
 where
     C: FnOnce() -> F + Send + 'static,
@@ -76,11 +81,8 @@ where
     tokio::task::spawn_blocking(move || handle.block_on(builder()))
         .await
         .map_err(|e| {
-            problem(
-                500,
-                "Internal Server Error",
-                format!("{label} task failed: {e}"),
-            )
+            tracing::error!(label = %label, error = %e, "blocking deployment task failed");
+            problem(500, "Internal Server Error", format!("{label} task failed"))
         })
 }
 
@@ -287,10 +289,10 @@ pub async fn post_deploy(
         let content_hash = hash
             .parse::<DeploymentContentHash>()
             .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
-        let manager = Arc::clone(manager);
+        let manager_clone = Arc::clone(manager);
         let deploy_hash = content_hash.clone();
         let deploy_result = run_off_worker("deploy", move || async move {
-            manager.deploy_by_hash(&deploy_hash).await
+            manager_clone.deploy_by_hash(&deploy_hash).await
         })
         .await?;
         match deploy_result {

@@ -2767,6 +2767,10 @@ async fn router_with_deployment_manager(manager: Arc<dyn DeploymentManager>) -> 
     )
 }
 
+// Runs on a `current_thread` runtime — `block_in_place` panics there but
+// `spawn_blocking` works correctly. This catches the wrong-pattern regression
+// (any handler reverting to `block_in_place`) rather than the production
+// starvation symptom on a multi-threaded runtime.
 #[tokio::test]
 async fn deploy_in_flight_does_not_block_readyz() {
     use std::time::{Duration, Instant};
@@ -2818,4 +2822,18 @@ async fn deploy_in_flight_does_not_block_readyz() {
 
     let deploy_status = deploy_handle.await.expect("deploy task panicked");
     assert_eq!(deploy_status, StatusCode::OK);
+}
+
+/// Static guard: any deployment handler that reverts to `block_in_place`
+/// would re-introduce the probe-starvation bug. Only the `deploy_in_flight_*`
+/// integration test currently exercises the `/deploy` path; this check covers
+/// the other handlers (`post_undeploy`, `get_deployments`, `post_migrate`)
+/// that share the `run_off_worker` helper.
+#[test]
+fn handlers_do_not_use_block_in_place() {
+    const HANDLERS_SRC: &str = include_str!("../src/handlers.rs");
+    assert!(
+        !HANDLERS_SRC.contains("block_in_place"),
+        "handlers.rs uses block_in_place; deployment endpoints must route through run_off_worker"
+    );
 }
