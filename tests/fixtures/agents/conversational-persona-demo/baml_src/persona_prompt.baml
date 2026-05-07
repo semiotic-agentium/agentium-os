@@ -140,11 +140,11 @@ function DecideDelegationAction(
 ) -> SystemInternalA2aSessionPlan | string? {
   client DefaultClient
   prompt #"
-    Coordinate a conversation with agent {{ agent_package }}/{{ agent_instance_id }} to achieve this goal: {{ goal }}
-    `Open` / `Send` field shapes: `*OpenInput` and `*SendInput` in the merged runtime. Return `null` when the goal is satisfied or after 2+ exchanges.
+    Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
+    {{ ctx.output_format }}
+    For `Open` / `Send`, use `*OpenInput` and `*SendInput` shapes from the merged runtime. Return `null` when the goal is satisfied or after 2+ exchanges.
 
     {{ ctx.tags['conversation_transcript'] }}
-    {{ ctx.output_format }}
   "#
 }
 
@@ -156,12 +156,12 @@ function PersonaReact(
 ) -> StructuredReply {
   client DefaultClient
   prompt #"
-    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns in ctx.tags['conversation_history'] when present for continuity.
+    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns from the transcript below when present for continuity.
 
     The user asked: {{ user_message }}
     Plan objective: {{ plan_objective }}
 
-    The session history below contains the results from your specialist agent(s).
+    The transcript below contains the results from your specialist agent(s).
     Match the output schema exactly (StructuredReply: parts + citations).
     Synthesize across steps when needed; use ork-flavoured diction (krump, waaagh) sparingly.
 

@@ -29,7 +29,7 @@ Use a strict sequence:
 1. Infer intent from the user message.
 2. Commit a discovery plan (capability matching).
 3. Run discovery session hops to completion.
-4. Build a structured execution plan (`plan_steps`, not `steps`).
+4. Build a structured execution plan (`plan_steps`, not `steps`). Coordinators may run this synthesis inside a **committed execution-session step** (then finish that session) before opening a new session for delegation — see [conversational-persona-demo](../tests/fixtures/agents/conversational-persona-demo/src/index.ts).
 5. Commit the execution plan.
 6. Execute each delegated step via Step Executor hops.
 7. Summarize final output for the user.
@@ -46,24 +46,26 @@ Why this works:
 
 - State the business goal in plain terms (for example: identify agents that satisfy intent).
 - Provide stable output contract via `{{ ctx.output_format }}`.
-- Provide compact dynamic inputs (`inferred_intent`, `session_context`, latest event log).
+- Provide compact dynamic inputs (`inferred_intent`, `session_context`, and — where needed — `event_log`).
+- Use `{{ ctx.tags['conversation_transcript'] }}` for the host-rendered turn transcript (formatted `conversation_history` rows); this is the usual surface for “what happened so far” in authored BAML.
 - Avoid instructing internal runtime mechanics that are already enforced by schema/FSM.
 
 ### What prompts should not do
 
 - Re-explain transition rules that runtime already enforces.
 - Include stale status-token aliases or ad hoc FSM shorthand.
-- Carry full user message after intent extraction in session continuation prompts.
-- Include both `conversation_history` and session event log for the same Step Executor call.
+- Carry full user message after intent extraction in session continuation prompts when the transcript already contains it (avoid redundant duplication).
+- Include both a **manual** `{% for msg in ctx.tags['conversation_history'] %}` loop **and** `conversation_transcript` in the same prompt (duplicate projection). Prefer **`conversation_transcript`** unless you need structured per-row fields from Jinja.
+- Include both `event_log` and `conversation_transcript` when they would repeat the same facts without adding distinct signal — pick one projection per concern (transcript for citable/history lines; `event_log` when your backend emits a separate compact tail).
 
 ## Session Prompt Template Ordering (Cache-Oriented)
 
 For Step Executor prompts, prefer this ordering:
 
 1. **Static goal block** (least volatile).
-2. **`{{ ctx.output_format }}`** (stable contract text; high prefix reuse).
+2. `{{ ctx.output_format }}` (stable contract text; high prefix reuse).
 3. **Small dynamic control fields** (for example `inferred_intent`, `session_context.session_open`).
-4. **Event log tail** (most volatile, appended near the end).
+4. **Volatile tail:** `{{ ctx.tags['conversation_transcript'] }}` and/or a bounded `event_log` loop — transcript last when both are present.
 
 Canonical skeleton:
 
@@ -79,14 +81,16 @@ prompt #"
   - {{ event.role }} | {{ event.source }} | {{ event.content }}
   {% endfor %}
   {% endif %}
+
+  {{ ctx.tags['conversation_transcript'] }}
 "#
 ```
 
 Notes:
 
 - Legal ops are enforced by the **per-phase** step-executor function return type; `session_context` carries FSM facts only (`contract_version`, `session_open`).
-- Event log should be bounded/compacted upstream; only include most relevant recent context.
-- Do not inject persona chat history into internal Step Executor prompts.
+- **`conversation_transcript`** is the formatted string mirror of `conversation_history` (see `format_conversation_history_transcript` in `baml-rt-tools/prompt_projection.rs`). Use it in Step Executor and planner-facing prompts so models see the standard citable-history projection for the turn.
+- Event log should be bounded/compacted upstream when used; only include the most relevant recent context.
 
 ## Deriving Goal Text from Intent and Plan Steps
 
@@ -131,6 +135,8 @@ prompt #"
   - {{ event.role }} | {{ event.source }} | {{ event.content }}
   {% endfor %}
   {% endif %}
+
+  {{ ctx.tags['conversation_transcript'] }}
 "#
 ```
 
@@ -238,7 +244,7 @@ This is primarily a Rust runtime/tooling concern, not a prompt-authoring trick.
 - Conversation context provider in `baml-rt-a2a` reads recent store events.
 - It calls `project_prompt_context(...)` from `baml-rt-tools/prompt_projection.rs`.
 - `project_prompt_context(...)` applies per-tool compaction via `ToolHandler::compact_result(...)`.
-- It emits three tags for prompts: `conversation_history`, `event_log`, and `session_state`.
+- It emits tags for prompts including `conversation_history`, `conversation_transcript` (formatted transcript string), `event_log`, and `session_state`.
 - `baml-rt-quickjs` injects those tags into BAML `ctx.tags.*` for Step Executor calls.
 
 ### What to implement in a Rust tool
@@ -281,7 +287,7 @@ struct MyNextOutput {
 
 ### Why this matters for prompts
 
-- Step Executor prompts should consume already-compacted `event_log` and `session_state`.
+- Step Executor prompts should consume already-compacted `event_log` / `session_state` when you rely on those surfaces, and **`conversation_transcript`** for the standard history projection.
 - Prompt templates remain simple and stable; backend owns payload shaping complexity.
 - Cache reuse improves because volatile large payloads are normalized before prompt render.
 
@@ -289,7 +295,7 @@ struct MyNextOutput {
 
 - Goal text describes user/business outcome, not FSM machinery.
 - `ctx.output_format` appears before highly volatile fields.
-- Session prompt includes `session_context` (FSM facts) and event log tail.
+- Session prompt includes `session_context` (FSM facts) and transcript tail (`conversation_transcript`) and/or event log when appropriate.
 - No `status_token`/legacy aliases in prompt inputs.
 - No duplicated top-level and step-level reason fields.
 - TS orchestration commits intent + Plan Artifact before execution.
@@ -299,6 +305,6 @@ struct MyNextOutput {
 
 - "Execute committed session by choosing transitions..." as the primary goal statement.
 - Embedding transition micro-rules in user-authored prompt prose.
-- Mixing conversational persona context into internal execution hops.
+- Duplicating the same history twice (for example `conversation_transcript` plus a parallel hand-written recap) without adding new signal.
 - Static hardcoded plan/intent IDs that bypass LLM-derived intent semantics.
 - Shim-local compaction/heuristics that should live in Rust runtime/tooling.

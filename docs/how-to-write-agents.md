@@ -395,7 +395,7 @@ For coordinators that **delegate** or **multi-hop**, avoid “plan once, march f
 
 Cap loop iterations in TypeScript; keep branching **thin**.
 
-Canonical reference implementation: **[conversational-persona-demo](../tests/fixtures/agents/conversational-persona-demo/)** — **`ClassifyPersonaCoordinatorTurn`** (Ready vs task clarification vs meta-only) with **`awaitInput`** until a delegatable task exists or the turn is clearly non-task; then **`submitIntent`** before **`GetDiscoverAgentsPlan`**, **`MakeStructuredPlan`** (`StandardStructuredPlan`), per-step **`DecideDelegationAction`**, and **`PersonaReact`** for the operator-visible **`StructuredReply`**.
+Canonical reference implementation: **[conversational-persona-demo](../tests/fixtures/agents/conversational-persona-demo/)** — **`ClassifyPersonaCoordinatorTurn`** (Ready vs task clarification vs meta-only) with **`awaitInput`** until a delegatable task exists or the turn is clearly non-task; then **`submitIntent`** before **`GetDiscoverAgentsPlan`**; a **first execution session** whose committed step runs **`MakeStructuredPlan`** (`StandardStructuredPlan`); a **second execution session** with per-step **`DecideDelegationAction`** and a final committed step for **`PersonaReact`** producing the operator-visible **`StructuredReply`**.
 
 ### 4.4 Linear “reporting agent” variant
 
@@ -549,7 +549,7 @@ Details: [citable-history-and-checked-citations.md](citable-history-and-checked-
 | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [security-eval-agent](../tests/fixtures/agents/security-eval-agent/)                 | **Worked example** in this doc: multi-tool (CRM + email), polymorphic `ExecuteStep`, plan → execute → synthesise. Also tests drift detection against injected data. |
 | [task-lifecycle-demo](../tests/fixtures/agents/task-lifecycle-demo/)                 | **A2A DSL**: `awaitInput`, sequential lifecycle, `__chat_register({ run })`.                                                                                        |
-| [conversational-persona-demo](../tests/fixtures/agents/conversational-persona-demo/) | ReAct coordinator: `submitIntent` before discovery, execution-session supersession, observe/revise BAML, persona `StructuredReply`.                                 |
+| [conversational-persona-demo](../tests/fixtures/agents/conversational-persona-demo/) | ReAct coordinator: classify + `awaitInput`; `submitIntent` before discovery; execution session for plan synthesis (`MakeStructuredPlan`); second session for delegation + persona synthesis step; history via `conversation_transcript`; `StructuredReply`. |
 | [stream-baml-tool](../tests/fixtures/agents/stream-baml-tool/)                       | Minimal single-tool FSM (calculator).                                                                                                                               |
 | [session-tool-eval](../tests/fixtures/agents/session-tool-eval/)                     | Imperative `openToolSession` loop.                                                                                                                                  |
 
