@@ -111,11 +111,15 @@ if [[ "$RUNNER_IMAGE_STRATEGY" == "registry" \
   exit 1
 fi
 
+# Shared artifact dir: smoke drops its port-forward log here and the
+# cleanup trap dumps logs into the same directory.
+LOG_DIR="${REPO_ROOT}/e2e-k8s-logs/verify-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$LOG_DIR"
+
 cleanup() {
   local code=$?
   if (( HAS_FAILURE )) || (( code != 0 )); then
-    local dir="./e2e-k8s-logs/verify-$(date +%Y%m%d-%H%M%S)"
-    dump_logs "$dir" 2>/dev/null || true
+    dump_logs "$LOG_DIR" 2>/dev/null || true
   fi
   if [[ "$KEEP_CLUSTER" == "false" ]]; then
     k3d cluster delete "$CLUSTER_NAME" 2>/dev/null || true
@@ -180,6 +184,7 @@ run_smoke() {
   (
     cd "$REPO_ROOT"
     RUNNER_TOKEN="$E2E_TOKEN" \
+    K8S_PILOT_PF_LOG_DIR="$LOG_DIR" \
       bash "${REPO_ROOT}/scripts/k8s-pilot-smoke.sh" \
         --namespace "$NAMESPACE" \
         --service "$RUNNER_API_SERVICE" \
@@ -191,7 +196,11 @@ run_smoke() {
 verify_package_wiring() {
   log_step "Verifying Helm-installed runners registered in cluster_runners"
   local result count
-  result="$(surreal_query "SELECT runner_id, endpoint FROM cluster_runners")"
+  if ! result="$(surreal_query "SELECT runner_id, endpoint FROM cluster_runners")"; then
+    log_fail "cluster_runners query failed (kubectl exec into SurrealDB pod did not succeed)"
+    echo "$result" | jq . >&2 || true
+    return 1
+  fi
   count="$(echo "$result" | jq '[.[] | .result | .[]] | length')"
   if [[ "$count" != "2" ]]; then
     log_fail "cluster_runners: expected 2 rows, got ${count:-unknown}"
