@@ -545,7 +545,7 @@ fn classify_error(e: &anyhow::Error) -> (&'static str, String) {
     if let Some(err) = e.downcast_ref::<ChatCommandError>() {
         return (err.tag, err.message.clone());
     }
-    ("UNK", e.to_string())
+    ("UNK", format!("{e:#}"))
 }
 
 pub fn run(agent: &str, base_url: &str, instance: &str, verbose: bool) -> Result<()> {
