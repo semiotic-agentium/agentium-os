@@ -106,6 +106,21 @@ For any real design-partner or shared-cluster install, that means supplying a cl
 
 For the full first-run operator flow (including building the runner image, creating the required objects, authenticated publish/deploy, and the packaged smoke script), see [`docs/k8s-pilot-operator-guide.md`](../../../docs/k8s-pilot-operator-guide.md).
 
+## Runner probes
+
+The runner StatefulSet uses HTTP `GET /healthz` for liveness and `GET /readyz` for readiness. The chart sets explicit, conservative defaults:
+
+| Knob                  | livenessProbe | readinessProbe |
+| --------------------- | ------------- | -------------- |
+| `initialDelaySeconds` | `10`          | `5`            |
+| `periodSeconds`       | `15`          | `10`           |
+| `timeoutSeconds`      | `5`           | `5`            |
+| `failureThreshold`    | `6`           | `6`            |
+
+`timeoutSeconds` and `failureThreshold` are higher than the Kubernetes defaults (`1` and `3`) because `POST /deploy` does meaningful synchronous work (QuickJS init, BAML schema parse, tool wrapping, agent boot) that can starve the HTTP server long enough for tight probes to fail under contention. When a readiness probe fails, the kubelet removes the pod from the runner Service endpoints and any in-flight Service-routed client connection (including `kubectl port-forward svc/...`) is reset mid-deploy.
+
+Override any field via the `runner.livenessProbe.*` and `runner.readinessProbe.*` keys in your values file. Probe paths and ports are not overridable — they are part of the runner contract.
+
 ## What this chart does not cover
 
 - **Ingress / TLS**: operator access is via `kubectl port-forward` to the API ClusterIP service. Ingress and TLS termination are out of scope for the pilot.
