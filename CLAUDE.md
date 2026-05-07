@@ -58,7 +58,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 ### Crate Map
 
 **Foundation**
-- **baml-rt-core** — Shared error types, result types, correlation helpers
+- **baml-rt-core** — Shared error types, result types, correlation helpers, event bus with effect subscriber observability
 - **baml-rt-id** — Newtype ID wrappers (UUID-based)
 - **baml-rt-hash** — Canonical content-addressable hashing for agent source bundles
 - **baml-rt-config** — Tool configuration storage and resolution
@@ -73,7 +73,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations, provenance error mapping
 - **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling
 - **baml-rt-conversation** — Agent-visible conversation history projection and episode types; pure computation (no I/O); see `docs/agent-conversation-crate.md` and normative spec `docs/baml-rt-conversation-spec.md`
-- **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence, cluster-safe archive refs with activity-anchor idempotency
+- **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence, cluster-safe archive refs with activity-anchor idempotency, effect subscriber observability
 - **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search
 - **baml-rt-router** — Cluster routing, SSRF validation, token auth, cross-pod A2A forwarding with distributed trace propagation
 - **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors, operator auth boundary, OpenTelemetry middleware for distributed tracing, conversation history endpoints, context metrics
