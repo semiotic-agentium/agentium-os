@@ -84,9 +84,8 @@ Effect bus and subscriber fan-out (liveness + provenance subscribers).
 | Metric name | Type | Purpose |
 |-------------|------|---------|
 | `baml_rt_core.effect_emit.process_duration_ms` | Histogram | End-to-end `process_effect` by `event.variant`. |
-| `baml_rt_core.effect_emit.subscriber_notify_total` | Counter | Subscriber invocations by `event.variant`, `dispatch.mode`, `result`. |
-| `baml_rt_core.effect_emit.subscriber_duration_ms` | Histogram | Per-subscriber `on_effect` latency (same attributes). |
-| `baml_rt_core.bus.emit_envelope_duration_ms` | Histogram | `Bus::emit` fan-out by `envelope.subscriber_bucket`. |
+| `baml_rt_core.effect_emit.subscriber_notify_total` | Counter | Subscriber invocations by `event.variant`, `dispatch.mode`, `subscriber`, `result`. The `subscriber` attribute is the stable identity returned by `EffectSubscriber::name()` (`provenance`, `auto_status`, `live_stream_relay`, …). The `dispatch.mode` attribute is one of `awaitable` (tier-partitioned `LlmCompleted` path, awaited concurrently before emit returns), `background` (tier-partitioned `LlmCompleted` path, spawned detached), or `sequential` (every other event variant; subscribers run inline on the caller's task in registration order). Paired with `result="error"`, `subscriber`, and `event.variant`, this counter is the canonical alert dimension for `EffectSubscriber::on_effect` failures (GitHub #318) — these failures are logged + counted but do not fail the originating emit. |
+| `baml_rt_core.effect_emit.subscriber_duration_ms` | Histogram | Per-subscriber `on_effect` latency (same attributes as `subscriber_notify_total`). |
 
 ---
 

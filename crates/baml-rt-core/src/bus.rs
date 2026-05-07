@@ -18,7 +18,7 @@
 //!    `LlmCompleted.result_payload` carries the LLM completion payload.
 //!    Both are `Option<Value>` — `None` only for error/abort paths.
 
-use std::{collections::HashMap, marker::PhantomData, pin::Pin, sync::Arc};
+use std::{collections::HashMap, marker::PhantomData, pin::Pin, sync::Arc, time::Instant};
 
 use async_channel::{Receiver, Sender};
 use async_trait::async_trait;
@@ -26,11 +26,14 @@ use futures_util::{future::join_all, stream::Stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
+use tracing::Instrument;
 
 use crate::{
+    bus_spans::{effect_emit_process, effect_emit_subscriber_notify},
     clock_events,
     context::RuntimeScope,
     correlation,
+    effect_metrics::{record_effect_process, record_effect_subscriber},
     ids::{AgentId, ContextId, CorrelationId, IntentId, PlanId, PlanStepId, TaskId},
     semantics::Outcome,
 };
@@ -322,6 +325,24 @@ impl EffectEvent {
             | EffectEvent::PlanStepStatusChanged { context_id, .. } => context_id,
         }
     }
+
+    /// Stable, low-cardinality variant name suitable for telemetry attributes
+    /// (e.g. `event.variant` on `baml_rt_core.effect_emit.*` metrics).
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            EffectEvent::ToolStarted { .. } => "tool_started",
+            EffectEvent::ToolCompleted { .. } => "tool_completed",
+            EffectEvent::ToolStreamChunk { .. } => "tool_stream_chunk",
+            EffectEvent::ToolSessionStep { .. } => "tool_session_step",
+            EffectEvent::LlmStarted { .. } => "llm_started",
+            EffectEvent::LlmCompleted { .. } => "llm_completed",
+            EffectEvent::A2aStarted { .. } => "a2a_started",
+            EffectEvent::A2aCompleted { .. } => "a2a_completed",
+            EffectEvent::IntentResolved { .. } => "intent_resolved",
+            EffectEvent::PlanGenerated { .. } => "plan_generated",
+            EffectEvent::PlanStepStatusChanged { .. } => "plan_step_status_changed",
+        }
+    }
 }
 
 pub struct EffectStartToken<K> {
@@ -599,8 +620,43 @@ pub enum EffectSubscriberTier {
     Background,
 }
 
+impl EffectSubscriberTier {
+    /// Value emitted for the `dispatch.mode` attribute on the
+    /// `baml_rt_core.effect_emit.subscriber_*` metrics and the matching span
+    /// fields when the subscriber runs on the tier-partitioned `LlmCompleted`
+    /// path. Non-`LlmCompleted` events use [`DISPATCH_MODE_SEQUENTIAL`].
+    #[inline]
+    pub fn dispatch_label(self) -> &'static str {
+        match self {
+            Self::Awaitable => "awaitable",
+            Self::Background => "background",
+        }
+    }
+}
+
+/// `dispatch.mode` attribute for non-`LlmCompleted` events, where the bus runs
+/// every subscriber in registration order on the caller's task. Pairs with
+/// [`EffectSubscriberTier::dispatch_label`] for the tier-partitioned path.
+pub const DISPATCH_MODE_SEQUENTIAL: &str = "sequential";
+
+/// Value emitted for the `result` attribute on the
+/// `baml_rt_core.effect_emit.subscriber_*` metrics. Centralised so the two
+/// arms of the `result` cardinality (`"ok"` / `"error"`) cannot drift between
+/// dispatch sites.
+#[inline]
+fn subscriber_result_label(ok: bool) -> &'static str {
+    if ok { "ok" } else { "error" }
+}
+
 #[async_trait]
 pub trait EffectSubscriber: Send + Sync {
+    /// Stable, low-cardinality identity used as the `subscriber` attribute on
+    /// `baml_rt_core.effect_emit.subscriber_*` metrics and on the structured
+    /// "Effect subscriber failed" warn line. Use snake_case (e.g.
+    /// `"provenance"`, `"auto_status"`, `"live_stream_relay"`); never include
+    /// per-instance fields.
+    fn name(&self) -> &'static str;
+
     async fn on_effect(&self, event: &EffectEvent) -> crate::Result<()>;
 
     /// Defaults to `Background` so adding a new subscriber does not silently
@@ -750,7 +806,24 @@ impl BusWithEffects {
     }
 
     async fn process_effect(&self, event: EffectEvent) -> crate::Result<()> {
+        let event_variant = event.variant_name();
+        let process_started = Instant::now();
         let context_id = event.context_id().clone();
+        let parent_span = effect_emit_process(event_variant, context_id.as_str());
+        self.process_effect_inner(event, event_variant, context_id, &parent_span)
+            .instrument(parent_span.clone())
+            .await?;
+        record_effect_process(event_variant, process_started.elapsed());
+        Ok(())
+    }
+
+    async fn process_effect_inner(
+        &self,
+        event: EffectEvent,
+        event_variant: &'static str,
+        context_id: ContextId,
+        parent_span: &tracing::Span,
+    ) -> crate::Result<()> {
         {
             let mut counts = self.counts.write().await;
             let entry = counts
@@ -829,40 +902,116 @@ impl BusWithEffects {
             // detached: drift scoring (100–500 ms per call, ~2 s FastEmbed cold-start),
             // status updates, and SSE relays never gate the user-facing critical path
             // of an LLM hop.
+            //
+            // Subscriber failures on either tier are **logged + counted but not
+            // propagated** — the LLM hop returns the user-visible result even if a
+            // downstream provenance write failed. The follow-up read (e.g.
+            // `hop_lines_from_provider_delta`) surfaces the missing row as `Err`. The
+            // observability contract is: every failure increments
+            // `baml_rt_core.effect_emit.subscriber_notify_total{result="error", subscriber=…}`,
+            // so ops sees the originating subscriber, not just the downstream symptom.
+            // See GitHub #318 for the explicit decision; flipping the policy is a
+            // separate change that needs to thread errors through
+            // `baml_collector::complete_pending_effects` and the step-executor.
             let (awaitable, background): (Vec<_>, Vec<_>) = cloned
                 .into_iter()
                 .partition(|sub| sub.tier() == EffectSubscriberTier::Awaitable);
+            let awaitable_label = EffectSubscriberTier::Awaitable.dispatch_label();
+            let background_label = EffectSubscriberTier::Background.dispatch_label();
             let event = Arc::new(event);
             for sub in background {
                 let event = Arc::clone(&event);
-                tokio::spawn(async move {
-                    if let Err(e) = sub.on_effect(&event).await {
-                        tracing::warn!(
-                            error = ?e,
-                            tier = ?EffectSubscriberTier::Background,
-                            "Effect subscriber failed"
+                let span = effect_emit_subscriber_notify(
+                    parent_span,
+                    sub.name(),
+                    event_variant,
+                    background_label,
+                );
+                tokio::spawn(
+                    async move {
+                        let started = Instant::now();
+                        let res = sub.on_effect(&event).await;
+                        let elapsed = started.elapsed();
+                        record_effect_subscriber(
+                            event_variant,
+                            background_label,
+                            sub.name(),
+                            subscriber_result_label(res.is_ok()),
+                            elapsed,
                         );
+                        if let Err(e) = res {
+                            tracing::warn!(
+                                subscriber = sub.name(),
+                                event.variant = event_variant,
+                                dispatch.mode = background_label,
+                                error = ?e,
+                                "Effect subscriber failed"
+                            );
+                        }
                     }
-                });
+                    .instrument(span),
+                );
             }
             let results = join_all(awaitable.into_iter().map(|sub| {
                 let event = Arc::clone(&event);
-                async move { sub.on_effect(&event).await }
+                let span = effect_emit_subscriber_notify(
+                    parent_span,
+                    sub.name(),
+                    event_variant,
+                    awaitable_label,
+                );
+                async move {
+                    let started = Instant::now();
+                    let res = sub.on_effect(&event).await;
+                    (sub, res, started.elapsed())
+                }
+                .instrument(span)
             }))
             .await;
-            for res in results {
+            for (sub, res, elapsed) in results {
+                record_effect_subscriber(
+                    event_variant,
+                    awaitable_label,
+                    sub.name(),
+                    subscriber_result_label(res.is_ok()),
+                    elapsed,
+                );
                 if let Err(e) = res {
                     tracing::warn!(
+                        subscriber = sub.name(),
+                        event.variant = event_variant,
+                        dispatch.mode = awaitable_label,
                         error = ?e,
-                        tier = ?EffectSubscriberTier::Awaitable,
                         "Effect subscriber failed"
                     );
                 }
             }
         } else {
             for sub in cloned {
-                if let Err(e) = sub.on_effect(&event).await {
-                    tracing::warn!(error = ?e, "Effect subscriber failed");
+                let span = effect_emit_subscriber_notify(
+                    parent_span,
+                    sub.name(),
+                    event_variant,
+                    DISPATCH_MODE_SEQUENTIAL,
+                );
+                let started = Instant::now();
+                let res = sub.on_effect(&event).instrument(span).await;
+                let elapsed = started.elapsed();
+                record_effect_subscriber(
+                    event_variant,
+                    DISPATCH_MODE_SEQUENTIAL,
+                    sub.name(),
+                    subscriber_result_label(res.is_ok()),
+                    elapsed,
+                );
+                if let Err(e) = res {
+                    tracing::warn!(
+                        subscriber = sub.name(),
+                        event.variant = event_variant,
+                        dispatch.mode = DISPATCH_MODE_SEQUENTIAL,
+                        error = ?e,
+                        "Effect subscriber failed"
+                    );
                 }
             }
         }
@@ -959,6 +1108,10 @@ mod tests {
 
     #[async_trait]
     impl EffectSubscriber for DelayedFlagSubscriber {
+        fn name(&self) -> &'static str {
+            "test_delayed_flag"
+        }
+
         async fn on_effect(&self, _event: &EffectEvent) -> crate::Result<()> {
             tokio::time::sleep(self.delay).await;
             self.flag.store(true, Ordering::Relaxed);
@@ -1095,6 +1248,310 @@ mod tests {
             .expect("emit should succeed");
 
         assert!(flag.load(Ordering::Relaxed));
+    }
+
+    /// Subscriber that always returns `Err(BamlRtError::ToolExecution(...))`. Records
+    /// each invocation so tests can assert it ran and which `event_variant` it saw.
+    struct FailingSubscriber {
+        name: &'static str,
+        tier: EffectSubscriberTier,
+        invocations: Arc<tokio::sync::Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait]
+    impl EffectSubscriber for FailingSubscriber {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        async fn on_effect(&self, event: &EffectEvent) -> crate::Result<()> {
+            self.invocations.lock().await.push(event.variant_name());
+            Err(crate::BamlRtError::ToolExecution(format!(
+                "{} subscriber simulated failure",
+                self.name
+            )))
+        }
+
+        fn tier(&self) -> EffectSubscriberTier {
+            self.tier
+        }
+    }
+
+    #[tokio::test]
+    async fn llm_completed_awaitable_subscriber_failure_does_not_propagate_to_emit() {
+        // Issue #318 decision: subscriber failures on `LlmCompleted` are logged + counted
+        // but do not fail the LLM hop. Use the Awaitable tier so the test observes the
+        // subscriber's invocation deterministically before emit returns.
+        let bus = BusWithEffects::new();
+        let invocations = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        bus.subscribe_effect(Arc::new(FailingSubscriber {
+            name: "test_failing",
+            tier: EffectSubscriberTier::Awaitable,
+            invocations: Arc::clone(&invocations),
+        }))
+        .await;
+
+        EffectEmitter::emit(&bus, llm_completed_event())
+            .await
+            .expect("emit returns Ok despite subscriber failure");
+
+        let invocations = invocations.lock().await;
+        assert_eq!(invocations.as_slice(), &["llm_completed"]);
+    }
+
+    #[tokio::test]
+    async fn non_llm_completed_subscriber_failure_does_not_propagate_to_emit() {
+        let bus = BusWithEffects::new();
+        let invocations = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        bus.subscribe_effect(Arc::new(FailingSubscriber {
+            name: "test_failing",
+            tier: EffectSubscriberTier::Awaitable,
+            invocations: Arc::clone(&invocations),
+        }))
+        .await;
+
+        let event = EffectEvent::ToolStreamChunk {
+            context_id: ContextId::new(0, 0),
+            chunk: json!({"kind": "test"}),
+        };
+        EffectEmitter::emit(&bus, event)
+            .await
+            .expect("emit returns Ok despite subscriber failure");
+
+        let invocations = invocations.lock().await;
+        assert_eq!(invocations.as_slice(), &["tool_stream_chunk"]);
+    }
+
+    #[tokio::test]
+    async fn failing_awaitable_subscriber_does_not_block_other_awaitable_on_llm_completed() {
+        // On `LlmCompleted` the bus runs awaitable subscribers concurrently via
+        // `join_all`. A failure in one must not prevent another from observing the
+        // event — critical for `ProvenanceEffectSubscriber` running alongside other
+        // awaitable subscribers.
+        let bus = BusWithEffects::new();
+        let invocations = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let success_flag = Arc::new(AtomicBool::new(false));
+        bus.subscribe_effect(Arc::new(FailingSubscriber {
+            name: "test_failing",
+            tier: EffectSubscriberTier::Awaitable,
+            invocations: Arc::clone(&invocations),
+        }))
+        .await;
+        bus.subscribe_effect(Arc::new(DelayedFlagSubscriber::awaitable(
+            Duration::from_millis(0),
+            Arc::clone(&success_flag),
+        )))
+        .await;
+
+        EffectEmitter::emit(&bus, llm_completed_event())
+            .await
+            .expect("emit succeeds");
+
+        assert_eq!(invocations.lock().await.as_slice(), &["llm_completed"]);
+        assert!(success_flag.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn llm_completed_background_subscriber_failure_runs_and_does_not_propagate() {
+        // Background subscribers run detached on `LlmCompleted`. Their failures must
+        // still be reachable via the same warn + metric contract — verify the
+        // subscriber actually runs and returns Err past the spawn delay (the metric
+        // increment happens inside the spawned task; we observe it indirectly via
+        // the recorded `invocations`).
+        let bus = BusWithEffects::new();
+        let invocations = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        bus.subscribe_effect(Arc::new(FailingSubscriber {
+            name: "test_failing_background",
+            tier: EffectSubscriberTier::Background,
+            invocations: Arc::clone(&invocations),
+        }))
+        .await;
+
+        EffectEmitter::emit(&bus, llm_completed_event())
+            .await
+            .expect("emit returns Ok despite background subscriber failure");
+
+        assert!(
+            invocations.lock().await.is_empty(),
+            "Background subscriber must not have run before emit returned"
+        );
+
+        // Cooperatively yield until the spawned task records its invocation. Bounded
+        // by an absolute deadline so a regression that drops the spawned future fails
+        // loudly instead of hanging. Deadline is checked **before** the next mutex
+        // acquire so a hung test fails at the deadline, not one scheduler turn later.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            tokio::task::yield_now().await;
+            assert!(
+                Instant::now() < deadline,
+                "Background subscriber did not run within 2s"
+            );
+            if !invocations.lock().await.is_empty() {
+                break;
+            }
+        }
+
+        let invocations = invocations.lock().await;
+        assert_eq!(invocations.as_slice(), &["llm_completed"]);
+    }
+
+    #[test]
+    fn dispatch_label_round_trip() {
+        assert_eq!(
+            EffectSubscriberTier::Awaitable.dispatch_label(),
+            "awaitable"
+        );
+        assert_eq!(
+            EffectSubscriberTier::Background.dispatch_label(),
+            "background"
+        );
+        assert_eq!(super::DISPATCH_MODE_SEQUENTIAL, "sequential");
+    }
+
+    #[test]
+    fn variant_name_is_stable_for_every_event() {
+        // `variant_name` is the `event.variant` attribute on every effect-bus metric
+        // and span. The compiler enforces an arm per variant via the exhaustive match
+        // inside `variant_name`; this test pins the produced strings so a typo or
+        // rename in any arm fails CI.
+        use baml_rt_id::{ExternalId, UuidId};
+        const NIL_UUID: &str = "00000000-0000-0000-0000-000000000000";
+
+        use super::{
+            A2aEffectMetadata, A2aLivenessRole, SessionStepOp, ToolEffectMetadata,
+            ToolNameResolution,
+        };
+        use crate::ids::{AgentId, IntentId, PlanId, PlanStepId, TaskId};
+
+        let ctx = || ContextId::new(0, 0);
+        let tool_metadata = || ToolEffectMetadata {
+            tool_name: "t".into(),
+            function_name: None,
+            args: json!({}),
+            metadata: json!({}),
+            delegation_target: None,
+            tool_backend: None,
+            tool_digest: None,
+        };
+        let agent_id = || AgentId::from_uuid(UuidId::parse_str(NIL_UUID).unwrap());
+        let a2a_metadata = || A2aEffectMetadata {
+            agent_id: agent_id(),
+            method: "m".into(),
+            request_id: None,
+            liveness_role: A2aLivenessRole::Effect,
+            metadata: json!({}),
+        };
+        let llm_metadata = || LlmEffectMetadata {
+            client: "c".into(),
+            model: "m".into(),
+            function_name: "f".into(),
+            prompt: json!(null),
+            metadata: json!({}),
+            tool_name: ToolNameResolution::NotApplicable,
+        };
+
+        let cases: Vec<(&'static str, EffectEvent)> = vec![
+            (
+                "tool_started",
+                EffectEvent::ToolStarted {
+                    context_id: ctx(),
+                    metadata: tool_metadata(),
+                },
+            ),
+            (
+                "tool_completed",
+                EffectEvent::ToolCompleted {
+                    context_id: ctx(),
+                    metadata: tool_metadata(),
+                    duration_ms: 0,
+                    outcome: Outcome::Success,
+                    result: None,
+                },
+            ),
+            (
+                "tool_stream_chunk",
+                EffectEvent::ToolStreamChunk {
+                    context_id: ctx(),
+                    chunk: json!({}),
+                },
+            ),
+            (
+                "tool_session_step",
+                EffectEvent::ToolSessionStep {
+                    context_id: ctx(),
+                    tool_name: "t".into(),
+                    session_id: "s".into(),
+                    op: SessionStepOp::Open,
+                    task_id: None,
+                },
+            ),
+            (
+                "llm_started",
+                EffectEvent::LlmStarted {
+                    context_id: ctx(),
+                    metadata: llm_metadata(),
+                },
+            ),
+            ("llm_completed", llm_completed_event()),
+            (
+                "a2a_started",
+                EffectEvent::A2aStarted {
+                    context_id: ctx(),
+                    metadata: a2a_metadata(),
+                },
+            ),
+            (
+                "a2a_completed",
+                EffectEvent::A2aCompleted {
+                    context_id: ctx(),
+                    metadata: a2a_metadata(),
+                    duration_ms: 0,
+                    outcome: Outcome::Success,
+                },
+            ),
+            (
+                "intent_resolved",
+                EffectEvent::IntentResolved {
+                    context_id: ctx(),
+                    task_id: TaskId::from_external(ExternalId::new("t")),
+                    intent_id: IntentId::from("i"),
+                    description: "d".into(),
+                    citations: Vec::new(),
+                    supersession: None,
+                    epoch: None,
+                },
+            ),
+            (
+                "plan_generated",
+                EffectEvent::PlanGenerated {
+                    context_id: ctx(),
+                    task_id: TaskId::from_external(ExternalId::new("t")),
+                    intent_id: IntentId::from("i"),
+                    plan_id: PlanId::from("p"),
+                    steps: json!([]),
+                    supersession: None,
+                    epoch: None,
+                },
+            ),
+            (
+                "plan_step_status_changed",
+                EffectEvent::PlanStepStatusChanged {
+                    context_id: ctx(),
+                    task_id: TaskId::from_external(ExternalId::new("t")),
+                    intent_id: IntentId::from("i"),
+                    plan_id: PlanId::from("p"),
+                    step_id: PlanStepId::from("s"),
+                    old_status: None,
+                    new_status: "n".into(),
+                    citations: Vec::new(),
+                    epoch: None,
+                },
+            ),
+        ];
+        for (expected, event) in &cases {
+            assert_eq!(event.variant_name(), *expected);
+        }
     }
 
     #[tokio::test]

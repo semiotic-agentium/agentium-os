@@ -15,7 +15,6 @@ const METER_NAME: &str = "baml_rt_core";
 static EFFECT_PROCESS_MS: OnceLock<Histogram<f64>> = OnceLock::new();
 static EFFECT_SUBSCRIBER_MS: OnceLock<Histogram<f64>> = OnceLock::new();
 static EFFECT_SUBSCRIBER_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
-static BUS_ENVELOPE_MS: OnceLock<Histogram<f64>> = OnceLock::new();
 
 fn effect_process_ms() -> &'static Histogram<f64> {
     EFFECT_PROCESS_MS.get_or_init(|| {
@@ -41,41 +40,32 @@ fn effect_subscriber_total() -> &'static Counter<u64> {
     })
 }
 
-fn bus_envelope_ms() -> &'static Histogram<f64> {
-    BUS_ENVELOPE_MS.get_or_init(|| {
-        global::meter(METER_NAME)
-            .f64_histogram("baml_rt_core.bus.emit_envelope_duration_ms")
-            .init()
-    })
-}
-
 /// End-to-end `process_effect` (liveness map + subscribers).
 pub fn record_effect_process(event_variant: &'static str, duration: Duration) {
     let attrs = &[KeyValue::new("event.variant", event_variant)];
     effect_process_ms().record(duration.as_millis() as f64, attrs);
 }
 
-/// One subscriber invocation (`on_effect`).
+/// One subscriber invocation (`on_effect`). Increments
+/// `baml_rt_core.effect_emit.subscriber_notify_total` and records latency on
+/// `baml_rt_core.effect_emit.subscriber_duration_ms` with the same attribute set.
+///
+/// The `subscriber` attribute carries the subscriber's stable, low-cardinality
+/// identity (e.g. `"provenance"`, `"auto_status"`) and is the canonical alert
+/// dimension for failures, paired with `result="error"` and `event.variant`.
 pub fn record_effect_subscriber(
     event_variant: &'static str,
     dispatch_mode: &'static str,
-    result: &str,
+    subscriber: &'static str,
+    result: &'static str,
     duration: Duration,
 ) {
     let attrs = &[
         KeyValue::new("event.variant", event_variant),
         KeyValue::new("dispatch.mode", dispatch_mode),
-        KeyValue::new("result", result.to_string()),
+        KeyValue::new("subscriber", subscriber),
+        KeyValue::new("result", result),
     ];
     effect_subscriber_total().add(1, attrs);
     effect_subscriber_ms().record(duration.as_millis() as f64, attrs);
-}
-
-/// `Bus::emit` fan-out to registered subscribers and stream sinks.
-pub fn record_bus_emit_envelope(subscriber_bucket: &'static str, duration: Duration) {
-    let attrs = &[KeyValue::new(
-        "envelope.subscriber_bucket",
-        subscriber_bucket,
-    )];
-    bus_envelope_ms().record(duration.as_millis() as f64, attrs);
 }

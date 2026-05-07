@@ -1667,6 +1667,10 @@ impl ProvenanceEffectSubscriber {
 
 #[async_trait]
 impl EffectSubscriber for ProvenanceEffectSubscriber {
+    fn name(&self) -> &'static str {
+        "provenance"
+    }
+
     /// Awaited because the next `conversation_context` read structurally
     /// depends on this subscriber's Surreal write being committed. Drift
     /// scoring rides along inside the same handler and is therefore still on

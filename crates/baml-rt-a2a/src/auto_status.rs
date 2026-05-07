@@ -147,6 +147,10 @@ impl AutoWorkingStatusSubscriber {
 
 #[async_trait]
 impl EffectSubscriber for AutoWorkingStatusSubscriber {
+    fn name(&self) -> &'static str {
+        "auto_status"
+    }
+
     async fn on_effect(&self, event: &EffectEvent) -> baml_rt_core::Result<()> {
         match event {
             EffectEvent::ToolStarted {
