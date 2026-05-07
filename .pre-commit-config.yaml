@@ -68,6 +68,22 @@ repos:
         pass_filenames: true
         files: ^(agents|tests/fixtures/agents)/.+\.baml$
 
+      # Helm: assert the runner StatefulSet probes render with the documented
+      # defaults and that overrides are honoured. Cheap (helm template runs
+      # in well under a second). Triggered only on chart files that affect
+      # the contract or the test itself.
+      - id: helm-runner-probes-render
+        name: helm runner probes render check
+        entry: bash scripts/test-helm-runner-probes.sh
+        language: system
+        pass_filenames: false
+        files: |
+          (?x)^(
+            deploy/helm/agentium-os/templates/runner-statefulset\.yaml|
+            deploy/helm/agentium-os/values\.yaml|
+            scripts/test-helm-runner-probes\.sh
+          )$
+
   # Typos - spell checker for code
   - repo: https://github.com/crate-ci/typos
     rev: v1.28.1

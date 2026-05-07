@@ -76,6 +76,44 @@ runner:
     # `kubectl set env`.
     rustLog: ""
 
+  # -- Runner liveness probe (HTTP GET /healthz).
+  # Defaults are deliberately more forgiving than Kubernetes' own defaults
+  # (timeoutSeconds=1, failureThreshold=3). The runner's `POST /deploy` path
+  # does meaningful synchronous work (QuickJS init, BAML schema parse, tool
+  # wrapping, agent boot) that can starve the HTTP server long enough for
+  # tight probes to fail under contention (CI nodes, modest VMs, k3d). When
+  # the readiness probe fails, the kubelet removes the pod from the runner
+  # Service endpoints and any in-flight Service-routed client connection is
+  # reset mid-deploy.
+  livenessProbe:
+    # -- Seconds before the first probe is issued.
+    initialDelaySeconds: 10
+    # -- Probe interval.
+    periodSeconds: 15
+    # -- Per-probe HTTP timeout. Kubernetes default is 1s; raised here so
+    # the slow `/deploy` path does not flap the probe.
+    timeoutSeconds: 5
+    # -- Consecutive failures before the probe is considered failing.
+    # Kubernetes default is 3; raised here for the same reason as
+    # `timeoutSeconds`.
+    failureThreshold: 6
+
+  # -- Runner readiness probe (HTTP GET /readyz).
+  # Same rationale as `livenessProbe`; readiness failures additionally remove
+  # the pod from Service endpoints, so under-tuned values break Service-routed
+  # clients (including `kubectl port-forward svc/...`).
+  readinessProbe:
+    # -- Seconds before the first probe is issued.
+    initialDelaySeconds: 5
+    # -- Probe interval.
+    periodSeconds: 10
+    # -- Per-probe HTTP timeout. See `livenessProbe.timeoutSeconds` for
+    # rationale.
+    timeoutSeconds: 5
+    # -- Consecutive failures before the probe is considered failing. See
+    # `livenessProbe.failureThreshold` for rationale.
+    failureThreshold: 6
+
 # -- SurrealDB configuration (shared provenance store).
 # The pilot packages SurrealDB directly rather than depending on
 # the upstream Helm chart, which is unproven for v3

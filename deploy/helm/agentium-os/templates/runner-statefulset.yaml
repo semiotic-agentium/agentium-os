@@ -115,14 +115,18 @@ spec:
             httpGet:
               path: /healthz
               port: {{ .Values.runner.service.headless.port }}
-            initialDelaySeconds: 10
-            periodSeconds: 15
+            initialDelaySeconds: {{ .Values.runner.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.runner.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.runner.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.runner.livenessProbe.failureThreshold }}
           readinessProbe:
             httpGet:
               path: /readyz
               port: {{ .Values.runner.service.headless.port }}
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            initialDelaySeconds: {{ .Values.runner.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.runner.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.runner.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.runner.readinessProbe.failureThreshold }}
       volumes:
         - name: tmp
           emptyDir: {}
