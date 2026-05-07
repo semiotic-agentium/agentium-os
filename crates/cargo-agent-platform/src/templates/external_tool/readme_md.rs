@@ -78,18 +78,23 @@ fn manual_probe_section(ctx: &ScaffoldContext<'_>, tool_id: &str) -> String {
     };
 
     let preface = if ctx.runtime == Runtime::Sandbox {
-        "For sandbox runtime tools, the runner invokes `/tool-adapter` inside the sandbox.\n`tool-server` is **not** the runtime invoke path; it's only a local debugging helper.\n\n"
+        if ctx.language == Language::Bash {
+            "For sandbox runtime tools, the runner invokes `/tool-adapter` inside the sandbox.\nFor Bash scaffolds, `tool-server` is the script implementation that the adapter delegates to; probing it directly still bypasses sandbox framing/rootfs checks.\n\n"
+        } else {
+            "For sandbox runtime tools, the runner invokes `/tool-adapter` inside the sandbox.\nThis local source probe only checks the underlying tool logic; it bypasses sandbox framing/rootfs/image checks.\n\n"
+        }
     } else {
         ""
     };
+    let probe_command = local_probe_command(ctx);
 
     match ctx.invocation_mode {
         InvocationMode::SingleShot => format!(
             r#"{heading}
 
 {preface}```bash
-printf '{{"jsonrpc":"2.0","id":1,"method":"{method_describe}","params":{{"tool_name":"{tool_id}"}}}}\n' | ./tool-server
-printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocation_id":"demo","tool_name":"{tool_id}","input":{{"{input_key}":"hello"}}}}}}\n' | ./tool-server
+printf '{{"jsonrpc":"2.0","id":1,"method":"{method_describe}","params":{{"tool_name":"{tool_id}"}}}}\n' | {probe_command}
+printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocation_id":"demo","tool_name":"{tool_id}","input":{{"{input_key}":"hello"}}}}}}\n' | {probe_command}
 ```
 "#,
             heading = heading,
@@ -98,29 +103,44 @@ printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocati
             method_invoke = METHOD_INVOKE,
             tool_id = tool_id,
             input_key = STARTER_INPUT_KEY,
+            probe_command = probe_command,
         ),
         InvocationMode::Session => format!(
             r#"{heading}
 
 {preface}```bash
 # open
-printf '{{"jsonrpc":"2.0","id":1,"method":"tool/session_open","params":{{"invocation_id":"demo","tool_name":"{tool_id}","open_input":{{}}}}}}\n' | ./tool-server
+printf '{{"jsonrpc":"2.0","id":1,"method":"tool/session_open","params":{{"invocation_id":"demo","tool_name":"{tool_id}","open_input":{{}}}}}}\n' | {probe_command}
 
 # send input (replace demo-session with the session_id returned by session_open)
-printf '{{"jsonrpc":"2.0","id":2,"method":"tool/session_send","params":{{"session_id":"demo-session","input":{{"{input_key}":"hello"}}}}}}\n' | ./tool-server
+printf '{{"jsonrpc":"2.0","id":2,"method":"tool/session_send","params":{{"session_id":"demo-session","input":{{"{input_key}":"hello"}}}}}}\n' | {probe_command}
 
 # read next step (payloadless, same session_id)
-printf '{{"jsonrpc":"2.0","id":3,"method":"tool/session_read","params":{{"session_id":"demo-session"}}}}\n' | ./tool-server
+printf '{{"jsonrpc":"2.0","id":3,"method":"tool/session_read","params":{{"session_id":"demo-session"}}}}\n' | {probe_command}
 
 # finish (same session_id)
-printf '{{"jsonrpc":"2.0","id":4,"method":"tool/session_finish","params":{{"session_id":"demo-session"}}}}\n' | ./tool-server
+printf '{{"jsonrpc":"2.0","id":4,"method":"tool/session_finish","params":{{"session_id":"demo-session"}}}}\n' | {probe_command}
 ```
 "#,
             heading = heading,
             preface = preface,
             tool_id = tool_id,
             input_key = STARTER_INPUT_KEY,
+            probe_command = probe_command,
         ),
+    }
+}
+
+fn local_probe_command(ctx: &ScaffoldContext<'_>) -> &'static str {
+    if ctx.runtime == Runtime::Process || ctx.language == Language::Bash {
+        return "./tool-server";
+    }
+
+    match ctx.language {
+        Language::Rust => "cargo run --quiet --manifest-path ./Cargo.toml --",
+        Language::Python => "python3 ./main.py",
+        Language::Typescript => "node ./dist/main.js",
+        Language::Bash => "./tool-server",
     }
 }
 

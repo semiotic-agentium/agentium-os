@@ -24,11 +24,11 @@ python3 ./main.py </dev/null || true
 ## Local probe (developer convenience)
 
 For sandbox runtime tools, the runner invokes `/tool-adapter` inside the sandbox.
-`tool-server` is **not** the runtime invoke path; it's only a local debugging helper.
+This local source probe only checks the underlying tool logic; it bypasses sandbox framing/rootfs/image checks.
 
 ```bash
-printf '{"jsonrpc":"2.0","id":1,"method":"tool/describe","params":{"tool_name":"dev/meteo-tool"}}\n' | ./tool-server
-printf '{"jsonrpc":"2.0","id":2,"method":"tool/invoke","params":{"invocation_id":"demo","tool_name":"dev/meteo-tool","input":{"location_query":"Athens, Greece"}}}\n' | ./tool-server
+printf '{"jsonrpc":"2.0","id":1,"method":"tool/describe","params":{"tool_name":"dev/meteo-tool"}}\n' | python3 ./main.py
+printf '{"jsonrpc":"2.0","id":2,"method":"tool/invoke","params":{"invocation_id":"demo","tool_name":"dev/meteo-tool","input":{"location_query":"Athens, Greece"}}}\n' | python3 ./main.py
 ```
 
 

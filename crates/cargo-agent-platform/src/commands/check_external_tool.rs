@@ -205,7 +205,6 @@ mod tests {
             invocation_mode: InvocationMode::SingleShot,
             sandbox_source: Some(SandboxSource::Oci),
             sandbox_image: None,
-            runtime_digest: None,
             sandbox_entrypoint: Vec::new(),
             generate_docker: false,
         };

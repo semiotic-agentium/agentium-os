@@ -37,10 +37,11 @@ cargo run -p cargo-agent-platform -- new-tool meteo-tool \
 This emits, among others:
 - `tool-metadata.json`
 - `main.py`
-- `tool-server`
 - `adapter/Dockerfile`
 - `adapter/tool-adapter`
 - `setup_bind_sandbox.sh`
+
+Non-Bash sandbox scaffolds intentionally do not emit host `tool-server`; the sandbox runtime path is `/tool-adapter`.
 
 > If you skip `--generate-docker`, you can still use bind mode. You just need to materialize rootfs yourself and run `sandbox-bind-sync` (step 3).
 
@@ -57,11 +58,13 @@ Implement `main.py` handlers for:
 - `tool/describe`
 - `tool/invoke`
 
-Local probe:
+For a quick host-only source probe, pipe raw JSON-RPC to `main.py` directly. This does not exercise sandbox framing/rootfs/image behavior:
 
 ```bash
-printf '{"jsonrpc":"2.0","id":1,"method":"tool/describe","params":{"tool_name":"dev/meteo"}}\n' | examples/external-tools/meteo-tool/tool-server
+printf '{"jsonrpc":"2.0","id":1,"method":"tool/describe","params":{"tool_name":"dev/meteo"}}\n' | python3 examples/external-tools/meteo-tool/main.py
 ```
+
+For sandbox coverage, use the framed `/tool-adapter` probes after materializing the bind rootfs.
 
 ---
 

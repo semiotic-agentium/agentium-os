@@ -250,7 +250,16 @@ pub fn build_file_set(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
         GeneratedFile::new("tool-metadata.json", metadata_json::generate(ctx)),
         GeneratedFile::new("README.md", readme_md::generate(ctx)),
     ];
-    files.extend(ctx.language.files(ctx));
+    let mut language_files = ctx.language.files(ctx);
+    if ctx.runtime == Runtime::Sandbox && ctx.language != Language::Bash {
+        // Sandbox execution enters through `/tool-adapter` inside the guest.
+        // For non-Bash starters, `tool-server` is only a host-side wrapper
+        // around the language source and can be mistaken for sandbox coverage.
+        // Bash is the exception: its `tool-server` file is the actual script
+        // implementation that the generated adapter delegates to.
+        language_files.retain(|file| file.relative_path != "tool-server");
+    }
+    files.extend(language_files);
     if ctx.runtime == Runtime::Sandbox && ctx.sandbox_source == Some(SandboxSource::Bind) {
         files.extend(crate::templates::external_tool::bind_sandbox::files(ctx));
         ensure_gitignore_entry(&mut files, ".tmp/");
@@ -468,6 +477,14 @@ mod tests {
         );
     }
 
+    fn assert_scaffold_lacks(files: &[GeneratedFile], path: &str) {
+        assert!(
+            files.iter().all(|f| f.relative_path != path),
+            "scaffold unexpectedly included `{path}`; got {:?}",
+            files.iter().map(|f| &f.relative_path).collect::<Vec<_>>()
+        );
+    }
+
     /// Golden fixtures per language — catches silent drift when adding a
     /// language or renaming a scaffolded file.
     #[test]
@@ -492,6 +509,32 @@ mod tests {
         assert_scaffold_has(&ts_files, "tsconfig.json");
         assert_scaffold_has(&ts_files, "src/main.ts");
         assert_scaffold_has(&ts_files, "tool-server");
+    }
+
+    #[test]
+    fn sandbox_scaffold_omits_host_tool_server_except_bash() {
+        for lang in [Language::Rust, Language::Python, Language::Typescript] {
+            let mut sandbox_ctx = ctx(lang);
+            sandbox_ctx.runtime = Runtime::Sandbox;
+            sandbox_ctx.sandbox_source = Some(SandboxSource::Oci);
+            sandbox_ctx.sandbox_image = Some(SandboxImageRef::Oci {
+                r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+            });
+
+            let files = build_file_set(&sandbox_ctx);
+            assert_scaffold_lacks(&files, "tool-server");
+        }
+
+        let mut bash_ctx = ctx(Language::Bash);
+        bash_ctx.runtime = Runtime::Sandbox;
+        bash_ctx.sandbox_source = Some(SandboxSource::Oci);
+        bash_ctx.sandbox_image = Some(SandboxImageRef::Oci {
+            r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+        });
+        let bash_files = build_file_set(&bash_ctx);
+        assert_scaffold_has(&bash_files, "tool-server");
     }
 
     /// `tool-metadata.json` must round-trip through the runtime's catalog

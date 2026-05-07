@@ -164,8 +164,10 @@ impl AgentPackage {
 
         // Dev-mode external tools: BAML_EXTERNAL_TOOLS_DIR=/path/to/tool_a:/path/to/tool_b
         // Each colon-separated entry is a tool package dir containing
-        // tool-metadata.json + tool-server binary. Production (Phase 2) uses
-        // the digest-pinned lockfile resolver instead.
+        // tool-metadata.json. Process-runtime tools also contain the host
+        // executable (default `tool-server`); sandbox-runtime tools resolve to
+        // `/tool-adapter` inside their image/rootfs instead. Production
+        // (Phase 2) uses the digest-pinned lockfile resolver instead.
         let lifecycle_writer: Arc<dyn ProvenanceWriter> = provenance_store.clone();
         let lifecycle_recorder = build_external_lifecycle_recorder(lifecycle_writer);
         let lockfile_path = self.extract_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);

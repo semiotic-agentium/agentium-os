@@ -41,20 +41,11 @@ Current SDK defaults in `src/claude.rs`:
 ## Local probe (developer convenience)
 
 For sandbox runtime tools, the runner invokes `/tool-adapter` inside the sandbox.
-`tool-server` is **not** the runtime invoke path; it's only a local debugging helper.
+For this Rust session tool, use the sandbox adapter path for meaningful probes; raw host stdio does not match the framed session transport.
 
 ```bash
-# open
-printf '{"jsonrpc":"2.0","id":1,"method":"tool/session_open","params":{"invocation_id":"demo","tool_name":"dev/claude-ext","open_input":{}}}\n' | ./tool-server
-
-# send input (replace demo-session with the session_id returned by session_open)
-printf '{"jsonrpc":"2.0","id":2,"method":"tool/session_send","params":{"session_id":"demo-session","input":{"message":"hello"}}}\n' | ./tool-server
-
-# read next step (payloadless, same session_id)
-printf '{"jsonrpc":"2.0","id":3,"method":"tool/session_read","params":{"session_id":"demo-session"}}\n' | ./tool-server
-
-# finish (same session_id)
-printf '{"jsonrpc":"2.0","id":4,"method":"tool/session_finish","params":{"session_id":"demo-session"}}\n' | ./tool-server
+./setup_bind_sandbox.sh --force
+# Then exercise the tool through the runner/A2A flow, or run a framed adapter probe against /tool-adapter in the materialized rootfs/image.
 ```
 
 

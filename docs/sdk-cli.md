@@ -105,7 +105,7 @@ cargo agent-platform new-tool [name] [options]
 | `--output <dir>` | `./<name>` | Output directory for standalone tool project |
 | `--dry-run` | off | Preview changes without writing files (non-interactive only) |
 
-Generated scaffold always includes `tool-metadata.json`, `README.md`, and language-specific files. Most language templates also include `tool-server` for local probing. For `runtime=sandbox`, runner invocation still goes through `/tool-adapter` inside the sandbox (not host `tool-server`). `tool-metadata.json` always emits an explicit `runtime` block (`process` by default, or `sandbox` when selected).
+Generated scaffold always includes `tool-metadata.json`, `README.md`, and language-specific files. For `runtime=process`, language templates include `tool-server`, which is the host executable the runner invokes. For `runtime=sandbox`, non-Bash scaffolds omit host `tool-server`; runner invocation goes through `/tool-adapter` inside the sandbox. Bash sandbox scaffolds still include `tool-server` because it is the Bash implementation script that the adapter delegates to. `tool-metadata.json` always emits an explicit `runtime` block (`process` by default, or `sandbox` when selected).
 
 `--invocation-mode session` scaffolds metadata with `invocation_mode: "session"` (external session protocol). For now, scaffold defaults still keep session knobs conservative (`session_policy: strict`, `secret_scope: send`) unless you edit metadata manually.
 
