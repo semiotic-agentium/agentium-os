@@ -57,6 +57,35 @@ use crate::{
 /// HTTP result type for handlers that return RFC 7807 problem details on error.
 type HttpResult<T> = Result<T, HttpApiProblem>;
 
+/// Run a `!Send` future on a dedicated blocking thread so the request handler
+/// — and the worker pool serving `/readyz` and `/healthz` — stay responsive.
+///
+/// Deployment boot performs synchronous BAML schema parsing, QuickJS sandbox
+/// initialization, and tool wrapper registration; running that on a tokio
+/// worker can starve probe handlers and trip kubelet readiness checks. The
+/// `DeploymentManager` trait is `?Send` (boot internals are not `Send` across
+/// await points), so the builder constructs the future inside the blocking
+/// task and `Handle::current().block_on` drives it on the same blocking thread.
+///
+/// Cancellation: `spawn_blocking` tasks are not aborted when their `JoinHandle`
+/// is dropped. If the request handler future is cancelled (client disconnect),
+/// the deploy continues to completion — the durable preference for partial-
+/// state-bad operations like deploy.
+async fn run_off_worker<C, F, T>(builder: C) -> HttpResult<T>
+where
+    C: FnOnce() -> F + Send + 'static,
+    F: std::future::Future<Output = T>,
+    T: Send + 'static,
+{
+    let handle = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || handle.block_on(builder()))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "blocking deployment task failed");
+            problem(500, "Internal Server Error", "deployment task failed")
+        })
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct RepositoryEntriesResponse {
     entries: Vec<RepositoryEntryHeaderItem>,
@@ -260,9 +289,11 @@ pub async fn post_deploy(
         let content_hash = hash
             .parse::<DeploymentContentHash>()
             .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
-        let deploy_result = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(manager.deploy_by_hash(&content_hash))
-        });
+        let manager_clone = Arc::clone(manager);
+        let deploy_hash = content_hash.clone();
+        let deploy_result =
+            run_off_worker(move || async move { manager_clone.deploy_by_hash(&deploy_hash).await })
+                .await?;
         match deploy_result {
             Ok(result) => Ok(Json(DeployResponseDto {
                 hash,
@@ -320,9 +351,13 @@ pub async fn post_undeploy(
             .hash
             .parse::<DeploymentContentHash>()
             .map_err(|e| problem(400, "Bad Request", format!("invalid hash: {e}")))?;
-        let undeploy_result = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(manager.undeploy_by_hash(&content_hash))
-        });
+        let manager_clone = Arc::clone(manager);
+        let undeploy_hash = content_hash.clone();
+        let undeploy_result =
+            run_off_worker(
+                move || async move { manager_clone.undeploy_by_hash(&undeploy_hash).await },
+            )
+            .await?;
         match undeploy_result {
             Ok(result) if result.removed => Ok(Json(UndeployResponseDto { removed: true })),
             Ok(_) => Err(problem(
@@ -371,9 +406,9 @@ pub async fn get_deployments(
                 "Deployment manager not configured",
             ));
         };
-        let deployments_result = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(manager.list_deployments())
-        });
+        let manager_clone = Arc::clone(manager);
+        let deployments_result =
+            run_off_worker(move || async move { manager_clone.list_deployments().await }).await?;
         match deployments_result {
             Ok(records) => Ok(Json(
                 records
@@ -504,9 +539,12 @@ pub async fn post_migrate(
         }
 
         // 2. Target confirmed deploy success — now drain and undeploy locally.
-        let undeploy_result = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(manager.undeploy_by_hash(&content_hash))
-        });
+        let manager_clone = Arc::clone(manager);
+        let undeploy_hash = content_hash.clone();
+        let undeploy_result = run_off_worker(move || async move {
+            manager_clone.undeploy_by_hash(&undeploy_hash).await
+        })
+        .await?;
         let source_undeploy_failed = match &undeploy_result {
             Ok(r) if !r.removed => {
                 tracing::warn!(

@@ -22,8 +22,9 @@ use baml_rt_api::{
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
     AgentDispatchRequest, AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey,
-    BamlRtError, BusStream, EventSchemaVersion, EventSourceKind, EventSubscription, Outcome,
-    Result,
+    BamlRtError, BusStream, DeployResult, DeploymentContentHash, DeploymentManager,
+    DeploymentRecord, EventSchemaVersion, EventSourceKind, EventSubscription, Outcome, Result,
+    UndeployResult,
     event_subscription::{EventSourceKey, EventSourceKeyPrefix},
     ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, UuidId},
 };
@@ -2698,4 +2699,141 @@ async fn repository_remove_tag_requires_auth_in_cluster_mode() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Mock `DeploymentManager` that simulates CPU-bound deploy boot work by
+/// blocking the executing thread for the configured duration.
+struct SlowDeployManager {
+    sleep: std::time::Duration,
+}
+
+#[async_trait(?Send)]
+impl DeploymentManager for SlowDeployManager {
+    async fn deploy_by_hash(&self, _content_hash: &DeploymentContentHash) -> Result<DeployResult> {
+        std::thread::sleep(self.sleep);
+        Ok(DeployResult {
+            already_deployed: false,
+        })
+    }
+
+    async fn undeploy_by_hash(
+        &self,
+        _content_hash: &DeploymentContentHash,
+    ) -> Result<UndeployResult> {
+        std::thread::sleep(self.sleep);
+        Ok(UndeployResult { removed: true })
+    }
+
+    async fn list_deployments(&self) -> Result<Vec<DeploymentRecord>> {
+        Ok(Vec::new())
+    }
+}
+
+async fn router_with_deployment_manager(manager: Arc<dyn DeploymentManager>) -> axum::Router {
+    use std::sync::atomic::AtomicBool;
+
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> =
+        Arc::new(baml_rt_tools::InventoryCatalog::new());
+    let config_service: Arc<dyn baml_rt_config::ConfigService> = Arc::new(
+        baml_rt_config::SurrealConfigStore::in_memory()
+            .await
+            .expect("in-memory config store"),
+    );
+    let secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver> =
+        Arc::new(baml_rt_llm_config::EmptySecretResolver);
+
+    api_router_with_services_and_deploy(
+        registry,
+        None, // mermaid
+        None, // context_metrics
+        None, // provenance_ops
+        None, // planning
+        None, // episode
+        None, // conversation_history
+        None, // conversation_history_events
+        None, // context_index
+        Some(manager),
+        None, // repository_url
+        None, // repository_service
+        tool_catalog,
+        config_service,
+        secret_resolver,
+        None, // runtime_secret_store
+        Arc::new(AtomicBool::new(true)),
+        None,                    // runner_token
+        ClusterMode::Standalone, // standalone → no auth required
+        None,                    // web_dir
+    )
+}
+
+// Runs on a `current_thread` runtime — `block_in_place` panics there but
+// `spawn_blocking` works correctly. This catches the wrong-pattern regression
+// (any handler reverting to `block_in_place`) rather than the production
+// starvation symptom on a multi-threaded runtime.
+#[tokio::test]
+async fn deploy_in_flight_does_not_block_readyz() {
+    use std::time::{Duration, Instant};
+
+    let manager: Arc<dyn DeploymentManager> = Arc::new(SlowDeployManager {
+        sleep: Duration::from_millis(800),
+    });
+    let app = router_with_deployment_manager(manager).await;
+
+    let deploy_body = serde_json::json!({ "hash": "a".repeat(64) }).to_string();
+
+    let deploy_app = app.clone();
+    let deploy_handle = tokio::spawn(async move {
+        deploy_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/deploy")
+                    .header("content-type", "application/json")
+                    .body(Body::from(deploy_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    });
+
+    // Let the deploy reach the synchronous sleep before probing.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let readyz_start = Instant::now();
+    let readyz_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let elapsed = readyz_start.elapsed();
+
+    assert_eq!(readyz_resp.status(), StatusCode::OK);
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "/readyz took {elapsed:?} during in-flight /deploy (must be < 200ms)",
+    );
+
+    let deploy_status = deploy_handle.await.expect("deploy task panicked");
+    assert_eq!(deploy_status, StatusCode::OK);
+}
+
+/// Static guard: any deployment handler that reverts to `block_in_place`
+/// would re-introduce the probe-starvation bug. Only the `deploy_in_flight_*`
+/// integration test currently exercises the `/deploy` path; this check covers
+/// the other handlers (`post_undeploy`, `get_deployments`, `post_migrate`)
+/// that share the `run_off_worker` helper.
+#[test]
+fn handlers_do_not_use_block_in_place() {
+    const HANDLERS_SRC: &str = include_str!("../src/handlers.rs");
+    assert!(
+        !HANDLERS_SRC.contains("block_in_place"),
+        "handlers.rs uses block_in_place; deployment endpoints must route through run_off_worker"
+    );
 }
