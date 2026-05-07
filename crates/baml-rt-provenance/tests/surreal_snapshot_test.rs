@@ -19,6 +19,7 @@ use baml_rt_provenance::{
     ProvenanceContextReader, ProvenanceOpsQuery, ProvenancePlanningQuery, ProvenanceQueryApi,
     ProvenanceWriter, SurrealStoreBuilder, TaskScopedEvent, serialized_prompt_utf8_len,
 };
+use baml_rt_tools::prompt_message_char_count;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -399,6 +400,9 @@ async fn setup_failed_call_with_classification(store: &dyn SnapshotStore) {
                 citations: vec![],
                 resolved_citations: vec![],
                 prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(
+                    &serde_json::json!({"messages": [{"role": "user", "content": "test"}]}),
+                ),
+                prompt_message_chars: prompt_message_char_count(
                     &serde_json::json!({"messages": [{"role": "user", "content": "test"}]}),
                 ),
             },

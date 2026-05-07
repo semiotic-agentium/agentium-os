@@ -21,10 +21,6 @@ expression: history
   },
   {
     "role": "tool",
-    "content": "@1 · \"found 2 agents\" · 4L · 113B"
-  },
-  {
-    "role": "tool",
     "content": "grep -n 'name description' @1\n# no matches"
   },
   {

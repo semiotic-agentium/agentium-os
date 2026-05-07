@@ -1,6 +1,6 @@
 use std::{collections::HashSet, fmt, fs, path::Path};
 
-use baml_rt_tools::ts_gen::render_tool_typescript;
+use baml_rt_tools::{UnifiedStepExecutorFunctionsMap, ts_gen::render_tool_typescript};
 use genco::{fmt::Error as GencoFmtError, lang::js, prelude::*};
 use internal_baml_core::ir::ir_hasher::IRSignature;
 
@@ -50,6 +50,7 @@ pub fn render_ts_declarations(
     ir_signature: &IRSignature,
     tool_names: &[String],
     session_plan_functions: &baml_rt_tools::SessionPlanFunctionsMap,
+    unified_step_executors: &UnifiedStepExecutorFunctionsMap,
 ) -> Result<String> {
     let header = "/**
  * BAML runtime TypeScript declarations.
@@ -111,6 +112,11 @@ pub fn render_ts_declarations(
 
         // Stable output for snapshots.
         let mut step_executor_names: Vec<String> = session_plan_functions.keys().cloned().collect();
+        for k in unified_step_executors.keys() {
+            if !step_executor_names.iter().any(|e| e == k) {
+                step_executor_names.push(k.clone());
+            }
+        }
         step_executor_names.sort();
         let step_executor_union = step_executor_names
             .iter()

@@ -52,12 +52,6 @@ function ClassifyPersonaCoordinatorTurn(user_message: string) -> PersonaReadyInt
   "#
 }
 
-// Agent selection for delegation (matches InternalA2aTarget).
-class SelectedAgent {
-  agent_package string
-  agent_instance_id string
-}
-
 // StructuredReply: shared synthesis shape in `_baml_runtime.baml` (builder prelude).
 
 // Persona-voiced summary of what agents can do (no delegation).
@@ -66,29 +60,11 @@ class SelectedAgent {
 function FormatCapabilities(user_message: string) -> StructuredReply {
   client DefaultClient
   prompt #"
-    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns if present in ctx.tags['conversation_history'] for continuity.
+    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns from the transcript below when present for continuity.
 
     If the session history includes a tool discovery **Read** result, describe those agents in brutal ork persona voice.
     If there is **no** discovery listing in history (meta-only turn without specialist search), answer briefly in persona: greet or explain you're ready when they name a task or ask what coordination does — **do not invent** agent package names.
     Match the output schema exactly (StructuredReply: parts + citations). 2-5 sentences in the text part; no tool jargon.
-
-    {{ ctx.tags['conversation_transcript'] }}
-    {{ _.role('user') }}
-    {{ user_message }}
-    {{ ctx.output_format }}
-  "#
-}
-
-// Pick one agent that can handle the user's request, or none. Exclude conversational-persona-demo (self).
-// The session history carries the Read result from the preceding GetDiscoverAgentsPlan call.
-function SelectAgentForMessage(user_message: string) -> SelectedAgent | null {
-  client DefaultClient
-  prompt #"
-    You do NOT perform the user's task. You only choose which specialist agent will do it. Return only the structured selection (agent_package, agent_instance_id) or null. Never generate code, scripts, or the answer yourself.
-
-    The session history below contains the list of available agents retrieved in the previous step.
-    Pick the single best agent for the user's request. Use prior turns in ctx.tags['conversation_history'] when present (e.g. follow-ups like "use the argument one").
-    Return that agent's agent_package and agent_instance_id only. If no agent fits, or the user just wants to know capabilities, return null. Never select conversational-persona-demo (that is this router itself).
 
     {{ ctx.tags['conversation_transcript'] }}
     {{ _.role('user') }}

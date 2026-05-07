@@ -77,6 +77,11 @@ impl baml_rt_api::ContextMetricsService for ContextMetricsServiceImpl {
                 .as_ref()
                 .and_then(|r| r.get("prompt_context_bytes_current")),
         );
+        let session_prompt_chars_current = value_as_u64(
+            session_prompt_tail
+                .as_ref()
+                .and_then(|r| r.get("prompt_message_chars_current")),
+        );
 
         let mut prompt_count_by_message: HashMap<String, u64> = HashMap::new();
         for row in prompt_rows {
@@ -100,6 +105,7 @@ impl baml_rt_api::ContextMetricsService for ContextMetricsServiceImpl {
                 llm_call_count: value_as_u64(row.get("llm_call_count")),
                 llm_duration_ms_total: value_as_u64(row.get("llm_duration_ms_total")),
                 prompt_context_bytes_current: value_as_u64(row.get("prompt_context_bytes_current")),
+                prompt_message_chars_current: value_as_u64(row.get("prompt_message_chars_current")),
                 tokens: baml_rt_api::TokenUsageDto {
                     input: value_as_u64(row.get("tokens_in")),
                     output: value_as_u64(row.get("tokens_out")),
@@ -117,6 +123,7 @@ impl baml_rt_api::ContextMetricsService for ContextMetricsServiceImpl {
                 llm_call_count: 0,
                 llm_duration_ms_total: 0,
                 prompt_context_bytes_current: 0,
+                prompt_message_chars_current: 0,
                 tokens: baml_rt_api::TokenUsageDto {
                     input: 0,
                     output: 0,
@@ -144,6 +151,7 @@ impl baml_rt_api::ContextMetricsService for ContextMetricsServiceImpl {
                 llm_calls_total: session_llm_calls,
                 llm_duration_ms_total: session_llm_duration_ms,
                 prompt_context_bytes_current: session_prompt_bytes_current,
+                prompt_message_chars_current: session_prompt_chars_current,
                 tokens_total: baml_rt_api::TokenUsageDto {
                     input: session_tokens_in,
                     output: session_tokens_out,

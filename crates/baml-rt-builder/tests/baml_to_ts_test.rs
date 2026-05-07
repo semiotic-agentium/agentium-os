@@ -44,8 +44,13 @@ fn generate_ts_from_fixture(fixture_name: &str) -> Result<String, Box<dyn std::e
     let tool_names =
         load_manifest_tools(&baml_src).map_err(|e| format!("load_manifest_tools: {}", e))?;
     let session_plan_map = session_plan_functions_map(&ir_signature);
-    let ts = render_ts_declarations(&ir_signature, &tool_names, &session_plan_map)
-        .map_err(|e| format!("render_ts_declarations: {}", e))?;
+    let ts = render_ts_declarations(
+        &ir_signature,
+        &tool_names,
+        &session_plan_map,
+        &Default::default(),
+    )
+    .map_err(|e| format!("render_ts_declarations: {}", e))?;
     Ok(ts)
 }
 

@@ -36,6 +36,23 @@ impl BamlRuntimeManager {
         self.state.session_plan_functions.clone()
     }
 
+    /// Whether `base_function_name` uses unified structured step execution (`__select` + intra hops).
+    pub(crate) fn is_unified_step_executor_root(&self, base_function_name: &str) -> bool {
+        self.unified_step_executor_config(base_function_name)
+            .is_some()
+    }
+
+    /// Builder-authored options for a unified root (`include_archive_reads`, …).
+    pub(crate) fn unified_step_executor_config(
+        &self,
+        base_function_name: &str,
+    ) -> Option<&baml_rt_tools::UnifiedStepExecutorRootConfig> {
+        self.state
+            .unified_step_executor_functions
+            .as_ref()
+            .and_then(|m| m.get(base_function_name))
+    }
+
     /// Get the eagerly resolved function→tool manifest.
     pub fn function_tool_manifest(&self) -> Arc<FunctionToolManifest> {
         self.state.function_tool_manifest.clone()

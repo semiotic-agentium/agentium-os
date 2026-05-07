@@ -25,10 +25,6 @@ expression: session_history
   },
   {
     "role": "tool",
-    "content": "4894@1 · \"agents\" · 3L · 100B"
-  },
-  {
-    "role": "tool",
     "content": "cat -n 4894@1\n     1\t- id: agent-alpha\n     2\t  desc: Alpha agent\n     3\t- id: agent-beta\n     4\t  desc: Beta agent\n     5\t- id: agent-gamma\n     6\t  desc: Gamma agent"
   },
   {

@@ -48,6 +48,8 @@ pub mod a2a {
     pub const PROMPT: &str = "a2a:prompt";
     /// UTF-8 length of JSON-serialized prompt (`serde_json::to_string`) measured once at emission.
     pub const PROMPT_SERIALIZED_UTF8_BYTES: &str = "a2a:prompt_serialized_utf8_bytes";
+    /// Unicode scalar count of textual chat `messages` content (see prompt projection / display helpers).
+    pub const PROMPT_MESSAGE_CHARS: &str = "a2a:prompt_message_chars";
     pub const USAGE_PROMPT_TOKENS: &str = "a2a:usage_prompt_tokens";
     pub const USAGE_COMPLETION_TOKENS: &str = "a2a:usage_completion_tokens";
     pub const USAGE_TOTAL_TOKENS: &str = "a2a:usage_total_tokens";
@@ -285,6 +287,8 @@ pub mod storage_safe {
     pub const A2A_PROMPT: &str = "a2a_prompt";
     /// UTF-8 byte length of JSON-serialized LLM prompt payload on `LlmCall` nodes (single measurement at emission).
     pub const A2A_PROMPT_SERIALIZED_UTF8_BYTES: &str = "a2a_prompt_serialized_utf8_bytes";
+    /// Unicode scalar count of chat message text in the LLM request (same rules as display flattening).
+    pub const A2A_PROMPT_MESSAGE_CHARS: &str = "a2a_prompt_message_chars";
     pub const A2A_USAGE_PROMPT_TOKENS: &str = "a2a_usage_prompt_tokens";
     pub const A2A_USAGE_COMPLETION_TOKENS: &str = "a2a_usage_completion_tokens";
     pub const A2A_USAGE_TOTAL_TOKENS: &str = "a2a_usage_total_tokens";

@@ -60,7 +60,7 @@ function SynthesizeCoordinatorResponse(
 
     Do not invent facts. Keep wording concise.
 
-    {% if ctx.tags['conversation_history'] %}
+    {% if ctx.tags['conversation_transcript'] %}
     Prior conversation (for continuity only, NOT as evidence):
     {{ ctx.tags['conversation_transcript'] }}
     {% endif %}

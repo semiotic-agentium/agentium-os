@@ -453,8 +453,29 @@ async function runSingleSendSession(toolName, openInput, sendInput) {
         throw err;
     }
 }
+function discoverAgentsFromStepExecutorRun(run) {
+    const candidates = [run.last, ...run.steps.slice().reverse()];
+    for (const candidate of candidates) {
+        const parsed = parseDiscoverAgentsOutput(candidate);
+        if (parsed?.agents && parsed.agents.length > 0)
+            return parsed.agents;
+    }
+    return parseDiscoverAgentsOutput(run.last)?.agents ?? [];
+}
 async function discoverAgents(userText) {
-    const response = await runSingleSendSession(DISCOVER_AGENTS_TOOL_NAME, { reason: "Discover available specialist agents for coordinator routing" }, { query: userText, limit: 100, offset: 0 });
+    const query = userText;
+    const limit = 100;
+    const offset = 0;
+    if (typeof runGeneratedStepExecutor === "function") {
+        try {
+            const run = await runGeneratedStepExecutor("CoordinatorDiscoverAgentsPlan", { user_message: userText, query, limit, offset }, { max_steps: MAX_SINGLE_SEND_CONTINUE_STEPS });
+            return discoverAgentsFromStepExecutorRun(run);
+        }
+        catch {
+            // Fall through to direct tool session.
+        }
+    }
+    const response = await runSingleSendSession(DISCOVER_AGENTS_TOOL_NAME, { reason: "Discover available specialist agents for coordinator routing" }, { query, limit, offset });
     const parsed = parseDiscoverAgentsOutput(response);
     return parsed?.agents || [];
 }
@@ -528,16 +549,16 @@ async function planWorkflow(userText, agents, conversationSummary) {
     }
 }
 // ---------------------------------------------------------------------------
-// Conversation context
+// Conversation context (BAML supplements only)
 // ---------------------------------------------------------------------------
-function getConversationSummary(ctx) {
-    const tags = ctx.tags;
-    if (!isObject(tags))
+/** Supplement for `conversation_context` on planner/synthesis BAML. Canonical transcript is ctx.tags in BAML. */
+function plannerConversationSupplement(clarificationTurns) {
+    if (clarificationTurns.length === 0)
         return null;
-    const history = tags.conversation_history;
-    if (typeof history !== "string" || history.trim().length === 0)
+    const joined = clarificationTurns.join("\n").trim();
+    if (!joined)
         return null;
-    return history.slice(0, MAX_CONVERSATION_CONTEXT_CHARS);
+    return joined.slice(0, MAX_CONVERSATION_CONTEXT_CHARS);
 }
 // ---------------------------------------------------------------------------
 // Synthesis and rendering
@@ -650,12 +671,13 @@ async function collectEvidence(delegationPrompt, target) {
 // ---------------------------------------------------------------------------
 // Synthesis
 // ---------------------------------------------------------------------------
-async function synthesize(userText, transcript, _conversationSummary) {
+async function synthesize(userText, transcript, conversationSummary) {
     let synthesizedRaw;
     try {
         synthesizedRaw = await SynthesizeCoordinatorResponse({
             user_message: userText,
             delegated_transcript: transcript,
+            conversation_context: conversationSummary || null,
         });
     }
     catch (err) {
@@ -1423,7 +1445,6 @@ async function runWorkflowCoordinator(ctx) {
         return { message: "Please share what you want me to coordinate." };
     }
     ctx.emit.statusChanged("TASK_STATE_WORKING");
-    const baseConversationSummary = getConversationSummary(ctx);
     const clarificationTurns = [];
     let agents;
     try {
@@ -1435,28 +1456,20 @@ async function runWorkflowCoordinator(ctx) {
         return { message: `Agent discovery failed: ${reason}` };
     }
     for (let iteration = 0; iteration < MAX_WORKFLOW_ITERATIONS; iteration++) {
-        const conversationSummary = [
-            baseConversationSummary,
-            clarificationTurns.length > 0
-                ? clarificationTurns.join("\n").slice(0, MAX_CONVERSATION_CONTEXT_CHARS)
-                : null,
-        ]
-            .filter((entry) => typeof entry === "string" && entry.trim().length > 0)
-            .join("\n\n")
-            .slice(0, MAX_CONVERSATION_CONTEXT_CHARS);
+        const conversationSupplement = plannerConversationSupplement(clarificationTurns);
         const effectiveUserText = clarificationTurns.length === 0
             ? baseUserText
             : `${baseUserText}\n\nAdditional user clarifications:\n${clarificationTurns.join("\n")}`;
         let plan;
         try {
             ctx.emit.message(`Planning workflow (iteration ${iteration + 1})...`);
-            plan = await planWorkflow(effectiveUserText, agents, conversationSummary.length > 0 ? conversationSummary : null);
+            plan = await planWorkflow(effectiveUserText, agents, conversationSupplement);
         }
         catch (err) {
             const reason = err instanceof Error ? err.message : String(err);
             return { message: `Workflow planning failed: ${reason}` };
         }
-        const outcome = await executeWorkflowPlanPhase3(plan, effectiveUserText, conversationSummary.length > 0 ? conversationSummary : null, ctx.emit);
+        const outcome = await executeWorkflowPlanPhase3(plan, effectiveUserText, conversationSupplement, ctx.emit);
         if (outcome.kind === "final") {
             return outcome.result;
         }

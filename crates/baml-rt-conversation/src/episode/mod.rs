@@ -104,7 +104,7 @@ pub struct Episode {
     pub transcript: Vec<EpisodeEntry>,
     /// Session-style projection of the **merged** episode timeline (prior + in-task conversation +
     /// status + artifacts, see provenance `EpisodeReader`), aligned with live
-    /// `ctx.tags['conversation_history']` and optional per-message `citations`.
+    /// Projected history rows (same lineage as `conversation_transcript`) and optional per-message `citations`.
     pub session_history: Vec<SessionHistoryLine>,
     pub intents: Vec<IntentRevision>,
     pub plans: Vec<PlanRevision>,

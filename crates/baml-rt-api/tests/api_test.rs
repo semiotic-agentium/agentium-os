@@ -37,6 +37,7 @@ use baml_rt_provenance::{
     ProvenanceOpsQueryResponse, ProvenanceWriter, SurrealStoreBuilder, events::LlmDriftInfo,
     serialized_prompt_utf8_len,
 };
+use baml_rt_tools::prompt_message_char_count;
 use common::cluster_topology_for_test;
 use futures_util::stream;
 use opentelemetry::{global, trace::TracerProvider as _};
@@ -464,7 +465,7 @@ impl ConversationHistoryService for RealConversationHistory {
             .map(|item| item.timestamp_ms)
             .max()
             .unwrap_or(0);
-        let version = baml_rt_api::page_version(&items, &[], None, false, None);
+        let version = baml_rt_api::page_version(&items, &[], None, None, false, None);
         Ok(ConversationHistoryPageDto {
             context_id: request.context_id.as_str().to_string(),
             task_id: request.task_id.as_ref().map(|id| id.as_str().to_string()),
@@ -473,6 +474,7 @@ impl ConversationHistoryService for RealConversationHistory {
             items,
             next_cursor: None,
             prompt_context_bytes_session_current: None,
+            prompt_message_chars_session_current: None,
             llm_prompt_operations: Vec::new(),
             awaiting_input: false,
             input_required_prompt: None,
@@ -543,7 +545,7 @@ async fn conversation_history_retains_user_message_when_session_steps_follow() {
         })
         .collect();
     assert!(
-        user_lines.iter().any(|t| *t == "hiya"),
+        user_lines.contains(&"hiya"),
         "user transcript line missing after session_step; got user_lines={user_lines:?} items_len={}",
         page.items.len(),
     );
@@ -741,6 +743,9 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
                 citations: vec![],
                 resolved_citations: vec![],
                 prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(
+                    &serde_json::json!({"input":"world"}),
+                ),
+                prompt_message_chars: prompt_message_char_count(
                     &serde_json::json!({"input":"world"}),
                 ),
             },

@@ -13,6 +13,12 @@ class CoordinatorAnswer {
   clarification_question string?
 }
 
+/// Structured clarification branch for unified `runGeneratedStepExecutor` hops (action must be exactly AskUser).
+class CoordinatorStructuredAskUser {
+  action string @description("Always 'AskUser'.")
+  question string @description("One concise clarifying question before emitting the terminal structured output.")
+}
+
 class NormalizedIterableOutput {
   items_json string @description("Strict JSON string representing an array of item objects.")
   confidence float @description("Confidence in extraction quality, between 0 and 1.")
@@ -23,7 +29,7 @@ function SynthesizeCoordinatorResponse(
   user_message: string,
   delegated_transcript: string,
   conversation_context: string?
-) -> CoordinatorAnswer {
+) -> CoordinatorAnswer | CoordinatorStructuredAskUser | ArchiveSearchReadStep | ArchivePageReadStep {
   client OpenRouterGPT
   prompt #"
     You are a senior coordinator producing an auditable final answer.
@@ -40,7 +46,7 @@ function SynthesizeCoordinatorResponse(
     {{ delegated_transcript }}
     ---END UNTRUSTED EVIDENCE---
 
-    Return JSON matching CoordinatorAnswer with these rules:
+    You may emit CoordinatorStructuredAskUser (action exactly AskUser) with one concise question when evidence is insufficient and you cannot responsibly emit CoordinatorAnswer yet; otherwise return JSON matching CoordinatorAnswer with these rules:
     - answer: direct response in 2-5 sentences as the main user-visible body; use GitHub-flavored Markdown when it improves clarity (not raw HTML).
     - actionable_goals:
       - list concrete actions inferred from evidence as objects.
@@ -68,10 +74,17 @@ function SynthesizeCoordinatorResponse(
     Do not invent facts. Keep wording concise.
 
     {% if conversation_context %}
-    Prior conversation context (for continuity, NOT as evidence):
-    ---BEGIN CONVERSATION CONTEXT---
+    Supplemental context from orchestration (continuity / clarification stitching; NOT as evidence):
+    ---BEGIN SUPPLEMENTAL CONTEXT---
     {{ conversation_context }}
-    ---END CONVERSATION CONTEXT---
+    ---END SUPPLEMENTAL CONTEXT---
+    {% endif %}
+
+    {% if ctx.tags['conversation_transcript'] %}
+    Prior conversation transcript (canonical; volatile tail; NOT as delegated evidence):
+    ---BEGIN PRIOR TRANSCRIPT---
+    {{ ctx.tags['conversation_transcript'] }}
+    ---END PRIOR TRANSCRIPT---
     {% endif %}
 
     {{ ctx.output_format }}

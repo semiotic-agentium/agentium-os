@@ -249,7 +249,7 @@ One round trip only: send Cleese’s line once; when Chapman’s reply appears i
 
 FSM ops for this tool are exactly Open, Send, SearchRead, PageRead, Finish, Abort — never use op Read (invalid).
 
-{% if ctx.tags['conversation_history'] %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
@@ -281,7 +281,7 @@ One round trip only: send Cleese’s line once; when Chapman’s reply appears i
 
 FSM ops for this tool are exactly Open, Send, SearchRead, PageRead, Finish, Abort — never use op Read (invalid).
 
-{% if ctx.tags['conversation_history'] %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
@@ -300,7 +300,7 @@ function CleeseSendToChapman__continue__system_internal_a2a(
 ) -> SystemInternalA2aSendStep | SystemInternalA2aSearchReadStep | SystemInternalA2aPageReadStep | SystemInternalA2aFinishStep | SystemInternalA2aAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/internal_a2a result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N system/internal_a2a\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N system/internal_a2a\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N system/internal_a2a\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nArgue in the style of a Monty Python sketch.
+  prompt #"[CONTINUE] system/internal_a2a result is archived.\nCheck session history:\n- See \"@N system/internal_a2a\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/internal_a2a\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n- See \"@N system/internal_a2a\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\nArgue in the style of a Monty Python sketch.
 
 For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
 
@@ -313,7 +313,7 @@ One round trip only: send Cleese’s line once; when Chapman’s reply appears i
 
 FSM ops for this tool are exactly Open, Send, SearchRead, PageRead, Finish, Abort — never use op Read (invalid).
 
-{% if ctx.tags['conversation_history'] %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}

@@ -1387,3 +1387,182 @@ async fn test_invoke_function_with_explicit_scope_fails_for_missing_function() {
         }
     }
 }
+
+/// Unified structured step executor: non-terminal AskUser-shaped JSON then terminal WorkflowPlan-shaped payload.
+#[tokio::test]
+async fn test_unified_step_executor_ask_user_then_plan_with_interceptor() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use baml_rt::baml::BamlRuntimeManager;
+    use baml_rt_core::context::InvocationScope;
+    use baml_rt_quickjs::step_executor_loop::run_step_executor_loop;
+
+    test_support::common::ensure_fixture_runtime_types();
+    let agent_dir = test_support::common::workspace_root()
+        .join("tests/fixtures/agents/unified-step-harness-demo");
+    let built =
+        test_support::common::build_agent_package_to_temp(agent_dir, "unified-step-harness-demo")
+            .await;
+
+    let scope = InvocationScope::synthetic_task(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-0000000000c4").unwrap(),
+    ));
+    let (context_id, message_id, task_id) = {
+        let rs = scope.as_scope();
+        let task_id = rs
+            .task_id_opt()
+            .expect("synthetic_task has task_id")
+            .clone();
+        (rs.context_id().clone(), rs.message_id().clone(), task_id)
+    };
+
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
+    manager
+        .load_schema(built.to_str().unwrap())
+        .expect("load schema");
+
+    let manifest = baml_rt_tools::ManifestToolNames::parse(&["support/calculate".to_string()])
+        .expect("parse manifest");
+    let policy = baml_rt_tools::parse_access_allowlist();
+    manager
+        .set_tool_allowlist(
+            ["support/calculate"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        )
+        .await
+        .unwrap();
+    baml_rt_tools::register_manifest_tools(manager.tool_registry().as_ref(), &manifest, &policy)
+        .unwrap();
+    manager.rebuild_function_tool_manifest();
+
+    let bus: Arc<dyn EffectEmitter> = Arc::new(BusWithEffects::new());
+    let store = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("in-memory provenance for unified step executor e2e");
+    manager.set_effect_emitter(bus.clone());
+    let manager = Arc::new(RwLock::new(manager));
+    baml_rt::a2a_transport::install_provenance_conversation_wiring(
+        store.clone(),
+        Some(store.clone()),
+        &manager,
+        &bus,
+    )
+    .await
+    .expect("provenance + conversation wiring");
+
+    {
+        let agent = scope.as_scope().agent_id().clone();
+        store
+            .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+            .await
+            .expect("task exists");
+        store
+            .add_event(ProvEvent::task_execution_started(
+                context_id.clone(),
+                task_id.clone(),
+                agent.clone(),
+            ))
+            .await
+            .expect("task execution started");
+        store
+            .add_event(ProvEvent::message_received_task(
+                context_id.clone(),
+                task_id,
+                message_id,
+                "user".to_string(),
+                vec!["unified step harness e2e".to_string()],
+                None,
+                agent,
+                1_700_000_010_304,
+            ))
+            .await
+            .expect("message received");
+    }
+
+    let call_count = Arc::new(AtomicU32::new(0));
+    let call_count_clone = call_count.clone();
+
+    struct UnifiedSequenceInterceptor {
+        count: Arc<AtomicU32>,
+    }
+
+    #[async_trait]
+    impl baml_rt::interceptor::LLMInterceptor for UnifiedSequenceInterceptor {
+        async fn intercept_llm_call(
+            &self,
+            _ctx: &baml_rt::interceptor::LLMCallContext,
+        ) -> baml_rt_core::Result<baml_rt::interceptor::InterceptorDecision> {
+            let n = self.count.fetch_add(1, Ordering::Relaxed);
+            let response = match n {
+                0 => json!({ "action": "AskUser", "question": "Which scope?" }),
+                1 => json!({
+                    "goal": "fixture-goal",
+                    "nodes": [{
+                        "id": "n1",
+                        "kind": "direct_answer",
+                        "depends_on": [],
+                    }],
+                }),
+                _ => json!({ "message": "unexpected hop" }),
+            };
+            Ok(baml_rt::interceptor::InterceptorDecision::Substitute(
+                response,
+            ))
+        }
+
+        async fn on_llm_call_complete(
+            &self,
+            _: &baml_rt::interceptor::LLMCallContext,
+            _: &baml_rt_core::Result<Value>,
+            _: u64,
+        ) {
+        }
+    }
+
+    {
+        let w = manager.write().await;
+        w.register_llm_interceptor(UnifiedSequenceInterceptor {
+            count: call_count_clone,
+        })
+        .await;
+    }
+
+    let result = context::with_scope(
+        scope.as_scope().clone(),
+        run_step_executor_loop(
+            &manager,
+            scope.as_scope(),
+            "UnifiedHarnessPick",
+            json!({ "user_message": "hello" }),
+            8,
+            None,
+        ),
+    )
+    .await
+    .expect("unified step executor should complete");
+
+    assert!(
+        result.steps.len() >= 2,
+        "expected AskUser hop then terminal plan, got {} steps",
+        result.steps.len()
+    );
+    assert!(
+        call_count.load(Ordering::Relaxed) >= 2,
+        "interceptor should run at least twice"
+    );
+
+    let envelope = &result.last;
+    let terminal = envelope
+        .get("output")
+        .filter(|v| !v.is_null())
+        .cloned()
+        .unwrap_or_else(|| envelope.clone());
+    assert_eq!(
+        terminal.get("goal").and_then(Value::as_str),
+        Some("fixture-goal"),
+        "terminal payload should be UnifiedHarnessPlan JSON; got {terminal:?}"
+    );
+}

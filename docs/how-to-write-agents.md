@@ -22,6 +22,7 @@ Agent packages live under `tests/fixtures/agents/<name>/` (fixtures) or `agents/
 | `baml_src/_baml_runtime.baml`                       | Generated shared types and tool/session shapes (commit or regenerate).                                                                                           |
 | `src/baml-runtime.d.ts` or `dist/baml-runtime.d.ts` | Typed BAML + A2A DSL (generated).                                                                                                                                |
 | `session_plan_functions.json` (package root)        | Emitted when you **package** the agent: maps **BAML function name → session plan type(s)** so the host binds tool sessions without `__type` in the model output. |
+| `unified_step_executor_functions.json` (optional)   | Emitted when `baml_src/unified_step_executors.json` lists roots: enables unified structured `runGeneratedStepExecutor` mode for those base function names (plan/synthesis/archive/AskUser-style hops). |
 
 
 After changing generator output, BAML, or tool contracts, refresh artifacts:
@@ -146,10 +147,8 @@ function ExecuteStep(
     Objective: {{ objective }}
     Current step: {{ step_description }}
 
-    {% if ctx.tags['conversation_history'] %}
-    {% for msg in ctx.tags['conversation_history'] %}
-    {{ msg.role }}: {{ msg.content }}
-    {% endfor %}
+    {% if ctx.tags['conversation_transcript'] %}
+    {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
 
     Session open (host FSM): {{ session_context.session_open }}
@@ -204,7 +203,7 @@ class ExecuteStepSessionPlan {
 }
 ```
 
-**What happens at runtime:** On the **select** phase, the generated `ExecuteStep__select` function narrows the return type to `**CrmStepResult | SupportCrmOpenStep | SupportEmailOpenStep**`. The **narrowed return type** is what the BAML parser enforces; the **generated** prompt layers [`session_step_stable_prefix`](crates/baml-rt-tools/src/session_ctx_tags.rs), an explicit **phase cue** (`Phase: SELECT …`), the parent `prompt_template` (standalone `{{ ctx.output_format }}` lines stripped), a **`---` footer** listing those variants by name, then exactly **one** trailing `{{ ctx.output_format }}`. Put **`{{ _.role('system') }}` / `tool_schema_prelude`** inside the **hand-authored parent** `prompt_template` when you need tool cards in prose — codegen does not inject them so prompts stay consistent across agents (same structure as `GetDiscoverAgentsPlan__*` and other session-plan roots). The model picks a tool by emitting, for example:
+**What happens at runtime:** On the **select** phase, the generated `ExecuteStep__select` function narrows the return type to `**CrmStepResult | SupportCrmOpenStep | SupportEmailOpenStep**`. The **narrowed return type** is what the BAML parser enforces; the **generated** prompt layers the embedded archive-policy preamble from [`SESSION_STEP_STABLE_PREFIX_BAML`](crates/baml-rt-tools/src/session_ctx_tags.rs), an explicit **phase cue** (`Phase: SELECT …`), the parent `prompt_template` (standalone `{{ ctx.output_format }}` lines stripped), a **`---` footer** listing those variants by name, then exactly **one** trailing `{{ ctx.output_format }}`. Multi-turn history uses **`{{ ctx.tags['conversation_transcript'] }}` only** — no other `ctx.tags` keys are injected on step-executor hops. Put **`{{ _.role('system') }}` / `tool_schema_prelude`** inside the **hand-authored parent** `prompt_template` when you need tool cards in prose — codegen does not inject them so prompts stay consistent across agents (same structure as `GetDiscoverAgentsPlan__*` and other session-plan roots). The model picks a tool by emitting, for example:
 
 ```json
 { "op": "Open", "tool_name": "support/crm" }
@@ -230,7 +229,7 @@ If the next plan step calls for email, a new `runGeneratedStepExecutor` invocati
 | Email Send completed                    | `ExecuteStep__continue__support_email` | `SupportEmailSendStep | SupportEmailSearchReadStep | SupportEmailPageReadStep | SupportEmailFinishStep` | Send again, SearchRead/PageRead, or Finish.                                                                                                                      |
 
 
-Each generated phase prompt places **`session_step_stable_prefix`**, a **phase cue**, then the parent task/history template (with umbrella `output_format` lines stripped), then a **footer** naming **only** the legal variant types on this hop (matching the return union). The trailing `{{ ctx.output_format }}` is narrowed by BAML to that union. The model literally cannot express an illegal transition at parse time because the return type omits disallowed ops.
+Each generated phase prompt places the **embedded archive policy preamble** (`SESSION_STEP_STABLE_PREFIX_BAML`), a **phase cue**, then the parent task/history template (with umbrella `output_format` lines stripped), then a **footer** naming **only** the legal variant types on this hop (matching the return union). The trailing `{{ ctx.output_format }}` is narrowed by BAML to that union. The model literally cannot express an illegal transition at parse time because the return type omits disallowed ops.
 
 **Example JSON at each phase** (what the model actually emits):
 
@@ -272,7 +271,7 @@ The runtime accepts **flat** `{ "op": … }` (from per-phase functions) and **wr
 
 **Strictness:** If the package is stale and a phase function (e.g. `ExecuteStep__select`) is **missing**, the executor **fails fast** with an explicit rebuild message.
 
-**Tool corpus, transcript order, and spare prose (session and step-executor BAML).** The merged `baml_src/_baml_runtime.baml` holds **all** tool cards, `*OpenInput`, `*SendInput`, `ArchiveSearchReadInput` / `ArchivePageReadInput`, and step classes. Field names and semantics live in those types and in `@@description` — not in a second, hand-copied “JSON with `query` / `limit` / …” block in the `prompt` text. **Codegen** ([`session_from_ir/mod.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/mod.rs), [`phase_prompt.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/phase_prompt.rs)) builds **generated** per-phase functions (`__select` / `__act__` / `__continue__*`) as: `{{ ctx.tags['session_step_stable_prefix'] }}` → **Phase: SELECT | ACT | CONTINUE** cue → parent IR `prompt_template` with **standalone** `{{ ctx.output_format }}` lines stripped → `---` **Narrowed return union for this hop only:** (bullet list of type names) → exactly one `{{ ctx.output_format }}`. Authors may still include `{{ _.role('system') }}` / `tool_schema_prelude` / task prose **inside the parent** template when needed; codegen does not prepend them automatically. Enforcement remains the **narrowed return type** for that phase function. Hand-written **umbrella** session-plan `prompt` bodies may still use **task** → transcript → `{{ ctx.output_format }}` when you rely on the umbrella return type for a direct call. **FSM parent** templates should **omit** standalone `{{ ctx.output_format }}` lines when possible (codegen strips them); rely on the phase footer + narrowed type. Plain plan/synthesis functions (non-session) may keep `output_format` last for readability. Do not add a parallel FSM story in prose that could disagree with the generated union.
+**Tool corpus, transcript order, and spare prose (session and step-executor BAML).** The merged `baml_src/_baml_runtime.baml` holds **all** tool cards, `*OpenInput`, `*SendInput`, `ArchiveSearchReadInput` / `ArchivePageReadInput`, and step classes. Field names and semantics live in those types and in `@@description` — not in a second, hand-copied “JSON with `query` / `limit` / …” block in the `prompt` text. **Codegen** ([`session_from_ir/mod.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/mod.rs), [`phase_prompt.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/phase_prompt.rs)) builds **generated** per-phase functions (`__select` / `__act__` / `__continue__*`) as: **embedded `SESSION_STEP_STABLE_PREFIX_BAML` prose** → **Phase: SELECT | ACT | CONTINUE** cue → parent IR `prompt_template` with **standalone** `{{ ctx.output_format }}` lines stripped → `---` **Narrowed return union for this hop only:** (bullet list of type names) → exactly one `{{ ctx.output_format }}`. Authors may still include `{{ _.role('system') }}` / `tool_schema_prelude` / task prose **inside the parent** template when needed; codegen does not prepend them automatically. Enforcement remains the **narrowed return type** for that phase function. Hand-written **umbrella** session-plan `prompt` bodies may still use **task** → `{{ ctx.tags['conversation_transcript'] }}` → `{{ ctx.output_format }}` when you rely on the umbrella return type for a direct call. **FSM parent** templates should **omit** standalone `{{ ctx.output_format }}` lines when possible (codegen strips them); rely on the phase footer + narrowed type. Plain plan/synthesis functions (non-session) may keep `output_format` last for readability. Do not add a parallel FSM story in prose that could disagree with the generated union.
 
 ### 3.5 Map the BAML function to session plans (packaging)
 
@@ -316,7 +315,7 @@ __chat_register({
     });
 
     // Phase 3: execute each committed step via the polymorphic step executor.
-    // Results accumulate in conversation_history automatically.
+    // Results accumulate in conversation_transcript (via merged projection) automatically.
     for (const step of plan.steps) {
       await executable.startStep(step.step_id, ["#1"]);
 
@@ -344,6 +343,16 @@ __chat_register({
 - `**runGeneratedStepExecutor**` handles the multi-hop FSM loop (§3.3–3.4); you pass the **base function name** and your **business args** — the host injects `session_context` and history.
 - `**PlanReportingWork`** and `**PresentReportingToUser**` are ordinary BAML calls — their return types (`ReportingPlan`, `StructuredReply`) are **not** session plans, so the runtime passes them through unchanged.
 - **Provenance** (`submitIntent`, `submitPlan`, `startStep`, `completeStep`) is thin TS glue; the **LLM** does the real work through BAML.
+
+### 3.6a Unified primary hop (`unified_step_executors.json`)
+
+Some roots are **not** `*SessionPlan` tool umbrellas but still need the same **step-executor harness**: stable archive-policy prefix, transcript-only `ctx.tags`, per-hop narrowed unions, and `invoke_function_with_intra` history growth. Examples: coordinator **planning** (`WorkflowPlan` plus optional structured AskUser and archive reads) and **synthesis** (`CoordinatorAnswer` plus the same optional branches).
+
+Opt in by adding `baml_src/unified_step_executors.json` with a `roots` object mapping **base BAML function names** to options (for example `include_archive_reads`, defaulting true). Packaging emits `unified_step_executor_functions.json`; the QuickJS host routes `runGeneratedStepExecutor("<BaseName>", …)` through [`run_step_executor_loop`](../crates/baml-rt-quickjs/src/step_executor_loop.rs) **unified mode** when that map lists the base name.
+
+Generated `BaseName__select` functions use **PhaseHop::UnifiedPrimary** prompts (see [`phase_prompt.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/phase_prompt.rs)). The Rust loop classifies each hop: executable archive reads run and extend the intra-turn supplement (then another `__select`); structured AskUser-shaped JSON consumes a hop and loops; terminal success is a non-session JSON payload such as `WorkflowPlan` or `CoordinatorAnswer` (tool Open/session plans are rejected unless you use a classic tool-session root).
+
+Reference: [`agents/coordinator-agent/baml_src/unified_step_executors.json`](../agents/coordinator-agent/baml_src/unified_step_executors.json), fixture [`tests/fixtures/agents/unified-step-harness-demo/`](../tests/fixtures/agents/unified-step-harness-demo/).
 
 ### 3.7 Direct `await MyBamlFunction(...)` (single hop)
 
@@ -432,7 +441,7 @@ Understanding **citable history** and the **citation vocabulary** is necessary t
 
 ### 6.1 Ref-table vocabulary (canonical)
 
-The stack uses a **unified citation contract** tied to a **ref table** built when projecting context into BAML (`ctx.tags['conversation_history']` in Jinja). Allocation is **1-based** for both namespaces: first citable history line is `**#1`**, first archive slot is `**@1**` (see `RefTable` / `insert_history` in `crates/baml-rt-tools/src/archive_refs.rs` and rendering in `prompt_projection.rs`).
+The stack uses a **unified citation contract** tied to a **ref table** built when projecting context; the model sees rendered lines (including `**#N**` / `**@N**`) in **`ctx.tags['conversation_transcript']`** only. Allocation is **1-based** for both namespaces: first citable history line is `**#1`**, first archive slot is `**@1**` (see `RefTable` / `insert_history` in `crates/baml-rt-tools/src/archive_refs.rs` and rendering in `prompt_projection.rs`).
 
 
 | Form                                 | Canonical meaning                                                                                                                                                                                                                       |
@@ -447,23 +456,25 @@ Intents, step transitions, and effects carry `**citations: string[]`** using **t
 
 The builder centralizes long `@description` text for `**StructuredReply.citations`**, session-plan and Send **citations**, and `**ArchiveSearchReadInput` / `ArchivePageReadInput`** (SearchRead: required **grep** + paging; PageRead: contiguous lines, no grep) in `[crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs](../crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs)`; `regen_fixtures` refreshes `_baml_runtime.baml` from that source.
 
-When a tool result is **windowed** in `conversation_history`, the host injects an imperative line (next `offset=`, **SearchRead** / **PageRead**) next to the synthetic `cat -n` block — that is the primary nudge to read more; the static `_baml_runtime` prelude does not repeat read tactics. Policy for partial archives and FSM ordering is also on the session-plan `**step`** field and SearchRead/PageRead step descriptions in `prompt_copy.rs`.
+When a tool result is **windowed** in the projected transcript, the host injects an imperative line (next `offset=`, **SearchRead** / **PageRead**) next to the synthetic `cat -n` block — that is the primary nudge to read more; the static `_baml_runtime` prelude does not repeat read tactics. Policy for partial archives and FSM ordering is also on the session-plan `**step`** field and SearchRead/PageRead step descriptions in `prompt_copy.rs`.
 
 **SearchRead `grep` tokens:** Archive bodies render as grep-friendly lines (`fieldName:` …). Host tools publish `**grep_anchors`** on `[ToolProjectionSemantics](../crates/baml-rt-tools/src/tools.rs)` (or the host derives them from the output JSON Schema). `**ctx.tags['tool_archive_grep_anchors']**` maps qualified tool names to anchor strings for the manifest allowlist — use these when picking `**grep**` before guessing free text. See [Host tool guide §11.1](host-tool-guide.md).
 
 Full rationale vs PUD-style evidence strings: [citable-history-and-checked-citations.md](citable-history-and-checked-citations.md).
 
-#### 6.1.1 Jinja: `conversation_history` rows
+#### 6.1.1 Jinja: `conversation_transcript`
 
-BAML does not type-check `ctx.tags` at compile time. Treat each item in `ctx.tags['conversation_history']` as a wire object with at least `**role**` and `**content**`; **message**-sourced rows may add optional `**citations: string[]`** (see [baml-rt-conversation-spec.md](baml-rt-conversation-spec.md)).
+BAML does not type-check `ctx.tags` at compile time. Inject history with **`{{ ctx.tags['conversation_transcript'] }}`** (optionally wrapped in `{% if ctx.tags['conversation_transcript'] %}…{% endif %}`). The string is produced by `format_conversation_history_transcript` from the same projected rows the ref table uses internally — see [intent-based-planning-and-session-prompting.md](intent-based-planning-and-session-prompting.md).
 
-- **Authoring default:** copy the multiline Jinja in `BAML_CONVERSATION_HISTORY_JINJA_BLOCK` in `[baml-rt-builder/.../prompt_copy.rs](../crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs)` (loop variable `message`, `{{ _.role(message.role) }}` and `{{ message.content }}` on **separate** lines). Avoid one-line `{{ message.role }}: {{ message.content }}` — it is valid at runtime but discouraged for diffs and consistency.
-- **Optional `citations` in prompts:** if you list them, guard with `{% if message.citations %}` (and iterate or join) so empty/absent `citations` does not break rendering.
-- **Enforcement:** `[scripts/check-baml-conversation-history.sh](../scripts/check-baml-conversation-history.sh)` (pre-commit) flags disallowed property names on the loop value; see [baml-conversation-history-jinja-audit.md](baml-conversation-history-jinja-audit.md) for a repo inventory.
+- **Authoring default:** use the constant `BAML_CONVERSATION_HISTORY_JINJA_BLOCK` in `[crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs](../crates/baml-rt-builder/src/builder/baml_gen/prompt_copy.rs)` (`{{ ctx.tags['conversation_transcript'] }}`).
+
+- **Wire row shape** (for HTTP/API and Rust tests, not BAML tags): each projected row has `role`, `content`; message rows may add optional `citations` — see [baml-rt-conversation-spec.md](baml-rt-conversation-spec.md).
+
+- **Enforcement:** `[scripts/check-baml-conversation-history.sh](../scripts/check-baml-conversation-history.sh)` rejects any `ctx.tags` reference to `conversation_history` in agent/fixture BAML.
 
 ### 6.2 Worked example: projected history for the reporting agent
 
-Continuing from §3. The user asked *"Get Q3 revenue data by region."* The agent planned two steps: (1) query CRM, (2) summarise for the user. During step 1, `runGeneratedStepExecutor("ExecuteStep", …)` ran through **select → act → continue → finish**. By the time step 2 (or the final `PresentReportingToUser`) fires, the model sees this in `**ctx.tags['conversation_history']`**:
+Continuing from §3. The user asked *"Get Q3 revenue data by region."* The agent planned two steps: (1) query CRM, (2) summarise for the user. During step 1, `runGeneratedStepExecutor("ExecuteStep", …)` ran through **select → act → continue → finish**. By the time step 2 (or the final `PresentReportingToUser`) fires, the model sees this in `**ctx.tags['conversation_transcript']`** (one formatted string; shown here as plain text):
 
 ```text
 user: #1 Get Q3 revenue data by region.

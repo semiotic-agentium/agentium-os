@@ -791,6 +791,34 @@ impl<'de> Deserialize<'de> for SessionPlanTypeName {
 /// Length >1 = polymorphic Open — the LLM selects a tool via `tool_name` on the Open step.
 pub type SessionPlanFunctionsMap = std::collections::HashMap<String, Vec<SessionPlanTypeName>>;
 
+/// Authoring/build manifest: base BAML function names that use the unified structured step
+/// executor (`__select` only, `run_step_executor_loop` unified mode — plan/synthesis/archive/AskUser).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UnifiedStepExecutorRootConfig {
+    #[serde(default = "default_include_archive_reads")]
+    pub include_archive_reads: bool,
+}
+
+fn default_include_archive_reads() -> bool {
+    true
+}
+
+pub type UnifiedStepExecutorFunctionsMap =
+    std::collections::HashMap<String, UnifiedStepExecutorRootConfig>;
+
+/// Parses authoring `baml_src/unified_step_executors.json`: either `{ "roots": { … } }` or a flat
+/// map from base function name → [`UnifiedStepExecutorRootConfig`].
+pub fn parse_unified_step_executors_authoring_json(text: &str) -> UnifiedStepExecutorFunctionsMap {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return UnifiedStepExecutorFunctionsMap::new();
+    };
+    if let Some(obj) = v.get("roots").and_then(|r| r.as_object()) {
+        serde_json::from_value(serde_json::Value::Object(obj.clone())).unwrap_or_default()
+    } else {
+        serde_json::from_value(v).unwrap_or_default()
+    }
+}
+
 /// The role a BAML function plays in the step executor pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -3686,5 +3714,26 @@ mod archive_identity_tests {
             vec![("api_key", json!("secret")), ("query", json!("status"))],
         );
         assert_eq!(out, "Send(call_api api_key=<redacted> query=\"status\")");
+    }
+}
+
+#[cfg(test)]
+mod unified_step_executor_authoring_parse_tests {
+    use super::parse_unified_step_executors_authoring_json;
+
+    #[test]
+    fn parses_roots_wrapper() {
+        let text = r#"{"roots":{"PlanFoo":{"include_archive_reads":false}}}"#;
+        let m = parse_unified_step_executors_authoring_json(text);
+        let cfg = m.get("PlanFoo").expect("PlanFoo key");
+        assert!(!cfg.include_archive_reads);
+    }
+
+    #[test]
+    fn parses_flat_object_map() {
+        let text = r#"{"PlanBar":{}}"#;
+        let m = parse_unified_step_executors_authoring_json(text);
+        let cfg = m.get("PlanBar").expect("PlanBar key");
+        assert!(cfg.include_archive_reads);
     }
 }

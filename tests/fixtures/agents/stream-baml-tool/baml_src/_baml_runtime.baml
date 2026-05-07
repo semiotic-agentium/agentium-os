@@ -194,7 +194,7 @@ function ChooseCalcTool__select(
   prompt #"[OPEN] Open a session with: support/calculate.\n\nEvaluate this calculation: {{ user_message }}
 Send payload: `CalculateSendInput` in the merged runtime; match this hop’s `ctx.output_format`.
 
-{% if ctx.tags['conversation_history'] %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
@@ -216,7 +216,7 @@ function ChooseCalcTool__act__support_calculate(
   prompt #"[ACT] A support/calculate session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nEvaluate this calculation: {{ user_message }}
 Send payload: `CalculateSendInput` in the merged runtime; match this hop’s `ctx.output_format`.
 
-{% if ctx.tags['conversation_history'] %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
@@ -235,10 +235,10 @@ function ChooseCalcTool__continue__support_calculate(
 ) -> SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/calculate result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N support/calculate\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N support/calculate\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N support/calculate\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nEvaluate this calculation: {{ user_message }}
+  prompt #"[CONTINUE] support/calculate result is archived.\nCheck session history:\n- See \"@N support/calculate\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/calculate\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n- See \"@N support/calculate\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\nEvaluate this calculation: {{ user_message }}
 Send payload: `CalculateSendInput` in the merged runtime; match this hop’s `ctx.output_format`.
 
-{% if ctx.tags['conversation_history'] %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}

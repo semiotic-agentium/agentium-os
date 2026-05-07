@@ -616,7 +616,7 @@ Looping policy: each reply is EITHER one `SupportSlackSessionPlan` step (narrowe
 
 Use session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
 
-{% if ctx.tags['conversation_history'] %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
@@ -644,7 +644,7 @@ Looping policy: each reply is EITHER one `SupportSlackSessionPlan` step (narrowe
 
 Use session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
 
-{% if ctx.tags['conversation_history'] %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
@@ -664,7 +664,7 @@ function ChooseSlackAction__continue__support_slack(
 ) -> SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep | SupportSlackFinishStep | SupportSlackAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/slack result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N support/slack\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N support/slack\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N support/slack\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nYou execute ONE retrieve step of a read-only Slack plan.
+  prompt #"[CONTINUE] support/slack result is archived.\nCheck session history:\n- See \"@N support/slack\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/slack\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n- See \"@N support/slack\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\nYou execute ONE retrieve step of a read-only Slack plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
@@ -672,7 +672,7 @@ Looping policy: each reply is EITHER one `SupportSlackSessionPlan` step (narrowe
 
 Use session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
 
-{% if ctx.tags['conversation_history'] %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}

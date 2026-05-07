@@ -1,4 +1,4 @@
-//! **Spec regression:** `ctx.tags['conversation_history']` from the same pipeline as
+//! **Spec regression:** projected conversation rows (same pipeline as BAML `conversation_transcript`) via
 //! [`baml_rt_a2a::a2a_transport::ProjectingConversationContextProvider`]: store rows →
 //! [`baml_rt_conversation::provenance_item_to_projection_item`] →
 //! [`baml_rt_tools::prompt_projection::project_prompt_context`] with **default** options and a
@@ -6,7 +6,7 @@
 //! `describe_invocation` is non-empty — matches integration tests that wire a real catalog).
 //!
 //! Surface: **Message** (`#N`), **ToolCall** + **ToolResult** (execute), **SessionStep** (Open,
-//! SendDone, SearchRead, PageRead), **ContextRefTables** + **ArchiveReader** (live grep/cat).
+//! SearchRead, PageRead; **SendDone** in graph only — not projected), **ContextRefTables** + **ArchiveReader** (live grep/cat).
 //! Normative: [`docs/baml-rt-conversation-spec.md`]. Update: `INSTA_UPDATE=1 cargo test -p baml-rt-a2a --test conversation_history_snapshot`
 
 mod discover_stub {

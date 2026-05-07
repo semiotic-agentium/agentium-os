@@ -5,7 +5,7 @@ function ChooseCalcTool(user_message: string, session_context: SessionContext?) 
     Evaluate this calculation: {{ user_message }}
     Send payload: `CalculateSendInput` in the merged runtime; match this hop’s `ctx.output_format`.
 
-    {% if ctx.tags['conversation_history'] %}
+    {% if ctx.tags['conversation_transcript'] %}
     Session history:
     {{ ctx.tags['conversation_transcript'] }}
     {% endif %}

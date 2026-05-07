@@ -40,6 +40,7 @@ mod schema_invoke;
 mod state;
 mod tool_dispatch;
 mod tool_invocation_plan;
+pub(crate) use tool_invocation_plan::{BamlToolInvocationPlan, resolve_baml_tool_invocation_plan};
 mod tool_session_plan;
 mod tool_sessions;
 

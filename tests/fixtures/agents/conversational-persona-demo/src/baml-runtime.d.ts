@@ -54,10 +54,6 @@ export interface PersonaNeedTaskClarification { question: string;
 export interface PersonaReadyIntent { inferred_intent: string;
  }
 
-export interface SelectedAgent { agent_package: string;
-agent_instance_id: string;
- }
-
 export interface StandardAgentPlanStep { agent_package: string;
 agent_instance_id: string;
 sub_message: string;
@@ -142,8 +138,6 @@ declare function MakeStructuredPlan(args: { user_message: string } & { __baml_in
 declare function PersonaChat(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
 declare function PersonaReact(args: { user_message: string; plan_objective: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
-
-declare function SelectAgentForMessage(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SelectedAgent | null>;
 
 }
 

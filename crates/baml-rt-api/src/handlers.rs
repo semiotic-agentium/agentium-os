@@ -1750,6 +1750,8 @@ pub async fn get_conversation_history_stream(
                         .extend(page.llm_prompt_operations.clone());
                     latest.prompt_context_bytes_session_current =
                         page.prompt_context_bytes_session_current;
+                    latest.prompt_message_chars_session_current =
+                        page.prompt_message_chars_session_current;
                     latest.max_event_order = page.max_event_order.max(latest.max_event_order);
                     latest.awaiting_input = page.awaiting_input;
                     latest.input_required_prompt = page.input_required_prompt.clone();

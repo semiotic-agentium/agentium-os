@@ -62,6 +62,7 @@ pub use ingress_store::{
 };
 pub use llm_request_display::{
     flatten_chat_completion_request_for_display, flatten_message_content_value,
+    message_content_char_count, prompt_message_char_count,
 };
 pub use mcp_snapshot::{
     ApprovalRecord, Digest as McpDigest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState,
@@ -76,10 +77,7 @@ pub use session_coordination::{
     SessionCoordinationProvider, gather_coordination_fragments,
     get_session_coordination_baml_for_tools,
 };
-pub use session_ctx_tags::{
-    CTX_TAG_SESSION_STEP_STABLE_PREFIX, SESSION_STEP_STABLE_PREFIX_BAML,
-    SESSION_STEP_STABLE_PREFIX_VALUE,
-};
+pub use session_ctx_tags::{SESSION_STEP_STABLE_PREFIX_BAML, SESSION_STEP_STABLE_PREFIX_VALUE};
 pub use tool_catalog::{CompositeCatalog, InventoryCatalog, ManifestToolNames, ToolCatalog};
 pub use tool_discovery::search_tools;
 pub use tool_error_classify::{
@@ -100,7 +98,9 @@ pub use tools::{
     ToolAccess, ToolBackend, ToolBundle, ToolBundleMetadata, ToolCapability, ToolConfigMetadata,
     ToolDiscoveryRecord, ToolExecutor, ToolFunctionMetadataExport, ToolHandler,
     ToolMetadataBuilder, ToolName, ToolOrigin, ToolRegistry, ToolSessionAdvance, ToolSessionHandle,
-    ToolSlug, ToolTypeSpec, TypeBasedMetadataBuilder, create_multi_send_session_tool_from_async,
+    ToolSlug, ToolTypeSpec, TypeBasedMetadataBuilder, UnifiedStepExecutorFunctionsMap,
+    UnifiedStepExecutorRootConfig, create_multi_send_session_tool_from_async,
     create_one_shot_tool_from_async, create_one_shot_tool_from_async_with_context,
-    parse_tool_name_and_class, project_archive_action_identity_from_parts,
+    parse_tool_name_and_class, parse_unified_step_executors_authoring_json,
+    project_archive_action_identity_from_parts,
 };

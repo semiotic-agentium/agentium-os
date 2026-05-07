@@ -4,6 +4,7 @@ use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
 use baml_rt_repository::RepositoryService;
 use baml_rt_tools::{
+    UnifiedStepExecutorFunctionsMap,
     external_tools::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolsLockfile, external_dirs_from_env},
     gather_coordination_fragments,
 };
@@ -31,6 +32,17 @@ use crate::builder::{
 pub struct RuntimeTypeGenerator {
     mcp_registry_service: Option<Arc<RepositoryService>>,
     mcp_registry_url: Option<String>,
+}
+
+fn load_unified_step_executors_authoring(baml_src: &Path) -> UnifiedStepExecutorFunctionsMap {
+    let path = baml_src.join("unified_step_executors.json");
+    if !path.is_file() {
+        return UnifiedStepExecutorFunctionsMap::new();
+    }
+    let Ok(text) = fs::read_to_string(&path) else {
+        return UnifiedStepExecutorFunctionsMap::new();
+    };
+    baml_rt_tools::parse_unified_step_executors_authoring_json(&text)
 }
 
 impl RuntimeTypeGenerator {
@@ -137,13 +149,15 @@ impl TypeGenerator for RuntimeTypeGenerator {
 
             let ir_signature = extract_baml_signatures(&runtime)?;
             let session_plan_map = session_plan_functions_map(&ir_signature);
+            let unified_roots = load_unified_step_executors_authoring(&baml_src);
 
             // Generate polymorphic session types AND per-phase step executor functions
             // from the compiled IR — single pass, no source text parsing.
             let mut session_plan_map = session_plan_map;
-            if !tool_metadata.is_empty() {
-                let session_baml = render_generated_session_baml_from_ir(&runtime, &tool_metadata)?;
+            let session_baml =
+                render_generated_session_baml_from_ir(&runtime, &tool_metadata, &unified_roots)?;
 
+            if !tool_metadata.is_empty() || !unified_roots.is_empty() {
                 if !session_baml.polymorphic_types.is_empty() {
                     generated_baml
                         .push_str("\n\n// ── builder: polymorphic session unions (from IR) ──\n\n");
@@ -155,34 +169,38 @@ impl TypeGenerator for RuntimeTypeGenerator {
                     generated_baml.push_str(&session_baml.phase_functions);
 
                     // Register phase functions for all session functions (single- and multi-tool).
-                    let poly_entries: Vec<(String, Vec<baml_rt_tools::SessionPlanTypeName>)> =
-                        session_plan_map
-                            .iter()
-                            .filter(|(_, v)| !v.is_empty())
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect();
-                    for (func_name, plan_types) in &poly_entries {
-                        session_plan_map.insert(
-                            baml_rt_tools::SessionTypeNames::select(func_name),
-                            plan_types.clone(),
-                        );
-                        for tool in &tool_metadata {
-                            let slug = tool.name.slug();
-                            let tool_plan: Vec<baml_rt_tools::SessionPlanTypeName> = plan_types
+                    if !tool_metadata.is_empty() {
+                        let poly_entries: Vec<(String, Vec<baml_rt_tools::SessionPlanTypeName>)> =
+                            session_plan_map
                                 .iter()
-                                .filter(|pt| pt.class_name() == tool.class_name)
-                                .cloned()
+                                .filter(|(_, v)| !v.is_empty())
+                                .map(|(k, v)| (k.clone(), v.clone()))
                                 .collect();
-                            if !tool_plan.is_empty() {
-                                session_plan_map.insert(
-                                    baml_rt_tools::SessionTypeNames::act(func_name, &slug),
-                                    tool_plan.clone(),
-                                );
-                                // No __consume__ phase: Send blocks until Done.
-                                session_plan_map.insert(
-                                    baml_rt_tools::SessionTypeNames::r#continue(func_name, &slug),
-                                    tool_plan,
-                                );
+                        for (func_name, plan_types) in &poly_entries {
+                            session_plan_map.insert(
+                                baml_rt_tools::SessionTypeNames::select(func_name),
+                                plan_types.clone(),
+                            );
+                            for tool in &tool_metadata {
+                                let slug = tool.name.slug();
+                                let tool_plan: Vec<baml_rt_tools::SessionPlanTypeName> = plan_types
+                                    .iter()
+                                    .filter(|pt| pt.class_name() == tool.class_name)
+                                    .cloned()
+                                    .collect();
+                                if !tool_plan.is_empty() {
+                                    session_plan_map.insert(
+                                        baml_rt_tools::SessionTypeNames::act(func_name, &slug),
+                                        tool_plan.clone(),
+                                    );
+                                    // No __consume__ phase: Send blocks until Done.
+                                    session_plan_map.insert(
+                                        baml_rt_tools::SessionTypeNames::r#continue(
+                                            func_name, &slug,
+                                        ),
+                                        tool_plan,
+                                    );
+                                }
                             }
                         }
                     }
@@ -200,8 +218,12 @@ impl TypeGenerator for RuntimeTypeGenerator {
                             .map_err(|e| BamlBuilderError::RuntimeLoadFailed { source: e })?;
                 }
             }
-            let declarations =
-                render_ts_declarations(&ir_signature, &tool_names, &session_plan_map)?;
+            let declarations = render_ts_declarations(
+                &ir_signature,
+                &tool_names,
+                &session_plan_map,
+                &unified_roots,
+            )?;
 
             // Write baml-runtime.d.ts into agent's src/ so tsc resolves it directly.
             let src_dts = agent_dir.src().join("baml-runtime.d.ts");
@@ -225,6 +247,13 @@ impl TypeGenerator for RuntimeTypeGenerator {
                 let json = serde_json::to_string_pretty(&session_plan_map)
                     .map_err(BamlBuilderError::Json)?;
                 atomic_write(&manifest_path, json.as_bytes())?;
+            }
+
+            if !unified_roots.is_empty() {
+                let unified_path = build_dir.join("unified_step_executor_functions.json");
+                let json =
+                    serde_json::to_string_pretty(&unified_roots).map_err(BamlBuilderError::Json)?;
+                atomic_write(&unified_path, json.as_bytes())?;
             }
 
             // Emit tool-to-step-executor mapping for polymorphic shim auto-narrowing.

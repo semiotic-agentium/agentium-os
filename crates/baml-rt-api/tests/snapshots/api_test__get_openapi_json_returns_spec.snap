@@ -2052,6 +2052,7 @@ expression: snapshot
             "llm_calls_total",
             "llm_duration_ms_total",
             "prompt_context_bytes_current",
+            "prompt_message_chars_current",
             "tokens_total"
           ],
           "properties": {
@@ -2068,7 +2069,13 @@ expression: snapshot
             "prompt_context_bytes_current": {
               "type": "integer",
               "format": "int64",
-              "description": "Serialized prompt JSON bytes for the **latest** LLM call in this context (temporal tail).",
+              "description": "UTF-8 length of JSON-serialized prompt for the **latest** LLM call in this context (temporal tail).",
+              "minimum": 0
+            },
+            "prompt_message_chars_current": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Unicode scalar count of chat message text for that same tail LLM call.",
               "minimum": 0
             },
             "tokens_total": {
@@ -2095,6 +2102,7 @@ expression: snapshot
             "llm_call_count",
             "llm_duration_ms_total",
             "prompt_context_bytes_current",
+            "prompt_message_chars_current",
             "tokens"
           ],
           "properties": {
@@ -2114,7 +2122,13 @@ expression: snapshot
             "prompt_context_bytes_current": {
               "type": "integer",
               "format": "int64",
-              "description": "Serialized prompt JSON bytes for the **latest** LLM call in this turn (`a2a_event_order` tail).",
+              "description": "UTF-8 length of JSON-serialized prompt for the **latest** LLM call in this turn (`a2a_event_order` tail).",
+              "minimum": 0
+            },
+            "prompt_message_chars_current": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Unicode scalar count of chat message text in that same tail LLM call.",
               "minimum": 0
             },
             "tokens": {
@@ -2311,7 +2325,16 @@ expression: snapshot
                 "null"
               ],
               "format": "int64",
-              "description": "Latest LLM prompt JSON size in this scope (temporal tail).",
+              "description": "Latest LLM prompt JSON UTF-8 byte length in this scope (temporal tail).",
+              "minimum": 0
+            },
+            "promptMessageCharsSessionCurrent": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "description": "Latest LLM prompt message character count in this scope (same tail as bytes).",
               "minimum": 0
             },
             "taskId": {
@@ -2934,11 +2957,12 @@ expression: snapshot
         },
         "LlmPromptOperationDto": {
           "type": "object",
-          "description": "One completed LLM call’s measured prompt JSON byte length (for UI / SSE merge).",
+          "description": "One completed LLM call’s prompt telemetry (for UI / SSE merge).",
           "required": [
             "activityAnchor",
             "eventOrder",
-            "promptContextBytesCurrent"
+            "promptContextBytesCurrent",
+            "promptMessageCharsCurrent"
           ],
           "properties": {
             "activityAnchor": {
@@ -2952,6 +2976,13 @@ expression: snapshot
             "promptContextBytesCurrent": {
               "type": "integer",
               "format": "int64",
+              "description": "UTF-8 length of JSON-serialized prompt payload.",
+              "minimum": 0
+            },
+            "promptMessageCharsCurrent": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Unicode scalar count of chat message text in the request.",
               "minimum": 0
             }
           }

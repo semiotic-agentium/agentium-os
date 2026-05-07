@@ -199,7 +199,7 @@ impl BamlRuntimeManager {
             "next_offset": page.next_offset,
         });
 
-        if let Some(emitter) = self.state.effect_emitter.as_ref() {
+        if let Some(emitter) = self.effect_emitter_for_tool_effects() {
             let op = match grep_raw.as_deref() {
                 Some(grep_str) => baml_rt_core::bus::SessionStepOp::SearchRead {
                     archive_ref: archive_ref_str.clone(),
@@ -359,7 +359,7 @@ impl BamlRuntimeManager {
                         "tool_name": tool_name_str
                     }));
                     // Emit session step so conversation_context reflects Open synchronously.
-                    if let Some(emitter) = self.state.effect_emitter.as_ref() {
+                    if let Some(emitter) = self.effect_emitter_for_tool_effects() {
                         let _ = emitter
                             .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
                                 context_id: plan_scope.context_id().clone(),
@@ -430,7 +430,7 @@ impl BamlRuntimeManager {
                         match send_outcome {
                             Ok(ToolSessionSendBlockingOutcome::Completed(send_result)) => {
                                 last_output = Some(send_done_json(&send_result));
-                                if let Some(emitter) = self.state.effect_emitter.as_ref() {
+                                if let Some(emitter) = self.effect_emitter_for_tool_effects() {
                                     let _ = emitter
                                         .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
                                             context_id: plan_scope.context_id().clone(),
@@ -572,7 +572,7 @@ impl BamlRuntimeManager {
                     });
                     last_output = Some(read_output.clone());
 
-                    if let Some(emitter) = self.state.effect_emitter.as_ref() {
+                    if let Some(emitter) = self.effect_emitter_for_tool_effects() {
                         let grep_str = grep.pattern_text().to_string();
                         let read_args = serde_json::json!({
                             "op": "SearchRead",
@@ -689,7 +689,7 @@ impl BamlRuntimeManager {
                     });
                     last_output = Some(read_output.clone());
 
-                    if let Some(emitter) = self.state.effect_emitter.as_ref() {
+                    if let Some(emitter) = self.effect_emitter_for_tool_effects() {
                         let read_args = serde_json::json!({
                             "op": "PageRead",
                             "archive_ref": archive_ref.to_string(),

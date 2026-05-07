@@ -79,12 +79,23 @@ impl BamlRuntimeManager {
         self.state.tool_step_executors = runtime_io::load_build_manifest::<
             std::collections::HashMap<String, String>,
         >(project_root, "tool_step_executors.json");
+        self.state.unified_step_executor_functions =
+            runtime_io::load_build_manifest::<baml_rt_tools::UnifiedStepExecutorFunctionsMap>(
+                project_root,
+                "unified_step_executor_functions.json",
+            );
 
         tracing::debug!(
             function_count = self.state.function_registry.len(),
             session_plan_manifest = self
                 .state
                 .session_plan_functions
+                .as_ref()
+                .map(|m| m.len())
+                .unwrap_or(0),
+            unified_step_executor_roots = self
+                .state
+                .unified_step_executor_functions
                 .as_ref()
                 .map(|m| m.len())
                 .unwrap_or(0),
@@ -176,7 +187,7 @@ impl BamlRuntimeManager {
             .as_ref()
             .ok_or_else(|| BamlRtError::BamlRuntime("BAML runtime not loaded".to_string()))?;
 
-        // `conversation_history` in [`BamlRuntimeManager::build_conversation_context_tags`]
+        // `conversation_transcript` via [`BamlRuntimeManager::build_conversation_context_tags`]
         // (graph) or with supplement via [`Self::invoke_function_with_intra`].
         let interceptor_registry = Some(self.state.interceptor_registry.clone());
         let planning_step = resolve_planning_step(&self.state.execution_sessions, scope);

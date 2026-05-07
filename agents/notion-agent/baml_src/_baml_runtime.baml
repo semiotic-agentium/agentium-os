@@ -512,7 +512,7 @@ This step: {{ step_description }}
 
 The system line may be prefixed with a phase tag like [OPEN] or [SEND] — the JSON you emit for this hop must be one value matching the narrowed return type in `ctx.output_format` and that phase, not a parallel FSM. Notion `Send` payloads use the generated `NotionInput` / block shapes in the merged file.
 
-{% if ctx.tags['conversation_history'] %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
@@ -538,7 +538,7 @@ This step: {{ step_description }}
 
 The system line may be prefixed with a phase tag like [OPEN] or [SEND] — the JSON you emit for this hop must be one value matching the narrowed return type in `ctx.output_format` and that phase, not a parallel FSM. Notion `Send` payloads use the generated `NotionInput` / block shapes in the merged file.
 
-{% if ctx.tags['conversation_history'] %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
@@ -558,13 +558,13 @@ function ChooseNotionAction__continue__support_notion(
 ) -> SupportNotionSendStep | SupportNotionSearchReadStep | SupportNotionPageReadStep | SupportNotionFinishStep | SupportNotionAbortStep {
 
   client OpenRouterGPT
-  prompt #"[CONTINUE] support/notion result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N support/notion\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N support/notion\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N support/notion\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nYou are executing one step of a read-only Notion retrieval plan.
+  prompt #"[CONTINUE] support/notion result is archived.\nCheck session history:\n- See \"@N support/notion\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/notion\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n- See \"@N support/notion\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\nYou are executing one step of a read-only Notion retrieval plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
 The system line may be prefixed with a phase tag like [OPEN] or [SEND] — the JSON you emit for this hop must be one value matching the narrowed return type in `ctx.output_format` and that phase, not a parallel FSM. Notion `Send` payloads use the generated `NotionInput` / block shapes in the merged file.
 
-{% if ctx.tags['conversation_history'] %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}

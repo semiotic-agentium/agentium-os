@@ -29,7 +29,7 @@ function CleeseSendToChapman(first_line: string) -> SystemInternalA2aSessionPlan
 
     FSM ops for this tool are exactly Open, Send, SearchRead, PageRead, Finish, Abort — never use op Read (invalid).
 
-    {% if ctx.tags['conversation_history'] %}
+    {% if ctx.tags['conversation_transcript'] %}
     Session history:
     {{ ctx.tags['conversation_transcript'] }}
     {% endif %}

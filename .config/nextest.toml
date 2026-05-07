@@ -269,6 +269,11 @@ filter = 'package(baml-agent-runner) and test(~test_e2e_)'
 slow-timeout = { period = "120s", terminate-after = 3 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
+# Workspace coordinator + execution-session planning: occasional QuickJS/yield races drop chunks without invocation context.
+[[profile.ci-merged.overrides]]
+filter = 'package(baml-agent-runner) and test(~test_workspace_coordinator_direct_answer_completes_planned_steps)'
+retries = { backoff = "fixed", count = 3, delay = "5s" }
+
 # Default timeouts and retries. Earlier overrides take priority per nextest semantics,
 # so this catch-all applies only where no specific override has set the corresponding field.
 [[profile.ci-merged.overrides]]

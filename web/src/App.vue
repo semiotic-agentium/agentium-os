@@ -47,8 +47,8 @@ const isLoading = computed(() => activeClient.value?.isLoading.value ?? false);
 const provenanceDiagram = computed(() => activeClient.value?.provenanceDiagram.value ?? "");
 const traceRefreshGeneration = computed(() => activeClient.value?.traceRefreshGeneration.value ?? 0);
 const contextMetrics = computed(() => activeClient.value?.contextMetrics.value ?? null);
-const promptContextBytesSessionCurrent = computed(
-  () => activeClient.value?.promptContextBytesSessionCurrent.value ?? null,
+const promptMessageCharsSessionCurrent = computed(
+  () => activeClient.value?.promptMessageCharsSessionCurrent.value ?? null,
 );
 const llmPromptOperations = computed<LlmPromptOperation[]>(
   () => activeClient.value?.llmPromptOperations.value ?? [],
@@ -353,7 +353,7 @@ watch(
           :runner-online="systemOnline"
           :context-id="contextId"
           :context-metrics="contextMetrics"
-          :prompt-context-bytes-session-current="promptContextBytesSessionCurrent"
+          :prompt-message-chars-session-current="promptMessageCharsSessionCurrent"
           :provenance-diagram="provenanceDiagram"
           :messages="messages"
           :provenance-summary="provenanceDashboardSummary"

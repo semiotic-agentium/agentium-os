@@ -19,7 +19,7 @@ const props = defineProps<{
   agents: AgentDiscoveryEntry[];
   laneSnapshots: DashboardLaneSnapshot[];
   contextMetrics: ContextMetricsResponse | null;
-  promptContextBytesSessionCurrent?: number | null;
+  promptMessageCharsSessionCurrent?: number | null;
   provenanceDiagram: string;
   messages: ChatMessage[];
   contextId?: string;
@@ -88,7 +88,7 @@ const vm = computed(() =>
   buildDashboardViewModel({
     laneSnapshots: props.laneSnapshots,
     contextMetrics: props.contextMetrics,
-    promptContextBytesSessionCurrent: props.promptContextBytesSessionCurrent,
+    promptMessageCharsSessionCurrent: props.promptMessageCharsSessionCurrent,
     provenanceSummary: props.provenanceSummary ?? null,
     messages: props.messages,
     planningChip: planningChip.value,
@@ -148,7 +148,6 @@ function onDrillProvenance(tab: ProvenancePaneTab) {
     <DashboardCausalSection
       :causal-lines="vm.causalLines"
       :context-metrics="contextMetrics"
-      :prompt-context-bytes-session-current="promptContextBytesSessionCurrent"
       :session-strip="vm.sessionStrip"
       :hotspots="vm.hotspots"
       :diagram-svg="diagramSvg"

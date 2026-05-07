@@ -19,12 +19,46 @@ capabilities: string[];
 tools: string[];
  }
 
+export interface ArchivePageReadInput { archive_ref: string;
+offset: number | null;
+limit: number | null;
+ }
+
+export interface ArchivePageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface ArchiveSearchReadInput { archive_ref: string;
+grep: string;
+offset: number | null;
+limit: number | null;
+ }
+
+export interface ArchiveSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
+ }
+
 export interface CoordinatorAnswer { answer: string;
 actionable_goals: ActionableGoal[];
 sources: string[];
 confidence: number;
 gaps: string[];
 clarification_question: string | null;
+ }
+
+export interface CoordinatorStructuredAskUser { action: string;
+question: string;
+ }
+
+export interface DiscoverAgentsOpenInput { reason: string | null;
+ }
+
+export interface DiscoverAgentsSendInput { query: string | null;
+required_capabilities: string[] | null;
+required_schema_versions: string[] | null;
+required_source_kinds: string[] | null;
+limit: number | null;
+offset: number | null;
  }
 
 export interface ForeachTemplate { id_prefix: string;
@@ -38,6 +72,34 @@ export type NodeKind = "CallAgent" | "Foreach" | "Synthesize" | "Clarify" | "Dir
 export interface NormalizedIterableOutput { items_json: string;
 confidence: number;
 notes: string[];
+ }
+
+export interface SystemDiscoverAgentsAbortStep { op: "Abort";
+ }
+
+export interface SystemDiscoverAgentsFinishStep { op: "Finish";
+ }
+
+export interface SystemDiscoverAgentsOpenStep { op: "Open";
+tool_name: "system/discover_agents";
+initial_input: DiscoverAgentsOpenInput | null;
+ }
+
+export interface SystemDiscoverAgentsPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface SystemDiscoverAgentsSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
+ }
+
+export interface SystemDiscoverAgentsSendStep { op: "Send";
+input: DiscoverAgentsSendInput;
+citations: string[];
+ }
+
+export interface SystemDiscoverAgentsSessionPlan { step: SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsAbortStep;
+citations: string[];
  }
 
 export interface WorkflowNode { id: string;
@@ -64,13 +126,15 @@ agent_instance_id: string;
 
 declare global {
 
+declare function CoordinatorDiscoverAgentsPlan(args: { user_message: string; query: string; limit: number; offset: number } & { __baml_invocation_token?: string }): Promise<SystemDiscoverAgentsSessionPlan>;
+
 declare function NormalizeIterableOutput(args: { user_message: string; producer_output_text: string | null; producer_output_data_json: string | null; consumer_action_hint: string | null; required_item_fields: string[]; max_items: number | null } & { __baml_invocation_token?: string }): Promise<NormalizedIterableOutput>;
 
-declare function PlanCoordinatorWorkflow(args: { user_message: string; available_agents: AgentCandidate[]; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<WorkflowPlan>;
+declare function PlanCoordinatorWorkflow(args: { user_message: string; available_agents: AgentCandidate[]; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<WorkflowPlan | CoordinatorStructuredAskUser | ArchiveSearchReadStep | ArchivePageReadStep>;
 
-declare function PlanCoordinatorWorkflowBestEffort(args: { user_message: string; available_agents: AgentCandidate[]; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<WorkflowPlan>;
+declare function PlanCoordinatorWorkflowBestEffort(args: { user_message: string; available_agents: AgentCandidate[]; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<WorkflowPlan | CoordinatorStructuredAskUser | ArchiveSearchReadStep | ArchivePageReadStep>;
 
-declare function SynthesizeCoordinatorResponse(args: { user_message: string; delegated_transcript: string; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<CoordinatorAnswer>;
+declare function SynthesizeCoordinatorResponse(args: { user_message: string; delegated_transcript: string; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<CoordinatorAnswer | CoordinatorStructuredAskUser | ArchiveSearchReadStep | ArchivePageReadStep>;
 
 }
 
@@ -392,4 +456,73 @@ export interface ToolFailure {
     kind: ToolFailureKind;
     message: string;
     retryable: boolean;
+}
+
+/** Generated Step Executor bindings (function -> typed step-executor args/result). */
+
+export type StepExecutorFunctionName = "CoordinatorDiscoverAgentsPlan" | "CoordinatorDiscoverAgentsPlan__act__system_discover_agents" | "CoordinatorDiscoverAgentsPlan__continue__system_discover_agents" | "CoordinatorDiscoverAgentsPlan__select" | "PlanCoordinatorWorkflow" | "PlanCoordinatorWorkflowBestEffort" | "SynthesizeCoordinatorResponse";
+
+export interface SessionContext {
+    contract_version: "session_context_v2";
+    session_open: boolean;
+    status: "awaiting_open" | "just_opened" | "done";
+    last_step_op?: "open" | "send" | "read" | "finish" | "abort";
+    last_step_status?: "open" | "done" | "finished" | "aborted";
+    last_archive_ref?: string;
+    last_output_header?: string;
+    last_completion?: string;
+}
+
+/** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
+
+export type HistoryContextSessionOp = "SearchRead" | "PageRead";
+
+export type HistoryContextStatus = "done" | "streaming" | "suspended" | "error";
+
+export interface HistoryContext {
+    hop: number;
+    op: HistoryContextSessionOp;
+    status: HistoryContextStatus;
+    truncated: boolean;
+    cursor: string | null;
+    payload: Record<string, unknown> | null;
+}
+
+export interface StepExecutorStateInput {
+    session_context?: SessionContext | null;
+    history_context?: HistoryContext | null;
+}
+
+export interface StepExecutorRunOptions {
+    max_steps?: number;
+}
+
+/**
+ * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
+ * User-facing replies are synthesized once at session completion (and recorded there).
+ */
+
+export interface StepExecutorRunResult<R = unknown> {
+    last: R;
+    steps: R[];
+    session_context: SessionContext;
+    selected_tool: string | null;
+}
+
+export interface StepExecutorFunctionMap {
+  CoordinatorDiscoverAgentsPlan: { args: Parameters<typeof CoordinatorDiscoverAgentsPlan>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CoordinatorDiscoverAgentsPlan>>; };
+  CoordinatorDiscoverAgentsPlan__act__system_discover_agents: { args: Parameters<typeof CoordinatorDiscoverAgentsPlan__act__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CoordinatorDiscoverAgentsPlan__act__system_discover_agents>>; };
+  CoordinatorDiscoverAgentsPlan__continue__system_discover_agents: { args: Parameters<typeof CoordinatorDiscoverAgentsPlan__continue__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CoordinatorDiscoverAgentsPlan__continue__system_discover_agents>>; };
+  CoordinatorDiscoverAgentsPlan__select: { args: Parameters<typeof CoordinatorDiscoverAgentsPlan__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CoordinatorDiscoverAgentsPlan__select>>; };
+  PlanCoordinatorWorkflow: { args: Parameters<typeof PlanCoordinatorWorkflow>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof PlanCoordinatorWorkflow>>; };
+  PlanCoordinatorWorkflowBestEffort: { args: Parameters<typeof PlanCoordinatorWorkflowBestEffort>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof PlanCoordinatorWorkflowBestEffort>>; };
+  SynthesizeCoordinatorResponse: { args: Parameters<typeof SynthesizeCoordinatorResponse>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof SynthesizeCoordinatorResponse>>; };
+}
+
+declare global {
+  function runGeneratedStepExecutor<F extends StepExecutorFunctionName>(
+    stepExecutor: F,
+    args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
+    options?: StepExecutorRunOptions
+  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
 }

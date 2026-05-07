@@ -615,6 +615,7 @@ ci_features := "baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-buil
 # Requires: cargo-nextest and OPENROUTER_API_KEY for LLM tests.
 # OTEL is disabled for stability/noise reduction in local test runs.
 test:
+    cargo build -p sandbox-echo-adapter --locked
     OTEL_SDK_DISABLED=true OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none OTEL_EXPORTER_OTLP_ENDPOINT="" cargo nextest run --workspace --locked --profile ci-merged --no-fail-fast --features {{ci_features}}
 
 # Same as `test` but only compile — useful for a quick pre-push check.

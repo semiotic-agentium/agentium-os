@@ -12,7 +12,9 @@ use baml_rt_core::{
 };
 use baml_rt_interceptor::InterceptorRegistry;
 use baml_rt_llm_config::LlmClientResolver;
-use baml_rt_tools::{ToolRegistry as ConcreteToolRegistry, ToolSessionId};
+use baml_rt_tools::{
+    ToolRegistry as ConcreteToolRegistry, ToolSessionId, UnifiedStepExecutorFunctionsMap,
+};
 use dashmap::DashMap;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -31,6 +33,7 @@ pub(in crate::baml) struct BamlRuntimeState {
     pub(in crate::baml) executor: Option<BamlExecutor>,
     pub(in crate::baml) tool_registry: Arc<ConcreteToolRegistry>,
     pub(in crate::baml) session_plan_functions: Option<SessionPlanFunctionsMap>,
+    pub(in crate::baml) unified_step_executor_functions: Option<UnifiedStepExecutorFunctionsMap>,
     pub(in crate::baml) tool_step_executors: Option<HashMap<String, String>>,
     pub(in crate::baml) function_tool_manifest: Arc<FunctionToolManifest>,
     pub(in crate::baml) interceptor_registry: Arc<TokioMutex<InterceptorRegistry>>,
@@ -60,6 +63,7 @@ impl Default for BamlRuntimeState {
             executor: None,
             tool_registry: Arc::new(ConcreteToolRegistry::new()),
             session_plan_functions: None,
+            unified_step_executor_functions: None,
             tool_step_executors: None,
             function_tool_manifest: Arc::new(FunctionToolManifest::default()),
             interceptor_registry: Arc::new(TokioMutex::new(InterceptorRegistry::new())),

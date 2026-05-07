@@ -12,7 +12,7 @@ use baml_rt_provenance::{
     CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceWriter,
     SurrealStoreBuilder, serialized_prompt_utf8_len,
 };
-use baml_rt_tools::{ToolRegistry, ToolStep};
+use baml_rt_tools::{ToolRegistry, ToolStep, prompt_message_char_count};
 use baml_tools_calculator::CalculatorTool;
 use baml_tools_system::SystemBundle;
 use futures_util::stream;
@@ -194,6 +194,7 @@ async fn seeded_store_for_context(
                 prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(
                     &json!({"input":"caller"}),
                 ),
+                prompt_message_chars: prompt_message_char_count(&json!({"input":"caller"})),
             },
         }))
         .await
@@ -229,6 +230,7 @@ async fn seeded_store_for_context(
                 prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(
                     &json!({"input":"caller-failed"}),
                 ),
+                prompt_message_chars: prompt_message_char_count(&json!({"input":"caller-failed"})),
             },
         }))
         .await
@@ -384,6 +386,7 @@ async fn seeded_store_for_context(
                 citations: vec![],
                 resolved_citations: vec![],
                 prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(&json!({"input":"other"})),
+                prompt_message_chars: prompt_message_char_count(&json!({"input":"other"})),
             },
         }))
         .await

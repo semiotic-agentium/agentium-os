@@ -289,9 +289,12 @@ pub struct ConversationHistoryPageDto {
     pub items: Vec<ConversationHistoryItemDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
-    /// Latest LLM prompt JSON size in this scope (temporal tail).
+    /// Latest LLM prompt JSON UTF-8 byte length in this scope (temporal tail).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_context_bytes_session_current: Option<u64>,
+    /// Latest LLM prompt message character count in this scope (same tail as bytes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_message_chars_session_current: Option<u64>,
     /// LLM prompt operations through `max_event_order` (delta may contain only new rows).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub llm_prompt_operations: Vec<LlmPromptOperationDto>,
@@ -303,13 +306,16 @@ pub struct ConversationHistoryPageDto {
     pub input_required_prompt: Option<String>,
 }
 
-/// One completed LLM call’s measured prompt JSON byte length (for UI / SSE merge).
+/// One completed LLM call’s prompt telemetry (for UI / SSE merge).
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmPromptOperationDto {
     pub activity_anchor: String,
     pub event_order: u64,
+    /// UTF-8 length of JSON-serialized prompt payload.
     pub prompt_context_bytes_current: u64,
+    /// Unicode scalar count of chat message text in the request.
+    pub prompt_message_chars_current: u64,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -520,6 +526,7 @@ pub async fn merge_conversation_history_pages(
                 &page.items,
                 &page.llm_prompt_operations,
                 page.prompt_context_bytes_session_current,
+                page.prompt_message_chars_session_current,
                 page.awaiting_input,
                 page.input_required_prompt.as_deref(),
             );
@@ -557,6 +564,7 @@ pub fn page_version(
     items: &[ConversationHistoryItemDto],
     llm_prompt_operations: &[LlmPromptOperationDto],
     prompt_context_bytes_session_current: Option<u64>,
+    prompt_message_chars_session_current: Option<u64>,
     awaiting_input: bool,
     input_required_prompt: Option<&str>,
 ) -> String {
@@ -572,8 +580,10 @@ pub fn page_version(
         op.activity_anchor.hash(&mut hasher);
         op.event_order.hash(&mut hasher);
         op.prompt_context_bytes_current.hash(&mut hasher);
+        op.prompt_message_chars_current.hash(&mut hasher);
     }
     prompt_context_bytes_session_current.hash(&mut hasher);
+    prompt_message_chars_session_current.hash(&mut hasher);
     awaiting_input.hash(&mut hasher);
     input_required_prompt.hash(&mut hasher);
     format!("v1:{:x}", hasher.finish())
@@ -613,7 +623,7 @@ pub fn paginate_items(
     };
     let items: Vec<ConversationHistoryItemDto> = page_rows.into_iter().map(Into::into).collect();
     let max_event_order = items.last().map(|item| item.timestamp_ms).unwrap_or(0);
-    let version = page_version(&items, &[], None, false, None);
+    let version = page_version(&items, &[], None, None, false, None);
 
     Ok(ConversationHistoryPageDto {
         context_id: request.context_id.as_str().to_string(),
@@ -623,6 +633,7 @@ pub fn paginate_items(
         items,
         next_cursor,
         prompt_context_bytes_session_current: None,
+        prompt_message_chars_session_current: None,
         llm_prompt_operations: Vec::new(),
         awaiting_input: false,
         input_required_prompt: None,
@@ -676,6 +687,28 @@ pub fn profile_filter(
     }
 }
 
+fn compact_json(value: Value) -> Value {
+    const MAX_STRING_LEN: usize = 512;
+    match value {
+        Value::String(s) if s.chars().count() > MAX_STRING_LEN => {
+            let compact = s.chars().take(MAX_STRING_LEN).collect::<String>();
+            Value::String(format!("{compact}…"))
+        }
+        Value::Array(mut arr) if arr.len() > 64 => {
+            arr.truncate(64);
+            Value::Array(arr)
+        }
+        Value::Object(mut map) if map.len() > 64 => {
+            let keys = map.keys().cloned().collect::<Vec<_>>();
+            for k in keys.iter().skip(64) {
+                map.remove(k);
+            }
+            Value::Object(map)
+        }
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -700,27 +733,5 @@ mod tests {
             req.page.limit(),
             DEFAULT_CONVERSATION_HISTORY_LIMIT as usize
         );
-    }
-}
-
-fn compact_json(value: Value) -> Value {
-    const MAX_STRING_LEN: usize = 512;
-    match value {
-        Value::String(s) if s.chars().count() > MAX_STRING_LEN => {
-            let compact = s.chars().take(MAX_STRING_LEN).collect::<String>();
-            Value::String(format!("{compact}…"))
-        }
-        Value::Array(mut arr) if arr.len() > 64 => {
-            arr.truncate(64);
-            Value::Array(arr)
-        }
-        Value::Object(mut map) if map.len() > 64 => {
-            let keys = map.keys().cloned().collect::<Vec<_>>();
-            for k in keys.iter().skip(64) {
-                map.remove(k);
-            }
-            Value::Object(map)
-        }
-        other => other,
     }
 }

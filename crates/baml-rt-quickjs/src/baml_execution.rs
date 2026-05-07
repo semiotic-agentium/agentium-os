@@ -173,8 +173,8 @@ impl Default for ParseRetryPolicy {
 pub trait ConversationContextProvider: Send + Sync {
     /// Return conversation-history payload for the current runtime scope.
     ///
-    /// The payload is injected as `ctx.tags['conversation_history']` and
-    /// `ctx.tags['conversation_transcript']` in BAML templates.
+    /// The projection is merged into BAML `ctx.tags` as **`conversation_transcript`** only
+    /// (formatted string). The raw JSON array is used internally to build that transcript.
     /// Provider is called with the runtime scope of the current invocation. For resume,
     /// scope must be TaskScoped with the session's `context_id` so history includes
     /// prior turns. Used in both stream and non-stream paths when conversation context
@@ -257,6 +257,10 @@ impl BamlExecutor {
     /// Set the effect emitter (for effects-first liveness)
     pub fn set_effect_emitter(&mut self, emitter: Arc<dyn EffectEmitter>) {
         self.effect_emitter = Some(emitter);
+    }
+
+    pub(crate) fn effect_emitter(&self) -> Option<&Arc<dyn EffectEmitter>> {
+        self.effect_emitter.as_ref()
     }
 
     /// Set a provider that supplies conversation context for template tags.
@@ -646,8 +650,8 @@ impl BamlExecutor {
         Ok(ctx_manager)
     }
 
-    /// Raw `conversation_history` line objects from the provider only (no intra-turn merge).
-    /// Matches `ctx.tags['conversation_history']` capping (e.g. last _N_ graph items).
+    /// Raw projected line objects from the provider only (no intra-turn merge).
+    /// Uses the same cap policy as the transcript shown to the LLM (e.g. last _N_ graph items).
     pub(crate) async fn provider_conversation_history_lines(
         &self,
         scope: &context::RuntimeScope,
@@ -678,7 +682,7 @@ impl BamlExecutor {
         Ok(extract_conversation_array_from_payload(&payload))
     }
 
-    /// Build `ctx.tags` from a merged `conversation_history` line list.
+    /// Build `ctx.tags` from a merged projected line list (transcript only — canonical BAML history).
     pub(crate) fn tags_from_merged_conversation_lines(
         &self,
         lines: Vec<Value>,
@@ -688,10 +692,6 @@ impl BamlExecutor {
         }
         let mut tags = HashMap::new();
         let transcript = format_conversation_history_transcript(&lines);
-        tags.insert(
-            "conversation_history".to_string(),
-            self.json_to_baml_value(&Value::Array(lines))?,
-        );
         tags.insert(
             "conversation_transcript".to_string(),
             self.json_to_baml_value(&Value::String(transcript))?,

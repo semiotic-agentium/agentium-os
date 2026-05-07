@@ -165,6 +165,7 @@ function fallbackIntentFromOpenInput(userText: string): QueryIntent {
 
 __chat_register({
   run: async (ctx) => {
+    // `BuildExtrospectionPlan`: unified step executor (`runGeneratedStepExecutor`, tool-session IR). Intent/summary: direct BAML invokes. Planner-only unions use `unified_step_executors.json` for structured hops.
     let userText = normalizeDelegatedText(toText(ctx.text));
     if (!userText) {
       return {

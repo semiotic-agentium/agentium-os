@@ -306,7 +306,8 @@ impl ProvenanceWriter for SurrealRuntimeStore {
     }
 }
 
-/// Projects [`ProvenanceConversationContextItem`] rows into BAML `conversation_history` JSON.
+/// Projects [`ProvenanceConversationContextItem`] rows into **wire** conversation JSON (provider payload).
+/// QuickJS turns the merged line array into BAML **`ctx.tags['conversation_transcript']`** only — there is no history array tag on prompts.
 ///
 /// This is the **runtime** home for the tag pipeline: `ConversationContextSource::conversation_context`
 /// → [`to_projection_item`] ([`baml_rt_conversation::provenance_item_to_projection_item`]) →

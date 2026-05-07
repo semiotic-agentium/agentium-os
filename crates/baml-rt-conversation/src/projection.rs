@@ -1,5 +1,5 @@
-//! Convert conversation view rows into [`baml_rt_tools::prompt_projection`] items for BAML
-//! `ctx.tags['conversation_history']`.
+//! Convert conversation view rows into [`baml_rt_tools::prompt_projection`] items (feeds
+//! `conversation_transcript` via `format_conversation_history_transcript` in the QuickJS host).
 
 use baml_rt_tools::{
     archive_refs::RefTable,

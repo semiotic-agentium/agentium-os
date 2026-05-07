@@ -7,7 +7,7 @@
 //! - **Voice:** Imperative, second person implied. No hedging for host-enforced behaviour.
 //! - **Strength:** **Must** / **Do not** — schema and namespace rules. **Use** / **Set** — operational
 //!   defaults. Read-tactics for windowed tool output are stated on the FSM step fields and in the
-//!   in-context `offset=` / pagination line in `conversation_history`, not in the static prelude. **Optional** — fields
+//!   in-context `offset=` / pagination line in the projected transcript, not in the static prelude. **Optional** — fields
 //!   the host allows empty (`[]`, omit).
 //! - **Verbs:** **Emit** — one FSM step or session-plan fragment. **Return** — reserved for human
 //!   doc / coordination intro (“return a report”) where it matches BAML wording; step rules use *emit*.
@@ -16,9 +16,10 @@
 //!   or a second FSM that could disagree with the BAML return type. Legal ops and payloads: narrowed
 //!   return union and `*SendInput` / `*OpenInput` / archive classes in the merged runtime prelude only
 //!   (see `docs/how-to-write-agents.md` — prompt layout for session step functions).
-//! - **Step-executor runtime tag:** `ctx.tags['session_step_stable_prefix']` is defined in
-//!   [`baml_rt_tools::session_ctx_tags`] and injected on `invoke_function_with_intra` only; codegen
-//!   prepends `SESSION_STEP_STABLE_PREFIX_BAML` to per-phase `prompt` bodies in `session_from_ir`.
+//! - **Step-executor archive policy:** [`baml_rt_tools::session_ctx_tags::SESSION_STEP_STABLE_PREFIX_BAML`]
+//!   is prepended literally to generated per-phase `prompt` bodies in `session_from_ir`. History
+//!   uses **`ctx.tags['conversation_transcript']` only** — no other `ctx.tags` keys are injected for
+//!   step-executor hops.
 
 use super::escape::escape_baml_description;
 
@@ -49,8 +50,7 @@ pub(crate) const ARCHIVE_READ_LIMIT: &str = "Max lines in this read window. Pref
 
 /// Canonical Jinja for past turns: inject [`format_conversation_history_transcript`]
 /// (`baml_rt_tools::prompt_projection`) as `ctx.tags['conversation_transcript']` — `role: content`
-/// per turn, blank line between turns. The `conversation_history` array remains for programs that
-/// need structured rows (and optional per-row `citations` on message-sourced entries).
+/// per turn, blank line between turns. This is the **only** history tag BAML receives.
 ///
 /// For session / step-executor BAML, prefer order: task lines →
 /// `{{ ctx.tags['conversation_transcript'] }}` (if any) → `{{ ctx.output_format }}` last so the

@@ -191,6 +191,10 @@ export interface ContextPlanningTaskSnapshot {
   taskId: string;
   currentIntent: PlanningIntentView | null;
   currentPlan: PlanningPlanView | null;
+  /** Superseded plan revisions from provenance (`plan_history`); current plan is `currentPlan`. */
+  planHistory?: PlanningPlanView[];
+  /** Prior intents for this task (`intent_history`). */
+  intentHistory?: PlanningIntentView[];
   stepSummary: PlanningStepSummary;
   drift?: TaskPlanDriftSummary;
 }
@@ -253,7 +257,7 @@ export interface EpisodeTranscriptEntry {
   citation_strings?: string[];
 }
 
-/** BAML `conversation_history` mirror: role + projection-shaped content (episode-prefixed refs). */
+/** Episode/session history line mirror (projection-shaped content; aligns with transcript source rows). */
 export interface EpisodeSessionHistoryLine {
   role: string;
   content: string;

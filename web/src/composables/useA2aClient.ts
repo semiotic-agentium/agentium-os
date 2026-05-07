@@ -141,9 +141,9 @@ export function useA2aClient() {
 
   // Context metrics (fetched after each response)
   const contextMetrics = ref<ContextMetricsResponse | null>(null);
-  /** From conversation-history SSE/HTTP: temporal tail + per-LLM prompt JSON sizes */
+  /** From conversation-history SSE/HTTP: temporal tail + per-LLM prompt telemetry */
   const llmPromptOperations = ref<LlmPromptOperation[]>([]);
-  const promptContextBytesSessionCurrent = ref<number | null>(null);
+  const promptMessageCharsSessionCurrent = ref<number | null>(null);
   const conversationHistoryOptions = ref<ConversationHistoryOption[]>([]);
   const selectedHistoryContextId = ref<string | null>(null);
   const historyLoading = ref(false);
@@ -170,13 +170,13 @@ export function useA2aClient() {
 
   function replaceLlmPromptStateFromPage(page: ConversationHistoryPage): void {
     llmPromptOperations.value = [...(page.llmPromptOperations ?? [])].sort(sortLlmPromptOperations);
-    promptContextBytesSessionCurrent.value = page.promptContextBytesSessionCurrent ?? null;
+    promptMessageCharsSessionCurrent.value = page.promptMessageCharsSessionCurrent ?? null;
   }
 
   function extendLlmPromptStateFromPage(page: ConversationHistoryPage): void {
     llmPromptOperations.value = mergeLlmPromptOperations(llmPromptOperations.value, page.llmPromptOperations);
-    if (page.promptContextBytesSessionCurrent != null) {
-      promptContextBytesSessionCurrent.value = page.promptContextBytesSessionCurrent;
+    if (page.promptMessageCharsSessionCurrent != null) {
+      promptMessageCharsSessionCurrent.value = page.promptMessageCharsSessionCurrent;
     }
   }
 
@@ -351,7 +351,7 @@ export function useA2aClient() {
     closeConversationHistoryStream();
     _historyVersion = "";
     llmPromptOperations.value = [];
-    promptContextBytesSessionCurrent.value = null;
+    promptMessageCharsSessionCurrent.value = null;
     conversationHistoryOptions.value = [];
     selectedHistoryContextId.value = null;
     void fetchConversationHistoryOptions();
@@ -978,7 +978,7 @@ export function useA2aClient() {
     closeConversationHistoryStream();
     _historyVersion = "";
     llmPromptOperations.value = [];
-    promptContextBytesSessionCurrent.value = null;
+    promptMessageCharsSessionCurrent.value = null;
     _contextId.value = contextId;
     _taskId.value = null;
     workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
@@ -1042,7 +1042,7 @@ export function useA2aClient() {
     traceRefreshGeneration,
     contextMetrics,
     llmPromptOperations,
-    promptContextBytesSessionCurrent,
+    promptMessageCharsSessionCurrent,
     conversationHistoryOptions,
     selectedHistoryContextId,
     historyLoading,

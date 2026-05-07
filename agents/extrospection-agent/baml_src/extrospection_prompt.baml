@@ -1,3 +1,8 @@
+// Unified step-executor harness: `GetDiscoverAgentsPlan` / `BuildExtrospectionPlan` are *SessionPlan roots —
+// drive them with `runGeneratedStepExecutor` (same Rust loop, prefix algebra, transcript-only tags, intra supplement
+// as unified-primary). IR narrows host-tool Open/act/continue. Direct invokes (`DetermineExtrospectionIntent`, …)
+// stay plain `invoke`; planner-only unions opt into `unified_step_executors.json` for single-hop `FuncName__select`.
+
 enum QueryResource {
   Auto
   Llm_calls
@@ -63,7 +68,7 @@ function DetermineExtrospectionIntent(user_message: string) -> NeedClarification
     {{ _.role('user') }}
     {{ user_message }}
 
-    {% if ctx.tags['conversation_history'] %}
+    {% if ctx.tags['conversation_transcript'] %}
     {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
 
@@ -82,7 +87,7 @@ function GetDiscoverAgentsPlan(
 
     Context: {{ user_message }}
 
-    {% if ctx.tags['conversation_history'] %}
+    {% if ctx.tags['conversation_transcript'] %}
     Session history:
     {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
@@ -110,7 +115,7 @@ function SelectAgentFocus(
     {{ user_message }}
     Agents: {{ agents }}
 
-    {% if ctx.tags['conversation_history'] %}
+    {% if ctx.tags['conversation_transcript'] %}
     {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
 
@@ -130,7 +135,7 @@ function BuildExtrospectionPlan(
     intent: {{ intent }}
     selected_agent: {{ selected_agent }}
 
-    {% if ctx.tags['conversation_history'] %}
+    {% if ctx.tags['conversation_transcript'] %}
     Session history:
     {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
@@ -194,7 +199,7 @@ function SummarizeExtrospectionReport(
     primary_payload_json: {{ primary_payload_json }}
     secondary_payload_json: {{ secondary_payload_json }}
 
-    {% if ctx.tags['conversation_history'] %}
+    {% if ctx.tags['conversation_transcript'] %}
     {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
 

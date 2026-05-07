@@ -6,7 +6,6 @@ import type { CausalStoryLine, ProvenancePaneTab } from "../../composables/useDa
 import {
   formatCompact as formatTokenCount,
   formatDuration,
-  formatKb,
   normalizeGroupValue,
   asDisplayIdentity,
 } from "../../utils/format";
@@ -14,12 +13,11 @@ import {
 const props = defineProps<{
   causalLines: CausalStoryLine[];
   contextMetrics: ContextMetricsResponse | null;
-  promptContextBytesSessionCurrent?: number | null;
   sessionStrip: {
     tokensTotal: number | null;
     llmCalls: number | null;
     avgLatencyMs: number | null;
-    promptKb: string | null;
+    promptChars: string | null;
     turns: number | null;
   } | null;
   hotspots: ProvenanceGroupHotspot[];
@@ -95,12 +93,6 @@ function hotspotLabel(group: ProvenanceGroupHotspot): string {
   return agentDisplay;
 }
 
-const sessionPromptKb = computed(() => {
-  const sse = props.promptContextBytesSessionCurrent;
-  if (sse != null) return formatKb(sse);
-  const cur = props.contextMetrics?.session.prompt_context_bytes_current;
-  return cur != null ? formatKb(cur) : null;
-});
 </script>
 
 <template>
@@ -150,8 +142,8 @@ const sessionPromptKb = computed(() => {
               <span v-if="sessionStrip.tokensTotal != null"
                 ><strong>{{ formatTokenCount(sessionStrip.tokensTotal) }}</strong> tokens</span
               >
-              <span v-if="sessionPromptKb"
-                ><strong>{{ sessionPromptKb }}</strong> prompt JSON</span
+              <span v-if="sessionStrip.promptChars"
+                ><strong>{{ sessionStrip.promptChars }}</strong> prompt</span
               >
             </div>
 

@@ -14,6 +14,7 @@ use baml_rt_core::{
     },
 };
 use baml_rt_embedding::{BipiaSignalInputs, DriftMode, DriftSeverity};
+use baml_rt_tools::prompt_message_char_count;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, Value as JsonValue};
 
@@ -512,6 +513,9 @@ pub enum ProvEventData {
         /// Measured once at construction via [`serialized_prompt_utf8_len`] on `prompt`.
         #[serde(default)]
         prompt_serialized_utf8_bytes: u64,
+        /// Unicode scalar count of chat message text in `prompt` (`baml_rt_tools::prompt_message_char_count`).
+        #[serde(default)]
+        prompt_message_chars: u64,
     },
     ToolCallStarted {
         scope: CallScope,
@@ -891,6 +895,7 @@ impl ProvEvent {
         resolved_citations: Vec<ResolvedCitationTarget>,
     ) -> Self {
         let prompt_serialized_utf8_bytes = serialized_prompt_utf8_len(&prompt);
+        let prompt_message_chars = prompt_message_char_count(&prompt);
         ProvEvent::Global(GlobalEvent {
             id: next_activity_anchor_id(),
             context_id,
@@ -909,6 +914,7 @@ impl ProvEvent {
                 citations,
                 resolved_citations,
                 prompt_serialized_utf8_bytes,
+                prompt_message_chars,
             },
         })
     }
@@ -960,6 +966,7 @@ impl ProvEvent {
         resolved_citations: Vec<ResolvedCitationTarget>,
     ) -> Self {
         let prompt_serialized_utf8_bytes = serialized_prompt_utf8_len(&prompt);
+        let prompt_message_chars = prompt_message_char_count(&prompt);
         ProvEvent::Task(TaskScopedEvent {
             id: next_activity_anchor_id(),
             context_id,
@@ -979,6 +986,7 @@ impl ProvEvent {
                 citations,
                 resolved_citations,
                 prompt_serialized_utf8_bytes,
+                prompt_message_chars,
             },
         })
     }
@@ -1275,23 +1283,33 @@ impl ProvEvent {
             SessionStepOp::SendDone { informed_by, .. } => Some(informed_by.clone()),
             _ => None,
         };
-        ProvEvent::Global(GlobalEvent {
-            id: next_activity_anchor_id(),
-            context_id,
-            timestamp_ms: now_millis(),
-            data: ProvEventData::ToolSessionStep {
-                scope,
-                tool_name,
-                session_id,
-                op_kind,
-                header,
-                archive_ref,
-                grep,
-                offset,
-                limit,
-                informed_by_tool_activity_anchor: informed_by,
-            },
-        })
+        let data = ProvEventData::ToolSessionStep {
+            scope: scope.clone(),
+            tool_name,
+            session_id,
+            op_kind,
+            header,
+            archive_ref,
+            grep,
+            offset,
+            limit,
+            informed_by_tool_activity_anchor: informed_by,
+        };
+        match scope {
+            CallScope::Task { task_id } => ProvEvent::Task(TaskScopedEvent {
+                id: next_activity_anchor_id(),
+                context_id,
+                task_id,
+                timestamp_ms: now_millis(),
+                data,
+            }),
+            CallScope::Message { .. } => ProvEvent::Global(GlobalEvent {
+                id: next_activity_anchor_id(),
+                context_id,
+                timestamp_ms: now_millis(),
+                data,
+            }),
+        }
     }
 
     /// Annotate a `ToolCallStarted` / `ToolCallCompleted` event with execution

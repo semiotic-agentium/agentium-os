@@ -120,6 +120,18 @@ declare function PlanCoordinatorWorkflow(args: {
   conversation_context?: string | null;
 }): Promise<unknown>;
 
+declare function PlanCoordinatorWorkflowBestEffort(args: {
+  user_message: string;
+  available_agents: AgentCandidate[];
+  conversation_context?: string | null;
+}): Promise<unknown>;
+
+declare function SynthesizeCoordinatorResponse(args: {
+  user_message: string;
+  delegated_transcript: string;
+  conversation_context?: string | null;
+}): Promise<unknown>;
+
 declare function NormalizeIterableOutput(args: {
   user_message: string;
   producer_output_text?: string | null;
@@ -133,6 +145,16 @@ declare function openToolSession(
   toolName: string,
   openInput?: Record<string, unknown>,
 ): Promise<ToolSessionHandle>;
+
+declare function runGeneratedStepExecutor(
+  stepExecutor:
+    | "CoordinatorDiscoverAgentsPlan"
+    | "PlanCoordinatorWorkflow"
+    | "PlanCoordinatorWorkflowBestEffort"
+    | "SynthesizeCoordinatorResponse",
+  args: Record<string, unknown>,
+  options?: { max_steps?: number },
+): Promise<{ last: unknown; steps: unknown[] }>;
 
 const MAX_FANOUT_CONCURRENCY = 3;
 const MAX_TRANSCRIPT_CHARS = 12_000;
@@ -153,6 +175,11 @@ const MAX_NORMALIZATION_INPUT_CHARS = 16_000;
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
 const TASK_DAEMON_COORDINATOR_HANDOFF_SCHEMA_VERSION = "task-daemon.coordinator-handoff.v1";
+
+/** Unified-primary planner root (`unified_step_executors.json`). Set to `PlanCoordinatorWorkflowBestEffort` to bias execution-heavy routing. */
+const COORDINATOR_PLANNER_UNIFIED_ROOT:
+  | "PlanCoordinatorWorkflow"
+  | "PlanCoordinatorWorkflowBestEffort" = "PlanCoordinatorWorkflow";
 
 type WorkflowNodeKind =
   | "call_agent"
@@ -1267,11 +1294,47 @@ async function runSingleSendSession(
   }
 }
 
+function peelStepExecutorEnvelope(last: unknown): unknown {
+  if (!isObject(last)) return last;
+  const output = last.output;
+  if (output !== undefined && output !== null) return output;
+  return last;
+}
+
+function discoverAgentsFromStepExecutorRun(run: {
+  last: unknown;
+  steps: unknown[];
+}): DiscoveredAgent[] {
+  const candidates: unknown[] = [run.last, ...run.steps.slice().reverse()];
+  for (const candidate of candidates) {
+    const parsed = parseDiscoverAgentsOutput(candidate);
+    if (parsed?.agents && parsed.agents.length > 0) return parsed.agents;
+  }
+  return parseDiscoverAgentsOutput(run.last)?.agents ?? [];
+}
+
 async function discoverAgents(userText: string): Promise<DiscoveredAgent[]> {
+  const query = userText;
+  const limit = 100;
+  const offset = 0;
+
+  if (typeof runGeneratedStepExecutor === "function") {
+    try {
+      const run = await runGeneratedStepExecutor(
+        "CoordinatorDiscoverAgentsPlan",
+        { user_message: userText, query, limit, offset },
+        { max_steps: MAX_SINGLE_SEND_CONTINUE_STEPS },
+      );
+      return discoverAgentsFromStepExecutorRun(run);
+    } catch {
+      // Host may lack merged step roots; fall through to direct tool session.
+    }
+  }
+
   const response = await runSingleSendSession(
     DISCOVER_AGENTS_TOOL_NAME,
     { reason: "Discover available specialist agents for coordinator routing" },
-    { query: userText, limit: 100, offset: 0 },
+    { query, limit, offset },
   );
   const parsed = parseDiscoverAgentsOutput(response);
   return parsed?.agents || [];
@@ -1351,23 +1414,54 @@ function buildAgentRegistry(candidates: AgentCandidate[]): Set<string> {
   );
 }
 
+async function invokePlannerBamlDirect(args: {
+  user_message: string;
+  available_agents: AgentCandidate[];
+  conversation_context: string | null;
+}): Promise<unknown> {
+  if (COORDINATOR_PLANNER_UNIFIED_ROOT === "PlanCoordinatorWorkflowBestEffort") {
+    return PlanCoordinatorWorkflowBestEffort(args);
+  }
+  return PlanCoordinatorWorkflow(args);
+}
+
 async function planWorkflow(
   userText: string,
   agents: DiscoveredAgent[],
-  conversationSummary: string | null,
+  /** Supplement only; canonical transcript is `ctx.tags['conversation_transcript']` in BAML. */
+  conversationSupplement: string | null,
 ): Promise<WorkflowPlan> {
   const candidates = buildAgentCandidates(agents);
   const agentRegistry = buildAgentRegistry(candidates);
+  const plannerArgs = {
+    user_message: userText,
+    available_agents: candidates,
+    conversation_context: conversationSupplement || null,
+  };
 
   try {
-    const rawPlan = await PlanCoordinatorWorkflow({
-      user_message: userText,
-      available_agents: candidates,
-      conversation_context: conversationSummary || null,
-    });
+    if (typeof runGeneratedStepExecutor === "function") {
+      try {
+        const run = await runGeneratedStepExecutor(
+          COORDINATOR_PLANNER_UNIFIED_ROOT,
+          plannerArgs,
+          { max_steps: MAX_SINGLE_SEND_CONTINUE_STEPS },
+        );
+        const peeled = peelStepExecutorEnvelope(run.last);
+        const parsed = parseWorkflowPlan(peeled);
+        if (parsed) {
+          validateWorkflowPlan(parsed, agentRegistry);
+          return parsed;
+        }
+      } catch {
+        // Stale packages or missing unified roots — fall through to direct BAML.
+      }
+    }
+
+    const rawPlan = await invokePlannerBamlDirect(plannerArgs);
     const parsed = parseWorkflowPlan(rawPlan);
     if (!parsed) {
-      throw new Error("PlanCoordinatorWorkflow returned an unparsable plan.");
+      throw new Error(`${COORDINATOR_PLANNER_UNIFIED_ROOT} returned an unparsable plan.`);
     }
     validateWorkflowPlan(parsed, agentRegistry);
     return parsed;
@@ -1378,15 +1472,18 @@ async function planWorkflow(
 }
 
 // ---------------------------------------------------------------------------
-// Conversation context
+// Conversation context (BAML supplements only)
 // ---------------------------------------------------------------------------
 
-function getConversationSummary(ctx: RunContext): string | null {
-  const tags = (ctx as unknown as { tags?: unknown }).tags;
-  if (!isObject(tags)) return null;
-  const history = tags.conversation_history;
-  if (typeof history !== "string" || history.trim().length === 0) return null;
-  return history.slice(0, MAX_CONVERSATION_CONTEXT_CHARS);
+/** Text passed into `conversation_context` on PlanCoordinatorWorkflow / SynthesizeCoordinatorResponse.
+ * Canonical multi-turn history is `ctx.tags['conversation_transcript']` inside BAML (runtime-injected).
+ * This string is **supplemental only**: e.g. clarification lines stitched before the next planner pass
+ * when they may not yet appear in the graph-backed transcript. */
+function plannerConversationSupplement(clarificationTurns: string[]): string | null {
+  if (clarificationTurns.length === 0) return null;
+  const joined = clarificationTurns.join("\n").trim();
+  if (!joined) return null;
+  return joined.slice(0, MAX_CONVERSATION_CONTEXT_CHARS);
 }
 
 // ---------------------------------------------------------------------------
@@ -1472,14 +1569,36 @@ async function collectEvidence(
 async function synthesize(
   userText: string,
   transcript: string,
-  conversationSummary: string | null,
+  /** Supplement only; canonical transcript is `ctx.tags['conversation_transcript']` in BAML. */
+  conversationSupplement: string | null,
 ): Promise<StructuredReply> {
   let synthesizedRaw: unknown;
   try {
+    if (typeof runGeneratedStepExecutor === "function") {
+      try {
+        const run = await runGeneratedStepExecutor(
+          "SynthesizeCoordinatorResponse",
+          {
+            user_message: userText,
+            delegated_transcript: transcript,
+            conversation_context: conversationSupplement || null,
+          },
+          { max_steps: MAX_SINGLE_SEND_CONTINUE_STEPS },
+        );
+        const peeled = peelStepExecutorEnvelope(run.last);
+        const synthesized = toCoordinatorAnswer(peeled);
+        if (synthesized) {
+          return coordinatorAnswerToStructured(synthesized);
+        }
+      } catch {
+        // Fall through to direct BAML.
+      }
+    }
+
     synthesizedRaw = await SynthesizeCoordinatorResponse({
       user_message: userText,
       delegated_transcript: transcript,
-      conversation_context: conversationSummary || null,
+      conversation_context: conversationSupplement || null,
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -2572,7 +2691,8 @@ function renderWorkflowExecutionNotes(summary: WorkflowExecutionSummary): string
 async function executeWorkflowPlanPhase3(
   plan: WorkflowPlan,
   userText: string,
-  conversationSummary: string | null,
+  /** Supplement for synthesis/planner BAML; canonical transcript from runtime tags in BAML. */
+  conversationSupplement: string | null,
   emit?: SessionEmitter,
   executable?: WorkflowExecutionHandle | null,
 ): Promise<WorkflowExecutionOutcome> {
@@ -2713,7 +2833,7 @@ async function executeWorkflowPlanPhase3(
         ? await synthesize(
             buildSynthesisUserMessage(userText, finalNode.synthesis_template),
             transcript,
-            conversationSummary,
+            conversationSupplement,
           )
         : textReply("I delegated according to the workflow plan, but received no usable evidence.");
       if (executable != null) {
@@ -2763,7 +2883,7 @@ async function executeWorkflowPlanPhase3(
       tracked_steps_completed,
     };
   }
-  const base = await synthesize(userText, transcript, conversationSummary);
+  const base = await synthesize(userText, transcript, conversationSupplement);
   return { kind: "final", result: appendExecutionNotes(base), tracked_steps_completed };
 }
 
@@ -2780,7 +2900,6 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   if (plannerUserText.structuredHandoff) {
     ctx.emit.message("Received structured task-daemon handoff. Planning from interpretation payload.");
   }
-  const baseConversationSummary = getConversationSummary(ctx);
   const clarificationTurns: string[] = [];
 
   let agents: DiscoveredAgent[];
@@ -2793,15 +2912,7 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   }
 
   for (let iteration = 0; iteration < MAX_WORKFLOW_ITERATIONS; iteration++) {
-    const conversationSummary = [
-      baseConversationSummary,
-      clarificationTurns.length > 0
-        ? clarificationTurns.join("\n").slice(0, MAX_CONVERSATION_CONTEXT_CHARS)
-        : null,
-    ]
-      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-      .join("\n\n")
-      .slice(0, MAX_CONVERSATION_CONTEXT_CHARS);
+    const conversationSupplement = plannerConversationSupplement(clarificationTurns);
 
     const effectiveUserText =
       clarificationTurns.length === 0
@@ -2814,7 +2925,7 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
       plan = await planWorkflow(
         effectiveUserText,
         agents,
-        conversationSummary.length > 0 ? conversationSummary : null,
+        conversationSupplement,
       );
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -2861,7 +2972,7 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
       const outcome = await executeWorkflowPlanPhase3(
         plan,
         effectiveUserText,
-        conversationSummary.length > 0 ? conversationSummary : null,
+        conversationSupplement,
         ctx.emit,
         executionExecutable,
       );

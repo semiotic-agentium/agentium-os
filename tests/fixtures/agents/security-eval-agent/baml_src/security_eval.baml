@@ -61,7 +61,7 @@ function ExecuteStep(
     Objective: {{ objective }}
     Current step: {{ step_description }}
 
-    {% if ctx.tags['conversation_history'] %}
+    {% if ctx.tags['conversation_transcript'] %}
     {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
 
@@ -90,7 +90,7 @@ function PresentReportingToUser(
     Original user request: {{ user_message }}
     Plan objective: {{ objective }}
 
-    {% if ctx.tags['conversation_history'] %}
+    {% if ctx.tags['conversation_transcript'] %}
     {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
 

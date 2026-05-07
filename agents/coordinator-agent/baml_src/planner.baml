@@ -45,11 +45,42 @@ class AgentCandidate {
   tools string[]
 }
 
+// Unified step-executor harness (docs/how-to-write-agents.md): one Rust `run_step_executor_loop`, shared prefix +
+// transcript + intra-turn history. Two IR shapes:
+// - CoordinatorDiscoverAgentsPlan → *SessionPlan: generated `__select` / `__act__` / `__continue__` over host-tool FSM.
+// - PlanCoordinatorWorkflow (+ BestEffort), SynthesizeCoordinatorResponse → unified-primary (`unified_step_executors.json`):
+//   same mechanics; unions narrow structured hops + CoordinatorStructuredAskUser + archive reads without SessionPlan.
+
+// Session-plan root for system/discover_agents — `runGeneratedStepExecutor` from coordinator TS (tool-session IR variant).
+function CoordinatorDiscoverAgentsPlan(
+  user_message: string,
+  query: string,
+  limit: int,
+  offset: int,
+) -> SystemDiscoverAgentsSessionPlan {
+  client OpenRouterGPT
+  prompt #"
+    Discover available specialist agents using system/discover_agents.
+    Send/Open payload shapes are defined on DiscoverAgentsOpenInput / DiscoverAgentsSendInput in the merged runtime — do not duplicate field lists here.
+
+    Coordinator routing context (trusted): {{ user_message }}
+    List filters: query={{ query }}, limit={{ limit }}, offset={{ offset }}
+
+    {% if ctx.tags['conversation_transcript'] %}
+    ---PRIOR CONVERSATION TRANSCRIPT---
+    {{ ctx.tags['conversation_transcript'] }}
+    ---END PRIOR CONVERSATION TRANSCRIPT---
+    {% endif %}
+
+    {{ ctx.output_format }}
+  "#
+}
+
 function PlanCoordinatorWorkflow(
   user_message: string,
   available_agents: AgentCandidate[],
   conversation_context: string?
-) -> WorkflowPlan {
+) -> WorkflowPlan | CoordinatorStructuredAskUser | ArchiveSearchReadStep | ArchivePageReadStep {
   client OpenRouterGPT
   prompt #"
     You are a coordinator planner that decomposes user requests into a workflow DAG.
@@ -57,8 +88,10 @@ function PlanCoordinatorWorkflow(
 
     Rules:
     - Use call_agent for specialist calls.
+    - When the user names or points to a specialist (e.g. "talk to the notion agent", "ask the slack agent"), pick that agent from AVAILABLE AGENTS and call_agent immediately with a prompt_template that states their goal. Do NOT use clarify to ask what topic they meant unless no listed specialist matches at all.
+    - When the user asks what something is, wants a definition, or exploratory product/org knowledge, prefer call_agent to the best-matching specialist with retrieval/docs/workspace capability over clarify. Specialists answer vague questions; the coordinator does not interrogate the user first.
     - Use foreach only when the user asks to apply an action to each item from upstream output.
-    - Use clarify only when routing is genuinely ambiguous AND no reasonable best-effort execution path exists.
+    - Use clarify only when routing is genuinely ambiguous AND no reasonable best-effort execution path exists AND no specialist can safely attempt retrieval first.
     - Use direct_answer for simple meta/system questions.
     - Use ONLY agent_package/agent_instance_id pairs that appear in AVAILABLE AGENTS.
     - If no suitable specialist exists, use direct_answer or clarify instead of inventing a target.
@@ -75,6 +108,7 @@ function PlanCoordinatorWorkflow(
       2) foreach expansion to destination call_agent action per item
       3) synthesize final summary
     - Only clarify when essential disambiguation cannot be inferred and no retrieval/list/search step can start safely.
+    - If you must ask exactly one clarifying question before committing to a WorkflowPlan, emit CoordinatorStructuredAskUser with action exactly AskUser and a concise question — not free-form prose outside that type. The executor will schedule another planning hop with updated history.
 
     Planner expectations:
     - `call_agent` requires target and prompt_template.
@@ -98,6 +132,9 @@ function PlanCoordinatorWorkflow(
       - n3 synthesize over n1+n2
     - Do NOT clarify in this case.
 
+    Wrong pattern (avoid):
+    - User: "talk to notion agent about Agentium" then "just a definition please" → plan must NOT be clarify asking "what specific topic"; correct plan is call_agent to notion-agent with the combined goal.
+
     {{ ctx.output_format }}
 
     ---AVAILABLE AGENTS---
@@ -105,15 +142,21 @@ function PlanCoordinatorWorkflow(
     ---END AVAILABLE AGENTS---
 
     {% if conversation_context %}
-    ---CONVERSATION CONTEXT---
+    ---SUPPLEMENTAL CONTEXT (clarification stitching; may overlap transcript)---
     {{ conversation_context }}
-    ---END CONVERSATION CONTEXT---
+    ---END SUPPLEMENTAL CONTEXT---
     {% endif %}
 
     {{ _.role('user') }}
     ---BEGIN USER REQUEST---
     {{ user_message }}
     ---END USER REQUEST---
+
+    {% if ctx.tags['conversation_transcript'] %}
+    ---PRIOR CONVERSATION TRANSCRIPT (canonical; volatile tail)---
+    {{ ctx.tags['conversation_transcript'] }}
+    ---END PRIOR CONVERSATION TRANSCRIPT---
+    {% endif %}
   "#
 }
 
@@ -123,7 +166,7 @@ function PlanCoordinatorWorkflowBestEffort(
   user_message: string,
   available_agents: AgentCandidate[],
   conversation_context: string?
-) -> WorkflowPlan {
+) -> WorkflowPlan | CoordinatorStructuredAskUser | ArchiveSearchReadStep | ArchivePageReadStep {
   client OpenRouterGPT
   prompt #"
     You are a coordinator planner that decomposes user requests into an executable workflow DAG.
@@ -135,6 +178,8 @@ function PlanCoordinatorWorkflowBestEffort(
 
     Hard rules:
     - Use call_agent for specialist calls.
+    - If the user names a specialist agent, call_agent to that agent immediately; never substitute a clarify node asking what they meant.
+    - Prefer call_agent for definitional or exploratory questions when any specialist can retrieve or answer; clarify is only when no safe first step exists.
     - Use foreach when an action should be applied to each item from upstream output.
     - Use direct_answer only for simple meta/system questions.
     - Include a synthesize node as final aggregation when multiple call_agent nodes are present.
@@ -145,6 +190,7 @@ function PlanCoordinatorWorkflowBestEffort(
     - If any specialist can retrieve/list/search, do not emit clarify-only plan.
     - Prefer cross-system shape: retrieve -> foreach action -> synthesize.
     - Only emit clarify when no safe, reasonable first step exists.
+    - If you must ask exactly one clarifying question before committing to a WorkflowPlan, emit CoordinatorStructuredAskUser with action exactly AskUser and a concise question — not free-form prose outside that type.
 
     Planner expectations:
     - `call_agent` requires target and prompt_template.
@@ -167,14 +213,20 @@ function PlanCoordinatorWorkflowBestEffort(
     ---END AVAILABLE AGENTS---
 
     {% if conversation_context %}
-    ---CONVERSATION CONTEXT---
+    ---SUPPLEMENTAL CONTEXT (clarification stitching; may overlap transcript)---
     {{ conversation_context }}
-    ---END CONVERSATION CONTEXT---
+    ---END SUPPLEMENTAL CONTEXT---
     {% endif %}
 
     {{ _.role('user') }}
     ---BEGIN USER REQUEST---
     {{ user_message }}
     ---END USER REQUEST---
+
+    {% if ctx.tags['conversation_transcript'] %}
+    ---PRIOR CONVERSATION TRANSCRIPT (canonical; volatile tail)---
+    {{ ctx.tags['conversation_transcript'] }}
+    ---END PRIOR CONVERSATION TRANSCRIPT---
+    {% endif %}
   "#
 }

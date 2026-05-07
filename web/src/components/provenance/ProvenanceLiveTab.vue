@@ -3,7 +3,6 @@ import { computed } from "vue";
 import {
   formatCompact,
   formatDuration,
-  formatKb,
   shortId,
   groupValueAt,
   asDisplayIdentity,
@@ -232,6 +231,12 @@ const promptOpsForDisplay = computed(() =>
     .sort(sortLlmPromptOperations),
 );
 
+/** Temporal tail: last prompt op after sorting by event order (then anchor). */
+const latestPromptOp = computed(() => {
+  const ops = promptOpsForDisplay.value;
+  return ops.length > 0 ? ops[ops.length - 1]! : null;
+});
+
 function applyLiveHotspotDrilldown(item: LiveHotspotItem) {
   const agentId = groupValueAt(item.groupValues, item.groupKey, 0);
   const dim = groupValueAt(item.groupValues, item.groupKey, HOTSPOT_DIM_IDX);
@@ -250,20 +255,20 @@ function applyLiveHotspotDrilldown(item: LiveHotspotItem) {
 
 <template>
   <div
-    v-if="promptOpsForDisplay.length > 0"
+    v-if="latestPromptOp"
     class="prompt-ops-telemetry"
-    aria-label="Serialized prompt JSON size per LLM call"
+    aria-label="Latest LLM prompt character count"
   >
-    <span class="prompt-ops-label">Prompt JSON</span>
+    <span class="prompt-ops-label">Prompt</span>
     <span
-      v-for="op in promptOpsForDisplay"
-      :key="op.activityAnchor"
       class="prompt-op-chip"
-      :title="op.activityAnchor"
+      :title="`${latestPromptOp.activityAnchor} · event order ${latestPromptOp.eventOrder}`"
     >
-      <span class="prompt-op-order">#{{ op.eventOrder }}</span>
-      <span class="prompt-op-kb">{{ formatKb(op.promptContextBytesCurrent) }}</span>
-      <span class="prompt-op-anchor">{{ shortId(op.activityAnchor) }}</span>
+      <span class="prompt-op-order">#{{ latestPromptOp.eventOrder }}</span>
+      <span class="prompt-op-kb">
+        {{ formatCompact(latestPromptOp.promptMessageCharsCurrent ?? 0) }} chars
+      </span>
+      <span class="prompt-op-anchor">{{ shortId(latestPromptOp.activityAnchor) }}</span>
     </span>
   </div>
   <div class="provenance-card-grid" role="region" aria-label="Live aggregate counts">

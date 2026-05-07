@@ -14,6 +14,7 @@
 
 import type { AgentDiscoveryEntry, ChatMessage, ContextMetricsResponse } from "../types/a2a";
 import type { ProvenanceGroupHotspot } from "../types/provenance";
+import { formatCompact } from "../utils/format";
 
 export type ProvenancePaneTab = "live" | "failures" | "anomalies" | "drift" | "explore";
 
@@ -69,7 +70,7 @@ export interface DashboardViewModel {
     tokensTotal: number | null;
     llmCalls: number | null;
     avgLatencyMs: number | null;
-    promptKb: string | null;
+    promptChars: string | null;
     turns: number | null;
   } | null;
   hotspots: ProvenanceGroupHotspot[];
@@ -132,7 +133,7 @@ export function extractCausalLines(messages: ChatMessage[], max = 8): CausalStor
 export interface BuildDashboardViewModelInput {
   laneSnapshots: DashboardLaneSnapshot[];
   contextMetrics: ContextMetricsResponse | null;
-  promptContextBytesSessionCurrent?: number | null;
+  promptMessageCharsSessionCurrent?: number | null;
   provenanceSummary?: {
     count: number;
     failedCount: number;
@@ -219,11 +220,11 @@ export function buildDashboardViewModel(input: BuildDashboardViewModelInput): Da
   });
 
   const session = input.contextMetrics?.session;
-  const sseBytes = input.promptContextBytesSessionCurrent;
-  const metricsBytes = session?.prompt_context_bytes_current ?? null;
-  const promptBytes = sseBytes ?? metricsBytes;
-  const promptKb =
-    promptBytes != null ? `${(promptBytes / 1024).toFixed(1)} KB` : null;
+  const sseChars = input.promptMessageCharsSessionCurrent;
+  const metricsChars = session?.prompt_message_chars_current ?? null;
+  const promptN = sseChars ?? metricsChars;
+  const promptChars =
+    promptN != null && Number.isFinite(promptN) ? `${formatCompact(promptN)} chars` : null;
 
   const avgLatencyMs =
     session && session.llm_calls_total > 0
@@ -231,12 +232,12 @@ export function buildDashboardViewModel(input: BuildDashboardViewModelInput): Da
       : null;
 
   const sessionStrip =
-    session || promptKb
+    session || promptChars
       ? {
           tokensTotal: session?.tokens_total.total ?? null,
           llmCalls: session?.llm_calls_total ?? null,
           avgLatencyMs,
-          promptKb,
+          promptChars,
           turns: session?.turns_total ?? null,
         }
       : null;

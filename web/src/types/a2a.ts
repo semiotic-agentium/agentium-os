@@ -34,6 +34,8 @@ export interface TurnMetrics {
   llm_duration_ms_total: number;
   /** Latest LLM call in turn: JSON-serialized prompt UTF-8 bytes */
   prompt_context_bytes_current: number;
+  /** Same tail call: Unicode scalar count of chat message text in the request */
+  prompt_message_chars_current?: number;
   tokens: TokenUsage;
 }
 
@@ -45,6 +47,8 @@ export interface SessionMetrics {
   llm_duration_ms_total: number;
   /** Temporal tail: latest LLM prompt JSON UTF-8 bytes in context */
   prompt_context_bytes_current: number;
+  /** Same tail call: character count of prompt message text */
+  prompt_message_chars_current?: number;
   tokens_total: TokenUsage;
 }
 
@@ -55,11 +59,13 @@ export interface ContextMetricsResponse {
   session: SessionMetrics;
 }
 
-/** One LLM completion’s measured prompt JSON size (from provenance). */
+/** One LLM completion’s prompt telemetry (from provenance). */
 export interface LlmPromptOperation {
   activityAnchor: string;
   eventOrder: number;
   promptContextBytesCurrent: number;
+  /** Present on newer runners; absent or zero on older provenance rows. */
+  promptMessageCharsCurrent?: number;
 }
 
 export interface ConversationHistoryPage {
@@ -70,6 +76,7 @@ export interface ConversationHistoryPage {
   items: ConversationHistoryItem[];
   nextCursor?: string | null;
   promptContextBytesSessionCurrent?: number | null;
+  promptMessageCharsSessionCurrent?: number | null;
   llmPromptOperations?: LlmPromptOperation[];
   /** From `a2a_task.status_json` when the task is TASK_STATE_INPUT_REQUIRED */
   awaitingInput?: boolean;

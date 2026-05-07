@@ -12,7 +12,8 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, ExternalId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, ProvEvent, ProvenancePlanningQuery, ProvenanceWriter, SurrealProvenanceStore,
+    AgentType, PlanningPlanRecord, ProvEvent, ProvenancePlanningQuery, ProvenanceWriter,
+    SurrealProvenanceStore,
 };
 use baml_tools_system::SystemBundle;
 use common::{
@@ -26,6 +27,28 @@ use test_support::common::{
     workspace_fnox_path, workspace_root,
 };
 use tokio::time::{Duration, sleep, timeout};
+
+/// Prefer [`ProvenancePlanningQuery::query_current_plan`]; fall back to newest non-empty row from
+/// [`ProvenancePlanningQuery::query_plan_history`] (same pattern as ClickUp runner tests).
+async fn resolve_latest_coordinator_plan_for_task(
+    store: &SurrealProvenanceStore,
+    task_id: &TaskId,
+) -> Option<PlanningPlanRecord> {
+    for _ in 0..150 {
+        if let Ok(Some(p)) = store.query_current_plan(task_id).await {
+            if !p.steps.is_empty() {
+                return Some(p);
+            }
+        }
+        if let Ok(hist) = store.query_plan_history(task_id, Some(50)).await {
+            if let Some(p) = hist.into_iter().find(|p| !p.steps.is_empty()) {
+                return Some(p);
+            }
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+    None
+}
 
 struct EmptyAgentList;
 
@@ -297,22 +320,14 @@ async fn test_workspace_coordinator_direct_answer_completes_planned_steps() {
         "Expected response to contain '4' for a simple math query. Got: {merged_text}"
     );
 
-    let mut plan = None;
-    for _ in 0..80 {
-        plan = provenance
-            .query_current_plan(&planning_task_id)
-            .await
-            .ok()
-            .flatten();
-        if plan.is_some() {
-            break;
-        }
-        sleep(Duration::from_millis(200)).await;
-    }
+    // Allow graph writes from execution-session planning effects to land before we poll.
+    sleep(Duration::from_secs(1)).await;
 
-    let plan = plan.expect(
-        "Expected persisted coordinator plan for direct-answer run; ensure execution session submitPlan completed",
-    );
+    let plan = resolve_latest_coordinator_plan_for_task(provenance.as_ref(), &planning_task_id)
+        .await
+        .expect(
+            "Expected persisted coordinator plan for direct-answer run; ensure execution session submitPlan completed",
+        );
     assert!(
         !plan.steps.is_empty(),
         "Expected persisted coordinator plan to include at least one step"

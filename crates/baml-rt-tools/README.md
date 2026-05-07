@@ -15,7 +15,7 @@ This crate defines **contracts** between BAML/LLM session plans and host integra
 - **`SessionPolicy`** — Strict vs MultiSend scheduling for the step executor.
 - **`tool_schema`** — `ToolType`, JSON Schema + TS, **`DescribeAction`**.
 - **`tool_error_classify`** — `ClassifiedToolError`, host retry vs LLM-correctable.
-- **`prompt_projection`** — `conversation_history` from provenance + registry.
+- **`prompt_projection`** — projected history rows + `format_conversation_history_transcript` → BAML `ctx.tags['conversation_transcript']` only (wire/API history arrays are separate).
 - **`tool_discovery`** — deterministic ranked `search_tools`.
 - **`session_coordination`** — inventory providers for session BAML fragments.
 
@@ -112,7 +112,7 @@ Session helpers such as **`create_multi_send_session_tool_from_async`** wire **O
 ## `DescribeAction` & `prompt_projection`
 
 - **`DescribeAction::describe`** — natural-language line for **Open** and **Send** payloads (drift scoring, context).
-- **`prompt_projection`** — builds `conversation_history` for `ctx.tags`; **ToolCall** text uses registry **`describe_invocation`**, which often deserializes step JSON and calls **`DescribeAction`** on typed inputs.
+- **`prompt_projection`** — builds projected history rows (JSON) and the formatted **`conversation_transcript`** string injected into BAML `ctx.tags`; **ToolCall** text uses registry **`describe_invocation`**, which often deserializes step JSON and calls **`DescribeAction`** on typed inputs.
 
 ---
 

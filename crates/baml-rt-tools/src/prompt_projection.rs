@@ -1,7 +1,8 @@
-//! Conversation context projection for BAML prompt injection.
+//! Conversation context projection for prompts.
 //!
-//! Produces a flat `conversation_history` array for `ctx.tags` (and the runtime mirrors a
-//! [`format_conversation_history_transcript`] string as `conversation_transcript`).
+//! Produces a flat JSON array of `{role, content}` rows for graph/API consumers; the QuickJS host
+//! injects **only** [`format_conversation_history_transcript`] as `ctx.tags['conversation_transcript']`
+//! into BAML (canonical history surface).
 //! Each item has `{role, content}` — rendered by the trait system:
 //!
 //! - `Message`     → `{HistoryRef} {text}` (e.g. `#1 …`) via [`RefTable::insert_history`], plus
@@ -11,9 +12,9 @@
 //!   top-level and nested `citations: []` are stripped before render (no vacuous lines in history)
 //! - `ToolError`   → archive_read render of error value (same `citations` strip as tool results)
 //! - `SessionStep` → same rendering as above; items use role **`tool`** in `conversation_history`
-//!   (not `assistant`). `Open` and `SendDone` are **summary** rows only; archive **content** appears
-//!   only for explicit `SearchRead` / `PageRead` (the **grep(1)/cat(1)** analogues) via
-//!   [`ArchiveReader`] and `grep_paginate` — never raw JSON dumps, never a SendDone inline preview.
+//!   (not `assistant`). `Open` is a **summary** row; **`SendDone` is omitted** from projected history
+//!   (FSM bookkeeping only — graph rows stay). Archive **content** appears only for explicit
+//!   `SearchRead` / `PageRead` via [`ArchiveReader`] and `grep_paginate` — never raw JSON dumps.
 //! - `StatusOnly` items are discarded at the conversion boundary before reaching here.
 
 use std::{borrow::Cow, fmt};
@@ -30,15 +31,15 @@ use crate::{
     tools::ToolRegistry,
 };
 
-/// `SendDone` in `conversation_history` / episode transcript: a single line — the same compact
-/// `header` the archive table uses (e.g. `@2 · "…" · NL · size`). No inline read instructions;
-/// the static FSM descriptions cover SearchRead/PageRead.
+/// Compact `SendDone` header line (same string as the archive table header). Used for logging and
+/// APIs that surface session FSM state; **not** inserted into `conversation_history` /
+/// `conversation_transcript` projection (those omit `SendDone`; explicit reads carry archive text).
 #[must_use]
 pub fn format_send_done_projection_line(header: &str, _archive_ref: &str) -> String {
     header.to_string()
 }
 
-/// Flatten `ctx.tags['conversation_history']` JSON array into chat-style `role: content` blocks
+/// Flatten projected history rows (JSON array of `{role, content}` objects) into chat-style blocks
 /// (blank line between turns). `role` and `content` are taken from each row; optional fields are
 /// ignored. If `content` is an array of `type: "text"` parts (OpenAI-style), it is flattened to
 /// a single string for display, matching [`flatten_message_content_value`].
@@ -100,8 +101,8 @@ pub enum SessionStepProjection {
 pub struct SessionStepPayload {
     pub tool_name: String,
     pub op: SessionStepProjection,
-    /// `SendDone` only: graph-hydrated tool `tool_result` JSON (for ref-table and replay), **not**
-    /// rendered in `conversation_history` — only explicit read steps show archive text.
+    /// `SendDone` only: graph-hydrated tool `tool_result` JSON for ref-table / `@N` replay seeding;
+    /// the `SendDone` step itself is **not** emitted as a projected history row.
     pub send_done_replay_payload: Option<Value>,
     /// `SearchRead` / `PageRead` only: pre-hydrated window; wins over `archive_reader` when non-empty.
     pub read_replay_lines: Option<Vec<String>>,
@@ -277,7 +278,7 @@ pub fn project_projection_item_to_rows(
     }
 }
 
-/// Produce the `conversation_history` array for `ctx.tags`.
+/// Produce the projected history JSON array (feeds transcript formatting and HTTP snapshots).
 ///
 /// `ref_table`: receives `#N` allocations for messages and tool-call descriptions.
 /// `archive_reader`: called for `SessionStep` items to re-derive cat-n output from the archive.
@@ -443,12 +444,9 @@ fn render_projection_content(
                     message_citations: None,
                 },
                 SessionStepProjection::SendDone {
-                    archive_ref,
-                    header,
-                } => RenderedEntry::One {
-                    content: format_send_done_projection_line(header, archive_ref.as_str()),
-                    message_citations: None,
-                },
+                    archive_ref: _,
+                    header: _,
+                } => RenderedEntry::Filtered,
                 SessionStepProjection::SearchRead {
                     archive_ref,
                     grep,
@@ -544,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn send_done_is_one_summary_row_and_ignores_archive_reader() {
+    fn send_done_is_filtered_from_projected_history_even_with_archive_reader() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
         let items = vec![PromptProjectionItem {
@@ -565,16 +563,9 @@ mod tests {
             };
         let history = project_prompt_context(items, &registry, &ref_table, Some(&archive_reader));
         let arr = history.as_array().expect("array");
-        assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["role"].as_str(), Some("assistant"));
-        let content = arr[0]["content"].as_str().expect("content");
-        assert_eq!(
-            content, "@3 demo/tool 'ok' [1 lines]",
-            "SendDone is header only"
-        );
         assert!(
-            !content.contains("BODY") && !content.contains("cat -n @3"),
-            "SendDone must not inline archive body: {content}"
+            arr.is_empty(),
+            "SendDone must not appear in conversation_history JSON: {history}"
         );
     }
 
@@ -706,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_send_done_emits_summary_each_time_no_archive_body() {
+    fn repeated_send_done_emits_no_projection_rows() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
         let items = vec![
@@ -755,18 +746,10 @@ mod tests {
 
         let history = project_prompt_context(items, &registry, &ref_table, Some(&archive_reader));
         let rows = history.as_array().expect("array");
-        assert_eq!(rows.len(), 3);
-        for r in rows {
-            let content = r["content"].as_str().expect("content");
-            assert!(
-                content.contains("@15") && content.contains("found tasks"),
-                "header names the ref and summary: {content}"
-            );
-            assert!(
-                !content.contains("TASK_LIST_PAYLOAD"),
-                "SendDone must not call archive reader: {content}"
-            );
-        }
+        assert!(
+            rows.is_empty(),
+            "SendDone steps must not allocate conversation_history rows: {history}"
+        );
     }
 
     #[test]
@@ -878,7 +861,7 @@ mod tests {
 
         assert_eq!(
             payload_occurrences, 1,
-            "only PageRead may inline archive text; SendDone is summary only"
+            "only PageRead may inline archive text; SendDone is not projected"
         );
     }
 

@@ -90,6 +90,20 @@ impl BamlRuntimeManager {
         }
     }
 
+    /// Effect bus used for [`ToolSessionStep`](baml_rt_core::bus::EffectEvent::ToolSessionStep) and
+    /// related host emissions. Prefer the loaded executor's emitter (what LLM/tools use during
+    /// `execute_function`) and fall back to `state.effect_emitter` so session-step fan-out cannot
+    /// silently drop events when only one side was wired.
+    pub(in crate::baml) fn effect_emitter_for_tool_effects(
+        &self,
+    ) -> Option<&Arc<dyn EffectEmitter>> {
+        self.state
+            .executor
+            .as_ref()
+            .and_then(|ex| ex.effect_emitter())
+            .or(self.state.effect_emitter.as_ref())
+    }
+
     pub fn set_conversation_context_provider(
         &mut self,
         provider: Arc<dyn ConversationContextProvider>,

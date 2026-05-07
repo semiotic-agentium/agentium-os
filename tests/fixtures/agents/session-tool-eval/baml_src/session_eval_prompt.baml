@@ -37,7 +37,7 @@ function PlanSessionToolEvalStep(
     The allowed ops and current session state are implied by session history below.
     Read the history to determine what has already been done, then emit the single next step.
 
-    {% if ctx.tags['conversation_history'] %}
+    {% if ctx.tags['conversation_transcript'] %}
     Session history:
     {{ ctx.tags['conversation_transcript'] }}
     {% endif %}
