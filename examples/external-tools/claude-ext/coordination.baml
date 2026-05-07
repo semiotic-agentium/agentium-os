@@ -39,12 +39,7 @@ function ChooseDevClaudeExtAction(user_message: string) -> DevClaudeExtSessionPl
 
     {{ ctx.output_format }}
 
-    {% if ctx.tags['conversation_history'] %}
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-    {% endif %}
+    {{ ctx.tags['conversation_transcript'] }}
 
     {{ _.role('user') }}
     {{ user_message }}

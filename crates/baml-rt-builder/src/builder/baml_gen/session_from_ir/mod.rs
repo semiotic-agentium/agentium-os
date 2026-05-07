@@ -278,14 +278,11 @@ pub fn render_generated_session_baml_from_ir(
             let continue_preamble = if tool_name_str == "system/discover_agents" {
                 format!(
                     "[CONTINUE] {tool_name_str} result is archived.\\n\
-                     Session metadata is available as hints, not as a replacement for tool-specific instructions:\\n\
-                     - session_context.last_archive_ref is the latest archive ref when available; prefer it over guessing an @N.\\n\
-                     - session_context.last_output_header is the compact archive header shown for the latest result.\\n\
-                     - session_context.last_completion may contain a tool-specific terminal marker such as DONE or INTERRUPTED. Interpret it according to this tool's prompt/schema.\\n\
                      Archive fallback when content must be inspected:\\n\
+                     - Use the visible @N archive handle from conversation/history; do not guess one.\\n\
                      - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\\n\
                      - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit SearchRead or PageRead to paginate.\\n\
-                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead with archive_ref=session_context.last_archive_ref or the visible @N.\\n\
+                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead against the visible @N.\\n\
                      - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\\n\
                      - Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\\n\\n\
                      {DISCOVER_AGENTS_SEND_DISCIPLINE}"
@@ -293,14 +290,11 @@ pub fn render_generated_session_baml_from_ir(
             } else {
                 format!(
                     "[CONTINUE] {tool_name_str} result is archived.\\n\
-                     Session metadata is available as hints, not as a replacement for tool-specific instructions:\\n\
-                     - session_context.last_archive_ref is the latest archive ref when available; prefer it over guessing an @N.\\n\
-                     - session_context.last_output_header is the compact archive header shown for the latest result.\\n\
-                     - session_context.last_completion may contain a tool-specific terminal marker such as DONE or INTERRUPTED. Interpret it according to this tool's prompt/schema.\\n\
                      Archive fallback when content must be inspected:\\n\
+                     - Use the visible @N archive handle from conversation/history; do not guess one.\\n\
                      - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\\n\
                      - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit SearchRead or PageRead to paginate.\\n\
-                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead with archive_ref=session_context.last_archive_ref or the visible @N.\\n\
+                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead against the visible @N.\\n\
                      - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\\n\
                      - Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\\n\\n"
                 )

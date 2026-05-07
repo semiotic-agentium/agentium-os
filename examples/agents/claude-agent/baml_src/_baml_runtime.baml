@@ -243,12 +243,7 @@ function ChooseDevClaudeExtAction(user_message: string) -> DevClaudeExtSessionPl
 
     {{ ctx.output_format }}
 
-    {% if ctx.tags['conversation_history'] %}
-    {% for message in ctx.tags['conversation_history'] %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-    {% endif %}
+    {{ ctx.tags['conversation_transcript'] }}
 
     {{ _.role('user') }}
     {{ user_message }}
@@ -296,12 +291,7 @@ markdown, no prose, no surrounding text.
 
 {{ ctx.output_format }}
 
-{% if ctx.tags['conversation_history'] %}
-{% for message in ctx.tags['conversation_history'] %}
-{{ _.role(message.role) }}
-{{ message.content }}
-{% endfor %}
-{% endif %}
+{{ ctx.tags['conversation_transcript'] }}
 
 {{ _.role('user') }}
 {{ user_message }}
@@ -346,12 +336,7 @@ markdown, no prose, no surrounding text.
 
 {{ ctx.output_format }}
 
-{% if ctx.tags['conversation_history'] %}
-{% for message in ctx.tags['conversation_history'] %}
-{{ _.role(message.role) }}
-{{ message.content }}
-{% endfor %}
-{% endif %}
+{{ ctx.tags['conversation_transcript'] }}
 
 {{ _.role('user') }}
 {{ user_message }}
@@ -368,7 +353,7 @@ function ChooseDevClaudeExtAction__continue__dev_claude_ext(
 ) -> DevClaudeExtSendStep | DevClaudeExtSearchReadStep | DevClaudeExtPageReadStep | DevClaudeExtFinishStep | DevClaudeExtAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] dev/claude-ext result is archived.\nSession metadata is available as hints, not as a replacement for tool-specific instructions:\n- session_context.last_archive_ref is the latest archive ref when available; prefer it over guessing an @N.\n- session_context.last_output_header is the compact archive header shown for the latest result.\n- session_context.last_completion may contain a tool-specific terminal marker such as DONE or INTERRUPTED. Interpret it according to this tool's prompt/schema.\nArchive fallback when content must be inspected:\n- See \"@N dev/claude-ext\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N dev/claude-ext\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N dev/claude-ext\" with no content yet → emit SearchRead or PageRead with archive_ref=session_context.last_archive_ref or the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nYou drive a Claude Code session via the dev/claude-ext tool. Your only
+  prompt #"[CONTINUE] dev/claude-ext result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N dev/claude-ext\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N dev/claude-ext\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N dev/claude-ext\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nYou drive a Claude Code session via the dev/claude-ext tool. Your only
 job is to manage the session FSM: Open the session, Send the user's
 request, then Finish once Claude returns a terminal result. Do NOT
 implement, rewrite, or answer the user's task yourself — Claude Code does
@@ -396,12 +381,7 @@ markdown, no prose, no surrounding text.
 
 {{ ctx.output_format }}
 
-{% if ctx.tags['conversation_history'] %}
-{% for message in ctx.tags['conversation_history'] %}
-{{ _.role(message.role) }}
-{{ message.content }}
-{% endfor %}
-{% endif %}
+{{ ctx.tags['conversation_transcript'] }}
 
 {{ _.role('user') }}
 {{ user_message }}
