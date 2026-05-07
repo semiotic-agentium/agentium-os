@@ -162,9 +162,7 @@ impl SandboxCache {
 
 /// §9.4 reattach validation checklist.
 ///
-/// - **Runtime digest match** — if both sides declare one, they must agree.
-///   If either is `None`, we skip the check (provider-limited case).
-/// - **Policy hash match** — same rule.
+/// - **Policy hash match** — if both sides declare one, they must agree.
 /// - **Age check** — handle must still have lifetime left.
 ///
 /// Status / context-liveness checks from the full list belong upstream (the
@@ -172,11 +170,6 @@ impl SandboxCache {
 /// Workstream B wires the two checks we can evaluate here.
 fn validate_reattach(handle: &SandboxHandle, spec: &SandboxSpec) -> bool {
     if handle.is_expired() {
-        return false;
-    }
-    if let (Some(h), Some(s)) = (&handle.runtime_digest, &spec.runtime_digest)
-        && h != s
-    {
         return false;
     }
     if let (Some(h), Some(s)) = (&handle.policy_hash, &spec.policy_hash)

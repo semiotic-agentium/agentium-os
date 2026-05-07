@@ -10,17 +10,31 @@
     "input": {
       "type": "object",
       "properties": {
-        "city": { "type": "string" },
-        "units": { "type": "string", "enum": ["c", "f"] }
+        "city": {
+          "type": "string"
+        },
+        "units": {
+          "type": "string",
+          "enum": [
+            "c",
+            "f"
+          ]
+        }
       },
-      "required": ["city"]
+      "required": [
+        "city"
+      ]
     },
     "output": {
       "type": "object",
       "properties": {
-        "temp_c": { "type": "number" }
+        "temp_c": {
+          "type": "number"
+        }
       },
-      "required": ["temp_c"]
+      "required": [
+        "temp_c"
+      ]
     }
   },
   "secrets": [],
@@ -31,13 +45,17 @@
       "kind": "bind",
       "path": "/tmp/meteo-rootfs"
     },
-    "entrypoint": ["/tool-adapter"],
+    "entrypoint": [
+      "/tool-adapter"
+    ],
     "adapter": {
       "schema_version": 1,
       "protocol": "jsonrpc-stdio",
-      "command": ["python3", "/opt/tool/main.py"],
+      "command": [
+        "python3",
+        "/opt/tool/main.py"
+      ],
       "workdir": "/opt/tool"
     }
-  },
-  "runtime_digest": "sha256:meteo-runtime"
+  }
 }

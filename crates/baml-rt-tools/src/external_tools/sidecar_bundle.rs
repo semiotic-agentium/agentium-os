@@ -26,7 +26,6 @@ pub struct ToolSidecarBundle {
 pub struct ToolRuntimeSidecar {
     pub schema_version: u32,
     pub tool_id: String,
-    pub runtime_digest: String,
     pub command: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workdir: Option<String>,
@@ -50,10 +49,7 @@ pub struct ToolSchemaSidecar {
     pub output: Value,
 }
 
-pub fn render_sidecar_bundle(
-    meta: &ExternalToolMetadata,
-    runtime_digest: &str,
-) -> Result<ToolSidecarBundle> {
+pub fn render_sidecar_bundle(meta: &ExternalToolMetadata) -> Result<ToolSidecarBundle> {
     let ToolRuntime::Sandbox(sandbox) = meta.runtime.clone().ok_or_else(|| {
         BamlRtError::InvalidArgument(format!(
             "sidecar bundle generation requires runtime.kind=sandbox (tool: {})",
@@ -80,7 +76,6 @@ pub fn render_sidecar_bundle(
         runtime: ToolRuntimeSidecar {
             schema_version: adapter.schema_version,
             tool_id: meta.name.clone(),
-            runtime_digest: runtime_digest.to_string(),
             command: adapter.command,
             workdir: adapter.workdir,
             protocol: adapter.protocol,
@@ -123,17 +118,4 @@ pub fn read_sidecar_bundle(path: &Path) -> Result<ToolSidecarBundle> {
             source: Box::new(e),
         }
     })
-}
-
-pub fn verify_runtime_digest(
-    bundle: &ToolSidecarBundle,
-    expected_runtime_digest: &str,
-) -> Result<()> {
-    if bundle.runtime.runtime_digest != expected_runtime_digest {
-        return Err(BamlRtError::InvalidArgument(format!(
-            "runtime sidecar digest mismatch: expected {} got {}",
-            expected_runtime_digest, bundle.runtime.runtime_digest
-        )));
-    }
-    Ok(())
 }

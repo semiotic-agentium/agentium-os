@@ -26,7 +26,7 @@ cargo run -p baml-agent-runner --features sandbox-provider
 - `image` is a placeholder digest-pinned reference (`sha256:00…`). The real
   echo adapter image isn't built here — publishing the image is a separate
   ops task tracked under Workstream F.
-- `runtime_digest` is the same placeholder; it becomes load-bearing once the
-  image exists and the `SandboxSpecFactory` is tightened by Workstream D.
+- OCI identity is the digest-pinned image reference itself; no separate
+  `runtime_digest` field is used.
 - Schema matches the process-backed `e2e_echo` sibling so the same BAML
   contract can be swapped between backends without agent changes.

@@ -238,11 +238,6 @@
         }
       ]
     },
-    "runtime_digest": {
-      "type": "string",
-      "pattern": "^sha256:[a-f0-9]{64}$",
-      "description": "DEPRECATED in source files: do not commit. Bind sandbox digests live in the per-tool lock sidecar (tool-metadata.lock.json) written by sandbox-bind-sync; OCI sandbox digests are pinned in image.ref. Field kept for back-compat parsing only."
-    },
     "coordination": {
       "type": "object",
       "description": "Optional session-coordination BAML pointer. Required for session tools that expose a Choose<Tool>Action step-executor function; forbidden for single_shot tools.",

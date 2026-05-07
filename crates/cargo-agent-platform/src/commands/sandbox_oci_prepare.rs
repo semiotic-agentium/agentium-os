@@ -32,7 +32,7 @@ struct Summary {
     metadata: String,
     output: String,
     tool_name: String,
-    runtime_digest: String,
+    image_ref: String,
     dry_run: bool,
     check: bool,
 }
@@ -51,16 +51,6 @@ pub fn run(args: SandboxOciPrepareRunArgs<'_>) -> Result<()> {
     }
 
     let metadata = read_runtime_external_metadata(&tool_dir)?;
-    let runtime_digest = metadata
-        .runtime_digest
-        .as_deref()
-        .ok_or_else(|| {
-            anyhow!(
-                "sandbox runtime requires runtime_digest in tool-metadata.json (tool: {})",
-                metadata.name
-            )
-        })?
-        .to_string();
 
     let runtime = metadata.runtime.as_ref().ok_or_else(|| {
         anyhow!(
@@ -94,15 +84,8 @@ pub fn run(args: SandboxOciPrepareRunArgs<'_>) -> Result<()> {
     if !digest_from_image.starts_with("sha256:") {
         bail!("sandbox oci image must include @sha256:<64-hex>: {image_ref}");
     }
-    if digest_from_image != runtime_digest {
-        bail!(
-            "runtime_digest mismatch for oci source: metadata runtime_digest={} but image digest={}",
-            runtime_digest,
-            digest_from_image
-        );
-    }
 
-    let bundle = render_sidecar_bundle(&metadata, &runtime_digest)
+    let bundle = render_sidecar_bundle(&metadata)
         .map_err(|e| anyhow!("failed to render sidecar bundle: {e}"))?;
 
     let output_path = resolve_output_path(&tool_dir, args.output);
@@ -135,7 +118,7 @@ pub fn run(args: SandboxOciPrepareRunArgs<'_>) -> Result<()> {
         metadata: metadata_path.display().to_string(),
         output: output_path.display().to_string(),
         tool_name: metadata.name.clone(),
-        runtime_digest,
+        image_ref: image_ref.to_string(),
         dry_run: args.dry_run,
         check: args.check,
     };
@@ -151,7 +134,7 @@ pub fn run(args: SandboxOciPrepareRunArgs<'_>) -> Result<()> {
         println!("  tool:           {}", summary.tool_name);
         println!("  metadata:       {}", summary.metadata);
         println!("  output:         {}", summary.output);
-        println!("  runtime_digest: {}", summary.runtime_digest);
+        println!("  image_ref:      {}", summary.image_ref);
         if args.check {
             println!("  validation:     check-external-tool passed");
         }
@@ -211,8 +194,7 @@ mod tests {
       "command": ["python3", "/opt/tool/main.py"],
       "workdir": "/opt/tool"
     }}
-  }},
-  "runtime_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  }}
 }}"#
         );
 
@@ -243,13 +225,7 @@ mod tests {
 
         let raw = fs::read_to_string(out).expect("read sidecar");
         let v: serde_json::Value = serde_json::from_str(&raw).expect("parse sidecar");
-        assert_eq!(
-            v["runtime"]["runtime_digest"],
-            serde_json::Value::String(
-                "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                    .to_string()
-            )
-        );
+        assert!(v["runtime"].get("runtime_digest").is_none());
         assert!(
             v["manifest"]["supported_methods"]
                 .as_array()

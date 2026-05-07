@@ -37,7 +37,6 @@
 
 #[cfg(feature = "sandbox-provider")]
 use std::{
-    path::Path,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -60,8 +59,6 @@ use super::{
     exec_adapter::exec_handle_into_channel,
     spec::{PullPolicy, SandboxImageSource, SecretBindingMode},
 };
-#[cfg(feature = "sandbox-provider")]
-use crate::external_tools::{read_sidecar_bundle, verify_runtime_digest};
 
 /// Env-var names used to stash reattach metadata inside the guest. Chosen
 /// under the `BAML_` prefix so they don't collide with tool-author vars.
@@ -73,9 +70,6 @@ const STASH_POLICY_HASH: &str = "BAML_POLICY_HASH";
 const STASH_MAX_DURATION_SECS: &str = "BAML_MAX_DURATION_SECS";
 #[cfg(feature = "sandbox-provider")]
 const STASH_GUEST_WORKDIR: &str = "BAML_GUEST_WORKDIR";
-#[cfg(feature = "sandbox-provider")]
-const SIDECAR_BUNDLE_PATH: &str = "etc/agentium/tool-bundle.json";
-
 /// How long to wait for `stop_and_wait` before falling back to `kill`.
 #[cfg(feature = "sandbox-provider")]
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -87,35 +81,6 @@ pub struct MicrosandboxProvider {
     live: Arc<DashMap<String, microsandbox::Sandbox>>,
     #[cfg(not(feature = "sandbox-provider"))]
     _unused: std::marker::PhantomData<()>,
-}
-
-/// Check that the bind rootfs sidecar at `/etc/agentium/tool-bundle.json`
-/// advertises the same `runtime_digest` as host metadata.
-///
-/// **Freshness check, not a tamper check.** The sidecar embeds the digest
-/// it claims to satisfy, so an attacker who can rewrite rootfs contents can
-/// also rewrite the field. Trust anchor is `expected_digest` from host-side
-/// tool metadata; this is only as strong as that metadata's integrity.
-///
-/// What it catches: developer edited metadata and forgot
-/// `sandbox-bind-sync`, so the rootfs bundle drifted from current schemas.
-/// Surfaces a clear error instead of a downstream tool/invoke timeout.
-///
-/// For tamper-resistance, sign the metadata or ship a signed sidecar.
-#[cfg(feature = "sandbox-provider")]
-fn check_bind_sidecar_freshness(bind_root: &Path, expected_digest: Option<&str>) -> Result<()> {
-    let Some(expected) = expected_digest else {
-        return Ok(());
-    };
-
-    let sidecar = bind_root.join(SIDECAR_BUNDLE_PATH);
-    let bundle = read_sidecar_bundle(&sidecar)?;
-    verify_runtime_digest(&bundle, expected).map_err(|e| {
-        BamlRtError::InvalidArgument(format!(
-            "bind sidecar runtime_digest mismatch at {}: {e}",
-            sidecar.display()
-        ))
-    })
 }
 
 impl MicrosandboxProvider {
@@ -199,7 +164,6 @@ impl SandboxProvider for MicrosandboxProvider {
                 builder.image(image.as_str())
             }
             SandboxImageSource::Bind(path) => {
-                check_bind_sidecar_freshness(path, runtime_digest.as_deref())?;
                 info!(sandbox = %name, image_source = "bind", bind_path = %path.display(), "creating sandbox with bind rootfs");
                 builder.image(path.clone())
             }

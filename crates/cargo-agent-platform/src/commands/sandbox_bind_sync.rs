@@ -3,7 +3,7 @@
 //! Materializes host-resolved bind state next to a hand-written
 //! `tool-metadata.json`:
 //! - writes a sibling `tool-metadata.lock.json` carrying the canonical
-//!   absolute rootfs path and computed `runtime_digest`;
+//!   absolute rootfs path;
 //! - writes the in-rootfs sidecar bundle at `etc/agentium/tool-bundle.json`.
 //!
 //! The committed source `tool-metadata.json` is **never** mutated, so example
@@ -19,8 +19,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use baml_rt_tools::external_tools::{
     SIDECAR_BUNDLE_REL_PATH, SandboxImageRef, ToolRuntime, ToolRuntimeLock, read_external_metadata,
-    read_runtime_external_metadata, read_sidecar_bundle, render_sidecar_bundle,
-    sandbox_runtime_digest_for_bind, verify_runtime_digest,
+    read_runtime_external_metadata, render_sidecar_bundle,
 };
 use serde::Serialize;
 
@@ -29,7 +28,6 @@ struct SyncSummary {
     tool_dir: String,
     metadata_path: String,
     rootfs_path: String,
-    runtime_digest: String,
     docker_mode: bool,
     checked: bool,
     dry_run: bool,
@@ -128,12 +126,9 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
         );
     }
 
-    let digest = sandbox_runtime_digest_for_bind(&canonical_rootfs)?;
-
     if !dry_run {
-        write_runtime_lock(&tool_dir, &canonical_rootfs, &digest)?;
-        write_runtime_sidecars(&metadata_path, &canonical_rootfs, &digest)?;
-        verify_runtime_sidecar_digest(&canonical_rootfs, &digest)?;
+        write_runtime_lock(&tool_dir, &canonical_rootfs)?;
+        write_runtime_sidecars(&metadata_path, &canonical_rootfs)?;
     }
 
     if check {
@@ -148,7 +143,6 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
         tool_dir: tool_dir.display().to_string(),
         metadata_path: metadata_path.display().to_string(),
         rootfs_path: canonical_rootfs.display().to_string(),
-        runtime_digest: digest,
         docker_mode,
         checked: check,
         dry_run,
@@ -165,7 +159,6 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
         println!("  tool dir:       {}", summary.tool_dir);
         println!("  metadata:       {}", summary.metadata_path);
         println!("  bind path:      {}", summary.rootfs_path);
-        println!("  runtime_digest: {}", summary.runtime_digest);
         if docker_mode {
             println!("  mode:           docker-assisted");
         } else {
@@ -296,8 +289,8 @@ fn build_and_export_rootfs(
 }
 
 /// Validate that the source `tool-metadata.json` declares a portable bind
-/// sandbox runtime: kind=sandbox, image.kind=bind, relative path, no
-/// `runtime_digest`. Run before any writes so `--dry-run` catches the same
+/// sandbox runtime: kind=sandbox, image.kind=bind, relative path. Run before
+/// any writes so `--dry-run` catches the same
 /// errors a real sync would, and return the authored bind path so callers can
 /// default `--rootfs` to it.
 fn validate_bind_source(tool_dir: &Path) -> Result<PathBuf> {
@@ -333,31 +326,24 @@ fn validate_bind_source(tool_dir: &Path) -> Result<PathBuf> {
         ),
     };
 
-    if source.runtime_digest.is_some() {
-        bail!(
-            "source tool-metadata.json contains 'runtime_digest'; remove it — \
-             the digest belongs in tool-metadata.lock.json"
-        );
-    }
-
     Ok(source_rootfs)
 }
 
 /// Write the per-tool runtime lock sidecar (`tool-metadata.lock.json`) next
 /// to the source `tool-metadata.json`. Pure writer — callers must invoke
 /// [`validate_bind_source`] first.
-fn write_runtime_lock(tool_dir: &Path, bind_path: &Path, digest: &str) -> Result<()> {
-    let lock = ToolRuntimeLock::new_bind(bind_path.to_path_buf(), digest.to_string());
+fn write_runtime_lock(tool_dir: &Path, bind_path: &Path) -> Result<()> {
+    let lock = ToolRuntimeLock::new_bind(bind_path.to_path_buf());
     lock.write_to_dir(tool_dir).map_err(|e| anyhow!("{e}"))?;
     Ok(())
 }
 
-fn write_runtime_sidecars(metadata_path: &Path, rootfs: &Path, runtime_digest: &str) -> Result<()> {
+fn write_runtime_sidecars(metadata_path: &Path, rootfs: &Path) -> Result<()> {
     let tool_dir = metadata_path
         .parent()
         .ok_or_else(|| anyhow!("metadata path has no parent: {}", metadata_path.display()))?;
     let metadata = read_runtime_external_metadata(tool_dir)?;
-    let bundle = render_sidecar_bundle(&metadata, runtime_digest)
+    let bundle = render_sidecar_bundle(&metadata)
         .map_err(|e| anyhow!("failed to render sidecar bundle: {e}"))?;
 
     let bundle_path = rootfs.join(SIDECAR_BUNDLE_REL_PATH);
@@ -370,22 +356,6 @@ fn write_runtime_sidecars(metadata_path: &Path, rootfs: &Path, runtime_digest: &
         .with_context(|| format!("failed to write {}", bundle_path.display()))?;
 
     Ok(())
-}
-
-fn verify_runtime_sidecar_digest(rootfs: &Path, expected_digest: &str) -> Result<()> {
-    let bundle_path = rootfs.join(SIDECAR_BUNDLE_REL_PATH);
-    let bundle = read_sidecar_bundle(&bundle_path).map_err(|e| {
-        anyhow!(
-            "failed to read sidecar bundle {}: {e}",
-            bundle_path.display()
-        )
-    })?;
-    verify_runtime_digest(&bundle, expected_digest).map_err(|e| {
-        anyhow!(
-            "runtime sidecar digest mismatch in {}: {e}",
-            bundle_path.display()
-        )
-    })
 }
 
 fn run_command(cmd: &mut Command, label: &str) -> Result<()> {
@@ -467,8 +437,7 @@ mod tests {
         let bind_path = tmp.path().join("rootfs");
         std::fs::create_dir_all(&bind_path).expect("rootfs");
 
-        let digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
-        write_runtime_lock(tmp.path(), &bind_path, digest).expect("write lock");
+        write_runtime_lock(tmp.path(), &bind_path).expect("write lock");
 
         // Source file untouched.
         let source_after = std::fs::read_to_string(&metadata_path).expect("read source");
@@ -480,7 +449,6 @@ mod tests {
         let lock = read_runtime_lock(tmp.path())
             .expect("read lock")
             .expect("lock present");
-        assert_eq!(lock.runtime_digest.as_deref(), Some(digest));
         assert_eq!(lock.image_path_abs.as_deref(), Some(bind_path.as_path()));
     }
 
@@ -496,19 +464,6 @@ mod tests {
             err.to_string().contains("absolute bind path"),
             "unexpected error: {err}"
         );
-    }
-
-    #[test]
-    fn validate_bind_source_rejects_runtime_digest() {
-        let tmp = tempfile::tempdir().expect("tmp");
-        let polluted = PORTABLE_SOURCE.replace(
-            r#""capabilities": {},"#,
-            r#""capabilities": {}, "runtime_digest": "sha256:dead", "#,
-        );
-        std::fs::write(tmp.path().join("tool-metadata.json"), polluted).expect("write");
-
-        let err = validate_bind_source(tmp.path()).expect_err("must reject");
-        assert!(err.to_string().contains("runtime_digest"), "got: {err}");
     }
 
     #[test]
@@ -609,8 +564,7 @@ mod tests {
       "command": ["python3", "/opt/tool/main.py"],
       "workdir": "/opt/tool"
     }
-  },
-  "runtime_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  }
 }
 "#,
         )
@@ -619,8 +573,7 @@ mod tests {
         let rootfs = tmp.path().join("rootfs");
         std::fs::create_dir_all(&rootfs).expect("rootfs");
 
-        let digest = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
-        write_runtime_sidecars(&metadata_path, &rootfs, digest).expect("write sidecars");
+        write_runtime_sidecars(&metadata_path, &rootfs).expect("write sidecars");
 
         let bundle_path = rootfs.join(SIDECAR_BUNDLE_REL_PATH);
         assert!(bundle_path.exists(), "sidecar bundle must exist");
@@ -634,10 +587,7 @@ mod tests {
             runtime_json.get("tool_id").and_then(Value::as_str),
             Some("dev/meteo-tool")
         );
-        assert_eq!(
-            runtime_json.get("runtime_digest").and_then(Value::as_str),
-            Some(digest)
-        );
+        assert!(runtime_json.get("runtime_digest").is_none());
         assert_eq!(
             runtime_json.get("protocol").and_then(Value::as_str),
             Some("jsonrpc-stdio")
@@ -689,26 +639,6 @@ mod tests {
                 .is_some(),
             "schema.content_digest must exist"
         );
-
-        verify_runtime_sidecar_digest(&rootfs, digest).expect("digest verify");
-    }
-
-    #[test]
-    fn verify_runtime_sidecar_digest_detects_mismatch() {
-        let tmp = tempfile::tempdir().expect("tmp");
-        let rootfs = tmp.path();
-        let dir = rootfs.join("etc/agentium");
-        std::fs::create_dir_all(&dir).expect("dir");
-        std::fs::write(
-            dir.join("tool-bundle.json"),
-            r#"{"runtime":{"schema_version":1,"tool_id":"dev/meteo-tool","runtime_digest":"sha256:aaaa","command":["python3","/opt/tool/main.py"],"protocol":"jsonrpc-stdio"},"manifest":{"tool_name":"dev/meteo-tool","protocol_version":"2","supported_methods":["tool/describe","tool/schema","tool/invoke"]},"schema":{"schema_version":1,"tool_name":"dev/meteo-tool","content_type":"application/schema+json","content_digest":"sha256:cccc","input":{"type":"object"},"output":{"type":"object"}}}"#,
-        )
-        .expect("sidecar");
-
-        let err =
-            verify_runtime_sidecar_digest(rootfs, "sha256:bbbb").expect_err("expected mismatch");
-        let msg = err.to_string();
-        assert!(msg.contains("digest mismatch"), "got: {msg}");
     }
 
     #[test]

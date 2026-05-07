@@ -1,10 +1,9 @@
 //! Per-tool runtime lock sidecar (`tool-metadata.lock.json`).
 //!
 //! Carries host-resolved fields that must NOT live in the committed
-//! `tool-metadata.json` source: the canonical absolute bind rootfs path and
-//! the bind `runtime_digest`. These values are local to whoever ran
-//! `sandbox-bind-sync`, so committing them would force every contributor's
-//! checkout to drift.
+//! `tool-metadata.json` source: the canonical absolute bind rootfs path. This
+//! value is local to whoever ran `sandbox-bind-sync`, so committing it would
+//! force every contributor's checkout to drift.
 //!
 //! Distinct from [`super::lockfile`], which is a *workspace-level* supply-chain
 //! lock that pins package digests across the agent build. This sidecar is
@@ -41,17 +40,18 @@ pub struct ToolRuntimeLock {
     /// runtimes). Other runtime kinds may omit this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_path_abs: Option<PathBuf>,
-    /// Sandbox runtime digest (`sha256:<hex>`). Required for bind sandbox
-    /// runtimes; OCI runtimes carry the digest in the image ref instead.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Deprecated legacy field accepted when reading older local locks. New
+    /// locks do not write a bind runtime digest; bind is a dev-only path and
+    /// OCI identity is the digest-pinned image ref.
+    #[serde(default, skip_serializing)]
     pub runtime_digest: Option<String>,
 }
 
 impl ToolRuntimeLock {
-    pub fn new_bind(image_path_abs: PathBuf, runtime_digest: String) -> Self {
+    pub fn new_bind(image_path_abs: PathBuf) -> Self {
         Self {
             image_path_abs: Some(image_path_abs),
-            runtime_digest: Some(runtime_digest),
+            runtime_digest: None,
         }
     }
 

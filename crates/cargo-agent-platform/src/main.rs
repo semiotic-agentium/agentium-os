@@ -24,8 +24,7 @@
 //! - `doctor` — Validate workspace integrity
 //! - `chat` — Interactive terminal chat with a deployed agent
 //! - `check-external-tool` — Validate tool metadata schema/runtime compatibility
-//! - `sandbox-digest` — Compute sandbox runtime digests (bind rootfs)
-//! - `sandbox-bind-sync` — Sync bind rootfs path/digest into tool metadata (optionally Docker-assisted)
+//! - `sandbox-bind-sync` — Sync local bind dev rootfs path into tool metadata (optionally Docker-assisted)
 
 mod commands;
 mod event_schemas;
@@ -42,7 +41,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 use commands::{
     new_tool::{NewToolRunArgs, RunMode},
     publish::PublishOriginArg,
-    sandbox_digest::SandboxDigestSourceArg,
     utils::resolve_runner_token,
 };
 use templates::external_tool::{
@@ -106,12 +104,6 @@ enum Commands {
         /// Sandbox OCI image reference (`...@sha256:...`) when --sandbox-source oci
         #[arg(long)]
         sandbox_image: Option<String>,
-
-        /// Runtime identity digest (`sha256:...`) when --runtime sandbox --sandbox-source oci.
-        /// Optional: defaults to the image digest. Not accepted with --sandbox-source bind —
-        /// bind digests are written into tool-metadata.lock.json by `sandbox-bind-sync`.
-        #[arg(long)]
-        runtime_digest: Option<String>,
 
         /// Optional sandbox entrypoint argv, comma-separated
         #[arg(long, value_delimiter = ',')]
@@ -329,16 +321,6 @@ enum Commands {
         path: String,
     },
 
-    /// Compute sandbox runtime digest for a source path
-    SandboxDigest {
-        /// Sandbox source kind (currently: bind)
-        #[arg(long, value_enum, default_value_t = SandboxDigestSourceArg::Bind)]
-        source: SandboxDigestSourceArg,
-
-        /// Path to source input (for bind: rootfs directory)
-        path: String,
-    },
-
     /// Sync bind sandbox metadata with a concrete rootfs directory.
     ///
     /// Optional Docker-assisted mode can build/export rootfs first.
@@ -482,7 +464,6 @@ fn main() -> anyhow::Result<()> {
             invocation_mode,
             sandbox_source,
             sandbox_image,
-            runtime_digest,
             sandbox_entrypoint,
             generate_docker,
             description,
@@ -536,8 +517,7 @@ fn main() -> anyhow::Result<()> {
                 runtime
             };
 
-            let (sandbox_image, runtime_digest, sandbox_entrypoint) = if runtime == Runtime::Sandbox
-            {
+            let (sandbox_image, sandbox_entrypoint) = if runtime == Runtime::Sandbox {
                 let entrypoint = if interactive {
                     interactive::prompt_external_tool_sandbox_entrypoint()?
                 } else {
@@ -549,12 +529,12 @@ fn main() -> anyhow::Result<()> {
                             Some(v) if !interactive => v,
                             _ => interactive::prompt_external_tool_sandbox_image()?,
                         };
-                        (Some(image), runtime_digest, entrypoint)
+                        (Some(image), entrypoint)
                     }
-                    SandboxSource::Bind => (None, runtime_digest, entrypoint),
+                    SandboxSource::Bind => (None, entrypoint),
                 }
             } else {
-                (None, None, Vec::new())
+                (None, Vec::new())
             };
 
             // Interactive flow always gets a confirm prompt so a mistyped
@@ -576,7 +556,6 @@ fn main() -> anyhow::Result<()> {
                 invocation_mode,
                 sandbox_source,
                 sandbox_image: sandbox_image.as_deref(),
-                runtime_digest: runtime_digest.as_deref(),
                 sandbox_entrypoint: &sandbox_entrypoint,
                 generate_docker,
                 description: &description,
@@ -781,8 +760,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Regen { names, paths } => commands::regen::run(&names, &paths),
 
         Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
-
-        Commands::SandboxDigest { source, path } => commands::sandbox_digest::run(source, &path),
 
         Commands::SandboxBindSync {
             tool_dir,

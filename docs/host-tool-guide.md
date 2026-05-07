@@ -39,7 +39,7 @@ Use this sequence for a new sandboxed external tool:
 
 1. Scaffold tool (`new-tool`)
 2. Build adapter artifact (OCI image and optionally bind rootfs export)
-3. Compute/refresh digest (`sandbox-digest` when needed)
+3. Pin OCI image ref or sync local bind rootfs (`sandbox-bind-sync` for bind)
 4. Validate metadata (`check-external-tool`)
 5. Configure + start runner (`BAML_EXTERNAL_TOOLS_DIR`, sandbox env)
 6. Allowlist tool in agent manifest
@@ -101,7 +101,6 @@ Useful sandbox flags:
 - `--sandbox-source oci|bind`
 - `--sandbox-image <ref@sha256:...>` (OCI)
 - `--sandbox-entrypoint <argv,...>`
-- `--runtime-digest <sha256:...>` (optional; auto in common paths)
 - `--generate-docker` (bind-only scaffold helper: emits `adapter/Dockerfile` + `setup_bind_sandbox.sh` wrapper)
 
 Tool naming rules:
@@ -138,7 +137,7 @@ If you chose `--runtime process` (the default), most of the sandbox sections bel
 4. §6 configure runner with `BAML_EXTERNAL_TOOLS_DIR` (`BAML_SANDBOX_*` env vars not needed)
 5. §7 agent wiring + publish + deploy + chat
 
-Skip §2 (sandbox adapter model), §3 (build adapter artifact), §4 (runtime_digest), §9's sandbox-specific entries, and §10 (Bind security).
+Skip §2 (sandbox adapter model), §3 (build adapter artifact), §4 (sandbox runtime identity), §9's sandbox-specific entries, and §10 (Bind local-dev notes).
 
 ## 1.4 Session-mode external tools (`invocation_mode=session`)
 
@@ -205,7 +204,7 @@ docker build -t ghcr.io/acme/my-tool:latest -f <Dockerfile> .
 # push + obtain digest, then use ghcr.io/acme/my-tool@sha256:...
 ```
 
-Set metadata runtime image to OCI ref and ensure `runtime_digest` matches.
+Set metadata `runtime.image.ref` to the digest-pinned OCI ref. No separate `runtime_digest` field is used.
 
 ## 3.2 Bind source
 
@@ -229,7 +228,7 @@ Non-Docker alternatives: `skopeo copy oci:...` followed by manual layer flatten,
 Then:
 
 3. Point source metadata `runtime.image` to a portable relative path such as `{"kind": "bind", "path": "./.tmp/my-tool-rootfs"}`.
-4. Run `sandbox-bind-sync` (§4) to write the local `tool-metadata.lock.json` with the canonical absolute path + `runtime_digest`.
+4. Run `sandbox-bind-sync` (§4) to write the local `tool-metadata.lock.json` with the canonical absolute path.
 5. Ensure the resolved bind path is under `BAML_SANDBOX_BIND_ROOTS` before starting the runner (§6).
 
 Reference runnable example:
@@ -237,27 +236,16 @@ Reference runnable example:
 
 ---
 
-## 4) Digest workflow (`runtime_digest`)
+## 4) Sandbox runtime identity
 
-`runtime_digest` is required for sandbox runtime identity.
+Sandbox runtime identity is source-specific:
 
-### When digest is automatic
+- **OCI** is the distributable runtime format. Identity is the digest-pinned image ref in metadata: `repo@sha256:<64hex>`. No separate `runtime_digest` field is used.
+- **Bind** is a local development convenience. It points at a host rootfs directory and is not treated as a distributable verified artifact. `sandbox-bind-sync` records only the host-resolved path in `tool-metadata.lock.json` and writes the compatibility sidecar bundle when needed.
 
-- `new-tool --runtime sandbox --sandbox-source oci --sandbox-image <...@sha256:...>`: digest derives from image ref suffix.
-- `new-tool --runtime sandbox --sandbox-source bind`: scaffold emits a portable tool-relative bind path and no source `runtime_digest`; run `sandbox-bind-sync` after rootfs materialization to generate the local lock sidecar.
-  - default mode emits metadata only (no setup script)
-  - adding `--generate-docker` emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh` wrapper for Docker build/export + runtime lock/sidecar sync/validation
+### Bind sync command
 
-`setup_bind_sandbox.sh` resolves the SDK CLI command in this order:
-1. `AGENT_PLATFORM_CMD` (if set)
-2. `cargo agent-platform <subcommand>` (validated per subcommand)
-3. `cargo run -q -p cargo-agent-platform -- <subcommand>` (workspace fallback)
-
-This avoids stale installed-plugin mismatches.
-
-### Preferred bind sync command
-
-Use `sandbox-bind-sync` to write the local `tool-metadata.lock.json` with the resolved bind path + digest, generate the adapter sidecar bundle (`/etc/agentium/tool-bundle.json`), and optionally validate metadata. It never mutates committed `tool-metadata.json`. Relative `--rootfs` and `--dockerfile` paths resolve against `--tool-dir`; if `--rootfs` is omitted, it defaults to the source metadata `runtime.image.path`.
+Use `sandbox-bind-sync` to write the local `tool-metadata.lock.json` with the resolved bind path, generate the adapter sidecar bundle (`/etc/agentium/tool-bundle.json`), and optionally validate metadata. It never mutates committed `tool-metadata.json`. Relative `--rootfs` and `--dockerfile` paths resolve against `--tool-dir`; if `--rootfs` is omitted, it defaults to the source metadata `runtime.image.path`.
 
 ```bash
 cargo agent-platform sandbox-bind-sync \
@@ -275,10 +263,9 @@ cargo agent-platform sandbox-bind-sync \
   --check
 ```
 
-### OCI sidecar preparation (no registry pull)
+### OCI sidecar preparation (compatibility only)
 
-Use `sandbox-oci-prepare` when metadata already points at an OCI image and you
-want to materialize the adapter sidecar bundle next to your tool sources:
+`tool-metadata.json` is the builder/runtime source of truth. `sandbox-oci-prepare` can still render a compatibility `tool-bundle.json` next to tool sources for adapters that explicitly need that file, but OCI identity remains the digest-pinned image ref and the bundle is not part of image identity.
 
 ```bash
 cargo agent-platform sandbox-oci-prepare \
@@ -286,18 +273,7 @@ cargo agent-platform sandbox-oci-prepare \
   --check
 ```
 
-This validates OCI metadata/digest consistency and writes the default output at:
-`adapter/sidecars/etc/agentium/tool-bundle.json`.
-
-### When to run `sandbox-digest`
-
-Use `sandbox-digest` for low-level digest-only checks (without metadata patching):
-
-```bash
-cargo agent-platform sandbox-digest --source bind /abs/path/to/rootfs
-```
-
----
+Default output: `adapter/sidecars/etc/agentium/tool-bundle.json`.
 
 ## 5) Validate metadata before deploy
 
@@ -310,8 +286,8 @@ This validates:
 1. schema compliance,
 2. runtime typed parse,
 3. sandbox source consistency:
-   - OCI digest pin + match against `runtime_digest`,
-   - Bind source metadata is portable, `tool-metadata.lock.json` resolves to a directory, and recomputed bind digest matches the locked `runtime_digest`.
+   - OCI image refs are digest-pinned (`repo@sha256:...`),
+   - Bind source metadata is portable and the local lock path, when present, resolves to a directory.
 
 ---
 
@@ -485,8 +461,6 @@ Use the shipped inspector to test adapter protocol directly (outside microVM):
   - the directory doesn't exist or symlink target is missing — re-export rootfs
 - **`bind path is not a directory: <path>`**
   - pointed at a file; bind sources must be directories
-- **`runtime_digest mismatch for bind source: metadata runtime_digest=... but computed=...`**
-  - rootfs mutated since the last sync; rerun `sandbox-bind-sync` to refresh `tool-metadata.lock.json` + sidecar bundle
 - **`pull_policy=always is invalid for bind sandbox images`**
   - `PullPolicy::Always` applies only to OCI; drop it or switch source to `oci`
 - **`unable to find library -lcap-ng`**

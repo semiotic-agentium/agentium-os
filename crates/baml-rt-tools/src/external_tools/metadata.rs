@@ -76,9 +76,9 @@ pub struct ExternalToolMetadata {
     /// the wrapper default (§4.2 of `tool_sandbox.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<ToolRuntime>,
-    /// Runtime identity digest for sandbox runtimes (`sha256:<hex>`).
-    ///
-    /// Required when `runtime.kind == "sandbox"`; omitted for process tools.
+    /// Deprecated legacy runtime digest field. New metadata must not use this:
+    /// OCI identity is `runtime.image.ref` (`repo@sha256:...`) and bind is a
+    /// local development path without distributable artifact identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_digest: Option<String>,
     /// Optional session-coordination BAML declaration. When set, the builder
@@ -249,14 +249,14 @@ pub fn read_external_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
 /// Read authored metadata and resolve it into the launch-ready runtime view.
 ///
 /// The committed source file stays portable (relative bind paths, no
-/// `runtime_digest`); the lock — written by `sandbox-bind-sync` and gitignored
-/// — supplies the canonical absolute bind path and bind digest.
+/// runtime identity); the lock — written by `sandbox-bind-sync` and gitignored
+/// — supplies the canonical absolute bind path.
 ///
 /// Behavior per runtime kind:
 /// - `Sandbox { image: Bind { path } }`: relative `path` is resolved against
 ///   `dir` so the runtime never sees a relative bind path. If a lock with
 ///   `image_path_abs` is present it overrides the resolved path.
-/// - Bind `runtime_digest` from the lock overrides the source value.
+/// - Bind lock supplies only local path resolution; no digest is merged.
 /// - `Process` and OCI: lock is ignored.
 pub fn read_runtime_external_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
     let mut parsed = read_external_metadata(dir)?;
@@ -283,13 +283,6 @@ fn apply_runtime_lock(dir: &Path, meta: &mut ExternalToolMetadata) -> Result<()>
         if let Some(lock) = &lock {
             if let Some(abs) = &lock.image_path_abs {
                 *path = abs.clone();
-            }
-            // Lock is the source of truth for bind digests. Always override —
-            // a stale `runtime_digest` smuggled into committed source must not
-            // shadow a fresh sync. Source pollution is caught separately by
-            // `check-external-tool` lint and `sandbox-bind-sync` validation.
-            if let Some(digest) = &lock.runtime_digest {
-                meta.runtime_digest = Some(digest.clone());
             }
         }
     }

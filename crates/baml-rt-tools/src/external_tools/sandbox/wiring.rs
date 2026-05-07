@@ -48,8 +48,6 @@ pub fn fresh_runner_id() -> String {
 ///
 /// Behavior:
 /// - Reads `meta.runtime` (must be `Sandbox`) for `image` + `entrypoint`.
-/// - Carries `meta.runtime_digest` onto the spec for the §9.4 reattach
-///   checklist.
 /// - Uses deny-all `NetworkPolicy`, no secrets, no volumes.
 /// - Uses §10.3 default idle / max durations.
 ///
@@ -103,7 +101,6 @@ fn build_default_spec_builder(
         .as_ref()
         .and_then(|adapter| adapter.workdir.clone())
         .unwrap_or_else(|| "/".to_string());
-    let runtime_digest = meta.runtime_digest.clone();
     let secret_env = build_secret_env(meta);
 
     Ok(Arc::new(move |key: &SandboxCacheKey| {
@@ -112,7 +109,6 @@ fn build_default_spec_builder(
             &image,
             &guest_workdir,
             &entrypoint,
-            runtime_digest.clone(),
             secret_env.clone(),
         ))
     }))
@@ -123,7 +119,6 @@ fn build_stock_spec(
     image: &SandboxImageSource,
     guest_workdir: &str,
     entrypoint: &[String],
-    runtime_digest: Option<String>,
     env: BTreeMap<String, String>,
 ) -> SandboxSpec {
     SandboxSpec {
@@ -143,7 +138,7 @@ fn build_stock_spec(
         detached: true,
         pull_policy: PullPolicy::IfMissing,
         entrypoint: entrypoint.to_vec(),
-        runtime_digest,
+        runtime_digest: None,
         policy_hash: None,
     }
 }

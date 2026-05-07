@@ -751,12 +751,8 @@ if __name__ == "__main__":
 
 fn scaffold_sidecar_bundle(ctx: &ScaffoldContext<'_>) -> String {
     let meta = metadata_json::build_metadata(ctx);
-    let runtime_digest = meta
-        .runtime_digest
-        .as_deref()
-        .unwrap_or("sha256:0000000000000000000000000000000000000000000000000000000000000000");
-    let bundle = render_sidecar_bundle(&meta, runtime_digest)
-        .expect("render sidecar bundle from scaffold metadata");
+    let bundle =
+        render_sidecar_bundle(&meta).expect("render sidecar bundle from scaffold metadata");
     serde_json::to_string_pretty(&bundle).expect("serialize scaffold sidecar bundle") + "\n"
 }
 

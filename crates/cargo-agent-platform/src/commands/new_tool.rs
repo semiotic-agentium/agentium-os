@@ -57,7 +57,6 @@ pub struct NewToolRunArgs<'a> {
     pub invocation_mode: InvocationMode,
     pub sandbox_source: SandboxSource,
     pub sandbox_image: Option<&'a str>,
-    pub runtime_digest: Option<&'a str>,
     pub sandbox_entrypoint: &'a [String],
     pub generate_docker: bool,
     pub description: &'a str,
@@ -75,7 +74,6 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         invocation_mode,
         sandbox_source,
         sandbox_image,
-        runtime_digest,
         sandbox_entrypoint,
         generate_docker,
         description,
@@ -105,13 +103,12 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
     validate_generate_docker_option(runtime, sandbox_source, generate_docker)?;
     validate_invocation_mode(runtime, invocation_mode)?;
 
-    let (sandbox_image, runtime_digest) = validate_runtime_options(
+    let sandbox_image = validate_runtime_options(
         name,
         bundle,
         runtime,
         sandbox_source,
         sandbox_image,
-        runtime_digest,
         sandbox_entrypoint,
     )?;
 
@@ -125,7 +122,6 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         invocation_mode,
         sandbox_source: Some(sandbox_source),
         sandbox_image,
-        runtime_digest,
         sandbox_entrypoint: sandbox_entrypoint.to_vec(),
         generate_docker,
     };
@@ -153,10 +149,6 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
             println!(
                 "  Image:     {}",
                 style(format!("{:?}", ctx.sandbox_image)).cyan()
-            );
-            println!(
-                "  Digest:    {}",
-                style(ctx.runtime_digest.as_deref().unwrap_or("(missing)")).cyan()
             );
             if !ctx.sandbox_entrypoint.is_empty() {
                 println!(
@@ -353,18 +345,16 @@ fn validate_runtime_options(
     runtime: Runtime,
     sandbox_source: SandboxSource,
     sandbox_image: Option<&str>,
-    runtime_digest: Option<&str>,
     sandbox_entrypoint: &[String],
-) -> Result<(Option<SandboxImageRef>, Option<String>)> {
+) -> Result<Option<SandboxImageRef>> {
     match runtime {
         Runtime::Process => {
-            if sandbox_image.is_some() || runtime_digest.is_some() || !sandbox_entrypoint.is_empty()
-            {
+            if sandbox_image.is_some() || !sandbox_entrypoint.is_empty() {
                 bail!(
                     "Error: sandbox-only options were supplied with --runtime process.\nHint: remove --sandbox-* options or use --runtime sandbox."
                 );
             }
-            Ok((None, None))
+            Ok(None)
         }
         Runtime::Sandbox => match sandbox_source {
             SandboxSource::Oci => {
@@ -376,43 +366,24 @@ fn validate_runtime_options(
                         "Error: --sandbox-image must be digest-pinned (missing @sha256:): {image}"
                     );
                 };
-                if !digest_from_image.starts_with("sha256:") {
-                    bail!("Error: --sandbox-image must include @sha256:<64-hex>: {image}");
-                }
-                let digest = runtime_digest.unwrap_or(digest_from_image);
-                validate_runtime_digest(digest)?;
-                Ok((
-                    Some(SandboxImageRef::Oci {
-                        r#ref: image.to_string(),
-                    }),
-                    Some(digest.to_string()),
-                ))
+                validate_image_digest(digest_from_image)?;
+                Ok(Some(SandboxImageRef::Oci {
+                    r#ref: image.to_string(),
+                }))
             }
-            SandboxSource::Bind => {
-                if runtime_digest.is_some() {
-                    bail!(
-                        "Error: --runtime-digest is not supported with --sandbox-source bind. \
-                         Bind digests are computed and stored in tool-metadata.lock.json by \
-                         `cargo agent-platform sandbox-bind-sync`."
-                    );
-                }
-                Ok((
-                    Some(SandboxImageRef::Bind {
-                        path: default_bind_rootfs_path(name, bundle),
-                    }),
-                    None,
-                ))
-            }
+            SandboxSource::Bind => Ok(Some(SandboxImageRef::Bind {
+                path: default_bind_rootfs_path(name, bundle),
+            })),
         },
     }
 }
 
-fn validate_runtime_digest(digest: &str) -> Result<()> {
+fn validate_image_digest(digest: &str) -> Result<()> {
     let digest_ok = digest.starts_with("sha256:")
         && digest.len() == 71
         && digest[7..].chars().all(|c| c.is_ascii_hexdigit());
     if !digest_ok {
-        bail!("Error: --runtime-digest must match sha256:<64-hex>; got '{digest}'.");
+        bail!("Error: OCI image digest must match sha256:<64-hex>; got '{digest}'.");
     }
     Ok(())
 }
@@ -484,7 +455,6 @@ mod tests {
             invocation_mode: InvocationMode::SingleShot,
             sandbox_source: Some(SandboxSource::Oci),
             sandbox_image: None,
-            runtime_digest: None,
             sandbox_entrypoint: Vec::new(),
             generate_docker: false,
         }
@@ -578,7 +548,6 @@ mod tests {
             invocation_mode: InvocationMode::SingleShot,
             sandbox_source: Some(SandboxSource::Oci),
             sandbox_image: None,
-            runtime_digest: None,
             sandbox_entrypoint: Vec::new(),
             generate_docker: false,
         };
@@ -614,9 +583,6 @@ mod tests {
             r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .to_string(),
         });
-        ctx.runtime_digest = Some(
-            "sha256:2222222222222222222222222222222222222222222222222222222222222222".to_string(),
-        );
         ctx.sandbox_entrypoint = vec!["/app/tool-adapter".to_string()];
 
         let raw = metadata_json::generate(&ctx);
@@ -638,10 +604,7 @@ mod tests {
             }
             other => panic!("expected sandbox runtime, got {other:?}"),
         }
-        assert_eq!(
-            parsed.runtime_digest.as_deref(),
-            Some("sha256:2222222222222222222222222222222222222222222222222222222222222222")
-        );
+        assert!(parsed.runtime_digest.is_none());
         assert!(matches!(
             parsed.invocation_mode,
             baml_rt_tools::external_tools::InvocationMode::Session
@@ -649,13 +612,12 @@ mod tests {
     }
 
     #[test]
-    fn bind_sandbox_defaults_to_tool_relative_rootfs_and_no_digest() {
-        let (image, digest) = validate_runtime_options(
+    fn bind_sandbox_defaults_to_tool_relative_rootfs() {
+        let image = validate_runtime_options(
             "echo",
             "dev",
             Runtime::Sandbox,
             SandboxSource::Bind,
-            None,
             None,
             &[],
         )
@@ -667,30 +629,6 @@ mod tests {
             }
             other => panic!("expected bind image, got {other:?}"),
         }
-
-        assert!(
-            digest.is_none(),
-            "bind source must not carry runtime_digest; got {digest:?}"
-        );
-    }
-
-    #[test]
-    fn bind_sandbox_rejects_runtime_digest_flag() {
-        let err = validate_runtime_options(
-            "echo",
-            "dev",
-            Runtime::Sandbox,
-            SandboxSource::Bind,
-            None,
-            Some("sha256:1111111111111111111111111111111111111111111111111111111111111111"),
-            &[],
-        )
-        .expect_err("bind + --runtime-digest must be rejected");
-        assert!(
-            err.to_string()
-                .contains("not supported with --sandbox-source bind"),
-            "unexpected error: {err}"
-        );
     }
 
     #[test]
@@ -701,7 +639,6 @@ mod tests {
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
             path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = None;
 
         let files = build_file_set(&bind_ctx);
         assert!(
@@ -732,7 +669,6 @@ mod tests {
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
             path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = None;
         bind_ctx.generate_docker = true;
 
         let files = build_file_set(&bind_ctx);
@@ -787,9 +723,6 @@ mod tests {
             r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .to_string(),
         });
-        session_ctx.runtime_digest = Some(
-            "sha256:1111111111111111111111111111111111111111111111111111111111111111".to_string(),
-        );
         let files = build_file_set(&session_ctx);
         let readme = files
             .iter()
@@ -809,7 +742,6 @@ mod tests {
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
             path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = None;
         bind_ctx.generate_docker = true;
 
         let files = build_file_set(&bind_ctx);
@@ -836,7 +768,6 @@ mod tests {
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
             path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = None;
 
         let files = build_file_set(&bind_ctx);
         let gitignore = files
@@ -861,7 +792,6 @@ mod tests {
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
             path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = None;
 
         let files = build_file_set(&bind_ctx);
         let gitignore = files
@@ -883,7 +813,6 @@ mod tests {
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
             path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = None;
 
         let files = build_file_set(&bind_ctx);
         let gitignore = files

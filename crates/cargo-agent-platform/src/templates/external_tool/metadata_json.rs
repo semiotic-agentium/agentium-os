@@ -94,12 +94,10 @@ pub fn build_metadata(ctx: &ScaffoldContext<'_>) -> ExternalToolMetadata {
                 entrypoint: ctx.sandbox_entrypoint.clone(),
                 adapter: Some(default_adapter_spec(ctx.language)),
             }));
-            // Bind sandboxes carry no `runtime_digest` in source — it lives in
-            // the host-resolved `tool-metadata.lock.json` written by
-            // `sandbox-bind-sync`. OCI sandboxes embed the digest in the image
-            // ref; the explicit `runtime_digest` field is optional and only set
-            // when the caller passed `--runtime-digest`.
-            meta.runtime_digest = ctx.runtime_digest.clone();
+            // Sandbox artifact identity is source-specific and never emitted
+            // as a separate `runtime_digest`: OCI uses the digest-pinned image
+            // ref, while bind is a local development path.
+            meta.runtime_digest = None;
         }
     }
 

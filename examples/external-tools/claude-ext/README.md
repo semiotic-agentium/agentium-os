@@ -76,8 +76,8 @@ Then reference this tool in an agent manifest as:
 
 These notes apply to both bind modes:
 
-- metadata starts with a placeholder bind path and placeholder digest,
-- real `runtime.image.path` + `runtime_digest` must be patched after rootfs exists,
+- metadata uses a portable tool-relative bind path,
+- local absolute bind paths live in gitignored `tool-metadata.lock.json`,
 - `check-external-tool` should pass before running the runner,
 - sandbox adapters should support TSRPC-framed JSON-RPC for parity with sandbox execution.
 
@@ -100,7 +100,7 @@ Helper scripts are scaffolded at:
 ```
 
 This script wraps `sandbox-bind-sync` to build `adapter/Dockerfile`, export bind
-rootfs, patch metadata, materialize adapter sidecar bundle (`/etc/agentium/tool-bundle.json`),
+rootfs, write the local lock file, materialize adapter sidecar bundle (`/etc/agentium/tool-bundle.json`),
 and run `check-external-tool`.
 
 > Bind rootfs mode copies filesystem contents only. Docker image config

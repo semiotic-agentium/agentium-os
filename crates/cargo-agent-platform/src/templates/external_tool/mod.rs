@@ -207,8 +207,6 @@ pub struct ScaffoldContext<'a> {
     pub sandbox_source: Option<SandboxSource>,
     /// Sandbox image reference/path when runtime is sandbox.
     pub sandbox_image: Option<SandboxImageRef>,
-    /// Runtime identity digest (`sha256:...`) when runtime is sandbox.
-    pub runtime_digest: Option<String>,
     /// Optional sandbox entrypoint argv.
     pub sandbox_entrypoint: Vec<String>,
     /// Whether to scaffold Docker-oriented bind helper artifacts.
