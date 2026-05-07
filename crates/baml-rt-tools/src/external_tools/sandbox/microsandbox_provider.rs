@@ -72,6 +72,8 @@ const STASH_POLICY_HASH: &str = "BAML_POLICY_HASH";
 #[cfg(feature = "sandbox-provider")]
 const STASH_MAX_DURATION_SECS: &str = "BAML_MAX_DURATION_SECS";
 #[cfg(feature = "sandbox-provider")]
+const STASH_GUEST_WORKDIR: &str = "BAML_GUEST_WORKDIR";
+#[cfg(feature = "sandbox-provider")]
 const SIDECAR_BUNDLE_PATH: &str = "etc/agentium/tool-bundle.json";
 
 /// How long to wait for `stop_and_wait` before falling back to `kill`.
@@ -170,6 +172,7 @@ impl SandboxProvider for MicrosandboxProvider {
     async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle> {
         let name = spec.name.clone();
         let max_duration = spec.max_duration;
+        let guest_workdir = spec.guest_workdir.clone();
         let runtime_digest = spec.runtime_digest.clone();
         let policy_hash = spec.policy_hash.clone();
 
@@ -185,7 +188,7 @@ impl SandboxProvider for MicrosandboxProvider {
         let mut builder = microsandbox::Sandbox::builder(&name)
             .cpus(clamp_cpus(spec.cpus))
             .memory(spec.memory_mib)
-            .workdir("/home/sandbox/workspace")
+            .workdir(&guest_workdir)
             .idle_timeout(spec.idle_timeout.as_secs())
             .max_duration(spec.max_duration.as_secs())
             .replace(); // idempotent by name-replace per trait contract
@@ -213,7 +216,7 @@ impl SandboxProvider for MicrosandboxProvider {
         for (k, v) in [
             ("HOME", "/home/sandbox"),
             ("USER", "sandbox"),
-            ("PWD", "/home/sandbox/workspace"),
+            ("PWD", guest_workdir.as_str()),
             ("XDG_CONFIG_HOME", "/home/sandbox/.config"),
             ("XDG_CACHE_HOME", "/home/sandbox/.cache"),
             ("TMPDIR", "/tmp"),
@@ -235,6 +238,7 @@ impl SandboxProvider for MicrosandboxProvider {
             STASH_MAX_DURATION_SECS,
             spec.max_duration.as_secs().to_string(),
         );
+        builder = builder.env(STASH_GUEST_WORKDIR, &guest_workdir);
 
         // Secrets — create-time egress-bound bindings injected via
         // microsandbox placeholder substitution (§10.1 primary path).
@@ -286,6 +290,7 @@ impl SandboxProvider for MicrosandboxProvider {
         Ok(SandboxHandle {
             name,
             created_at: SystemTime::now(),
+            guest_workdir,
             runtime_digest,
             policy_hash,
             max_duration,
@@ -308,7 +313,7 @@ impl SandboxProvider for MicrosandboxProvider {
         // fall back to PATH lookup for compatibility.
         let exec_handle = match sandbox
             .exec_stream_with("/tool-adapter", |opts| {
-                opts.cwd("/home/sandbox/workspace").stdin_pipe()
+                opts.cwd(&handle.guest_workdir).stdin_pipe()
             })
             .await
         {
@@ -321,7 +326,7 @@ impl SandboxProvider for MicrosandboxProvider {
                 );
                 sandbox
                     .exec_stream_with("tool-adapter", |opts| {
-                        opts.cwd("/home/sandbox/workspace").stdin_pipe()
+                        opts.cwd(&handle.guest_workdir).stdin_pipe()
                     })
                     .await
                     .map_err(|e| {
@@ -407,6 +412,7 @@ impl SandboxProvider for MicrosandboxProvider {
                     .unwrap_or_else(SystemTime::now),
                 // Metadata stash recovery is done lazily on reattach(); list
                 // returns name-only handles.
+                guest_workdir: "/".to_string(),
                 runtime_digest: None,
                 policy_hash: None,
                 max_duration: Duration::from_secs(0),
@@ -424,12 +430,14 @@ impl SandboxProvider for MicrosandboxProvider {
 
         // Recover stashed metadata by running `printenv` on the guest. One
         // exec, parse the block, bail gracefully if anything is missing.
-        let (runtime_digest, policy_hash, max_duration) = recover_reattach_metadata(&sandbox)
-            .await
-            .unwrap_or_else(|e| {
-                debug!(?e, sandbox = %name, "reattach metadata recovery failed; using defaults");
-                (None, None, Duration::from_secs(0))
-            });
+        let (runtime_digest, policy_hash, max_duration, guest_workdir) = recover_reattach_metadata(
+            &sandbox,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            debug!(?e, sandbox = %name, "reattach metadata recovery failed; using defaults");
+            (None, None, Duration::from_secs(0), "/".to_string())
+        });
 
         self.live.insert(name.to_string(), sandbox);
 
@@ -439,6 +447,7 @@ impl SandboxProvider for MicrosandboxProvider {
             // creation time can be recovered via Sandbox::get(name) if
             // callers need it later; §9.4 age check uses max_duration anyway.
             created_at: SystemTime::now(),
+            guest_workdir,
             runtime_digest,
             policy_hash,
             max_duration,
@@ -452,7 +461,7 @@ impl SandboxProvider for MicrosandboxProvider {
 #[cfg(feature = "sandbox-provider")]
 async fn recover_reattach_metadata(
     sandbox: &microsandbox::Sandbox,
-) -> Result<(Option<String>, Option<String>, Duration)> {
+) -> Result<(Option<String>, Option<String>, Duration, String)> {
     let output = sandbox
         .exec("printenv", std::iter::empty::<&str>())
         .await
@@ -464,6 +473,7 @@ async fn recover_reattach_metadata(
     let mut runtime_digest = None;
     let mut policy_hash = None;
     let mut max_duration_secs: u64 = 0;
+    let mut guest_workdir = "/".to_string();
 
     for line in stdout.lines() {
         if let Some(v) = line.strip_prefix(&format!("{STASH_RUNTIME_DIGEST}="))
@@ -478,6 +488,10 @@ async fn recover_reattach_metadata(
             && let Ok(n) = v.parse()
         {
             max_duration_secs = n;
+        } else if let Some(v) = line.strip_prefix(&format!("{STASH_GUEST_WORKDIR}="))
+            && !v.is_empty()
+        {
+            guest_workdir = v.to_string();
         }
     }
 
@@ -485,6 +499,7 @@ async fn recover_reattach_metadata(
         runtime_digest,
         policy_hash,
         Duration::from_secs(max_duration_secs),
+        guest_workdir,
     ))
 }
 

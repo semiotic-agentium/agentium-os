@@ -51,6 +51,7 @@ This emits, among others:
 Update `examples/external-tools/meteo-tool/tool-metadata.json` schema/name as needed:
 - `name` (e.g. `dev/meteo`) must match the agent tool allowlist exactly
 - keep sandbox runtime shape (`runtime.kind = sandbox`, bind image)
+- set `runtime.adapter.workdir` to the guest cwd your tool expects; that directory must exist inside the sandbox rootfs. If omitted, the runner uses `/`.
 
 Implement `main.py` handlers for:
 - `tool/describe`

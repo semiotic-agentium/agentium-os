@@ -98,6 +98,11 @@ fn build_default_spec_builder(
         }
     };
     let entrypoint = sandbox_spec.entrypoint.clone();
+    let guest_workdir = sandbox_spec
+        .adapter
+        .as_ref()
+        .and_then(|adapter| adapter.workdir.clone())
+        .unwrap_or_else(|| "/".to_string());
     let runtime_digest = meta.runtime_digest.clone();
     let secret_env = build_secret_env(meta);
 
@@ -105,6 +110,7 @@ fn build_default_spec_builder(
         Ok(build_stock_spec(
             cache.encode_name(key),
             &image,
+            &guest_workdir,
             &entrypoint,
             runtime_digest.clone(),
             secret_env.clone(),
@@ -115,6 +121,7 @@ fn build_default_spec_builder(
 fn build_stock_spec(
     name: String,
     image: &SandboxImageSource,
+    guest_workdir: &str,
     entrypoint: &[String],
     runtime_digest: Option<String>,
     env: BTreeMap<String, String>,
@@ -122,6 +129,7 @@ fn build_stock_spec(
     SandboxSpec {
         name,
         image: image.clone(),
+        guest_workdir: guest_workdir.to_string(),
         cpus: 1,
         memory_mib: 512,
         env,

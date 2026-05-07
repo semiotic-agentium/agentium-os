@@ -184,6 +184,9 @@ fn validate_reattach(handle: &SandboxHandle, spec: &SandboxSpec) -> bool {
     {
         return false;
     }
+    if handle.guest_workdir != spec.guest_workdir {
+        return false;
+    }
     true
 }
 

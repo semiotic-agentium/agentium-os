@@ -226,7 +226,10 @@
                   "minItems": 1,
                   "description": "argv used by /tool-adapter to invoke tool child process"
                 },
-                "workdir": { "type": "string" }
+                "workdir": {
+                  "type": "string",
+                  "description": "Guest working directory used for sandbox creation, /tool-adapter launch cwd, and default PWD. Applies across sandbox image sources (bind, OCI, future disk backends). Must already exist inside the guest filesystem; if omitted, the runner falls back to '/'."
+                }
               },
               "additionalProperties": false
             }

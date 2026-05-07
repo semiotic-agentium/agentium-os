@@ -351,7 +351,7 @@
       "command": [
         "/tool-adapter"
       ],
-      "workdir": "/"
+      "workdir": "/home/sandbox/workspace"
     }
   }
 }

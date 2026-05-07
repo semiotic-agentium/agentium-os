@@ -135,6 +135,9 @@ pub struct SandboxSpec {
     /// (§9.2). Provider uses this for list/reattach.
     pub name: String,
     pub image: SandboxImageSource,
+    /// Guest-side working directory used for sandbox creation, adapter exec,
+    /// and default `PWD`. Must exist inside the guest filesystem.
+    pub guest_workdir: String,
     pub cpus: u32,
     pub memory_mib: u32,
     pub env: BTreeMap<String, String>,
@@ -170,6 +173,7 @@ impl SandboxSpec {
         Self {
             name: name.into(),
             image: SandboxImageSource::Oci(image.into()),
+            guest_workdir: "/".to_string(),
             cpus: 1,
             memory_mib: 512,
             env: BTreeMap::new(),
@@ -195,6 +199,8 @@ impl SandboxSpec {
 pub struct SandboxHandle {
     pub name: String,
     pub created_at: SystemTime,
+    /// Guest-side working directory used when (re)launching `/tool-adapter`.
+    pub guest_workdir: String,
     /// Snapshot of the digest / policy hash at create time — used by the
     /// reattach checklist to detect drift (§9.4).
     pub runtime_digest: Option<String>,
@@ -210,6 +216,7 @@ impl SandboxHandle {
         Self {
             name: name.into(),
             created_at: SystemTime::now(),
+            guest_workdir: "/".to_string(),
             runtime_digest: None,
             policy_hash: None,
             max_duration,

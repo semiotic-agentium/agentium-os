@@ -124,6 +124,10 @@ Runtime-specific emissions:
 
 For sandbox tools, metadata points to a sandbox image source, but you still need to build/provide the adapter artifact (next section).
 
+If `runtime.adapter.workdir` is set in `tool-metadata.json`, the runner uses it as the guest working directory when creating the sandbox and launching `/tool-adapter`, and also as the default `PWD`. That path must already exist inside the guest filesystem/rootfs. If omitted, the runner falls back to `/`.
+
+This field is the authoritative runtime contract across sandbox image sources: Bind, OCI, and future sandbox backends such as Disk. Do not rely on an OCI image's Dockerfile `WORKDIR` being discovered automatically by the runner — if your tool expects a non-`/` cwd, declare the same path explicitly in `runtime.adapter.workdir`.
+
 ## 1.3 Process-runtime shortcut (non-sandboxed)
 
 If you chose `--runtime process` (the default), most of the sandbox sections below do not apply. Minimum path:
@@ -186,7 +190,7 @@ Adapter lookup order at invoke time:
 1. absolute path `/tool-adapter` (distroless-friendly, matches bind-rootfs convention),
 2. `tool-adapter` via guest `PATH` (fallback for images with a populated PATH).
 
-Place your adapter at `/tool-adapter` for the most reliable behavior.
+Place your adapter at `/tool-adapter` for the most reliable behavior. If your tool process needs a specific cwd, declare it in `runtime.adapter.workdir`; it applies across sandbox image sources (OCI, bind, and future sandbox backends) and must exist in the guest filesystem.
 
 ---
 
