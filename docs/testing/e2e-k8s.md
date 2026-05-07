@@ -164,17 +164,52 @@ On any scenario failure, the harness dumps diagnostic data before tearing down:
 ./e2e-k8s-logs/<timestamp>/
 ├── agentium-agentium-os-runner-0.log            # Current pod logs
 ├── agentium-agentium-os-runner-0-previous.log   # Previous container logs (if pod restarted)
+├── agentium-agentium-os-runner-0-tail.log       # Tail re-captured ~2s after the dump (catches lines emitted post-failure)
 ├── agentium-agentium-os-runner-1.log
 ├── agentium-agentium-os-runner-1-previous.log
+├── agentium-agentium-os-runner-1-tail.log
 ├── agentium-agentium-os-surrealdb-0.log
 ├── agentium-agentium-os-surrealdb-0-previous.log
-├── cluster_runners.json                         # SurrealDB cluster registry dump
+├── describe-pods.txt                            # `kubectl describe pod` for each chart pod
+├── events.txt                                   # Namespace events sorted by lastTimestamp
+├── all-pods.txt                                 # `kubectl get pods -A -o wide`
+├── cluster-state.yaml                           # StatefulSet/Service state in the namespace
+├── configmaps-list.txt                          # ConfigMap *names* (no data — fnox-config carries LLM keys)
+├── secrets-list.txt                             # Secret *names* (no values — never captured)
+├── port-forward.log                             # `kubectl port-forward` log when smoke ran far enough to start it
+├── cluster_runners.json                         # SurrealDB cluster registry dump (see status field)
 └── cluster_agent_placements.json
 ```
 
 File names reflect the chart-rendered StatefulSet names
 (`<release>-agentium-os-runner`, `<release>-agentium-os-surrealdb`). The
 default release is `agentium`.
+
+When triaging a failed lane, work from cluster layer down to runner layer:
+
+| Layer | File | What it answers |
+|-------|------|-----------------|
+| Scheduling / image pull / OOM / eviction | `describe-pods.txt` | Why a pod is not Running, last container exit reason, ImagePullBackOff details |
+| NetworkPolicy drops, scheduling failures, kubelet rejections | `events.txt` | Cluster-side events the runner never sees |
+| Cluster-wide pod state | `all-pods.txt` | Whether expected pods exist at all, on which node, with what age |
+| Chart wiring | `cluster-state.yaml` | StatefulSets and Services actually rendered (replica count, image, env, mounts) |
+| Operator transport | `port-forward.log` | Whether `kubectl port-forward` died, was reset, or never bound |
+| Runner request handling | `*-tail.log` | Lines emitted in the seconds **after** the original log dump — usually the panic / 5xx body |
+| Runner startup / steady state | `*.log`, `*-previous.log` | Full per-container log; `--previous` covers the pre-restart container if pod looped |
+| Cluster state in SurrealDB | `cluster_runners.json`, `cluster_agent_placements.json` | Whether runners registered and where agents are placed |
+
+`cluster_runners.json` and `cluster_agent_placements.json` carry a
+top-level `_query_status` field (`ok` or `failed`); on failure an
+`_error` field gives the underlying SurrealDB / `kubectl exec` message.
+This means an empty `result` array unambiguously says "table is empty"
+rather than "the query never reached SurrealDB".
+
+ConfigMap and Secret *data* are deliberately never written to
+artifacts; only their names are captured (`configmaps-list.txt`,
+`secrets-list.txt`). The `fnox-config` ConfigMap is built from
+`fnox.toml` and carries `default = "..."` LLM API keys when the repo
+root has a populated fnox file, so `-o yaml` on either resource would
+leak credentials into the artifact zip.
 
 ### SurrealDB introspection
 

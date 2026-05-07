@@ -28,8 +28,14 @@ Options:
   -h, --help           Show this message and exit
 
 Environment:
-  RUNNER_TOKEN         If set, used directly. Otherwise the script reads it
-                       from the named Kubernetes secret.
+  RUNNER_TOKEN              If set, used directly. Otherwise the script reads
+                            it from the named Kubernetes secret.
+  K8S_PILOT_PF_LOG_DIR      Directory for the kubectl port-forward log. When
+                            set, the log is written to <dir>/port-forward.log
+                            and survives this script's cleanup. When unset,
+                            the log goes to a tempfile that is removed on
+                            exit. scripts/verify-k8s-pilot-package.sh sets
+                            this so the log lands beside its other artifacts.
 
 Exit codes:
   0  smoke passed
@@ -93,7 +99,7 @@ cleanup() {
     kill "$PF_PID" 2>/dev/null || true
     wait "$PF_PID" 2>/dev/null || true
   fi
-  if [[ -n "$PF_LOG" && -f "$PF_LOG" ]]; then
+  if [[ -n "$PF_LOG" && -f "$PF_LOG" && -z "${K8S_PILOT_PF_LOG_DIR:-}" ]]; then
     rm -f "$PF_LOG"
   fi
   exit "$code"
@@ -121,7 +127,13 @@ if [[ "$DO_PORT_FORWARD" -eq 1 ]]; then
   if curl -sf -o /dev/null --connect-timeout 1 "http://localhost:$LOCAL_PORT/healthz" 2>/dev/null; then
     fail "localhost:$LOCAL_PORT already responds to /healthz — another process is bound here. Stop it or re-run with --local-port <port>." 1
   fi
-  PF_LOG="$(mktemp)"
+  if [[ -n "${K8S_PILOT_PF_LOG_DIR:-}" ]]; then
+    mkdir -p "$K8S_PILOT_PF_LOG_DIR"
+    PF_LOG="${K8S_PILOT_PF_LOG_DIR}/port-forward.log"
+    log "    port-forward log persisted at $PF_LOG"
+  else
+    PF_LOG="$(mktemp)"
+  fi
   kubectl -n "$NAMESPACE" port-forward "svc/$API_SERVICE" "$LOCAL_PORT:$API_PORT" \
     >"$PF_LOG" 2>&1 &
   PF_PID=$!

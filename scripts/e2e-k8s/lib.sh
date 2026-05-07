@@ -58,7 +58,10 @@ LOG_DIR=""
 log_info()  { echo "  [INFO]  $*"; }
 log_pass()  { echo "  [PASS]  $*"; }
 log_fail()  { echo "  [FAIL]  $*"; HAS_FAILURE=1; }
-log_warn()  { echo "  [WARN]  $*"; }
+# log_warn writes to stderr so callers whose stdout is reserved for a
+# structured payload (e.g. surreal_query piped to a JSON file) can still
+# emit warnings without corrupting the payload.
+log_warn()  { echo "  [WARN]  $*" >&2; }
 log_step()  { echo ""; echo "--- $* ---"; }
 
 # ---------------------------------------------------------------------------
@@ -218,6 +221,20 @@ publish_and_deploy() {
 # Executes a SurrealQL statement via kubectl exec on the SurrealDB pod.
 # Defaults: namespace=cluster, database=registry.
 # Requires resolve_chart_names to have populated $SURREAL_POD_0.
+#
+# Output contract (stable, machine-readable in artifact dumps):
+#   On success:
+#     [{"result": [...rows...], "_query_status": "ok"}]
+#   On failure (kubectl exec non-zero, or non-JSON output):
+#     [{"result": [], "_query_status": "failed", "_error": "..."}]
+#     and the function returns non-zero.
+#
+# The `_query_status` field disambiguates "table is empty" from "the
+# query never reached SurrealDB" in CI artifacts. The outer-array shape
+# is preserved so existing jq expressions (`.[] | .result | .[]`) keep
+# working unchanged. Stderr from the helper itself stays on stderr — the
+# stdout stream is reserved for the structured payload so callers can
+# safely redirect it to a file.
 surreal_query() {
   local sql="$1"
   local ns="${2:-cluster}"
@@ -227,9 +244,11 @@ surreal_query() {
     # non-zero return, not a hard shell exit. ${VAR:?} would kill the
     # whole script right through any protective `|| true`.
     log_warn "surreal_query: SURREAL_POD_0 not set — call resolve_chart_names first"
+    jq -nc '[{result:[], _query_status:"failed", _error:"SURREAL_POD_0 not set"}]'
     return 1
   fi
-  local raw
+  local stderr_file raw exec_status stderr_text
+  stderr_file=$(mktemp)
   raw=$(echo "$sql" | kubectl exec -n "$NAMESPACE" "$SURREAL_POD_0" -c surrealdb -i -- \
     /surreal sql \
     --endpoint http://localhost:8000 \
@@ -237,10 +256,25 @@ surreal_query() {
     --password "$SURREAL_PASS" \
     --namespace "$ns" \
     --database "$db" \
-    --json 2>/dev/null)
-  # SurrealDB v3 outputs [[...rows...]], normalize to v2-like [{"result": [...rows...]}]
-  # so existing jq expressions using `.[] | .result | .[]` continue to work.
-  echo "$raw" | jq '[{result: .[0] // []}]' 2>/dev/null || echo '[{"result":[]}]'
+    --json 2>"$stderr_file")
+  exec_status=$?
+  stderr_text=$(cat "$stderr_file")
+  rm -f "$stderr_file"
+  if (( exec_status != 0 )); then
+    local err_msg="${stderr_text:-kubectl exec failed with status ${exec_status}}"
+    jq -nc --arg msg "$err_msg" \
+      '[{result:[], _query_status:"failed", _error:$msg}]'
+    return 1
+  fi
+  # SurrealDB v3 outputs [[...rows...]]; normalize to v2-like
+  # [{"result": [...rows...]}] so existing `.[] | .result | .[]` jq
+  # paths keep working.
+  if echo "$raw" | jq -c '[{result: (.[0] // []), _query_status: "ok"}]' 2>/dev/null; then
+    return 0
+  fi
+  jq -nc --arg msg "$raw" \
+    '[{result:[], _query_status:"failed", _error:("invalid JSON from surreal: " + $msg)}]'
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -371,7 +405,22 @@ assert_ge() {
 # ---------------------------------------------------------------------------
 
 # dump_logs [directory]
-# Dumps pod logs and SurrealDB state to the given directory.
+# Dumps pod logs, cluster diagnostics, and SurrealDB state into <directory>.
+#
+# In addition to per-pod logs and cluster_runners / cluster_agent_placements,
+# captures the cluster-layer state that pod logs do not surface — pod
+# descriptions (pull failures, OOM, eviction reasons), namespaced events
+# (NetworkPolicy drops, scheduling failures), wide pod listing across all
+# namespaces, and the chart-rendered StatefulSet/Service state.
+# ConfigMap and Secret *data* are deliberately not captured: this
+# codebase mounts fnox.toml (LLM API keys) into a ConfigMap, so a `-o
+# yaml` dump would leak the keys into the artifact. Only ConfigMap and
+# Secret names are recorded.
+#
+# After the initial captures, sleeps briefly and re-captures the tail of
+# the runner pod logs into <pod>-tail.log so log lines emitted between the
+# original dump and pod teardown are preserved (failures often produce
+# their most diagnostic lines in this window).
 dump_logs() {
   local dir="${1:-./e2e-k8s-logs/$(date +%Y%m%d-%H%M%S)}"
   mkdir -p "$dir"
@@ -396,9 +445,40 @@ dump_logs() {
     kubectl logs -n "$NAMESPACE" "$pod" --all-containers > "${dir}/${pod}.log" 2>&1 || true
     kubectl logs -n "$NAMESPACE" "$pod" --all-containers --previous > "${dir}/${pod}-previous.log" 2>&1 || true
   done
-  # Dump cluster tables
-  surreal_query "SELECT * FROM cluster_runners" > "${dir}/cluster_runners.json" 2>&1 || true
-  surreal_query "SELECT * FROM cluster_agent_placements" > "${dir}/cluster_agent_placements.json" 2>&1 || true
+
+  if (( ${#pods[@]} > 0 )); then
+    kubectl describe pod -n "$NAMESPACE" "${pods[@]}" \
+      > "${dir}/describe-pods.txt" 2>&1 || true
+  fi
+  kubectl get events -n "$NAMESPACE" --sort-by=.lastTimestamp \
+    > "${dir}/events.txt" 2>&1 || true
+  kubectl get pods -A -o wide \
+    > "${dir}/all-pods.txt" 2>&1 || true
+  kubectl get statefulset,svc -n "$NAMESPACE" -o yaml \
+    > "${dir}/cluster-state.yaml" 2>&1 || true
+  # ConfigMap and Secret data are intentionally excluded: this codebase
+  # mounts fnox.toml (LLM API keys) into a ConfigMap, so `-o yaml` would
+  # leak the keys into the artifact. Names only.
+  kubectl get configmap -n "$NAMESPACE" -o name \
+    > "${dir}/configmaps-list.txt" 2>&1 || true
+  kubectl get secret -n "$NAMESPACE" -o name \
+    > "${dir}/secrets-list.txt" 2>&1 || true
+
+  surreal_query "SELECT * FROM cluster_runners" \
+    > "${dir}/cluster_runners.json" || true
+  surreal_query "SELECT * FROM cluster_agent_placements" \
+    > "${dir}/cluster_agent_placements.json" || true
+
+  # Settle, then re-tail: pod logs above are a single snapshot, and the
+  # diagnostic 5xx body / panic typically lands in the seconds between
+  # the snapshot and pod teardown.
+  sleep 2
+  for pod in "$RUNNER_POD_0" "$RUNNER_POD_1"; do
+    [[ -z "$pod" ]] && continue
+    kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=400 \
+      > "${dir}/${pod}-tail.log" 2>&1 || true
+  done
+
   log_info "Log dump complete: ${dir}/"
 }
 
