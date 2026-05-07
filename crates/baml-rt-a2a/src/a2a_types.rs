@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use baml_rt_core::ids::{ArtifactId, ContextId, DerivedId, ExternalId, MessageId, TaskId};
+use baml_rt_core::{
+    BamlRtError,
+    ids::{ArtifactId, ContextId, DerivedId, ExternalId, MessageId, TaskId},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -611,7 +614,16 @@ impl StreamChunkView {
     }
 
     pub fn is_null(&self) -> bool {
-        self.raw.is_null()
+        match &self.raw {
+            Value::Null => true,
+            Value::Object(map) => map.is_empty(),
+            _ => false,
+        }
+    }
+
+    /// Wrap a typed stream payload for the same accessors as [`Self::new`] (serializes once).
+    pub fn from_stream_response(sr: &StreamResponse) -> Self {
+        Self::new(serde_json::to_value(sr).unwrap_or(Value::Null))
     }
 
     pub fn task_id(&self) -> Option<&TaskId> {
@@ -663,6 +675,74 @@ pub struct StreamResponse {
     pub artifact_update: Option<TaskArtifactUpdateEvent>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+/// Stream chunk accepted by [`crate::a2a_store::TaskChunkApplier`]: invariant that
+/// `status_update` / `artifact_update` require `task` in the same payload is enforced here,
+/// not left to each store implementation.
+#[derive(Debug, Clone)]
+pub struct ValidatedTaskChunk(StreamResponse);
+
+impl ValidatedTaskChunk {
+    #[inline]
+    pub fn stream_response(&self) -> &StreamResponse {
+        &self.0
+    }
+
+    #[inline]
+    pub fn into_stream_response(self) -> StreamResponse {
+        self.0
+    }
+
+    #[inline]
+    pub fn task(&self) -> Option<&Task> {
+        self.0.task.as_ref()
+    }
+
+    #[inline]
+    pub fn message(&self) -> Option<&Message> {
+        self.0.message.as_ref()
+    }
+
+    #[inline]
+    pub fn status_update(&self) -> Option<&TaskStatusUpdateEvent> {
+        self.0.status_update.as_ref()
+    }
+
+    #[inline]
+    pub fn artifact_update(&self) -> Option<&TaskArtifactUpdateEvent> {
+        self.0.artifact_update.as_ref()
+    }
+}
+
+impl TryFrom<StreamResponse> for ValidatedTaskChunk {
+    type Error = BamlRtError;
+
+    fn try_from(stream: StreamResponse) -> Result<Self, Self::Error> {
+        if stream.task.is_none()
+            && (stream.status_update.is_some() || stream.artifact_update.is_some())
+        {
+            return Err(BamlRtError::InvalidArgument(
+                "status_update or artifact_update requires task in chunk".into(),
+            ));
+        }
+        Ok(Self(stream))
+    }
+}
+
+impl TryFrom<SendMessageResponse> for ValidatedTaskChunk {
+    type Error = BamlRtError;
+
+    fn try_from(response: SendMessageResponse) -> Result<Self, Self::Error> {
+        StreamResponse {
+            message: response.message,
+            task: response.task,
+            status_update: None,
+            artifact_update: None,
+            extra: response.extra,
+        }
+        .try_into()
+    }
 }
 
 #[cfg(test)]

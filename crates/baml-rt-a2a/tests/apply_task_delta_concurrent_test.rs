@@ -8,7 +8,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use baml_rt_a2a::{
     a2a_store::{TaskChunkApplier, TaskStore},
-    a2a_types::TaskState,
+    a2a_types::{StreamResponse, TaskState, ValidatedTaskChunk},
 };
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 use tokio::sync::Mutex;
@@ -26,23 +26,31 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
         Some(common::task_status("TASK_STATE_SUBMITTED")),
     );
     let _ = (*store)
-        .apply_task_delta(Some(chunk1_task), None, None, None)
+        .apply_task_chunk(
+            ValidatedTaskChunk::try_from(StreamResponse {
+                task: Some(chunk1_task),
+                ..Default::default()
+            })
+            .unwrap(),
+        )
         .await
         .unwrap();
     // Chunk 2: move to WORKING (task required when status_update present)
     let chunk2_task = common::minimal_task(&task_id, &context_id, None);
     let _ = (*store)
-        .apply_task_delta(
-            Some(chunk2_task),
-            None,
-            Some(baml_rt_a2a::a2a_types::TaskStatusUpdateEvent {
-                context_id: Some(context_id.clone()),
-                task_id: Some(task_id.clone()),
-                status: Some(common::task_status("TASK_STATE_WORKING")),
-                metadata: None,
-                extra: HashMap::new(),
-            }),
-            None,
+        .apply_task_chunk(
+            ValidatedTaskChunk::try_from(StreamResponse {
+                task: Some(chunk2_task),
+                status_update: Some(baml_rt_a2a::a2a_types::TaskStatusUpdateEvent {
+                    context_id: Some(context_id.clone()),
+                    task_id: Some(task_id.clone()),
+                    status: Some(common::task_status("TASK_STATE_WORKING")),
+                    metadata: None,
+                    extra: HashMap::new(),
+                }),
+                ..Default::default()
+            })
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -55,17 +63,19 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
     let chunk_h1 = common::minimal_task(&task_id2, &context_id2, None);
     let h1 = tokio::spawn(async move {
         (*store2)
-            .apply_task_delta(
-                Some(chunk_h1),
-                None,
-                Some(baml_rt_a2a::a2a_types::TaskStatusUpdateEvent {
-                    context_id: Some(context_id2.clone()),
-                    task_id: Some(task_id2.clone()),
-                    status: Some(common::task_status("TASK_STATE_INPUT_REQUIRED")),
-                    metadata: None,
-                    extra: HashMap::new(),
-                }),
-                None,
+            .apply_task_chunk(
+                ValidatedTaskChunk::try_from(StreamResponse {
+                    task: Some(chunk_h1),
+                    status_update: Some(baml_rt_a2a::a2a_types::TaskStatusUpdateEvent {
+                        context_id: Some(context_id2.clone()),
+                        task_id: Some(task_id2.clone()),
+                        status: Some(common::task_status("TASK_STATE_INPUT_REQUIRED")),
+                        metadata: None,
+                        extra: HashMap::new(),
+                    }),
+                    ..Default::default()
+                })
+                .unwrap(),
             )
             .await
     });
@@ -75,17 +85,19 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
     let chunk_h2 = common::minimal_task(&task_id3, &context_id3, None);
     let h2 = tokio::spawn(async move {
         (*store3)
-            .apply_task_delta(
-                Some(chunk_h2),
-                None,
-                Some(baml_rt_a2a::a2a_types::TaskStatusUpdateEvent {
-                    context_id: Some(context_id3.clone()),
-                    task_id: Some(task_id3.clone()),
-                    status: Some(common::task_status("TASK_STATE_COMPLETED")),
-                    metadata: None,
-                    extra: HashMap::new(),
-                }),
-                None,
+            .apply_task_chunk(
+                ValidatedTaskChunk::try_from(StreamResponse {
+                    task: Some(chunk_h2),
+                    status_update: Some(baml_rt_a2a::a2a_types::TaskStatusUpdateEvent {
+                        context_id: Some(context_id3.clone()),
+                        task_id: Some(task_id3.clone()),
+                        status: Some(common::task_status("TASK_STATE_COMPLETED")),
+                        metadata: None,
+                        extra: HashMap::new(),
+                    }),
+                    ..Default::default()
+                })
+                .unwrap(),
             )
             .await
     });

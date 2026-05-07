@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use crate::a2a_types::{
     Artifact, ListTasksRequest, ListTasksResponse, Message, MessageRole, Part, ROLE_USER,
     TASK_STATE_CANCELED, Task, TaskArtifactUpdateEvent, TaskState, TaskStatus,
-    TaskStatusUpdateEvent,
+    TaskStatusUpdateEvent, ValidatedTaskChunk,
 };
 
 #[derive(Debug, Clone)]
@@ -108,13 +108,7 @@ pub trait TaskUpdateQueue: Send + Sync {
 pub trait TaskChunkApplier: Send + Sync {
     /// Applies task delta atomically. Task status is never applied via merge; status changes
     /// go through the FSM in `record_status_update`. Returns events for accepted updates.
-    async fn apply_task_delta(
-        &self,
-        task: Option<Task>,
-        message: Option<Message>,
-        status_update: Option<TaskStatusUpdateEvent>,
-        artifact_update: Option<TaskArtifactUpdateEvent>,
-    ) -> Result<Vec<TaskUpdateEvent>>;
+    async fn apply_task_chunk(&self, chunk: ValidatedTaskChunk) -> Result<Vec<TaskUpdateEvent>>;
 }
 
 /// Source of **BAML conversation rows** (`ProvenanceConversationContextItem`) for prompt projection.
@@ -253,20 +247,9 @@ impl TaskUpdateQueue for Mutex<TaskStore> {
 
 #[async_trait]
 impl TaskChunkApplier for Mutex<TaskStore> {
-    async fn apply_task_delta(
-        &self,
-        task: Option<Task>,
-        message: Option<Message>,
-        status_update: Option<TaskStatusUpdateEvent>,
-        artifact_update: Option<TaskArtifactUpdateEvent>,
-    ) -> Result<Vec<TaskUpdateEvent>> {
-        if task.is_none() && (status_update.is_some() || artifact_update.is_some()) {
-            return Err(BamlRtError::InvalidArgument(
-                "status_update or artifact_update requires task in chunk".into(),
-            ));
-        }
+    async fn apply_task_chunk(&self, chunk: ValidatedTaskChunk) -> Result<Vec<TaskUpdateEvent>> {
         let mut store = self.lock().await;
-        Ok(store.apply_task_delta(task, message, status_update, artifact_update))
+        Ok(store.apply_task_chunk(&chunk))
     }
 }
 
@@ -813,25 +796,19 @@ impl TaskUpdateQueue for ProvenanceTaskStore {
 
 #[async_trait]
 impl TaskChunkApplier for ProvenanceTaskStore {
-    async fn apply_task_delta(
-        &self,
-        task: Option<Task>,
-        message: Option<Message>,
-        status_update: Option<TaskStatusUpdateEvent>,
-        artifact_update: Option<TaskArtifactUpdateEvent>,
-    ) -> Result<Vec<TaskUpdateEvent>> {
-        if task.is_none() && (status_update.is_some() || artifact_update.is_some()) {
-            return Err(BamlRtError::InvalidArgument(
-                "status_update or artifact_update requires task in chunk".into(),
-            ));
-        }
-        let new_task_prov = task.as_ref().and_then(|t| {
+    async fn apply_task_chunk(&self, chunk: ValidatedTaskChunk) -> Result<Vec<TaskUpdateEvent>> {
+        let new_task_prov = chunk.task().and_then(|t| {
             let cid = t.context_id.clone()?;
             let tid = t.id.clone()?;
             Some((tid, cid))
         });
-        let (task, message) = Self::inject_agent_id_into_chunk(task, message, &self.agent_id);
-        let message_for_prov = message.clone();
+        let mut sr = chunk.into_stream_response();
+        let (task, message) =
+            Self::inject_agent_id_into_chunk(sr.task.take(), sr.message.take(), &self.agent_id);
+        sr.task = task;
+        sr.message = message;
+        let chunk = ValidatedTaskChunk::try_from(sr)?;
+        let message_for_prov = chunk.message().cloned();
         // Reserve an activity anchor BEFORE the inner await so that event_order is assigned
         // in logical emission order, not DB-round-trip completion order.
         // The drain-loop task (COMPLETED) and the QuickJS task (WORKING) race through here
@@ -839,11 +816,8 @@ impl TaskChunkApplier for ProvenanceTaskStore {
         // transition per chunk. Additional transitions take fresh anchors (rare).
         let mut status_anchor = Some(ReservedAnchor::allocate());
         let start = Instant::now();
-        let events = self
-            .inner
-            .apply_task_delta(task, message, status_update, artifact_update)
-            .await?;
-        record_task_store_metrics("apply_task_delta", "success", start);
+        let events = self.inner.apply_task_chunk(chunk).await?;
+        record_task_store_metrics("apply_task_chunk", "success", start);
         // I3: emit provenance only after store accepted the updates
         if let Some((tid, cid)) = new_task_prov
             && let Ok(context_id) = require_context_id(Some(cid), "provenance task_exists")
@@ -899,10 +873,10 @@ impl TaskChunkApplier for ProvenanceTaskStore {
         if let Some(ref msg) = message_for_prov {
             let context_id = require_context_id(
                 msg.context_id.clone(),
-                "provenance message in apply_task_delta",
+                "provenance message in apply_task_chunk",
             )?;
             let role = message_role_string(&msg.role);
-            let content = validated_message_content(msg, "apply_task_delta")?;
+            let content = validated_message_content(msg, "apply_task_chunk")?;
             let metadata = msg.metadata.as_ref().map(metadata_string_map);
             // Extract validated citation refs from wire metadata before the lossy string-map
             // conversion drops the array. Citations are model-produced #N/@N ref strings.
@@ -966,14 +940,14 @@ impl TaskChunkApplier for ProvenanceTaskStore {
                     citations,
                 ),
             };
-            self.record_event_required(event, "apply_task_delta message lifecycle")
+            self.record_event_required(event, "apply_task_chunk message lifecycle")
                 .await?;
         }
         Ok(events)
     }
 }
 
-fn status_to_string(status: &TaskStatus) -> Option<String> {
+pub(crate) fn status_to_string(status: &TaskStatus) -> Option<String> {
     status.state.as_ref().map(|state| match state {
         TaskState::String(value) => value.clone(),
         TaskState::Integer(value) => value.to_string(),
@@ -1248,81 +1222,8 @@ impl TaskStore {
 
     /// I2: Applies one stream chunk atomically (merge + status + artifacts + message).
     /// Task status is never applied via merge; status changes go through the FSM.
-    pub fn apply_task_delta(
-        &mut self,
-        task: Option<Task>,
-        message: Option<Message>,
-        status_update: Option<TaskStatusUpdateEvent>,
-        artifact_update: Option<TaskArtifactUpdateEvent>,
-    ) -> Vec<TaskUpdateEvent> {
-        let mut out = Vec::new();
-        // When a chunk has both task.status and status_update (e.g. make_submitted_chunk), record
-        // status only once to avoid duplicate provenance/sequence notes.
-        let mut status_recorded_from_task: Option<(Option<TaskId>, Option<ContextId>, String)> =
-            None;
-        if let Some(mut t) = task {
-            let status = t.status.take();
-            let context_id = t.context_id.clone();
-            let task_id = t.id.clone();
-            let artifacts = std::mem::take(&mut t.artifacts);
-            let result = self.upsert(t);
-            debug_assert!(
-                result.is_some(),
-                "apply_task_delta: task without id is a logic error"
-            );
-            if let Some(status) = status
-                && let Some(ev) =
-                    self.record_status_update(task_id.clone(), context_id.clone(), status.clone())
-            {
-                let state_str = status_to_string(&status).unwrap_or_default();
-                status_recorded_from_task = Some((task_id.clone(), context_id.clone(), state_str));
-                out.push(ev);
-            }
-            if let Some(tid) = task_id {
-                for artifact in artifacts {
-                    if let Some(ev) = self.record_artifact_update(
-                        Some(tid.clone()),
-                        context_id.clone(),
-                        artifact,
-                        Some(false),
-                        Some(true),
-                    ) {
-                        out.push(ev);
-                    }
-                }
-            }
-        }
-        if let Some(msg) = message {
-            self.insert_message(&msg);
-        }
-        if let Some(ref up) = status_update
-            && let Some(status) = up.status.clone()
-        {
-            let state_str = status_to_string(&status).unwrap_or_default();
-            let is_duplicate = status_recorded_from_task
-                .as_ref()
-                .is_some_and(|(tid, cid, s)| {
-                    tid == &up.task_id && cid == &up.context_id && *s == state_str
-                });
-            if !is_duplicate
-                && let Some(ev) =
-                    self.record_status_update(up.task_id.clone(), up.context_id.clone(), status)
-            {
-                out.push(ev);
-            }
-        }
-        if let Some(ref up) = artifact_update
-            && let Some(ev) = self.record_artifact_update(
-                up.task_id.clone(),
-                up.context_id.clone(),
-                up.artifact.clone().unwrap_or_default(),
-                up.append,
-                up.last_chunk,
-            )
-        {
-            out.push(ev);
-        }
-        out
+    pub fn apply_task_chunk(&mut self, chunk: &ValidatedTaskChunk) -> Vec<TaskUpdateEvent> {
+        crate::task_chunk_apply::apply_validated_chunk_to_task_store(self, chunk)
     }
 }
 

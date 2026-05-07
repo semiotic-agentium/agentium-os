@@ -42,10 +42,7 @@ use crate::{
         TaskChunkApplier, TaskEventRecorder, TaskRepository, TaskStoreBackend, TaskUpdateEvent,
         TaskUpdateQueue, message_role_string, metadata_string_map, validated_message_content,
     },
-    a2a_types::{
-        JSONRPCId, Message, ROLE_USER, StreamChunkView, TaskArtifactUpdateEvent,
-        TaskStatusUpdateEvent,
-    },
+    a2a_types::{JSONRPCId, Message, ROLE_USER, StreamChunkView, StreamResponse},
     auto_status::AutoWorkingStatusSubscriber,
     error_classifier::{A2aErrorClassifier, ErrorClassifier},
     events::{BroadcastEventEmitter, EventEmitter},
@@ -252,16 +249,11 @@ impl TaskUpdateQueue for SurrealRuntimeStore {
 
 #[async_trait]
 impl TaskChunkApplier for SurrealRuntimeStore {
-    async fn apply_task_delta(
+    async fn apply_task_chunk(
         &self,
-        task: Option<crate::a2a_types::Task>,
-        message: Option<crate::a2a_types::Message>,
-        status_update: Option<TaskStatusUpdateEvent>,
-        artifact_update: Option<TaskArtifactUpdateEvent>,
+        chunk: crate::a2a_types::ValidatedTaskChunk,
     ) -> Result<Vec<TaskUpdateEvent>> {
-        self.task_store
-            .apply_task_delta(task, message, status_update, artifact_update)
-            .await
+        self.task_store.apply_task_chunk(chunk).await
     }
 }
 
@@ -1651,13 +1643,16 @@ impl A2aJsChatHost for A2aAgent {}
 /// Wire chunk when the collector signals `InputRequired` completion with a null payload.
 /// Not wire-final (`final: false`); both `task.status` and `statusUpdate.status` carry
 /// `TASK_STATE_INPUT_REQUIRED` so clients (e.g. `getStateFromChunk`) stay aligned.
-fn synthetic_input_required_chunk_wire_value(task_id: String, context_id: &str) -> Value {
+fn synthetic_input_required_chunk(task_id: String, context_id: &str) -> StreamResponse {
+    let mid = format!("a2a-synthetic-input-required-{task_id}");
     let prompt_msg = json!({
+        "messageId": mid.clone(),
+        "role": "ROLE_AGENT",
         "parts": [{ "text": "Reply to continue the conversation." }]
     });
-    json!({
+    serde_json::from_value(json!({
         "task": {
-            "id": task_id,
+            "id": task_id.clone(),
             "contextId": context_id,
             "status": {
                 "state": "TASK_STATE_INPUT_REQUIRED",
@@ -1665,13 +1660,16 @@ fn synthetic_input_required_chunk_wire_value(task_id: String, context_id: &str) 
             }
         },
         "statusUpdate": {
+            "taskId": task_id,
+            "contextId": context_id,
             "status": {
                 "state": "TASK_STATE_INPUT_REQUIRED",
                 "message": prompt_msg
             }
         },
         "final": false
-    })
+    }))
+    .expect("synthetic INPUT_REQUIRED chunk shape")
 }
 
 /// Signals whether the outer turn loop should continue or break after an instrumented turn body.
@@ -1794,7 +1792,7 @@ impl A2aAgent {
         /// alive: dropping it closes abort_rx which immediately fires the abort arm in the
         /// collector's tokio::select!, terminating the collector before the resume can arrive.
         type SuspendedState = (
-            mpsc::Receiver<(Value, usize, Option<StreamCompletion>)>,
+            mpsc::Receiver<(StreamResponse, usize, Option<StreamCompletion>)>,
             mpsc::Sender<Value>,
             Option<mpsc::Sender<()>>, // abort_tx — keep alive until stream fully terminates
         );
@@ -2016,17 +2014,20 @@ impl A2aAgent {
                                     .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
                             })
                             .unwrap_or_else(|| format!("stream-{}", session_context_id));
-                        let completion_chunk = json!({
+                        let completion_chunk: StreamResponse = serde_json::from_value(json!({
                             "task": {
                                 "id": tid,
                                 "contextId": session_context_id.as_str(),
                                 "status": { "state": "TASK_STATE_COMPLETED" },
                                 "final": true
                             }
-                        });
+                        }))
+                        .expect("rx-closed completion chunk shape");
+                        let completion_wire =
+                            serde_json::to_value(&completion_chunk).unwrap_or(Value::Null);
                         if let Err(e) = self
                             .live_result_pipeline
-                            .store_result(&completion_chunk)
+                            .store_result(&completion_wire)
                             .await
                         {
                             tracing::warn!(
@@ -2036,7 +2037,7 @@ impl A2aAgent {
                         }
                         let formatted = self.response_formatter.format_stream_chunk(
                             request_id.clone(),
-                            completion_chunk,
+                            completion_wire,
                             0_usize,
                             true,
                         );
@@ -2069,7 +2070,7 @@ impl A2aAgent {
                     let (chunk, index, comp) = outcome_msg;
 
                     completion = comp;
-                    let view = StreamChunkView::new(chunk);
+                    let view = StreamChunkView::from_stream_response(&chunk);
                     if !view.is_null() {
                         if let Some(tid) = view.task_id() {
                             last_task_id = Some(tid.as_str().to_string());
@@ -2077,14 +2078,15 @@ impl A2aAgent {
                         let store_span =
                             spans::live_stream_store_result(index, view.has_storable_payload());
                         async {
-                            let raw_for_store = if view.raw.get("__toolStreamChunk").is_some() {
-                                let mut c = view.raw.clone();
-                                c.as_object_mut()
-                                    .and_then(|o| o.remove("__toolStreamChunk"));
-                                c
-                            } else {
-                                view.raw.clone()
-                            };
+                            let mut raw_for_store =
+                                serde_json::to_value(&chunk).unwrap_or(Value::Null);
+                            if raw_for_store
+                                .get("__toolStreamChunk")
+                                .is_some_and(|v| v.as_bool() == Some(true))
+                                && let Some(obj) = raw_for_store.as_object_mut()
+                            {
+                                obj.remove("__toolStreamChunk");
+                            }
                             let store_result =
                                 self.live_result_pipeline.store_result(&raw_for_store).await;
                             let ok = store_result.is_ok();
@@ -2107,13 +2109,13 @@ impl A2aAgent {
                             .clone()
                             .or(session_task_id_str.clone())
                             .unwrap_or_else(|| format!("stream-{}", session_context_id));
-                        let input_required_chunk = synthetic_input_required_chunk_wire_value(
-                            tid,
-                            session_context_id.as_str(),
-                        );
+                        let input_required_chunk =
+                            synthetic_input_required_chunk(tid, session_context_id.as_str());
+                        let input_wire =
+                            serde_json::to_value(&input_required_chunk).unwrap_or(Value::Null);
                         let formatted = self.response_formatter.format_stream_chunk(
                             request_id.clone(),
-                            input_required_chunk,
+                            input_wire,
                             index,
                             false,
                         );
@@ -2130,7 +2132,8 @@ impl A2aAgent {
                         break;
                     }
                     let is_final = comp.is_some_and(StreamCompletion::is_wire_final);
-                    let mut chunk_for_format = view.raw.clone();
+                    let mut chunk_for_format =
+                        serde_json::to_value(&chunk).unwrap_or(Value::Null);
                     let is_tool_stream = chunk_for_format
                         .as_object_mut()
                         .and_then(|o| o.remove("__toolStreamChunk"))
@@ -2254,7 +2257,7 @@ impl A2aAgent {
                 let mut last_task_id: Option<String> = None;
                 // Stream in real time: receive → format → send immediately. No buffering.
                 while let Some((chunk, index, comp)) = rx.recv().await {
-                    let view = StreamChunkView::new(chunk);
+                    let view = StreamChunkView::from_stream_response(&chunk);
                     if let Some(tid) = view.task_id() {
                         last_task_id = Some(tid.as_str().to_string());
                     }
@@ -2262,13 +2265,13 @@ impl A2aAgent {
                         let tid = last_task_id
                             .clone()
                             .unwrap_or_else(|| format!("stream-{synthetic_context}"));
-                        let input_required_chunk = synthetic_input_required_chunk_wire_value(
-                            tid,
-                            synthetic_context.as_str(),
-                        );
+                        let input_required_chunk =
+                            synthetic_input_required_chunk(tid, synthetic_context.as_str());
+                        let input_wire =
+                            serde_json::to_value(&input_required_chunk).unwrap_or(Value::Null);
                         let formatted = self.response_formatter.format_stream_chunk(
                             request_id.clone(),
-                            input_required_chunk,
+                            input_wire,
                             index,
                             false,
                         );
@@ -2276,7 +2279,7 @@ impl A2aAgent {
                         break;
                     }
                     let is_final = comp.is_some_and(StreamCompletion::is_wire_final);
-                    let mut chunk_for_format = view.raw.clone();
+                    let mut chunk_for_format = serde_json::to_value(&chunk).unwrap_or(Value::Null);
                     let is_tool_stream = chunk_for_format
                         .as_object_mut()
                         .and_then(|o| o.remove("__toolStreamChunk"))
@@ -2599,7 +2602,7 @@ mod tests {
 
     use super::{
         A2aAgent, SurrealRuntimeStore, TaskRepository, synthesized_live_task_id,
-        synthetic_input_required_chunk_wire_value,
+        synthetic_input_required_chunk,
     };
     use crate::a2a_types::{A2aMessageId, Message, MessageRole, Part};
 
@@ -2610,7 +2613,11 @@ mod tests {
             "InputRequired must not set final: true on the wire"
         );
 
-        let v = synthetic_input_required_chunk_wire_value("task-wire-test".to_string(), "ctx-9");
+        let v = serde_json::to_value(synthetic_input_required_chunk(
+            "task-wire-test".to_string(),
+            "ctx-9",
+        ))
+        .unwrap();
         assert_eq!(v.get("final"), Some(&json!(false)));
 
         let task = v.get("task").expect("task object");

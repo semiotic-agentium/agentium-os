@@ -5,15 +5,14 @@ use baml_rt_core::{
     BamlRtError, InvocationKind, Result, stream_completion::StreamCompletion, to_json_value,
 };
 use baml_rt_quickjs::QuickJSBridge;
-use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::{
     a2a,
     a2a_store::{TaskEventRecorder, TaskRepository, TaskUpdateEvent, TaskUpdateQueue},
     a2a_types::{
-        GetTaskRequest, ListTasksRequest, ListTasksResponse, StreamChunk, SubscribeToTaskRequest,
-        TaskStatusUpdateEvent,
+        GetTaskRequest, ListTasksRequest, ListTasksResponse, StreamChunk, StreamResponse,
+        SubscribeToTaskRequest, TaskStatusUpdateEvent,
     },
     events::EventEmitter,
 };
@@ -126,12 +125,17 @@ impl TaskHandler for DefaultTaskHandler {
             let n = responses.len();
             let (tx, rx) = mpsc::channel(64);
             for (i, chunk) in responses.into_iter().enumerate() {
-                if tx.send((chunk, i, None)).await.is_err() {
+                let sr = serde_json::from_value(chunk).unwrap_or_default();
+                if tx.send((sr, i, None)).await.is_err() {
                     tracing::debug!("stream chunk send failed (receiver dropped)");
                 }
             }
             if tx
-                .send((Value::Null, n, Some(StreamCompletion::SemanticFinal)))
+                .send((
+                    StreamResponse::default(),
+                    n,
+                    Some(StreamCompletion::SemanticFinal),
+                ))
                 .await
                 .is_err()
             {

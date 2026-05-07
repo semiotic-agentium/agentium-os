@@ -22,8 +22,9 @@ use crate::{
         TaskChunkApplier, TaskEventRecorder, TaskRepository, TaskUpdateEvent, TaskUpdateQueue,
     },
     a2a_types::{
-        Artifact, ListTasksRequest, ListTasksResponse, Message, Task, TaskArtifactUpdateEvent,
-        TaskState, TaskStatus, TaskStatusUpdateEvent,
+        A2aMessageId, Artifact, ListTasksRequest, ListTasksResponse, Message, MessageRole, Part,
+        Task, TaskArtifactUpdateEvent, TaskState, TaskStatus, TaskStatusUpdateEvent,
+        ValidatedTaskChunk,
     },
 };
 
@@ -38,6 +39,73 @@ const S_AUTH_REQUIRED: &str = "TASK_STATE_AUTH_REQUIRED";
 
 fn is_terminal_state(s: &str) -> bool {
     matches!(s, S_COMPLETED | S_FAILED | S_CANCELED | S_REJECTED)
+}
+
+fn status_is_input_required(status: &TaskStatus) -> bool {
+    matches!(
+        &status.state,
+        Some(TaskState::String(s)) if s == S_INPUT_REQUIRED
+    )
+}
+
+/// Non-empty text carried on `task.status.message` (INPUT_REQUIRED prompts often omit top-level `message`).
+fn transcript_text_from_wire_status_message(msg: &Message) -> Option<String> {
+    let mut lines = Vec::new();
+    for p in &msg.parts {
+        if let Some(t) = msg_part_trimmed_text(p) {
+            lines.push(t.to_string());
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(lines.join("\n"))
+}
+
+fn msg_part_trimmed_text(p: &Part) -> Option<&str> {
+    let t = p.text.as_deref()?.trim();
+    if t.is_empty() {
+        return None;
+    }
+    Some(t)
+}
+
+fn input_required_transcript_message(
+    task_id: &TaskId,
+    context_id: &ContextId,
+    status: &TaskStatus,
+) -> Option<Message> {
+    if !status_is_input_required(status) {
+        return None;
+    }
+    let wire = status.message.as_ref()?;
+    let text = transcript_text_from_wire_status_message(wire)?;
+    let mid = ir_transcript_external_id(task_id, &text);
+    Some(Message {
+        message_id: A2aMessageId::incoming(mid),
+        role: MessageRole::Agent,
+        parts: vec![Part {
+            text: Some(text),
+            ..Default::default()
+        }],
+        context_id: Some(context_id.clone()),
+        task_id: Some(task_id.clone()),
+        reference_task_ids: Vec::new(),
+        extensions: Vec::new(),
+        metadata: None,
+        extra: HashMap::new(),
+    })
+}
+
+fn ir_transcript_external_id(task_id: &TaskId, prompt: &str) -> ExternalId {
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
+    let mut h = DefaultHasher::new();
+    task_id.as_str().hash(&mut h);
+    prompt.hash(&mut h);
+    ExternalId::new(format!("{}-ir-{:x}", task_id.as_str(), h.finish()))
 }
 
 fn is_allowed_transition(from: &str, to: &str) -> bool {
@@ -493,24 +561,19 @@ impl TaskUpdateQueue for TaskSubgraphStore {
 
 #[async_trait]
 impl TaskChunkApplier for TaskSubgraphStore {
-    async fn apply_task_delta(
-        &self,
-        task: Option<Task>,
-        message: Option<Message>,
-        status_update: Option<TaskStatusUpdateEvent>,
-        artifact_update: Option<TaskArtifactUpdateEvent>,
-    ) -> Result<Vec<TaskUpdateEvent>> {
-        if task.is_none() && (status_update.is_some() || artifact_update.is_some()) {
-            return Err(BamlRtError::InvalidArgument(
-                "status_update or artifact_update requires task in chunk".into(),
-            ));
-        }
+    async fn apply_task_chunk(&self, chunk: ValidatedTaskChunk) -> Result<Vec<TaskUpdateEvent>> {
+        let task = chunk.task().cloned();
+        let message = chunk.message().cloned();
+        let status_update = chunk.status_update().cloned();
+        let artifact_update = chunk.artifact_update().cloned();
         let mut out = Vec::new();
         // When a chunk has both task.status and status_update (e.g. make_submitted_chunk), record
         // status only once to avoid duplicate provenance/sequence notes.
         let mut status_recorded_from_task: Option<(Option<TaskId>, Option<ContextId>, String)> =
             None;
+        let mut input_required_transcript: Option<Message> = None;
         if let Some(mut t) = task {
+            let status_snapshot = t.status.clone();
             let status = t.status.take();
             let context_id = t.context_id.clone();
             let task_id = t.id.clone();
@@ -525,6 +588,11 @@ impl TaskChunkApplier for TaskSubgraphStore {
                 let state_str = status_to_string(&status).unwrap_or_default();
                 status_recorded_from_task = Some((task_id.clone(), context_id.clone(), state_str));
                 out.push(ev);
+            }
+            if message.is_none()
+                && let (Some(tid), Some(cid), Some(st)) = (&task_id, &context_id, &status_snapshot)
+            {
+                input_required_transcript = input_required_transcript_message(tid, cid, st);
             }
             if let Some(tid) = task_id {
                 for artifact in artifacts {
@@ -543,8 +611,18 @@ impl TaskChunkApplier for TaskSubgraphStore {
                 }
             }
         }
+        if message.is_none()
+            && input_required_transcript.is_none()
+            && let Some(ref up) = status_update
+            && let (Some(tid), Some(cid), Some(st)) =
+                (&up.task_id, &up.context_id, up.status.as_ref())
+        {
+            input_required_transcript = input_required_transcript_message(tid, cid, st);
+        }
         if let Some(msg) = message {
             self.insert_message(&msg).await?;
+        } else if let Some(pm) = input_required_transcript {
+            self.insert_message(&pm).await?;
         }
         if let Some(ref up) = status_update
             && let Some(status) = up.status.clone()

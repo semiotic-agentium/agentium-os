@@ -34,18 +34,12 @@ impl A2aResultPipeline {
 #[async_trait::async_trait]
 impl ResultStoragePipeline for A2aResultPipeline {
     async fn store_result(&self, value: &Value) -> Result<()> {
-        if (value.get("statusUpdate").is_some() || value.get("artifactUpdate").is_some())
-            && let Some(stream) = self.extractor.extract_stream_response(value)?
-        {
+        if let Some(stream) = self.extractor.extract_stream_response(value)? {
             return self.processor.process_stream_response(stream).await;
         }
 
         if let Some(response) = self.extractor.extract_send_message_response(value)? {
             return self.processor.process_send_message_response(response).await;
-        }
-
-        if let Some(stream) = self.extractor.extract_stream_response(value)? {
-            return self.processor.process_stream_response(stream).await;
         }
 
         if let Some(task) = self.extractor.extract_task(value)? {
