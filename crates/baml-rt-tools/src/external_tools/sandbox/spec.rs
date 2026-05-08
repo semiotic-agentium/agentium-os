@@ -135,6 +135,9 @@ pub struct SandboxSpec {
     /// (§9.2). Provider uses this for list/reattach.
     pub name: String,
     pub image: SandboxImageSource,
+    /// Guest-side working directory used for sandbox creation, adapter exec,
+    /// and default `PWD`. Must exist inside the guest filesystem.
+    pub guest_workdir: String,
     pub cpus: u32,
     pub memory_mib: u32,
     pub env: BTreeMap<String, String>,
@@ -153,12 +156,7 @@ pub struct SandboxSpec {
     /// Guest-side argv for the tool-adapter entrypoint. Empty = use image
     /// default. Provider passes this to `exec_stream` (§5.2).
     pub entrypoint: Vec<String>,
-    /// Creation-time runtime digest snapshot stashed on the sandbox so the
-    /// reattach validation checklist (§9.4) can compare it against the
-    /// current tool metadata. Optional for providers that cannot persist
-    /// arbitrary metadata on the sandbox.
-    pub runtime_digest: Option<String>,
-    /// Creation-time policy hash snapshot, used by the same reattach
+    /// Creation-time policy hash snapshot, used by the reattach
     /// checklist (policy hash match).
     pub policy_hash: Option<String>,
 }
@@ -170,6 +168,7 @@ impl SandboxSpec {
         Self {
             name: name.into(),
             image: SandboxImageSource::Oci(image.into()),
+            guest_workdir: "/".to_string(),
             cpus: 1,
             memory_mib: 512,
             env: BTreeMap::new(),
@@ -183,7 +182,6 @@ impl SandboxSpec {
             detached: true,
             pull_policy: PullPolicy::IfMissing,
             entrypoint: Vec::new(),
-            runtime_digest: None,
             policy_hash: None,
         }
     }
@@ -195,9 +193,10 @@ impl SandboxSpec {
 pub struct SandboxHandle {
     pub name: String,
     pub created_at: SystemTime,
-    /// Snapshot of the digest / policy hash at create time — used by the
+    /// Guest-side working directory used when (re)launching `/tool-adapter`.
+    pub guest_workdir: String,
+    /// Snapshot of the policy hash at create time — used by the
     /// reattach checklist to detect drift (§9.4).
-    pub runtime_digest: Option<String>,
     pub policy_hash: Option<String>,
     /// The `max_duration` that was set on this sandbox — used for the reattach
     /// age check so the runtime can reason about remaining lifetime without
@@ -210,7 +209,7 @@ impl SandboxHandle {
         Self {
             name: name.into(),
             created_at: SystemTime::now(),
-            runtime_digest: None,
+            guest_workdir: "/".to_string(),
             policy_hash: None,
             max_duration,
         }

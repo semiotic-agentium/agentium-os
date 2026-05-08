@@ -8,7 +8,7 @@ use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use baml_rt_tools::external_tools::{
-    SandboxImageRef, ToolRuntime, canonical_bind_digest, read_external_metadata,
+    SandboxImageRef, ToolRuntime, read_external_metadata, read_runtime_external_metadata,
 };
 use console::style;
 use jsonschema::JSONSchema;
@@ -46,14 +46,43 @@ pub fn run(path: &str) -> Result<()> {
         bail!("external tool metadata failed schema validation");
     }
 
-    let typed = read_external_metadata(tool_dir)?;
+    // Source-pollution lint: catch contributors who hand-edited absolute bind
+    // paths into the committed `tool-metadata.json`. Host-resolved bind paths
+    // belong in the gitignored `tool-metadata.lock.json` written by
+    // `sandbox-bind-sync`. Run against the unmerged source — the resolved view
+    // would mask abs paths that the lock happened to override.
+    let source = read_external_metadata(tool_dir)?;
+    if let Some(ToolRuntime::Sandbox(spec)) = &source.runtime
+        && let SandboxImageRef::Bind { path } = &spec.image
+        && path.is_absolute()
+    {
+        bail!(
+            "source tool-metadata.json declares an absolute bind path ({}); use a relative path \
+             like \"./.tmp/<rootfs>\" — host-resolved paths belong in tool-metadata.lock.json",
+            path.display()
+        );
+    }
+    let typed = read_runtime_external_metadata(tool_dir)?;
     if let Some(ToolRuntime::Sandbox(runtime)) = &typed.runtime {
-        let runtime_digest = typed.runtime_digest.as_deref().ok_or_else(|| {
+        let adapter = runtime.adapter.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
-                "sandbox runtime requires runtime_digest in tool-metadata.json (tool: {})",
+                "sandbox runtime requires runtime.adapter with command/protocol (tool: {})",
                 typed.name
             )
         })?;
+        if adapter.command.is_empty() {
+            bail!(
+                "sandbox runtime.adapter.command must contain at least one argv token (tool: {})",
+                typed.name
+            );
+        }
+        if adapter.protocol != "jsonrpc-stdio" {
+            bail!(
+                "sandbox runtime.adapter.protocol must be 'jsonrpc-stdio' (tool: {}, got: {})",
+                typed.name,
+                adapter.protocol
+            );
+        }
 
         match &runtime.image {
             SandboxImageRef::Oci { r#ref } => {
@@ -63,29 +92,12 @@ pub fn run(path: &str) -> Result<()> {
                 if !digest.starts_with("sha256:") {
                     bail!("sandbox oci image must include @sha256:<64-hex>: {ref}", ref = r#ref);
                 }
-                if digest != runtime_digest {
-                    bail!(
-                        "runtime_digest mismatch for oci source: metadata runtime_digest={} but image digest={}",
-                        runtime_digest,
-                        digest
-                    );
-                }
             }
             SandboxImageRef::Bind { path } => {
                 let canonical = std::fs::canonicalize(path)
                     .with_context(|| format!("bind path does not resolve: {}", path.display()))?;
                 if !canonical.is_dir() {
                     bail!("bind path is not a directory: {}", canonical.display());
-                }
-                let computed = canonical_bind_digest(&canonical).with_context(|| {
-                    format!("failed to compute bind digest for {}", canonical.display())
-                })?;
-                if computed != runtime_digest {
-                    bail!(
-                        "runtime_digest mismatch for bind source: metadata runtime_digest={} but computed={}",
-                        runtime_digest,
-                        computed
-                    );
                 }
 
                 #[cfg(unix)]
@@ -124,8 +136,49 @@ pub fn run(path: &str) -> Result<()> {
     println!(
         "{} metadata valid for {} ({runtime_kind})",
         style("✓").green(),
-        style(typed.name).cyan()
+        style(&typed.name).cyan()
     );
+
+    if let Some(spec) = &typed.coordination {
+        if matches!(
+            typed.invocation_mode,
+            baml_rt_tools::external_tools::InvocationMode::SingleShot
+        ) {
+            bail!(
+                "tool '{}' declares coordination.baml_file but invocation_mode is single_shot; coordination is only valid for session tools",
+                typed.name
+            );
+        }
+        if spec.baml_file.is_empty() {
+            bail!("tool '{}' has empty coordination.baml_file", typed.name);
+        }
+        let coord_path = tool_dir.join(&spec.baml_file);
+        if !coord_path.is_file() {
+            bail!(
+                "tool '{}': coordination file not found at {}",
+                typed.name,
+                coord_path.display()
+            );
+        }
+        let coord_body = fs::read_to_string(&coord_path).with_context(|| {
+            format!(
+                "failed to read coordination BAML at {}",
+                coord_path.display()
+            )
+        })?;
+        if coord_body.trim().is_empty() {
+            bail!(
+                "tool '{}': coordination file is empty: {}",
+                typed.name,
+                coord_path.display()
+            );
+        }
+        println!(
+            "{} coordination BAML loaded from {}",
+            style("✓").green(),
+            style(coord_path.display()).cyan()
+        );
+    }
 
     Ok(())
 }
@@ -135,7 +188,9 @@ mod tests {
     use super::*;
     use crate::{
         commands::new_tool::build_file_set,
-        templates::external_tool::{Access, Language, Runtime, SandboxSource, ScaffoldContext},
+        templates::external_tool::{
+            Access, InvocationMode, Language, Runtime, SandboxSource, ScaffoldContext,
+        },
     };
 
     #[test]
@@ -147,9 +202,9 @@ mod tests {
             language: Language::Bash,
             description: "Echo external tool",
             runtime: Runtime::Process,
+            invocation_mode: InvocationMode::SingleShot,
             sandbox_source: Some(SandboxSource::Oci),
             sandbox_image: None,
-            runtime_digest: None,
             sandbox_entrypoint: Vec::new(),
             generate_docker: false,
         };

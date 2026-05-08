@@ -18,7 +18,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{protocol::PROTOCOL_VERSION, runtime::ToolRuntime};
+use super::{
+    protocol::PROTOCOL_VERSION,
+    runtime::{SandboxImageRef, ToolRuntime},
+    runtime_lock::read_runtime_lock,
+};
 use crate::{
     ToolName,
     tools::{
@@ -48,7 +52,7 @@ pub struct ExternalToolMetadata {
     pub access_level: ToolAccess,
     #[serde(default)]
     pub tags: Vec<String>,
-    /// Invocation semantics — V1 supports single-shot only.
+    /// Invocation semantics (`single_shot` or `session`).
     pub invocation_mode: InvocationMode,
     /// FSM scheduling policy. Defaults to `Strict`.
     #[serde(default)]
@@ -58,6 +62,9 @@ pub struct ExternalToolMetadata {
     /// Secret names the runtime must resolve for this tool.
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Session-mode secret placement (`send` by default).
+    #[serde(default)]
+    pub secret_scope: ExternalSecretScope,
     /// Capability declaration (HTTP hosts, FS access, etc.). Free-form JSON
     /// until Phase 2-full formalises it into a typed struct.
     #[serde(default)]
@@ -69,11 +76,30 @@ pub struct ExternalToolMetadata {
     /// the wrapper default (§4.2 of `tool_sandbox.md`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<ToolRuntime>,
-    /// Runtime identity digest for sandbox runtimes (`sha256:<hex>`).
+    /// Optional session-coordination BAML declaration. When set, the builder
+    /// reads the referenced file from the tool directory and merges its
+    /// contents into the agent's generated BAML prelude — equivalent to an
+    /// internal tool registering a `SessionCoordinationProvider` via inventory.
     ///
-    /// Required when `runtime.kind == "sandbox"`; omitted for process tools.
+    /// Required for external `invocation_mode=session` tools that expose a
+    /// `Choose<Tool>Action` step-executor function to agents. Forbidden for
+    /// `single_shot` tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_digest: Option<String>,
+    pub coordination: Option<CoordinationSpec>,
+}
+
+/// Tool-author-supplied coordination BAML pointer.
+///
+/// The file lives next to `tool-metadata.json` in the tool package and contains
+/// the `Choose<Tool>Action` function plus any tool-specific terminal classes
+/// (Report / AskUser / etc.). The builder concatenates this into the prelude;
+/// auto-generated session classes (Open/Send/.../SessionPlan) come from the
+/// JSON schema and are emitted by the builder, not by the tool author.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoordinationSpec {
+    /// File name (relative to the tool directory) containing the coordination
+    /// BAML fragment.
+    pub baml_file: String,
 }
 
 impl ExternalToolMetadata {
@@ -105,10 +131,11 @@ impl ExternalToolMetadata {
                 output: output_schema,
             },
             secrets: Vec::new(),
+            secret_scope: ExternalSecretScope::default(),
             capabilities: Value::Object(Default::default()),
             config_bundle: None,
             runtime: None,
-            runtime_digest: None,
+            coordination: None,
         }
     }
 
@@ -132,13 +159,25 @@ impl ExternalToolMetadata {
     }
 }
 
-/// Invocation semantics declared by the tool. V1 only supports single-shot
-/// (stateless spawn-per-invoke); streaming/keep-alive lands in a future phase
-/// and will add a new variant — the compiler enforces we handle it.
+/// Invocation semantics declared by the tool package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InvocationMode {
+    /// Stateless one-request execution (`tool/invoke`).
     SingleShot,
+    /// Stateful session protocol (`tool/session_*`).
+    Session,
+}
+
+/// Where secrets are attached for session-mode tools.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalSecretScope {
+    /// Default: include resolved secrets on each `session_send`.
+    #[default]
+    Send,
+    /// Include resolved secrets once on `session_open`.
+    Session,
 }
 
 /// Session policy encoded in the external metadata file. Separate from the
@@ -168,7 +207,11 @@ pub struct MetadataSchemas {
     pub output: Value,
 }
 
-/// Read + validate `<dir>/tool-metadata.json` into the typed model.
+/// Read + validate the authored `<dir>/tool-metadata.json` source only.
+///
+/// This does not resolve bind paths and does not read/merge the local
+/// `tool-metadata.lock.json` sidecar. Use it for builder/codegen, source
+/// validation, and any workflow that needs the portable committed metadata.
 ///
 /// Typed deserialization rejects malformed enums (e.g. an unknown
 /// `access_level`) before the runtime sees them, so there's no extra manual
@@ -197,16 +240,57 @@ pub fn read_external_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
     Ok(parsed)
 }
 
-/// Deprecated alias kept for the old call sites still in migration.
-/// Remove once every caller points at [`read_external_metadata`].
-#[deprecated(note = "use read_external_metadata")]
-#[allow(dead_code)]
-pub(crate) fn read_raw_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
-    read_external_metadata(dir)
+/// Read authored metadata and resolve it into the launch-ready runtime view.
+///
+/// The committed source file stays portable (relative bind paths, no
+/// runtime identity); the lock — written by `sandbox-bind-sync` and gitignored
+/// — supplies the canonical absolute bind path.
+///
+/// Behavior per runtime kind:
+/// - `Sandbox { image: Bind { path } }`: relative `path` is resolved against
+///   `dir` so the runtime never sees a relative bind path. If a lock with
+///   `image_path_abs` is present it overrides the resolved path.
+/// - Bind lock supplies only local path resolution; no digest is merged.
+/// - `Process` and OCI: lock is ignored.
+pub fn read_runtime_external_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
+    let mut parsed = read_external_metadata(dir)?;
+    apply_runtime_lock(dir, &mut parsed)?;
+    Ok(parsed)
+}
+
+fn apply_runtime_lock(dir: &Path, meta: &mut ExternalToolMetadata) -> Result<()> {
+    let lock = read_runtime_lock(dir)?;
+
+    // Lock semantics are bind-scoped: it carries host-resolved fields that only
+    // make sense for `Sandbox::Bind`. OCI sandboxes and process tools must not
+    // be influenced by a locally-written lock — their digests live elsewhere
+    // (image ref / process binary digest).
+    if let Some(ToolRuntime::Sandbox(spec)) = meta.runtime.as_mut()
+        && let SandboxImageRef::Bind { path } = &mut spec.image
+    {
+        // Resolve relative bind paths against the metadata directory so
+        // runtime callers never see "./rootfs"-style values, even when
+        // the lock is missing.
+        if path.is_relative() {
+            *path = dir.join(&path);
+        }
+        if let Some(lock) = &lock {
+            if let Some(abs) = &lock.image_path_abs {
+                *path = abs.clone();
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Project parsed metadata into the runtime [`ToolFunctionMetadata`] shape.
+///
+/// `dir` is the tool package directory containing `tool-metadata.json`. When
+/// `meta.coordination` is set, the referenced BAML file is read relative to
+/// `dir` and attached as [`ToolFunctionMetadata::coordination_baml`].
 pub(crate) fn build_tool_metadata(
+    dir: &Path,
     meta: &ExternalToolMetadata,
     tool_name: &ToolName,
 ) -> Result<ToolFunctionMetadata> {
@@ -228,6 +312,37 @@ pub(crate) fn build_tool_metadata(
             )
         })
         .collect();
+
+    let coordination_baml = match &meta.coordination {
+        Some(spec) => {
+            if matches!(meta.invocation_mode, InvocationMode::SingleShot) {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "tool '{}' declares coordination.baml_file but invocation_mode is single_shot; \
+                     coordination is only valid for session tools",
+                    meta.name
+                )));
+            }
+            if spec.baml_file.is_empty() {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "tool '{}' has empty coordination.baml_file",
+                    meta.name
+                )));
+            }
+            let coord_path = dir.join(&spec.baml_file);
+            let body = fs::read_to_string(&coord_path).map_err(|e| {
+                BamlRtError::InvalidArgumentWithSource {
+                    message: format!(
+                        "tool '{}': failed to read coordination BAML at {}",
+                        meta.name,
+                        coord_path.display()
+                    ),
+                    source: Box::new(e),
+                }
+            })?;
+            Some(body)
+        }
+        None => None,
+    };
 
     Ok(ToolFunctionMetadata {
         name: tool_name.clone(),
@@ -262,20 +377,23 @@ pub(crate) fn build_tool_metadata(
         projection_semantics: None,
         session_policy: meta.session_policy.to_session_policy(),
         event_sources: Vec::new(),
+        coordination_baml,
     })
 }
 
-/// Canonical SHA-256 of the input+output schemas. Both runner and tool author
-/// must compute this identically for describe-mismatch detection to work.
-pub(crate) fn metadata_schema_hash(meta: &ExternalToolMetadata) -> String {
+/// RFC 8785 (JCS) canonical SHA-256 of the input+output schemas.
+///
+/// Both runner and tool author must compute this identically for
+/// describe-mismatch detection to work.
+pub(crate) fn metadata_schema_digest(meta: &ExternalToolMetadata) -> String {
     let payload = serde_json::json!({
-        "input": sort_json_keys(&meta.schemas.input),
-        "output": sort_json_keys(&meta.schemas.output),
+        "input": &meta.schemas.input,
+        "output": &meta.schemas.output,
     });
-    let canonical = serde_json::to_string(&payload)
+    let canonical = serde_jcs::to_vec(&payload)
         .expect("serializing canonical tool schema payload should not fail");
     let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
+    hasher.update(&canonical);
     format!("sha256:{:x}", hasher.finalize())
 }
 
@@ -292,8 +410,7 @@ pub(crate) fn metadata_schema_hash(meta: &ExternalToolMetadata) -> String {
 /// - canonicalized metadata bytes prefixed by u64 little-endian length
 ///
 /// Sandbox tools intentionally do not require a local `tool-server` binary:
-/// runtime identity is declared by sandbox metadata (`runtime.image`,
-/// `runtime_digest`) rather than host executable bytes.
+/// runtime identity is declared by sandbox metadata (`runtime.image`) rather than host executable bytes.
 pub fn compute_tool_digest(dir: &Path) -> Result<String> {
     let metadata_path = dir.join("tool-metadata.json");
     let metadata_raw =
@@ -323,18 +440,16 @@ pub fn compute_tool_digest(dir: &Path) -> Result<String> {
         }
     })?;
     let canonical_metadata =
-        serde_json::to_string(&sort_json_keys(&metadata_json)).map_err(|e| {
-            BamlRtError::InvalidArgumentWithSource {
-                message: "failed to canonicalize external tool metadata JSON".to_string(),
-                source: Box::new(e),
-            }
+        serde_jcs::to_vec(&metadata_json).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+            message: "failed to canonicalize external tool metadata JSON".to_string(),
+            source: Box::new(e),
         })?;
 
     if matches!(metadata.runtime, Some(ToolRuntime::Sandbox(_))) {
         let mut hasher = Sha256::new();
         hasher.update(b"baml-ext-tool-sandbox-v1\0");
         hasher.update((canonical_metadata.len() as u64).to_le_bytes());
-        hasher.update(canonical_metadata.as_bytes());
+        hasher.update(&canonical_metadata);
         return Ok(format!("sha256:{:x}", hasher.finalize()));
     }
 
@@ -350,7 +465,7 @@ pub fn compute_tool_digest(dir: &Path) -> Result<String> {
     hasher.update((bin_bytes.len() as u64).to_le_bytes());
     hasher.update(&bin_bytes);
     hasher.update((canonical_metadata.len() as u64).to_le_bytes());
-    hasher.update(canonical_metadata.as_bytes());
+    hasher.update(&canonical_metadata);
     hasher.update(mode_bits.to_le_bytes());
 
     Ok(format!("sha256:{:x}", hasher.finalize()))
@@ -370,22 +485,6 @@ fn file_mode_bits(path: &Path) -> Result<u32> {
 #[cfg(not(unix))]
 fn file_mode_bits(_path: &Path) -> Result<u32> {
     Ok(0)
-}
-
-pub(crate) fn sort_json_keys(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut pairs: Vec<_> = map.iter().collect();
-            pairs.sort_by_key(|(ka, _)| *ka);
-            let sorted = pairs
-                .into_iter()
-                .map(|(k, v)| (k.clone(), sort_json_keys(v)))
-                .collect();
-            Value::Object(sorted)
-        }
-        Value::Array(values) => Value::Array(values.iter().map(sort_json_keys).collect()),
-        _ => value.clone(),
-    }
 }
 
 #[cfg(test)]
@@ -418,7 +517,7 @@ mod tests {
         let parsed: ExternalToolMetadata =
             serde_json::from_value(raw).expect("legacy metadata should parse");
         assert!(parsed.runtime.is_none());
-        assert!(parsed.runtime_digest.is_none());
+        assert_eq!(parsed.secret_scope, ExternalSecretScope::Send);
     }
 
     #[test]
@@ -444,8 +543,7 @@ mod tests {
                     "ref": "ghcr.io/org/tool@sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 },
                 "entrypoint": ["/app/tool-adapter"]
-            },
-            "runtime_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
         });
 
         let parsed: ExternalToolMetadata =
@@ -455,17 +553,41 @@ mod tests {
             Some(ToolRuntime::Sandbox(SandboxRuntimeSpec {
                 image: SandboxImageRef::Oci { r#ref },
                 entrypoint,
+                ..
             })) => {
                 assert!(r#ref.starts_with("ghcr.io/"));
                 assert_eq!(entrypoint, vec!["/app/tool-adapter".to_string()]);
             }
             other => panic!("expected sandbox runtime, got {other:?}"),
         }
+    }
 
-        assert_eq!(
-            parsed.runtime_digest.as_deref(),
-            Some("sha256:2222222222222222222222222222222222222222222222222222222222222222")
-        );
+    #[test]
+    fn build_tool_metadata_pascal_cases_hyphen_and_underscore_components() {
+        let raw = serde_json::json!({
+            "tool_abi_version": "1",
+            "name": "internal-dev/meteo_tool",
+            "description": "meteo tool",
+            "bundle": "internal-dev",
+            "local_name": "meteo_tool",
+            "access_level": "read",
+            "invocation_mode": "single_shot",
+            "schemas": {
+                "input": {"type": "object"},
+                "output": {"type": "object"}
+            },
+            "secrets": [],
+            "capabilities": {}
+        });
+
+        let meta: ExternalToolMetadata = serde_json::from_value(raw).expect("metadata parses");
+        let tool_name = ToolName::parse("internal-dev/meteo_tool").expect("valid tool name");
+        let dir = std::env::temp_dir();
+        let built = build_tool_metadata(&dir, &meta, &tool_name).expect("metadata builds");
+
+        assert_eq!(built.class_name, "InternalDevMeteoTool");
+        assert_eq!(built.input_type.name, "InternalDevMeteoToolInput");
+        assert_eq!(built.output_type.name, "InternalDevMeteoToolOutput");
     }
 
     #[test]
@@ -494,8 +616,7 @@ mod tests {
                     "path": "/tmp/sandbox-rootfs"
                 },
                 "entrypoint": ["/tool-adapter"]
-            },
-            "runtime_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            }
         });
 
         fs::write(
@@ -599,6 +720,29 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn schema_digest_matches_conformance_fixture() {
+        let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/sandbox-conformance/meteo-tool");
+        let metadata_path = fixture_dir.join("tool-metadata.json");
+        let expected_path = fixture_dir.join("expected-digests.json");
+
+        let metadata_raw = fs::read_to_string(&metadata_path).expect("read fixture metadata");
+        let metadata: ExternalToolMetadata =
+            serde_json::from_str(&metadata_raw).expect("parse fixture metadata");
+
+        let expected_raw = fs::read_to_string(&expected_path).expect("read expected digest");
+        let expected: serde_json::Value =
+            serde_json::from_str(&expected_raw).expect("parse expected digest json");
+        let expected_digest = expected
+            .get("schema_content_digest")
+            .and_then(|v| v.as_str())
+            .expect("schema_content_digest string");
+
+        let got = metadata_schema_digest(&metadata);
+        assert_eq!(got, expected_digest);
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {

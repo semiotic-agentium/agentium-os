@@ -38,7 +38,7 @@ pub struct ToolDescribe {
     pub tool_name: String,
     pub supported_methods: Vec<String>,
     pub max_payload_bytes: Option<u64>,
-    pub schema_hash: Option<String>,
+    pub schema_digest: Option<String>,
     pub capabilities: Option<Value>,
 }
 
@@ -49,7 +49,7 @@ impl From<ToolDescribeResult> for ToolDescribe {
             tool_name: r.tool_name,
             supported_methods: r.supported_methods,
             max_payload_bytes: r.max_payload_bytes,
-            schema_hash: r.schema_hash,
+            schema_digest: r.schema_digest,
             capabilities: r.capabilities,
         }
     }

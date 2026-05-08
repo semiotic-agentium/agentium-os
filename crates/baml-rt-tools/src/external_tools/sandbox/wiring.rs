@@ -9,7 +9,7 @@
 //! - Secrets default to empty — resolver integration is a D concern.
 //! - Resource limits default to the §10.3 suggested values.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 
 use baml_rt_core::{BamlRtError, Result};
 use tracing::info;
@@ -48,8 +48,6 @@ pub fn fresh_runner_id() -> String {
 ///
 /// Behavior:
 /// - Reads `meta.runtime` (must be `Sandbox`) for `image` + `entrypoint`.
-/// - Carries `meta.runtime_digest` onto the spec for the §9.4 reattach
-///   checklist.
 /// - Uses deny-all `NetworkPolicy`, no secrets, no volumes.
 /// - Uses §10.3 default idle / max durations.
 ///
@@ -98,14 +96,20 @@ fn build_default_spec_builder(
         }
     };
     let entrypoint = sandbox_spec.entrypoint.clone();
-    let runtime_digest = meta.runtime_digest.clone();
+    let guest_workdir = sandbox_spec
+        .adapter
+        .as_ref()
+        .and_then(|adapter| adapter.workdir.clone())
+        .unwrap_or_else(|| "/".to_string());
+    let secret_env = build_secret_env(meta);
 
     Ok(Arc::new(move |key: &SandboxCacheKey| {
         Ok(build_stock_spec(
             cache.encode_name(key),
             &image,
+            &guest_workdir,
             &entrypoint,
-            runtime_digest.clone(),
+            secret_env.clone(),
         ))
     }))
 }
@@ -113,15 +117,17 @@ fn build_default_spec_builder(
 fn build_stock_spec(
     name: String,
     image: &SandboxImageSource,
+    guest_workdir: &str,
     entrypoint: &[String],
-    runtime_digest: Option<String>,
+    env: BTreeMap<String, String>,
 ) -> SandboxSpec {
     SandboxSpec {
         name,
         image: image.clone(),
+        guest_workdir: guest_workdir.to_string(),
         cpus: 1,
         memory_mib: 512,
-        env: Default::default(),
+        env,
         volumes: Vec::new(),
         port_mappings: Vec::new(),
         network_policy: Default::default(),
@@ -132,9 +138,20 @@ fn build_stock_spec(
         detached: true,
         pull_policy: PullPolicy::IfMissing,
         entrypoint: entrypoint.to_vec(),
-        runtime_digest,
         policy_hash: None,
     }
+}
+
+fn build_secret_env(meta: &ExternalToolMetadata) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for secret_name in &meta.secrets {
+        if let Ok(value) = std::env::var(secret_name)
+            && !value.trim().is_empty()
+        {
+            out.insert(secret_name.clone(), value);
+        }
+    }
+    out
 }
 
 /// Convenience: build a full [`SandboxRuntimeWiring`] for a given provider

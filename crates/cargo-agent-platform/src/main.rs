@@ -24,8 +24,7 @@
 //! - `doctor` — Validate workspace integrity
 //! - `chat` — Interactive terminal chat with a deployed agent
 //! - `check-external-tool` — Validate tool metadata schema/runtime compatibility
-//! - `sandbox-digest` — Compute sandbox runtime digests (bind rootfs)
-//! - `sandbox-bind-sync` — Sync bind rootfs path/digest into tool metadata (optionally Docker-assisted)
+//! - `sandbox-bind-sync` — Sync local bind dev rootfs path into tool metadata (optionally Docker-assisted)
 
 mod commands;
 mod event_schemas;
@@ -42,10 +41,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use commands::{
     new_tool::{NewToolRunArgs, RunMode},
     publish::PublishOriginArg,
-    sandbox_digest::SandboxDigestSourceArg,
     utils::resolve_runner_token,
 };
-use templates::external_tool::{Access, DEFAULT_BUNDLE, Language, Runtime, SandboxSource};
+use templates::external_tool::{
+    Access, DEFAULT_BUNDLE, InvocationMode, Language, Runtime, SandboxSource,
+};
 
 /// Agent Platform SDK CLI
 ///
@@ -90,6 +90,13 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = Runtime::Process)]
         runtime: Runtime,
 
+        /// Invocation contract to scaffold into tool-metadata.json.
+        ///
+        /// - `single-shot`: stateless `tool/invoke`
+        /// - `session`: `tool/session_*` protocol (requires `--runtime sandbox`)
+        #[arg(long, value_enum, default_value_t = InvocationMode::SingleShot)]
+        invocation_mode: InvocationMode,
+
         /// Sandbox source kind when --runtime sandbox
         #[arg(long, value_enum, default_value_t = SandboxSource::Oci)]
         sandbox_source: SandboxSource,
@@ -97,11 +104,6 @@ enum Commands {
         /// Sandbox OCI image reference (`...@sha256:...`) when --sandbox-source oci
         #[arg(long)]
         sandbox_image: Option<String>,
-
-        /// Runtime identity digest (`sha256:...`) when --runtime sandbox.
-        /// Optional for oci (defaults to image digest) and bind (defaults to scaffold placeholder digest).
-        #[arg(long)]
-        runtime_digest: Option<String>,
 
         /// Optional sandbox entrypoint argv, comma-separated
         #[arg(long, value_delimiter = ',')]
@@ -319,16 +321,6 @@ enum Commands {
         path: String,
     },
 
-    /// Compute sandbox runtime digest for a source path
-    SandboxDigest {
-        /// Sandbox source kind (currently: bind)
-        #[arg(long, value_enum, default_value_t = SandboxDigestSourceArg::Bind)]
-        source: SandboxDigestSourceArg,
-
-        /// Path to source input (for bind: rootfs directory)
-        path: String,
-    },
-
     /// Sync bind sandbox metadata with a concrete rootfs directory.
     ///
     /// Optional Docker-assisted mode can build/export rootfs first.
@@ -338,17 +330,19 @@ enum Commands {
         tool_dir: String,
 
         /// Bind rootfs path. Relative paths resolve against --tool-dir.
+        /// Defaults to runtime.image.path from tool-metadata.json.
         #[arg(long)]
-        rootfs: String,
+        rootfs: Option<String>,
 
         /// Optional Dockerfile path for Docker-assisted build/export mode.
-        /// Relative paths resolve against --tool-dir.
-        /// Must be provided together with --image.
+        /// Relative paths resolve against --tool-dir. When --image is provided
+        /// and --dockerfile is omitted, defaults to adapter/Dockerfile.
         #[arg(long)]
         dockerfile: Option<String>,
 
         /// Optional Docker image tag/name for Docker-assisted build/export mode.
-        /// Must be provided together with --dockerfile.
+        /// Required to build/export from Docker; kept explicit to avoid using
+        /// an unintended local image tag.
         #[arg(long)]
         image: Option<String>,
 
@@ -361,6 +355,34 @@ enum Commands {
         check: bool,
 
         /// Validate and print planned values without writing metadata.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Emit machine-readable JSON summary.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Materialize sandbox sidecar bundle for OCI runtime metadata.
+    ///
+    /// Writes `tool-bundle.json` using shared sidecar helpers from metadata.
+    SandboxOciPrepare {
+        /// Path to external tool directory (contains tool-metadata.json)
+        #[arg(long, default_value = ".")]
+        tool_dir: String,
+
+        /// Output path for generated tool-bundle.json.
+        /// Relative paths resolve against --tool-dir.
+        ///
+        /// Default: adapter/sidecars/etc/agentium/tool-bundle.json
+        #[arg(long)]
+        output: Option<String>,
+
+        /// Run check-external-tool after writing bundle.
+        #[arg(long)]
+        check: bool,
+
+        /// Validate and print planned values without writing output.
         #[arg(long)]
         dry_run: bool,
 
@@ -439,9 +461,9 @@ fn main() -> anyhow::Result<()> {
             lang,
             access,
             runtime,
+            invocation_mode,
             sandbox_source,
             sandbox_image,
-            runtime_digest,
             sandbox_entrypoint,
             generate_docker,
             description,
@@ -495,8 +517,7 @@ fn main() -> anyhow::Result<()> {
                 runtime
             };
 
-            let (sandbox_image, runtime_digest, sandbox_entrypoint) = if runtime == Runtime::Sandbox
-            {
+            let (sandbox_image, sandbox_entrypoint) = if runtime == Runtime::Sandbox {
                 let entrypoint = if interactive {
                     interactive::prompt_external_tool_sandbox_entrypoint()?
                 } else {
@@ -508,12 +529,12 @@ fn main() -> anyhow::Result<()> {
                             Some(v) if !interactive => v,
                             _ => interactive::prompt_external_tool_sandbox_image()?,
                         };
-                        (Some(image), runtime_digest, entrypoint)
+                        (Some(image), entrypoint)
                     }
-                    SandboxSource::Bind => (None, runtime_digest, entrypoint),
+                    SandboxSource::Bind => (None, entrypoint),
                 }
             } else {
-                (None, None, Vec::new())
+                (None, Vec::new())
             };
 
             // Interactive flow always gets a confirm prompt so a mistyped
@@ -532,9 +553,9 @@ fn main() -> anyhow::Result<()> {
                 lang,
                 access,
                 runtime,
+                invocation_mode,
                 sandbox_source,
                 sandbox_image: sandbox_image.as_deref(),
-                runtime_digest: runtime_digest.as_deref(),
                 sandbox_entrypoint: &sandbox_entrypoint,
                 generate_docker,
                 description: &description,
@@ -740,8 +761,6 @@ fn main() -> anyhow::Result<()> {
 
         Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
 
-        Commands::SandboxDigest { source, path } => commands::sandbox_digest::run(source, &path),
-
         Commands::SandboxBindSync {
             tool_dir,
             rootfs,
@@ -754,7 +773,7 @@ fn main() -> anyhow::Result<()> {
         } => {
             commands::sandbox_bind_sync::run(commands::sandbox_bind_sync::SandboxBindSyncRunArgs {
                 tool_dir: &tool_dir,
-                rootfs: &rootfs,
+                rootfs: rootfs.as_deref(),
                 dockerfile: dockerfile.as_deref(),
                 image: image.as_deref(),
                 force,
@@ -763,6 +782,22 @@ fn main() -> anyhow::Result<()> {
                 as_json: json,
             })
         }
+
+        Commands::SandboxOciPrepare {
+            tool_dir,
+            output,
+            check,
+            dry_run,
+            json,
+        } => commands::sandbox_oci_prepare::run(
+            commands::sandbox_oci_prepare::SandboxOciPrepareRunArgs {
+                tool_dir: &tool_dir,
+                output: output.as_deref(),
+                check,
+                dry_run,
+                as_json: json,
+            },
+        ),
 
         Commands::Doctor {
             ci,

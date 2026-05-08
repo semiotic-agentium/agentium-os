@@ -37,10 +37,11 @@ cargo run -p cargo-agent-platform -- new-tool meteo-tool \
 This emits, among others:
 - `tool-metadata.json`
 - `main.py`
-- `tool-server`
 - `adapter/Dockerfile`
 - `adapter/tool-adapter`
 - `setup_bind_sandbox.sh`
+
+Non-Bash sandbox scaffolds intentionally do not emit host `tool-server`; the sandbox runtime path is `/tool-adapter`.
 
 > If you skip `--generate-docker`, you can still use bind mode. You just need to materialize rootfs yourself and run `sandbox-bind-sync` (step 3).
 
@@ -51,16 +52,19 @@ This emits, among others:
 Update `examples/external-tools/meteo-tool/tool-metadata.json` schema/name as needed:
 - `name` (e.g. `dev/meteo`) must match the agent tool allowlist exactly
 - keep sandbox runtime shape (`runtime.kind = sandbox`, bind image)
+- set `runtime.adapter.workdir` to the guest cwd your tool expects; that directory must exist inside the sandbox rootfs. If omitted, the runner uses `/`.
 
 Implement `main.py` handlers for:
 - `tool/describe`
 - `tool/invoke`
 
-Local probe:
+For a quick host-only source probe, pipe raw JSON-RPC to `main.py` directly. This does not exercise sandbox framing/rootfs/image behavior:
 
 ```bash
-printf '{"jsonrpc":"2.0","id":1,"method":"tool/describe","params":{"tool_name":"dev/meteo"}}\n' | examples/external-tools/meteo-tool/tool-server
+printf '{"jsonrpc":"2.0","id":1,"method":"tool/describe","params":{"tool_name":"dev/meteo"}}\n' | python3 examples/external-tools/meteo-tool/main.py
 ```
+
+For sandbox coverage, use the framed `/tool-adapter` probes after materializing the bind rootfs.
 
 ---
 
@@ -71,8 +75,6 @@ printf '{"jsonrpc":"2.0","id":1,"method":"tool/describe","params":{"tool_name":"
 ```bash
 cargo run -p cargo-agent-platform -- sandbox-bind-sync \
   --tool-dir examples/external-tools/meteo-tool \
-  --rootfs .tmp/dev-meteo-rootfs \
-  --dockerfile adapter/Dockerfile \
   --image dev-meteo-sandbox:local \
   --force \
   --check
@@ -88,8 +90,9 @@ cargo run -p cargo-agent-platform -- sandbox-bind-sync \
 ```
 
 Notes:
-- Relative `--rootfs` / `--dockerfile` paths resolve against `--tool-dir`.
-- This command computes digest, patches metadata (`runtime.image.path` + `runtime_digest`), and validates with `check-external-tool` when `--check` is set.
+- `--rootfs` defaults to source metadata `runtime.image.path`; relative `--rootfs` / `--dockerfile` paths resolve against `--tool-dir`.
+- When `--image` is provided, `--dockerfile` defaults to `adapter/Dockerfile`.
+- This command computes the digest, writes gitignored `tool-metadata.lock.json`, materializes the rootfs sidecar bundle, and validates with `check-external-tool` when `--check` is set.
 
 ---
 

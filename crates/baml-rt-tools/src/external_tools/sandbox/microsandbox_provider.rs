@@ -24,11 +24,9 @@
 //!
 //! ## Reattach metadata stash (§9.4)
 //!
-//! `runtime_digest` and `policy_hash` must survive a cache rebuild so the
-//! §9.4 validation checklist can run. We stash them as guest env vars at
-//! create time:
+//! `policy_hash` must survive a cache rebuild so the §9.4 validation checklist
+//! can run. We stash it as a guest env var at create time:
 //!
-//! - `BAML_RUNTIME_DIGEST`
 //! - `BAML_POLICY_HASH`
 //! - `BAML_MAX_DURATION_SECS`
 //!
@@ -36,9 +34,10 @@
 //! read them back. This is cheap and avoids adding a new sidecar protocol.
 
 #[cfg(feature = "sandbox-provider")]
-use std::sync::Arc;
-#[cfg(feature = "sandbox-provider")]
-use std::time::{Duration, SystemTime};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, Result};
@@ -62,12 +61,11 @@ use super::{
 /// Env-var names used to stash reattach metadata inside the guest. Chosen
 /// under the `BAML_` prefix so they don't collide with tool-author vars.
 #[cfg(feature = "sandbox-provider")]
-const STASH_RUNTIME_DIGEST: &str = "BAML_RUNTIME_DIGEST";
-#[cfg(feature = "sandbox-provider")]
 const STASH_POLICY_HASH: &str = "BAML_POLICY_HASH";
 #[cfg(feature = "sandbox-provider")]
 const STASH_MAX_DURATION_SECS: &str = "BAML_MAX_DURATION_SECS";
-
+#[cfg(feature = "sandbox-provider")]
+const STASH_GUEST_WORKDIR: &str = "BAML_GUEST_WORKDIR";
 /// How long to wait for `stop_and_wait` before falling back to `kill`.
 #[cfg(feature = "sandbox-provider")]
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -135,7 +133,7 @@ impl SandboxProvider for MicrosandboxProvider {
     async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle> {
         let name = spec.name.clone();
         let max_duration = spec.max_duration;
-        let runtime_digest = spec.runtime_digest.clone();
+        let guest_workdir = spec.guest_workdir.clone();
         let policy_hash = spec.policy_hash.clone();
 
         if matches!(
@@ -150,6 +148,7 @@ impl SandboxProvider for MicrosandboxProvider {
         let mut builder = microsandbox::Sandbox::builder(&name)
             .cpus(clamp_cpus(spec.cpus))
             .memory(spec.memory_mib)
+            .workdir(&guest_workdir)
             .idle_timeout(spec.idle_timeout.as_secs())
             .max_duration(spec.max_duration.as_secs())
             .replace(); // idempotent by name-replace per trait contract
@@ -171,11 +170,22 @@ impl SandboxProvider for MicrosandboxProvider {
             builder = builder.env(k, v);
         }
 
-        // Reattach-metadata stash (§9.4 — runtime_digest / policy_hash /
-        // max_duration recovered via env inside the guest on reattach).
-        if let Some(digest) = &runtime_digest {
-            builder = builder.env(STASH_RUNTIME_DIGEST, digest);
+        // Match the working probe's baseline runtime env unless the tool spec
+        // already set an explicit value.
+        for (k, v) in [
+            ("HOME", "/home/sandbox"),
+            ("USER", "sandbox"),
+            ("PWD", guest_workdir.as_str()),
+            ("XDG_CONFIG_HOME", "/home/sandbox/.config"),
+            ("XDG_CACHE_HOME", "/home/sandbox/.cache"),
+            ("TMPDIR", "/tmp"),
+        ] {
+            if !spec.env.contains_key(k) {
+                builder = builder.env(k, v);
+            }
         }
+
+        // Reattach-metadata stash (§9.4 — policy_hash / max_duration recovered via env inside the guest on reattach).
         if let Some(hash) = &policy_hash {
             builder = builder.env(STASH_POLICY_HASH, hash);
         }
@@ -183,6 +193,7 @@ impl SandboxProvider for MicrosandboxProvider {
             STASH_MAX_DURATION_SECS,
             spec.max_duration.as_secs().to_string(),
         );
+        builder = builder.env(STASH_GUEST_WORKDIR, &guest_workdir);
 
         // Secrets — create-time egress-bound bindings injected via
         // microsandbox placeholder substitution (§10.1 primary path).
@@ -234,7 +245,7 @@ impl SandboxProvider for MicrosandboxProvider {
         Ok(SandboxHandle {
             name,
             created_at: SystemTime::now(),
-            runtime_digest,
+            guest_workdir,
             policy_hash,
             max_duration,
         })
@@ -255,7 +266,9 @@ impl SandboxProvider for MicrosandboxProvider {
         // (distroless style) without PATH entries; prefer absolute path and
         // fall back to PATH lookup for compatibility.
         let exec_handle = match sandbox
-            .exec_stream_with("/tool-adapter", |opts| opts.stdin_pipe())
+            .exec_stream_with("/tool-adapter", |opts| {
+                opts.cwd(&handle.guest_workdir).stdin_pipe()
+            })
             .await
         {
             Ok(h) => h,
@@ -266,7 +279,9 @@ impl SandboxProvider for MicrosandboxProvider {
                     "exec '/tool-adapter' failed; retrying with PATH lookup 'tool-adapter'"
                 );
                 sandbox
-                    .exec_stream_with("tool-adapter", |opts| opts.stdin_pipe())
+                    .exec_stream_with("tool-adapter", |opts| {
+                        opts.cwd(&handle.guest_workdir).stdin_pipe()
+                    })
                     .await
                     .map_err(|e| {
                         to_rt_err(
@@ -351,7 +366,7 @@ impl SandboxProvider for MicrosandboxProvider {
                     .unwrap_or_else(SystemTime::now),
                 // Metadata stash recovery is done lazily on reattach(); list
                 // returns name-only handles.
-                runtime_digest: None,
+                guest_workdir: "/".to_string(),
                 policy_hash: None,
                 max_duration: Duration::from_secs(0),
             })
@@ -368,11 +383,11 @@ impl SandboxProvider for MicrosandboxProvider {
 
         // Recover stashed metadata by running `printenv` on the guest. One
         // exec, parse the block, bail gracefully if anything is missing.
-        let (runtime_digest, policy_hash, max_duration) = recover_reattach_metadata(&sandbox)
+        let (policy_hash, max_duration, guest_workdir) = recover_reattach_metadata(&sandbox)
             .await
             .unwrap_or_else(|e| {
                 debug!(?e, sandbox = %name, "reattach metadata recovery failed; using defaults");
-                (None, None, Duration::from_secs(0))
+                (None, Duration::from_secs(0), "/".to_string())
             });
 
         self.live.insert(name.to_string(), sandbox);
@@ -383,7 +398,7 @@ impl SandboxProvider for MicrosandboxProvider {
             // creation time can be recovered via Sandbox::get(name) if
             // callers need it later; §9.4 age check uses max_duration anyway.
             created_at: SystemTime::now(),
-            runtime_digest,
+            guest_workdir,
             policy_hash,
             max_duration,
         })
@@ -396,7 +411,7 @@ impl SandboxProvider for MicrosandboxProvider {
 #[cfg(feature = "sandbox-provider")]
 async fn recover_reattach_metadata(
     sandbox: &microsandbox::Sandbox,
-) -> Result<(Option<String>, Option<String>, Duration)> {
+) -> Result<(Option<String>, Duration, String)> {
     let output = sandbox
         .exec("printenv", std::iter::empty::<&str>())
         .await
@@ -405,16 +420,12 @@ async fn recover_reattach_metadata(
         .stdout()
         .map_err(|e| to_rt_err("printenv stdout not valid utf-8", e))?;
 
-    let mut runtime_digest = None;
     let mut policy_hash = None;
     let mut max_duration_secs: u64 = 0;
+    let mut guest_workdir = "/".to_string();
 
     for line in stdout.lines() {
-        if let Some(v) = line.strip_prefix(&format!("{STASH_RUNTIME_DIGEST}="))
-            && !v.is_empty()
-        {
-            runtime_digest = Some(v.to_string());
-        } else if let Some(v) = line.strip_prefix(&format!("{STASH_POLICY_HASH}="))
+        if let Some(v) = line.strip_prefix(&format!("{STASH_POLICY_HASH}="))
             && !v.is_empty()
         {
             policy_hash = Some(v.to_string());
@@ -422,13 +433,17 @@ async fn recover_reattach_metadata(
             && let Ok(n) = v.parse()
         {
             max_duration_secs = n;
+        } else if let Some(v) = line.strip_prefix(&format!("{STASH_GUEST_WORKDIR}="))
+            && !v.is_empty()
+        {
+            guest_workdir = v.to_string();
         }
     }
 
     Ok((
-        runtime_digest,
         policy_hash,
         Duration::from_secs(max_duration_secs),
+        guest_workdir,
     ))
 }
 

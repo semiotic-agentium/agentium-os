@@ -99,31 +99,31 @@ budget_hint: number | null;
 
 export type SessionReadEnvelopeMode = "RetrieveRef";
 
-export interface SystemDiscover_agentsAbortStep { op: "Abort";
+export interface SystemDiscoverAgentsAbortStep { op: "Abort";
  }
 
-export interface SystemDiscover_agentsFinishStep { op: "Finish";
+export interface SystemDiscoverAgentsFinishStep { op: "Finish";
  }
 
-export interface SystemDiscover_agentsOpenStep { op: "Open";
+export interface SystemDiscoverAgentsOpenStep { op: "Open";
 tool_name: "system/discover_agents";
 initial_input: DiscoverAgentsOpenInput | null;
  }
 
-export interface SystemDiscover_agentsPageReadStep { op: "PageRead";
+export interface SystemDiscoverAgentsPageReadStep { op: "PageRead";
 input: ArchivePageReadInput;
  }
 
-export interface SystemDiscover_agentsSearchReadStep { op: "SearchRead";
+export interface SystemDiscoverAgentsSearchReadStep { op: "SearchRead";
 input: ArchiveSearchReadInput;
  }
 
-export interface SystemDiscover_agentsSendStep { op: "Send";
+export interface SystemDiscoverAgentsSendStep { op: "Send";
 input: DiscoverAgentsSendInput;
 citations: string[];
  }
 
-export interface SystemDiscover_agentsSessionPlan { step: SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsSearchReadStep | SystemDiscover_agentsPageReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep;
+export interface SystemDiscoverAgentsSessionPlan { step: SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsAbortStep;
 citations: string[];
  }
 
@@ -163,7 +163,7 @@ declare function BuildExtrospectionPlan(args: { intent: QueryIntent; selected_ag
 
 declare function DetermineExtrospectionIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedClarification | QueryIntent>;
 
-declare function GetDiscoverAgentsPlan(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSessionPlan>;
+declare function GetDiscoverAgentsPlan(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscoverAgentsSessionPlan>;
 
 declare function SelectAgentFocus(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<SelectedAgent | null>;
 
@@ -496,8 +496,14 @@ export interface ToolFailure {
 export type StepExecutorFunctionName = "BuildExtrospectionPlan" | "BuildExtrospectionPlan__act__system_extrospection" | "BuildExtrospectionPlan__continue__system_extrospection" | "BuildExtrospectionPlan__select" | "GetDiscoverAgentsPlan" | "GetDiscoverAgentsPlan__act__system_discover_agents" | "GetDiscoverAgentsPlan__continue__system_discover_agents" | "GetDiscoverAgentsPlan__select";
 
 export interface SessionContext {
-    contract_version: "session_context";
+    contract_version: "session_context_v2";
     session_open: boolean;
+    status: "awaiting_open" | "just_opened" | "done";
+    last_step_op?: "open" | "send" | "read" | "finish" | "abort";
+    last_step_status?: "open" | "done" | "finished" | "aborted";
+    last_archive_ref?: string;
+    last_output_header?: string;
+    last_completion?: string;
 }
 
 /** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */

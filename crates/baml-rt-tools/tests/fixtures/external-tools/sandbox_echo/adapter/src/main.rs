@@ -31,7 +31,7 @@ impl SandboxTool for EchoTool {
             tool_name: "sandbox-echo".to_string(),
             supported_methods: SUPPORTED_METHODS.iter().map(|s| (*s).to_string()).collect(),
             max_payload_bytes: None,
-            schema_hash: None,
+            schema_digest: None,
             capabilities: None,
         }
     }

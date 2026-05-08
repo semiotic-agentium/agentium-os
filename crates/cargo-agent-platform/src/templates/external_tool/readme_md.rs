@@ -3,9 +3,9 @@
 //! Setup instructions come from the typed `Language` enum so adding a new
 //! language requires a compile-error fix rather than a silent fall-through.
 
-use baml_rt_tools::external_tools::{METHOD_DESCRIBE, METHOD_INVOKE, SUPPORTED_METHODS};
+use baml_rt_tools::external_tools::{METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA};
 
-use super::{Language, Runtime, STARTER_INPUT_KEY, SandboxSource, ScaffoldContext};
+use super::{InvocationMode, Language, Runtime, STARTER_INPUT_KEY, SandboxSource, ScaffoldContext};
 
 pub fn generate(ctx: &ScaffoldContext<'_>) -> String {
     let tool_id = ctx.tool_id();
@@ -13,8 +13,8 @@ pub fn generate(ctx: &ScaffoldContext<'_>) -> String {
 
     // Keep the README's "supported methods" bullets in sync with the actual
     // `SUPPORTED_METHODS` list declared in `templates/mod.rs`.
-    let supported_bullets = SUPPORTED_METHODS
-        .iter()
+    let supported_bullets = supported_methods_for(ctx)
+        .into_iter()
         .map(|m| format!("- `{m}`"))
         .collect::<Vec<_>>()
         .join("\n");
@@ -71,37 +71,91 @@ Then reference this tool in an agent manifest as:
 }
 
 fn manual_probe_section(ctx: &ScaffoldContext<'_>, tool_id: &str) -> String {
-    if ctx.runtime == Runtime::Sandbox {
-        format!(
-            r#"## Local probe (developer convenience)
-
-For sandbox runtime tools, the runner invokes `/tool-adapter` inside the sandbox.
-`tool-server` is **not** the runtime invoke path; it's only a local debugging helper.
-
-```bash
-printf '{{"jsonrpc":"2.0","id":1,"method":"{method_describe}","params":{{"tool_name":"{tool_id}"}}}}\n' | ./tool-server
-printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocation_id":"demo","tool_name":"{tool_id}","input":{{"{input_key}":"hello"}}}}}}\n' | ./tool-server
-```
-"#,
-            method_describe = METHOD_DESCRIBE,
-            method_invoke = METHOD_INVOKE,
-            tool_id = tool_id,
-            input_key = STARTER_INPUT_KEY,
-        )
+    let heading = if ctx.runtime == Runtime::Sandbox {
+        "## Local probe (developer convenience)"
     } else {
-        format!(
-            r#"## Manual probe
+        "## Manual probe"
+    };
 
-```bash
-printf '{{"jsonrpc":"2.0","id":1,"method":"{method_describe}","params":{{"tool_name":"{tool_id}"}}}}\n' | ./tool-server
-printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocation_id":"demo","tool_name":"{tool_id}","input":{{"{input_key}":"hello"}}}}}}\n' | ./tool-server
+    let preface = if ctx.runtime == Runtime::Sandbox {
+        if ctx.language == Language::Bash {
+            "For sandbox runtime tools, the runner invokes `/tool-adapter` inside the sandbox.\nFor Bash scaffolds, `tool-server` is the script implementation that the adapter delegates to; probing it directly still bypasses sandbox framing/rootfs checks.\n\n"
+        } else {
+            "For sandbox runtime tools, the runner invokes `/tool-adapter` inside the sandbox.\nThis local source probe only checks the underlying tool logic; it bypasses sandbox framing/rootfs/image checks.\n\n"
+        }
+    } else {
+        ""
+    };
+    let probe_command = local_probe_command(ctx);
+
+    match ctx.invocation_mode {
+        InvocationMode::SingleShot => format!(
+            r#"{heading}
+
+{preface}```bash
+printf '{{"jsonrpc":"2.0","id":1,"method":"{method_describe}","params":{{"tool_name":"{tool_id}"}}}}\n' | {probe_command}
+printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocation_id":"demo","tool_name":"{tool_id}","input":{{"{input_key}":"hello"}}}}}}\n' | {probe_command}
 ```
 "#,
+            heading = heading,
+            preface = preface,
             method_describe = METHOD_DESCRIBE,
             method_invoke = METHOD_INVOKE,
             tool_id = tool_id,
             input_key = STARTER_INPUT_KEY,
-        )
+            probe_command = probe_command,
+        ),
+        InvocationMode::Session => format!(
+            r#"{heading}
+
+{preface}```bash
+# open
+printf '{{"jsonrpc":"2.0","id":1,"method":"tool/session_open","params":{{"invocation_id":"demo","tool_name":"{tool_id}","open_input":{{}}}}}}\n' | {probe_command}
+
+# send input (replace demo-session with the session_id returned by session_open)
+printf '{{"jsonrpc":"2.0","id":2,"method":"tool/session_send","params":{{"session_id":"demo-session","input":{{"{input_key}":"hello"}}}}}}\n' | {probe_command}
+
+# read next step (payloadless, same session_id)
+printf '{{"jsonrpc":"2.0","id":3,"method":"tool/session_read","params":{{"session_id":"demo-session"}}}}\n' | {probe_command}
+
+# finish (same session_id)
+printf '{{"jsonrpc":"2.0","id":4,"method":"tool/session_finish","params":{{"session_id":"demo-session"}}}}\n' | {probe_command}
+```
+"#,
+            heading = heading,
+            preface = preface,
+            tool_id = tool_id,
+            input_key = STARTER_INPUT_KEY,
+            probe_command = probe_command,
+        ),
+    }
+}
+
+fn local_probe_command(ctx: &ScaffoldContext<'_>) -> &'static str {
+    if ctx.runtime == Runtime::Process || ctx.language == Language::Bash {
+        return "./tool-server";
+    }
+
+    match ctx.language {
+        Language::Rust => "cargo run --quiet --manifest-path ./Cargo.toml --",
+        Language::Python => "python3 ./main.py",
+        Language::Typescript => "node ./dist/main.js",
+        Language::Bash => "./tool-server",
+    }
+}
+
+fn supported_methods_for(ctx: &ScaffoldContext<'_>) -> Vec<&'static str> {
+    match ctx.invocation_mode {
+        InvocationMode::SingleShot => vec![METHOD_DESCRIBE, METHOD_INVOKE],
+        InvocationMode::Session => vec![
+            METHOD_DESCRIBE,
+            METHOD_SCHEMA,
+            "tool/session_open",
+            "tool/session_send",
+            "tool/session_read",
+            "tool/session_finish",
+            "tool/session_abort",
+        ],
     }
 }
 
@@ -114,8 +168,8 @@ fn bind_setup_section(ctx: &ScaffoldContext<'_>) -> String {
 
 These notes apply to both bind modes:
 
-- metadata starts with a placeholder bind path and placeholder digest,
-- real `runtime.image.path` + `runtime_digest` must be patched after rootfs exists,
+- metadata starts with a portable tool-relative bind path,
+- host-resolved bind path lives in gitignored `tool-metadata.lock.json` after sync,
 - `check-external-tool` should pass before running the runner,
 - sandbox adapters should support TSRPC-framed JSON-RPC for parity with sandbox execution.
 
@@ -133,22 +187,28 @@ These notes apply to both bind modes:
 fn bind_setup_docker_mode(_ctx: &ScaffoldContext<'_>) -> String {
     r#"## Bind setup (Docker-assisted)
 
-A helper script is scaffolded at `./setup_bind_sandbox.sh`.
+Helper scripts are scaffolded at:
+
+- `./setup_bind_sandbox.sh` (build/export/sync/check)
+- `./inspect_tool.py` (framed adapter probe: describe/schema/invoke)
 
 ```bash
 ./setup_bind_sandbox.sh --force
 ```
 
 This script wraps `sandbox-bind-sync` to build `adapter/Dockerfile`, export bind
-rootfs, patch metadata, and run `check-external-tool`.
+rootfs, write `tool-metadata.lock.json`, materialize adapter sidecar bundle
+(`/etc/agentium/tool-bundle.json`), and run `check-external-tool`.
+
+> Bind rootfs mode copies filesystem contents only. Docker image config
+> (like `ENV TOOL_CMD=...`) is not guaranteed at runtime. The generated
+> adapter resolves a default tool command without requiring env vars.
 
 You can also call the command directly:
 
 ```bash
 cargo run -q -p cargo-agent-platform -- sandbox-bind-sync \
   --tool-dir . \
-  --rootfs ./.tmp/bind-rootfs \
-  --dockerfile adapter/Dockerfile \
   --image local-sandbox:latest \
   --force \
   --check
@@ -156,6 +216,17 @@ cargo run -q -p cargo-agent-platform -- sandbox-bind-sync \
 
 `adapter/tool-adapter` is a generated transport shim (TSRPC <-> raw stdio).
 You usually only edit the scaffolded language source (`main.py`, `src/main.rs`, etc.).
+
+Example probes:
+
+```bash
+# Reads bind artifact sidecar from .tmp/<tool>-rootfs by default.
+./inspect_tool.py describe
+./inspect_tool.py schema
+
+# invoke requires a runnable adapter command
+./inspect_tool.py invoke --input '{"message":"hello"}' -- docker run --rm -i local-sandbox:latest /tool-adapter
+```
 "#
     .to_string()
 }
@@ -165,7 +236,7 @@ fn bind_setup_manual_mode() -> String {
 
 No Docker/setup script is generated in this mode.
 
-Materialize bind rootfs externally, then sync metadata + digest:
+Materialize bind rootfs externally, then sync the local runtime lock + digest:
 
 ```bash
 ROOTFS=/abs/path/to/rootfs

@@ -107,7 +107,7 @@ impl MockSandboxProvider {
 impl SandboxProvider for MockSandboxProvider {
     async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle> {
         let mut handle = SandboxHandle::new(&spec.name, spec.max_duration);
-        handle.runtime_digest = spec.runtime_digest.clone();
+        handle.guest_workdir = spec.guest_workdir.clone();
         handle.policy_hash = spec.policy_hash.clone();
         let mut inner = self.inner.lock().unwrap();
         inner.sandboxes.insert(

@@ -18,23 +18,26 @@ use std::{
 use baml_rt_core::{BamlRtError, Result};
 
 use super::{
-    ExternalLifecycleEvent, ExternalLifecycleRecorder,
+    ExternalLifecycleEvent, ExternalLifecycleRecorder, ExternalSessionToolHandler,
     handler::ProcessToolHandler,
     invoker::{ExternalInvoker, ToolDescribe},
     lockfile::{ExternalLockfileMode, ExternalToolsLockfile},
     metadata::{
-        ExternalToolMetadata, build_tool_metadata, compute_tool_digest, metadata_schema_hash,
-        read_external_metadata,
+        ExternalToolMetadata, InvocationMode, build_tool_metadata, compute_tool_digest,
+        metadata_schema_digest, read_runtime_external_metadata,
     },
     policy::{DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT},
     protocol::{METHOD_INVOKE, PROTOCOL_VERSION},
     runtime::ToolRuntime,
-    sandbox::{SandboxCache, SandboxProvider, SandboxSpecBuilder, SandboxToolHandler},
+    sandbox::{
+        SandboxCache, SandboxProvider, SandboxSessionInvoker, SandboxSessionInvokerConfig,
+        SandboxSpecBuilder, SandboxToolHandler, SessionPool, SessionPoolConfig,
+    },
     stdio::StdioSubprocessInvoker,
 };
 use crate::{
     ExternalToolResolver, ToolName,
-    tools::{ToolFunctionMetadata, ToolHandler},
+    tools::{ToolFunctionMetadata, ToolHandler, ToolSessionContext},
 };
 
 /// Per-tool callback the resolver invokes to build a
@@ -292,9 +295,20 @@ async fn load_tool_dir(
         )));
     }
 
-    let meta = read_external_metadata(dir)?;
+    let meta = read_runtime_external_metadata(dir)?;
     let tool_name = ToolName::parse(&meta.name)?;
     let runtime_kind = meta.runtime.as_ref().map(ToolRuntime::kind);
+
+    if matches!(meta.invocation_mode, InvocationMode::Session)
+        && !matches!(
+            runtime_kind,
+            Some(crate::external_tools::runtime::ToolRuntimeKind::Sandbox)
+        )
+    {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "tool '{tool_name}' sets invocation_mode=session but is not sandbox runtime; session mode is sandbox-only"
+        )));
+    }
 
     // Dispatch by runtime kind (tool_sandbox.md Workstream B step 6).
     // - None / Some(Process) → existing subprocess + stdio path.
@@ -334,7 +348,7 @@ async fn load_process_tool_dir(
     }
 
     let digest = compute_tool_digest(dir)?;
-    let mut metadata = build_tool_metadata(&meta, &tool_name)?;
+    let mut metadata = build_tool_metadata(dir, &meta, &tool_name)?;
     metadata.digest = Some(digest.clone());
 
     if let Some(recorder) = lifecycle_recorder {
@@ -388,12 +402,11 @@ async fn load_sandbox_tool_dir(
     })?;
 
     // Sandbox-kind tools don't ship a tool-server binary — the adapter lives
-    // inside the image. Digest comes from the image field (§8.4); runtime
-    // digest validation is Workstream C's schema job. For the resolver we
-    // synthesize a best-effort digest off the metadata until the full
-    // sandbox artifact digesting story lands.
-    let digest = format!("sandbox:{}", meta.name);
-    let mut metadata = build_tool_metadata(&meta, &tool_name)?;
+    // inside the image. `compute_tool_digest` covers the sandbox branch
+    // (`baml-ext-tool-sandbox-v1\0` magic + canonical metadata bytes), so the
+    // lockfile sees schema/runtime changes instead of a name-only stub.
+    let digest = compute_tool_digest(dir)?;
+    let mut metadata = build_tool_metadata(dir, &meta, &tool_name)?;
     metadata.digest = Some(digest.clone());
 
     if let Some(recorder) = lifecycle_recorder {
@@ -418,18 +431,66 @@ async fn load_sandbox_tool_dir(
     // first invoke.
     let spec_builder = (wiring.spec_factory)(&tool_name, &meta)?;
 
-    let mut handler_builder = SandboxToolHandler::new(
-        metadata.clone(),
-        wiring.provider.clone(),
-        wiring.cache.clone(),
-        spec_builder,
-        DEFAULT_INVOKE_TIMEOUT,
-    )
-    .with_capabilities(meta.capabilities.clone());
-    if let Some(recorder) = lifecycle_recorder {
-        handler_builder = handler_builder.with_lifecycle_recorder(recorder.clone());
-    }
-    let handler: Arc<dyn ToolHandler> = Arc::new(handler_builder);
+    let handler: Arc<dyn ToolHandler> = match meta.invocation_mode {
+        InvocationMode::SingleShot => {
+            let mut handler_builder = SandboxToolHandler::new(
+                metadata.clone(),
+                wiring.provider.clone(),
+                wiring.cache.clone(),
+                spec_builder,
+                DEFAULT_INVOKE_TIMEOUT,
+            )
+            .with_capabilities(meta.capabilities.clone());
+            if let Some(recorder) = lifecycle_recorder {
+                handler_builder = handler_builder.with_lifecycle_recorder(recorder.clone());
+            }
+            Arc::new(handler_builder)
+        }
+        InvocationMode::Session => {
+            // TODO(phase-4 sandbox-streaming §7.2/§9.4): wire per-tool
+            // configuration from metadata into the pool/invoker instead of
+            // using the type defaults below. Specifically:
+            //   - `meta.session_policy` (Strict / MultiSend) — should drive
+            //     `SandboxSessionInvokerConfig` once a corresponding field
+            //     exists; today every tool gets the same FSM enforcement.
+            //   - `meta.reuse_after_session` — must override
+            //     `SandboxSessionInvokerConfig::reuse_after_session`
+            //     (default `false`); right now opt-in reuse is dropped on
+            //     the floor so every finish destroys the sandbox.
+            //   - `SessionPoolConfig::default_pool_max` /
+            //     `pool_checkout_timeout` — should pull from a future
+            //     `meta.pool_*` block once Phase 4 lands; today every tool
+            //     shares the global default cap.
+            let pool = Arc::new(SessionPool::new(
+                wiring.cache.runner_id().to_string(),
+                wiring.provider.clone(),
+                spec_builder,
+                SessionPoolConfig::default(),
+            ));
+            let invoker_config = SandboxSessionInvokerConfig::default();
+            let invoker_factory = {
+                let pool = pool.clone();
+                Arc::new(move |ctx: &ToolSessionContext| {
+                    Arc::new(SandboxSessionInvoker::new(
+                        pool.clone(),
+                        ctx.agent_id.clone(),
+                        ctx.context_id.clone(),
+                        invoker_config.clone(),
+                    )) as Arc<dyn super::SessionToolInvoker>
+                })
+            };
+
+            Arc::new(
+                ExternalSessionToolHandler::new_with_factory(
+                    metadata.clone(),
+                    invoker_factory,
+                    DEFAULT_INVOKE_TIMEOUT,
+                )
+                .with_capabilities(meta.capabilities.clone())
+                .with_secret_scope(meta.secret_scope),
+            )
+        }
+    };
 
     let artifact_ref = dir.display().to_string();
     Ok((
@@ -498,7 +559,7 @@ async fn describe_with_cache(
             result: "ok".to_string(),
             details: serde_json::json!({
                 "supported_methods": describe.supported_methods.clone(),
-                "schema_hash": describe.schema_hash.clone(),
+                "schema_digest": describe.schema_digest.clone(),
             }),
         });
     }
@@ -562,23 +623,41 @@ fn validate_describe_contract(
         )));
     }
 
-    if !describe
-        .supported_methods
-        .iter()
-        .any(|method| method == METHOD_INVOKE)
-    {
-        return Err(BamlRtError::InvalidArgument(format!(
-            "external tool '{}' describe mismatch: supported_methods must include '{}'",
-            tool_name, METHOD_INVOKE
-        )));
+    match meta.invocation_mode {
+        InvocationMode::SingleShot => {
+            if !describe
+                .supported_methods
+                .iter()
+                .any(|method| method == METHOD_INVOKE)
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "external tool '{}' describe mismatch: supported_methods must include '{}'",
+                    tool_name, METHOD_INVOKE
+                )));
+            }
+        }
+        InvocationMode::Session => {
+            for required in baml_sandbox_protocol::SUPPORTED_METHODS_SESSION {
+                if !describe
+                    .supported_methods
+                    .iter()
+                    .any(|method| method == required)
+                {
+                    return Err(BamlRtError::InvalidArgument(format!(
+                        "external tool '{}' describe mismatch: supported_methods must include '{}' for invocation_mode=session",
+                        tool_name, required
+                    )));
+                }
+            }
+        }
     }
 
-    if let Some(describe_schema_hash) = describe.schema_hash.as_ref() {
-        let expected = metadata_schema_hash(meta);
-        if describe_schema_hash != &expected {
+    if let Some(describe_schema_digest) = describe.schema_digest.as_ref() {
+        let expected = metadata_schema_digest(meta);
+        if describe_schema_digest != &expected {
             return Err(BamlRtError::InvalidArgument(format!(
-                "external tool '{}' describe mismatch: metadata schema hash '{}' != describe schema hash '{}'",
-                tool_name, expected, describe_schema_hash
+                "external tool '{}' describe mismatch: metadata schema digest '{}' != describe schema digest '{}'",
+                tool_name, expected, describe_schema_digest
             )));
         }
     }
@@ -609,7 +688,11 @@ mod tests {
 
     use super::{DevModeResolver, ExternalLifecycleEvent, ExternalLifecycleRecorder};
     use crate::{
-        ExternalToolResolver, ToolName, external_tools::metadata::metadata_schema_hash,
+        ExternalToolResolver, ToolName,
+        external_tools::{
+            ToolDescribe,
+            metadata::{ExternalToolMetadata, InvocationMode, metadata_schema_digest},
+        },
         tools::SessionPolicy,
     };
 
@@ -644,10 +727,10 @@ mod tests {
         )
         .unwrap();
 
-        let schema_hash = metadata_schema_hash(&serde_json::from_value(metadata).unwrap());
+        let schema_digest = metadata_schema_digest(&serde_json::from_value(metadata).unwrap());
         let counter_path = tool_dir.join("describe-count");
         let response = format!(
-            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"],\"schema_hash\":\"{schema_hash}\"}}}}"
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"],\"schema_digest\":\"{schema_digest}\"}}}}"
         );
         write_tool_server(
             &tool_dir.join("tool-server"),
@@ -851,6 +934,49 @@ printf '%s\\n' '{response}'\n",
         );
 
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn validate_describe_requires_session_method_set_for_session_mode() {
+        let meta: ExternalToolMetadata = serde_json::from_value(json!({
+            "tool_abi_version": "1",
+            "name": "support/session_contract",
+            "description": "session contract",
+            "bundle": "support",
+            "local_name": "session_contract",
+            "access_level": "read",
+            "invocation_mode": "session",
+            "schemas": {
+                "input": {"type": "object"},
+                "output": {"type": "object"}
+            },
+            "secrets": [],
+            "capabilities": {}
+        }))
+        .expect("metadata parse");
+        assert!(matches!(meta.invocation_mode, InvocationMode::Session));
+
+        let describe = ToolDescribe {
+            protocol_version: "1".to_string(),
+            tool_name: "support/session_contract".to_string(),
+            supported_methods: vec![
+                "tool/describe".to_string(),
+                "tool/schema".to_string(),
+                "tool/session_open".to_string(),
+                "tool/session_send".to_string(),
+                "tool/session_read".to_string(),
+                // Missing finish + abort on purpose.
+            ],
+            max_payload_bytes: None,
+            schema_digest: None,
+            capabilities: None,
+        };
+
+        let tool_name = ToolName::parse("support/session_contract").unwrap();
+        let err = super::validate_describe_contract(&meta, &tool_name, &describe)
+            .expect_err("missing methods should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("invocation_mode=session"), "unexpected: {msg}");
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {

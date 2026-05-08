@@ -769,6 +769,7 @@ impl A2aAgent {
             digest: None,
             projection_semantics: None,
             session_policy: baml_rt_tools::SessionPolicy::default(),
+            coordination_baml: None,
         };
 
         let handler: Arc<dyn ToolHandler> = Arc::new(JsToolHandler {

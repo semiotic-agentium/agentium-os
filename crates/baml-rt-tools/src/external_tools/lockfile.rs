@@ -170,8 +170,7 @@ mod tests {
                 "kind": "sandbox",
                 "image": {"kind": "bind", "path": "/tmp/sbox-rootfs"},
                 "entrypoint": ["/tool-adapter"]
-            },
-            "runtime_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
         });
         fs::write(
             dir.join("tool-metadata.json"),

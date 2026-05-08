@@ -446,8 +446,14 @@ export interface ToolFailure {
 export type StepExecutorFunctionName = "ChooseCalculatoragentTool" | "ChooseCalculatoragentTool__act__support_calculate" | "ChooseCalculatoragentTool__continue__support_calculate" | "ChooseCalculatoragentTool__select";
 
 export interface SessionContext {
-    contract_version: "session_context";
+    contract_version: "session_context_v2";
     session_open: boolean;
+    status: "awaiting_open" | "just_opened" | "done";
+    last_step_op?: "open" | "send" | "read" | "finish" | "abort";
+    last_step_status?: "open" | "done" | "finished" | "aborted";
+    last_archive_ref?: string;
+    last_output_header?: string;
+    last_completion?: string;
 }
 
 /** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
@@ -508,7 +514,8 @@ declare global {
     "target": "ES2020",
     "lib": ["ES2020"],
     "module": "ESNext",
-    "moduleResolution": "bundler",
+    "moduleResolution": "node",
+    "ignoreDeprecations": "6.0",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -560,6 +567,12 @@ class ProvenancePlanStep {
 class SessionContext {
   contract_version string
   session_open bool
+  status string @description("FSM status: awaiting_open | just_opened | done")
+  last_step_op string? @description("Previous FSM step op when known: open | send | read | finish | abort")
+  last_step_status string? @description("Previous FSM step status when known: open | done | finished | aborted")
+  last_archive_ref string? @description("Archive ref from the previous Send when available, e.g. @4")
+  last_output_header string? @description("Compact archive header from the previous Send/Read when available")
+  last_completion string? @description("Tool-specific terminal completion marker when available, e.g. DONE | INPUT_REQUIRED | INTERRUPTED")
 }
 
 /// Opaque JSON transport wrapper for host-managed tools and event payloads.
@@ -722,11 +735,11 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — first post-Open hop: Send, SearchRead, or PageRead (support/calculate).
+/// Phase: act — first post-Open hop: Send, SearchRead, PageRead, or Abort (support/calculate).
 function ChooseCalculatoragentTool__act__support_calculate(
   user_message: string,
   session_context: SessionContext
-) -> SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep {
+) -> SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateAbortStep {
 
   client DefaultClient
   prompt #"[ACT] A support/calculate session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nThe user said: { user_message }
@@ -737,19 +750,19 @@ Decide whether to use a tool and produce a session plan.
 { _.role('user') }
 { user_message }
 
-PHASE CONSTRAINT (act — Send or archive read): The JSON root must be exactly one Send, SearchRead, or PageRead step. op must be exactly the string Send, SearchRead, or PageRead — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
+PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
 "#
 
 }
 
-/// Phase: continue — SearchRead/PageRead, send again, or finish support/calculate.
+/// Phase: continue — SearchRead/PageRead, send again, finish, or abort support/calculate.
 function ChooseCalculatoragentTool__continue__support_calculate(
   user_message: string,
   session_context: SessionContext
-) -> SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep {
+) -> SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/calculate result is archived.\nCheck session history:\n- See \"@N support/calculate\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/calculate\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n- See \"@N support/calculate\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\nThe user said: { user_message }
+  prompt #"[CONTINUE] support/calculate result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N support/calculate\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N support/calculate\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N support/calculate\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nThe user said: { user_message }
 Decide whether to use a tool and produce a session plan.
 
 { ctx.output_format }
@@ -757,7 +770,7 @@ Decide whether to use a tool and produce a session plan.
 { _.role('user') }
 { user_message }
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, or Finish step. op must be Send, SearchRead, PageRead, or Finish — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
 "#
 
 }

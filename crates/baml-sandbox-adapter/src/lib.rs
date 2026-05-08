@@ -20,15 +20,17 @@ compile_error!(
 );
 
 mod panic_catch;
+pub mod session;
 mod stdout_swap;
 
 use async_trait::async_trait;
 use baml_sandbox_protocol::{
     CodecError, ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR, ErrorClass, JsonRpcError,
-    JsonRpcRequest, JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, ToolDescribeResult,
-    ToolInvokeParams, ToolInvokeResult, TsrpcChannel,
+    JsonRpcRequest, JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA,
+    ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult, TsrpcChannel,
 };
 use serde_json::{Value, json};
+pub use session::{ResetOutcome, SandboxSessionTool, dispatch_session_request};
 
 use crate::panic_catch::catch_tool_panic;
 
@@ -123,6 +125,12 @@ fn collect_source_chain(err: &(dyn std::error::Error + 'static)) -> Vec<String> 
 #[async_trait]
 pub trait SandboxTool: Send + Sync {
     fn describe(&self) -> ToolDescribeResult;
+    /// Optional static schema endpoint backing `tool/schema`.
+    ///
+    /// Default is `None` for backward compatibility with V1 adapters.
+    fn schema(&self) -> Option<ToolSchemaResult> {
+        None
+    }
     async fn invoke(&self, params: ToolInvokeParams) -> Result<ToolInvokeResult, AdapterError>;
 }
 
@@ -267,6 +275,24 @@ async fn dispatch_one<T: SandboxTool>(tool: &T, req: JsonRpcRequest) -> JsonRpcR
                 ERR_INTERNAL,
                 format!("failed to serialize describe result: {err}"),
                 ErrorClass::Execution,
+            ),
+        }
+    } else if req.method == METHOD_SCHEMA {
+        match tool.schema() {
+            Some(schema) => match serde_json::to_value(schema) {
+                Ok(value) => success_response(req.id, value),
+                Err(err) => error_response(
+                    req.id,
+                    ERR_INTERNAL,
+                    format!("failed to serialize schema result: {err}"),
+                    ErrorClass::Execution,
+                ),
+            },
+            None => error_response(
+                req.id,
+                ERR_METHOD_NOT_FOUND,
+                format!("unknown method '{}'", req.method),
+                ErrorClass::InvalidArgument,
             ),
         }
     } else if req.method == METHOD_INVOKE {

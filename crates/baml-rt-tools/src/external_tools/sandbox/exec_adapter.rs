@@ -25,7 +25,7 @@
 
 use microsandbox::{ExecEvent, ExecHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::channel::TsrpcChannel;
 
@@ -73,17 +73,17 @@ pub fn exec_handle_into_channel(mut handle: ExecHandle) -> Result<TsrpcChannel, 
                 }
                 ExecEvent::Stderr(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);
-                    debug!(stderr = %text.trim_end(), "sandbox tool-adapter stderr");
+                    info!(stderr = %text.trim_end(), "sandbox tool-adapter stderr");
                 }
                 ExecEvent::Exited { code } => {
-                    debug!(
+                    info!(
                         exit_code = code,
                         "sandbox tool-adapter exited; closing channel"
                     );
                     break;
                 }
                 ExecEvent::Started { pid } => {
-                    debug!(pid, "sandbox tool-adapter started");
+                    info!(pid, "sandbox tool-adapter started");
                 }
             }
         }

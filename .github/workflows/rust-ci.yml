@@ -45,6 +45,12 @@ jobs:
               - 'crates/baml-sandbox-adapter/**'
               - 'crates/baml-sandbox-protocol/**'
               - 'crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/adapter/**'
+              - 'tests/fixtures/sandbox-conformance/**'
+              - 'crates/baml-rt-tools/src/external_tools/metadata.rs'
+              - 'crates/cargo-agent-platform/src/commands/sandbox_bind_sync.rs'
+              - 'crates/cargo-agent-platform/src/commands/sandbox_oci_prepare.rs'
+              - 'crates/cargo-agent-platform/src/commands/mod.rs'
+              - 'crates/cargo-agent-platform/src/main.rs'
               - '.github/workflows/rust-ci.yml'
 
   doctor:
@@ -98,8 +104,11 @@ jobs:
       - name: Install OS build deps
         run: |
           sudo apt-get install -y \
-            build-essential pkg-config libssl-dev libclang-dev util-linux lld \
+            build-essential pkg-config libssl-dev libclang-dev clang llvm-dev util-linux lld \
             zstd git-lfs
+
+      - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
+        run: bash scripts/ci/set-libclang-path.sh
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -276,7 +285,10 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config lld
+          sudo apt update && sudo apt install -y build-essential pkg-config libclang-dev clang llvm-dev lld
+
+      - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
+        run: bash scripts/ci/set-libclang-path.sh
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -301,6 +313,19 @@ jobs:
             -p baml-sandbox-adapter \
             -p baml-sandbox-protocol \
             --locked --profile ci --no-fail-fast
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+      - name: Conformance digest check (Rust authority)
+        run: |
+          cargo test -p baml-rt-tools schema_digest_matches_conformance_fixture --locked -- --nocapture
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
+      - name: Sandbox sidecar parity checks (bind + OCI)
+        run: |
+          cargo test -p cargo-agent-platform write_runtime_sidecars_materializes_expected_files --locked -- --ignored --nocapture
+          cargo test -p cargo-agent-platform sandbox_oci_prepare --locked -- --ignored --nocapture
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
@@ -368,11 +393,12 @@ jobs:
 
           path = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
           doc = json.loads(path.read_text(encoding="utf-8"))
-          digest = doc.get("runtime_digest", "")
           expected = "sha256:" + "0" * 64
-          if digest != expected:
+
+          image = doc.get("runtime", {}).get("image", "")
+          if not isinstance(image, str) or expected not in image:
               raise SystemExit(
-                  "fixture metadata runtime_digest is no longer placeholder; "
+                  "fixture metadata runtime.image is no longer placeholder; "
                   "no-publish lane expects committed metadata to stay template-only"
               )
 
@@ -456,7 +482,6 @@ jobs:
       - name: Materialize CI-local fixture metadata (no publish)
         env:
           IMAGE_REF: ${{ steps.image_digest.outputs.image_ref }}
-          IMAGE_DIGEST: ${{ steps.image_digest.outputs.image_digest }}
         run: |
           python - <<'PY'
           import json
@@ -470,7 +495,6 @@ jobs:
             doc = json.load(f)
 
           doc["runtime"]["image"] = os.environ["IMAGE_REF"]
-          doc["runtime_digest"] = os.environ["IMAGE_DIGEST"]
 
           with dst.open("w", encoding="utf-8") as f:
             json.dump(doc, f, indent=2)
@@ -479,7 +503,7 @@ jobs:
           print(f"wrote {dst}")
           PY
 
-      - name: Validate CI-local fixture metadata has non-placeholder digest
+      - name: Validate CI-local fixture metadata has materialized image
         run: |
           python - <<'PY'
           import json
@@ -488,12 +512,6 @@ jobs:
           path = os.path.join(os.environ["RUNNER_TEMP"], "sandbox_echo.tool-metadata.ci.json")
           with open(path, "r", encoding="utf-8") as f:
             doc = json.load(f)
-
-          digest = doc.get("runtime_digest", "")
-          if not isinstance(digest, str) or not digest.startswith("sha256:"):
-            raise SystemExit(f"invalid runtime_digest: {digest!r}")
-          if digest == "sha256:" + "0" * 64:
-            raise SystemExit("runtime_digest is still placeholder sha256:00..")
 
           image = doc.get("runtime", {}).get("image", "")
           if not image.startswith("sandbox-echo-adapter:ci-"):
@@ -538,13 +556,8 @@ jobs:
               raise SystemExit(f"artifact missing: {path}")
 
           doc = json.loads(path.read_text(encoding="utf-8"))
-          digest = doc.get("runtime_digest", "")
           image = doc.get("runtime", {}).get("image", "")
 
-          if not isinstance(digest, str) or not digest.startswith("sha256:"):
-              raise SystemExit(f"invalid runtime_digest: {digest!r}")
-          if digest == "sha256:" + "0" * 64:
-              raise SystemExit("runtime_digest is placeholder sha256:00..")
           if not isinstance(image, str) or not image.startswith("sandbox-echo-adapter:ci-"):
               raise SystemExit(f"unexpected runtime.image for no-publish lane: {image!r}")
 

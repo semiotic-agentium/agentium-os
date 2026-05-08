@@ -22,8 +22,8 @@ use console::style;
 
 use crate::{
     templates::external_tool::{
-        Access, GeneratedFile, Language, Runtime, SandboxSource, ScaffoldContext, metadata_json,
-        readme_md,
+        Access, GeneratedFile, InvocationMode, Language, Runtime, SandboxSource, ScaffoldContext,
+        metadata_json, readme_md,
     },
     transaction::TransactionalWriter,
 };
@@ -54,9 +54,9 @@ pub struct NewToolRunArgs<'a> {
     pub lang: Language,
     pub access: Access,
     pub runtime: Runtime,
+    pub invocation_mode: InvocationMode,
     pub sandbox_source: SandboxSource,
     pub sandbox_image: Option<&'a str>,
-    pub runtime_digest: Option<&'a str>,
     pub sandbox_entrypoint: &'a [String],
     pub generate_docker: bool,
     pub description: &'a str,
@@ -71,9 +71,9 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         lang,
         access,
         runtime,
+        invocation_mode,
         sandbox_source,
         sandbox_image,
-        runtime_digest,
         sandbox_entrypoint,
         generate_docker,
         description,
@@ -101,12 +101,14 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
     };
 
     validate_generate_docker_option(runtime, sandbox_source, generate_docker)?;
+    validate_invocation_mode(runtime, invocation_mode)?;
 
-    let (sandbox_image, runtime_digest) = validate_runtime_options(
+    let sandbox_image = validate_runtime_options(
+        name,
+        bundle,
         runtime,
         sandbox_source,
         sandbox_image,
-        runtime_digest,
         sandbox_entrypoint,
     )?;
 
@@ -117,9 +119,9 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         language: lang,
         description,
         runtime,
+        invocation_mode,
         sandbox_source: Some(sandbox_source),
         sandbox_image,
-        runtime_digest,
         sandbox_entrypoint: sandbox_entrypoint.to_vec(),
         generate_docker,
     };
@@ -134,6 +136,7 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         println!("  Language:  {}", style(lang.as_str()).cyan());
         println!("  Access:    {}", style(access.as_str()).cyan());
         println!("  Runtime:   {}", style(runtime.as_str()).cyan());
+        println!("  Invoke:    {}", style(invocation_mode.as_str()).cyan());
         if runtime == Runtime::Sandbox {
             println!(
                 "  Source:    {}",
@@ -146,10 +149,6 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
             println!(
                 "  Image:     {}",
                 style(format!("{:?}", ctx.sandbox_image)).cyan()
-            );
-            println!(
-                "  Digest:    {}",
-                style(ctx.runtime_digest.as_deref().unwrap_or("(missing)")).cyan()
             );
             if !ctx.sandbox_entrypoint.is_empty() {
                 println!(
@@ -251,10 +250,24 @@ pub fn build_file_set(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
         GeneratedFile::new("tool-metadata.json", metadata_json::generate(ctx)),
         GeneratedFile::new("README.md", readme_md::generate(ctx)),
     ];
-    files.extend(ctx.language.files(ctx));
+    let mut language_files = ctx.language.files(ctx);
+    if ctx.runtime == Runtime::Sandbox && ctx.language != Language::Bash {
+        // Sandbox execution enters through `/tool-adapter` inside the guest.
+        // For non-Bash starters, `tool-server` is only a host-side wrapper
+        // around the language source and can be mistaken for sandbox coverage.
+        // Bash is the exception: its `tool-server` file is the actual script
+        // implementation that the generated adapter delegates to.
+        language_files.retain(|file| file.relative_path != "tool-server");
+    }
+    files.extend(language_files);
     if ctx.runtime == Runtime::Sandbox && ctx.sandbox_source == Some(SandboxSource::Bind) {
         files.extend(crate::templates::external_tool::bind_sandbox::files(ctx));
         ensure_gitignore_entry(&mut files, ".tmp/");
+        // The host-resolved bind sidecar (written by `sandbox-bind-sync`) is
+        // per-machine and must never be committed. Keeping the rule next to
+        // the tool means it travels with the tool if the package is moved or
+        // published, instead of relying on a workspace-level wildcard.
+        ensure_gitignore_entry(&mut files, "tool-metadata.lock.json");
     }
     files
 }
@@ -327,26 +340,30 @@ fn validate_tool_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-const BIND_ROOTFS_PLACEHOLDER: &str = "<rootfs-path>";
-const ZERO_RUNTIME_DIGEST: &str =
-    "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+/// Build the conventional bind rootfs path scaffolds advertise in source
+/// metadata: a tool-relative `./.tmp/<bundle>-<safe_name>-rootfs`. Matches
+/// the rootfs dir the setup script writes to (see `bind_sandbox.rs`).
+fn default_bind_rootfs_path(name: &str, bundle: &str) -> PathBuf {
+    let safe_name = name.replace('_', "-");
+    PathBuf::from(format!("./.tmp/{bundle}-{safe_name}-rootfs"))
+}
 
 fn validate_runtime_options(
+    name: &str,
+    bundle: &str,
     runtime: Runtime,
     sandbox_source: SandboxSource,
     sandbox_image: Option<&str>,
-    runtime_digest: Option<&str>,
     sandbox_entrypoint: &[String],
-) -> Result<(Option<SandboxImageRef>, Option<String>)> {
+) -> Result<Option<SandboxImageRef>> {
     match runtime {
         Runtime::Process => {
-            if sandbox_image.is_some() || runtime_digest.is_some() || !sandbox_entrypoint.is_empty()
-            {
+            if sandbox_image.is_some() || !sandbox_entrypoint.is_empty() {
                 bail!(
                     "Error: sandbox-only options were supplied with --runtime process.\nHint: remove --sandbox-* options or use --runtime sandbox."
                 );
             }
-            Ok((None, None))
+            Ok(None)
         }
         Runtime::Sandbox => match sandbox_source {
             SandboxSource::Oci => {
@@ -358,38 +375,24 @@ fn validate_runtime_options(
                         "Error: --sandbox-image must be digest-pinned (missing @sha256:): {image}"
                     );
                 };
-                if !digest_from_image.starts_with("sha256:") {
-                    bail!("Error: --sandbox-image must include @sha256:<64-hex>: {image}");
-                }
-                let digest = runtime_digest.unwrap_or(digest_from_image);
-                validate_runtime_digest(digest)?;
-                Ok((
-                    Some(SandboxImageRef::Oci {
-                        r#ref: image.to_string(),
-                    }),
-                    Some(digest.to_string()),
-                ))
+                validate_image_digest(digest_from_image)?;
+                Ok(Some(SandboxImageRef::Oci {
+                    r#ref: image.to_string(),
+                }))
             }
-            SandboxSource::Bind => {
-                let digest = runtime_digest.unwrap_or(ZERO_RUNTIME_DIGEST);
-                validate_runtime_digest(digest)?;
-                Ok((
-                    Some(SandboxImageRef::Bind {
-                        path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
-                    }),
-                    Some(digest.to_string()),
-                ))
-            }
+            SandboxSource::Bind => Ok(Some(SandboxImageRef::Bind {
+                path: default_bind_rootfs_path(name, bundle),
+            })),
         },
     }
 }
 
-fn validate_runtime_digest(digest: &str) -> Result<()> {
+fn validate_image_digest(digest: &str) -> Result<()> {
     let digest_ok = digest.starts_with("sha256:")
         && digest.len() == 71
         && digest[7..].chars().all(|c| c.is_ascii_hexdigit());
     if !digest_ok {
-        bail!("Error: --runtime-digest must match sha256:<64-hex>; got '{digest}'.");
+        bail!("Error: OCI image digest must match sha256:<64-hex>; got '{digest}'.");
     }
     Ok(())
 }
@@ -402,6 +405,15 @@ fn validate_generate_docker_option(
     if generate_docker && !(runtime == Runtime::Sandbox && sandbox_source == SandboxSource::Bind) {
         bail!(
             "Error: --generate-docker is only supported with --runtime sandbox --sandbox-source bind."
+        );
+    }
+    Ok(())
+}
+
+fn validate_invocation_mode(runtime: Runtime, invocation_mode: InvocationMode) -> Result<()> {
+    if invocation_mode == InvocationMode::Session && runtime != Runtime::Sandbox {
+        bail!(
+            "Error: --invocation-mode session requires --runtime sandbox.\nHint: use --runtime sandbox or switch to --invocation-mode single-shot."
         );
     }
     Ok(())
@@ -449,9 +461,9 @@ mod tests {
             language: lang,
             description: "Echo external tool",
             runtime: Runtime::Process,
+            invocation_mode: InvocationMode::SingleShot,
             sandbox_source: Some(SandboxSource::Oci),
             sandbox_image: None,
-            runtime_digest: None,
             sandbox_entrypoint: Vec::new(),
             generate_docker: false,
         }
@@ -461,6 +473,14 @@ mod tests {
         assert!(
             files.iter().any(|f| f.relative_path == path),
             "scaffold missing expected file `{path}`; got {:?}",
+            files.iter().map(|f| &f.relative_path).collect::<Vec<_>>()
+        );
+    }
+
+    fn assert_scaffold_lacks(files: &[GeneratedFile], path: &str) {
+        assert!(
+            files.iter().all(|f| f.relative_path != path),
+            "scaffold unexpectedly included `{path}`; got {:?}",
             files.iter().map(|f| &f.relative_path).collect::<Vec<_>>()
         );
     }
@@ -489,6 +509,32 @@ mod tests {
         assert_scaffold_has(&ts_files, "tsconfig.json");
         assert_scaffold_has(&ts_files, "src/main.ts");
         assert_scaffold_has(&ts_files, "tool-server");
+    }
+
+    #[test]
+    fn sandbox_scaffold_omits_host_tool_server_except_bash() {
+        for lang in [Language::Rust, Language::Python, Language::Typescript] {
+            let mut sandbox_ctx = ctx(lang);
+            sandbox_ctx.runtime = Runtime::Sandbox;
+            sandbox_ctx.sandbox_source = Some(SandboxSource::Oci);
+            sandbox_ctx.sandbox_image = Some(SandboxImageRef::Oci {
+                r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+            });
+
+            let files = build_file_set(&sandbox_ctx);
+            assert_scaffold_lacks(&files, "tool-server");
+        }
+
+        let mut bash_ctx = ctx(Language::Bash);
+        bash_ctx.runtime = Runtime::Sandbox;
+        bash_ctx.sandbox_source = Some(SandboxSource::Oci);
+        bash_ctx.sandbox_image = Some(SandboxImageRef::Oci {
+            r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+        });
+        let bash_files = build_file_set(&bash_ctx);
+        assert_scaffold_has(&bash_files, "tool-server");
     }
 
     /// `tool-metadata.json` must round-trip through the runtime's catalog
@@ -542,9 +588,9 @@ mod tests {
             language: Language::Bash,
             description: &desc_with_specials,
             runtime: Runtime::Process,
+            invocation_mode: InvocationMode::SingleShot,
             sandbox_source: Some(SandboxSource::Oci),
             sandbox_image: None,
-            runtime_digest: None,
             sandbox_entrypoint: Vec::new(),
             generate_docker: false,
         };
@@ -567,21 +613,18 @@ mod tests {
             }
             other => panic!("expected explicit process runtime, got {other:?}"),
         }
-        assert!(parsed.runtime_digest.is_none());
     }
 
     #[test]
     fn scaffolded_metadata_emits_sandbox_runtime_block_when_requested() {
         let mut ctx = ctx(Language::Rust);
         ctx.runtime = Runtime::Sandbox;
+        ctx.invocation_mode = InvocationMode::Session;
         ctx.sandbox_source = Some(SandboxSource::Oci);
         ctx.sandbox_image = Some(SandboxImageRef::Oci {
             r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
                 .to_string(),
         });
-        ctx.runtime_digest = Some(
-            "sha256:2222222222222222222222222222222222222222222222222222222222222222".to_string(),
-        );
         ctx.sandbox_entrypoint = vec!["/app/tool-adapter".to_string()];
 
         let raw = metadata_json::generate(&ctx);
@@ -595,29 +638,38 @@ mod tests {
                     _ => panic!("expected oci image"),
                 }
                 assert_eq!(spec.entrypoint, vec!["/app/tool-adapter".to_string()]);
+                let adapter = spec
+                    .adapter
+                    .expect("sandbox runtime should include adapter block");
+                assert_eq!(adapter.protocol, "jsonrpc-stdio");
+                assert!(!adapter.command.is_empty());
             }
             other => panic!("expected sandbox runtime, got {other:?}"),
         }
-        assert_eq!(
-            parsed.runtime_digest.as_deref(),
-            Some("sha256:2222222222222222222222222222222222222222222222222222222222222222")
-        );
+        assert!(matches!(
+            parsed.invocation_mode,
+            baml_rt_tools::external_tools::InvocationMode::Session
+        ));
     }
 
     #[test]
-    fn bind_sandbox_defaults_to_placeholder_path_and_zero_digest() {
-        let (image, digest) =
-            validate_runtime_options(Runtime::Sandbox, SandboxSource::Bind, None, None, &[])
-                .expect("bind scaffolding defaults should be valid");
+    fn bind_sandbox_defaults_to_tool_relative_rootfs() {
+        let image = validate_runtime_options(
+            "echo",
+            "dev",
+            Runtime::Sandbox,
+            SandboxSource::Bind,
+            None,
+            &[],
+        )
+        .expect("bind scaffolding defaults should be valid");
 
         match image {
             Some(SandboxImageRef::Bind { path }) => {
-                assert_eq!(path, PathBuf::from(BIND_ROOTFS_PLACEHOLDER));
+                assert_eq!(path, PathBuf::from("./.tmp/dev-echo-rootfs"));
             }
             other => panic!("expected bind image, got {other:?}"),
         }
-
-        assert_eq!(digest.as_deref(), Some(ZERO_RUNTIME_DIGEST));
     }
 
     #[test]
@@ -626,9 +678,8 @@ mod tests {
         bind_ctx.runtime = Runtime::Sandbox;
         bind_ctx.sandbox_source = Some(SandboxSource::Bind);
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
 
         let files = build_file_set(&bind_ctx);
         assert!(
@@ -657,13 +708,13 @@ mod tests {
         bind_ctx.runtime = Runtime::Sandbox;
         bind_ctx.sandbox_source = Some(SandboxSource::Bind);
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
         bind_ctx.generate_docker = true;
 
         let files = build_file_set(&bind_ctx);
         assert_scaffold_has(&files, "setup_bind_sandbox.sh");
+        assert_scaffold_has(&files, "inspect_tool.py");
         assert_scaffold_has(&files, "adapter/Dockerfile");
         assert_scaffold_has(&files, "adapter/tool-adapter");
     }
@@ -682,6 +733,13 @@ mod tests {
     }
 
     #[test]
+    fn session_invocation_mode_requires_sandbox_runtime() {
+        assert!(validate_invocation_mode(Runtime::Sandbox, InvocationMode::Session).is_ok());
+        assert!(validate_invocation_mode(Runtime::Process, InvocationMode::Session).is_err());
+        assert!(validate_invocation_mode(Runtime::Process, InvocationMode::SingleShot).is_ok());
+    }
+
+    #[test]
     fn readme_supported_methods_do_not_duplicate_describe() {
         let files = build_file_set(&ctx(Language::Python));
         let readme = files
@@ -697,14 +755,34 @@ mod tests {
     }
 
     #[test]
+    fn session_readme_lists_session_methods() {
+        let mut session_ctx = ctx(Language::Python);
+        session_ctx.runtime = Runtime::Sandbox;
+        session_ctx.invocation_mode = InvocationMode::Session;
+        session_ctx.sandbox_source = Some(SandboxSource::Oci);
+        session_ctx.sandbox_image = Some(SandboxImageRef::Oci {
+            r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+        });
+        let files = build_file_set(&session_ctx);
+        let readme = files
+            .iter()
+            .find(|f| f.relative_path == "README.md")
+            .expect("README emitted");
+
+        assert!(readme.content.contains("- `tool/session_open`"));
+        assert!(readme.content.contains("- `tool/session_read`"));
+        assert!(readme.content.contains("payloadless"));
+    }
+
+    #[test]
     fn bind_setup_script_uses_tool_relative_rootfs_and_sync_command() {
         let mut bind_ctx = ctx(Language::Python);
         bind_ctx.runtime = Runtime::Sandbox;
         bind_ctx.sandbox_source = Some(SandboxSource::Bind);
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
         bind_ctx.generate_docker = true;
 
         let files = build_file_set(&bind_ctx);
@@ -724,14 +802,37 @@ mod tests {
     }
 
     #[test]
+    fn bind_scaffold_gitignore_ignores_runtime_lock_sidecar() {
+        let mut bind_ctx = ctx(Language::Python);
+        bind_ctx.runtime = Runtime::Sandbox;
+        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
+        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
+            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
+        });
+
+        let files = build_file_set(&bind_ctx);
+        let gitignore = files
+            .iter()
+            .find(|f| f.relative_path == ".gitignore")
+            .expect(".gitignore emitted");
+
+        assert!(
+            gitignore
+                .content
+                .lines()
+                .any(|line| line.trim() == "tool-metadata.lock.json"),
+            ".gitignore should ignore tool-metadata.lock.json"
+        );
+    }
+
+    #[test]
     fn bind_scaffold_gitignore_ignores_tmp_rootfs() {
         let mut bind_ctx = ctx(Language::Python);
         bind_ctx.runtime = Runtime::Sandbox;
         bind_ctx.sandbox_source = Some(SandboxSource::Bind);
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
 
         let files = build_file_set(&bind_ctx);
         let gitignore = files
@@ -751,9 +852,8 @@ mod tests {
         bind_ctx.runtime = Runtime::Sandbox;
         bind_ctx.sandbox_source = Some(SandboxSource::Bind);
         bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from(BIND_ROOTFS_PLACEHOLDER),
+            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
         });
-        bind_ctx.runtime_digest = Some(ZERO_RUNTIME_DIGEST.to_string());
 
         let files = build_file_set(&bind_ctx);
         let gitignore = files
@@ -761,6 +861,11 @@ mod tests {
             .find(|f| f.relative_path == ".gitignore")
             .expect(".gitignore emitted for bash bind scaffold");
 
-        assert_eq!(gitignore.content, ".tmp/\n");
+        let lines: Vec<&str> = gitignore.content.lines().collect();
+        assert!(lines.contains(&".tmp/"), "expected .tmp/, got {lines:?}");
+        assert!(
+            lines.contains(&"tool-metadata.lock.json"),
+            "expected tool-metadata.lock.json, got {lines:?}"
+        );
     }
 }

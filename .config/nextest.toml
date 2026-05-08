@@ -162,6 +162,13 @@ retries = { backoff = "fixed", count = 2, delay = "3s" }
 filter = 'package(baml-agent-runner) and binary(drift_integration_test)'
 test-group = "llm-heavy"
 
+# Two-agent real-LLM handoff test is especially timing/resource sensitive in CI.
+[[profile.ci-merged.overrides]]
+filter = 'package(baml-agent-runner) and test(test_e2e_argument_sketch_two_agents)'
+test-group = "llm-heavy"
+slow-timeout = { period = "300s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "5s" }
+
 # Provenance tests need serialization to avoid SurrealDB contention.
 [[profile.ci-merged.overrides]]
 filter = 'package(baml-rt-provenance) and binary(tool_index_test)'

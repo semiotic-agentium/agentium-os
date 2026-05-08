@@ -20,17 +20,15 @@ use baml_rt_core::{
 use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
+#[cfg(all(not(feature = "sandbox-provider"), test))]
+use baml_rt_tools::external_tools::sandbox::MockSandboxProvider;
 use baml_rt_tools::{
     BundleRegistrar, ExternalToolResolver, ManifestToolNames, SharedContextRefStore,
     ToolAccessPolicy, ToolRegistry,
     external_tools::{
-        BUILDER_EXTERNAL_TOOLS_ENV, DevModeResolver, EXTERNAL_TOOLS_LOCKFILE_NAME,
-        ExternalLifecycleEvent, ExternalLifecycleRecorder, ExternalLockfileMode,
-        ExternalToolsLockfile,
+        DevModeResolver, EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleEvent,
+        ExternalLifecycleRecorder, ExternalLockfileMode, ExternalToolsLockfile,
         resolver::SandboxRuntimeWiring,
-        sandbox::{
-            MockSandboxProvider, SandboxProvider, fresh_runner_id, stock_wiring_with_bind_roots,
-        },
     },
     register_manifest_tools_with_fallback,
 };
@@ -70,6 +68,8 @@ pub(crate) struct AgentPackageBootArgs<'a> {
     pub(crate) a2a_handler: Arc<dyn A2aRequestHandler>,
     pub(crate) stream_idle_secs: Option<u64>,
     pub(crate) claude_workspaces_base: Option<&'a Path>,
+    pub(crate) external_tools_dirs: &'a [PathBuf],
+    pub(crate) sandbox_bind_roots: &'a [PathBuf],
 }
 
 impl AgentPackage {
@@ -101,6 +101,7 @@ impl AgentPackage {
         Ok(SchemaLoaded { runtime_manager })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn register_tools_phase(
         &self,
         loaded: SchemaLoaded,
@@ -109,6 +110,8 @@ impl AgentPackage {
         a2a_handler: Arc<dyn A2aRequestHandler>,
         provenance_store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
         claude_workspaces_base: Option<&std::path::Path>,
+        external_tools_dirs: &[std::path::PathBuf],
+        sandbox_bind_roots: &[std::path::PathBuf],
     ) -> Result<ToolsRegistered> {
         let mut runtime_manager = loaded.runtime_manager;
         let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
@@ -161,17 +164,20 @@ impl AgentPackage {
 
         // Dev-mode external tools: BAML_EXTERNAL_TOOLS_DIR=/path/to/tool_a:/path/to/tool_b
         // Each colon-separated entry is a tool package dir containing
-        // tool-metadata.json + tool-server binary. Production (Phase 2) uses
-        // the digest-pinned lockfile resolver instead.
+        // tool-metadata.json. Process-runtime tools also contain the host
+        // executable (default `tool-server`); sandbox-runtime tools resolve to
+        // `/tool-adapter` inside their image/rootfs instead. Production
+        // (Phase 2) uses the digest-pinned lockfile resolver instead.
         let lifecycle_writer: Arc<dyn ProvenanceWriter> = provenance_store.clone();
         let lifecycle_recorder = build_external_lifecycle_recorder(lifecycle_writer);
         let lockfile_path = self.extract_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
-        let sandbox_wiring = build_sandbox_wiring()?;
+        let sandbox_wiring = build_sandbox_wiring(sandbox_bind_roots.to_vec())?;
         let external_resolver = build_dev_mode_resolver(
             Some(lifecycle_recorder),
             &lockfile_path,
             ExternalLockfileMode::from_env(),
             sandbox_wiring,
+            external_tools_dirs.to_vec(),
         )
         .await?;
 
@@ -321,6 +327,8 @@ impl AgentPackage {
                     args.a2a_handler,
                     args.provenance_config.store().clone(),
                     args.claude_workspaces_base,
+                    args.external_tools_dirs,
+                    args.sandbox_bind_roots,
                 )
                 .await?;
             let built = self
@@ -572,64 +580,39 @@ fn build_external_lifecycle_recorder(
     })
 }
 
-/// Build a [`DevModeResolver`] from the `BAML_EXTERNAL_TOOLS_DIR` env var, if set.
-///
-/// Value is a colon-separated list of tool package directories. Returns `None`
-/// when the env var is absent or empty, meaning "no external tools in dev mode".
-/// Env var controlling the sandbox backend used by this runner.
-///
-/// - unset / `off` / empty → no sandbox provider; sandbox-declared tools
-///   fail at resolve time with a clear message.
-/// - `mock`               → [`MockSandboxProvider::echo`] (dev / fixture
-///   mode; no VM required).
-/// - `microsandbox`       → real microsandbox backend; requires the
-///   `sandbox-provider` cargo feature to be built in.
-pub const SANDBOX_PROVIDER_ENV: &str = "BAML_SANDBOX_PROVIDER";
-pub const SANDBOX_BIND_ROOTS_ENV: &str = "BAML_SANDBOX_BIND_ROOTS";
+fn build_sandbox_wiring(
+    bind_roots: Vec<std::path::PathBuf>,
+) -> Result<Option<SandboxRuntimeWiring>> {
+    #[cfg(feature = "sandbox-provider")]
+    {
+        use baml_rt_tools::external_tools::sandbox::{
+            MicrosandboxProvider, SandboxProvider, fresh_runner_id, stock_wiring_with_bind_roots,
+        };
+        let provider: Arc<dyn SandboxProvider> = Arc::new(MicrosandboxProvider::new()?);
+        Ok(Some(stock_wiring_with_bind_roots(
+            provider,
+            fresh_runner_id(),
+            bind_roots,
+        )))
+    }
 
-fn build_sandbox_wiring() -> Result<Option<SandboxRuntimeWiring>> {
-    let raw = std::env::var(SANDBOX_PROVIDER_ENV).unwrap_or_default();
-    let kind = raw.trim().to_ascii_lowercase();
-    let bind_roots: Vec<std::path::PathBuf> = std::env::var(SANDBOX_BIND_ROOTS_ENV)
-        .ok()
-        .map(|v| {
-            v.split(':')
-                .filter(|s| !s.trim().is_empty())
-                .map(std::path::PathBuf::from)
-                .collect()
-        })
-        .unwrap_or_default();
+    #[cfg(all(not(feature = "sandbox-provider"), test))]
+    {
+        use baml_rt_tools::external_tools::sandbox::{
+            SandboxProvider, fresh_runner_id, stock_wiring_with_bind_roots,
+        };
+        let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::echo());
+        Ok(Some(stock_wiring_with_bind_roots(
+            provider,
+            fresh_runner_id(),
+            bind_roots,
+        )))
+    }
 
-    match kind.as_str() {
-        "" | "off" => Ok(None),
-        "mock" => {
-            let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::echo());
-            Ok(Some(stock_wiring_with_bind_roots(
-                provider,
-                fresh_runner_id(),
-                bind_roots,
-            )))
-        }
-        "microsandbox" => {
-            #[cfg(feature = "sandbox-provider")]
-            {
-                use baml_rt_tools::external_tools::sandbox::MicrosandboxProvider;
-                let provider: Arc<dyn SandboxProvider> = Arc::new(MicrosandboxProvider::new()?);
-                Ok(Some(stock_wiring_with_bind_roots(
-                    provider,
-                    fresh_runner_id(),
-                    bind_roots,
-                )))
-            }
-            #[cfg(not(feature = "sandbox-provider"))]
-            Err(BamlRtError::InvalidArgument(
-                "BAML_SANDBOX_PROVIDER=microsandbox requires building with the 'sandbox-provider' cargo feature"
-                    .to_string(),
-            ))
-        }
-        other => Err(BamlRtError::InvalidArgument(format!(
-            "unknown {SANDBOX_PROVIDER_ENV}='{other}'; expected 'off', 'mock', or 'microsandbox'"
-        ))),
+    #[cfg(all(not(feature = "sandbox-provider"), not(test)))]
+    {
+        let _ = bind_roots;
+        Ok(None)
     }
 }
 
@@ -638,6 +621,7 @@ async fn build_dev_mode_resolver(
     lockfile_path: &Path,
     lockfile_mode: ExternalLockfileMode,
     sandbox: Option<SandboxRuntimeWiring>,
+    dirs: Vec<PathBuf>,
 ) -> Result<Option<Box<dyn ExternalToolResolver>>> {
     let lockfile = if lockfile_path.exists() {
         match ExternalToolsLockfile::read_from_path(lockfile_path) {
@@ -668,33 +652,13 @@ async fn build_dev_mode_resolver(
         None
     };
 
-    let raw = match std::env::var(BUILDER_EXTERNAL_TOOLS_ENV) {
-        Ok(v) if !v.trim().is_empty() => v,
-        _ => {
-            if let Some(lockfile) = lockfile.as_ref()
-                && !lockfile.tools.is_empty()
-            {
-                return Err(BamlRtError::InvalidArgument(format!(
-                    "package contains {} external tool lockfile entries at {}, but BAML_EXTERNAL_TOOLS_DIR is not set",
-                    lockfile.tools.len(),
-                    lockfile_path.display()
-                )));
-            }
-            return Ok(None);
-        }
-    };
-
-    let dirs: Vec<PathBuf> = raw
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .collect();
     if dirs.is_empty() {
         if let Some(lockfile) = lockfile.as_ref()
             && !lockfile.tools.is_empty()
         {
             return Err(BamlRtError::InvalidArgument(format!(
-                "BAML_EXTERNAL_TOOLS_DIR resolved to zero tool directories while package lockfile {} declares external tools",
+                "package contains {} external tool lockfile entries at {}, but no external tool directories were configured (set [external_tools].dirs in --runner-config or BAML_EXTERNAL_TOOLS_DIR)",
+                lockfile.tools.len(),
                 lockfile_path.display()
             )));
         }
@@ -720,7 +684,7 @@ async fn build_dev_mode_resolver(
     info!(
         count = dirs.len(),
         mode = ?lockfile_mode,
-        "Loading external tools from BAML_EXTERNAL_TOOLS_DIR"
+        "Loading dev-mode external tools"
     );
 
     let resolver = match sandbox {
@@ -846,24 +810,11 @@ mod tests {
     use baml_rt_tools::external_tools::{ExternalToolLockEntry, ExternalToolsLockfile};
     use tempfile::tempdir;
 
-    use super::{
-        BUILDER_EXTERNAL_TOOLS_ENV, EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode,
-        build_dev_mode_resolver,
-    };
+    use super::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode, build_dev_mode_resolver};
 
     fn env_lock() -> &'static tokio::sync::Mutex<()> {
         static ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
         ENV_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-    }
-
-    fn set_env(key: &str, value: &str) {
-        // SAFETY: tests in this module serialize env-var mutation via `env_lock`.
-        unsafe { std::env::set_var(key, value) }
-    }
-
-    fn remove_env(key: &str) {
-        // SAFETY: tests in this module serialize env-var mutation via `env_lock`.
-        unsafe { std::env::remove_var(key) }
     }
 
     fn write_tool_fixture(dir: &Path, tool_name: &str) {
@@ -909,17 +860,16 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let tool_dir = temp.path().join("tool");
         write_tool_fixture(&tool_dir, "support/test");
-        set_env(
-            BUILDER_EXTERNAL_TOOLS_ENV,
-            tool_dir.to_str().expect("utf8 tool path"),
-        );
 
         let missing_lockfile = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
-        let result =
-            build_dev_mode_resolver(None, &missing_lockfile, ExternalLockfileMode::Enforce, None)
-                .await;
-
-        remove_env(BUILDER_EXTERNAL_TOOLS_ENV);
+        let result = build_dev_mode_resolver(
+            None,
+            &missing_lockfile,
+            ExternalLockfileMode::Enforce,
+            None,
+            vec![tool_dir.clone()],
+        )
+        .await;
 
         let err = match result {
             Ok(_) => panic!("enforce mode must fail when lockfile is missing"),
@@ -933,10 +883,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_dev_mode_resolver_fails_with_entries_when_env_unset() {
+    async fn build_dev_mode_resolver_fails_with_entries_when_dirs_empty() {
         let _guard = env_lock().lock().await;
-
-        remove_env(BUILDER_EXTERNAL_TOOLS_ENV);
 
         let temp = tempdir().expect("tempdir");
         let lockfile_path = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
@@ -962,15 +910,16 @@ mod tests {
             &lockfile_path,
             ExternalLockfileMode::Permissive,
             None,
+            Vec::new(),
         )
         .await
         {
-            Ok(_) => panic!("env unset with lockfile entries should fail with explicit error"),
+            Ok(_) => panic!("empty dirs with lockfile entries should fail with explicit error"),
             Err(err) => err,
         };
         let msg = err.to_string();
         assert!(
-            msg.contains(BUILDER_EXTERNAL_TOOLS_ENV) && msg.contains("external tool"),
+            msg.contains("--runner-config") && msg.contains("BAML_EXTERNAL_TOOLS_DIR"),
             "unexpected error: {msg}"
         );
     }
@@ -982,19 +931,19 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let tool_dir = temp.path().join("tool");
         write_tool_fixture(&tool_dir, "support/test");
-        set_env(
-            BUILDER_EXTERNAL_TOOLS_ENV,
-            tool_dir.to_str().expect("utf8 tool path"),
-        );
 
         let bad_lockfile = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
         fs::write(&bad_lockfile, b"{not-json").expect("write malformed lockfile");
 
-        let resolver =
-            build_dev_mode_resolver(None, &bad_lockfile, ExternalLockfileMode::Permissive, None)
-                .await
-                .expect("permissive mode should continue with malformed lockfile");
-        remove_env(BUILDER_EXTERNAL_TOOLS_ENV);
+        let resolver = build_dev_mode_resolver(
+            None,
+            &bad_lockfile,
+            ExternalLockfileMode::Permissive,
+            None,
+            vec![tool_dir.clone()],
+        )
+        .await
+        .expect("permissive mode should continue with malformed lockfile");
 
         assert!(resolver.is_some(), "resolver should still be constructed");
     }

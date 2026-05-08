@@ -1,11 +1,14 @@
 {
   "tool_abi_version": "1",
   "name": "support/sandbox_echo",
-  "description": "Sandbox-declared echo fixture — runnable under BAML_SANDBOX_PROVIDER=mock without a real VM",
+  "description": "Sandbox-declared echo fixture \u2014 runnable under BAML_SANDBOX_PROVIDER=mock without a real VM",
   "bundle": "support",
   "local_name": "sandbox_echo",
   "access_level": "read",
-  "tags": ["sandbox", "fixture"],
+  "tags": [
+    "sandbox",
+    "fixture"
+  ],
   "invocation_mode": "single_shot",
   "schemas": {
     "input": {
@@ -15,7 +18,9 @@
           "type": "string"
         }
       },
-      "required": ["message"],
+      "required": [
+        "message"
+      ],
       "additionalProperties": false
     },
     "output": {
@@ -25,7 +30,9 @@
           "type": "string"
         }
       },
-      "required": ["reply"],
+      "required": [
+        "reply"
+      ],
       "additionalProperties": false
     }
   },
@@ -34,7 +41,8 @@
   "runtime": {
     "kind": "sandbox",
     "image": "ghcr.io/agentium/sandbox-echo@sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "entrypoint": ["/tool-adapter"]
-  },
-  "runtime_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    "entrypoint": [
+      "/tool-adapter"
+    ]
+  }
 }

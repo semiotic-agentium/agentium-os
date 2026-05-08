@@ -24,31 +24,31 @@ export interface DiscoverToolsSendInput { query: string | null;
 limit: number | null;
  }
 
-export interface SystemDiscover_toolsAbortStep { op: "Abort";
+export interface SystemDiscoverToolsAbortStep { op: "Abort";
  }
 
-export interface SystemDiscover_toolsFinishStep { op: "Finish";
+export interface SystemDiscoverToolsFinishStep { op: "Finish";
  }
 
-export interface SystemDiscover_toolsOpenStep { op: "Open";
+export interface SystemDiscoverToolsOpenStep { op: "Open";
 tool_name: "system/discover_tools";
 initial_input: DiscoverToolsOpenInput | null;
  }
 
-export interface SystemDiscover_toolsPageReadStep { op: "PageRead";
+export interface SystemDiscoverToolsPageReadStep { op: "PageRead";
 input: ArchivePageReadInput;
  }
 
-export interface SystemDiscover_toolsSearchReadStep { op: "SearchRead";
+export interface SystemDiscoverToolsSearchReadStep { op: "SearchRead";
 input: ArchiveSearchReadInput;
  }
 
-export interface SystemDiscover_toolsSendStep { op: "Send";
+export interface SystemDiscoverToolsSendStep { op: "Send";
 input: DiscoverToolsSendInput;
 citations: string[];
  }
 
-export interface SystemDiscover_toolsSessionPlan { step: SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsSearchReadStep | SystemDiscover_toolsPageReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep;
+export interface SystemDiscoverToolsSessionPlan { step: SystemDiscoverToolsOpenStep | SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsFinishStep | SystemDiscoverToolsAbortStep;
 citations: string[];
  }
 
@@ -56,7 +56,7 @@ citations: string[];
 
 declare global {
 
-declare function ChooseDiscoverToolsQuery(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_toolsSessionPlan>;
+declare function ChooseDiscoverToolsQuery(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscoverToolsSessionPlan>;
 
 }
 
@@ -385,8 +385,14 @@ export interface ToolFailure {
 export type StepExecutorFunctionName = "ChooseDiscoverToolsQuery" | "ChooseDiscoverToolsQuery__act__system_discover_tools" | "ChooseDiscoverToolsQuery__continue__system_discover_tools" | "ChooseDiscoverToolsQuery__select";
 
 export interface SessionContext {
-    contract_version: "session_context";
+    contract_version: "session_context_v2";
     session_open: boolean;
+    status: "awaiting_open" | "just_opened" | "done";
+    last_step_op?: "open" | "send" | "read" | "finish" | "abort";
+    last_step_status?: "open" | "done" | "finished" | "aborted";
+    last_archive_ref?: string;
+    last_output_header?: string;
+    last_completion?: string;
 }
 
 /** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */

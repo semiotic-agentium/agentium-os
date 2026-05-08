@@ -1,0 +1,6 @@
+{
+  "protocol_version": "2",
+  "tool_name": "dev/meteo-tool",
+  "supported_methods": ["tool/describe", "tool/schema", "tool/invoke"],
+  "schema_digest": "sha256:54352a842cb13fcd030c69402d70075b655668bda3b0859bb79cb9f632c05a5a"
+}

@@ -37,11 +37,18 @@ pub fn slug_from_name(name: &str) -> String {
 fn session_plan_type_for_tool_id(tool_id: &str) -> String {
     let parts: Vec<&str> = tool_id.splitn(2, '/').collect();
     if parts.len() != 2 {
-        return format!("{}SessionPlan", capitalize_first(tool_id));
+        return format!("{}SessionPlan", to_pascal_case_identifier(tool_id));
     }
-    let bundle = capitalize_first(parts[0]);
-    let local = capitalize_first(parts[1]);
+    let bundle = to_pascal_case_identifier(parts[0]);
+    let local = to_pascal_case_identifier(parts[1]);
     format!("{}{}SessionPlan", bundle, local)
+}
+
+fn to_pascal_case_identifier(s: &str) -> String {
+    s.split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(capitalize_first)
+        .collect()
 }
 
 fn capitalize_first(s: &str) -> String {
@@ -259,6 +266,14 @@ mod tests {
         assert_eq!(
             session_plan_type_for_tool_id("support/calculate"),
             "SupportCalculateSessionPlan"
+        );
+        assert_eq!(
+            session_plan_type_for_tool_id("system/internal_a2a"),
+            "SystemInternalA2aSessionPlan"
+        );
+        assert_eq!(
+            session_plan_type_for_tool_id("internal-dev/calculate"),
+            "InternalDevCalculateSessionPlan"
         );
     }
 }

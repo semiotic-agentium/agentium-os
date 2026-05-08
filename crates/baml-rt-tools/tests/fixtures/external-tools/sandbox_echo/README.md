@@ -3,7 +3,7 @@
 Smallest possible `runtime.kind = "sandbox"` tool package. Exists to exercise
 the end-to-end resolve path introduced in Workstream Y of `tool_sandbox.md`:
 
-- parsed by `ExternalToolMetadata::read_external_metadata`
+- parsed into the runtime view by `read_runtime_external_metadata`
 - routed through `DevModeResolver::from_dirs_with_sandbox`
 - dispatched to a `SandboxToolHandler` built by the runner-wired
   `SandboxSpecFactory`
@@ -26,7 +26,7 @@ cargo run -p baml-agent-runner --features sandbox-provider
 - `image` is a placeholder digest-pinned reference (`sha256:00…`). The real
   echo adapter image isn't built here — publishing the image is a separate
   ops task tracked under Workstream F.
-- `runtime_digest` is the same placeholder; it becomes load-bearing once the
-  image exists and the `SandboxSpecFactory` is tightened by Workstream D.
+- OCI identity is the digest-pinned image reference itself; no separate
+  runtime digest field is used.
 - Schema matches the process-backed `e2e_echo` sibling so the same BAML
   contract can be swapped between backends without agent changes.

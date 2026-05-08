@@ -1,10 +1,19 @@
-// Fixture: Tool discovery demo. Generated __select / __act__* / __continue__* reuse this prompt; per-hop variance: narrowed return type in ctx.output_format and `*SendInput` / step classes in the merged runtime — not duplicate FSM prose here.
-function ChooseDiscoverToolsQuery(user_message: string) -> SystemDiscover_toolsSessionPlan {
+// Fixture: Tool discovery demo. Generated __select / __act__* / __continue__* functions reuse this prompt verbatim; per-hop variance is only the narrowed return type (hence {{ ctx.output_format }}).
+function ChooseDiscoverToolsQuery(user_message: string) -> SystemDiscoverToolsSessionPlan {
   client DefaultClient
   prompt #"
     Find tools that can help with: {{ user_message }}
+    For Send: set input.query to a concise search term derived from the user message.
 
-    {{ ctx.tags['conversation_transcript'] }}
+    Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
+    Once the tool list for the user's query is present in history, use the Continue hop to emit Finish and close the session.
+    Do not issue extra Reads or Sends unless the archive explicitly indicates more pages or incomplete results.
+
+    {% for message in ctx.tags['conversation_history'] %}
+    {{ _.role(message.role) }}
+    {{ message.content }}
+    {% endfor %}
+
     {{ ctx.output_format }}
   "#
 }

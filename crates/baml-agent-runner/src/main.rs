@@ -15,6 +15,7 @@ mod deployment_state;
 mod package;
 mod routing;
 mod runner;
+mod runner_config_file;
 mod services;
 mod stdio;
 
@@ -295,15 +296,17 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         permitted = ?permitted,
         "Tool access cap resolved (per-agent manifest allowlist still gates tool exposure)"
     );
-    let builder = builder::RunnerBuilder::<builder::Loading>::new(
+    let builder = builder::RunnerBuilder::<builder::Loading>::new(runner::AgentRunnerConfig {
         provenance_config,
         deployment_state,
-        access_allowlist,
-        config.stream_idle_secs,
-        config.claude_workspaces_base,
-        config.repository_url.clone(),
-        Some(repository_service.clone()),
-    )
+        access_policy: access_allowlist,
+        stream_idle_secs: config.stream_idle_secs,
+        claude_workspaces_base: config.claude_workspaces_base,
+        repository_url: config.repository_url.clone(),
+        embedded_repository: Some(repository_service.clone()),
+        external_tools_dirs: config.external_tools_dirs.clone(),
+        sandbox_bind_roots: config.sandbox_bind_roots.clone(),
+    })
     .map_err(|e| anyhow::anyhow!("runner builder init: {e}"))?;
 
     // --- Cluster registration (remote SurrealDB mode only) ---
@@ -777,7 +780,7 @@ mod tests {
         config::{ProvenanceConfig, ProvenanceConfigBuilder},
         deployment_state,
         routing::{RunnerRegistry, ScopedInternalA2aRouter, extract_internal_a2a_target},
-        runner::AgentRunner,
+        runner::{AgentRunner, AgentRunnerConfig},
         services::PlanningServiceImpl,
         stdio::{
             is_a2a_method, map_a2a_error, select_implicit_stdio_agent, serialize_a2a_response,
@@ -862,15 +865,17 @@ globalThis.onChatMessage = async function(_message) {
         state: Arc<deployment_state::DeploymentStateStore>,
     ) -> Arc<AgentRunner> {
         let runner = Arc::new(
-            AgentRunner::new(
-                prov,
-                state,
-                baml_rt_tools::ToolAccessPolicy::default(),
-                None,
-                None,
-                "http://127.0.0.1:18080/repository".to_string(),
-                None,
-            )
+            AgentRunner::new(AgentRunnerConfig {
+                provenance_config: prov,
+                deployment_state: state,
+                access_policy: baml_rt_tools::ToolAccessPolicy::default(),
+                stream_idle_secs: None,
+                claude_workspaces_base: None,
+                repository_url: "http://127.0.0.1:18080/repository".to_string(),
+                embedded_repository: None,
+                external_tools_dirs: Vec::new(),
+                sandbox_bind_roots: Vec::new(),
+            })
             .expect("test runner construction"),
         );
         runner.internal_a2a_router().set_runner(Arc::clone(&runner));

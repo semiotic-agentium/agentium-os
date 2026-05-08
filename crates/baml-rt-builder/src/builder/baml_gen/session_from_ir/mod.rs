@@ -30,13 +30,13 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 /// Appended on **act** (first post-Open hop: Send or archive paging) — same archive discipline as continue.
 const PHASE_STEP_EXECUTOR_SUFFIX_ACT: &str = r#"
 
-PHASE CONSTRAINT (act — Send or archive read): The JSON root must be exactly one Send, SearchRead, or PageRead step. op must be exactly the string Send, SearchRead, or PageRead — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
+PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
 "#;
 
-/// Appended on **continue** hops (Send | SearchRead | PageRead | Finish).
+/// Appended on **continue** hops (Send | SearchRead | PageRead | Finish | Abort).
 const PHASE_STEP_EXECUTOR_SUFFIX_CONTINUE: &str = r#"
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, or Finish step. op must be Send, SearchRead, PageRead, or Finish — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
 "#;
 
 /// Injected into **act** and **continue** preambles for `system/discover_agents` only.
@@ -239,6 +239,7 @@ pub fn render_generated_session_baml_from_ir(
             let search_read_type = format!("{}SearchReadStep", tool.class_name);
             let page_read_type = format!("{}PageReadStep", tool.class_name);
             let finish_type = format!("{}FinishStep", tool.class_name);
+            let abort_type = format!("{}AbortStep", tool.class_name);
 
             let act_preamble = if tool_name_str == "system/discover_agents" {
                 format!(
@@ -253,13 +254,13 @@ pub fn render_generated_session_baml_from_ir(
             write_line(
                 &mut phase_out,
                 &format!(
-                    "/// Phase: act — first post-Open hop: Send, SearchRead, or PageRead ({tool_name_str})."
+                    "/// Phase: act — first post-Open hop: Send, SearchRead, PageRead, or Abort ({tool_name_str})."
                 ),
             )?;
             write_line(
                 &mut phase_out,
                 &format!(
-                    "function {act_name}{args_block} -> {send_type} | {search_read_type} | {page_read_type} {{"
+                    "function {act_name}{args_block} -> {send_type} | {search_read_type} | {page_read_type} | {abort_type} {{"
                 ),
             )?;
             write_line(
@@ -277,34 +278,38 @@ pub fn render_generated_session_baml_from_ir(
             let continue_preamble = if tool_name_str == "system/discover_agents" {
                 format!(
                     "[CONTINUE] {tool_name_str} result is archived.\\n\
-                     Check session history:\\n\
-                     - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
-                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit SearchRead or PageRead to paginate\\n\
-                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead with archive_ref=\\\"@N\\\"\\n\
-                     - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\\n\\n\
+                     Archive fallback when content must be inspected:\\n\
+                     - Use the visible @N archive handle from conversation/history; do not guess one.\\n\
+                     - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\\n\
+                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit SearchRead or PageRead to paginate.\\n\
+                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead against the visible @N.\\n\
+                     - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\\n\
+                     - Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\\n\\n\
                      {DISCOVER_AGENTS_SEND_DISCIPLINE}"
                 )
             } else {
                 format!(
                     "[CONTINUE] {tool_name_str} result is archived.\\n\
-                     Check session history:\\n\
-                     - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
-                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit SearchRead or PageRead to paginate\\n\
-                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead with archive_ref=\\\"@N\\\"\\n\
-                     - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\\n\\n"
+                     Archive fallback when content must be inspected:\\n\
+                     - Use the visible @N archive handle from conversation/history; do not guess one.\\n\
+                     - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\\n\
+                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit SearchRead or PageRead to paginate.\\n\
+                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead against the visible @N.\\n\
+                     - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\\n\
+                     - Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\\n\\n"
                 )
             };
             let continue_name = SessionTypeNames::r#continue(func_name, &slug);
             write_line(
                 &mut phase_out,
                 &format!(
-                    "/// Phase: continue — SearchRead/PageRead, send again, or finish {tool_name_str}."
+                    "/// Phase: continue — SearchRead/PageRead, send again, finish, or abort {tool_name_str}."
                 ),
             )?;
             write_line(
                 &mut phase_out,
                 &format!(
-                    "function {continue_name}{args_block} -> {send_type} | {search_read_type} | {page_read_type} | {finish_type} {{"
+                    "function {continue_name}{args_block} -> {send_type} | {search_read_type} | {page_read_type} | {finish_type} | {abort_type} {{"
                 ),
             )?;
             write_line(

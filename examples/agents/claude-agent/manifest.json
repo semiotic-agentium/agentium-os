@@ -1,0 +1,23 @@
+{
+  "version": "1.0.0",
+  "name": "claude-agent",
+  "entry_point": "src/index.ts",
+  "signature": "claude-agent@1.0.0",
+  "tools": ["dev/claude-ext"],
+  "tags": [
+    "development",
+    "code-generation",
+    "claude",
+    "session-tools"
+  ],
+  "discovery": {
+    "description": "Development agent that turns natural-language requirements into working software. Accepts requirements or specs, plans implementation, and produces code via claude/dev session tools.",
+    "capabilities": [
+      "development:requirements-analysis",
+      "development:implementation-planning",
+      "development:code-generation",
+      "development:session-execution",
+      "claude:dev-session"
+    ]
+  }
+}

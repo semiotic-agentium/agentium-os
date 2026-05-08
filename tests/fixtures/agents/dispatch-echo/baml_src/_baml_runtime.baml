@@ -36,6 +36,12 @@ class ProvenancePlanStep {
 class SessionContext {
   contract_version string
   session_open bool
+  status string @description("FSM status: awaiting_open | just_opened | done")
+  last_step_op string? @description("Previous FSM step op when known: open | send | read | finish | abort")
+  last_step_status string? @description("Previous FSM step status when known: open | done | finished | aborted")
+  last_archive_ref string? @description("Archive ref from the previous Send when available, e.g. @4")
+  last_output_header string? @description("Compact archive header from the previous Send/Read when available")
+  last_completion string? @description("Tool-specific terminal completion marker when available, e.g. DONE | INPUT_REQUIRED | INTERRUPTED")
 }
 
 /// Opaque JSON transport wrapper for host-managed tools and event payloads.
@@ -240,7 +246,7 @@ class SystemCallbackSessionPlan {
 }
 
 /// Tool card for system/discover_tools: metadata for polymorphic Open selection.
-class SystemDiscover_toolsToolCard {
+class SystemDiscoverToolsToolCard {
   tool_name "system/discover_tools"
   description "Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times."
   session_policy "Strict"
@@ -248,39 +254,39 @@ class SystemDiscover_toolsToolCard {
   tags string[] @description("Tool tags: system, discovery")
 }
 
-class SystemDiscover_toolsOpenStep {
+class SystemDiscoverToolsOpenStep {
   op "Open"
   tool_name "system/discover_tools" @description("Tool to open")
   initial_input DiscoverToolsOpenInput? @description("Optional open payload.")
 }
 
-class SystemDiscover_toolsSendStep {
+class SystemDiscoverToolsSendStep {
   op "Send"
   input DiscoverToolsSendInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
 }
 
-class SystemDiscover_toolsSearchReadStep {
+class SystemDiscoverToolsSearchReadStep {
   op "SearchRead"
   input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
 }
 
-class SystemDiscover_toolsPageReadStep {
+class SystemDiscoverToolsPageReadStep {
   op "PageRead"
   input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
 }
 
-class SystemDiscover_toolsFinishStep {
+class SystemDiscoverToolsFinishStep {
   op "Finish"
 }
 
-class SystemDiscover_toolsAbortStep {
+class SystemDiscoverToolsAbortStep {
   op "Abort"
 }
 
-type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsSearchReadStep | SystemDiscover_toolsPageReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
+type SystemDiscoverToolsSessionStep = SystemDiscoverToolsOpenStep | SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsFinishStep | SystemDiscoverToolsAbortStep
 
-class SystemDiscover_toolsSessionPlan {
-  step SystemDiscover_toolsSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. A @N in history is a handle until you read it.")
+class SystemDiscoverToolsSessionPlan {
+  step SystemDiscoverToolsSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. A @N in history is a handle until you read it.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }

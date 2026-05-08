@@ -69,59 +69,59 @@ plan_steps: StandardAgentPlanStep[];
 citations: string[] | null;
  }
 
-export interface SystemDiscover_agentsAbortStep { op: "Abort";
+export interface SystemDiscoverAgentsAbortStep { op: "Abort";
  }
 
-export interface SystemDiscover_agentsFinishStep { op: "Finish";
+export interface SystemDiscoverAgentsFinishStep { op: "Finish";
  }
 
-export interface SystemDiscover_agentsOpenStep { op: "Open";
+export interface SystemDiscoverAgentsOpenStep { op: "Open";
 tool_name: "system/discover_agents";
 initial_input: DiscoverAgentsOpenInput | null;
  }
 
-export interface SystemDiscover_agentsPageReadStep { op: "PageRead";
+export interface SystemDiscoverAgentsPageReadStep { op: "PageRead";
 input: ArchivePageReadInput;
  }
 
-export interface SystemDiscover_agentsSearchReadStep { op: "SearchRead";
+export interface SystemDiscoverAgentsSearchReadStep { op: "SearchRead";
 input: ArchiveSearchReadInput;
  }
 
-export interface SystemDiscover_agentsSendStep { op: "Send";
+export interface SystemDiscoverAgentsSendStep { op: "Send";
 input: DiscoverAgentsSendInput;
 citations: string[];
  }
 
-export interface SystemDiscover_agentsSessionPlan { step: SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsSearchReadStep | SystemDiscover_agentsPageReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep;
+export interface SystemDiscoverAgentsSessionPlan { step: SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsAbortStep;
 citations: string[];
  }
 
-export interface SystemInternal_a2aAbortStep { op: "Abort";
+export interface SystemInternalA2aAbortStep { op: "Abort";
  }
 
-export interface SystemInternal_a2aFinishStep { op: "Finish";
+export interface SystemInternalA2aFinishStep { op: "Finish";
  }
 
-export interface SystemInternal_a2aOpenStep { op: "Open";
+export interface SystemInternalA2aOpenStep { op: "Open";
 tool_name: "system/internal_a2a";
 initial_input: InternalA2aOpenInput;
  }
 
-export interface SystemInternal_a2aPageReadStep { op: "PageRead";
+export interface SystemInternalA2aPageReadStep { op: "PageRead";
 input: ArchivePageReadInput;
  }
 
-export interface SystemInternal_a2aSearchReadStep { op: "SearchRead";
+export interface SystemInternalA2aSearchReadStep { op: "SearchRead";
 input: ArchiveSearchReadInput;
  }
 
-export interface SystemInternal_a2aSendStep { op: "Send";
+export interface SystemInternalA2aSendStep { op: "Send";
 input: InternalA2aSendInput;
 citations: string[];
  }
 
-export interface SystemInternal_a2aSessionPlan { step: SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aSearchReadStep | SystemInternal_a2aPageReadStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep;
+export interface SystemInternalA2aSessionPlan { step: SystemInternalA2aOpenStep | SystemInternalA2aSendStep | SystemInternalA2aSearchReadStep | SystemInternalA2aPageReadStep | SystemInternalA2aFinishStep | SystemInternalA2aAbortStep;
 citations: string[];
  }
 
@@ -131,11 +131,11 @@ declare global {
 
 declare function ClassifyPersonaCoordinatorTurn(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<PersonaReadyIntent | PersonaNeedTaskClarification | PersonaMetaOnly>;
 
-declare function DecideDelegationAction(args: { goal: string; agent_package: string; agent_instance_id: string } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aSessionPlan | string | null>;
+declare function DecideDelegationAction(args: { goal: string; agent_package: string; agent_instance_id: string } & { __baml_invocation_token?: string }): Promise<SystemInternalA2aSessionPlan | string | null>;
 
 declare function FormatCapabilities(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
 
-declare function GetDiscoverAgentsPlan(args: { inferred_intent: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSessionPlan>;
+declare function GetDiscoverAgentsPlan(args: { inferred_intent: string } & { __baml_invocation_token?: string }): Promise<SystemDiscoverAgentsSessionPlan>;
 
 declare function MakeStructuredPlan(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<StandardStructuredPlan>;
 
@@ -472,8 +472,14 @@ export interface ToolFailure {
 export type StepExecutorFunctionName = "DecideDelegationAction" | "DecideDelegationAction__act__system_internal_a2a" | "DecideDelegationAction__continue__system_internal_a2a" | "DecideDelegationAction__select" | "GetDiscoverAgentsPlan" | "GetDiscoverAgentsPlan__act__system_discover_agents" | "GetDiscoverAgentsPlan__continue__system_discover_agents" | "GetDiscoverAgentsPlan__select";
 
 export interface SessionContext {
-    contract_version: "session_context";
+    contract_version: "session_context_v2";
     session_open: boolean;
+    status: "awaiting_open" | "just_opened" | "done";
+    last_step_op?: "open" | "send" | "read" | "finish" | "abort";
+    last_step_status?: "open" | "done" | "finished" | "aborted";
+    last_archive_ref?: string;
+    last_output_header?: string;
+    last_completion?: string;
 }
 
 /** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */

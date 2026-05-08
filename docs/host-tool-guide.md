@@ -39,7 +39,7 @@ Use this sequence for a new sandboxed external tool:
 
 1. Scaffold tool (`new-tool`)
 2. Build adapter artifact (OCI image and optionally bind rootfs export)
-3. Compute/refresh digest (`sandbox-digest` when needed)
+3. Pin OCI image ref or sync local bind rootfs (`sandbox-bind-sync` for bind)
 4. Validate metadata (`check-external-tool`)
 5. Configure + start runner (`BAML_EXTERNAL_TOOLS_DIR`, sandbox env)
 6. Allowlist tool in agent manifest
@@ -47,6 +47,38 @@ Use this sequence for a new sandboxed external tool:
 8. Verify with chat
 
 ---
+
+## 0.6) Quick session-mode sanity check
+
+If you just want to verify the full session path quickly:
+
+```bash
+# 1) Scaffold a sandbox session-mode tool
+cargo agent-platform new-tool streamed_echo \
+  --runtime sandbox \
+  --invocation-mode session \
+  --sandbox-source oci \
+  --sandbox-image ghcr.io/acme/streamed-echo@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+# 2) Validate metadata
+cargo agent-platform check-external-tool --path ./streamed_echo
+
+# 3) Start runner with a runner.toml (recommended) or fall back to env vars
+cat > runner.toml <<'EOF'
+[external_tools]
+dirs = ["./streamed_echo"]
+
+[sandbox.bind]
+roots = []  # add host paths here when sandbox tools need bind mounts
+EOF
+cargo run -p baml-agent-runner --all-features -- --runner-config ./runner.toml
+
+# Equivalent legacy form (still supported; env wins when both file and env are set):
+# export BAML_EXTERNAL_TOOLS_DIR="$(pwd)/streamed_echo"
+# cargo run -p baml-agent-runner --all-features
+```
+
+Then allowlist the tool in an agent manifest, publish + deploy, and verify with `cargo agent-platform chat`.
 
 ## 1) External tools (standalone, recommended)
 
@@ -65,10 +97,10 @@ cargo agent-platform new-tool my_tool \
 Useful sandbox flags:
 
 - `--runtime sandbox`
+- `--invocation-mode single-shot|session`
 - `--sandbox-source oci|bind`
 - `--sandbox-image <ref@sha256:...>` (OCI)
 - `--sandbox-entrypoint <argv,...>`
-- `--runtime-digest <sha256:...>` (optional; auto in common paths)
 - `--generate-docker` (bind-only scaffold helper: emits `adapter/Dockerfile` + `setup_bind_sandbox.sh` wrapper)
 
 Tool naming rules:
@@ -87,9 +119,13 @@ Tool naming rules:
 Runtime-specific emissions:
 
 - **`--runtime process`** (default): a host-side `tool-server` launcher executable is scaffolded. The runner invokes it directly over stdio.
-- **`--runtime sandbox`**: runner execution goes through the guest adapter at `/tool-adapter`. Some scaffolds may still include a host `tool-server` helper for local probing, but it is not the runtime invoke path. The adapter binary/script (usually `tool-adapter`) must be built by you and placed inside the OCI image or bind rootfs at `/tool-adapter` (see §2–§3). Metadata references the image/rootfs; the runner spawns the adapter inside the guest.
+- **`--runtime sandbox`**: runner execution goes through the guest adapter at `/tool-adapter`. Non-Bash sandbox scaffolds do not include a host `tool-server`; Bash sandbox scaffolds keep `tool-server` only as the script implementation that the adapter delegates to. The adapter binary/script (usually `tool-adapter`) must be built by you and placed inside the OCI image or bind rootfs at `/tool-adapter` (see §2–§3). Metadata references the image/rootfs; the runner spawns the adapter inside the guest.
 
 For sandbox tools, metadata points to a sandbox image source, but you still need to build/provide the adapter artifact (next section).
+
+If `runtime.adapter.workdir` is set in `tool-metadata.json`, the runner uses it as the guest working directory when creating the sandbox and launching `/tool-adapter`, and also as the default `PWD`. That path must already exist inside the guest filesystem/rootfs. If omitted, the runner falls back to `/`.
+
+This field is the authoritative runtime contract across sandbox image sources: Bind, OCI, and future sandbox backends such as Disk. Do not rely on an OCI image's Dockerfile `WORKDIR` being discovered automatically by the runner — if your tool expects a non-`/` cwd, declare the same path explicitly in `runtime.adapter.workdir`.
 
 ## 1.3 Process-runtime shortcut (non-sandboxed)
 
@@ -101,7 +137,37 @@ If you chose `--runtime process` (the default), most of the sandbox sections bel
 4. §6 configure runner with `BAML_EXTERNAL_TOOLS_DIR` (`BAML_SANDBOX_*` env vars not needed)
 5. §7 agent wiring + publish + deploy + chat
 
-Skip §2 (sandbox adapter model), §3 (build adapter artifact), §4 (runtime_digest), §9's sandbox-specific entries, and §10 (Bind security).
+Skip §2 (sandbox adapter model), §3 (build adapter artifact), §4 (sandbox runtime identity), §9's sandbox-specific entries, and §10 (Bind local-dev notes).
+
+## 1.4 Session-mode external tools (`invocation_mode=session`)
+
+Use session mode when the external tool needs persistent in-session state and/or chunked streaming.
+
+Metadata essentials:
+
+- `runtime.kind = "sandbox"` (required)
+- `invocation_mode = "session"`
+- host must be built with the `sandbox-provider` feature (default for the runner) so sandbox wiring is present
+- default scaffold behavior keeps:
+  - `session_policy = "strict"`
+  - `secret_scope = "send"`
+
+Required adapter methods (advertised via `tool/describe.supported_methods`):
+
+- `tool/session_open`
+- `tool/session_send`
+- `tool/session_read`
+- `tool/session_finish`
+- `tool/session_abort`
+
+Host call pattern for external session tools:
+
+1. open session
+2. send input
+3. read steps until `done`/`error`
+4. finish (or abort)
+
+Important: external `read()` is payloadless at the protocol level. If a caller passes payload to host `read()`, the runtime rejects it; use explicit `send(input)` before `read()`.
 
 ---
 
@@ -123,7 +189,7 @@ Adapter lookup order at invoke time:
 1. absolute path `/tool-adapter` (distroless-friendly, matches bind-rootfs convention),
 2. `tool-adapter` via guest `PATH` (fallback for images with a populated PATH).
 
-Place your adapter at `/tool-adapter` for the most reliable behavior.
+Place your adapter at `/tool-adapter` for the most reliable behavior. If your tool process needs a specific cwd, declare it in `runtime.adapter.workdir`; it applies across sandbox image sources (OCI, bind, and future sandbox backends) and must exist in the guest filesystem.
 
 ---
 
@@ -138,7 +204,7 @@ docker build -t ghcr.io/acme/my-tool:latest -f <Dockerfile> .
 # push + obtain digest, then use ghcr.io/acme/my-tool@sha256:...
 ```
 
-Set metadata runtime image to OCI ref and ensure `runtime_digest` matches.
+Set metadata `runtime.image.ref` to the digest-pinned OCI ref.
 
 ## 3.2 Bind source
 
@@ -161,66 +227,53 @@ Non-Docker alternatives: `skopeo copy oci:...` followed by manual layer flatten,
 
 Then:
 
-3. Point metadata `runtime.image` to `{"kind": "bind", "path": "/abs/path/to/rootfs"}`.
-4. Set/refresh `runtime_digest` (§4).
-5. Ensure the bind path is under `BAML_SANDBOX_BIND_ROOTS` before starting the runner (§6).
+3. Point source metadata `runtime.image` to a portable relative path such as `{"kind": "bind", "path": "./.tmp/my-tool-rootfs"}`.
+4. Run `sandbox-bind-sync` (§4) to write the local `tool-metadata.lock.json` with the canonical absolute path.
+5. Ensure the resolved bind path is under `BAML_SANDBOX_BIND_ROOTS` before starting the runner (§6).
 
 Reference runnable example:
 - `examples/external-tools/dev_echo_sandbox/README.md` (includes an `export_rootfs.sh` helper that wraps the steps above)
 
 ---
 
-## 4) Digest workflow (`runtime_digest`)
+## 4) Sandbox runtime identity
 
-`runtime_digest` is required for sandbox runtime identity.
+Sandbox runtime identity is source-specific:
 
-### When digest is automatic
+- **OCI** is the distributable runtime format. Identity is the digest-pinned image ref in metadata: `repo@sha256:<64hex>`.
+- **Bind** is a local development convenience. It points at a host rootfs directory and is not treated as a distributable verified artifact. `sandbox-bind-sync` records only the host-resolved path in `tool-metadata.lock.json` and writes the compatibility sidecar bundle when needed.
 
-- `new-tool --runtime sandbox --sandbox-source oci --sandbox-image <...@sha256:...>`: digest derives from image ref suffix.
-- `new-tool --runtime sandbox --sandbox-source bind`: scaffold emits placeholder bind path (`"<rootfs-path>"`) and placeholder digest; set real path + recompute digest after rootfs materialization.
-  - default mode emits metadata only (no setup script)
-  - adding `--generate-docker` emits `adapter/Dockerfile` + `adapter/tool-adapter` + `setup_bind_sandbox.sh` wrapper for Docker build/export + metadata sync/validation
+### Bind sync command
 
-`setup_bind_sandbox.sh` resolves the SDK CLI command in this order:
-1. `AGENT_PLATFORM_CMD` (if set)
-2. `cargo agent-platform <subcommand>` (validated per subcommand)
-3. `cargo run -q -p cargo-agent-platform -- <subcommand>` (workspace fallback)
-
-This avoids stale installed-plugin mismatches.
-
-### Preferred bind sync command
-
-Use `sandbox-bind-sync` to refresh bind path + digest and optionally validate metadata.
-Relative `--rootfs` and `--dockerfile` paths resolve against `--tool-dir`:
+Use `sandbox-bind-sync` to write the local `tool-metadata.lock.json` with the resolved bind path, generate the adapter sidecar bundle (`/etc/agentium/tool-bundle.json`), and optionally validate metadata. It never mutates committed `tool-metadata.json`. Relative `--rootfs` and `--dockerfile` paths resolve against `--tool-dir`; if `--rootfs` is omitted, it defaults to the source metadata `runtime.image.path`.
 
 ```bash
 cargo agent-platform sandbox-bind-sync \
   --tool-dir ./examples/external-tools/my_tool \
-  --rootfs /abs/path/to/rootfs \
   --check
 ```
 
-Docker-assisted mode (build + export + sync + validate):
+Docker-assisted mode (build + export + sync + validate). `--image` is explicit; when it is provided, `--dockerfile` defaults to `adapter/Dockerfile`:
 
 ```bash
 cargo agent-platform sandbox-bind-sync \
   --tool-dir ./examples/external-tools/my_tool \
-  --rootfs ./.tmp/my-tool-rootfs \
-  --dockerfile adapter/Dockerfile \
   --image support-my-tool-sandbox:local \
   --force \
   --check
 ```
 
-### When to run `sandbox-digest`
+### OCI sidecar preparation (compatibility only)
 
-Use `sandbox-digest` for low-level digest-only checks (without metadata patching):
+`tool-metadata.json` is the builder/runtime source of truth. `sandbox-oci-prepare` can still render a compatibility `tool-bundle.json` next to tool sources for adapters that explicitly need that file, but OCI identity remains the digest-pinned image ref and the bundle is not part of image identity.
 
 ```bash
-cargo agent-platform sandbox-digest --source bind /abs/path/to/rootfs
+cargo agent-platform sandbox-oci-prepare \
+  --tool-dir ./examples/external-tools/my_tool \
+  --check
 ```
 
----
+Default output: `adapter/sidecars/etc/agentium/tool-bundle.json`.
 
 ## 5) Validate metadata before deploy
 
@@ -233,21 +286,38 @@ This validates:
 1. schema compliance,
 2. runtime typed parse,
 3. sandbox source consistency:
-   - OCI digest pin + match against `runtime_digest`,
-   - Bind path canonicalises, is a directory, and recomputed digest matches `runtime_digest`,
-   - `runtime_source_kind` in lock (when present) agrees with metadata.
+   - OCI image refs are digest-pinned (`repo@sha256:...`),
+   - Bind source metadata is portable and the local lock path, when present, resolves to a directory.
 
 ---
 
 ## 6) Configure and start runner
 
-Core env:
+Recommended: a `runner.toml` consumed via `--runner-config`. Falls back to env vars; env wins when both file and env are set.
 
-```bash
-export BAML_EXTERNAL_TOOLS_DIR=/abs/path/to/external-tools
+```toml
+# runner.toml — paths relative to this file's parent dir
+[external_tools]
+dirs = ["/abs/path/to/external-tools"]
+
+[sandbox.bind]
+roots = ["/abs/root1", "/abs/root2"]
 ```
 
-`BAML_EXTERNAL_TOOLS_DIR` scans for one subdirectory per tool, each containing its own `tool-metadata.json`. The runner loads the catalog at boot — **restart the runner after adding / editing / removing tools**; there is no hot reload in v1.
+```bash
+cargo run -p baml-agent-runner --all-features -- --runner-config ./runner.toml
+```
+
+Each entry under `[external_tools].dirs` is a tool package directory containing its own `tool-metadata.json`. The runner loads the catalog at boot — **restart the runner after adding / editing / removing tools**; there is no hot reload in v1.
+
+Legacy env vars still work (for back-compat and quick scripts):
+
+```bash
+export BAML_EXTERNAL_TOOLS_DIR=/abs/path/to/external-tools   # colon-separated
+export BAML_SANDBOX_BIND_ROOTS=/abs/root1:/abs/root2         # colon-separated
+```
+
+Resolution precedence per list: env (when set and non-empty) replaces the file value; otherwise the file value applies. Startup logs show the resolved source: `external_tools.dirs source=<file|env|none>` and `sandbox.bind.roots source=<file|env|none>`.
 
 Sandbox provider:
 
@@ -263,11 +333,24 @@ Current network default (microsandbox path):
 
 This default is runtime-level behavior (not currently per-tool configurable in metadata for v1).
 
-Bind allowlist (colon-separated roots):
+Bind-mode note: bind rootfs uses filesystem contents, not full OCI image config.
+Do not rely on Dockerfile `ENV` to bootstrap `/tool-adapter`; keep adapter startup
+self-contained (or provide explicit runtime env from runner wiring).
 
-```bash
-export BAML_SANDBOX_BIND_ROOTS=/abs/root1:/abs/root2
-```
+### Child process stdio discipline
+
+`/tool-adapter` speaks **length-prefixed framed JSON-RPC over stdout**. The
+tool child process spawned for `tool/invoke` therefore must:
+
+- write **only** a single JSON-RPC response to stdout (newline-terminated raw
+  JSON-RPC — the adapter re-frames it);
+- use **stderr** for logs, diagnostics, or any other output;
+- **not** print banners, progress bars, or debug prints to stdout.
+
+Anything emitted to stdout that is not the framed response will corrupt the
+channel and surface as `invalid JSON` or truncated-frame errors at the runner.
+
+Bind allowlist (configured via `runner.toml` `[sandbox.bind].roots` or `BAML_SANDBOX_BIND_ROOTS`):
 
 - Empty or unset → **all Bind sources are rejected** (`bind rootfs is disabled`). Safe default for non-dev deployments.
 - Narrow the roots. Broad roots (e.g. `/`) are tenant-escape vectors; see §10.
@@ -312,22 +395,50 @@ cargo agent-platform chat --agent my-agent
 After adapter/rootfs changes in bind mode, run:
 
 1. rebuild/export rootfs (or materialize it via your own pipeline)
-2. sync metadata + digest:
+2. sync runtime lock + digest:
 
    ```bash
    cargo agent-platform sandbox-bind-sync \
      --tool-dir /path/to/tool \
-     --rootfs /path/to/rootfs \
      --check
    ```
 
 3. restart runner (no hot reload) and re-publish + re-deploy agent
 
-If you skip digest refresh after rootfs mutation, metadata identity is stale and the running agent boots from drifted content.
+If you skip digest refresh after rootfs mutation, the local runtime lock is stale and the running agent boots from drifted content.
 
 ---
 
 ## 9) Debugging and troubleshooting
+
+### 9.1 Session-mode runbook (operator quick actions)
+
+Use this when `invocation_mode=session` tools fail in production-like runs.
+
+- **Tool rejected at load (no sandbox wiring):**
+  - Cause: runner built without the `sandbox-provider` feature, so no SandboxRuntimeWiring is registered.
+  - Action: rebuild the runner with the `sandbox-provider` feature enabled (default) and restart.
+  - Verify: resolver no longer emits sandbox-wiring rejection; tool appears in load/resolve logs.
+
+- **`pool_exhausted`:**
+  - Cause: all sandboxes for that tool key are live and checkout timed out.
+  - Action: retry; if sustained, raise session pool capacity in host config (current knob is pool-wide `SessionPoolConfig.default_pool_max`).
+  - Verify: checkout wait and `pool_exhausted` frequency drops.
+
+- **`unknown_session`:**
+  - Cause: stale/foreign `session_id` (restart, eviction, or wrong invoker scope).
+  - Action: reopen a fresh session; do not reuse old ids across runner restarts.
+  - Verify: `session_open -> session_send -> session_read` succeeds with new id.
+
+- **`resume_token_mismatch`:**
+  - Cause: incorrect or missing resume token after a `suspended` step.
+  - Action: enforce flow `read(suspended) -> send(resume_token) -> read`.
+  - Verify: mismatch errors stop and steps progress to `streaming`/`done`.
+
+- **Timeout confusion (`chunk_timeout` vs session lifecycle timeout):**
+  - Cause: chunk timeout means “no next step yet”; lifecycle timeout means session-level failure.
+  - Action: on chunk timeout, retry/read again in-session; on lifecycle timeout, reopen session.
+  - Verify: error code/disposition aligns with expected timeout class.
 
 ### Useful debugging helper
 
@@ -350,8 +461,6 @@ Use the shipped inspector to test adapter protocol directly (outside microVM):
   - the directory doesn't exist or symlink target is missing — re-export rootfs
 - **`bind path is not a directory: <path>`**
   - pointed at a file; bind sources must be directories
-- **`runtime_digest mismatch for bind source: metadata runtime_digest=... but computed=...`**
-  - rootfs mutated since the last digest; rerun `sandbox-digest`, patch metadata, validate
 - **`pull_policy=always is invalid for bind sandbox images`**
   - `PullPolicy::Always` applies only to OCI; drop it or switch source to `oci`
 - **`unable to find library -lcap-ng`**
@@ -362,6 +471,12 @@ Use the shipped inspector to test adapter protocol directly (outside microVM):
   - ensure rootfs/image contains adapter at `/tool-adapter` (or a PATH-resolvable `tool-adapter`)
 - **adapter hangs without responding**
   - test the adapter in isolation with `inspect_tsrpc.py` (above) before blaming the VM
+- **`resume_token_mismatch`**
+  - adapter expects a resume token from a prior `suspended` step; ensure your client flow is `send -> read(suspended) -> send(resume_token) -> read`
+- **`unknown_session`**
+  - `session_id` is stale/foreign to the invoker instance (often after restart); reopen a new session
+- **`pool_exhausted`**
+  - session pool cap reached; retry or raise pool capacity in host config (currently pool-wide)
 
 ---
 

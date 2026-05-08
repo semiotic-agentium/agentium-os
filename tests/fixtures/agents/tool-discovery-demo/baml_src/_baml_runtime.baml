@@ -36,6 +36,12 @@ class ProvenancePlanStep {
 class SessionContext {
   contract_version string
   session_open bool
+  status string @description("FSM status: awaiting_open | just_opened | done")
+  last_step_op string? @description("Previous FSM step op when known: open | send | read | finish | abort")
+  last_step_status string? @description("Previous FSM step status when known: open | done | finished | aborted")
+  last_archive_ref string? @description("Archive ref from the previous Send when available, e.g. @4")
+  last_output_header string? @description("Compact archive header from the previous Send/Read when available")
+  last_completion string? @description("Tool-specific terminal completion marker when available, e.g. DONE | INPUT_REQUIRED | INTERRUPTED")
 }
 
 /// Opaque JSON transport wrapper for host-managed tools and event payloads.
@@ -176,7 +182,7 @@ class DiscoverToolsSendInput {
 }
 
 /// Tool card for system/discover_tools: metadata for polymorphic Open selection.
-class SystemDiscover_toolsToolCard {
+class SystemDiscoverToolsToolCard {
   tool_name "system/discover_tools"
   description "Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times."
   session_policy "Strict"
@@ -184,40 +190,40 @@ class SystemDiscover_toolsToolCard {
   tags string[] @description("Tool tags: system, discovery")
 }
 
-class SystemDiscover_toolsOpenStep {
+class SystemDiscoverToolsOpenStep {
   op "Open"
   tool_name "system/discover_tools" @description("Tool to open")
   initial_input DiscoverToolsOpenInput? @description("Optional open payload.")
 }
 
-class SystemDiscover_toolsSendStep {
+class SystemDiscoverToolsSendStep {
   op "Send"
   input DiscoverToolsSendInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
 }
 
-class SystemDiscover_toolsSearchReadStep {
+class SystemDiscoverToolsSearchReadStep {
   op "SearchRead"
   input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
 }
 
-class SystemDiscover_toolsPageReadStep {
+class SystemDiscoverToolsPageReadStep {
   op "PageRead"
   input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
 }
 
-class SystemDiscover_toolsFinishStep {
+class SystemDiscoverToolsFinishStep {
   op "Finish"
 }
 
-class SystemDiscover_toolsAbortStep {
+class SystemDiscoverToolsAbortStep {
   op "Abort"
 }
 
-type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsSearchReadStep | SystemDiscover_toolsPageReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
+type SystemDiscoverToolsSessionStep = SystemDiscoverToolsOpenStep | SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsFinishStep | SystemDiscoverToolsAbortStep
 
-class SystemDiscover_toolsSessionPlan {
-  step SystemDiscover_toolsSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. A @N in history is a handle until you read it.")
+class SystemDiscoverToolsSessionPlan {
+  step SystemDiscoverToolsSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. A @N in history is a handle until you read it.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -277,12 +283,21 @@ class SupportCalculateSessionPlan {
 function ChooseDiscoverToolsQuery__select(
   user_message: string,
   session_context: SessionContext
-) -> SystemDiscover_toolsOpenStep {
+) -> SystemDiscoverToolsOpenStep {
 
   client DefaultClient
   prompt #"[OPEN] Open a session with: system/discover_tools.\n\nFind tools that can help with: {{ user_message }}
+For Send: set input.query to a concise search term derived from the user message.
 
-{{ ctx.tags['conversation_transcript'] }}
+Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
+Once the tool list for the user's query is present in history, use the Continue hop to emit Finish and close the session.
+Do not issue extra Reads or Sends unless the archive explicitly indicates more pages or incomplete results.
+
+{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
+{% endfor %}
+
 {{ ctx.output_format }}
 
 PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
@@ -294,12 +309,21 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 function ChooseDiscoverToolsQuery__act__system_discover_tools(
   user_message: string,
   session_context: SessionContext
-) -> SystemDiscover_toolsSendStep | SystemDiscover_toolsSearchReadStep | SystemDiscover_toolsPageReadStep {
+) -> SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep {
 
   client DefaultClient
   prompt #"[ACT] A system/discover_tools session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nFind tools that can help with: {{ user_message }}
+For Send: set input.query to a concise search term derived from the user message.
 
-{{ ctx.tags['conversation_transcript'] }}
+Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
+Once the tool list for the user's query is present in history, use the Continue hop to emit Finish and close the session.
+Do not issue extra Reads or Sends unless the archive explicitly indicates more pages or incomplete results.
+
+{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
+{% endfor %}
+
 {{ ctx.output_format }}
 
 PHASE CONSTRAINT (act — Send or archive read): The JSON root must be exactly one Send, SearchRead, or PageRead step. op must be exactly the string Send, SearchRead, or PageRead — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
@@ -311,12 +335,21 @@ PHASE CONSTRAINT (act — Send or archive read): The JSON root must be exactly o
 function ChooseDiscoverToolsQuery__continue__system_discover_tools(
   user_message: string,
   session_context: SessionContext
-) -> SystemDiscover_toolsSendStep | SystemDiscover_toolsSearchReadStep | SystemDiscover_toolsPageReadStep | SystemDiscover_toolsFinishStep {
+) -> SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/discover_tools result is archived.\nCheck session history:\n- See \"@N system/discover_tools\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_tools\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n- See \"@N system/discover_tools\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\nFind tools that can help with: {{ user_message }}
+  prompt #"[CONTINUE] system/discover_tools result is archived.\nPriority rules:\n- If session_context.last_step_op == \"send\" and session_context.last_completion == \"DONE\", emit Finish unless tool-specific instructions explicitly require reading the archive first.\n- If session_context.last_step_op == \"send\" and session_context.last_completion == \"INTERRUPTED\", emit Abort or follow tool-specific interruption guidance.\nArchive fallback when content must be inspected:\n- Use SearchRead or PageRead with archive_ref=session_context.last_archive_ref or the visible @N.\n- A \"more lines\" indicator means paginate with SearchRead/PageRead.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work just because archive body content is not inline.\n\nFind tools that can help with: {{ user_message }}
+For Send: set input.query to a concise search term derived from the user message.
 
-{{ ctx.tags['conversation_transcript'] }}
+Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
+Once the tool list for the user's query is present in history, use the Continue hop to emit Finish and close the session.
+Do not issue extra Reads or Sends unless the archive explicitly indicates more pages or incomplete results.
+
+{% for message in ctx.tags['conversation_history'] %}
+{{ _.role(message.role) }}
+{{ message.content }}
+{% endfor %}
+
 {{ ctx.output_format }}
 
 PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, or Finish step. op must be Send, SearchRead, PageRead, or Finish — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).

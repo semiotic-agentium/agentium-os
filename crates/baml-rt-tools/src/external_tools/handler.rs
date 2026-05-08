@@ -308,7 +308,7 @@ mod tests {
                 tool_name: tool.to_string(),
                 supported_methods: vec![METHOD_INVOKE.to_string()],
                 max_payload_bytes: None,
-                schema_hash: None,
+                schema_digest: None,
                 capabilities: None,
             })
         }
@@ -370,7 +370,7 @@ mod tests {
                 tool_name: tool.to_string(),
                 supported_methods: vec![METHOD_INVOKE.to_string()],
                 max_payload_bytes: None,
-                schema_hash: None,
+                schema_digest: None,
                 capabilities: None,
             })
         }
@@ -651,6 +651,7 @@ mod tests {
             projection_semantics: None,
             session_policy: Default::default(),
             event_sources: Vec::new(),
+            coordination_baml: None,
         }
     }
 }

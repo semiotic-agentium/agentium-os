@@ -43,6 +43,7 @@ reqwest = { workspace = true }
 futures-util = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
+toml = "0.8"
 url = { workspace = true }
 
 [dev-dependencies]
@@ -70,8 +71,10 @@ notion = ["dep:baml-tools-notion"]
 slack = ["dep:baml-tools-slack"]
 security-eval = ["dep:baml-tools-security-eval"]
 http-tools = ["clickup", "notion", "slack", "security-eval"]
-# Forwards baml-rt-tools's sandbox-provider feature — enables the real
-# MicrosandboxProvider when selected at runtime via BAML_SANDBOX_PROVIDER=microsandbox.
+# Compile-time sandbox provider selection (three states):
+#   feature ON              → MicrosandboxProvider (production)
+#   feature OFF + cfg(test) → MockSandboxProvider::echo() (tests)
+#   feature OFF + no test   → None (no sandbox)
 sandbox-provider = ["baml-rt-tools/sandbox-provider"]
 llm-tests = []
 cluster-tests = []

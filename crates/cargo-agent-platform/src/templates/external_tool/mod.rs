@@ -101,6 +101,13 @@ pub enum Runtime {
     Sandbox,
 }
 
+/// Invocation mode encoded in scaffolded `tool-metadata.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum InvocationMode {
+    SingleShot,
+    Session,
+}
+
 /// Sandbox source type when `runtime=sandbox`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SandboxSource {
@@ -113,6 +120,15 @@ impl Runtime {
         match self {
             Self::Process => "process",
             Self::Sandbox => "sandbox",
+        }
+    }
+}
+
+impl InvocationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SingleShot => "single_shot",
+            Self::Session => "session",
         }
     }
 }
@@ -157,6 +173,19 @@ impl Language {
             Self::Typescript => lang::typescript::generate(ctx),
         }
     }
+
+    /// Default `(command, workdir)` pair the adapter should invoke for
+    /// `tool/invoke` in a sandbox. Single source of truth for scaffold-time
+    /// `runtime.adapter` defaults and for the adapter shim's baked-in
+    /// `FALLBACK_RUNTIME` — keeping them aligned avoids silent drift.
+    pub fn default_adapter_command(self) -> (&'static [&'static str], &'static str) {
+        match self {
+            Self::Python => (&["python3", "/opt/tool/main.py"], "/opt/tool"),
+            Self::Bash => (&["/opt/tool/tool-server"], "/opt/tool"),
+            Self::Rust => (&["/opt/tool/external-tool"], "/opt/tool"),
+            Self::Typescript => (&["node", "/opt/tool/dist/main.js"], "/opt/tool"),
+        }
+    }
 }
 
 /// Inputs passed to every language scaffold so signatures stay uniform.
@@ -172,12 +201,12 @@ pub struct ScaffoldContext<'a> {
     pub description: &'a str,
     /// Runtime metadata block to emit in `tool-metadata.json`.
     pub runtime: Runtime,
+    /// Invocation mode to emit in metadata (`single_shot` or `session`).
+    pub invocation_mode: InvocationMode,
     /// Sandbox source when runtime is sandbox.
     pub sandbox_source: Option<SandboxSource>,
     /// Sandbox image reference/path when runtime is sandbox.
     pub sandbox_image: Option<SandboxImageRef>,
-    /// Runtime identity digest (`sha256:...`) when runtime is sandbox.
-    pub runtime_digest: Option<String>,
     /// Optional sandbox entrypoint argv.
     pub sandbox_entrypoint: Vec<String>,
     /// Whether to scaffold Docker-oriented bind helper artifacts.

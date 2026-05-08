@@ -73,6 +73,18 @@ fn parse_repository_entry_version(value: &serde_json::Value) -> Option<u32> {
     None
 }
 
+pub(crate) struct AgentRunnerConfig {
+    pub(crate) provenance_config: ProvenanceConfig,
+    pub(crate) deployment_state: Arc<crate::deployment_state::DeploymentStateStore>,
+    pub(crate) access_policy: ToolAccessPolicy,
+    pub(crate) stream_idle_secs: Option<u64>,
+    pub(crate) claude_workspaces_base: Option<std::path::PathBuf>,
+    pub(crate) repository_url: String,
+    pub(crate) embedded_repository: Option<Arc<RepositoryService>>,
+    pub(crate) external_tools_dirs: Vec<std::path::PathBuf>,
+    pub(crate) sandbox_bind_roots: Vec<std::path::PathBuf>,
+}
+
 /// Agent runner host: manages agents and composes the tool catalogue at startup.
 pub(crate) struct AgentRunner {
     pub(crate) agents: RwLock<HashMap<String, BootedAgent>>,
@@ -91,35 +103,39 @@ pub(crate) struct AgentRunner {
     pub(crate) cluster_manager: std::sync::OnceLock<Arc<crate::cluster::ClusterManager>>,
     /// One map for all deployed agents so `@N` survives internal A2A to another manager.
     pub(crate) shared_context_ref_store: SharedContextRefStore,
+    pub(crate) external_tools_dirs: Vec<std::path::PathBuf>,
+    pub(crate) sandbox_bind_roots: Vec<std::path::PathBuf>,
 }
 
 impl AgentRunner {
-    pub(crate) fn new(
-        provenance_config: ProvenanceConfig,
-        deployment_state: Arc<crate::deployment_state::DeploymentStateStore>,
-        access_policy: ToolAccessPolicy,
-        stream_idle_secs: Option<u64>,
-        claude_workspaces_base: Option<std::path::PathBuf>,
-        repository_url: String,
-        embedded_repository: Option<Arc<RepositoryService>>,
-    ) -> baml_rt_core::Result<Self> {
+    pub(crate) fn new(config: AgentRunnerConfig) -> baml_rt_core::Result<Self> {
         let routed_agents = std::sync::RwLock::new(HashMap::new());
         let internal_a2a_router = Arc::new(InternalA2aRouter::new());
         Ok(Self {
             agents: RwLock::new(HashMap::new()),
-            provenance_config,
-            deployment_state,
-            access_policy,
+            provenance_config: config.provenance_config,
+            deployment_state: config.deployment_state,
+            access_policy: config.access_policy,
             routed_agents,
             internal_a2a_router,
-            stream_idle_secs,
-            claude_workspaces_base,
-            repository_url,
-            embedded_repository,
+            stream_idle_secs: config.stream_idle_secs,
+            claude_workspaces_base: config.claude_workspaces_base,
+            repository_url: config.repository_url,
+            embedded_repository: config.embedded_repository,
             repository_http_client: reqwest::Client::new(),
             cluster_manager: std::sync::OnceLock::new(),
             shared_context_ref_store: SharedContextRefStore::new(),
+            external_tools_dirs: config.external_tools_dirs,
+            sandbox_bind_roots: config.sandbox_bind_roots,
         })
+    }
+
+    pub(crate) fn external_tools_dirs(&self) -> &[std::path::PathBuf] {
+        &self.external_tools_dirs
+    }
+
+    pub(crate) fn sandbox_bind_roots(&self) -> &[std::path::PathBuf] {
+        &self.sandbox_bind_roots
     }
 
     pub(crate) fn deployment_state(&self) -> &Arc<crate::deployment_state::DeploymentStateStore> {
@@ -390,6 +406,8 @@ impl AgentRunner {
                 a2a_handler: scoped_router,
                 stream_idle_secs: self.stream_idle_secs(),
                 claude_workspaces_base: self.claude_workspaces_base.as_deref(),
+                external_tools_dirs: self.external_tools_dirs(),
+                sandbox_bind_roots: self.sandbox_bind_roots(),
             })
             .await?;
         let manifest = package.manifest().clone();
