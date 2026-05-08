@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "name": "cpu-peg-agent",
+  "entry_point": "src/index.ts",
+  "signature": "cpu-peg-agent@1.0.0",
+  "tools": [],
+  "discovery": {
+    "description": "Adversarial fixture: pegs the JS thread for ~5s during top-level evaluation to probe runner-readiness invariants under deploy starvation (issue #341 T1).",
+    "capabilities": []
+  },
+  "tags": [
+    "fixture",
+    "adversarial"
+  ]
+}
