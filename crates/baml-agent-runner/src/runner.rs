@@ -84,7 +84,7 @@ pub(crate) struct AgentRunnerConfig {
     pub(crate) embedded_repository: Option<Arc<RepositoryService>>,
     pub(crate) external_tools_dirs: Vec<std::path::PathBuf>,
     pub(crate) sandbox_bind_roots: Vec<std::path::PathBuf>,
-    pub(crate) runtime_progress: Option<Arc<RuntimeProgressMeter>>,
+    pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
 }
 
 /// Agent runner host: manages agents and composes the tool catalogue at startup.
@@ -110,7 +110,7 @@ pub(crate) struct AgentRunner {
     /// Shared with the HTTP API so `/diagnose`'s `runtime_progress_lag_ms`
     /// reflects CPU pegs on the QuickJS thread (each booted agent registers a
     /// JS-event-loop probe), not just on the tokio runtime.
-    pub(crate) runtime_progress: Option<Arc<RuntimeProgressMeter>>,
+    pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
 }
 
 impl AgentRunner {

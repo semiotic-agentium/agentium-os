@@ -241,23 +241,20 @@ pub fn api_router_with_services(
         Arc::new(AtomicBool::new(true)),
         None,
         ClusterMode::Standalone,
-        None,
+        RuntimeProgressMeter::spawn_in_current_runtime(),
         web_dir,
     )
 }
 
 /// Build API router with optional deployment manager and repository URL wiring.
 ///
-/// `runtime_progress` injects a meter that is shared with the runner so probes
-/// registered during agent boot (e.g. the JS event-loop probe) feed the same
-/// `/diagnose` value the HTTP API serves. When `None`, a fresh meter is
-/// constructed for this router only — sufficient for tests that have no
-/// runner-side probes to share.
+/// `runtime_progress` is shared with the runner so probes registered during
+/// agent boot (e.g. the JS event-loop probe) feed the same `/diagnose` value
+/// the HTTP API serves.
 ///
 /// # Panics
-/// Panics if called outside a tokio runtime context and `runtime_progress` is
-/// `None`: the freshly constructed `/diagnose` meter spawns a background
-/// ticker on construction.
+/// Panics if called outside a tokio runtime context: `RuntimeProgressMeter`
+/// must already have been constructed inside a tokio runtime by the caller.
 #[allow(clippy::too_many_arguments)]
 pub fn api_router_with_services_and_deploy(
     registry: Arc<dyn AgentRegistry>,
@@ -279,7 +276,7 @@ pub fn api_router_with_services_and_deploy(
     ready: Arc<AtomicBool>,
     runner_token: Option<String>,
     cluster_mode: ClusterMode,
-    runtime_progress: Option<Arc<RuntimeProgressMeter>>,
+    runtime_progress: Arc<RuntimeProgressMeter>,
     web_dir: Option<&Path>,
 ) -> Router {
     let http_trace_layer =
@@ -425,9 +422,6 @@ pub fn api_router_with_services_and_deploy(
     }
     openapi.tags = Some(tags);
 
-    let runtime_progress =
-        runtime_progress.unwrap_or_else(RuntimeProgressMeter::spawn_in_current_runtime);
-
     let state = Arc::new(ApiState {
         registry,
         openapi: Arc::new(openapi),
@@ -563,7 +557,7 @@ pub async fn serve_with_services(
         Arc::new(AtomicBool::new(true)),
         None,
         ClusterMode::Standalone,
-        None,
+        RuntimeProgressMeter::spawn_in_current_runtime(),
         web_dir,
     )
     .await
@@ -573,7 +567,6 @@ pub async fn serve_with_services(
 ///
 /// `runtime_progress` is the meter shared with the runner so probes registered
 /// during agent boot feed the same `/diagnose` value the HTTP API serves.
-/// Pass `None` for tests or any caller without runner-side probes.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_with_services_and_deploy(
     registry: Arc<dyn AgentRegistry>,
@@ -596,7 +589,7 @@ pub async fn serve_with_services_and_deploy(
     ready: Arc<AtomicBool>,
     runner_token: Option<String>,
     cluster_mode: ClusterMode,
-    runtime_progress: Option<Arc<RuntimeProgressMeter>>,
+    runtime_progress: Arc<RuntimeProgressMeter>,
     web_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = api_router_with_services_and_deploy(

@@ -72,9 +72,7 @@ pub(crate) struct AgentPackageBootArgs<'a> {
     pub(crate) external_tools_dirs: &'a [PathBuf],
     pub(crate) sandbox_bind_roots: &'a [PathBuf],
     /// Meter to register the agent's JS-event-loop progress probe with.
-    /// `None` skips probe registration (used by tests that build agents
-    /// outside the runner's HTTP path).
-    pub(crate) runtime_progress: Option<Arc<RuntimeProgressMeter>>,
+    pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
 }
 
 impl AgentPackage {
@@ -342,10 +340,10 @@ impl AgentPackage {
             // Register before `initialize_js_phase`: a CPU-bound JS top-level
             // is the worst-case peg the meter must observe, and it runs inside
             // that phase.
-            if let Some(meter) = args.runtime_progress.as_ref() {
+            {
                 let bridge_arc = built.agent.bridge();
                 let mut bridge_guard = bridge_arc.lock().await;
-                bridge_guard.register_progress_probe(meter.as_ref());
+                bridge_guard.register_progress_probe(args.runtime_progress.as_ref());
             }
             let initialized = self.initialize_js_phase(built).await?;
             let agent = initialized.agent;

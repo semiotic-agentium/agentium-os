@@ -2344,7 +2344,7 @@ async fn authed_test_router(token: Option<&str>, mode: ClusterMode) -> axum::Rou
         Arc::new(AtomicBool::new(true)),
         token.map(String::from),
         mode,
-        None, // runtime_progress (test-only meter created internally)
+        baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
         None, // web_dir
     )
 }
@@ -2612,7 +2612,7 @@ async fn authed_test_router_with_repo(token: Option<&str>, mode: ClusterMode) ->
         Arc::new(AtomicBool::new(true)),
         token.map(String::from),
         mode,
-        None, // runtime_progress (test-only meter created internally)
+        baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
         None, // web_dir
     )
 }
@@ -2765,8 +2765,8 @@ async fn router_with_deployment_manager(manager: Arc<dyn DeploymentManager>) -> 
         Arc::new(AtomicBool::new(true)),
         None,                    // runner_token
         ClusterMode::Standalone, // standalone → no auth required
-        None,                    // runtime_progress
-        None,                    // web_dir
+        baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
+        None, // web_dir
     )
 }
 

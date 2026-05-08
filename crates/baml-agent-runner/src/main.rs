@@ -312,7 +312,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         embedded_repository: Some(repository_service.clone()),
         external_tools_dirs: config.external_tools_dirs.clone(),
         sandbox_bind_roots: config.sandbox_bind_roots.clone(),
-        runtime_progress: Some(runtime_progress.clone()),
+        runtime_progress: runtime_progress.clone(),
     })
     .map_err(|e| anyhow::anyhow!("runner builder init: {e}"))?;
 
@@ -529,7 +529,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
                 readyz_for_http,
                 runner_token,
                 cluster_mode,
-                Some(runtime_progress_for_http),
+                runtime_progress_for_http,
                 web_dir.as_deref(),
             )
             .await
@@ -884,7 +884,7 @@ globalThis.onChatMessage = async function(_message) {
                 embedded_repository: None,
                 external_tools_dirs: Vec::new(),
                 sandbox_bind_roots: Vec::new(),
-                runtime_progress: None,
+                runtime_progress: baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
             })
             .expect("test runner construction"),
         );
