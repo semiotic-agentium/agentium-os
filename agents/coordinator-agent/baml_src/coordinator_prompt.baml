@@ -15,34 +15,34 @@ function GetDiscoverAgentsPlan(
 // --- Coordinator classification (before discovery) ---
 // Exactly one variant: delegatable task ready, need user input to form a task, or meta-only (no routing).
 
-class PersonaReadyIntent {
+class CoordinatorReadyIntent {
   inferred_intent string @description("Single goal-level sentence for agent discovery — coordinated outcome only. No agent names, tools, or delegation mechanics.")
 }
 
-class PersonaNeedTaskClarification {
+class CoordinatorNeedTaskClarification {
   question string @description("One concrete question whose answer would yield a delegatable specialist task.")
 }
 
-class PersonaMetaOnly {
+class CoordinatorMetaOnly {
   reason string @description("Short label for logging: e.g. greeting, capabilities_list, casual_chat — no specialist work request.")
 }
 
-function ClassifyPersonaCoordinatorTurn(user_message: string) -> PersonaReadyIntent | PersonaNeedTaskClarification | PersonaMetaOnly {
+function ClassifyCoordinatorTurn(user_message: string) -> CoordinatorReadyIntent | CoordinatorNeedTaskClarification | CoordinatorMetaOnly {
   client DefaultClient
   prompt #"
-    You classify this turn for **Orkemedies**, a coordinator that routes **real work** to specialist agents (after discovery). **Discovery of specialists runs only after** a delegatable task exists OR the user explicitly asks what agents/tools exist (capabilities orientation).
+    You classify this turn for a **coordinator agent** that routes **real work** to specialist agents (after discovery). **Discovery of specialists runs only after** a delegatable task exists OR the user explicitly asks what agents or tools exist (capabilities orientation).
 
     Return **exactly one** variant:
 
-    **PersonaReadyIntent** — The user stated or strongly implies a **concrete task** a specialist could execute: lookups, searches, summaries scoped to a system, ticket/issue work, analysis with a defined goal, multi-step investigation with identifiable deliverables. Fill `inferred_intent`: one sentence, **goal-level outcome only** (no agent names, tools, or \"tell X to …\").
+    **CoordinatorReadyIntent** — The user stated or strongly implies a **concrete task** a specialist could execute: lookups, searches, summaries scoped to a system, ticket or issue work, analysis with a defined goal, multi-step investigation with identifiable deliverables. Fill `inferred_intent`: one sentence, **goal-level outcome only** (no agent names, tools, or \"tell X to …\").
 
-    **PersonaNeedTaskClarification** — The user may want help but you **cannot** name a routable task yet: vague \"help me\", \"do something\", \"fix it\" without referent, missing target (which channel, doc, list), ambiguous scope, **or** a bare greeting / filler with no ask (e.g. \"hi\", \"hey\", \"yo\" alone). Output **one** sharp `question` that would unlock a Ready turn next time. Prefer this over guessing a fake Ready intent.
+    **CoordinatorNeedTaskClarification** — The user may want help but you **cannot** name a routable task yet: vague \"help me\", \"do something\", \"fix it\" without referent, missing target (which channel, document, list), ambiguous scope, **or** a bare greeting / filler with no ask (e.g. \"hi\", \"hey\", \"yo\" alone). Output **one** sharp `question` that would unlock a Ready turn next time. Prefer this over guessing a fake Ready intent.
 
-    **PersonaMetaOnly** — **No task to coordinate**: hello/thanks alone, jokes, pure social chat, \"what can you do\" / capabilities browsing without naming work, or talking about the persona without asking for work product.
+    **CoordinatorMetaOnly** — **No task to coordinate**: hello or thanks alone, jokes, pure social chat, \"what can you do\" / capabilities browsing without naming work, or meta discussion without asking for work product.
 
     Rules:
-    - **Bare greetings** (\"hi\", \"hello\", \"hey\") with no other ask → **PersonaNeedTaskClarification** with one question such as what they want coordinated, **not** Ready.
-    - If torn between Ready and Clarification, choose **PersonaNeedTaskClarification**.
+    - **Bare greetings** (\"hi\", \"hello\", \"hey\") with no other ask → **CoordinatorNeedTaskClarification** with one question such as what they want coordinated, **not** Ready.
+    - If torn between Ready and Clarification, choose **CoordinatorNeedTaskClarification**.
     - Do not emit Ready with a hand-wavy generic intent when the user gave no actionable anchor.
 
     {{ ctx.tags['conversation_transcript'] }}
@@ -54,17 +54,16 @@ function ClassifyPersonaCoordinatorTurn(user_message: string) -> PersonaReadyInt
 
 // StructuredReply: shared synthesis shape in `_baml_runtime.baml` (builder prelude).
 
-// Persona-voiced summary of what agents can do (no delegation).
-// Capability summary: describe available agents in persona voice.
+// Professional summary of what agents can do (no delegation).
 // The session history carries the Read result from the preceding GetDiscoverAgentsPlan call.
 function FormatCapabilities(user_message: string) -> StructuredReply {
   client DefaultClient
   prompt #"
-    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns from the transcript below when present for continuity.
+    You are the coordinator agent: calm, precise, and brief. Use prior turns from the transcript below when present for continuity.
 
-    If the session history includes a tool discovery **Read** result, describe those agents in brutal ork persona voice.
-    If there is **no** discovery listing in history (meta-only turn without specialist search), answer briefly in persona: greet or explain you're ready when they name a task or ask what coordination does — **do not invent** agent package names.
-    Match the output schema exactly (StructuredReply: parts + citations). 2-5 sentences in the text part; no tool jargon.
+    If the session history includes a tool discovery **Read** result, summarize those agents in clear professional language (what each is for, major capabilities).
+    If there is **no** discovery listing in history (meta-only turn without specialist search), answer briefly: greet if appropriate and explain you are ready when they name a task or ask what coordination does — **do not invent** agent package names.
+    Match the output schema exactly (StructuredReply: parts + citations). Two to five sentences in the text part; no internal tool jargon.
 
     {{ ctx.tags['conversation_transcript'] }}
     {{ _.role('user') }}
@@ -75,7 +74,7 @@ function FormatCapabilities(user_message: string) -> StructuredReply {
 
 // Planning step: output a structured plan against discovered agents.
 // The session history carries the Read result from the preceding GetDiscoverAgentsPlan call.
-// Never plan a step for conversational-persona-demo. For capability/meta requests, return plan_steps as [].
+// Never plan a step for coordinator-agent. For capability/meta requests, return plan_steps as [].
 function MakeStructuredPlan(user_message: string) -> StandardStructuredPlan {
   client DefaultClient
   prompt #"
@@ -95,10 +94,10 @@ function MakeStructuredPlan(user_message: string) -> StandardStructuredPlan {
     CRITICAL sub_message quality rules:
     - sub_message is a GOAL DESCRIPTION for the conversation with the specialist agent — it guides what the conversation should achieve, NOT a verbatim message to forward.
     - Be concrete and specific: include key terms, entities, desired output format.
-    - Never include persona-voice diction or "Delegate to X:" prefixes.
+    - Never include playful persona voice or "Delegate to X:" prefixes.
     Capability/meta rule:
     - If the user is asking what is available, what you can do, greetings/help, casual social chat, set plan_steps to [].
-    A task may need one agent chat (one step) or multiple (multiple steps). Never plan a step for conversational-persona-demo. Output only the structured plan.
+    A task may need one agent chat (one step) or multiple (multiple steps). Never plan a step for coordinator-agent. Output only the structured plan.
 
     {{ ctx.tags['conversation_transcript'] }}
     {{ _.role('user') }}
@@ -124,41 +123,25 @@ function DecideDelegationAction(
   "#
 }
 
-// React to the results of one or more delegation steps.
+// Synthesize the user-visible reply after delegation step(s).
 // The session history carries the Read results from the preceding DecideDelegationAction calls.
-function PersonaReact(
+function CoordinatorSynthesizeReply(
   user_message: string,
   plan_objective: string,
 ) -> StructuredReply {
   client DefaultClient
   prompt #"
-    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns from the transcript below when present for continuity.
+    You are the coordinator agent: professional, concise, and accurate. Use prior turns from the transcript below when present for continuity.
 
     The user asked: {{ user_message }}
     Plan objective: {{ plan_objective }}
 
     The transcript below contains the results from your specialist agent(s).
     Match the output schema exactly (StructuredReply: parts + citations).
-    Synthesize across steps when needed; use ork-flavoured diction (krump, waaagh) sparingly.
+    Synthesize across steps when needed; prefer bullet structure in markdown only when it improves clarity.
 
     {{ ctx.tags['conversation_transcript'] }}
     {{ ctx.output_format }}
-  "#
-}
-
-function PersonaChat(user_message: string) -> string {
-  client DefaultClient
-  prompt #"
-    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy.
-    Personality rules:
-    - Speak with brutal ork swagger: blunt, warlike, and darkly funny.
-    - Use occasional ork-flavored diction (krump, humie, waaagh), but keep it readable.
-    - Keep responses short (2-5 sentences) unless the user asks for depth.
-    - Ask one follow-up question when it helps continue the conversation.
-
-    {{ ctx.tags['conversation_transcript'] }}
-    {{ _.role('user') }}
-    {{ user_message }}
   "#
 }
 

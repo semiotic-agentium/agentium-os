@@ -84,6 +84,13 @@ use baml_rt_tools::BundleName;
 #[cfg(feature = "llm-tests")]
 use common::try_load_dotenv_for_tests;
 use common::{e2e_secs_ci_or_local, e2e_serial_gate};
+
+/// Idle gap allowed on the A2A stream collector while waiting for the next `__chat_yield`.
+/// Default QuickJS is **60s**; full-workspace `nextest` runs LLM tests beside heavy crates, so OpenRouter
+/// + scheduler stalls can exceed that without indicating a product bug.
+fn e2e_llm_stream_collector_idle_secs() -> Option<u64> {
+    Some(e2e_secs_ci_or_local(300, 180))
+}
 #[cfg(feature = "llm-tests")]
 use test_support::common::message_visible_content_from_chunks;
 #[cfg(feature = "llm-tests")]
@@ -321,6 +328,10 @@ async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(
+            baml_rt::QuickJSConfig::new()
+                .with_stream_collector_idle_secs(e2e_llm_stream_collector_idle_secs()),
+        )
         .with_surreal_store(test_surreal_store().await)
         .build()
         .await
@@ -368,11 +379,9 @@ async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        // Grok-4.1-fast can stall longer than three minutes between yield
-        // chunks; the default 60s collector idle would trip first.
         .with_quickjs_config(
             baml_rt::QuickJSConfig::new()
-                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(300, 120))),
+                .with_stream_collector_idle_secs(e2e_llm_stream_collector_idle_secs()),
         )
         .with_surreal_store(test_surreal_store().await)
         .build()
@@ -676,6 +685,10 @@ globalThis.onChatMessage = async function(message) {
         .with_a2a_session_tool(RegistrationMode::Register)
         .with_a2a_session_router(router)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(
+            baml_rt::QuickJSConfig::new()
+                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(300, 120))),
+        )
         .with_surreal_store(initiator_store.clone())
         .build()
         .await
@@ -730,6 +743,10 @@ async fn setup_argument_fixture_agent(fixture: &str) -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(
+            baml_rt::QuickJSConfig::new()
+                .with_stream_collector_idle_secs(e2e_llm_stream_collector_idle_secs()),
+        )
         .with_surreal_store(test_surreal_store().await)
         .build()
         .await
@@ -798,12 +815,9 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
         .with_runtime_manager(manager)
         .with_init_js(entry_js)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        // Grok-4.1-fast can produce minute-long gaps between yield chunks on
-        // CI; the default 60s collector idle trips before the agent emits its
-        // terminal frame.
         .with_quickjs_config(
             baml_rt::QuickJSConfig::new()
-                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(300, 90))),
+                .with_stream_collector_idle_secs(e2e_llm_stream_collector_idle_secs()),
         )
         .with_surreal_store(test_surreal_store().await)
         .build()
@@ -811,64 +825,6 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
         .expect("build packaged A2A agent");
 
     (agent, extract_dir)
-}
-
-/// Build coordinator-agent from workspace agents/coordinator-agent and return an A2aAgent.
-/// Uses SurrealDB store so persistent mode is satisfied. Call only when agents/coordinator-agent exists.
-/// Kept for use by test on base branch after merge (test removed here to avoid duplicate definition in PR #62).
-#[cfg(feature = "llm-tests")]
-#[allow(dead_code)] // used by coordinator E2E when run with llm-tests feature
-async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
-    ensure_fixture_runtime_types();
-    let agent_dir = workspace_root().join("agents").join("coordinator-agent");
-    if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
-        panic!(
-            "coordinator-agent dir missing or invalid: {}",
-            agent_dir.display()
-        );
-    }
-    let extract_dir = common::build_agent_dir_to_temp_async(agent_dir, "coordinator-agent").await;
-
-    let mut manager = BamlRuntimeManager::builder()
-        .with_fnox_llm_resolver(workspace_fnox_path())
-        .build()
-        .expect("runtime manager");
-    manager
-        .load_schema(extract_dir.to_str().expect("utf8 path"))
-        .expect("load coordinator schema");
-    let allowlist: HashSet<String> = ["system/internal_a2a", "system/callback"]
-        .into_iter()
-        .map(String::from)
-        .collect();
-    manager
-        .set_tool_allowlist(allowlist)
-        .await
-        .expect("set allowlist");
-    let policy = parse_access_allowlist();
-    let manifest_tools = ManifestToolNames::parse(&["system/internal_a2a".to_string()])
-        .expect("parse manifest tools");
-    let registry = manager.tool_registry();
-    register_manifest_tools(registry.as_ref(), &manifest_tools, &policy).expect("register tools");
-    registry
-        .register_bundle(SystemBundle::new(
-            Arc::new(EmptyAgentList),
-            registry.clone(),
-            Arc::new(EmptyA2aHandler),
-        ))
-        .expect("register SystemBundle");
-
-    let entry_js = fs::read_to_string(extract_dir.join("dist").join("index.js"))
-        .expect("coordinator-agent dist/index.js");
-    // Persistent mode requires a store; omit and A2aAgent::build() returns InvalidArgument.
-    let store = test_surreal_store().await;
-    baml_rt::A2aAgent::builder()
-        .with_runtime_manager(manager)
-        .with_init_js(entry_js)
-        .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_surreal_store(store)
-        .build()
-        .await
-        .expect("build coordinator agent")
 }
 
 #[tokio::test]

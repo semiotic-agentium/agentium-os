@@ -65,6 +65,18 @@ const inputPlaceholder = computed(() => {
 
 const hydrateState = computed(() => props.historyHydrateState ?? "idle");
 
+/** Deep-link / context restore fills messages in bulk; do not pin scroll to the tail during hydrate. */
+watch(hydrateState, async (next, prev) => {
+  if (next === "loading") {
+    userAtBottom.value = false;
+  }
+  if (prev === "loading" && next === "ready" && props.messages.length > 0) {
+    await nextTick();
+    const el = messagesContainer.value;
+    if (el) el.scrollTop = 0;
+  }
+});
+
 const emptyStateTitle = computed(() => {
   if (props.messages.length > 0) return "";
   if (props.disabled) return "Select an agent";

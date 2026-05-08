@@ -395,7 +395,15 @@ function BuildExtrospectionPlan__select(
 ) -> SystemExtrospectionOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/extrospection.\n\nQuery provenance data matching the intent. Fill `ProvenanceQuerySendInput` (and other step payloads) from the field `@@description` on those types and this hop’s narrowed return union — do not duplicate the JSON field list in prose. Do not set `agentId` from `selected_agent` unless the user gave an explicit provenance agent_id.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
+
+Open a session with: system/extrospection.
+
+Query provenance data matching the intent. Fill `ProvenanceQuerySendInput` (and other step payloads) from the field `@@description` on those types and this hop’s narrowed return union — do not duplicate the JSON field list in prose. Do not set `agentId` from `selected_agent` unless the user gave an explicit provenance agent_id.
 
 intent: {{ intent }}
 selected_agent: {{ selected_agent }}
@@ -405,9 +413,14 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+---
+Narrowed return union for this hop only:
+- SystemExtrospectionOpenStep
+
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+
+PHASE CONSTRAINT (select — open only): The JSON root must be exactly one bare Open step: op must be Open; set tool_name and initial_input per the narrowed return type for this hop. Do NOT emit Report or AskUser. Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
 "#
 
 }
@@ -420,7 +433,15 @@ function BuildExtrospectionPlan__act__system_extrospection(
 ) -> SystemExtrospectionSendStep | SystemExtrospectionSearchReadStep | SystemExtrospectionPageReadStep | SystemExtrospectionAbortStep {
 
   client DefaultClient
-  prompt #"[ACT] A system/extrospection session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nQuery provenance data matching the intent. Fill `ProvenanceQuerySendInput` (and other step payloads) from the field `@@description` on those types and this hop’s narrowed return union — do not duplicate the JSON field list in prose. Do not set `agentId` from `selected_agent` unless the user gave an explicit provenance agent_id.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+Phase: ACT — first post-Open hop for system/extrospection: SearchRead, PageRead, or Send; legal ops only as below.
+
+A system/extrospection session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
+
+Query provenance data matching the intent. Fill `ProvenanceQuerySendInput` (and other step payloads) from the field `@@description` on those types and this hop’s narrowed return union — do not duplicate the JSON field list in prose. Do not set `agentId` from `selected_agent` unless the user gave an explicit provenance agent_id.
 
 intent: {{ intent }}
 selected_agent: {{ selected_agent }}
@@ -430,7 +451,14 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+---
+Narrowed return union for this hop only:
+- SystemExtrospectionSendStep
+- SystemExtrospectionSearchReadStep
+- SystemExtrospectionPageReadStep
+
 {{ ctx.output_format }}
+
 
 PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
 "#
@@ -445,7 +473,20 @@ function BuildExtrospectionPlan__continue__system_extrospection(
 ) -> SystemExtrospectionSendStep | SystemExtrospectionSearchReadStep | SystemExtrospectionPageReadStep | SystemExtrospectionFinishStep | SystemExtrospectionAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/extrospection result is archived.\nCheck session history:\n- See \"@N system/extrospection\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/extrospection\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n- See \"@N system/extrospection\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\nQuery provenance data matching the intent. Fill `ProvenanceQuerySendInput` (and other step payloads) from the field `@@description` on those types and this hop’s narrowed return union — do not duplicate the JSON field list in prose. Do not set `agentId` from `selected_agent` unless the user gave an explicit provenance agent_id.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+Phase: CONTINUE — for system/extrospection: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
+
+system/extrospection result is archived.
+Check session history:
+- See "@N system/extrospection" followed by numbered lines → content is inline; emit Finish
+- See "@N system/extrospection" with "more lines" indicator → emit SearchRead or PageRead to paginate
+- See "@N system/extrospection" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
+- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
+
+Query provenance data matching the intent. Fill `ProvenanceQuerySendInput` (and other step payloads) from the field `@@description` on those types and this hop’s narrowed return union — do not duplicate the JSON field list in prose. Do not set `agentId` from `selected_agent` unless the user gave an explicit provenance agent_id.
 
 intent: {{ intent }}
 selected_agent: {{ selected_agent }}
@@ -455,7 +496,15 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+---
+Narrowed return union for this hop only:
+- SystemExtrospectionSendStep
+- SystemExtrospectionSearchReadStep
+- SystemExtrospectionPageReadStep
+- SystemExtrospectionFinishStep
+
 {{ ctx.output_format }}
+
 
 PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
 "#
@@ -469,7 +518,15 @@ function GetDiscoverAgentsPlan__select(
 ) -> SystemDiscoverAgentsOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/discover_agents.\n\nDiscover available agents relevant to the user's request.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
+
+Open a session with: system/discover_agents.
+
+Discover available agents relevant to the user's request.
 Send input shape and empty-payload cases are defined on `DiscoverAgentsSendInput` in the merged runtime — do not restate those fields here.
 
 Context: {{ user_message }}
@@ -479,9 +536,14 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+---
+Narrowed return union for this hop only:
+- SystemDiscoverAgentsOpenStep
+
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+
+PHASE CONSTRAINT (select — open only): The JSON root must be exactly one bare Open step: op must be Open; set tool_name and initial_input per the narrowed return type for this hop. Do NOT emit Report or AskUser. Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
 "#
 
 }
@@ -493,7 +555,15 @@ function GetDiscoverAgentsPlan__act__system_discover_agents(
 ) -> SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsAbortStep {
 
   client DefaultClient
-  prompt #"[ACT] A system/discover_agents session is open. Emit Send for a new query, or SearchRead/PageRead an existing @N archive from history when listing output is already fetched — do not re-Send the same discover_agents listing without trying SearchRead/PageRead pagination first.\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+Phase: ACT — first post-Open hop for system/discover_agents: SearchRead, PageRead, or Send; legal ops only as below.
+
+A system/discover_agents session is open. Emit Send for a new query, or SearchRead/PageRead an existing @N archive from history when listing output is already fetched — do not re-Send the same discover_agents listing without trying SearchRead/PageRead pagination first.
+
+DISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
 
 PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agents listing at @N, prefer SearchRead or PageRead on that @N (grep/limit/offset) to page or narrow — do not re-Send discover_agents with the same broad query as a substitute for pagination.
 
@@ -507,7 +577,14 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+---
+Narrowed return union for this hop only:
+- SystemDiscoverAgentsSendStep
+- SystemDiscoverAgentsSearchReadStep
+- SystemDiscoverAgentsPageReadStep
+
 {{ ctx.output_format }}
+
 
 PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
 "#
@@ -521,9 +598,24 @@ function GetDiscoverAgentsPlan__continue__system_discover_agents(
 ) -> SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/discover_agents result is archived.\nCheck session history:\n- See \"@N system/discover_agents\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_agents\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n- See \"@N system/discover_agents\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\nDISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+Phase: CONTINUE — for system/discover_agents: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
+
+system/discover_agents result is archived.
+Check session history:
+- See "@N system/discover_agents" followed by numbered lines → content is inline; emit Finish
+- See "@N system/discover_agents" with "more lines" indicator → emit SearchRead or PageRead to paginate
+- See "@N system/discover_agents" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
+- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
+
+DISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
 
 PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agents listing at @N, prefer SearchRead or PageRead on that @N (grep/limit/offset) to page or narrow — do not re-Send discover_agents with the same broad query as a substitute for pagination.
+
+FINISH DEFAULT ON CONTINUE: When history already shows a completed discover_agents archive (@N) and the listing is visible or confirmed empty (including zero agents), default to Finish — do not Send again with the same broad query unless deliberately refining filters per DISCOVERY INPUT RULE. Use SearchRead/PageRead only when line-level archive inspection or pagination is required.
 
 Discover available agents relevant to the user's request.
 Send input shape and empty-payload cases are defined on `DiscoverAgentsSendInput` in the merged runtime — do not restate those fields here.
@@ -535,7 +627,15 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+---
+Narrowed return union for this hop only:
+- SystemDiscoverAgentsSendStep
+- SystemDiscoverAgentsSearchReadStep
+- SystemDiscoverAgentsPageReadStep
+- SystemDiscoverAgentsFinishStep
+
 {{ ctx.output_format }}
+
 
 PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
 "#

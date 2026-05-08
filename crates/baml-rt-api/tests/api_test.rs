@@ -30,7 +30,7 @@ use baml_rt_core::{
     UndeployResult,
     bus::SessionStepOp,
     event_subscription::{EventSourceKey, EventSourceKeyPrefix},
-    ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, UuidId},
+    ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
     CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceOpsQueryRequest,
@@ -548,6 +548,149 @@ async fn conversation_history_retains_user_message_when_session_steps_follow() {
         user_lines.contains(&"hiya"),
         "user transcript line missing after session_step; got user_lines={user_lines:?} items_len={}",
         page.items.len(),
+    );
+}
+
+/// After INPUT_REQUIRED, the resume user turn must appear in context-scoped conversation history
+/// (same query the web UI uses: `task_id: None`).
+#[tokio::test]
+async fn conversation_history_retains_resume_user_turn_after_input_required() {
+    let store = Arc::new(
+        SurrealStoreBuilder::in_memory_isolated()
+            .build()
+            .await
+            .expect("store"),
+    );
+    let context_id = ContextId::new(902, 77);
+    let task_id = TaskId::from_external(ExternalId::new("live-task-input-required"));
+    let agent = AgentId::from_uuid(
+        UuidId::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").expect("uuid"),
+    );
+
+    store
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("task_exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent.clone(),
+        ))
+        .await
+        .expect("task_execution_started");
+
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            MessageId::from_external(ExternalId::new("msg-user-a")),
+            "user".into(),
+            vec!["fix stuff".into()],
+            None,
+            agent.clone(),
+            10,
+        ))
+        .await
+        .expect("message_received_a");
+    store
+        .add_event(ProvEvent::message_sent_task(
+            context_id.clone(),
+            task_id.clone(),
+            MessageId::from_external(ExternalId::new("msg-agent-clarify")),
+            "ROLE_AGENT".into(),
+            vec!["What specific issues do you need help fixing?".into()],
+            None,
+            agent.clone(),
+            20,
+            Vec::new(),
+        ))
+        .await
+        .expect("message_sent_clarify");
+    store
+        .add_event(ProvEvent::task_status_changed(
+            context_id.clone(),
+            task_id.clone(),
+            Some("working".into()),
+            Some("input-required".into()),
+        ))
+        .await
+        .expect("status_input_required");
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            MessageId::from_external(ExternalId::new("msg-user-b")),
+            "user".into(),
+            vec!["the database migration keeps failing on step 3".into()],
+            None,
+            agent.clone(),
+            30,
+        ))
+        .await
+        .expect("message_received_resume");
+    store
+        .add_event(ProvEvent::task_status_changed(
+            context_id.clone(),
+            task_id.clone(),
+            Some("input-required".into()),
+            Some("working".into()),
+        ))
+        .await
+        .expect("status_working_after_resume");
+    store
+        .add_event(ProvEvent::message_sent_task(
+            context_id.clone(),
+            task_id.clone(),
+            MessageId::from_external(ExternalId::new("msg-agent-final")),
+            "ROLE_AGENT".into(),
+            vec!["Let's debug step 3 of your migration.".into()],
+            None,
+            agent.clone(),
+            40,
+            Vec::new(),
+        ))
+        .await
+        .expect("message_sent_final");
+
+    let svc = RealConversationHistory {
+        store: Arc::clone(&store),
+    };
+    let request = ConversationHistoryRequest::from_parts(
+        context_id.as_str(),
+        ConversationHistoryQueryParams {
+            task_id: None,
+            limit: Some(500),
+            cursor: None,
+            profile: None,
+            format: None,
+        },
+    )
+    .expect("history request");
+    let page = svc.page(&request).await.expect("page");
+
+    let user_texts: Vec<&str> = page
+        .items
+        .iter()
+        .filter(|i| i.role.eq_ignore_ascii_case("user"))
+        .filter_map(|i| match &i.content {
+            ConversationHistoryContentDto::Message { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(
+        user_texts,
+        vec![
+            "fix stuff",
+            "the database migration keeps failing on step 3"
+        ],
+        "both user turns must surface in GET conversation-history (items_len={}, roles={:?})",
+        page.items.len(),
+        page.items
+            .iter()
+            .map(|i| i.role.as_str())
+            .collect::<Vec<_>>(),
     );
 }
 

@@ -608,7 +608,15 @@ function ChooseSlackAction__select(
 ) -> ReadOnlyResponse | SupportSlackOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: support/slack.\n\nYou execute ONE retrieve step of a read-only Slack plan.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
+
+Open a session with: support/slack.
+
+You execute ONE retrieve step of a read-only Slack plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
@@ -621,7 +629,13 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+---
+Narrowed return union for this hop only:
+- ReadOnlyResponse
+- SupportSlackOpenStep
+
 {{ ctx.output_format }}
+
 
 PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
 "#
@@ -636,7 +650,15 @@ function ChooseSlackAction__act__support_slack(
 ) -> SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep | SupportSlackAbortStep {
 
   client DefaultClient
-  prompt #"[ACT] A support/slack session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nYou execute ONE retrieve step of a read-only Slack plan.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+Phase: ACT — first post-Open hop for support/slack: SearchRead, PageRead, or Send; legal ops only as below.
+
+A support/slack session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
+
+You execute ONE retrieve step of a read-only Slack plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
@@ -649,7 +671,14 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+---
+Narrowed return union for this hop only:
+- SupportSlackSendStep
+- SupportSlackSearchReadStep
+- SupportSlackPageReadStep
+
 {{ ctx.output_format }}
+
 
 PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
 "#
@@ -664,7 +693,20 @@ function ChooseSlackAction__continue__support_slack(
 ) -> SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep | SupportSlackFinishStep | SupportSlackAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/slack result is archived.\nCheck session history:\n- See \"@N support/slack\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/slack\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n- See \"@N support/slack\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\nYou execute ONE retrieve step of a read-only Slack plan.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+Phase: CONTINUE — for support/slack: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
+
+support/slack result is archived.
+Check session history:
+- See "@N support/slack" followed by numbered lines → content is inline; emit Finish
+- See "@N support/slack" with "more lines" indicator → emit SearchRead or PageRead to paginate
+- See "@N support/slack" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
+- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
+
+You execute ONE retrieve step of a read-only Slack plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
@@ -677,7 +719,15 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+---
+Narrowed return union for this hop only:
+- SupportSlackSendStep
+- SupportSlackSearchReadStep
+- SupportSlackPageReadStep
+- SupportSlackFinishStep
+
 {{ ctx.output_format }}
+
 
 PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
 "#

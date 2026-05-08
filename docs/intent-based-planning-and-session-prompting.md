@@ -29,7 +29,7 @@ Use a strict sequence:
 1. Infer intent from the user message.
 2. Commit a discovery plan (capability matching).
 3. Run discovery session hops to completion.
-4. Build a structured execution plan (`plan_steps`, not `steps`). Coordinators may run this synthesis inside a **committed execution-session step** (then finish that session) before opening a new session for delegation — see [conversational-persona-demo](../tests/fixtures/agents/conversational-persona-demo/src/index.ts).
+4. Build a structured execution plan (`plan_steps`, not `steps`). Coordinators may run this synthesis inside a **committed execution-session step** (then finish that session) before opening a new session for delegation — see [coordinator-agent](../agents/coordinator-agent/src/index.ts).
 5. Commit the execution plan.
 6. Execute each delegated step via Step Executor hops.
 7. Summarize final output for the user.

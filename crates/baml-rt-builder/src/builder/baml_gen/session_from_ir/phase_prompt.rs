@@ -1,14 +1,12 @@
-//! Phase executor prompt algebra: stable-prefix concatenation, strip/re-append `output_format`,
-//! phase cue, and narrowed-union footer. The parent module holds IR walking and polymorphic class
-//! emission.
+//! Phase executor prompt algebra: [`compose_phase_prompt_core`] (cue → optional supplement → IR
+//! template → narrowed-union footer → `{{ ctx.output_format }}`), then optional hop constraint
+//! suffix; [`ToolSessionPhasePromptSpec`] prepends [`SESSION_STEP_STABLE_PREFIX_BAML`] and wraps for
+//! BAML. The parent module holds IR walking and polymorphic class emission.
 
 use baml_rt_tools::SESSION_STEP_STABLE_PREFIX_BAML;
 
 /// Which FSM hop this executor represents — select, first post-open act, continue, or unified
 /// structured hop (plan / synthesis / archive reads / AskUser without a host tool Open).
-/// Tool-phase variants are exercised in unit tests; emitted session-plan prompts still use the
-/// legacy composer in `session_from_ir/mod.rs` until fully migrated onto [`compose_phase_prompt_core`].
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PhaseHop<'a> {
     Select,
@@ -93,13 +91,34 @@ pub(crate) fn wrap_client_baml_prompt_body(client_name: &str, prompt_inner: &str
     s
 }
 
+/// Stable session-step prefix + composed `core` (cue, template, footer, output_format, optional suffix), wrapped for BAML.
+fn wrap_phase_executor_prompt_body(client_name: &str, core: &str) -> String {
+    let mut inner = String::with_capacity(
+        SESSION_STEP_STABLE_PREFIX_BAML
+            .len()
+            .saturating_add(core.len()),
+    );
+    inner.push_str(SESSION_STEP_STABLE_PREFIX_BAML);
+    inner.push_str(core);
+    wrap_client_baml_prompt_body(client_name, &inner)
+}
+
 pub(crate) fn compose_phase_prompt_core(
     prompt_template: &str,
     phase: PhaseHop<'_>,
     legal_type_names: &[String],
+    supplement_after_cue: Option<&str>,
 ) -> String {
     let stripped = strip_standalone_output_format_directives(prompt_template);
     let mut out = phase_cue_line(phase);
+    if let Some(s) = supplement_after_cue
+        && !s.is_empty()
+    {
+        out.push_str(s);
+        if !s.ends_with('\n') {
+            out.push('\n');
+        }
+    }
     let trimmed_stripped = stripped.trim();
     if !trimmed_stripped.is_empty() {
         out.push_str(trimmed_stripped);
@@ -112,21 +131,46 @@ pub(crate) fn compose_phase_prompt_core(
     out
 }
 
+/// Typed inputs for one emitted tool-session phase executor (`__select` / `__act__*` / `__continue__*`).
+pub(crate) struct ToolSessionPhasePromptSpec<'a> {
+    pub phase: PhaseHop<'a>,
+    pub legal_type_names: &'a [String],
+    pub constraint_suffix: &'static str,
+    pub supplement_after_cue: Option<&'a str>,
+}
+
+impl ToolSessionPhasePromptSpec<'_> {
+    /// Stable prefix + phase cue + optional supplement + IR template core + constraint suffix, wrapped for BAML.
+    pub(crate) fn emit_baml_prompt_body(self, client_name: &str, prompt_template: &str) -> String {
+        let mut core = compose_phase_prompt_core(
+            prompt_template,
+            self.phase,
+            self.legal_type_names,
+            self.supplement_after_cue,
+        );
+        core.push_str(self.constraint_suffix);
+        wrap_phase_executor_prompt_body(client_name, &core)
+    }
+}
+
 /// `client` + `prompt #""#` for a step executor. Uses concatenation so IR text is not passed
 /// through `format!` — the stable-prefix Jinja, composed prompt core, and closing `"` must not use
 /// `format!` on IR/template fragments.
-#[allow(dead_code)] // Used by unit tests; IR emission uses `phase_executor_prompt_body_unified_primary` + `session_from_ir` legacy helper.
+#[cfg(test)]
 pub(crate) fn phase_executor_prompt_body(
     client_name: &str,
     prompt_template: &str,
     phase: PhaseHop<'_>,
     legal_type_names: &[String],
+    supplement_after_cue: Option<&str>,
 ) -> String {
-    let core = compose_phase_prompt_core(prompt_template, phase, legal_type_names);
-    let mut inner = String::new();
-    inner.push_str(SESSION_STEP_STABLE_PREFIX_BAML);
-    inner.push_str(&core);
-    wrap_client_baml_prompt_body(client_name, &inner)
+    let core = compose_phase_prompt_core(
+        prompt_template,
+        phase,
+        legal_type_names,
+        supplement_after_cue,
+    );
+    wrap_phase_executor_prompt_body(client_name, &core)
 }
 
 /// Unified planner/synthesis step executor: stable prefix + STRUCTURED cue + footer + constraint suffix.
@@ -135,13 +179,14 @@ pub(crate) fn phase_executor_prompt_body_unified_primary(
     prompt_template: &str,
     legal_type_names: &[String],
 ) -> String {
-    let mut core =
-        compose_phase_prompt_core(prompt_template, PhaseHop::UnifiedPrimary, legal_type_names);
+    let mut core = compose_phase_prompt_core(
+        prompt_template,
+        PhaseHop::UnifiedPrimary,
+        legal_type_names,
+        None,
+    );
     core.push_str(PHASE_STEP_EXECUTOR_SUFFIX_UNIFIED_PRIMARY);
-    let mut inner = String::new();
-    inner.push_str(SESSION_STEP_STABLE_PREFIX_BAML);
-    inner.push_str(&core);
-    wrap_client_baml_prompt_body(client_name, &inner)
+    wrap_phase_executor_prompt_body(client_name, &core)
 }
 
 #[cfg(test)]
@@ -156,6 +201,7 @@ mod tests {
             "Only the IR template.\n{{ ctx.output_format }}",
             PhaseHop::Select,
             &legal,
+            None,
         );
         assert!(
             out.contains("Only the IR template."),
@@ -192,6 +238,77 @@ mod tests {
         assert_eq!(
             strip_standalone_output_format_directives(embedded),
             embedded.trim_end()
+        );
+    }
+
+    #[test]
+    fn tool_session_act_emit_includes_supplement_constraint_and_no_legacy_act_tag() {
+        let legal = vec![
+            "FooSendStep".to_string(),
+            "FooSearchReadStep".to_string(),
+            "FooPageReadStep".to_string(),
+        ];
+        const ACT_SUFFIX: &str = "\n\nPHASE CONSTRAINT (act — test stub)";
+        let supplement = "A foo/tool session is open. Emit Send.\n\n";
+        let spec = ToolSessionPhasePromptSpec {
+            phase: PhaseHop::Act {
+                tool_display_name: "foo/tool",
+            },
+            legal_type_names: &legal,
+            constraint_suffix: ACT_SUFFIX,
+            supplement_after_cue: Some(supplement),
+        };
+        let out = spec.emit_baml_prompt_body("TestClient", "Body.\n{{ ctx.output_format }}");
+        assert!(out.contains("Phase: ACT"), "cue: {out}");
+        assert!(out.contains(supplement.trim_end()), "supplement: {out}");
+        assert!(out.contains("Body."), "template: {out}");
+        assert!(
+            out.contains("PHASE CONSTRAINT (act — test stub)"),
+            "suffix: {out}"
+        );
+        assert!(!out.contains("[ACT]"), "expected no legacy act tag: {out}");
+        assert!(
+            out.matches("{{ ctx.output_format }}").count() == 1,
+            "expected single output_format: {out}"
+        );
+        assert!(
+            out.contains("- FooSendStep"),
+            "expected footer bullet: {out}"
+        );
+    }
+
+    #[test]
+    fn tool_session_continue_emit_includes_supplement_and_no_legacy_continue_tag() {
+        let legal = vec![
+            "FooSendStep".to_string(),
+            "FooSearchReadStep".to_string(),
+            "FooPageReadStep".to_string(),
+            "FooFinishStep".to_string(),
+        ];
+        const CONTINUE_SUFFIX: &str = "\n\nPHASE CONSTRAINT (continue — test stub)";
+        let supplement = "foo/tool result is archived.\nNext hops allowed.\n\n";
+        let spec = ToolSessionPhasePromptSpec {
+            phase: PhaseHop::Continue {
+                tool_display_name: "foo/tool",
+            },
+            legal_type_names: &legal,
+            constraint_suffix: CONTINUE_SUFFIX,
+            supplement_after_cue: Some(supplement),
+        };
+        let out =
+            spec.emit_baml_prompt_body("TestClient", "Continue body.\n{{ ctx.output_format }}");
+        assert!(out.contains("Phase: CONTINUE"), "cue: {out}");
+        assert!(
+            out.contains("foo/tool result is archived."),
+            "supplement: {out}"
+        );
+        assert!(
+            out.contains("PHASE CONSTRAINT (continue — test stub)"),
+            "suffix: {out}"
+        );
+        assert!(
+            !out.contains("[CONTINUE]"),
+            "expected no legacy continue tag: {out}"
         );
     }
 

@@ -370,7 +370,7 @@ coordinator-agent: build-release
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
-# Same as coordinator-agent, but adds claude-session + conversational-persona and persists provenance.
+# Same as coordinator-agent stack, but adds claude-session + workspace coordinator-agent publish and persists provenance.
 coordinator-agent-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
@@ -384,7 +384,7 @@ coordinator-agent-provenance: build-release
       {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
@@ -428,7 +428,7 @@ persona-notion: web-build build-release
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
     ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-    {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     wait "$runner_pid"
 
@@ -444,7 +444,7 @@ persona-claude-notion: web-build build-release
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
     ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-    {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     wait "$runner_pid"
@@ -462,7 +462,7 @@ dev-all-agents: web-build build-release
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
     ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-    {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
@@ -485,7 +485,7 @@ persona-claude-extrospection-clickup: build-release
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
     ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-    {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
@@ -502,7 +502,7 @@ persona-claude-extrospection: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
@@ -519,7 +519,7 @@ persona-claude-extrospection-provenance: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir tests/fixtures/agents/conversational-persona-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}

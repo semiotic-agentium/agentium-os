@@ -1,14 +1,18 @@
 //! Session plans and per-phase step executors generated from compiled BAML IR.
 //!
 //! Per-phase functions (`__select`, `__act__*`, `__continue__*`) share the parent session-plan
-//! BAML function's `prompt_template`. Each hop wraps that template with a **phase-specific
-//! preamble** (describing the operation allowed — Open, Send-or-Read, Send-or-Read-or-Finish —
-//! and teaching the `@N` archive-ref notation) and a **phase-constraint suffix** (restating the
-//! legal JSON root shape for that hop). These bookends are essential: without them the LLM
-//! regularly emits malformed ops (e.g. the nonexistent op `Read` instead of `SearchRead` /
-//! `PageRead`, or `archive_ref = "#0"` instead of `"@0"`) that fail schema validation and stall the
-//! step-executor loop with no assistant output. The narrowed
-//! return type alone is not enough — the model needs the prose as well.
+//! BAML function's `prompt_template`. Each hop uses [`phase_prompt::compose_phase_prompt_core`]:
+//! [`SESSION_STEP_STABLE_PREFIX_BAML`](baml_rt_tools::SESSION_STEP_STABLE_PREFIX_BAML), a phase cue,
+//! optional tool-specific supplement (tool list on select; discover_agents discipline on act/continue),
+//! the stripped IR template, narrowed-union footer, `{{ ctx.output_format }}`, then a **phase-constraint
+//! suffix** (legal JSON root shape for that hop). Without cue + suffix + footer the LLM often emits
+//! malformed ops (`Read` vs `SearchRead`/`PageRead`, `#N` vs `@N`) that fail validation.
+//!
+//! **Suffix ↔ generated return types (tool phases):**
+//! - **select** — [`select_phase_executor_suffix`] must agree with the `function __select -> …` union.
+//! - **act** — [`PHASE_STEP_EXECUTOR_SUFFIX_ACT`] matches `Send | SearchRead | PageRead` only.
+//! - **continue** — [`PHASE_STEP_EXECUTOR_SUFFIX_CONTINUE`] adds `Finish` (generated `__continue__` omits `Abort`
+//!   even when full `*SessionStep` unions in the prelude include it).
 
 mod phase_prompt;
 
@@ -30,6 +34,31 @@ const PHASE_STEP_EXECUTOR_SUFFIX_SELECT: &str = r#"
 PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
 "#;
 
+/// Appended on **select** when the narrowed union is **only** `*OpenStep` variants (no Report / AskUser / etc.).
+/// Using [`PHASE_STEP_EXECUTOR_SUFFIX_SELECT`] in that case invites `op: Report` and BAML parse failures.
+///
+/// No ASCII double quotes inside: text is concatenated into BAML `prompt #""#` literals.
+const PHASE_STEP_EXECUTOR_SUFFIX_SELECT_OPEN_ONLY: &str = r#"
+
+PHASE CONSTRAINT (select — open only): The JSON root must be exactly one bare Open step: op must be Open; set tool_name and initial_input per the narrowed return type for this hop. Do NOT emit Report or AskUser. Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+"#;
+
+/// Per-hop suffix for generated `__select` functions: branchy union vs Open-shaped union only.
+///
+/// Open-only when **every** member of `select_return` ends with `OpenStep` (matches [`SessionTypeNames::open_step`]).
+/// Do **not** infer from `non_plan_types.is_empty()` alone — IR can list `FooOpenStep | BarSessionPlan` so
+/// `non_plan_types` is non-empty while the legal select union is still open-only.
+pub(crate) fn select_phase_executor_suffix(select_return: &[String]) -> &'static str {
+    if select_return.is_empty() {
+        return PHASE_STEP_EXECUTOR_SUFFIX_SELECT;
+    }
+    if select_return.iter().all(|t| t.ends_with("OpenStep")) {
+        PHASE_STEP_EXECUTOR_SUFFIX_SELECT_OPEN_ONLY
+    } else {
+        PHASE_STEP_EXECUTOR_SUFFIX_SELECT
+    }
+}
+
 /// Appended on **act** (first post-Open hop: Send or archive paging) — same archive discipline as continue.
 const PHASE_STEP_EXECUTOR_SUFFIX_ACT: &str = r#"
 
@@ -49,6 +78,11 @@ PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead,
 const DISCOVER_AGENTS_SEND_DISCIPLINE: &str = r#"DISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
 
 PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agents listing at @N, prefer SearchRead or PageRead on that @N (grep/limit/offset) to page or narrow — do not re-Send discover_agents with the same broad query as a substitute for pagination.
+
+"#;
+
+/// CONTINUE-only: act hop union has no Finish — keep Finish guidance out of [`DISCOVER_AGENTS_SEND_DISCIPLINE`].
+const DISCOVER_AGENTS_CONTINUE_FINISH_HINT: &str = r#"FINISH DEFAULT ON CONTINUE: When history already shows a completed discover_agents archive (@N) and the listing is visible or confirmed empty (including zero agents), default to Finish — do not Send again with the same broad query unless deliberately refining filters per DISCOVERY INPUT RULE. Use SearchRead/PageRead only when line-level archive inspection or pagination is required.
 
 "#;
 
@@ -77,22 +111,6 @@ impl SessionPlanIrInspector for IRSignature {
     }
 }
 
-/// `client` + `prompt #""#` for a step executor. Uses concatenation so IR text is not passed
-/// through `format!` — phase preamble, `prompt_template`, and phase suffix may all contain
-/// `{` / `}` tokens that a `format!` would misinterpret.
-fn phase_executor_prompt_body(
-    client_name: &str,
-    preamble: &str,
-    prompt_template: &str,
-    phase_suffix: &str,
-) -> String {
-    let mut inner = String::new();
-    inner.push_str(preamble);
-    inner.push_str(prompt_template);
-    inner.push_str(phase_suffix);
-    phase_prompt::wrap_client_baml_prompt_body(client_name, &inner)
-}
-
 fn merge_session_context_into_args_block(base_args: String, has_session_context: bool) -> String {
     if has_session_context {
         base_args
@@ -106,6 +124,13 @@ fn merge_session_context_into_args_block(base_args: String, has_session_context:
             format!("{trimmed},\n  session_context: SessionContext\n)")
         }
     }
+}
+
+/// BAML `( … )` args for generated step executors: IR params plus injected `session_context` when missing.
+fn executor_args_block_from_ir(inputs: &[(String, baml_types::TypeIR)]) -> String {
+    let base_args = build_args_block_from_ir(inputs);
+    let has_session_context = inputs.iter().any(|(name, _)| name == "session_context");
+    merge_session_context_into_args_block(base_args, has_session_context)
 }
 
 fn legal_union_members_for_unified_primary<T>(
@@ -131,29 +156,30 @@ where
     legal
 }
 
-fn phase_act_preamble(tool_name_str: &str) -> String {
+fn phase_act_supplement_after_cue(tool_name_str: &str) -> String {
     if tool_name_str == "system/discover_agents" {
         format!(
-            "[ACT] A {tool_name_str} session is open. Emit Send for a new query, or SearchRead/PageRead an existing @N archive from history when listing output is already fetched — do not re-Send the same discover_agents listing without trying SearchRead/PageRead pagination first.\\n\\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
+            "A {tool_name_str} session is open. Emit Send for a new query, or SearchRead/PageRead an existing @N archive from history when listing output is already fetched — do not re-Send the same discover_agents listing without trying SearchRead/PageRead pagination first.\n\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
         )
     } else {
         format!(
-            "[ACT] A {tool_name_str} session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\\n\\n"
+            "A {tool_name_str} session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\n"
         )
     }
 }
 
-fn phase_continue_preamble(tool_name_str: &str) -> String {
+fn phase_continue_supplement_after_cue(tool_name_str: &str) -> String {
     let mut s = format!(
-        "[CONTINUE] {tool_name_str} result is archived.\\n\
-         Check session history:\\n\
-         - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
-         - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit SearchRead or PageRead to paginate\\n\
-         - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead with archive_ref=\\\"@N\\\"\\n\
-         - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\\n\\n"
+        "{tool_name_str} result is archived.\n\
+         Check session history:\n\
+         - See \"@N {tool_name_str}\" followed by numbered lines → content is inline; emit Finish\n\
+         - See \"@N {tool_name_str}\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n\
+         - See \"@N {tool_name_str}\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n\
+         - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\n"
     );
     if tool_name_str == "system/discover_agents" {
         s.push_str(DISCOVER_AGENTS_SEND_DISCIPLINE);
+        s.push_str(DISCOVER_AGENTS_CONTINUE_FINISH_HINT);
     }
     s
 }
@@ -232,13 +258,7 @@ pub fn render_generated_session_baml_from_ir(
         let client_name = config.client.as_str();
         let prompt_template = &config.prompt_template;
 
-        let base_args = build_args_block_from_ir(&func.elem().inputs);
-        let has_session_context = func
-            .elem()
-            .inputs
-            .iter()
-            .any(|(name, _)| name == "session_context");
-        let args_block = merge_session_context_into_args_block(base_args, has_session_context);
+        let args_block = executor_args_block_from_ir(&func.elem().inputs);
 
         let non_plan_types: Vec<String> = {
             let all_members = collect_union_type_names(&func_sig.output);
@@ -261,7 +281,7 @@ pub fn render_generated_session_baml_from_ir(
             .map(|t| t.name.to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        let select_preamble = format!("[OPEN] Open a session with: {tool_list}.\\n\\n");
+        let select_supplement = format!("Open a session with: {tool_list}.\n\n");
 
         write_line(&mut phase_out, "/// Phase: select — open a tool session.")?;
         write_line(
@@ -271,14 +291,16 @@ pub fn render_generated_session_baml_from_ir(
                 select_return.join(" | ")
             ),
         )?;
+        let select_suffix = select_phase_executor_suffix(&select_return);
+        let select_spec = phase_prompt::ToolSessionPhasePromptSpec {
+            phase: phase_prompt::PhaseHop::Select,
+            legal_type_names: &select_return,
+            constraint_suffix: select_suffix,
+            supplement_after_cue: Some(select_supplement.as_str()),
+        };
         write_line(
             &mut phase_out,
-            &phase_executor_prompt_body(
-                client_name.as_str(),
-                &select_preamble,
-                prompt_template,
-                PHASE_STEP_EXECUTOR_SUFFIX_SELECT,
-            ),
+            &select_spec.emit_baml_prompt_body(client_name.as_str(), prompt_template),
         )?;
         write_line(&mut phase_out, "}")?;
         write_line(&mut phase_out, "")?;
@@ -292,7 +314,12 @@ pub fn render_generated_session_baml_from_ir(
             let finish_type = format!("{}FinishStep", tool.class_name);
             let abort_type = format!("{}AbortStep", tool.class_name);
 
-            let act_preamble = phase_act_preamble(&tool_name_str);
+            let act_supplement = phase_act_supplement_after_cue(&tool_name_str);
+            let legal_act = vec![
+                send_type.clone(),
+                search_read_type.clone(),
+                page_read_type.clone(),
+            ];
             let act_name = SessionTypeNames::act(func_name, &slug);
             write_line(
                 &mut phase_out,
@@ -306,19 +333,28 @@ pub fn render_generated_session_baml_from_ir(
                     "function {act_name}{args_block} -> {send_type} | {search_read_type} | {page_read_type} | {abort_type} {{"
                 ),
             )?;
+            let act_spec = phase_prompt::ToolSessionPhasePromptSpec {
+                phase: phase_prompt::PhaseHop::Act {
+                    tool_display_name: tool_name_str.as_str(),
+                },
+                legal_type_names: &legal_act,
+                constraint_suffix: PHASE_STEP_EXECUTOR_SUFFIX_ACT,
+                supplement_after_cue: Some(act_supplement.as_str()),
+            };
             write_line(
                 &mut phase_out,
-                &phase_executor_prompt_body(
-                    client_name.as_str(),
-                    &act_preamble,
-                    prompt_template,
-                    PHASE_STEP_EXECUTOR_SUFFIX_ACT,
-                ),
+                &act_spec.emit_baml_prompt_body(client_name.as_str(), prompt_template),
             )?;
             write_line(&mut phase_out, "}")?;
             write_line(&mut phase_out, "")?;
 
-            let continue_preamble = phase_continue_preamble(&tool_name_str);
+            let continue_supplement = phase_continue_supplement_after_cue(&tool_name_str);
+            let legal_continue = vec![
+                send_type.clone(),
+                search_read_type.clone(),
+                page_read_type.clone(),
+                finish_type.clone(),
+            ];
             let continue_name = SessionTypeNames::r#continue(func_name, &slug);
             write_line(
                 &mut phase_out,
@@ -332,14 +368,17 @@ pub fn render_generated_session_baml_from_ir(
                     "function {continue_name}{args_block} -> {send_type} | {search_read_type} | {page_read_type} | {finish_type} | {abort_type} {{"
                 ),
             )?;
+            let continue_spec = phase_prompt::ToolSessionPhasePromptSpec {
+                phase: phase_prompt::PhaseHop::Continue {
+                    tool_display_name: tool_name_str.as_str(),
+                },
+                legal_type_names: &legal_continue,
+                constraint_suffix: PHASE_STEP_EXECUTOR_SUFFIX_CONTINUE,
+                supplement_after_cue: Some(continue_supplement.as_str()),
+            };
             write_line(
                 &mut phase_out,
-                &phase_executor_prompt_body(
-                    client_name.as_str(),
-                    &continue_preamble,
-                    prompt_template,
-                    PHASE_STEP_EXECUTOR_SUFFIX_CONTINUE,
-                ),
+                &continue_spec.emit_baml_prompt_body(client_name.as_str(), prompt_template),
             )?;
             write_line(&mut phase_out, "}")?;
             write_line(&mut phase_out, "")?;
@@ -401,13 +440,7 @@ fn append_unified_primary_step_executors(
         let client_name = config.client.as_str();
         let prompt_template = &config.prompt_template;
 
-        let base_args = build_args_block_from_ir(&ir_func.elem().inputs);
-        let has_session_context = ir_func
-            .elem()
-            .inputs
-            .iter()
-            .any(|(name, _)| name == "session_context");
-        let args_block = merge_session_context_into_args_block(base_args, has_session_context);
+        let args_block = executor_args_block_from_ir(&ir_func.elem().inputs);
 
         let legal = legal_union_members_for_unified_primary(&func_sig.output, cfg);
         if legal.is_empty() {
@@ -544,6 +577,54 @@ fn generate_polymorphic_session_baml_for_function(
     write_line(output, "}")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn select_phase_executor_suffix_open_only_when_all_open_step_named() {
+    assert_eq!(
+        select_phase_executor_suffix(&["SystemFooOpenStep".to_string()]),
+        PHASE_STEP_EXECUTOR_SUFFIX_SELECT_OPEN_ONLY
+    );
+    assert_eq!(
+        select_phase_executor_suffix(&["AlphaOpenStep".to_string(), "BetaOpenStep".to_string(),]),
+        PHASE_STEP_EXECUTOR_SUFFIX_SELECT_OPEN_ONLY
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn select_phase_executor_suffix_branchy_when_non_open_step_present() {
+    assert_eq!(
+        select_phase_executor_suffix(&[
+            "CoordinatorReport".to_string(),
+            "SystemFooOpenStep".to_string()
+        ]),
+        PHASE_STEP_EXECUTOR_SUFFIX_SELECT
+    );
+    assert_eq!(
+        select_phase_executor_suffix(&["AskUser".to_string()]),
+        PHASE_STEP_EXECUTOR_SUFFIX_SELECT
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn select_phase_executor_suffix_open_only_despite_session_plan_sibling_in_ir_simulation() {
+    // Both entries are open-shaped step class names; non_plan_types-heuristic would be wrong if it only checked emptiness.
+    assert_eq!(
+        select_phase_executor_suffix(&["FooOpenStep".to_string(), "BarOpenStep".to_string()]),
+        PHASE_STEP_EXECUTOR_SUFFIX_SELECT_OPEN_ONLY
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn select_phase_executor_suffix_empty_falls_back_to_branchy() {
+    assert_eq!(
+        select_phase_executor_suffix(&[]),
+        PHASE_STEP_EXECUTOR_SUFFIX_SELECT
+    );
 }
 
 #[cfg(test)]

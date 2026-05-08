@@ -2,13 +2,7 @@ import { ref, computed, type Ref } from "vue";
 
 /** Per-request page size for GET/stream conversation-history (must match server default chunking). */
 const CONVERSATION_HISTORY_PAGE_SIZE = 50;
-import {
-  applyConversationHistoryDelta,
-  applyConversationHistoryPage,
-  liveAgentBubbleBlocksHistoryReplace,
-  provenanceSnapshotLagsLiveChat,
-  shouldDeferProvenanceHistoryRebuild,
-} from "../chat/conversationHistoryHydration";
+import { applyConversationHistoryIngress } from "../chat/conversationHistorySync";
 import { normalizeEpochMs, normalizePreview } from "../chat/chatTime";
 import {
   ensureContentBlocks,
@@ -180,6 +174,25 @@ export function useA2aClient() {
     }
   }
 
+  const sseConversationHistoryIngressDeps = {
+    messages,
+    getHistoryVersion: () => _historyVersion,
+    setHistoryVersion: (v: string) => {
+      _historyVersion = v;
+    },
+    setHydrateState: (s: HistoryHydrateState) => {
+      historyHydrateState.value = s;
+    },
+    setSelectedContextId: (id: string) => {
+      selectedHistoryContextId.value = id;
+    },
+    setTaskId: (id: string | null) => {
+      _taskId.value = id;
+    },
+    replaceLlmFromPage: replaceLlmPromptStateFromPage,
+    extendLlmFromPage: extendLlmPromptStateFromPage,
+  };
+
   /** Incremented (debounced) when SSE implies new provenance rows; ProvenancePane watches this */
   const traceRefreshGeneration = ref(0);
   let traceRefreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -223,13 +236,11 @@ export function useA2aClient() {
     stream.addEventListener("snapshot", (ev) => {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
-        if (page.version === _historyVersion) return;
-        if (shouldDeferProvenanceHistoryRebuild(messages.value, page)) return;
-        applyConversationHistoryPage(messages, page);
-        replaceLlmPromptStateFromPage(page);
-        _historyVersion = page.version;
-        selectedHistoryContextId.value = page.contextId;
-        historyHydrateState.value = "ready";
+        applyConversationHistoryIngress(sseConversationHistoryIngressDeps, {
+          kind: "full",
+          mode: "evented",
+          page,
+        });
       } catch {
         // Ignore malformed stream event payloads.
       }
@@ -237,13 +248,11 @@ export function useA2aClient() {
     stream.addEventListener("delta", (ev) => {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
-        if (page.version === _historyVersion) return;
-        if (shouldDeferProvenanceHistoryRebuild(messages.value, page)) return;
-        applyConversationHistoryDelta(messages, page);
-        extendLlmPromptStateFromPage(page);
-        _historyVersion = page.version;
-        selectedHistoryContextId.value = page.contextId;
-        historyHydrateState.value = "ready";
+        applyConversationHistoryIngress(sseConversationHistoryIngressDeps, {
+          kind: "delta",
+          mode: "evented",
+          page,
+        });
       } catch {
         // Ignore malformed stream event payloads.
       }
@@ -931,36 +940,43 @@ export function useA2aClient() {
             : `merged:${allItems.length}:${maxEventOrder}:${lastPage.version}`,
       };
 
-      _taskId.value = page.taskId ?? null;
-      if (liveAgentBubbleBlocksHistoryReplace(messages.value)) {
-        if (!options.quiet) {
-          historyHydrateState.value = "skipped";
-        }
-        if (options.allowRetry !== false && pendingHydrateRetryTimer === null) {
-          pendingHydrateRetryTimer = setTimeout(() => {
-            pendingHydrateRetryTimer = null;
-            void hydrateMessagesFromConversationHistory(contextId, { allowRetry: false });
-          }, 400);
-        }
-        return;
-      }
-      if (provenanceSnapshotLagsLiveChat(messages.value, page)) {
-        if (!options.quiet) {
-          historyHydrateState.value = "skipped";
-        }
-        if (options.allowRetry !== false && pendingHydrateRetryTimer === null) {
-          pendingHydrateRetryTimer = setTimeout(() => {
-            pendingHydrateRetryTimer = null;
-            void hydrateMessagesFromConversationHistory(contextId, { allowRetry: false });
-          }, 400);
-        }
-        return;
-      }
-      applyConversationHistoryPage(messages, page);
-      replaceLlmPromptStateFromPage(page);
-      _historyVersion = page.version;
-      selectedHistoryContextId.value = page.contextId;
-      historyHydrateState.value = "ready";
+      const hydrateIngressDeps = {
+        messages,
+        getHistoryVersion: () => _historyVersion,
+        setHistoryVersion: (v: string) => {
+          _historyVersion = v;
+        },
+        setHydrateState: (s: HistoryHydrateState) => {
+          historyHydrateState.value = s;
+        },
+        setSelectedContextId: (id: string) => {
+          selectedHistoryContextId.value = id;
+        },
+        setTaskId: (id: string | null) => {
+          _taskId.value = id;
+        },
+        replaceLlmFromPage: replaceLlmPromptStateFromPage,
+        extendLlmFromPage: extendLlmPromptStateFromPage,
+        scheduleHydrateRetry:
+          options.allowRetry !== false
+            ? () => {
+                if (pendingHydrateRetryTimer !== null) return;
+                pendingHydrateRetryTimer = setTimeout(() => {
+                  pendingHydrateRetryTimer = null;
+                  void hydrateMessagesFromConversationHistory(contextId, { allowRetry: false });
+                }, 400);
+              }
+            : undefined,
+      };
+
+      applyConversationHistoryIngress(hydrateIngressDeps, {
+        kind: "full",
+        mode: options.quiet ? "background" : "explicit_restore",
+        page,
+        allowRetry: options.allowRetry,
+        respectDuplicateVersion: false,
+        syncTaskIdFromPageBeforeDefer: true,
+      });
     } catch {
       if (!options.quiet) {
         historyHydrateState.value = "error";

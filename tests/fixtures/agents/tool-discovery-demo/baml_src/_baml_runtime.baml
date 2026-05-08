@@ -286,7 +286,15 @@ function ChooseDiscoverToolsQuery__select(
 ) -> SystemDiscoverToolsOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/discover_tools.\n\nFind tools that can help with: {{ user_message }}
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
+
+Open a session with: system/discover_tools.
+
+Find tools that can help with: {{ user_message }}
 For Send: set input.query to a concise search term derived from the user message.
 
 Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
@@ -298,9 +306,14 @@ Do not issue extra Reads or Sends unless the archive explicitly indicates more p
 {{ message.content }}
 {% endfor %}
 
+---
+Narrowed return union for this hop only:
+- SystemDiscoverToolsOpenStep
+
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+
+PHASE CONSTRAINT (select — open only): The JSON root must be exactly one bare Open step: op must be Open; set tool_name and initial_input per the narrowed return type for this hop. Do NOT emit Report or AskUser. Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
 "#
 
 }
@@ -312,7 +325,15 @@ function ChooseDiscoverToolsQuery__act__system_discover_tools(
 ) -> SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsAbortStep {
 
   client DefaultClient
-  prompt #"[ACT] A system/discover_tools session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nFind tools that can help with: {{ user_message }}
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+Phase: ACT — first post-Open hop for system/discover_tools: SearchRead, PageRead, or Send; legal ops only as below.
+
+A system/discover_tools session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
+
+Find tools that can help with: {{ user_message }}
 For Send: set input.query to a concise search term derived from the user message.
 
 Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
@@ -324,7 +345,14 @@ Do not issue extra Reads or Sends unless the archive explicitly indicates more p
 {{ message.content }}
 {% endfor %}
 
+---
+Narrowed return union for this hop only:
+- SystemDiscoverToolsSendStep
+- SystemDiscoverToolsSearchReadStep
+- SystemDiscoverToolsPageReadStep
+
 {{ ctx.output_format }}
+
 
 PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
 "#
@@ -338,7 +366,20 @@ function ChooseDiscoverToolsQuery__continue__system_discover_tools(
 ) -> SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsFinishStep | SystemDiscoverToolsAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/discover_tools result is archived.\nCheck session history:\n- See \"@N system/discover_tools\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_tools\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate\n- See \"@N system/discover_tools\" with no content yet → emit SearchRead or PageRead with archive_ref=\"@N\"\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern\n\nFind tools that can help with: {{ user_message }}
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+Phase: CONTINUE — for system/discover_tools: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
+
+system/discover_tools result is archived.
+Check session history:
+- See "@N system/discover_tools" followed by numbered lines → content is inline; emit Finish
+- See "@N system/discover_tools" with "more lines" indicator → emit SearchRead or PageRead to paginate
+- See "@N system/discover_tools" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
+- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
+
+Find tools that can help with: {{ user_message }}
 For Send: set input.query to a concise search term derived from the user message.
 
 Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
@@ -350,7 +391,15 @@ Do not issue extra Reads or Sends unless the archive explicitly indicates more p
 {{ message.content }}
 {% endfor %}
 
+---
+Narrowed return union for this hop only:
+- SystemDiscoverToolsSendStep
+- SystemDiscoverToolsSearchReadStep
+- SystemDiscoverToolsPageReadStep
+- SystemDiscoverToolsFinishStep
+
 {{ ctx.output_format }}
+
 
 PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
 "#
