@@ -309,14 +309,27 @@ main() {
   sleep "$HEAD_START_SECS"
 
   log_step "Deploying ${FIXTURE_NAME}"
-  if ! deploy_hash "$hash" "$RUNNER0_PORT" "$E2E_TOKEN" >/dev/null; then
-    # If /deploy never accepted, no CPU peg ran and I3's "max lag > 200ms"
-    # would fail for the wrong reason — exit before probing finishes so the
-    # cause is unambiguous in CI logs.
-    log_fail "/deploy of ${FIXTURE_NAME} failed"
+  # Roll a local POST instead of lib.sh:deploy_hash because the latter uses
+  # `curl -sf` which silently drops the 5xx body — under cgroup throttle
+  # the failure mode is exactly an in-flight 5xx, and the body / HTTP code
+  # are the only signals that distinguish a starved runner from a probe
+  # mismatch. If /deploy never accepted, exit before probing finishes so
+  # I3's "max lag > 200ms" doesn't fail for the wrong reason.
+  local deploy_body deploy_code
+  deploy_body=$(mktemp)
+  deploy_code=$(curl -s --max-time 30 -X POST \
+    -o "$deploy_body" -w '%{http_code}' \
+    -H "Content-Type: application/json" \
+    -H "X-Runner-Token: ${E2E_TOKEN}" \
+    -d "{\"hash\":\"${hash}\"}" \
+    "http://localhost:${RUNNER0_PORT}/deploy" 2>/dev/null) || deploy_code="000"
+  if [[ "$deploy_code" != 2* ]]; then
+    log_fail "/deploy of ${FIXTURE_NAME} failed (HTTP ${deploy_code}): $(cat "$deploy_body")"
+    rm -f "$deploy_body"
     stop_probers
     exit 1
   fi
+  rm -f "$deploy_body"
 
   # cpu-peg-agent holds the JS thread for ~5s; let probers ride out the
   # remaining window so /diagnose can integrate post-deploy lag.
