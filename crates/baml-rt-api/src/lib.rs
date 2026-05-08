@@ -18,6 +18,7 @@ mod planning;
 mod provenance_ops;
 mod repository_publish;
 mod router;
+pub mod runtime_progress;
 pub mod service_error;
 mod spans;
 
@@ -54,4 +55,5 @@ pub use router::{
     api_router_with_services_and_deploy, serve, serve_with_services,
     serve_with_services_and_deploy,
 };
+pub use runtime_progress::RuntimeProgressMeter;
 pub use service_error::{ServiceError, service_result_to_http};

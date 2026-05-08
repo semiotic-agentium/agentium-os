@@ -101,7 +101,7 @@ HTTP API surface (embedded in runner or standalone).
 | `baml_rt_api.conversation_history.payload_bytes` | Histogram | Response body size by `event` kind. |
 | `baml_rt_api.conversation_history.item_count` | Histogram | Items per page/snapshot by `event`. |
 
-**Routes:** Deploy/undeploy/list/migrate/dispatch handlers call `record_request`. Config CRUD uses stable `route` labels in [`config_handlers.rs`](../crates/baml-rt-api/src/config_handlers.rs) (e.g. `config_get`, `config_put`, `config_secrets_overview`). Static `/openapi.json`, `/healthz`, `/readyz` and nested repository paths are timed in [`router.rs`](../crates/baml-rt-api/src/router.rs) (`get_openapi_json`, `get_healthz`, `get_readyz`, plus `repository_*` via middleware).
+**Routes:** Deploy/undeploy/list/migrate/dispatch handlers call `record_request`. Config CRUD uses stable `route` labels in [`config_handlers.rs`](../crates/baml-rt-api/src/config_handlers.rs) (e.g. `config_get`, `config_put`, `config_secrets_overview`). Static `/openapi.json`, `/healthz`, `/readyz`, `/diagnose` and nested repository paths are timed in [`router.rs`](../crates/baml-rt-api/src/router.rs) (`get_openapi_json`, `get_healthz`, `get_readyz`, `get_diagnose`, plus `repository_*` via middleware). `/diagnose` reports continuous-readiness signal (`runtime_progress_lag_ms`) distinct from the boot-time `/readyz` gate.
 
 ---
 
