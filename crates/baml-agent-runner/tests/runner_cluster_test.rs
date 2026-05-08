@@ -729,16 +729,13 @@ async fn migrate_rejects_ssrf_targets() {
 
 #[cfg(feature = "cluster-tests")]
 mod cluster {
+    use common::CLUSTER_SURREALDB_IMAGE_TAG;
     use testcontainers_modules::{
         surrealdb::{SURREALDB_PORT, SurrealDb},
         testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner},
     };
 
     use super::*;
-
-    // Keep this in sync with `deploy/helm/agentium-os/values.yaml` so the
-    // tests exercise the same Surreal version the pilot ships.
-    const SURREALDB_IMAGE_TAG: &str = "v3.0.4";
 
     struct SurrealContainer {
         endpoint: String,
@@ -748,7 +745,7 @@ mod cluster {
     impl SurrealContainer {
         async fn start() -> Self {
             let container = SurrealDb::default()
-                .with_tag(SURREALDB_IMAGE_TAG)
+                .with_tag(CLUSTER_SURREALDB_IMAGE_TAG)
                 .start()
                 .await
                 .expect("start SurrealDB container — cluster-tests require Docker or Podman");
@@ -787,7 +784,7 @@ mod cluster {
             RunnerProcessConfig::standalone()
                 .without_token()
                 .with_surreal(&surreal.endpoint)
-                .with_runner_endpoint("http://10.0.0.1:18080"),
+                .with_runner_endpoint(common::FAKE_CLUSTER_RUNNER_ENDPOINT),
         )
         .await;
         let client = reqwest::Client::new();
@@ -820,7 +817,7 @@ mod cluster {
             RunnerProcessConfig::standalone()
                 .without_token()
                 .with_surreal(&surreal.endpoint)
-                .with_runner_endpoint("http://10.0.0.1:18080"),
+                .with_runner_endpoint(common::FAKE_CLUSTER_RUNNER_ENDPOINT),
         )
         .await;
         let client = reqwest::Client::new();

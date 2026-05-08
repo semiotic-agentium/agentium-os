@@ -84,6 +84,21 @@ pub fn e2e_secs_ci_or_local(ci_secs: u64, local_secs: u64) -> u64 {
     }
 }
 
+/// SurrealDB container image tag used by cluster-mode integration tests.
+/// Keep in sync with `deploy/helm/agentium-os/values.yaml` so adversarial
+/// and routing tests both exercise the same SurrealDB version the pilot
+/// ships.
+#[allow(dead_code)] // Only cluster-tests binaries reach this constant.
+pub const CLUSTER_SURREALDB_IMAGE_TAG: &str = "v3.0.4";
+
+/// RFC 1918 address used as a dummy advertised runner endpoint in
+/// cluster-mode tests. Satisfies the SSRF validator's private-range
+/// allowance without the test runner actually accepting traffic on that
+/// address — the cluster path under test only needs the URL to be
+/// validation-clean.
+#[allow(dead_code)] // Only cluster-tests binaries reach this constant.
+pub const FAKE_CLUSTER_RUNNER_ENDPOINT: &str = "http://10.0.0.1:18080";
+
 /// Load workspace `.env` when present. Missing file is normal (CI); other I/O is surfaced.
 ///
 /// Not every `tests/*.rs` binary links all helpers; integration targets are feature-split.
