@@ -96,6 +96,74 @@ pub fn try_load_dotenv_for_tests() {
     }
 }
 
+/// RAII guard that removes a single temp file on drop.
+///
+/// Pair with [`test_support::common::build_agent_package_archive_to_temp`] so a built
+/// `.tar.gz` is cleaned up even if the test panics.
+#[allow(dead_code)] // Not every integration binary publishes packages.
+pub struct TempFileCleanup {
+    path: std::path::PathBuf,
+}
+
+impl TempFileCleanup {
+    #[allow(dead_code)]
+    pub fn new(path: std::path::PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for TempFileCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Publish a built `.tar.gz` to the runner's embedded repository. Returns the
+/// content hash. The `rationale` is recorded on the published entry so each
+/// caller can identify which test wrote it.
+#[allow(dead_code)] // Not every integration binary publishes packages.
+pub async fn publish_fixture(
+    client: &reqwest::Client,
+    base_url: &str,
+    tar_path: &std::path::Path,
+    token: &str,
+    rationale: &str,
+) -> String {
+    use std::str::FromStr;
+
+    use baml_rt_repository::{
+        commands::{PublishCommand, PublishOrigin, PublishResult},
+        entry::ChangeRationale,
+        ids::AgentName,
+        package::source_bundle_from_tar_gz,
+    };
+
+    let bytes = std::fs::read(tar_path).expect("read package tar");
+    let (_, source) =
+        source_bundle_from_tar_gz(&bytes).expect("parse package as repository source bundle");
+    let name_str = source.manifest.name().expect("manifest name in package");
+    let cmd = PublishCommand {
+        name: AgentName::from_str(name_str).expect("valid AgentName"),
+        source,
+        rationale: ChangeRationale::new(rationale).expect("non-empty rationale"),
+        origin: PublishOrigin::Original,
+    };
+    let publish_url = format!("{base_url}/repository/publish");
+    let resp = client
+        .post(&publish_url)
+        .header("X-Runner-Token", token)
+        .json(&cmd)
+        .send()
+        .await
+        .expect("POST /repository/publish");
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        panic!("publish failed: {text}");
+    }
+    let result: PublishResult = resp.json().await.expect("PublishResult JSON");
+    result.hash.to_string()
+}
+
 #[cfg(any(
     feature = "clickup",
     feature = "notion",
