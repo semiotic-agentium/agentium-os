@@ -506,34 +506,34 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         } else {
             baml_rt_api::ClusterMode::Standalone
         };
-        let runtime_progress_for_http = runtime_progress.clone();
-        Some(tokio::spawn(async move {
-            baml_rt_api::serve_with_services_and_deploy(
-                registry_impl,
-                &bind,
-                mermaid,
-                context_metrics,
-                provenance_ops,
-                planning,
-                episode,
-                conversation_history,
-                conversation_history_events,
-                context_index,
-                Some(runner.clone() as Arc<dyn DeploymentManager>),
-                Some(config.repository_url.clone()),
-                Some(repository_service.clone()),
+        let api_config = baml_rt_api::ApiServerConfig {
+            mermaid,
+            context_metrics,
+            provenance_ops,
+            planning,
+            episode,
+            conversation_history,
+            conversation_history_events,
+            context_index,
+            deployment_manager: Some(runner.clone() as Arc<dyn DeploymentManager>),
+            repository_url: Some(config.repository_url.clone()),
+            repository_service: Some(repository_service.clone()),
+            runtime_secret_store,
+            ready: readyz_for_http,
+            runner_token,
+            cluster_mode,
+            web_dir,
+            ..baml_rt_api::ApiServerConfig::empty(
                 tool_catalog,
                 config_service,
                 secret_resolver,
-                runtime_secret_store,
-                readyz_for_http,
-                runner_token,
-                cluster_mode,
-                runtime_progress_for_http,
-                web_dir.as_deref(),
+                runtime_progress.clone(),
             )
-            .await
-            .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))
+        };
+        Some(tokio::spawn(async move {
+            baml_rt_api::serve_with_services_and_deploy(registry_impl, &bind, api_config)
+                .await
+                .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))
         }))
     } else {
         None

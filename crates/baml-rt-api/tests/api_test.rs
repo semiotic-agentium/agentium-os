@@ -13,10 +13,10 @@ use axum::{
 };
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_api::{
-    ClusterMode, ContextIndexError, ContextIndexRequest, ContextIndexService, ContextPickerPageDto,
-    ConversationHistoryError, ConversationHistoryPageDto, ConversationHistoryProfile,
-    ConversationHistoryRequest, ConversationHistoryService, MermaidError, MermaidService,
-    ProvenanceOpsError, ProvenanceOpsService, api_router, api_router_with_services,
+    ApiServerConfig, ClusterMode, ContextIndexError, ContextIndexRequest, ContextIndexService,
+    ContextPickerPageDto, ConversationHistoryError, ConversationHistoryPageDto,
+    ConversationHistoryProfile, ConversationHistoryRequest, ConversationHistoryService,
+    MermaidError, MermaidService, ProvenanceOpsError, ProvenanceOpsService, api_router,
     api_router_with_services_and_deploy,
 };
 use baml_rt_core::{
@@ -167,21 +167,19 @@ async fn prov_test_router_with_history(
     );
     let secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver> =
         Arc::new(EmptySecretResolver);
-    api_router_with_services(
+    api_router_with_services_and_deploy(
         registry,
-        None,
-        None,
-        provenance_ops,
-        None, // planning
-        None, // episode
-        conversation_history,
-        None, // conversation_history_events
-        context_index,
-        tool_catalog,
-        config_service,
-        secret_resolver,
-        None,
-        None,
+        ApiServerConfig {
+            provenance_ops,
+            conversation_history,
+            context_index,
+            ..ApiServerConfig::empty(
+                tool_catalog,
+                config_service,
+                secret_resolver,
+                baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
+            )
+        },
     )
 }
 
@@ -2311,8 +2309,6 @@ async fn get_mermaid_context_emits_http_and_handler_spans() {
 
 /// Build a router with explicit auth configuration for boundary tests.
 async fn authed_test_router(token: Option<&str>, mode: ClusterMode) -> axum::Router {
-    use std::sync::atomic::AtomicBool;
-
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
     let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> =
         Arc::new(baml_rt_tools::InventoryCatalog::new());
@@ -2326,26 +2322,16 @@ async fn authed_test_router(token: Option<&str>, mode: ClusterMode) -> axum::Rou
 
     api_router_with_services_and_deploy(
         registry,
-        None, // mermaid
-        None, // context_metrics
-        None, // provenance_ops
-        None, // planning
-        None, // episode
-        None, // conversation_history
-        None, // conversation_history_events
-        None, // context_index
-        None, // deployment_manager
-        None, // repository_url
-        None, // repository_service
-        tool_catalog,
-        config_service,
-        secret_resolver,
-        None, // runtime_secret_store
-        Arc::new(AtomicBool::new(true)),
-        token.map(String::from),
-        mode,
-        baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
-        None, // web_dir
+        ApiServerConfig {
+            runner_token: token.map(String::from),
+            cluster_mode: mode,
+            ..ApiServerConfig::empty(
+                tool_catalog,
+                config_service,
+                secret_resolver,
+                baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
+            )
+        },
     )
 }
 
@@ -2567,8 +2553,6 @@ async fn operator_routes_allow_with_valid_token() {
 
 /// Build a router with a real in-memory repository and auth configured.
 async fn authed_test_router_with_repo(token: Option<&str>, mode: ClusterMode) -> axum::Router {
-    use std::sync::atomic::AtomicBool;
-
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
     let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> =
         Arc::new(baml_rt_tools::InventoryCatalog::new());
@@ -2594,26 +2578,17 @@ async fn authed_test_router_with_repo(token: Option<&str>, mode: ClusterMode) ->
 
     api_router_with_services_and_deploy(
         registry,
-        None, // mermaid
-        None, // context_metrics
-        None, // provenance_ops
-        None, // planning
-        None, // episode
-        None, // conversation_history
-        None, // conversation_history_events
-        None, // context_index
-        None, // deployment_manager
-        None, // repository_url
-        Some(repo_service),
-        tool_catalog,
-        config_service,
-        secret_resolver,
-        None, // runtime_secret_store
-        Arc::new(AtomicBool::new(true)),
-        token.map(String::from),
-        mode,
-        baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
-        None, // web_dir
+        ApiServerConfig {
+            repository_service: Some(repo_service),
+            runner_token: token.map(String::from),
+            cluster_mode: mode,
+            ..ApiServerConfig::empty(
+                tool_catalog,
+                config_service,
+                secret_resolver,
+                baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
+            )
+        },
     )
 }
 
@@ -2732,8 +2707,6 @@ impl DeploymentManager for SlowDeployManager {
 }
 
 async fn router_with_deployment_manager(manager: Arc<dyn DeploymentManager>) -> axum::Router {
-    use std::sync::atomic::AtomicBool;
-
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
     let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> =
         Arc::new(baml_rt_tools::InventoryCatalog::new());
@@ -2747,26 +2720,15 @@ async fn router_with_deployment_manager(manager: Arc<dyn DeploymentManager>) -> 
 
     api_router_with_services_and_deploy(
         registry,
-        None, // mermaid
-        None, // context_metrics
-        None, // provenance_ops
-        None, // planning
-        None, // episode
-        None, // conversation_history
-        None, // conversation_history_events
-        None, // context_index
-        Some(manager),
-        None, // repository_url
-        None, // repository_service
-        tool_catalog,
-        config_service,
-        secret_resolver,
-        None, // runtime_secret_store
-        Arc::new(AtomicBool::new(true)),
-        None,                    // runner_token
-        ClusterMode::Standalone, // standalone → no auth required
-        baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
-        None, // web_dir
+        ApiServerConfig {
+            deployment_manager: Some(manager),
+            ..ApiServerConfig::empty(
+                tool_catalog,
+                config_service,
+                secret_resolver,
+                baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
+            )
+        },
     )
 }
 
