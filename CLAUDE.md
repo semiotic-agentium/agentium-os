@@ -43,6 +43,10 @@ cargo install cargo-nextest        # once
 # Load testing scripts
 python3 scripts/measure_a2a_sse.py --package PACKAGE --text "message"           # single SSE stream timing
 python3 scripts/concurrent_a2a_sse.py --package PACKAGE --concurrency N         # parallel SSE streams
+
+# E2E testing
+just e2e-k8s                                   # full k3d cluster e2e harness
+just e2e-k8s-cgroup-throttle                  # adversarial cgroup-throttled deploy fixture
 ```
 
 ### Secrets
@@ -177,6 +181,35 @@ Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 - Toolchain: stable for build/test, nightly for `cargo fmt --check` only.
 - **APT reliability:** CI uses `scripts/ci/apt-update-retry.sh` to mitigate transient Ubuntu mirror sync failures during package installation.
 
+## Testing Conventions
+
+- **Vertical slices over unit shards**: test via public API surfaces (`BamlRuntimeManager`, `QuickJSBridge`, `A2aRequestHandler`), not internal shortcuts
+- **test-support crate**: use `setup_baml_runtime_default()`, `setup_baml_runtime_from_fixture()`, `setup_bridge()`, `agent_fixture()`, `require_api_key()`, `ensure_fixture_runtime_types()`, `ensure_baml_src_exists()`
+- **Call `ensure_fixture_runtime_types()`** at the start of any E2E test loading from `tests/fixtures/agents/`
+- **Async tests**: use `#[tokio::test]`
+- **Snapshot tests**: `insta::assert_json_snapshot!` in provenance crate; update with `cargo insta review`
+- **Property tests**: scope attribution, tool session lifecycle, stream ordering (using proptest)
+- **Test fixtures**: `tests/fixtures/agents/` (agent packages), `baml_src/` (BAML schemas)
+- **E2E testing**: `just e2e-k8s` runs the full k3d cluster harness; `just e2e-k8s-cgroup-throttle` runs adversarial cgroup-throttled deploy fixture testing runner readiness under CPU constraints (see `docs/testing/e2e-k8s.md`)
+
+## Rust Conventions
+
+- Use `dotenvy` (not dotenv)
+- Use named string interpolation: `format!("{name} is {value}")` not `format!("{} is {}", name, value)`
+- Never unwrap in production code; use `?` with proper error types
+- Never silently discard errors with `let _ =` without logging
+- Error variant names should describe the operation that failed (e.g., `VaultRetrieval`, not `External`)
+- **`Option` is a type of last resort, not a default.** `Option` means "this value may be legitimately absent at this point in the program." It does not mean "I haven't built it yet" (use typestate), "it depends on the variant" (use an enum with different fields per variant), or "the DashMap might not have it" (fix the insertion guarantee or assert). Specifically:
+  - Model construction order with **typestate** (e.g., `Raw` → `Hydrated`), not `Option` bags where fields start as `None` and are filled in later.
+  - Model variant-specific data with **discriminated unions** (enum variants with different field sets), not flat structs with `Option` fields that are "only valid when op_kind is X."
+  - `DashMap::remove().map()` producing `Option` for a value that was structurally guaranteed to be inserted is a bug — fix the insertion or make the removal an assertion.
+  - Silent `None → skip` in write paths is prohibited — it produces invisible graph corruption far from the source. Use hard errors or logged degradation with a synthetic fallback.
+- Use newtype wrappers for domain IDs and values
+- Structured logging: static messages with dynamic data in fields (`tracing::info!(from = %from, event = "payment")`)
+- No version history in comments; describe current behavior in present tense
+- `#[allow(dead_code)]` requires a justifying comment explaining why the code is reserved
+- **Graph-first provenance reads:** All provenance read paths (conversation_context, episode assembly, drift scoring, graph export) must reconstruct data by traversing graph edges — never by parsing node ID prefixes, matching timestamps, or building HashMap joins from string keys. If a read path needs a relationship that isn't expressed as an edge, fix the write path. The edge table stores `from_label` and `to_label` — use them instead of string prefix matching on `from_id`/`to_id`. Ephemeral per-conversation indices (`@N`, `#N`) must be resolved at write time and not stored on graph edges.
+
 ## Deployment
 
 ### Supported Install Surface
@@ -209,34 +242,6 @@ The raw manifests under `deploy/k8s/` and the `deploy/demo/run-demo.sh` script a
 - `deploy/k8s/networkpolicy.yaml` — Network isolation policies
 - `deploy/k8s/runner-token.yaml.example` — Secret template
 - `deploy/demo/run-demo.sh` — Local k3d cluster bootstrap
-
-## Testing Conventions
-
-- **Vertical slices over unit shards**: test via public API surfaces (`BamlRuntimeManager`, `QuickJSBridge`, `A2aRequestHandler`), not internal shortcuts
-- **test-support crate**: use `setup_baml_runtime_default()`, `setup_baml_runtime_from_fixture()`, `setup_bridge()`, `agent_fixture()`, `require_api_key()`, `ensure_fixture_runtime_types()`, `ensure_baml_src_exists()`
-- **Call `ensure_fixture_runtime_types()`** at the start of any E2E test loading from `tests/fixtures/agents/`
-- **Async tests**: use `#[tokio::test]`
-- **Snapshot tests**: `insta::assert_json_snapshot!` in provenance crate; update with `cargo insta review`
-- **Property tests**: scope attribution, tool session lifecycle, stream ordering (using proptest)
-- **Test fixtures**: `tests/fixtures/agents/` (agent packages), `baml_src/` (BAML schemas)
-
-## Rust Conventions
-
-- Use `dotenvy` (not dotenv)
-- Use named string interpolation: `format!("{name} is {value}")` not `format!("{} is {}", name, value)`
-- Never unwrap in production code; use `?` with proper error types
-- Never silently discard errors with `let _ =` without logging
-- Error variant names should describe the operation that failed (e.g., `VaultRetrieval`, not `External`)
-- **`Option` is a type of last resort, not a default.** `Option` means "this value may be legitimately absent at this point in the program." It does not mean "I haven't built it yet" (use typestate), "it depends on the variant" (use an enum with different fields per variant), or "the DashMap might not have it" (fix the insertion guarantee or assert). Specifically:
-  - Model construction order with **typestate** (e.g., `Raw` → `Hydrated`), not `Option` bags where fields start as `None` and are filled in later.
-  - Model variant-specific data with **discriminated unions** (enum variants with different field sets), not flat structs with `Option` fields that are "only valid when op_kind is X."
-  - `DashMap::remove().map()` producing `Option` for a value that was structurally guaranteed to be inserted is a bug — fix the insertion or make the removal an assertion.
-  - Silent `None → skip` in write paths is prohibited — it produces invisible graph corruption far from the source. Use hard errors or logged degradation with a synthetic fallback.
-- Use newtype wrappers for domain IDs and values
-- Structured logging: static messages with dynamic data in fields (`tracing::info!(from = %from, event = "payment")`)
-- No version history in comments; describe current behavior in present tense
-- `#[allow(dead_code)]` requires a justifying comment explaining why the code is reserved
-- **Graph-first provenance reads:** All provenance read paths (conversation_context, episode assembly, drift scoring, graph export) must reconstruct data by traversing graph edges — never by parsing node ID prefixes, matching timestamps, or building HashMap joins from string keys. If a read path needs a relationship that isn't expressed as an edge, fix the write path. The edge table stores `from_label` and `to_label` — use them instead of string prefix matching on `from_id`/`to_id`. Ephemeral per-conversation indices (`@N`, `#N`) must be resolved at write time and not stored on graph edges.
 
 ## External Dependencies
 
