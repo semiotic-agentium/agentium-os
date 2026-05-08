@@ -608,6 +608,13 @@ e2e-k8s:
 k8s-pilot-smoke *args='':
     ./scripts/k8s-pilot-smoke.sh {{args}}
 
+# Adversarial cgroup-throttled deploy harness on a real k3d cluster.
+# Probes /readyz + /diagnose at ~100ms during a cpu-peg-agent deploy under
+# runner.resources.limits.cpu=500m and asserts three runner-readiness
+# invariants. See docs/testing/e2e-k8s.md.
+e2e-k8s-cgroup-throttle *args='':
+    ./scripts/e2e-k8s/t2-cgroup-throttle.sh {{args}}
+
 # Authoritative Kubernetes pilot package-validation flow.
 # Mirrors docs/k8s-pilot-operator-guide.md end-to-end on a local k3d cluster:
 # builds the runner image, creates the three required objects, installs the

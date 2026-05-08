@@ -1,0 +1,9 @@
+# Test-only overlay that constrains the runner pod to 500m CPU. Layered on
+# top of a base values file (e.g. k3d-values.yaml) by the adversarial e2e
+# harness in scripts/e2e-k8s/t2-cgroup-throttle.sh. Never use for design
+# partner / production installs.
+
+runner:
+  resources:
+    limits:
+      cpu: 500m

@@ -1,6 +1,6 @@
 # Kubernetes Package Validation
 
-The repo has two in-repo validation paths for the Kubernetes pilot:
+The repo has three in-repo validation paths for the Kubernetes pilot:
 
 1. **Authoritative package-validation flow** — `scripts/verify-k8s-pilot-package.sh`.
    Brings up a k3d cluster, makes the runner image reachable via the
@@ -17,8 +17,16 @@ The repo has two in-repo validation paths for the Kubernetes pilot:
    persistence across restarts, kubelet probe behaviour, StatefulSet
    lifecycle, cross-pod A2A, migration, heartbeat TTL, SSRF, token
    enforcement, and full agent lifecycle.
+3. **Cgroup-throttled deploy** — `scripts/e2e-k8s/t2-cgroup-throttle.sh`.
+   Installs the chart with `examples/cpu-throttle-test-values.yaml` (caps
+   the runner at `runner.resources.limits.cpu: 500m`), deploys
+   `cpu-peg-agent`, and probes `/readyz` and `/diagnose` at ~100ms cadence
+   during the deploy. Asserts (1) every `/readyz` returns 200 within 1s,
+   (2) no transport drops, and (3) `runtime_progress_lag_ms > 200` for at
+   least one sample. The runner-internal counterpart is the T1
+   `#[tokio::test]` in `crates/baml-agent-runner/tests/runner_starvation_test.rs`.
 
-Both paths now install via `helm upgrade --install` using the shared
+All three paths now install via `helm upgrade --install` using the shared
 bringup helpers in `scripts/e2e-k8s/lib.sh`
 (`ensure_runner_image_available`, `create_pilot_objects`,
 `install_pilot_chart`, `resolve_chart_names`, `wait_for_runner_readyz`).
