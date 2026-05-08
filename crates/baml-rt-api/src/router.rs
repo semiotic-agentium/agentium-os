@@ -38,8 +38,8 @@ use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
     ContextIndexService, ContextMetricsService, ConversationHistoryService, EpisodeService,
-    MermaidService, PlanningService, ProvenanceOpsService, config_handlers, handlers, metrics,
-    otel_middleware, repository_publish,
+    MermaidService, PlanningService, ProvenanceOpsService, RuntimeProgressMeter, config_handlers,
+    handlers, metrics, otel_middleware, repository_publish,
 };
 
 /// Shared state for API handlers: registry, OpenAPI spec, and **injected** config/catalog/resolver.
@@ -69,6 +69,9 @@ pub struct ApiState {
     /// Deployment topology: standalone (single runner) or cluster (shared SurrealDB).
     /// Controls whether control endpoints require a configured runner token.
     pub cluster_mode: ClusterMode,
+    /// Continuously observable signal of tokio-runtime progress; surfaced by `GET /diagnose`.
+    /// Distinct from [`ApiState::ready`], which is a one-shot boot latch.
+    pub runtime_progress: Arc<RuntimeProgressMeter>,
 }
 
 async fn serve_openapi_json(
@@ -100,6 +103,24 @@ async fn readyz(axum::extract::State(state): axum::extract::State<Arc<ApiState>>
     };
     metrics::record_request("get_readyz", result, start.elapsed());
     code
+}
+
+#[derive(serde::Serialize)]
+struct DiagnoseResponse {
+    runtime_progress_lag_ms: u64,
+    event_producers_loaded: bool,
+}
+
+async fn diagnose(
+    axum::extract::State(state): axum::extract::State<Arc<ApiState>>,
+) -> axum::Json<DiagnoseResponse> {
+    let start = Instant::now();
+    let body = DiagnoseResponse {
+        runtime_progress_lag_ms: state.runtime_progress.lag_millis(),
+        event_producers_loaded: state.ready.load(Ordering::Acquire),
+    };
+    metrics::record_request("get_diagnose", "success", start.elapsed());
+    axum::Json(body)
 }
 
 fn repository_route_metric_label(matched: &MatchedPath) -> &'static str {
@@ -143,6 +164,10 @@ async fn repository_http_metrics(request: Request<Body>, next: Next) -> Response
 
 /// Build a minimal API router with default config/catalog/resolver (in-memory config, empty catalog, no-op resolver).
 /// For production, use `api_router_with_services` and inject real implementations.
+///
+/// # Panics
+/// Panics if called outside a tokio runtime context: the `/diagnose`
+/// endpoint's progress meter spawns a background ticker on construction.
 pub async fn api_router(
     registry: Arc<dyn AgentRegistry>,
     mermaid: Option<Arc<dyn MermaidService>>,
@@ -175,6 +200,10 @@ pub async fn api_router(
 
 /// Build the API router with injected dependencies (required: tool_catalog, config_service, secret_resolver).
 /// When `runtime_secret_store` is Some, PUT /config/secrets/{name} provisions secrets in the UI.
+///
+/// # Panics
+/// Panics if called outside a tokio runtime context: the `/diagnose`
+/// endpoint's progress meter spawns a background ticker on construction.
 #[allow(clippy::too_many_arguments)]
 pub fn api_router_with_services(
     registry: Arc<dyn AgentRegistry>,
@@ -217,6 +246,10 @@ pub fn api_router_with_services(
 }
 
 /// Build API router with optional deployment manager and repository URL wiring.
+///
+/// # Panics
+/// Panics if called outside a tokio runtime context: the `/diagnose`
+/// endpoint's progress meter spawns a background ticker on construction.
 #[allow(clippy::too_many_arguments)]
 pub fn api_router_with_services_and_deploy(
     registry: Arc<dyn AgentRegistry>,
@@ -383,6 +416,8 @@ pub fn api_router_with_services_and_deploy(
     }
     openapi.tags = Some(tags);
 
+    let runtime_progress = RuntimeProgressMeter::spawn_in_current_runtime();
+
     let state = Arc::new(ApiState {
         registry,
         openapi: Arc::new(openapi),
@@ -403,12 +438,14 @@ pub fn api_router_with_services_and_deploy(
         ready,
         runner_token,
         cluster_mode,
+        runtime_progress,
     });
 
     let mut router = api_router
         .route("/openapi.json", axum::routing::get(serve_openapi_json))
         .route("/healthz", axum::routing::get(healthz))
         .route("/readyz", axum::routing::get(readyz))
+        .route("/diagnose", axum::routing::get(diagnose))
         .route_layer(http_trace_layer)
         .with_state(state);
 
