@@ -62,6 +62,11 @@ STOP_FILE="$LOG_DIR/probers.stop"
 mkdir -p "$SAMPLES_DIR"
 
 PROBER_PIDS=()
+# Set to 1 by main() if POST /deploy returned 2xx. assert_invariants reads
+# this to decide whether I3 (max lag > 200ms) is assertable: without a
+# successful /deploy, no cpu-peg ran, so a low max_lag isn't evidence the
+# meter is blind.
+DEPLOY_OK=0
 
 cleanup() {
   local code=$?
@@ -273,7 +278,9 @@ assert_invariants() {
     fi
   done < "$diagnose"
 
-  if (( lag_count == 0 )); then
+  if (( DEPLOY_OK == 0 )); then
+    log_info "I3: /deploy did not accept; runtime_progress_lag_ms not asserted (max observed ${max_lag}ms across ${lag_count} samples)"
+  elif (( lag_count == 0 )); then
     log_fail "I3: no runtime_progress_lag_ms values parsed from /diagnose; body shape may have drifted"
   elif (( max_lag <= 200 )); then
     log_fail "I3: expected runtime_progress_lag_ms > 200 in at least one /diagnose sample, but max observed was ${max_lag}ms across ${lag_count} samples"
@@ -313,8 +320,10 @@ main() {
   # `curl -sf` which silently drops the 5xx body — under cgroup throttle
   # the failure mode is exactly an in-flight 5xx, and the body / HTTP code
   # are the only signals that distinguish a starved runner from a probe
-  # mismatch. If /deploy never accepted, exit before probing finishes so
-  # I3's "max lag > 200ms" doesn't fail for the wrong reason.
+  # mismatch. On a non-2xx response: log the failure but keep probing for
+  # the full window so I1/I2 still report on what they captured. I3 is
+  # downgraded to informational by assert_invariants (no cpu-peg = no lag
+  # signal to assert against).
   local deploy_body deploy_code
   deploy_body=$(mktemp)
   deploy_code=$(curl -s --max-time 30 -X POST \
@@ -323,11 +332,11 @@ main() {
     -H "X-Runner-Token: ${E2E_TOKEN}" \
     -d "{\"hash\":\"${hash}\"}" \
     "http://localhost:${RUNNER0_PORT}/deploy" 2>/dev/null) || deploy_code="000"
-  if [[ "$deploy_code" != 2* ]]; then
+  if [[ "$deploy_code" == 2* ]]; then
+    DEPLOY_OK=1
+    log_info "/deploy accepted (HTTP ${deploy_code})"
+  else
     log_fail "/deploy of ${FIXTURE_NAME} failed (HTTP ${deploy_code}): $(cat "$deploy_body")"
-    rm -f "$deploy_body"
-    stop_probers
-    exit 1
   fi
   rm -f "$deploy_body"
 
