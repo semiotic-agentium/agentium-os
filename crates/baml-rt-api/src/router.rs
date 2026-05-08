@@ -613,22 +613,37 @@ pub async fn serve_with_services_and_deploy(
     // tests force `axum::serve` to return `Ok(())` after a delay, simulating a
     // listener task that exits silently. Stripped from release binaries via
     // `cfg(debug_assertions)` so production K8s images cannot be coerced into
-    // the early-exit path. Activated by setting
-    // `LISTENER_EXIT_AFTER_SECS_ENV=<u64>` on the runner process.
+    // the early-exit path. Activated by setting the env var named by
+    // `LISTENER_EXIT_AFTER_SECS_ENV` to a `u64` number of seconds.
     #[cfg(debug_assertions)]
-    if let Some(secs) = std::env::var(LISTENER_EXIT_AFTER_SECS_ENV)
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        tracing::warn!(
+    match std::env::var(LISTENER_EXIT_AFTER_SECS_ENV) {
+        Ok(raw) => match raw.parse::<u64>() {
+            Ok(secs) => {
+                tracing::warn!(
+                    env = LISTENER_EXIT_AFTER_SECS_ENV,
+                    secs,
+                    "TEST: listener fault-injection env set; listener will return Ok(()) after timeout (issue #341 T4)"
+                );
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(tokio::time::sleep(std::time::Duration::from_secs(
+                        secs,
+                    )))
+                    .await?;
+                return Ok(());
+            }
+            Err(err) => tracing::warn!(
+                env = LISTENER_EXIT_AFTER_SECS_ENV,
+                value = %raw,
+                error = %err,
+                "TEST: listener fault-injection env is set but does not parse as u64; ignoring"
+            ),
+        },
+        Err(std::env::VarError::NotPresent) => {}
+        Err(std::env::VarError::NotUnicode(raw)) => tracing::warn!(
             env = LISTENER_EXIT_AFTER_SECS_ENV,
-            secs,
-            "TEST: listener fault-injection env set; listener will return Ok(()) after timeout (issue #341 T4)"
-        );
-        axum::serve(listener, app)
-            .with_graceful_shutdown(tokio::time::sleep(std::time::Duration::from_secs(secs)))
-            .await?;
-        return Ok(());
+            value = ?raw,
+            "TEST: listener fault-injection env is set but is not valid Unicode; ignoring"
+        ),
     }
 
     axum::serve(listener, app).await?;
