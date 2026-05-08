@@ -6,17 +6,10 @@ use std::{
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    str::FromStr,
     time::{Duration, Instant},
 };
 
-use baml_rt_repository::{
-    commands::{PublishCommand, PublishOrigin, PublishResult},
-    entry::ChangeRationale,
-    ids::AgentName,
-    package::source_bundle_from_tar_gz,
-};
-use common::{e2e_secs_ci_or_local, e2e_serial_gate};
+use common::{TempFileCleanup, e2e_secs_ci_or_local, e2e_serial_gate, publish_fixture};
 use reqwest::StatusCode;
 use serde_json::Value;
 use test_support::common::{
@@ -29,22 +22,6 @@ const DEFAULT_TOKEN: &str = "test-runner-token-cluster";
 // ---------------------------------------------------------------------------
 // Test infrastructure
 // ---------------------------------------------------------------------------
-
-struct TempFileCleanup {
-    path: PathBuf,
-}
-
-impl TempFileCleanup {
-    fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-}
-
-impl Drop for TempFileCleanup {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
 
 /// Builder for spawning a `baml-agent-runner` subprocess with configurable options.
 struct RunnerProcessConfig {
@@ -260,39 +237,6 @@ impl Drop for RunnerProcess {
     }
 }
 
-/// Publish a built `.tar.gz` to the runner's embedded repository. Returns the content hash.
-async fn publish_fixture(
-    client: &reqwest::Client,
-    base_url: &str,
-    tar_path: &Path,
-    token: &str,
-) -> String {
-    let bytes = fs::read(tar_path).expect("read package tar");
-    let (_, source) =
-        source_bundle_from_tar_gz(&bytes).expect("parse package as repository source bundle");
-    let name_str = source.manifest.name().expect("manifest name in package");
-    let cmd = PublishCommand {
-        name: AgentName::from_str(name_str).expect("valid AgentName"),
-        source,
-        rationale: ChangeRationale::new("runner_cluster_test").expect("non-empty rationale"),
-        origin: PublishOrigin::Original,
-    };
-    let publish_url = format!("{base_url}/repository/publish");
-    let resp = client
-        .post(&publish_url)
-        .header("X-Runner-Token", token)
-        .json(&cmd)
-        .send()
-        .await
-        .expect("POST /repository/publish");
-    if !resp.status().is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        panic!("publish failed: {text}");
-    }
-    let result: PublishResult = resp.json().await.expect("PublishResult JSON");
-    result.hash.to_string()
-}
-
 /// Deploy a previously published hash.
 async fn deploy_hash(
     client: &reqwest::Client,
@@ -316,7 +260,7 @@ async fn publish_and_deploy(
     tar_path: &Path,
     token: &str,
 ) -> String {
-    let hash = publish_fixture(client, base_url, tar_path, token).await;
+    let hash = publish_fixture(client, base_url, tar_path, token, "runner_cluster_test").await;
     let resp = deploy_hash(client, base_url, &hash, token).await;
     if !resp.status().is_success() {
         let text = resp.text().await.unwrap_or_default();
@@ -404,7 +348,14 @@ async fn deploy_by_hash_returns_success() {
     let runner = RunnerProcess::start(RunnerProcessConfig::standalone()).await;
     let client = reqwest::Client::new();
 
-    let hash = publish_fixture(&client, &runner.base_url, &package_path, DEFAULT_TOKEN).await;
+    let hash = publish_fixture(
+        &client,
+        &runner.base_url,
+        &package_path,
+        DEFAULT_TOKEN,
+        "runner_cluster_test",
+    )
+    .await;
     let resp = deploy_hash(&client, &runner.base_url, &hash, DEFAULT_TOKEN).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let body: Value = resp.json().await.expect("deploy response JSON");
@@ -530,7 +481,14 @@ async fn deploy_requires_auth_when_token_configured() {
         RunnerProcess::start(RunnerProcessConfig::standalone().with_token("secret-token-123"))
             .await;
     let client = reqwest::Client::new();
-    let hash = publish_fixture(&client, &runner.base_url, &package_path, "secret-token-123").await;
+    let hash = publish_fixture(
+        &client,
+        &runner.base_url,
+        &package_path,
+        "secret-token-123",
+        "runner_cluster_test",
+    )
+    .await;
 
     // No token header.
     let resp = client
@@ -931,8 +889,22 @@ mod cluster {
         let client = reqwest::Client::new();
 
         // Publish to both runners (they need the archive in their local repository).
-        publish_fixture(&client, &runner_a.base_url, &package_path, DEFAULT_TOKEN).await;
-        let hash = publish_fixture(&client, &runner_b.base_url, &package_path, DEFAULT_TOKEN).await;
+        publish_fixture(
+            &client,
+            &runner_a.base_url,
+            &package_path,
+            DEFAULT_TOKEN,
+            "runner_cluster_test",
+        )
+        .await;
+        let hash = publish_fixture(
+            &client,
+            &runner_b.base_url,
+            &package_path,
+            DEFAULT_TOKEN,
+            "runner_cluster_test",
+        )
+        .await;
 
         // Deploy ONLY on runner-B.
         let resp = deploy_hash(&client, &runner_b.base_url, &hash, DEFAULT_TOKEN).await;
@@ -1012,8 +984,22 @@ mod cluster {
         // first publish on each runner produces the same hash; avoid
         // publishing twice on runner-A (which would create a new version hash
         // that runner-B doesn't know about).
-        let hash = publish_fixture(&client, &runner_a.base_url, &package_path, DEFAULT_TOKEN).await;
-        publish_fixture(&client, &runner_b.base_url, &package_path, DEFAULT_TOKEN).await;
+        let hash = publish_fixture(
+            &client,
+            &runner_a.base_url,
+            &package_path,
+            DEFAULT_TOKEN,
+            "runner_cluster_test",
+        )
+        .await;
+        publish_fixture(
+            &client,
+            &runner_b.base_url,
+            &package_path,
+            DEFAULT_TOKEN,
+            "runner_cluster_test",
+        )
+        .await;
 
         // Deploy on runner-A.
         let deploy_resp = deploy_hash(&client, &runner_a.base_url, &hash, DEFAULT_TOKEN).await;
@@ -1122,10 +1108,22 @@ mod cluster {
         let client = reqwest::Client::new();
 
         // Publish to both runners.
-        let hash_a =
-            publish_fixture(&client, &runner_a.base_url, &package_path, DEFAULT_TOKEN).await;
-        let hash_b =
-            publish_fixture(&client, &runner_b.base_url, &package_path, DEFAULT_TOKEN).await;
+        let hash_a = publish_fixture(
+            &client,
+            &runner_a.base_url,
+            &package_path,
+            DEFAULT_TOKEN,
+            "runner_cluster_test",
+        )
+        .await;
+        let hash_b = publish_fixture(
+            &client,
+            &runner_b.base_url,
+            &package_path,
+            DEFAULT_TOKEN,
+            "runner_cluster_test",
+        )
+        .await;
         assert_eq!(hash_a, hash_b, "same fixture should produce same hash");
 
         // Deploy on runner-A first, then runner-B (last writer wins).

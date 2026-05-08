@@ -25,13 +25,13 @@ mod common;
 use std::{
     fs,
     net::TcpListener,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
-use common::{e2e_secs_ci_or_local, e2e_serial_gate};
+use common::{TempFileCleanup, e2e_secs_ci_or_local, e2e_serial_gate, publish_fixture};
 use reqwest::StatusCode;
 use serde_json::Value;
 use test_support::common::{
@@ -56,22 +56,6 @@ struct ProbeSample {
     transport_error: Option<String>,
     /// Decoded JSON body when the endpoint returns one (e.g. `/diagnose`).
     body: Option<Value>,
-}
-
-struct TempFileCleanup {
-    path: PathBuf,
-}
-
-impl TempFileCleanup {
-    fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-}
-
-impl Drop for TempFileCleanup {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
 }
 
 /// Standalone runner subprocess for adversarial tests. Mirrors the
@@ -166,42 +150,6 @@ impl Drop for StandaloneRunner {
         let _ = fs::remove_dir_all(&self.repository_dir);
         let _ = fs::remove_dir_all(&self.state_dir);
     }
-}
-
-async fn publish_fixture(client: &reqwest::Client, base_url: &str, tar_path: &Path) -> String {
-    use std::str::FromStr;
-
-    use baml_rt_repository::{
-        commands::{PublishCommand, PublishOrigin, PublishResult},
-        entry::ChangeRationale,
-        ids::AgentName,
-        package::source_bundle_from_tar_gz,
-    };
-
-    let bytes = fs::read(tar_path).expect("read package tar");
-    let (_, source) =
-        source_bundle_from_tar_gz(&bytes).expect("parse package as repository source bundle");
-    let name_str = source.manifest.name().expect("manifest name in package");
-    let cmd = PublishCommand {
-        name: AgentName::from_str(name_str).expect("valid AgentName"),
-        source,
-        rationale: ChangeRationale::new("runner_starvation_test").expect("non-empty rationale"),
-        origin: PublishOrigin::Original,
-    };
-    let publish_url = format!("{base_url}/repository/publish");
-    let resp = client
-        .post(&publish_url)
-        .header("X-Runner-Token", RUNNER_TOKEN)
-        .json(&cmd)
-        .send()
-        .await
-        .expect("POST /repository/publish");
-    if !resp.status().is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        panic!("publish failed: {text}");
-    }
-    let result: PublishResult = resp.json().await.expect("PublishResult JSON");
-    result.hash.to_string()
 }
 
 /// Spawn a 100ms-cadence prober that hits an endpoint until `stop` flips.
@@ -306,11 +254,21 @@ async fn t1_cpu_peg_deploy_keeps_probes_responsive() {
     let _cleanup = TempFileCleanup::new(package_path.clone());
     let client = reqwest::Client::new();
 
-    let hash = publish_fixture(&client, &runner.base_url, &package_path).await;
+    let hash = publish_fixture(
+        &client,
+        &runner.base_url,
+        &package_path,
+        RUNNER_TOKEN,
+        "runner_starvation_test",
+    )
+    .await;
 
     // Drain any baseline lag accumulated during boot before we start probing,
-    // so the measurements only reflect the deploy-time CPU peg.
-    sleep(Duration::from_millis(300)).await;
+    // so the measurements only reflect the deploy-time CPU peg. Sized for a
+    // loaded CI worker: too short a drain risks the first probe samples
+    // reading boot-residual lag > 200ms, which would flip invariant 3 from
+    // "expected fail" to "unexpected pass" and trip `#[should_panic]`.
+    sleep(Duration::from_secs(1)).await;
 
     let started_at = Instant::now();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -347,7 +305,7 @@ async fn t1_cpu_peg_deploy_keeps_probes_responsive() {
     );
 
     // One extra polling window so /diagnose has a chance to read post-deploy lag.
-    sleep(Duration::from_millis(300)).await;
+    sleep(Duration::from_secs(1)).await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = readyz_handle.await;
