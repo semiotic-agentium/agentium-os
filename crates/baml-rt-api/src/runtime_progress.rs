@@ -6,19 +6,24 @@
 //! worker, cgroup throttling, deadlocked task) by exposing how long it
 //! has been since a 100ms ticker last ran.
 //!
-//! Scope: the ticker is a regular tokio task, so it detects whole-runtime
-//! stalls (every worker blocked, cgroup throttled). On a multi-worker
-//! runtime a single wedged worker with others available will not register
-//! as lag — the runner's `cpu: 1` cgroup limit makes that scenario
-//! unlikely in production, but it is the meter's blind spot.
+//! Scope: the ticker is a regular tokio task, so on its own it only sees
+//! whole-runtime stalls (every worker blocked, cgroup throttled). A single
+//! wedged worker, or a CPU peg confined to a non-tokio thread (e.g. the
+//! QuickJS event loop during deploy boot) does not register through the
+//! ticker alone. To cross those boundaries, callers can attach extra signals
+//! via [`RuntimeProgressMeter::register_probe`]; [`lag_millis`](Self::lag_millis)
+//! aggregates the worst lag across the ticker and every live probe so the
+//! meter reflects a CPU peg wherever it lives.
 
 use std::{
     sync::{
-        Arc,
+        Arc, RwLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
+
+use baml_rt_core::{ProgressProbe, ProgressProbeRegistry};
 
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -33,6 +38,7 @@ const TICK_INTERVAL: Duration = Duration::from_millis(100);
 pub struct RuntimeProgressMeter {
     started_at: Instant,
     last_tick_millis: AtomicU64,
+    probes: RwLock<Vec<Weak<dyn ProgressProbe>>>,
 }
 
 impl RuntimeProgressMeter {
@@ -40,6 +46,7 @@ impl RuntimeProgressMeter {
         Arc::new(Self {
             started_at: Instant::now(),
             last_tick_millis: AtomicU64::new(0),
+            probes: RwLock::new(Vec::new()),
         })
     }
 
@@ -74,21 +81,60 @@ impl RuntimeProgressMeter {
         self.last_tick_millis.store(elapsed, Ordering::Relaxed);
     }
 
-    /// Milliseconds since the last tick.
+    /// Attach an external lag signal whose value contributes to
+    /// [`lag_millis`](Self::lag_millis). Probes are held weakly: when the
+    /// caller drops its last `Arc`, the meter skips the dead reference on the
+    /// next read and prunes it on the next call to this method.
+    pub fn register_probe(&self, probe: Weak<dyn ProgressProbe>) {
+        let mut guard = self.probes.write().expect("probes lock poisoned");
+        guard.retain(|p| p.strong_count() > 0);
+        guard.push(probe);
+    }
+
+    /// Worst-case milliseconds since the last observed progress signal.
     ///
-    /// Healthy runtime: under one interval period (100ms) plus scheduler
-    /// jitter. Stalled runtime: grows linearly with wall-clock until the
-    /// runtime resumes polling tasks.
+    /// Returns the maximum across the tokio ticker and every registered
+    /// probe whose strong reference is still alive. Healthy runtime: under
+    /// one interval period (100ms) plus scheduler jitter. Stalled runtime
+    /// (anywhere — tokio worker, QuickJS event loop, or any other registered
+    /// probe): grows linearly with wall-clock until the underlying resource
+    /// resumes making progress.
     pub fn lag_millis(&self) -> u64 {
         let now = self.started_at.elapsed().as_millis() as u64;
         let last = self.last_tick_millis.load(Ordering::Relaxed);
-        now.saturating_sub(last)
+        let mut worst = now.saturating_sub(last);
+
+        let probes = self.probes.read().expect("probes lock poisoned");
+        for weak in probes.iter() {
+            if let Some(probe) = weak.upgrade() {
+                let probe_lag = probe.lag_millis();
+                if probe_lag > worst {
+                    worst = probe_lag;
+                }
+            }
+        }
+        worst
+    }
+}
+
+impl ProgressProbeRegistry for RuntimeProgressMeter {
+    fn register_probe(&self, probe: Weak<dyn ProgressProbe>) {
+        RuntimeProgressMeter::register_probe(self, probe);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct FixedLagProbe(u64);
+
+    impl ProgressProbe for FixedLagProbe {
+        fn lag_millis(&self) -> u64 {
+            self.0
+        }
+    }
 
     #[test]
     fn lag_grows_without_ticker() {
@@ -110,6 +156,35 @@ mod tests {
             meter.lag_millis() < 20,
             "lag should be near zero immediately after tick (got {})",
             meter.lag_millis()
+        );
+    }
+
+    #[test]
+    fn registered_probe_dominates_when_higher() {
+        let meter = RuntimeProgressMeter::new_without_ticker();
+        meter.tick();
+        let probe: Arc<dyn ProgressProbe> = Arc::new(FixedLagProbe(5_000));
+        meter.register_probe(Arc::downgrade(&probe));
+        let lag = meter.lag_millis();
+        assert!(
+            lag >= 5_000,
+            "probe lag should propagate through the meter (got {lag})"
+        );
+    }
+
+    #[test]
+    fn dropped_probes_do_not_inflate_lag() {
+        let meter = RuntimeProgressMeter::new_without_ticker();
+        meter.tick();
+        {
+            let probe: Arc<dyn ProgressProbe> = Arc::new(FixedLagProbe(9_999));
+            meter.register_probe(Arc::downgrade(&probe));
+        }
+        // Probe is dropped; the next read should not see the stale value.
+        let lag = meter.lag_millis();
+        assert!(
+            lag < 50,
+            "dropped probe must not contribute to lag (got {lag})"
         );
     }
 

@@ -29,6 +29,7 @@ use std::{
 };
 
 use anyhow::Context;
+use baml_rt_api::RuntimeProgressMeter;
 use baml_rt_core::{CallbackStore, DeploymentManager, DeploymentStatus, IngressStore};
 use baml_rt_llm_config::{
     FnoxFileSecretResolver, OverlaySecretResolver, SECRET_LINKS_CONFIG_KEY, SecretLinksState,
@@ -122,6 +123,11 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
     }
 
     info!("BAML Agent Runner starting");
+
+    // Constructed before the runner so deploy boots — including the restore
+    // loop, which evaluates agent top-level JS — register their JS-event-loop
+    // probes against the same meter the HTTP API will publish via /diagnose.
+    let runtime_progress = RuntimeProgressMeter::spawn_in_current_runtime();
 
     let config = cli
         .into_config(claude_workspaces_base)
@@ -306,6 +312,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         embedded_repository: Some(repository_service.clone()),
         external_tools_dirs: config.external_tools_dirs.clone(),
         sandbox_bind_roots: config.sandbox_bind_roots.clone(),
+        runtime_progress: Some(runtime_progress.clone()),
     })
     .map_err(|e| anyhow::anyhow!("runner builder init: {e}"))?;
 
@@ -499,6 +506,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         } else {
             baml_rt_api::ClusterMode::Standalone
         };
+        let runtime_progress_for_http = runtime_progress.clone();
         Some(tokio::spawn(async move {
             baml_rt_api::serve_with_services_and_deploy(
                 registry_impl,
@@ -521,6 +529,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
                 readyz_for_http,
                 runner_token,
                 cluster_mode,
+                Some(runtime_progress_for_http),
                 web_dir.as_deref(),
             )
             .await
@@ -875,6 +884,7 @@ globalThis.onChatMessage = async function(_message) {
                 embedded_repository: None,
                 external_tools_dirs: Vec::new(),
                 sandbox_bind_roots: Vec::new(),
+                runtime_progress: None,
             })
             .expect("test runner construction"),
         );
