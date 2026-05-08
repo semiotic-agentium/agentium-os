@@ -608,9 +608,39 @@ pub async fn serve_with_services_and_deploy(
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let addr = listener.local_addr()?;
     tracing::info!(%addr, web_dir = ?web_dir, "HTTP API listening");
+
+    // Issue #341 T4 fault injection: a debug-only hook that lets integration
+    // tests force `axum::serve` to return `Ok(())` after a delay, simulating a
+    // listener task that exits silently. Stripped from release binaries via
+    // `cfg(debug_assertions)` so production K8s images cannot be coerced into
+    // the early-exit path. Activated by setting
+    // `LISTENER_EXIT_AFTER_SECS_ENV=<u64>` on the runner process.
+    #[cfg(debug_assertions)]
+    if let Some(secs) = std::env::var(LISTENER_EXIT_AFTER_SECS_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        tracing::warn!(
+            env = LISTENER_EXIT_AFTER_SECS_ENV,
+            secs,
+            "TEST: listener fault-injection env set; listener will return Ok(()) after timeout (issue #341 T4)"
+        );
+        axum::serve(listener, app)
+            .with_graceful_shutdown(tokio::time::sleep(std::time::Duration::from_secs(secs)))
+            .await?;
+        return Ok(());
+    }
+
     axum::serve(listener, app).await?;
     Ok(())
 }
+
+/// Env var that activates the issue #341 T4 listener-fault-injection hook.
+/// Setting this to a `u64` (number of seconds) on the runner process makes the
+/// HTTP listener gracefully shut down after that delay and return `Ok(())`,
+/// simulating a silent listener-task death. The hook itself is gated behind
+/// `cfg(debug_assertions)` and is stripped from release binaries.
+pub const LISTENER_EXIT_AFTER_SECS_ENV: &str = "AGENTIUM_TEST_LISTENER_EXIT_AFTER_SECS";
 
 /// Build the OpenAPI spec fragment for all `/repository/*` routes.
 ///
