@@ -51,9 +51,8 @@ pub use planning::{
 };
 pub use provenance_ops::{ProvenanceOpsError, ProvenanceOpsService};
 pub use router::{
-    ApiState, ClusterMode, LISTENER_EXIT_AFTER_SECS_ENV, api_router, api_router_with_services,
-    api_router_with_services_and_deploy, serve, serve_with_services,
-    serve_with_services_and_deploy,
+    ApiServerConfig, ApiState, ClusterMode, LISTENER_EXIT_AFTER_SECS_ENV, api_router,
+    api_router_with_services_and_deploy, serve_with_services_and_deploy,
 };
 pub use runtime_progress::RuntimeProgressMeter;
 pub use service_error::{ServiceError, service_result_to_http};

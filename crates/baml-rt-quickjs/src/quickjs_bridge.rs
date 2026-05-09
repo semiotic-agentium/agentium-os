@@ -96,6 +96,10 @@ pub struct QuickJSBridge {
     /// Shared execution session state (planning FSM). Passed into `register_execution_session_helper`
     /// and read by `resolve_planning_step` for step coordinate injection.
     execution_sessions: Arc<DashMap<String, ExecutionSession>>,
+    /// JS-event-loop progress probe pinging this bridge's runtime. Owned here
+    /// so the probe's lifetime tracks the bridge that hosts the thread it
+    /// observes; dropped automatically on undeploy.
+    progress_probe: Option<Arc<crate::JsEventLoopProbe>>,
 }
 
 impl QuickJSBridge {
@@ -185,6 +189,7 @@ impl QuickJSBridge {
             a2a_yield_tx_by_session: Arc::new(DashMap::new()),
             next_stream_session_id: AtomicU64::new(1),
             execution_sessions: Arc::new(DashMap::new()),
+            progress_probe: None,
         };
 
         // Initialize sandbox - remove dangerous globals and implement safe console
@@ -230,6 +235,17 @@ impl QuickJSBridge {
     /// Getters for registration module (baml_registration) and other submodules.
     pub(crate) fn runtime(&self) -> &Arc<QuickJsRuntimeFacade> {
         &self.runtime
+    }
+
+    /// Attach a JS-event-loop probe to `registry` so the meter sees CPU pegs
+    /// on this bridge's event-loop thread. Idempotent: a second call leaves
+    /// the existing probe in place and re-registers it with `registry` (the
+    /// new registry then sees the same probe alongside any prior registry).
+    pub fn register_progress_probe(&mut self, registry: &dyn baml_rt_core::ProgressProbeRegistry) {
+        let probe = self
+            .progress_probe
+            .get_or_insert_with(|| crate::JsEventLoopProbe::spawn_for_runtime(&self.runtime));
+        baml_rt_core::register_progress_probe(registry, probe);
     }
     pub(crate) fn baml_manager(&self) -> &Arc<RwLock<BamlRuntimeManager>> {
         &self.baml_manager

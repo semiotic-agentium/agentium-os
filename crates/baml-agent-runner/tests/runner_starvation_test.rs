@@ -288,35 +288,11 @@ fn spawn_prober(
 // T1 — synthetic CPU-peg agent
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// **Regression target — currently expected to panic.**
-///
-/// Invariants 1 and 2 (every `/readyz` probe is `200` within 1s, no
-/// transport-level probe drops) pass today: PR #344 wraps the deploy boot
-/// in `spawn_blocking`, so the future-driver thread cannot starve the
-/// probe handlers.
-///
-/// Invariant 3 (`runtime_progress_lag_ms > 200` for at least one sample)
-/// **fails today**, which is the signal this test is designed to surface.
-/// Two structural factors keep the meter from seeing CPU-pegged deploy
-/// boot work:
-///
-///   * The QuickJS evaluation thread is its own thread and is *not*
-///     isolated by `spawn_blocking` — `spawn_blocking` only protects the
-///     future-driver. The meter never sees the peg unless the runtime
-///     itself stops making progress.
-///   * Even on the future-driver side, the meter is documented as having a
-///     "blind spot" (`crates/baml-rt-api/src/runtime_progress.rs`): on a
-///     multi-worker tokio runtime, a single wedged worker with others
-///     available does not register as lag.
-///
-/// `#[should_panic]` keeps CI green while preserving this as a regression
-/// target. When the underlying isolation lands (extending #335/#337 to the
-/// QuickJS thread, or making the meter sensitive enough to flag per-thread
-/// peg under multi-worker tokio), this test will fail with "did not panic
-/// as expected" — at which point whoever fixed the bug should remove
-/// `#[should_panic]` so the test asserts the invariant directly.
+/// Regression target for issue #341 / #352: deploying a CPU-pegged agent
+/// must keep `/readyz` and `/diagnose` responsive (transport-level), and
+/// `runtime_progress_lag_ms` must surface the QuickJS-thread peg with at
+/// least one sample above 200ms.
 #[tokio::test]
-#[should_panic(expected = "expected runtime_progress_lag_ms > 200")]
 async fn t1_cpu_peg_deploy_keeps_probes_responsive() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     ensure_fixture_runtime_types();

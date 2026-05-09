@@ -12,6 +12,7 @@ pub mod context;
 pub mod execution_session_types;
 pub use execution_session_types::{IntentSubmissionWire, PlanSubmissionWire};
 pub mod function_tool_manifest;
+pub mod js_event_loop_probe;
 pub mod js_value_converter;
 pub mod llm_client_registry;
 pub mod llm_resolver_adapter;
@@ -33,6 +34,7 @@ pub use a2a_stream::{
 };
 pub use baml::{BamlRuntimeManager, SessionPlanTypeName, ToolSessionExecutionHandle};
 pub use context::{BamlContext, ContextMetadata};
+pub use js_event_loop_probe::JsEventLoopProbe;
 pub use llm_client_registry::{
     LLM_SECRET_KEYS, LlmRegistryBuildResult, LlmSecretResolver, build_llm_client_registry,
 };

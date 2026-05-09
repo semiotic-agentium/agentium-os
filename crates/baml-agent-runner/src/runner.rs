@@ -8,6 +8,7 @@ use std::{
 
 use async_trait::async_trait;
 use baml_rt_a2a::{A2aRequestHandler, a2a};
+use baml_rt_api::RuntimeProgressMeter;
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
     AgentDispatchRequest, AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey,
@@ -83,6 +84,7 @@ pub(crate) struct AgentRunnerConfig {
     pub(crate) embedded_repository: Option<Arc<RepositoryService>>,
     pub(crate) external_tools_dirs: Vec<std::path::PathBuf>,
     pub(crate) sandbox_bind_roots: Vec<std::path::PathBuf>,
+    pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
 }
 
 /// Agent runner host: manages agents and composes the tool catalogue at startup.
@@ -105,6 +107,10 @@ pub(crate) struct AgentRunner {
     pub(crate) shared_context_ref_store: SharedContextRefStore,
     pub(crate) external_tools_dirs: Vec<std::path::PathBuf>,
     pub(crate) sandbox_bind_roots: Vec<std::path::PathBuf>,
+    /// Shared with the HTTP API so `/diagnose`'s `runtime_progress_lag_ms`
+    /// reflects CPU pegs on the QuickJS thread (each booted agent registers a
+    /// JS-event-loop probe), not just on the tokio runtime.
+    pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
 }
 
 impl AgentRunner {
@@ -127,6 +133,7 @@ impl AgentRunner {
             shared_context_ref_store: SharedContextRefStore::new(),
             external_tools_dirs: config.external_tools_dirs,
             sandbox_bind_roots: config.sandbox_bind_roots,
+            runtime_progress: config.runtime_progress,
         })
     }
 
@@ -408,6 +415,7 @@ impl AgentRunner {
                 claude_workspaces_base: self.claude_workspaces_base.as_deref(),
                 external_tools_dirs: self.external_tools_dirs(),
                 sandbox_bind_roots: self.sandbox_bind_roots(),
+                runtime_progress: self.runtime_progress.clone(),
             })
             .await?;
         let manifest = package.manifest().clone();

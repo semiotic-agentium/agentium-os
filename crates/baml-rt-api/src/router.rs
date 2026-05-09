@@ -1,8 +1,9 @@
 //! Axum router and API state for the HTTP surface.
 //!
 //! Config, tool catalog, and secret resolver are **injected as required dependencies** (no Option).
-//! Use `api_router()` for a minimal router with in-memory config and empty catalog/resolver;
-//! use `api_router_with_services()` to inject real implementations.
+//! Use [`api_router`] for a minimal router with in-memory config and empty catalog/resolver;
+//! use [`api_router_with_services_and_deploy`] with an [`ApiServerConfig`] to inject real
+//! implementations and (optionally) a deployment manager.
 
 use std::{
     path::Path,
@@ -162,8 +163,74 @@ async fn repository_http_metrics(request: Request<Body>, next: Next) -> Response
     response
 }
 
-/// Build a minimal API router with default config/catalog/resolver (in-memory config, empty catalog, no-op resolver).
-/// For production, use `api_router_with_services` and inject real implementations.
+/// All API server inputs except the agent registry. Construct via
+/// [`ApiServerConfig::empty`] and override the fields you care about with
+/// struct-update syntax.
+///
+/// `runtime_progress` is shared with the runner so probes registered during
+/// agent boot (e.g. the JS event-loop probe) feed the same `/diagnose` value
+/// the HTTP API serves.
+pub struct ApiServerConfig {
+    pub mermaid: Option<Arc<dyn MermaidService>>,
+    pub context_metrics: Option<Arc<dyn ContextMetricsService>>,
+    pub provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+    pub planning: Option<Arc<dyn PlanningService>>,
+    pub episode: Option<Arc<dyn EpisodeService>>,
+    pub conversation_history: Option<Arc<dyn ConversationHistoryService>>,
+    pub conversation_history_events: Option<Arc<dyn crate::ConversationHistoryEventService>>,
+    pub context_index: Option<Arc<dyn ContextIndexService>>,
+    pub deployment_manager: Option<Arc<dyn DeploymentManager>>,
+    pub repository_url: Option<String>,
+    pub repository_service: Option<Arc<baml_rt_repository::RepositoryService>>,
+    pub tool_catalog: Arc<dyn ToolCatalog>,
+    pub config_service: Arc<dyn ConfigService>,
+    pub secret_resolver: Arc<dyn SecretResolver>,
+    pub runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
+    pub ready: Arc<AtomicBool>,
+    pub runner_token: Option<String>,
+    pub cluster_mode: ClusterMode,
+    pub runtime_progress: Arc<RuntimeProgressMeter>,
+    pub web_dir: Option<std::path::PathBuf>,
+}
+
+impl ApiServerConfig {
+    /// Build a minimal config with only the four required infrastructure
+    /// dependencies. All optional service injections default to `None`,
+    /// `ready` to a latched `true`, and `cluster_mode` to standalone.
+    pub fn empty(
+        tool_catalog: Arc<dyn ToolCatalog>,
+        config_service: Arc<dyn ConfigService>,
+        secret_resolver: Arc<dyn SecretResolver>,
+        runtime_progress: Arc<RuntimeProgressMeter>,
+    ) -> Self {
+        Self {
+            mermaid: None,
+            context_metrics: None,
+            provenance_ops: None,
+            planning: None,
+            episode: None,
+            conversation_history: None,
+            conversation_history_events: None,
+            context_index: None,
+            deployment_manager: None,
+            repository_url: None,
+            repository_service: None,
+            tool_catalog,
+            config_service,
+            secret_resolver,
+            runtime_secret_store: None,
+            ready: Arc::new(AtomicBool::new(true)),
+            runner_token: None,
+            cluster_mode: ClusterMode::Standalone,
+            runtime_progress,
+            web_dir: None,
+        }
+    }
+}
+
+/// Build a minimal API router with default config/catalog/resolver (in-memory
+/// config, empty catalog, no-op resolver). For production, use
+/// [`api_router_with_services_and_deploy`] with a populated [`ApiServerConfig`].
 ///
 /// # Panics
 /// Panics if called outside a tokio runtime context: the `/diagnose`
@@ -180,49 +247,26 @@ pub async fn api_router(
             .expect("in-memory config store for API"),
     );
     let secret_resolver: Arc<dyn SecretResolver> = Arc::new(EmptySecretResolver);
-    api_router_with_services(
-        registry,
+    let runtime_progress = RuntimeProgressMeter::spawn_in_current_runtime();
+    let config = ApiServerConfig {
         mermaid,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        tool_catalog,
-        config_service,
-        secret_resolver,
-        None,
-        web_dir,
-    )
+        web_dir: web_dir.map(|p| p.to_path_buf()),
+        ..ApiServerConfig::empty(
+            tool_catalog,
+            config_service,
+            secret_resolver,
+            runtime_progress,
+        )
+    };
+    api_router_with_services_and_deploy(registry, config)
 }
 
-/// Build the API router with injected dependencies (required: tool_catalog, config_service, secret_resolver).
-/// When `runtime_secret_store` is Some, PUT /config/secrets/{name} provisions secrets in the UI.
-///
-/// # Panics
-/// Panics if called outside a tokio runtime context: the `/diagnose`
-/// endpoint's progress meter spawns a background ticker on construction.
-#[allow(clippy::too_many_arguments)]
-pub fn api_router_with_services(
+/// Build the full API router from an [`ApiServerConfig`].
+pub fn api_router_with_services_and_deploy(
     registry: Arc<dyn AgentRegistry>,
-    mermaid: Option<Arc<dyn MermaidService>>,
-    context_metrics: Option<Arc<dyn ContextMetricsService>>,
-    provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
-    planning: Option<Arc<dyn PlanningService>>,
-    episode: Option<Arc<dyn EpisodeService>>,
-    conversation_history: Option<Arc<dyn ConversationHistoryService>>,
-    conversation_history_events: Option<Arc<dyn crate::ConversationHistoryEventService>>,
-    context_index: Option<Arc<dyn ContextIndexService>>,
-    tool_catalog: Arc<dyn ToolCatalog>,
-    config_service: Arc<dyn ConfigService>,
-    secret_resolver: Arc<dyn SecretResolver>,
-    runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
-    web_dir: Option<&Path>,
+    config: ApiServerConfig,
 ) -> Router {
-    api_router_with_services_and_deploy(
-        registry,
+    let ApiServerConfig {
         mermaid,
         context_metrics,
         provenance_ops,
@@ -231,48 +275,19 @@ pub fn api_router_with_services(
         conversation_history,
         conversation_history_events,
         context_index,
-        None,
-        None,
-        None,
+        deployment_manager,
+        repository_url,
+        repository_service,
         tool_catalog,
         config_service,
         secret_resolver,
         runtime_secret_store,
-        Arc::new(AtomicBool::new(true)),
-        None,
-        ClusterMode::Standalone,
+        ready,
+        runner_token,
+        cluster_mode,
+        runtime_progress,
         web_dir,
-    )
-}
-
-/// Build API router with optional deployment manager and repository URL wiring.
-///
-/// # Panics
-/// Panics if called outside a tokio runtime context: the `/diagnose`
-/// endpoint's progress meter spawns a background ticker on construction.
-#[allow(clippy::too_many_arguments)]
-pub fn api_router_with_services_and_deploy(
-    registry: Arc<dyn AgentRegistry>,
-    mermaid: Option<Arc<dyn MermaidService>>,
-    context_metrics: Option<Arc<dyn ContextMetricsService>>,
-    provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
-    planning: Option<Arc<dyn PlanningService>>,
-    episode: Option<Arc<dyn EpisodeService>>,
-    conversation_history: Option<Arc<dyn ConversationHistoryService>>,
-    conversation_history_events: Option<Arc<dyn crate::ConversationHistoryEventService>>,
-    context_index: Option<Arc<dyn ContextIndexService>>,
-    deployment_manager: Option<Arc<dyn DeploymentManager>>,
-    repository_url: Option<String>,
-    repository_service: Option<Arc<baml_rt_repository::RepositoryService>>,
-    tool_catalog: Arc<dyn ToolCatalog>,
-    config_service: Arc<dyn ConfigService>,
-    secret_resolver: Arc<dyn SecretResolver>,
-    runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
-    ready: Arc<AtomicBool>,
-    runner_token: Option<String>,
-    cluster_mode: ClusterMode,
-    web_dir: Option<&Path>,
-) -> Router {
+    } = config;
     let http_trace_layer =
         TraceLayer::new_for_http().make_span_with(otel_middleware::http_request_span);
 
@@ -416,8 +431,6 @@ pub fn api_router_with_services_and_deploy(
     }
     openapi.tags = Some(tags);
 
-    let runtime_progress = RuntimeProgressMeter::spawn_in_current_runtime();
-
     let state = Arc::new(ApiState {
         registry,
         openapi: Arc::new(openapi),
@@ -449,7 +462,7 @@ pub fn api_router_with_services_and_deploy(
         .route_layer(http_trace_layer)
         .with_state(state);
 
-    if let Some(dir) = web_dir {
+    if let Some(dir) = web_dir.as_deref() {
         let fallback = ServeDir::new(dir)
             .append_index_html_on_directories(true)
             .fallback(ServeFile::new(dir.join("index.html")));
@@ -479,135 +492,17 @@ pub fn api_router_with_services_and_deploy(
     router
 }
 
-/// Run the HTTP server with default config/catalog/resolver (see `api_router`).
-pub async fn serve(
-    registry: Arc<dyn AgentRegistry>,
-    bind: &str,
-    mermaid: Option<Arc<dyn MermaidService>>,
-    web_dir: Option<&Path>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let tool_catalog: Arc<dyn ToolCatalog> = Arc::new(InventoryCatalog::new());
-    let config_service: Arc<dyn ConfigService> = Arc::new(
-        SurrealConfigStore::in_memory()
-            .await
-            .expect("in-memory config store for API"),
-    );
-    let secret_resolver: Arc<dyn SecretResolver> = Arc::new(EmptySecretResolver);
-    serve_with_services(
-        registry,
-        bind,
-        mermaid,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        tool_catalog,
-        config_service,
-        secret_resolver,
-        None,
-        web_dir,
-    )
-    .await
-}
-
-/// Run the HTTP server with injected dependencies (required: tool_catalog, config_service, secret_resolver).
-#[allow(clippy::too_many_arguments)]
-pub async fn serve_with_services(
-    registry: Arc<dyn AgentRegistry>,
-    bind: &str,
-    mermaid: Option<Arc<dyn MermaidService>>,
-    context_metrics: Option<Arc<dyn ContextMetricsService>>,
-    provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
-    planning: Option<Arc<dyn PlanningService>>,
-    episode: Option<Arc<dyn EpisodeService>>,
-    conversation_history: Option<Arc<dyn ConversationHistoryService>>,
-    conversation_history_events: Option<Arc<dyn crate::ConversationHistoryEventService>>,
-    context_index: Option<Arc<dyn ContextIndexService>>,
-    tool_catalog: Arc<dyn ToolCatalog>,
-    config_service: Arc<dyn ConfigService>,
-    secret_resolver: Arc<dyn SecretResolver>,
-    runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
-    web_dir: Option<&Path>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    serve_with_services_and_deploy(
-        registry,
-        bind,
-        mermaid,
-        context_metrics,
-        provenance_ops,
-        planning,
-        episode,
-        conversation_history,
-        conversation_history_events,
-        context_index,
-        None,
-        None,
-        None,
-        tool_catalog,
-        config_service,
-        secret_resolver,
-        runtime_secret_store,
-        Arc::new(AtomicBool::new(true)),
-        None,
-        ClusterMode::Standalone,
-        web_dir,
-    )
-    .await
-}
-
-/// Run HTTP server with optional deployment manager and repository URL wiring.
-#[allow(clippy::too_many_arguments)]
+/// Run the HTTP server with the full [`ApiServerConfig`].
 pub async fn serve_with_services_and_deploy(
     registry: Arc<dyn AgentRegistry>,
     bind: &str,
-    mermaid: Option<Arc<dyn MermaidService>>,
-    context_metrics: Option<Arc<dyn ContextMetricsService>>,
-    provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
-    planning: Option<Arc<dyn PlanningService>>,
-    episode: Option<Arc<dyn EpisodeService>>,
-    conversation_history: Option<Arc<dyn ConversationHistoryService>>,
-    conversation_history_events: Option<Arc<dyn crate::ConversationHistoryEventService>>,
-    context_index: Option<Arc<dyn ContextIndexService>>,
-    deployment_manager: Option<Arc<dyn DeploymentManager>>,
-    repository_url: Option<String>,
-    repository_service: Option<Arc<baml_rt_repository::RepositoryService>>,
-    tool_catalog: Arc<dyn ToolCatalog>,
-    config_service: Arc<dyn ConfigService>,
-    secret_resolver: Arc<dyn SecretResolver>,
-    runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
-    ready: Arc<AtomicBool>,
-    runner_token: Option<String>,
-    cluster_mode: ClusterMode,
-    web_dir: Option<&Path>,
+    config: ApiServerConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let app = api_router_with_services_and_deploy(
-        registry,
-        mermaid,
-        context_metrics,
-        provenance_ops,
-        planning,
-        episode,
-        conversation_history,
-        conversation_history_events,
-        context_index,
-        deployment_manager,
-        repository_url,
-        repository_service,
-        tool_catalog,
-        config_service,
-        secret_resolver,
-        runtime_secret_store,
-        ready,
-        runner_token,
-        cluster_mode,
-        web_dir,
-    );
+    tracing::info!(bind = %bind, web_dir = ?config.web_dir, "HTTP API binding");
+    let app = api_router_with_services_and_deploy(registry, config);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let addr = listener.local_addr()?;
-    tracing::info!(%addr, web_dir = ?web_dir, "HTTP API listening");
+    tracing::info!(%addr, "HTTP API listening");
 
     // Issue #341 T4 fault injection: a debug-only hook that lets integration
     // tests force `axum::serve` to return `Ok(())` after a delay, simulating a

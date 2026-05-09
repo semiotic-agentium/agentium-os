@@ -29,6 +29,7 @@ use std::{
 };
 
 use anyhow::Context;
+use baml_rt_api::RuntimeProgressMeter;
 use baml_rt_core::{CallbackStore, DeploymentManager, DeploymentStatus, IngressStore};
 use baml_rt_llm_config::{
     FnoxFileSecretResolver, OverlaySecretResolver, SECRET_LINKS_CONFIG_KEY, SecretLinksState,
@@ -122,6 +123,11 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
     }
 
     info!("BAML Agent Runner starting");
+
+    // Constructed before the runner so deploy boots — including the restore
+    // loop, which evaluates agent top-level JS — register their JS-event-loop
+    // probes against the same meter the HTTP API will publish via /diagnose.
+    let runtime_progress = RuntimeProgressMeter::spawn_in_current_runtime();
 
     let config = cli
         .into_config(claude_workspaces_base)
@@ -306,6 +312,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         embedded_repository: Some(repository_service.clone()),
         external_tools_dirs: config.external_tools_dirs.clone(),
         sandbox_bind_roots: config.sandbox_bind_roots.clone(),
+        runtime_progress: runtime_progress.clone(),
     })
     .map_err(|e| anyhow::anyhow!("runner builder init: {e}"))?;
 
@@ -499,32 +506,34 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         } else {
             baml_rt_api::ClusterMode::Standalone
         };
-        Some(tokio::spawn(async move {
-            baml_rt_api::serve_with_services_and_deploy(
-                registry_impl,
-                &bind,
-                mermaid,
-                context_metrics,
-                provenance_ops,
-                planning,
-                episode,
-                conversation_history,
-                conversation_history_events,
-                context_index,
-                Some(runner.clone() as Arc<dyn DeploymentManager>),
-                Some(config.repository_url.clone()),
-                Some(repository_service.clone()),
+        let api_config = baml_rt_api::ApiServerConfig {
+            mermaid,
+            context_metrics,
+            provenance_ops,
+            planning,
+            episode,
+            conversation_history,
+            conversation_history_events,
+            context_index,
+            deployment_manager: Some(runner.clone() as Arc<dyn DeploymentManager>),
+            repository_url: Some(config.repository_url.clone()),
+            repository_service: Some(repository_service.clone()),
+            runtime_secret_store,
+            ready: readyz_for_http,
+            runner_token,
+            cluster_mode,
+            web_dir,
+            ..baml_rt_api::ApiServerConfig::empty(
                 tool_catalog,
                 config_service,
                 secret_resolver,
-                runtime_secret_store,
-                readyz_for_http,
-                runner_token,
-                cluster_mode,
-                web_dir.as_deref(),
+                runtime_progress.clone(),
             )
-            .await
-            .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))
+        };
+        Some(tokio::spawn(async move {
+            baml_rt_api::serve_with_services_and_deploy(registry_impl, &bind, api_config)
+                .await
+                .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))
         }))
     } else {
         None
@@ -875,6 +884,7 @@ globalThis.onChatMessage = async function(_message) {
                 embedded_repository: None,
                 external_tools_dirs: Vec::new(),
                 sandbox_bind_roots: Vec::new(),
+                runtime_progress: baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
             })
             .expect("test runner construction"),
         );
