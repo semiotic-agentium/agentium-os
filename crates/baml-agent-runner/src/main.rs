@@ -642,7 +642,30 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             ready.run_a2a_stdio().await?;
         }
         (false, Some(handle)) => {
-            handle.await??;
+            // K8s-pilot mode: no stdio, only the HTTP listener. Nothing in this
+            // process requests a listener shutdown, so any return — clean or
+            // erroring — means the listener task died. Propagate as a non-zero
+            // exit so the kubelet restarts the pod (issue #341 T4).
+            match handle.await {
+                Ok(Ok(())) => {
+                    error!(
+                        "HTTP API listener task returned Ok(()) without a shutdown request; \
+                         in --serve-http mode this means the listener died silently. \
+                         Exiting non-zero so the kubelet restarts the pod"
+                    );
+                    anyhow::bail!("HTTP API listener task exited without a shutdown request");
+                }
+                Ok(Err(err)) => {
+                    error!(error = %err, "HTTP API listener task failed");
+                    return Err(err);
+                }
+                Err(join_err) => {
+                    error!(error = %join_err, "HTTP API listener task join error");
+                    return Err(anyhow::anyhow!(
+                        "HTTP API listener task join error: {join_err}"
+                    ));
+                }
+            }
         }
         (false, None) => {
             if let Some(handle) = dispatcher_handle {
