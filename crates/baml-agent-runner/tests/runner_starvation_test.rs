@@ -20,9 +20,8 @@
 //!   `axum::serve` task to return `Ok(())` early via the
 //!   `baml_rt_api::LISTENER_EXIT_AFTER_SECS_ENV` debug-only fault-injection
 //!   hook. Asserts: the runner process exits with non-zero status (so the
-//!   kubelet would restart it). Currently expected to fail because the
-//!   K8s-pilot match arm in `main.rs` treats clean exit from `axum::serve`
-//!   as a successful shutdown.
+//!   kubelet restarts it). The K8s-pilot match arm in `main.rs` enforces
+//!   this by treating any return from the listener task as a failure.
 //!
 //! - **T3 — SurrealDB latency injection** *(gated behind `cluster-tests`)*.
 //!   Front a real SurrealDB endpoint (testcontainer) with an in-process
@@ -438,31 +437,24 @@ async fn t1_cpu_peg_deploy_keeps_probes_responsive() {
 // T4 — listener-task-death
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// **Regression target — currently expected to panic.**
+/// In K8s-pilot mode (`--serve-http`, no stdio) the only long-running task in
+/// the runner process is the HTTP listener. Nothing in `main` ever requests a
+/// listener shutdown, so any return from `axum::serve(...).await` — clean or
+/// erroring — means the listener task died and the process must exit with a
+/// non-zero status so the kubelet restarts the pod.
 ///
-/// The K8s-pilot match arm in `crates/baml-agent-runner/src/main.rs`
-/// (`(false, Some(handle)) => handle.await??`) treats a clean `Ok(())` from
-/// the spawned `axum::serve` task as a successful shutdown and propagates it
-/// out of `main`, so the process exits with status 0. Under K8s, the kubelet
-/// then declares the pod terminated normally and does **not** restart it —
-/// silently masking a dead listener.
-///
-/// This test forces that exact failure: the runner is started in K8s-pilot
-/// mode (`--serve-http`, no stdio) with the debug-only fault-injection env
-/// var `AGENTIUM_TEST_LISTENER_EXIT_AFTER_SECS=2`. After ~2s the listener
+/// This test forces a clean listener exit via the debug-only fault-injection
+/// env var `AGENTIUM_TEST_LISTENER_EXIT_AFTER_SECS=2`. After ~2s the listener
 /// task gracefully shuts down and `axum::serve(...).await` returns `Ok(())`.
-/// The invariant is that this should propagate as a non-zero exit status,
-/// because nothing requested the shutdown.
+/// The K8s-pilot match arm in `crates/baml-agent-runner/src/main.rs` must
+/// translate that into a non-zero process exit; this test asserts the
+/// resulting status is not `success()`.
 ///
-/// Today the runner exits with status 0, so the assertion below fails. The
-/// `#[should_panic]` keeps CI green while preserving this as a regression
-/// target. When the K8s-pilot arm is fixed (e.g. by treating `Ok(())` from
-/// the listener task as an `Err` exit, or by making the listener loop
-/// indefinitely until an explicit shutdown channel fires), this test will
-/// fail with "did not panic as expected" — at which point the fixer should
-/// remove `#[should_panic]` so the assertion runs directly.
+/// Scoped to the silent-success path (`Ok(Ok(()))`): the `Ok(Err)` and
+/// `Err(JoinError)` arms already exited non-zero under the prior `handle.await??`,
+/// so the regression target here is the `Ok(())`-as-success masking that the
+/// kubelet observed as a clean shutdown. No separate fixture for the other arms.
 #[tokio::test]
-#[should_panic(expected = "expected runner to exit with non-zero status")]
 async fn t4_listener_task_death_exits_nonzero() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
@@ -490,9 +482,9 @@ async fn t4_listener_task_death_exits_nonzero() {
         !status.success(),
         "expected runner to exit with non-zero status after axum::serve returned Ok(()) \
          (a dead listener should propagate as a process-level failure so the kubelet restarts \
-         the pod), but the runner exited cleanly: {status}. This proves the K8s-pilot arm in \
-         main.rs (`(false, Some(handle)) => handle.await??`) treats clean exit from the \
-         listener task as a successful shutdown. Log:\n{log}"
+         the pod), but the runner exited cleanly: {status}. The K8s-pilot arm in main.rs \
+         must translate any return from the listener task into a non-zero process exit. \
+         Log:\n{log}"
     );
 }
 

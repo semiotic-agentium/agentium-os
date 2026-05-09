@@ -274,10 +274,10 @@ fn apply_runtime_lock(dir: &Path, meta: &mut ExternalToolMetadata) -> Result<()>
         if path.is_relative() {
             *path = dir.join(&path);
         }
-        if let Some(lock) = &lock {
-            if let Some(abs) = &lock.image_path_abs {
-                *path = abs.clone();
-            }
+        if let Some(lock) = &lock
+            && let Some(abs) = &lock.image_path_abs
+        {
+            *path = abs.clone();
         }
     }
 
