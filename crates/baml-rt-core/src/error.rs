@@ -230,6 +230,49 @@ pub enum BamlRtError {
         #[source]
         source: AnyhowError,
     },
+
+    /// Cluster heartbeat write to shared SurrealDB failed.
+    #[error("Cluster heartbeat failed ({kind}): {message}")]
+    ClusterHeartbeat {
+        kind: HeartbeatErrorKind,
+        message: String,
+    },
+}
+
+/// Class of failure observed by the cluster heartbeat task.
+///
+/// Operator-visible on `GET /diagnose` as `cluster_heartbeat_last_error_kind`.
+/// Connection failures point at SurrealDB transport (network / TLS / pool);
+/// query failures point at server-side execution (timeout, schema, throttle);
+/// permission failures point at credentials drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeartbeatErrorKind {
+    /// SDK-side connection or transport failure.
+    Connection,
+    /// Server-side query execution failure (timeout, cancellation, etc.).
+    Query,
+    /// Permission or auth failure (token expired, role insufficient).
+    NotAllowed,
+    /// Anything else (validation, serialization, internal, unknown).
+    Other,
+}
+
+impl HeartbeatErrorKind {
+    #[must_use]
+    pub fn as_code(&self) -> &'static str {
+        match self {
+            Self::Connection => "connection",
+            Self::Query => "query",
+            Self::NotAllowed => "not_allowed",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl std::fmt::Display for HeartbeatErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_code())
+    }
 }
 
 impl ClassifiedToolError {
@@ -315,7 +358,8 @@ pub fn baml_error_disposition(err: &BamlRtError) -> ErrorDisposition {
         BamlRtError::Io(_)
         | BamlRtError::QuickJs(_)
         | BamlRtError::QuickJsWithSource { .. }
-        | BamlRtError::ProvenanceContextRead { .. } => ErrorDisposition::HostRetriable,
+        | BamlRtError::ProvenanceContextRead { .. }
+        | BamlRtError::ClusterHeartbeat { .. } => ErrorDisposition::HostRetriable,
         BamlRtError::RequestBuildFailed { .. } => ErrorDisposition::LlmCorrectable,
         BamlRtError::ClientRegistryBuild { .. }
         | BamlRtError::RuntimeLoadFailed { .. }

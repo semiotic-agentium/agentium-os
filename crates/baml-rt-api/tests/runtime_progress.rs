@@ -8,13 +8,37 @@ use axum::{
     http::{Request, StatusCode},
 };
 use baml_rt_a2a::AgentRegistry;
-use baml_rt_api::api_router;
+use baml_rt_api::{
+    ApiServerConfig, ClusterHeartbeatHealth, ClusterMode, HeartbeatErrorKind, RuntimeProgressMeter,
+    api_router, api_router_with_services_and_deploy,
+};
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentDiscoveryEntry, AgentDispatchAck, AgentDispatchRequest,
     AgentLister, AgentRouteKey, BamlRtError, BusStream, Result,
 };
-use serde_json::Value;
+use serde::Deserialize;
 use tower::ServiceExt;
+
+/// Test mirror of `DiagnoseResponse`. `deny_unknown_fields` makes the test
+/// fail if a new field is added to the production response without a
+/// corresponding test update; missing fields fail too because the inner
+/// fields are concrete (no defaulting).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Diagnose {
+    runtime_progress_lag_ms: u64,
+    event_producers_loaded: bool,
+    cluster_heartbeat: Option<ClusterHeartbeat>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClusterHeartbeat {
+    status: String,
+    lag_ms: Option<u64>,
+    #[serde(default)]
+    last_error_kind: Option<String>,
+}
 
 struct StubRegistry;
 
@@ -43,7 +67,7 @@ impl AgentRegistry for StubRegistry {
     }
 }
 
-async fn diagnose_body(app: axum::Router) -> Value {
+async fn diagnose_body(app: axum::Router) -> Diagnose {
     let response = app
         .oneshot(
             Request::builder()
@@ -57,7 +81,10 @@ async fn diagnose_body(app: axum::Router) -> Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("body");
-    serde_json::from_slice(&bytes).expect("json body")
+    serde_json::from_slice(&bytes).unwrap_or_else(|err| {
+        let raw = std::str::from_utf8(&bytes).unwrap_or("<non-utf8>");
+        panic!("/diagnose body shape changed; update Diagnose schema: {err}\nbody: {raw}")
+    })
 }
 
 #[tokio::test]
@@ -68,20 +95,101 @@ async fn diagnose_returns_expected_shape() {
     let body = diagnose_body(app).await;
 
     assert!(
-        body.get("runtime_progress_lag_ms")
-            .and_then(Value::as_u64)
-            .is_some(),
-        "body missing runtime_progress_lag_ms: {body}"
+        body.cluster_heartbeat.is_none(),
+        "standalone-mode /diagnose must omit cluster_heartbeat entirely: {body:?}"
+    );
+    // `runtime_progress_lag_ms` and `event_producers_loaded` deserialized
+    // successfully (concrete u64 / bool); `deny_unknown_fields` on
+    // `Diagnose` ensures no extra fields are present.
+    let _ = body.runtime_progress_lag_ms;
+    let _ = body.event_producers_loaded;
+}
+
+async fn cluster_router_with_heartbeat(health: Arc<ClusterHeartbeatHealth>) -> axum::Router {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(StubRegistry);
+    let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> =
+        Arc::new(baml_rt_tools::InventoryCatalog::new());
+    let config_service: Arc<dyn baml_rt_config::ConfigService> = Arc::new(
+        baml_rt_config::SurrealConfigStore::in_memory()
+            .await
+            .expect("in-memory config store"),
+    );
+    let secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver> =
+        Arc::new(baml_rt_llm_config::EmptySecretResolver);
+    let runtime_progress = RuntimeProgressMeter::spawn_in_current_runtime();
+
+    let config = ApiServerConfig {
+        cluster_mode: ClusterMode::Cluster,
+        cluster_heartbeat: Some(health),
+        ..ApiServerConfig::empty(
+            tool_catalog,
+            config_service,
+            secret_resolver,
+            runtime_progress,
+        )
+    };
+    api_router_with_services_and_deploy(registry, config)
+}
+
+#[tokio::test]
+async fn diagnose_surfaces_cluster_heartbeat_fields_when_health_is_wired() {
+    let health = ClusterHeartbeatHealth::new(Duration::from_secs(5));
+    let app = cluster_router_with_heartbeat(health.clone()).await;
+
+    // Fresh meter — no attempt yet — reports `starting`.
+    let body = diagnose_body(app.clone()).await;
+    let hb = body
+        .cluster_heartbeat
+        .as_ref()
+        .expect("cluster_heartbeat object must be present in cluster mode");
+    assert_eq!(
+        hb.status, "starting",
+        "fresh health (no heartbeat attempt yet) must report starting: {body:?}"
+    );
+    assert_eq!(
+        hb.lag_ms, None,
+        "lag_ms must be null before any successful heartbeat: {body:?}"
+    );
+    assert_eq!(
+        hb.last_error_kind, None,
+        "last_error_kind must be omitted when no failure has been observed: {body:?}"
+    );
+
+    // Successful heartbeat → `ok`, lag is a u64, no error kind yet.
+    health.record_ok();
+    let body = diagnose_body(app.clone()).await;
+    let hb = body
+        .cluster_heartbeat
+        .as_ref()
+        .expect("cluster_heartbeat present");
+    assert_eq!(
+        hb.status, "ok",
+        "after record_ok, status flips to ok: {body:?}"
     );
     assert!(
-        body.get("event_producers_loaded")
-            .and_then(Value::as_bool)
-            .is_some(),
-        "body missing event_producers_loaded: {body}"
+        hb.lag_ms.is_some(),
+        "after record_ok, lag_ms is a u64: {body:?}"
     );
-    assert!(
-        body.as_object().is_some_and(|o| o.len() == 2),
-        "diagnose body shape changed; update tests and downstream consumers: {body}"
+    assert_eq!(
+        hb.last_error_kind, None,
+        "last_error_kind stays absent on the all-success path: {body:?}"
+    );
+
+    // Failed heartbeat → status flips to `degraded`, kind is surfaced.
+    health.record_error(HeartbeatErrorKind::Connection);
+    let body = diagnose_body(app).await;
+    let hb = body
+        .cluster_heartbeat
+        .as_ref()
+        .expect("cluster_heartbeat present");
+    assert_eq!(
+        hb.status, "degraded",
+        "after record_error, status flips to degraded: {body:?}"
+    );
+    assert_eq!(
+        hb.last_error_kind.as_deref(),
+        Some("connection"),
+        "last_error_kind must surface the typed kind code: {body:?}"
     );
 }
 
@@ -93,10 +201,7 @@ async fn diagnose_lag_stays_small_under_no_load() {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     let body = diagnose_body(app).await;
-    let lag = body
-        .get("runtime_progress_lag_ms")
-        .and_then(Value::as_u64)
-        .expect("lag field");
+    let lag = body.runtime_progress_lag_ms;
 
     // Looser bound than the in-process unit test: an axum handler round-trip
     // adds scheduling jitter, and CI workers can be noisy.

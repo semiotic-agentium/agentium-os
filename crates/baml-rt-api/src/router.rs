@@ -38,9 +38,9 @@ use utoipa::openapi::OpenApi as OpenApiSpec;
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
-    ContextIndexService, ContextMetricsService, ConversationHistoryService, EpisodeService,
-    MermaidService, PlanningService, ProvenanceOpsService, RuntimeProgressMeter, config_handlers,
-    handlers, metrics, otel_middleware, repository_publish,
+    ClusterHeartbeatHealth, ContextIndexService, ContextMetricsService, ConversationHistoryService,
+    EpisodeService, HeartbeatStatus, MermaidService, PlanningService, ProvenanceOpsService,
+    RuntimeProgressMeter, config_handlers, handlers, metrics, otel_middleware, repository_publish,
 };
 
 /// Shared state for API handlers: registry, OpenAPI spec, and **injected** config/catalog/resolver.
@@ -73,6 +73,8 @@ pub struct ApiState {
     /// Continuously observable signal of tokio-runtime progress; surfaced by `GET /diagnose`.
     /// Distinct from [`ApiState::ready`], which is a one-shot boot latch.
     pub runtime_progress: Arc<RuntimeProgressMeter>,
+    /// `None` in standalone mode (no heartbeat task).
+    pub cluster_heartbeat: Option<Arc<ClusterHeartbeatHealth>>,
 }
 
 async fn serve_openapi_json(
@@ -106,19 +108,44 @@ async fn readyz(axum::extract::State(state): axum::extract::State<Arc<ApiState>>
     code
 }
 
+/// Cluster-heartbeat slice of `/diagnose`. Only present in cluster mode.
+#[derive(serde::Serialize)]
+struct ClusterHeartbeatDiagnose {
+    status: HeartbeatStatus,
+    /// `null` until the first successful heartbeat completes.
+    lag_ms: Option<u64>,
+    /// Class of the most recent failure (sticky-on-fault). Omitted before
+    /// any error has been observed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_error_kind: Option<&'static str>,
+}
+
 #[derive(serde::Serialize)]
 struct DiagnoseResponse {
     runtime_progress_lag_ms: u64,
     event_producers_loaded: bool,
+    /// `None` in standalone mode; populated once per request from
+    /// [`ApiState::cluster_heartbeat`] in cluster mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster_heartbeat: Option<ClusterHeartbeatDiagnose>,
 }
 
 async fn diagnose(
     axum::extract::State(state): axum::extract::State<Arc<ApiState>>,
 ) -> axum::Json<DiagnoseResponse> {
     let start = Instant::now();
+    let cluster_heartbeat = state
+        .cluster_heartbeat
+        .as_ref()
+        .map(|h| ClusterHeartbeatDiagnose {
+            status: h.status(),
+            lag_ms: h.lag_millis(),
+            last_error_kind: h.last_error_kind().map(|k| k.as_code()),
+        });
     let body = DiagnoseResponse {
         runtime_progress_lag_ms: state.runtime_progress.lag_millis(),
         event_producers_loaded: state.ready.load(Ordering::Acquire),
+        cluster_heartbeat,
     };
     metrics::record_request("get_diagnose", "success", start.elapsed());
     axum::Json(body)
@@ -190,6 +217,7 @@ pub struct ApiServerConfig {
     pub runner_token: Option<String>,
     pub cluster_mode: ClusterMode,
     pub runtime_progress: Arc<RuntimeProgressMeter>,
+    pub cluster_heartbeat: Option<Arc<ClusterHeartbeatHealth>>,
     pub web_dir: Option<std::path::PathBuf>,
 }
 
@@ -223,6 +251,7 @@ impl ApiServerConfig {
             runner_token: None,
             cluster_mode: ClusterMode::Standalone,
             runtime_progress,
+            cluster_heartbeat: None,
             web_dir: None,
         }
     }
@@ -286,6 +315,7 @@ pub fn api_router_with_services_and_deploy(
         runner_token,
         cluster_mode,
         runtime_progress,
+        cluster_heartbeat,
         web_dir,
     } = config;
     let http_trace_layer =
@@ -452,6 +482,7 @@ pub fn api_router_with_services_and_deploy(
         runner_token,
         cluster_mode,
         runtime_progress,
+        cluster_heartbeat,
     });
 
     let mut router = api_router

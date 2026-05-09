@@ -68,8 +68,8 @@ pub use dispatch::{
     scheduling_scope_from_dispatch_metadata,
 };
 pub use error::{
-    BamlRtError, ClassifiedToolError, Result, SessionLifecycleError, baml_error_disposition,
-    retryability_for_a2a,
+    BamlRtError, ClassifiedToolError, HeartbeatErrorKind, Result, SessionLifecycleError,
+    baml_error_disposition, retryability_for_a2a,
 };
 pub use event_producer::{EventDeliveryOutcome, ProducedEvent};
 pub use event_subscription::{
