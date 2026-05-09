@@ -339,7 +339,8 @@ impl AgentPackage {
                 .await?;
             // Register before `initialize_js_phase`: a CPU-bound JS top-level
             // is the worst-case peg the meter must observe, and it runs inside
-            // that phase.
+            // that phase. The block scope is load-bearing: it drops
+            // `bridge_guard` before `initialize_js_phase` re-locks the bridge.
             {
                 let bridge_arc = built.agent.bridge();
                 let mut bridge_guard = bridge_arc.lock().await;

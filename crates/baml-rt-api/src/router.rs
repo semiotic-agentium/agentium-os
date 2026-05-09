@@ -498,11 +498,11 @@ pub async fn serve_with_services_and_deploy(
     bind: &str,
     config: ApiServerConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let web_dir = config.web_dir.clone();
+    tracing::info!(bind = %bind, web_dir = ?config.web_dir, "HTTP API binding");
     let app = api_router_with_services_and_deploy(registry, config);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let addr = listener.local_addr()?;
-    tracing::info!(%addr, web_dir = ?web_dir, "HTTP API listening");
+    tracing::info!(%addr, "HTTP API listening");
 
     // Issue #341 T4 fault injection: a debug-only hook that lets integration
     // tests force `axum::serve` to return `Ok(())` after a delay, simulating a

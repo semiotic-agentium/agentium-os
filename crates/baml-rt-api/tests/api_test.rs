@@ -149,12 +149,11 @@ fn looks_like_prov_activity_anchor(s: &str) -> bool {
     s.starts_with("prov:v1:payload:")
 }
 
-async fn prov_test_router_with_history(
-    registry: Arc<dyn AgentRegistry>,
-    provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
-    conversation_history: Option<Arc<dyn ConversationHistoryService>>,
-    context_index: Option<Arc<dyn ContextIndexService>>,
-) -> axum::Router {
+/// Build an [`ApiServerConfig`] populated with in-memory test infrastructure
+/// (empty tool catalog, in-memory SurrealKV config store, no-op secret
+/// resolver, ticker-less progress meter). Callers override the fields they
+/// need via struct-update syntax.
+async fn test_api_server_config() -> ApiServerConfig {
     use baml_rt_config::SurrealConfigStore;
     use baml_rt_llm_config::EmptySecretResolver;
     use baml_rt_tools::InventoryCatalog;
@@ -167,18 +166,27 @@ async fn prov_test_router_with_history(
     );
     let secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver> =
         Arc::new(EmptySecretResolver);
+    ApiServerConfig::empty(
+        tool_catalog,
+        config_service,
+        secret_resolver,
+        baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
+    )
+}
+
+async fn prov_test_router_with_history(
+    registry: Arc<dyn AgentRegistry>,
+    provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+    conversation_history: Option<Arc<dyn ConversationHistoryService>>,
+    context_index: Option<Arc<dyn ContextIndexService>>,
+) -> axum::Router {
     api_router_with_services_and_deploy(
         registry,
         ApiServerConfig {
             provenance_ops,
             conversation_history,
             context_index,
-            ..ApiServerConfig::empty(
-                tool_catalog,
-                config_service,
-                secret_resolver,
-                baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
-            )
+            ..test_api_server_config().await
         },
     )
 }
@@ -2310,27 +2318,12 @@ async fn get_mermaid_context_emits_http_and_handler_spans() {
 /// Build a router with explicit auth configuration for boundary tests.
 async fn authed_test_router(token: Option<&str>, mode: ClusterMode) -> axum::Router {
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
-    let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> =
-        Arc::new(baml_rt_tools::InventoryCatalog::new());
-    let config_service: Arc<dyn baml_rt_config::ConfigService> = Arc::new(
-        baml_rt_config::SurrealConfigStore::in_memory()
-            .await
-            .expect("in-memory config store for auth test"),
-    );
-    let secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver> =
-        Arc::new(baml_rt_llm_config::EmptySecretResolver);
-
     api_router_with_services_and_deploy(
         registry,
         ApiServerConfig {
             runner_token: token.map(String::from),
             cluster_mode: mode,
-            ..ApiServerConfig::empty(
-                tool_catalog,
-                config_service,
-                secret_resolver,
-                baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
-            )
+            ..test_api_server_config().await
         },
     )
 }
@@ -2554,16 +2547,6 @@ async fn operator_routes_allow_with_valid_token() {
 /// Build a router with a real in-memory repository and auth configured.
 async fn authed_test_router_with_repo(token: Option<&str>, mode: ClusterMode) -> axum::Router {
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
-    let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> =
-        Arc::new(baml_rt_tools::InventoryCatalog::new());
-    let config_service: Arc<dyn baml_rt_config::ConfigService> = Arc::new(
-        baml_rt_config::SurrealConfigStore::in_memory()
-            .await
-            .expect("in-memory config store for auth test"),
-    );
-    let secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver> =
-        Arc::new(baml_rt_llm_config::EmptySecretResolver);
-
     let store = Arc::new(
         baml_rt_repository::SurrealStore::open_in_memory()
             .await
@@ -2582,12 +2565,7 @@ async fn authed_test_router_with_repo(token: Option<&str>, mode: ClusterMode) ->
             repository_service: Some(repo_service),
             runner_token: token.map(String::from),
             cluster_mode: mode,
-            ..ApiServerConfig::empty(
-                tool_catalog,
-                config_service,
-                secret_resolver,
-                baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
-            )
+            ..test_api_server_config().await
         },
     )
 }
@@ -2708,26 +2686,11 @@ impl DeploymentManager for SlowDeployManager {
 
 async fn router_with_deployment_manager(manager: Arc<dyn DeploymentManager>) -> axum::Router {
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
-    let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> =
-        Arc::new(baml_rt_tools::InventoryCatalog::new());
-    let config_service: Arc<dyn baml_rt_config::ConfigService> = Arc::new(
-        baml_rt_config::SurrealConfigStore::in_memory()
-            .await
-            .expect("in-memory config store"),
-    );
-    let secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver> =
-        Arc::new(baml_rt_llm_config::EmptySecretResolver);
-
     api_router_with_services_and_deploy(
         registry,
         ApiServerConfig {
             deployment_manager: Some(manager),
-            ..ApiServerConfig::empty(
-                tool_catalog,
-                config_service,
-                secret_resolver,
-                baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
-            )
+            ..test_api_server_config().await
         },
     )
 }
