@@ -20,8 +20,13 @@ pub struct ArchiveEntry {
     pub content: Arc<RenderedContent>,
     /// Display name of the tool that produced this result (e.g. `"support/slack"`).
     pub tool_name: String,
-    /// One-line summary from `compact_result` or `describe_open`.
-    pub summary: String,
+    /// Legacy one-line summary from `compact_result` or `describe_open`.
+    /// `None` when `action_identity` is present (preferred for new entries) or when
+    /// no caller could produce a summary. Display falls back to a tool-name-only header.
+    pub summary: Option<String>,
+    /// Compact LLM-visible action/input identity, e.g. `Send(location_query="Paris, France")`.
+    /// This intentionally does not include output details; archive reads materialize the result body.
+    pub action_identity: Option<String>,
     /// Number of lines in `content`.
     pub line_count: usize,
     /// Byte size of `content`.
@@ -37,7 +42,7 @@ impl ArchiveEntry {
     pub fn new(
         content: RenderedContent,
         tool_name: String,
-        summary: String,
+        summary: Option<String>,
         activity_anchor: String,
         source: String,
     ) -> Self {
@@ -46,7 +51,8 @@ impl ArchiveEntry {
         Self {
             content: Arc::new(content),
             tool_name,
-            summary,
+            summary: summary.filter(|s| !s.trim().is_empty()),
+            action_identity: None,
             line_count,
             byte_count,
             activity_anchor,
@@ -54,18 +60,34 @@ impl ArchiveEntry {
         }
     }
 
-    /// One-line display: ref + summary + size (tool name is omitted here — it appears on the
-    /// session open / tool lines; keeps `@N` from duplicating next to `cat -n @N` in reads).
+    /// Attach a compact action/input identity used in new archive headers.
+    pub fn with_action_identity(mut self, action_identity: Option<String>) -> Self {
+        self.action_identity = action_identity.filter(|s| !s.trim().is_empty());
+        self
+    }
+
+    /// One-line display: ref + tool/action identity + size.
+    ///
+    /// Precedence: `action_identity` (new format) > `summary` (legacy quoted) > tool-name-only.
     pub fn display_header(&self, r: ShortRef) -> String {
         let kb = self.byte_count as f64 / 1024.0;
         let size_str = if kb < 1.0 {
             format!("{}B", self.byte_count)
         } else {
-            format!("{:.1}KB", kb)
+            format!("{kb:.1}KB")
         };
+        if let Some(action) = self.action_identity.as_deref() {
+            return format!(
+                "{r} · {}:{} · {}L · {}",
+                self.tool_name, action, self.line_count, size_str
+            );
+        }
+        if let Some(summary) = self.summary.as_deref() {
+            return format!(r#"{r} · "{summary}" · {}L · {size_str}"#, self.line_count);
+        }
         format!(
-            r#"{r} · "{}" · {}L · {}"#,
-            self.summary, self.line_count, size_str
+            "{r} · {} · {}L · {size_str}",
+            self.tool_name, self.line_count
         )
     }
 }
@@ -324,7 +346,7 @@ mod tests {
         ArchiveEntry::new(
             content,
             tool.into(),
-            summary.into(),
+            Some(summary.into()),
             String::new(),
             "tool_result".into(),
         )
@@ -357,12 +379,12 @@ mod tests {
     }
 
     #[test]
-    fn display_header() {
+    fn display_header_uses_legacy_summary_without_action_identity() {
         let content = render_to_lines(&json!([{"msg": "hello"}]));
         let entry = ArchiveEntry::new(
             content,
             "support/slack".into(),
-            "fetched 1 message".into(),
+            Some("fetched 1 message".into()),
             String::new(),
             "tool_result".into(),
         );
@@ -371,6 +393,39 @@ mod tests {
         assert!(header.starts_with("@3 · "));
         assert!(header.contains("fetched 1 message"));
         assert!(!header.contains("support/slack"));
+    }
+
+    #[test]
+    fn display_header_uses_tool_action_identity_when_available() {
+        let content = render_to_lines(&json!([{"msg": "hello"}]));
+        let entry = ArchiveEntry::new(
+            content,
+            "dev/meteo-tool".into(),
+            Some("weather result".into()),
+            String::new(),
+            "tool_result".into(),
+        )
+        .with_action_identity(Some("Send(location_query=\"Paris, France\")".into()));
+        let header = entry.display_header(ShortRef::new(1));
+        assert!(
+            header.starts_with("@1 · dev/meteo-tool:Send(location_query=\"Paris, France\") · ")
+        );
+        assert!(!header.contains("weather result"));
+    }
+
+    #[test]
+    fn display_header_falls_back_to_tool_name_when_summary_and_action_absent() {
+        let content = render_to_lines(&json!([{"msg": "hi"}]));
+        let entry = ArchiveEntry::new(
+            content,
+            "support/slack".into(),
+            None,
+            String::new(),
+            "tool_result".into(),
+        );
+        let header = entry.display_header(ShortRef::new(7));
+        assert!(header.starts_with("@7 · support/slack · "), "got: {header}");
+        assert!(!header.contains('"'), "no quoted-empty summary: {header}");
     }
 
     #[test]

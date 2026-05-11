@@ -36,6 +36,7 @@ fn entry_to_json(entry: &ArchiveEntry) -> Value {
     json!({
         "tool_name": entry.tool_name,
         "summary": entry.summary,
+        "action_identity": entry.action_identity,
         "activity_anchor": entry.activity_anchor,
         "source": entry.source,
         "rendered_lines": lines,
@@ -50,13 +51,17 @@ fn entry_from_json(v: &Value) -> Result<ArchiveEntry> {
             reason: "missing tool_name".into(),
         })?
         .to_string();
+    // `summary` is optional now: new rows with `action_identity` typically omit it.
     let summary = v
         .get("summary")
         .and_then(|x| x.as_str())
-        .ok_or_else(|| ProvenanceError::CorruptArchiveEntry {
-            reason: "missing summary".into(),
-        })?
-        .to_string();
+        .map(str::to_string)
+        .filter(|s| !s.trim().is_empty());
+    let action_identity = v
+        .get("action_identity")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string);
     let activity_anchor = v
         .get("activity_anchor")
         .and_then(|x| x.as_str())
@@ -79,13 +84,10 @@ fn entry_from_json(v: &Value) -> Result<ArchiveEntry> {
         .filter_map(|x| x.as_str().map(str::to_string))
         .collect();
     let content = RenderedContent::from_lines(lines);
-    Ok(ArchiveEntry::new(
-        content,
-        tool_name,
-        summary,
-        activity_anchor,
-        source,
-    ))
+    Ok(
+        ArchiveEntry::new(content, tool_name, summary, activity_anchor, source)
+            .with_action_identity(action_identity),
+    )
 }
 
 impl SurrealProvenanceStore {

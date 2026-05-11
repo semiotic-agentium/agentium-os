@@ -817,28 +817,43 @@ impl ToolSessionExecutionHandle {
                     // meaningful than "tool result". Fall back to describe_result, then
                     // the generic label. send_args_for_summary captured before the read
                     // loop removes the session state.
-                    let summary = send_args_for_summary
-                        .as_ref()
-                        .map(|args| {
-                            // Wrap in the canonical step shape expected by describe_invocation.
-                            let wrapped = serde_json::json!({ "op": "Send", "input": args });
-                            self.ctx
-                                .tool_registry
-                                .describe_invocation_with_hint(Some(tool_name.as_str()), &wrapped)
-                        })
-                        .or_else(|| {
-                            self.ctx
-                                .tool_registry
-                                .describe_result_for(&tool_name, &output_value)
-                        })
-                        .unwrap_or_else(|| "tool result".to_string());
+                    // Prefer the compact action/input identity for new entries; only fall back
+                    // to the legacy describe_invocation/describe_result summary when the registry
+                    // can't produce an identity (no Send args, or unknown tool).
+                    let action_identity = send_args_for_summary.as_ref().and_then(|args| {
+                        self.ctx
+                            .tool_registry
+                            .describe_archive_action_for(&tool_name, "Send", args)
+                    });
+                    // `summary` is only computed when no action_identity is available; the new
+                    // header path uses action_identity directly. `display_header` falls back to
+                    // tool-name-only when both are absent.
+                    let summary = if action_identity.is_some() {
+                        None
+                    } else {
+                        send_args_for_summary
+                            .as_ref()
+                            .map(|args| {
+                                let wrapped = serde_json::json!({ "op": "Send", "input": args });
+                                self.ctx.tool_registry.describe_invocation_with_hint(
+                                    Some(tool_name.as_str()),
+                                    &wrapped,
+                                )
+                            })
+                            .or_else(|| {
+                                self.ctx
+                                    .tool_registry
+                                    .describe_result_for(&tool_name, &output_value)
+                            })
+                    };
                     let entry = archive_refs::ArchiveEntry::new(
                         rendered,
                         tool_name,
                         summary,
                         activity_anchor,
                         "tool_result".to_string(),
-                    );
+                    )
+                    .with_action_identity(action_identity);
                     let context_id = plan_scope.context_id().as_str().to_string();
                     let ref_table =
                         archive_refs::get_or_create_ref_table(archive_ref_tables, &context_id);

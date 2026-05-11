@@ -254,7 +254,7 @@ async fn conversation_history_renders_like_ctx_tags() {
     let entry = ArchiveEntry::new(
         lines_content,
         tool_name.clone(),
-        "found 2 agents".into(),
+        Some("found 2 agents".into()),
         String::new(),
         "tool_result".to_string(),
     );

@@ -144,7 +144,7 @@ fn insert_virtual_for_wire(
     let entry = ArchiveEntry::new(
         rendered,
         tool_name.to_string(),
-        summary,
+        Some(summary),
         activity_anchor.to_string(),
         "tool_result".into(),
     );
@@ -228,7 +228,7 @@ pub(crate) fn absorb_episode_entry_into_ref_table(
             let entry = ArchiveEntry::new(
                 rc,
                 tool_name.clone(),
-                summary.clone(),
+                Some(summary.clone()),
                 e.activity_anchor.clone(),
                 "tool_result".into(),
             );
