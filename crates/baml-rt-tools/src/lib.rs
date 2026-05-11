@@ -80,7 +80,10 @@ pub use tool_fsm::{
     SessionPhase, ToolFailure, ToolFailureKind, ToolSession, ToolSessionError, ToolSessionId,
     ToolStep, tool_failure_to_baml_tool_execution_error,
 };
-pub use tool_schema::{DescribeAction, ToolType, json_schema_value, ts_decl, ts_name};
+pub use tool_schema::{
+    ActionIdentity, DescribeAction, DescribeActionIdentity, ToolType, json_schema_value, ts_decl,
+    ts_name,
+};
 pub use tools::{
     BamlTool, BundleName, FunctionPlanBinding, FunctionRole, LocalToolName, SecretRequest,
     SecretType, SessionPlanFunctionsMap, SessionPlanTypeName, SessionPolicy, SessionTypeNames,
@@ -89,5 +92,5 @@ pub use tools::{
     ToolMetadataBuilder, ToolName, ToolOrigin, ToolRegistry, ToolSessionAdvance, ToolSessionHandle,
     ToolSlug, ToolTypeSpec, TypeBasedMetadataBuilder, create_multi_send_session_tool_from_async,
     create_one_shot_tool_from_async, create_one_shot_tool_from_async_with_context,
-    parse_tool_name_and_class,
+    parse_tool_name_and_class, project_archive_action_identity_from_parts,
 };

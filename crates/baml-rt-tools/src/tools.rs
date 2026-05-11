@@ -34,7 +34,7 @@ use crate::{
         SessionPhase, ToolFailure, ToolSession, ToolSessionError, ToolSessionId, ToolStep,
         tool_failure_to_baml_tool_execution_error,
     },
-    tool_schema::{DescribeAction, ToolType, json_schema_value},
+    tool_schema::{ActionIdentity, DescribeAction, ToolType, json_schema_value},
     ts_gen::render_tool_typescript,
 };
 
@@ -319,6 +319,15 @@ pub trait BamlTool: Send + Sync + 'static {
     /// Default delegates to `DescribeAction::describe` on the Input type.
     fn describe_invocation(&self, input: &Self::Input) -> String {
         input.describe()
+    }
+
+    /// Structured, compact action/input identity for this tool's Send input.
+    ///
+    /// Return `None` for flat/single-action tools where schema-driven projection is sufficient.
+    /// Multi-action untagged-union tools should return an [`ActionIdentity`] so the runtime can
+    /// preserve semantic operation names while still owning formatting, redaction, and truncation.
+    fn action_identity(&self, _input: &Self::Input) -> Option<ActionIdentity> {
+        None
     }
 
     /// Classify execution failures for host retry policy and LLM-visible `tool_error` payloads.
@@ -1412,6 +1421,237 @@ pub struct HistoryContextV1 {
     pub payload: Option<BTreeMap<String, OpaqueJson>>,
 }
 
+const ARCHIVE_ACTION_MAX_VALUE_CHARS: usize = 32;
+const ARCHIVE_ACTION_MAX_TOTAL_CHARS: usize = 96;
+pub const ARCHIVE_ACTION_MAX_IDENTITY_FIELDS: usize = 3;
+
+/// Conservative field-name check for redaction in archive headers.
+///
+/// Substring/suffix rules (`*_key`, `*_token`, `*secret*`) over-match deliberately:
+/// the cost of redacting a benign `cache_key` in a debug header is trivial; the cost
+/// of leaking a real secret to LLM context is not. Tighten only with an allowlist.
+fn is_sensitive_archive_field(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    let eq = |s: &str| bytes.eq_ignore_ascii_case(s.as_bytes());
+    let ends_with_ci = |suffix: &str| {
+        bytes.len() >= suffix.len()
+            && bytes[bytes.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
+    };
+    let contains_ci = |needle: &str| {
+        let n = needle.as_bytes();
+        bytes.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+    };
+    eq("authorization")
+        || eq("password")
+        || eq("secret")
+        || eq("api_key")
+        || eq("apikey")
+        || eq("token")
+        || ends_with_ci("_key")
+        || ends_with_ci("_token")
+        || contains_ci("secret")
+}
+
+fn truncate_archive_string(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in s.chars().enumerate() {
+        if idx >= max {
+            out.push('…');
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn archive_value_to_token(field: &str, value: &Value) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    if is_sensitive_archive_field(field) {
+        return Some(format!("{field}=<redacted>"));
+    }
+    match value {
+        Value::String(s) if s.is_empty() => None,
+        Value::String(s) => Some(format!(
+            "{field}={:?}",
+            truncate_archive_string(s, ARCHIVE_ACTION_MAX_VALUE_CHARS)
+        )),
+        Value::Number(n) => Some(format!("{field}={n}")),
+        Value::Bool(b) => Some(format!("{field}={b}")),
+        Value::Array(a) => Some(format!("{field}=[{} items]", a.len())),
+        Value::Object(_) => Some(format!("{field}={{...}}")),
+        Value::Null => None,
+    }
+}
+
+fn schema_default_for<'a>(schema: Option<&'a Value>, field: &str) -> Option<&'a Value> {
+    schema?.get("properties")?.get(field)?.get("default")
+}
+
+fn push_archive_field_token(
+    tokens: &mut Vec<String>,
+    input_obj: &serde_json::Map<String, Value>,
+    schema: Option<&Value>,
+    field: &str,
+) {
+    let Some(value) = input_obj.get(field) else {
+        return;
+    };
+    if schema_default_for(schema, field).is_some_and(|default| default == value) {
+        return;
+    }
+    if let Some(token) = archive_value_to_token(field, value) {
+        tokens.push(token);
+    }
+}
+
+fn schema_property_order(schema: Option<&Value>) -> Vec<String> {
+    schema
+        .and_then(|s| s.get("properties"))
+        .and_then(Value::as_object)
+        .map(|props| props.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn tagged_one_of_archive_tokens(
+    input_obj: &serde_json::Map<String, Value>,
+    schema: Option<&Value>,
+) -> Option<Vec<String>> {
+    let branches = schema?.get("oneOf")?.as_array()?;
+    for branch in branches {
+        let Some(props) = branch.get("properties").and_then(Value::as_object) else {
+            continue;
+        };
+        let Some((disc_field, action_value)) = props.iter().find_map(|(name, spec)| {
+            let c = spec.get("const")?.as_str()?;
+            if input_obj.get(name).and_then(Value::as_str) == Some(c) {
+                Some((name.as_str(), c.to_string()))
+            } else {
+                None
+            }
+        }) else {
+            continue;
+        };
+        let mut tokens = vec![action_value];
+        if let Some(required) = branch.get("required").and_then(Value::as_array) {
+            for field in required.iter().filter_map(Value::as_str) {
+                if field != disc_field {
+                    push_archive_field_token(&mut tokens, input_obj, Some(branch), field);
+                }
+            }
+        }
+        for field in schema_property_order(Some(branch)) {
+            if field != disc_field && !tokens.iter().any(|t| t.starts_with(&format!("{field}="))) {
+                push_archive_field_token(&mut tokens, input_obj, Some(branch), &field);
+            }
+        }
+        return Some(tokens);
+    }
+    None
+}
+
+/// Render a compact action/input identity from typed, implementor-selected action parts.
+///
+/// The renderer keeps formatting, redaction, value truncation, field-count limits, and total-length
+/// limits centralized. At most [`ARCHIVE_ACTION_MAX_IDENTITY_FIELDS`] fields are rendered, in the
+/// order provided; if additional non-empty fields were supplied, an ellipsis token is appended so
+/// the model knows the identity was compacted.
+#[must_use]
+pub fn project_archive_action_identity_from_parts<'a, I>(
+    op: &str,
+    action_name: Option<&str>,
+    fields: I,
+) -> String
+where
+    I: IntoIterator<Item = (&'a str, Value)>,
+{
+    let mut tokens = Vec::new();
+    if let Some(name) = action_name.filter(|name| !name.is_empty()) {
+        tokens.push(name.to_string());
+    }
+
+    let mut rendered_fields = 0;
+    let mut omitted_fields = false;
+    for (field, value) in fields {
+        let Some(token) = archive_value_to_token(field, &value) else {
+            continue;
+        };
+        if rendered_fields >= ARCHIVE_ACTION_MAX_IDENTITY_FIELDS {
+            omitted_fields = true;
+            break;
+        }
+        tokens.push(token);
+        rendered_fields += 1;
+    }
+    if omitted_fields {
+        tokens.push("…".to_string());
+    }
+
+    if tokens.is_empty() {
+        return op.to_string();
+    }
+    let op_chars = op.chars().count();
+    let budget = ARCHIVE_ACTION_MAX_TOTAL_CHARS.saturating_sub(op_chars + 2);
+    let inner = tokens.join(" ");
+    if inner.chars().count() <= budget {
+        format!("{op}({inner})")
+    } else {
+        let trimmed = truncate_archive_string(&inner, budget.saturating_sub(1));
+        format!("{op}({trimmed})")
+    }
+}
+
+/// Render a compact action/input identity for archive headers, e.g.
+/// `Send(location_query="Paris, France")` or `Send(list_tasks list_id="abc")`.
+#[must_use]
+pub fn project_archive_action_identity(op: &str, input: &Value, schema: Option<&Value>) -> String {
+    let mut tokens = Vec::new();
+    if let Some(input_obj) = input.as_object() {
+        if let Some(tagged) = tagged_one_of_archive_tokens(input_obj, schema) {
+            tokens = tagged;
+        } else {
+            let mut fields = schema_property_order(schema);
+            for key in input_obj.keys() {
+                if !fields.iter().any(|f| f == key) {
+                    fields.push(key.clone());
+                }
+            }
+            for field in fields {
+                push_archive_field_token(&mut tokens, input_obj, schema, &field);
+            }
+        }
+    } else if !input.is_null() {
+        tokens.push(match input {
+            Value::String(s) => format!(
+                "value={:?}",
+                truncate_archive_string(s, ARCHIVE_ACTION_MAX_VALUE_CHARS)
+            ),
+            Value::Number(n) => format!("value={n}"),
+            Value::Bool(b) => format!("value={b}"),
+            Value::Array(a) => format!("value=[{} items]", a.len()),
+            Value::Object(_) => "value={...}".to_string(),
+            Value::Null => String::new(),
+        });
+    }
+
+    if tokens.is_empty() {
+        return op.to_string();
+    }
+    // Budget for the inner token list so the wrapped form stays balanced.
+    // `op(` + `)` = op.chars().count() + 2; reserve one extra char for `…` if we have to elide.
+    let op_chars = op.chars().count();
+    let budget = ARCHIVE_ACTION_MAX_TOTAL_CHARS.saturating_sub(op_chars + 2);
+    let inner = tokens.join(" ");
+    if inner.chars().count() <= budget {
+        format!("{op}({inner})")
+    } else {
+        // Reserve 1 char inside the parens for the ellipsis marker.
+        let trimmed = truncate_archive_string(&inner, budget.saturating_sub(1));
+        format!("{op}({trimmed})")
+    }
+}
+
 #[async_trait]
 pub trait ToolHandler: Send + Sync {
     fn metadata(&self) -> &ToolFunctionMetadata;
@@ -1423,6 +1663,18 @@ pub trait ToolHandler: Send + Sync {
     /// Returns `None` when no meaningful description is available.
     fn describe_result_value(&self, _output: &Value) -> Option<String> {
         None
+    }
+
+    /// Produce a compact action/input identity for archive headers.
+    ///
+    /// Returns a string shaped like `Send(location_query="Paris")`. This should not include
+    /// output details; it is only an affordance for choosing whether to read an existing `@N`.
+    fn describe_archive_action(&self, op: &str, input: &Value) -> Option<String> {
+        Some(project_archive_action_identity(
+            op,
+            input,
+            Some(&self.metadata().input_schema),
+        ))
     }
 
     /// Produce a natural language description of a tool action from its
@@ -1789,6 +2041,38 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
         if desc.is_empty() { None } else { Some(desc) }
     }
 
+    fn describe_archive_action(&self, op: &str, input: &Value) -> Option<String> {
+        let raw = input.get("input").unwrap_or(input);
+        match serde_json::from_value::<T::Input>(raw.clone()) {
+            Ok(typed) => self
+                .tool
+                .action_identity(&typed)
+                .map(|identity| {
+                    project_archive_action_identity_from_parts(op, identity.name, identity.fields)
+                })
+                .or_else(|| {
+                    Some(project_archive_action_identity(
+                        op,
+                        raw,
+                        Some(&self.metadata.input_schema),
+                    ))
+                }),
+            Err(err) => {
+                tracing::debug!(
+                    tool = %T::LOCAL_NAME,
+                    op = %op,
+                    error = %err,
+                    "describe_archive_action: typed deserialize failed; falling back to schema-driven projection"
+                );
+                Some(project_archive_action_identity(
+                    op,
+                    raw,
+                    Some(&self.metadata.input_schema),
+                ))
+            }
+        }
+    }
+
     fn describe_invocation(&self, content: &Value) -> String {
         // Single JSON parse point for the entire tool family.
         // Payload arrives in two shapes:
@@ -2145,6 +2429,19 @@ impl ToolRegistry {
         let inner = self.inner.lock().unwrap();
         let (_, handler) = inner.tools.get(&parsed)?;
         Some(handler.describe_invocation(content))
+    }
+
+    /// Get a compact action/input identity for an archive header.
+    pub fn describe_archive_action_for(
+        &self,
+        tool_name: &str,
+        op: &str,
+        input: &Value,
+    ) -> Option<String> {
+        let parsed = ToolName::parse(tool_name).ok()?;
+        let inner = self.inner.lock().unwrap();
+        let (_, handler) = inner.tools.get(&parsed)?;
+        handler.describe_archive_action(op, input)
     }
 
     /// Get a one-line description of what a tool result contains.
@@ -3242,5 +3539,133 @@ mod tool_name_identifier_tests {
     fn tool_slug_normalizes_hyphen_to_underscore() {
         let tool_name = ToolName::parse("dev/meteo-tool").unwrap();
         assert_eq!(tool_name.slug().as_str(), "dev_meteo_tool");
+    }
+}
+
+#[cfg(test)]
+mod archive_identity_tests {
+    use serde_json::json;
+
+    use super::{project_archive_action_identity, project_archive_action_identity_from_parts};
+
+    #[test]
+    fn flat_schema_projects_present_non_default_fields() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "location_query": { "type": "string" },
+                "timezone": { "type": "string", "default": "auto" },
+                "api_key": { "type": "string" }
+            }
+        });
+        let input = json!({
+            "location_query": "Paris, France",
+            "timezone": "auto",
+            "api_key": "secret"
+        });
+        assert_eq!(
+            project_archive_action_identity("Send", &input, Some(&schema)),
+            "Send(location_query=\"Paris, France\" api_key=<redacted>)"
+        );
+    }
+
+    #[test]
+    fn tagged_one_of_skips_non_matching_branches_to_find_match() {
+        // Regression: prior code used `?` inside the branch loop, which returned None
+        // from the whole function as soon as the first branch failed shape/const checks.
+        let schema = json!({
+            "oneOf": [
+                {
+                    "required": ["action"],
+                    "properties": {
+                        "action": { "const": "first_action" },
+                        "irrelevant": { "type": "string" }
+                    }
+                },
+                {
+                    "required": ["action", "list_id"],
+                    "properties": {
+                        "action": { "const": "list_tasks" },
+                        "list_id": { "type": "string" }
+                    }
+                }
+            ]
+        });
+        let input = json!({ "action": "list_tasks", "list_id": "lst_42" });
+        assert_eq!(
+            project_archive_action_identity("Send", &input, Some(&schema)),
+            "Send(list_tasks list_id=\"lst_42\")"
+        );
+    }
+
+    #[test]
+    fn long_input_truncation_keeps_balanced_parens() {
+        // Regression: prior code truncated the wrapped string and dropped the closing `)`.
+        let schema = json!({
+            "type": "object",
+            "properties": { "blob": { "type": "string" } }
+        });
+        let big = "x".repeat(500);
+        let input = json!({ "blob": big });
+        let out = project_archive_action_identity("Send", &input, Some(&schema));
+        assert!(out.starts_with("Send("), "must start with op(: {out}");
+        assert!(out.ends_with(')'), "must end with ): {out}");
+        assert!(out.contains('…'), "expected ellipsis on truncation: {out}");
+        assert!(
+            out.chars().count() <= 96,
+            "must respect total char cap: {} > 96",
+            out.chars().count()
+        );
+    }
+
+    #[test]
+    fn tagged_one_of_projects_action_and_identity_fields() {
+        let schema = json!({
+            "oneOf": [
+                {
+                    "required": ["action", "list_id"],
+                    "properties": {
+                        "action": { "const": "list_tasks" },
+                        "list_id": { "type": "string" }
+                    }
+                }
+            ]
+        });
+        let input = json!({ "action": "list_tasks", "list_id": "lst_42" });
+        assert_eq!(
+            project_archive_action_identity("Send", &input, Some(&schema)),
+            "Send(list_tasks list_id=\"lst_42\")"
+        );
+    }
+
+    #[test]
+    fn typed_identity_parts_cap_fields_and_mark_omission() {
+        let out = project_archive_action_identity_from_parts(
+            "Send",
+            Some("create_task"),
+            vec![
+                ("list_id", json!("lst_42")),
+                ("name", json!("Fix bug")),
+                ("priority", json!(1)),
+                (
+                    "description",
+                    json!("long details that should not be shown"),
+                ),
+            ],
+        );
+        assert_eq!(
+            out,
+            "Send(create_task list_id=\"lst_42\" name=\"Fix bug\" priority=1 …)"
+        );
+    }
+
+    #[test]
+    fn typed_identity_parts_still_redact_sensitive_fields() {
+        let out = project_archive_action_identity_from_parts(
+            "Send",
+            Some("call_api"),
+            vec![("api_key", json!("secret")), ("query", json!("status"))],
+        );
+        assert_eq!(out, "Send(call_api api_key=<redacted> query=\"status\")");
     }
 }
