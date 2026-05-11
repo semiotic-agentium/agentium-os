@@ -68,12 +68,37 @@ PROBER_PIDS=()
 # meter is blind.
 DEPLOY_OK=0
 
+# Capture cgroup/memory/pod state from the runner pod before cluster teardown,
+# so the decision matrix in issue #350 can be populated on every run regardless
+# of pass/fail. Runs unconditionally; failures swallowed since the cluster may
+# be in any state by the time we land here.
+capture_diagnostics() {
+  if [[ -z "${RUNNER_POD_0:-}" ]]; then
+    return 0
+  fi
+  local diag_dir="$LOG_DIR/diagnostics"
+  mkdir -p "$diag_dir"
+  log_step "Capturing cgroup diagnostics from ${RUNNER_POD_0}"
+  # --request-timeout caps each kubectl call so a transitional pod state
+  # (e.g. just SIGKILLed but not yet restarted) can't stretch cleanup into
+  # several wasted minutes of dead-wait on a CI run.
+  local k_timeout="--request-timeout=10s"
+  kubectl exec "$k_timeout" -n "$NAMESPACE" "$RUNNER_POD_0" -- cat /sys/fs/cgroup/cpu.stat \
+    > "$diag_dir/cpu.stat" 2>"$diag_dir/cpu.stat.err" || true
+  kubectl exec "$k_timeout" -n "$NAMESPACE" "$RUNNER_POD_0" -- cat /sys/fs/cgroup/memory.events \
+    > "$diag_dir/memory.events" 2>"$diag_dir/memory.events.err" || true
+  kubectl describe pod "$k_timeout" -n "$NAMESPACE" "$RUNNER_POD_0" \
+    > "$diag_dir/pod-describe.txt" 2>"$diag_dir/pod-describe.err" || true
+  log_info "Diagnostics written to $diag_dir/"
+}
+
 cleanup() {
   local code=$?
   for pid in "${PROBER_PIDS[@]}"; do
     kill "$pid" 2>/dev/null || true
   done
   kill_all_port_forwards
+  capture_diagnostics
   if (( HAS_FAILURE )) || (( code != 0 )); then
     dump_logs "$LOG_DIR" 2>/dev/null || true
   fi

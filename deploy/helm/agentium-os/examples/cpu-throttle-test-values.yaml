@@ -7,3 +7,4 @@ runner:
   resources:
     limits:
       cpu: 500m
+      memory: 3Gi
