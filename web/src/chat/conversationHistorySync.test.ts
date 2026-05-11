@@ -220,6 +220,73 @@ describe("applyConversationHistoryIngress", () => {
     expect(scheduledRetries.length).toBe(0);
   });
 
+  it("full defers when GET omits a client user-msg turn but still has older assistant text", () => {
+    const msgs: ChatMessage[] = [
+      {
+        id: "user-msg-99-1",
+        role: "user",
+        speakerKind: "human",
+        text: "follow-up",
+        timestamp: new Date(),
+      },
+      {
+        id: "agent-1",
+        role: "agent",
+        text: "fresh reply body",
+        timestamp: new Date(),
+        contentBlocks: [],
+      },
+    ];
+    const { deps, scheduledRetries } = makeDeps(msgs);
+    const page = basePage("v-stale-user", [
+      messageItem("user", "earlier", "u-old", 10),
+      messageItem("assistant", "earlier assistant row", "a-old", 20),
+    ]);
+    const effect = applyConversationHistoryIngress(deps, {
+      kind: "full",
+      mode: "background",
+      page,
+      respectDuplicateVersion: false,
+      syncTaskIdFromPageBeforeDefer: true,
+    });
+    expect(effect).toEqual({ kind: "deferred", reason: "provenance_lags_live" });
+    expect(deps.messages.value).toEqual(msgs);
+    expect(scheduledRetries.length).toBe(1);
+  });
+
+  it("full applies when GET includes text for every client user-msg turn", () => {
+    const msgs: ChatMessage[] = [
+      {
+        id: "user-msg-100-1",
+        role: "user",
+        speakerKind: "human",
+        text: "hello",
+        timestamp: new Date(),
+      },
+      {
+        id: "agent-1",
+        role: "agent",
+        text: "reply",
+        timestamp: new Date(),
+        contentBlocks: [],
+      },
+    ];
+    const { deps } = makeDeps(msgs);
+    const page = basePage("v-synced-user", [
+      messageItem("user", "hello", "u1", 10),
+      messageItem("assistant", "reply", "a1", 20),
+    ]);
+    const effect = applyConversationHistoryIngress(deps, {
+      kind: "full",
+      mode: "background",
+      page,
+      respectDuplicateVersion: false,
+      syncTaskIdFromPageBeforeDefer: true,
+    });
+    expect(effect).toEqual({ kind: "applied_full" });
+    expect(deps.messages.value.some((m) => m.role === "user" && m.text === "hello")).toBe(true);
+  });
+
   it("background full defer does not set skipped but still retries when scheduled", () => {
     const agent: ChatMessage = {
       id: "live",

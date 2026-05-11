@@ -6,9 +6,6 @@ function GetDiscoverAgentsPlan(
   prompt #"
     Discover available agents to match the user's intent.
     Inferred intent: {{ inferred_intent }}
-
-    {{ ctx.tags['conversation_transcript'] }}
-    {{ ctx.output_format }}
   "#
 }
 
@@ -116,10 +113,7 @@ function DecideDelegationAction(
   client DefaultClient
   prompt #"
     Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
-    {{ ctx.output_format }}
-    For `Open` / `Send`, use `*OpenInput` and `*SendInput` shapes from the merged runtime. Return `null` when the goal is satisfied or after 2+ exchanges.
-
-    {{ ctx.tags['conversation_transcript'] }}
+    Return `null` when the goal is satisfied or after 2+ exchanges.
   "#
 }
 

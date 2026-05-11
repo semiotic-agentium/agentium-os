@@ -1,9 +1,16 @@
-//! Phase executor prompt algebra: [`compose_phase_prompt_core`] (cue → optional supplement → IR
-//! template → narrowed-union footer → `{{ ctx.output_format }}`), then optional hop constraint
-//! suffix; [`ToolSessionPhasePromptSpec`] prepends [`SESSION_STEP_STABLE_PREFIX_BAML`] and wraps for
-//! BAML. The parent module holds IR walking and polymorphic class emission.
+//! Phase executor prompt algebra: [`compose_phase_prompt_core`] (cue → optional supplement →
+//! narrowed-union footer → IR template → canonical session-history Jinja → output binding), then
+//! optional hop constraint suffix;
+//! [`ToolSessionPhasePromptSpec`] prepends [`SESSION_STEP_STABLE_PREFIX_BAML`], optional
+//! `tool_schema_prelude` Jinja, and wraps for BAML. The parent module holds IR walking and
+//! polymorphic class emission.
 
-use baml_rt_tools::SESSION_STEP_STABLE_PREFIX_BAML;
+use std::sync::LazyLock;
+
+use baml_rt_tools::{
+    CONVERSATION_TRANSCRIPT_TAG, SESSION_STEP_STABLE_PREFIX_BAML, TOOL_SCHEMA_PRELUDE_TAG,
+};
+use regex::Regex;
 
 /// Which FSM hop this executor represents — select, first post-open act, continue, or unified
 /// structured hop (plan / synthesis / archive reads / AskUser without a host tool Open).
@@ -21,11 +28,14 @@ pub(crate) enum PhaseHop<'a> {
     UnifiedPrimary,
 }
 
-/// Remove lines that are only `{{ ctx.output_format }}` (optional whitespace / CRLF).
+/// Remove lines that are only `{{ ctx.output_format }}` or bare transcript tags (optional whitespace / CRLF).
 pub(crate) fn strip_standalone_output_format_directives(template: &str) -> String {
     template
         .lines()
-        .filter(|line| !is_standalone_output_format_line(line.trim()))
+        .filter(|line| {
+            let t = line.trim();
+            !is_standalone_output_format_line(t) && !is_standalone_conversation_transcript_line(t)
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -33,6 +43,55 @@ pub(crate) fn strip_standalone_output_format_directives(template: &str) -> Strin
 fn is_standalone_output_format_line(trimmed: &str) -> bool {
     let s = trimmed.trim_end_matches('\r').trim();
     s == "{{ ctx.output_format }}" || s == "{{ctx.output_format}}"
+}
+
+fn is_standalone_conversation_transcript_line(trimmed: &str) -> bool {
+    let s = trimmed.trim_end_matches('\r').trim();
+    matches!(
+        s,
+        "{{ ctx.tags['conversation_transcript'] }}"
+            | "{{ctx.tags['conversation_transcript']}}"
+            | "{{ ctx.tags.conversation_transcript }}"
+            | "{{ctx.tags.conversation_transcript}}"
+    )
+}
+
+/// Removes author-written `{% if … conversation_transcript … %}` … `{% endif %}` blocks from the
+/// parent IR prompt so generated phase executors inject history exactly once (see
+/// [`append_phase_session_history_jinja`]).
+fn strip_conversation_transcript_jinja_blocks(template: &str) -> String {
+    static BLOCK_BRACKET: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?s)\{%\s*if\s+ctx\.tags\[\s*(?:'conversation_transcript'|"conversation_transcript")\s*\]\s*%\}.*?\{%\s*endif\s*%\}"#,
+        )
+        .expect("CONVERSATION_TRANSCRIPT bracket-tag regex")
+    });
+    static BLOCK_DOT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?s)\{%\s*if\s+ctx\.tags\.conversation_transcript\s*%\}.*?\{%\s*endif\s*%\}")
+            .expect("CONVERSATION_TRANSCRIPT dot-tag regex")
+    });
+    let mut s = BLOCK_BRACKET.replace_all(template, "").into_owned();
+    s = BLOCK_DOT.replace_all(&s, "").into_owned();
+    // Normalize excessive blank lines left after stripping blocks.
+    static EXTRA_BLANK: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\n{3,}").expect("extra blank lines regex"));
+    EXTRA_BLANK.replace_all(&s, "\n\n").into_owned()
+}
+
+/// Strip directives that generated phase executors own: standalone `{{ ctx.output_format }}` lines
+/// and hand-authored conversation-transcript Jinja blocks.
+pub(crate) fn strip_phase_executor_ir_template(template: &str) -> String {
+    let without_output = strip_standalone_output_format_directives(template);
+    strip_conversation_transcript_jinja_blocks(&without_output)
+}
+
+/// Canonical session history injection for all generated phase executors (after IR task body).
+fn append_phase_session_history_jinja(out: &mut String) {
+    out.push_str("{% if ctx.tags['");
+    out.push_str(CONVERSATION_TRANSCRIPT_TAG);
+    out.push_str("'] %}\nSession history:\n{{ ctx.tags['");
+    out.push_str(CONVERSATION_TRANSCRIPT_TAG);
+    out.push_str("'] }}\n{% endif %}\n\n");
 }
 
 pub(crate) fn phase_cue_line(phase: PhaseHop<'_>) -> String {
@@ -80,6 +139,20 @@ pub(crate) fn append_phase_footer(body: &mut String, legal_type_names: &[String]
     }
 }
 
+/// Tail of tool-session phase prompts: no duplicated `{{ ctx.output_format }}` JSON dump — schemas
+/// live in `ctx.tags['tool_schema_prelude']` at the top of the rendered prompt.
+const TOOL_SESSION_JSON_CLOSURE: &str = "\nEmit exactly one JSON root matching one narrowed class name above. \
+Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt \
+(when present).\n\n";
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PhasePromptOutputFormatMode {
+    /// Full BAML-expanded schema (`{{ ctx.output_format }}`) — unified-primary structured hops.
+    Full,
+    /// Reference-only tail for tool FSM phase executors (`__select` / `__act__*` / `__continue__*`).
+    ToolSessionReference,
+}
+
 /// Wrap IR/template fragments in `client … prompt #""#` without applying `format!` to `prompt_inner`.
 pub(crate) fn wrap_client_baml_prompt_body(client_name: &str, prompt_inner: &str) -> String {
     let mut s = String::with_capacity(prompt_inner.len() + client_name.len() + 24);
@@ -91,14 +164,20 @@ pub(crate) fn wrap_client_baml_prompt_body(client_name: &str, prompt_inner: &str
     s
 }
 
-/// Stable session-step prefix + composed `core` (cue, template, footer, output_format, optional suffix), wrapped for BAML.
+/// Stable session-step prefix + optional prelude tag block + composed `core`, wrapped for BAML.
 fn wrap_phase_executor_prompt_body(client_name: &str, core: &str) -> String {
-    let mut inner = String::with_capacity(
-        SESSION_STEP_STABLE_PREFIX_BAML
-            .len()
-            .saturating_add(core.len()),
-    );
+    let prelude_slot = SESSION_STEP_STABLE_PREFIX_BAML.len()
+        + TOOL_SCHEMA_PRELUDE_TAG.len().saturating_mul(4)
+        + 96;
+    let mut inner = String::with_capacity(prelude_slot.saturating_add(core.len()));
     inner.push_str(SESSION_STEP_STABLE_PREFIX_BAML);
+    inner.push_str("{% if ctx.tags['");
+    inner.push_str(TOOL_SCHEMA_PRELUDE_TAG);
+    inner.push_str(
+        "'] %}\nTool and session-step types (authoritative field shapes):\n{{ ctx.tags['",
+    );
+    inner.push_str(TOOL_SCHEMA_PRELUDE_TAG);
+    inner.push_str("'] }}\n\n{% endif %}");
     inner.push_str(core);
     wrap_client_baml_prompt_body(client_name, &inner)
 }
@@ -108,8 +187,9 @@ pub(crate) fn compose_phase_prompt_core(
     phase: PhaseHop<'_>,
     legal_type_names: &[String],
     supplement_after_cue: Option<&str>,
+    output_format_mode: PhasePromptOutputFormatMode,
 ) -> String {
-    let stripped = strip_standalone_output_format_directives(prompt_template);
+    let stripped = strip_phase_executor_ir_template(prompt_template);
     let mut out = phase_cue_line(phase);
     if let Some(s) = supplement_after_cue
         && !s.is_empty()
@@ -119,6 +199,7 @@ pub(crate) fn compose_phase_prompt_core(
             out.push('\n');
         }
     }
+    append_phase_footer(&mut out, legal_type_names);
     let trimmed_stripped = stripped.trim();
     if !trimmed_stripped.is_empty() {
         out.push_str(trimmed_stripped);
@@ -126,8 +207,15 @@ pub(crate) fn compose_phase_prompt_core(
             out.push('\n');
         }
     }
-    append_phase_footer(&mut out, legal_type_names);
-    out.push_str("\n{{ ctx.output_format }}\n");
+    append_phase_session_history_jinja(&mut out);
+    match output_format_mode {
+        PhasePromptOutputFormatMode::Full => {
+            out.push_str("\n{{ ctx.output_format }}\n");
+        }
+        PhasePromptOutputFormatMode::ToolSessionReference => {
+            out.push_str(TOOL_SESSION_JSON_CLOSURE);
+        }
+    }
     out
 }
 
@@ -147,6 +235,7 @@ impl ToolSessionPhasePromptSpec<'_> {
             self.phase,
             self.legal_type_names,
             self.supplement_after_cue,
+            PhasePromptOutputFormatMode::ToolSessionReference,
         );
         core.push_str(self.constraint_suffix);
         wrap_phase_executor_prompt_body(client_name, &core)
@@ -169,6 +258,7 @@ pub(crate) fn phase_executor_prompt_body(
         phase,
         legal_type_names,
         supplement_after_cue,
+        PhasePromptOutputFormatMode::ToolSessionReference,
     );
     wrap_phase_executor_prompt_body(client_name, &core)
 }
@@ -184,6 +274,7 @@ pub(crate) fn phase_executor_prompt_body_unified_primary(
         PhaseHop::UnifiedPrimary,
         legal_type_names,
         None,
+        PhasePromptOutputFormatMode::Full,
     );
     core.push_str(PHASE_STEP_EXECUTOR_SUFFIX_UNIFIED_PRIMARY);
     wrap_phase_executor_prompt_body(client_name, &core)
@@ -208,8 +299,30 @@ mod tests {
             "expected IR body after phase cue: {out}"
         );
         assert!(
-            out.matches("{{ ctx.output_format }}").count() == 1,
-            "expected exactly one output_format line: {out}"
+            out.matches("{{ ctx.output_format }}").count() == 0,
+            "tool-session phases must not duplicate BAML output_format JSON at the tail: {out}"
+        );
+        assert!(
+            out.contains("tool_schema_prelude"),
+            "expected optional prelude Jinja block: {out}"
+        );
+        assert!(
+            out.find("Narrowed return union for this hop only:")
+                < out.find("Only the IR template."),
+            "narrowed union must precede IR template body: {out}"
+        );
+        assert_eq!(
+            out.matches("Session history:").count(),
+            1,
+            "single canonical session history injection: {out}"
+        );
+        let ir_pos = out
+            .find("Only the IR template.")
+            .expect("IR template fragment");
+        let hist_pos = out.find("Session history:").expect("session history");
+        assert!(
+            ir_pos < hist_pos,
+            "IR task body must precede generated session history: {out}"
         );
         assert!(out.contains("Phase: SELECT"), "expected phase cue: {out}");
         assert!(
@@ -238,6 +351,65 @@ mod tests {
         assert_eq!(
             strip_standalone_output_format_directives(embedded),
             embedded.trim_end()
+        );
+        let tx = "A\n{{ ctx.tags['conversation_transcript'] }}\nB\n";
+        assert_eq!(strip_standalone_output_format_directives(tx), "A\nB");
+    }
+
+    #[test]
+    fn strip_phase_executor_ir_removes_bracket_transcript_block() {
+        let t = r#"Task line.
+
+{% if ctx.tags['conversation_transcript'] %}
+Prior:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+More."#;
+        let s = strip_phase_executor_ir_template(t);
+        assert!(!s.contains("{% if ctx.tags['conversation_transcript'] %}"));
+        assert!(s.contains("Task line."));
+        assert!(s.contains("More."));
+    }
+
+    #[test]
+    fn strip_phase_executor_ir_removes_dot_transcript_block() {
+        let t = r#"Body
+{% if ctx.tags.conversation_transcript %}
+{{ ctx.tags.conversation_transcript }}
+{% endif %}
+Tail"#;
+        let s = strip_phase_executor_ir_template(t);
+        assert!(!s.contains("ctx.tags.conversation_transcript"));
+        assert!(s.contains("Body"));
+        assert!(s.contains("Tail"));
+    }
+
+    #[test]
+    fn phase_executor_injects_session_history_once_even_if_author_had_block() {
+        let legal = vec!["XOpenStep".to_string()];
+        let template = r#"Do work.
+{% if ctx.tags['conversation_transcript'] %}
+Old label:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+{{ ctx.output_format }}"#;
+        let out =
+            phase_executor_prompt_body("TestClient", template, PhaseHop::Select, &legal, None);
+        assert_eq!(
+            out.matches("Session history:").count(),
+            1,
+            "expected single generated history label: {out}"
+        );
+        assert!(
+            !out.contains("Old label:"),
+            "author transcript block must be stripped: {out}"
+        );
+        assert_eq!(
+            out.matches("{% if ctx.tags['conversation_transcript'] %}")
+                .count(),
+            1,
+            "exactly one generated transcript if-block: {out}"
         );
     }
 
@@ -268,8 +440,8 @@ mod tests {
         );
         assert!(!out.contains("[ACT]"), "expected no legacy act tag: {out}");
         assert!(
-            out.matches("{{ ctx.output_format }}").count() == 1,
-            "expected single output_format: {out}"
+            out.matches("{{ ctx.output_format }}").count() == 0,
+            "tool-session act must not duplicate output_format: {out}"
         );
         assert!(
             out.contains("- FooSendStep"),
@@ -310,6 +482,10 @@ mod tests {
             !out.contains("[CONTINUE]"),
             "expected no legacy continue tag: {out}"
         );
+        assert!(
+            out.matches("{{ ctx.output_format }}").count() == 0,
+            "tool-session continue must not duplicate output_format: {out}"
+        );
     }
 
     #[test]
@@ -335,6 +511,12 @@ mod tests {
         assert!(
             out.matches("{{ ctx.output_format }}").count() == 1,
             "expected single output_format: {out}"
+        );
+        let hist_pos = out.find("Session history:").expect("session history");
+        let of_pos = out.find("{{ ctx.output_format }}").expect("output_format");
+        assert!(
+            hist_pos < of_pos,
+            "session history must precede output_format on unified-primary hops: {out}"
         );
     }
 }

@@ -1556,6 +1556,16 @@ fn synthesized_live_task_id(context_id: &ContextId, message_id: &MessageId) -> T
     )))
 }
 
+fn strip_message_send_stream_task_id_from_wire(request: &mut Value) {
+    let Some(params) = request.get_mut("params").and_then(|p| p.as_object_mut()) else {
+        return;
+    };
+    let Some(msg) = params.get_mut("message").and_then(|m| m.as_object_mut()) else {
+        return;
+    };
+    msg.remove("taskId");
+}
+
 fn resolve_scope_for_outcome(
     parsed: &a2a::A2aRequest,
     ctx: &OutcomeInvocationContext,
@@ -1682,9 +1692,23 @@ enum TurnAction {
 impl A2aAgent {
     async fn handle_live_message_stream(
         &self,
-        request: Value,
-        parsed: a2a::A2aRequest,
+        mut request: Value,
+        mut parsed: a2a::A2aRequest,
     ) -> Result<BusStream<A2aStreamChunk>> {
+        if let Some(tid) = parsed.task_id_opt() {
+            let stored = self.task_store.get(tid.as_str(), None).await;
+            if crate::a2a_store::should_strip_wire_task_id_for_message_send_stream(stored.as_ref())
+            {
+                tracing::debug!(
+                    task_id = %tid.as_str(),
+                    had_record = stored.is_some(),
+                    "message.sendStream: stripping stale taskId (missing or terminal task)"
+                );
+                strip_message_send_stream_task_id_from_wire(&mut request);
+                parsed = a2a::A2aRequest::from_value(request.clone())?;
+            }
+        }
+
         let context_id = parsed.context_id().clone();
         let requested_session_key =
             LiveStreamSessionKey::from_context_and_task(&context_id, parsed.task_id_opt());

@@ -61,21 +61,7 @@ function ExecuteStep(
     Objective: {{ objective }}
     Current step: {{ step_description }}
 
-    {% if ctx.tags['conversation_transcript'] %}
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
-
-    This invocation uses a narrowed output schema: only the operations listed
-    in ctx.output_format / the response schema are valid for this hop. Emit
-    exactly one JSON object matching that schema — do not invent alternate
-    step shapes.
-
     Session open (host FSM): {{ session_context.session_open }}
-
-    Respond with a single JSON object matching the output schema below.
-    Follow ctx.output_format exactly — do not add wrapper fields like "step".
-
-    {{ ctx.output_format }}
   "#
 }
 

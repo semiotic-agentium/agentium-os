@@ -4,7 +4,8 @@
 // Host tools use a session FSM. Which ops are valid on a given model hop is defined only by the
 // narrowed BAML return type for that function, not by duplicated prose. Step classes (Open/Send/…)
 // and `*SendInput` / `*OpenInput` give field names and @description; see the shared prelude
-// and each session-plan `prompt` order: stable types, task, transcript, then ctx.output_format last.
+// and each session-plan parent `prompt`: task + domain lines only; generated per-phase executors
+// add archive prefix, optional tool_schema_prelude, narrowed union, transcript, and output binding.
 
 // Shared standard planning types
 class StandardAgentPlanStep {
@@ -397,20 +398,28 @@ function DecideDelegationAction__select(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
 
 Open a session with: system/internal_a2a.
 
-Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
-For `Open` / `Send`, use `*OpenInput` and `*SendInput` shapes from the merged runtime. Return `null` when the goal is satisfied or after 2+ exchanges.
-
-{{ ctx.tags['conversation_transcript'] }}
 
 ---
 Narrowed return union for this hop only:
 - SystemInternalA2aOpenStep
+Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
+Return `null` when the goal is satisfied or after 2+ exchanges.
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-{{ ctx.output_format }}
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (select — open only): The JSON root must be exactly one bare Open step: op must be Open; set tool_name and initial_input per the narrowed return type for this hop. Do NOT emit Report or AskUser. Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
@@ -431,22 +440,30 @@ function DecideDelegationAction__act__system_internal_a2a(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: ACT — first post-Open hop for system/internal_a2a: SearchRead, PageRead, or Send; legal ops only as below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: ACT — first post-Open hop for system/internal_a2a: SearchRead, PageRead, or Send; legal ops only as below.
 
 A system/internal_a2a session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
 
-Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
-For `Open` / `Send`, use `*OpenInput` and `*SendInput` shapes from the merged runtime. Return `null` when the goal is satisfied or after 2+ exchanges.
-
-{{ ctx.tags['conversation_transcript'] }}
 
 ---
 Narrowed return union for this hop only:
 - SystemInternalA2aSendStep
 - SystemInternalA2aSearchReadStep
 - SystemInternalA2aPageReadStep
+Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
+Return `null` when the goal is satisfied or after 2+ exchanges.
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-{{ ctx.output_format }}
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
@@ -467,7 +484,11 @@ function DecideDelegationAction__continue__system_internal_a2a(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: CONTINUE — for system/internal_a2a: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: CONTINUE — for system/internal_a2a: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
 
 system/internal_a2a result is archived.
 Check session history:
@@ -476,10 +497,6 @@ Check session history:
 - See "@N system/internal_a2a" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
 - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
 
-Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
-For `Open` / `Send`, use `*OpenInput` and `*SendInput` shapes from the merged runtime. Return `null` when the goal is satisfied or after 2+ exchanges.
-
-{{ ctx.tags['conversation_transcript'] }}
 
 ---
 Narrowed return union for this hop only:
@@ -487,8 +504,16 @@ Narrowed return union for this hop only:
 - SystemInternalA2aSearchReadStep
 - SystemInternalA2aPageReadStep
 - SystemInternalA2aFinishStep
+Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
+Return `null` when the goal is satisfied or after 2+ exchanges.
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-{{ ctx.output_format }}
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
@@ -507,20 +532,28 @@ function GetDiscoverAgentsPlan__select(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
 
 Open a session with: system/discover_agents.
 
-Discover available agents to match the user's intent.
-Inferred intent: {{ inferred_intent }}
-
-{{ ctx.tags['conversation_transcript'] }}
 
 ---
 Narrowed return union for this hop only:
 - SystemDiscoverAgentsOpenStep
+Discover available agents to match the user's intent.
+Inferred intent: {{ inferred_intent }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-{{ ctx.output_format }}
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (select — open only): The JSON root must be exactly one bare Open step: op must be Open; set tool_name and initial_input per the narrowed return type for this hop. Do NOT emit Report or AskUser. Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
@@ -539,7 +572,11 @@ function GetDiscoverAgentsPlan__act__system_discover_agents(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: ACT — first post-Open hop for system/discover_agents: SearchRead, PageRead, or Send; legal ops only as below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: ACT — first post-Open hop for system/discover_agents: SearchRead, PageRead, or Send; legal ops only as below.
 
 A system/discover_agents session is open. Emit Send for a new query, or SearchRead/PageRead an existing @N archive from history when listing output is already fetched — do not re-Send the same discover_agents listing without trying SearchRead/PageRead pagination first.
 
@@ -547,18 +584,22 @@ DISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field 
 
 PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agents listing at @N, prefer SearchRead or PageRead on that @N (grep/limit/offset) to page or narrow — do not re-Send discover_agents with the same broad query as a substitute for pagination.
 
-Discover available agents to match the user's intent.
-Inferred intent: {{ inferred_intent }}
-
-{{ ctx.tags['conversation_transcript'] }}
 
 ---
 Narrowed return union for this hop only:
 - SystemDiscoverAgentsSendStep
 - SystemDiscoverAgentsSearchReadStep
 - SystemDiscoverAgentsPageReadStep
+Discover available agents to match the user's intent.
+Inferred intent: {{ inferred_intent }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-{{ ctx.output_format }}
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
@@ -577,7 +618,11 @@ function GetDiscoverAgentsPlan__continue__system_discover_agents(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: CONTINUE — for system/discover_agents: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: CONTINUE — for system/discover_agents: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
 
 system/discover_agents result is archived.
 Check session history:
@@ -592,10 +637,6 @@ PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agent
 
 FINISH DEFAULT ON CONTINUE: When history already shows a completed discover_agents archive (@N) and the listing is visible or confirmed empty (including zero agents), default to Finish — do not Send again with the same broad query unless deliberately refining filters per DISCOVERY INPUT RULE. Use SearchRead/PageRead only when line-level archive inspection or pagination is required.
 
-Discover available agents to match the user's intent.
-Inferred intent: {{ inferred_intent }}
-
-{{ ctx.tags['conversation_transcript'] }}
 
 ---
 Narrowed return union for this hop only:
@@ -603,8 +644,16 @@ Narrowed return union for this hop only:
 - SystemDiscoverAgentsSearchReadStep
 - SystemDiscoverAgentsPageReadStep
 - SystemDiscoverAgentsFinishStep
+Discover available agents to match the user's intent.
+Inferred intent: {{ inferred_intent }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-{{ ctx.output_format }}
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).

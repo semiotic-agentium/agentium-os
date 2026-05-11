@@ -2270,13 +2270,13 @@ mod tests {
 
     #[test]
     fn delegation_shows_coordinator_as_sender_and_recipient_not_user() {
-        let persona = "conversational_persona_demo_1_0_0";
+        let coordinator = "coordinator_agent_1_0_0";
         let worker = "claude_session_demo_1_0_0";
         let mut edges = vec![
-            // Persona receives initial user message
+            // Coordinator receives initial user message
             edge("mp1", EDGE_WAS_RECEIVED_BY, "m1"),
-            edge("mp1", EDGE_WAS_EXECUTED_BY, "a_persona"),
-            // Persona calls internal_a2a (delegation)
+            edge("mp1", EDGE_WAS_EXECUTED_BY, "a_coordinator"),
+            // Coordinator calls internal_a2a (delegation)
             edge("mp1", EDGE_WAS_EXECUTED_BY, "tc1"),
             edge("tc1", semantic_labels::WAS_DELEGATED_TO, "dt1"),
             edge("tc1", "WAS_USED_BY", "args1"),
@@ -2286,15 +2286,15 @@ mod tests {
             // Worker emits reply
             edge("m3", EDGE_WAS_EMITTED_BY, "mp2"),
         ];
-        edges.extend(agent_chain_edges("a_persona", "boot_p", "arch_p"));
+        edges.extend(agent_chain_edges("a_coordinator", "boot_p", "arch_p"));
         edges.extend(agent_chain_edges("a_worker", "boot_w", "arch_w"));
         let g = graph(
             vec![
-                agent_node("a_persona", persona),
+                agent_node("a_coordinator", coordinator),
                 agent_node("a_worker", worker),
                 boot_node("boot_p"),
                 boot_node("boot_w"),
-                archive_node("arch_p", persona),
+                archive_node("arch_p", coordinator),
                 archive_node("arch_w", worker),
                 mp_node("mp1"),
                 mp_node("mp2"),
@@ -2318,11 +2318,11 @@ mod tests {
             "A2A mediator tools (internal_a2a) must be omitted from diagram; got:\n{output}"
         );
         assert!(
-            output.contains(&format!("{persona}->>+{worker}")),
+            output.contains(&format!("{coordinator}->>+{worker}")),
             "delegated user message must show coordinator->>worker, not User->>worker; got:\n{output}"
         );
         assert!(
-            output.contains(&format!("{worker}->>-{persona}")),
+            output.contains(&format!("{worker}->>-{coordinator}")),
             "delegate reply must show worker->>coordinator, not worker->>User; got:\n{output}"
         );
     }

@@ -77,7 +77,7 @@ class ReadOnlyResponse {
 }
 
 /// Per retrieve-step executor: drives support/slack Open → Send → Read → Finish.
-/// Prior retrieve steps on this turn are visible in ctx.tags['conversation_transcript'] — do not require a separate prior_results blob.
+/// Prior retrieve steps on this turn appear in generated phase session history — no separate prior_results blob.
 function ChooseSlackAction(
   goal: string,
   step_description: string,
@@ -88,16 +88,8 @@ function ChooseSlackAction(
     Overall goal: {{ goal }}
     This step: {{ step_description }}
 
-    Looping policy: each reply is EITHER one `SupportSlackSessionPlan` step (narrowed by `ctx.output_format`) or `ReadOnlyResponse` when this step is done. Open/Send payloads use the generated `*OpenInput` and `*SendInput` / union members in the merged runtime — do not restate their JSON in prose. Enum keys: prefer snake_case; match the schema in `ctx.output_format`.
-
-    Use session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
-
-    {% if ctx.tags['conversation_transcript'] %}
-    Session history:
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
-
-    {{ ctx.output_format }}
+    When emitting a session step: respect session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
+    When this retrieve step is complete without further tool work, return ReadOnlyResponse instead of a session step.
   "#
 }
 

@@ -54,6 +54,8 @@ pub(in crate::baml) struct BamlRuntimeState {
     pub(in crate::baml) planning_resolver: Arc<dyn PlanningResolver>,
     pub(in crate::baml) execution_sessions:
         Arc<DashMap<String, crate::quickjs_bridge::ExecutionSession>>,
+    /// Merged `baml_src/_baml_runtime.baml` for `ctx.tags['tool_schema_prelude']` on step-executor hops.
+    pub(in crate::baml) tool_schema_prelude: Option<Arc<str>>,
 }
 
 impl Default for BamlRuntimeState {
@@ -80,6 +82,7 @@ impl Default for BamlRuntimeState {
             llm_client_resolver: None,
             planning_resolver: Arc::new(DefaultPlanningResolver),
             execution_sessions: Arc::new(DashMap::new()),
+            tool_schema_prelude: None,
         }
     }
 }

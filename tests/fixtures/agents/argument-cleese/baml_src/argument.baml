@@ -12,7 +12,7 @@ function ArgumentReply(other_message: string) -> string {
   "#
 }
 
-// Send Cleese's line to Chapman via internal_a2a. Phase executors reuse this prompt verbatim; op shape comes from {{ ctx.output_format }} per hop.
+// Send Cleese's line to Chapman via internal_a2a. Generated phase executors supply FSM hardness and session history; op shape comes from {{ ctx.output_format }} per hop.
 function CleeseSendToChapman(first_line: string) -> SystemInternalA2aSessionPlan {
   client DefaultClient
   prompt #"
@@ -25,16 +25,7 @@ function CleeseSendToChapman(first_line: string) -> SystemInternalA2aSessionPlan
 
     On Send, the message body must be exactly the Cleese line above, character for character. Do not improvise dialogue.
 
-    One round trip only: send Cleese’s line once; when Chapman’s reply appears in the session below (or after at most one SearchRead/PageRead on the delegated archive if history is not yet visible), end this tool session with Finish. Do not Send again to Chapman in the same planner turn.
-
-    FSM ops for this tool are exactly Open, Send, SearchRead, PageRead, Finish, Abort — never use op Read (invalid).
-
-    {% if ctx.tags['conversation_transcript'] %}
-    Session history:
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
-
-    {{ ctx.output_format }}
+    One round trip only: send Cleese’s line once; when Chapman’s reply appears in session history (or after paging the delegated archive if needed), Finish — do not Send again to Chapman in the same planner turn.
   "#
 }
 

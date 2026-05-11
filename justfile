@@ -7,7 +7,7 @@ set dotenv-load
 
 provenance_db := "provenance.db"
 # Separate SurrealKV store dirs (provenance + sibling config.db) so this stack can run alongside another runner using `provenance.db`.
-provenance_persona_claude_notion_db := "persona-claude-notion-provenance.db"
+provenance_coordinator_claude_notion_db := "coordinator-claude-notion-provenance.db"
 # Default HTTP bind for `just` recipes. Port 8080 is a frequent conflict (e.g. inference gateways that 503
 # every route until a huge model loads). To use 8080, change the assignment below to `127.0.0.1:8080`.
 runner_http_bind := "127.0.0.1:18080"
@@ -384,7 +384,6 @@ coordinator-agent-provenance: build-release
       {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
       {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
@@ -416,8 +415,8 @@ claude-session-agent-provenance: build-release
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
-# Rebuilds persona + notion and runs with provenance and UI (HTTP only).
-persona-notion: web-build build-release
+# Rebuilds coordinator-agent + notion and runs with provenance and UI (HTTP only).
+coordinator-notion: web-build build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
@@ -432,15 +431,15 @@ persona-notion: web-build build-release
     {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     wait "$runner_pid"
 
-# Persona + Claude session + Notion, HTTP + provenance + web UI.
-persona-claude-notion: web-build build-release
+# Coordinator-agent + Claude session + Notion, HTTP + provenance + web UI.
+coordinator-claude-notion: web-build build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
     set -a
     [ -f .env ] && . ./.env
     set +a
-    {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_persona_claude_notion_db}} --web-dir web/dist &
+    {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_coordinator_claude_notion_db}} --web-dir web/dist &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
     ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
@@ -466,15 +465,14 @@ dev-all-agents: web-build build-release
     {{builder_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/slack-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/workflow-intake-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     wait "$runner_pid"
 
-# Rebuilds persona + claude-session + extrospection + clickup + security-eval and runs them with provenance (HTTP only, no stdio).
-persona-claude-extrospection-clickup: build-release
+# Rebuilds coordinator-agent + claude-session + extrospection + clickup + security-eval and runs them with provenance (HTTP only, no stdio).
+coordinator-claude-extrospection-clickup: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
@@ -492,8 +490,8 @@ persona-claude-extrospection-clickup: build-release
     {{builder_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     wait "$runner_pid"
 
-# Rebuilds persona + claude-session + extrospection + security-eval and runs them via a2a stdio.
-persona-claude-extrospection: build-release
+# Rebuilds coordinator-agent + claude-session + extrospection + security-eval and runs them via a2a stdio.
+coordinator-claude-extrospection: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
@@ -509,8 +507,8 @@ persona-claude-extrospection: build-release
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
-# Same as persona-claude-extrospection, but persists provenance to provenance.db.
-persona-claude-extrospection-provenance: build-release
+# Same as coordinator-claude-extrospection, but persists provenance to provenance.db.
+coordinator-claude-extrospection-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
@@ -526,7 +524,12 @@ persona-claude-extrospection-provenance: build-release
     ) &
     exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
-
+# Deprecated names: these stacks publish `agents/coordinator-agent`, not the removed persona fixture.
+alias persona-notion := coordinator-notion
+alias persona-claude-notion := coordinator-claude-notion
+alias persona-claude-extrospection-clickup := coordinator-claude-extrospection-clickup
+alias persona-claude-extrospection := coordinator-claude-extrospection
+alias persona-claude-extrospection-provenance := coordinator-claude-extrospection-provenance
 
 # Bootstraps and runs the sandbox echo example in foreground-runner mode:
 # - exports env vars for external tools + bind allowlist

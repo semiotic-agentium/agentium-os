@@ -4,7 +4,8 @@
 // Host tools use a session FSM. Which ops are valid on a given model hop is defined only by the
 // narrowed BAML return type for that function, not by duplicated prose. Step classes (Open/Send/…)
 // and `*SendInput` / `*OpenInput` give field names and @description; see the shared prelude
-// and each session-plan `prompt` order: stable types, task, transcript, then ctx.output_format last.
+// and each session-plan parent `prompt`: task + domain lines only; generated per-phase executors
+// add archive prefix, optional tool_schema_prelude, narrowed union, transcript, and output binding.
 
 // Shared standard planning types
 class StandardAgentPlanStep {
@@ -300,10 +301,20 @@ function ChooseClaudeDevAction__select(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
 
 Open a session with: claude/dev.
 
+
+---
+Narrowed return union for this hop only:
+- ClaudeDevReport
+- ClaudeDevAskUser
+- ClaudeDevOpenStep
 You control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
@@ -341,17 +352,15 @@ user_approval_intent (approved | rejected | empty):
 
 Session open (host FSM): {{ session_context.session_open }}
 
-{{ ctx.tags['conversation_transcript'] }}
-
 OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
----
-Narrowed return union for this hop only:
-- ClaudeDevReport
-- ClaudeDevAskUser
-- ClaudeDevOpenStep
 
-{{ ctx.output_format }}
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
@@ -373,10 +382,20 @@ function ChooseClaudeDevAction__act__claude_dev(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: ACT — first post-Open hop for claude/dev: SearchRead, PageRead, or Send; legal ops only as below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: ACT — first post-Open hop for claude/dev: SearchRead, PageRead, or Send; legal ops only as below.
 
 A claude/dev session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
 
+
+---
+Narrowed return union for this hop only:
+- ClaudeDevSendStep
+- ClaudeDevSearchReadStep
+- ClaudeDevPageReadStep
 You control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
@@ -414,17 +433,15 @@ user_approval_intent (approved | rejected | empty):
 
 Session open (host FSM): {{ session_context.session_open }}
 
-{{ ctx.tags['conversation_transcript'] }}
-
 OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
----
-Narrowed return union for this hop only:
-- ClaudeDevSendStep
-- ClaudeDevSearchReadStep
-- ClaudeDevPageReadStep
 
-{{ ctx.output_format }}
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
@@ -446,7 +463,11 @@ function ChooseClaudeDevAction__continue__claude_dev(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: CONTINUE — for claude/dev: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: CONTINUE — for claude/dev: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
 
 claude/dev result is archived.
 Check session history:
@@ -455,6 +476,13 @@ Check session history:
 - See "@N claude/dev" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
 - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
 
+
+---
+Narrowed return union for this hop only:
+- ClaudeDevSendStep
+- ClaudeDevSearchReadStep
+- ClaudeDevPageReadStep
+- ClaudeDevFinishStep
 You control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
@@ -492,18 +520,15 @@ user_approval_intent (approved | rejected | empty):
 
 Session open (host FSM): {{ session_context.session_open }}
 
-{{ ctx.tags['conversation_transcript'] }}
-
 OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
----
-Narrowed return union for this hop only:
-- ClaudeDevSendStep
-- ClaudeDevSearchReadStep
-- ClaudeDevPageReadStep
-- ClaudeDevFinishStep
 
-{{ ctx.output_format }}
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).

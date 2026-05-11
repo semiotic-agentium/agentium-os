@@ -1,12 +1,17 @@
 //! Session plans and per-phase step executors generated from compiled BAML IR.
 //!
 //! Per-phase functions (`__select`, `__act__*`, `__continue__*`) share the parent session-plan
-//! BAML function's `prompt_template`. Each hop uses [`phase_prompt::compose_phase_prompt_core`]:
-//! [`SESSION_STEP_STABLE_PREFIX_BAML`](baml_rt_tools::SESSION_STEP_STABLE_PREFIX_BAML), a phase cue,
-//! optional tool-specific supplement (tool list on select; discover_agents discipline on act/continue),
-//! the stripped IR template, narrowed-union footer, `{{ ctx.output_format }}`, then a **phase-constraint
-//! suffix** (legal JSON root shape for that hop). Without cue + suffix + footer the LLM often emits
-//! malformed ops (`Read` vs `SearchRead`/`PageRead`, `#N` vs `@N`) that fail validation.
+//! BAML function's `prompt_template`. Each rendered hop uses [`phase_prompt::wrap_phase_executor_prompt_body`]:
+//! [`SESSION_STEP_STABLE_PREFIX_BAML`](baml_rt_tools::SESSION_STEP_STABLE_PREFIX_BAML), optional Jinja for
+//! [`TOOL_SCHEMA_PRELUDE_TAG`](baml_rt_tools::TOOL_SCHEMA_PRELUDE_TAG), then a composed core from
+//! [`phase_prompt::compose_phase_prompt_core`]: phase cue, optional tool-specific supplement (select /
+//! discover_agents act / continue copy), narrowed-union footer (type names only), stripped IR task text
+//! (author `{% if conversation_transcript %}` blocks and standalone `{{ ctx.output_format }}` lines removed),
+//! **canonical** `ctx.tags['conversation_transcript']` session-history Jinja, then either a compact JSON
+//! closure (tool phases — schemas live in the prelude tag on `invoke_function_with_intra`) or
+//! `{{ ctx.output_format }}` (unified-primary hops), then a **phase-constraint suffix**. Without cue +
+//! suffix + footer the LLM often emits malformed ops (`Read` vs `SearchRead`/`PageRead`, `#N` vs `@N`)
+//! that fail validation.
 //!
 //! **Suffix ↔ generated return types (tool phases):**
 //! - **select** — [`select_phase_executor_suffix`] must agree with the `function __select -> …` union.
@@ -193,7 +198,8 @@ fn phase_continue_supplement_after_cue(tool_name_str: &str) -> String {
 /// Must be called after the first `BamlRuntime::from_directory` so the IR is available.
 /// A second compilation pass is then needed to include the generated types.
 ///
-/// Phase executor prompts are verbatim copies of each parent function's IR `prompt_template`.
+/// Phase executor prompts start from each parent function's IR `prompt_template`, stripped via
+/// [`phase_prompt::strip_phase_executor_ir_template`], then wrapped per module docs above.
 pub fn render_generated_session_baml_from_ir(
     runtime: &baml_runtime::BamlRuntime,
     tool_metadata: &[ToolFunctionMetadata],

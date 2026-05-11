@@ -4,7 +4,8 @@
 // Host tools use a session FSM. Which ops are valid on a given model hop is defined only by the
 // narrowed BAML return type for that function, not by duplicated prose. Step classes (Open/Send/…)
 // and `*SendInput` / `*OpenInput` give field names and @description; see the shared prelude
-// and each session-plan `prompt` order: stable types, task, transcript, then ctx.output_format last.
+// and each session-plan parent `prompt`: task + domain lines only; generated per-phase executors
+// add archive prefix, optional tool_schema_prelude, narrowed union, transcript, and output binding.
 
 // Shared standard planning types
 class StandardAgentPlanStep {
@@ -195,23 +196,27 @@ function ChooseCalcTool__select(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
 
 Open a session with: support/calculate.
 
-Evaluate this calculation: {{ user_message }}
-Send payload: `CalculateSendInput` in the merged runtime; match this hop’s `ctx.output_format`.
 
+---
+Narrowed return union for this hop only:
+- SupportCalculateOpenStep
+Evaluate this calculation: {{ user_message }}
 {% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
----
-Narrowed return union for this hop only:
-- SupportCalculateOpenStep
 
-{{ ctx.output_format }}
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (select — open only): The JSON root must be exactly one bare Open step: op must be Open; set tool_name and initial_input per the narrowed return type for this hop. Do NOT emit Report or AskUser. Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
@@ -230,25 +235,29 @@ function ChooseCalcTool__act__support_calculate(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: ACT — first post-Open hop for support/calculate: SearchRead, PageRead, or Send; legal ops only as below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: ACT — first post-Open hop for support/calculate: SearchRead, PageRead, or Send; legal ops only as below.
 
 A support/calculate session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
 
-Evaluate this calculation: {{ user_message }}
-Send payload: `CalculateSendInput` in the merged runtime; match this hop’s `ctx.output_format`.
-
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
 
 ---
 Narrowed return union for this hop only:
 - SupportCalculateSendStep
 - SupportCalculateSearchReadStep
 - SupportCalculatePageReadStep
+Evaluate this calculation: {{ user_message }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-{{ ctx.output_format }}
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
@@ -267,7 +276,11 @@ function ChooseCalcTool__continue__support_calculate(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: CONTINUE — for support/calculate: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: CONTINUE — for support/calculate: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
 
 support/calculate result is archived.
 Check session history:
@@ -276,13 +289,6 @@ Check session history:
 - See "@N support/calculate" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
 - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
 
-Evaluate this calculation: {{ user_message }}
-Send payload: `CalculateSendInput` in the merged runtime; match this hop’s `ctx.output_format`.
-
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
 
 ---
 Narrowed return union for this hop only:
@@ -290,8 +296,15 @@ Narrowed return union for this hop only:
 - SupportCalculateSearchReadStep
 - SupportCalculatePageReadStep
 - SupportCalculateFinishStep
+Evaluate this calculation: {{ user_message }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-{{ ctx.output_format }}
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).

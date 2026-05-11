@@ -52,12 +52,14 @@ pub(crate) const ARCHIVE_READ_LIMIT: &str = "Max lines in this read window. Pref
 /// (`baml_rt_tools::prompt_projection`) as `ctx.tags['conversation_transcript']` — `role: content`
 /// per turn, blank line between turns. This is the **only** history tag BAML receives.
 ///
-/// For session / step-executor BAML, prefer order: task lines →
-/// `{{ ctx.tags['conversation_transcript'] }}` (if any) → `{{ ctx.output_format }}` last so the
-/// narrow union and schema stay adjacent to the model’s answer token.
-/// Per-phase step executors copy the parent function's prompt verbatim from IR; this line is **not**
-/// auto-injected — use it in hand-written session-plan `*_prompt.baml` files.
-#[allow(dead_code)] // Authoring reference; kept for consistency with generated/runtime prompts.
+/// **Session-plan parents** (`Choose*` → `*SessionPlan`): do **not** paste transcript `{% if %}` blocks
+/// or Open/Send/SearchRead field-shape litanies — generated `__select` / `__act__*` / `__continue__*`
+/// inject archive policy, optional `tool_schema_prelude`, narrowed-type footer, transcript, and phase
+/// constraints. Author only task- and domain-specific lines (IDs, safety rules, channel/thread form).
+///
+/// For **non-phase** BAML (classifiers, planners, synthesis), keep order: task lines →
+/// `{{ ctx.tags['conversation_transcript'] }}` when needed → `{{ ctx.output_format }}` last.
+#[allow(dead_code)] // Authoring reference for non-phase prompts.
 pub(crate) const BAML_CONVERSATION_HISTORY_JINJA_BLOCK: &str = r#"{{ ctx.tags['conversation_transcript'] }}
 "#;
 
@@ -90,7 +92,8 @@ pub fn render_generated_tools_prelude() -> String {
 // Host tools use a session FSM. Which ops are valid on a given model hop is defined only by the
 // narrowed BAML return type for that function, not by duplicated prose. Step classes (Open/Send/…)
 // and `*SendInput` / `*OpenInput` give field names and @description; see the shared prelude
-// and each session-plan `prompt` order: stable types, task, transcript, then ctx.output_format last.
+// and each session-plan parent `prompt`: task + domain lines only; generated per-phase executors
+// add archive prefix, optional tool_schema_prelude, narrowed union, transcript, and output binding.
 
 // Shared standard planning types
 class StandardAgentPlanStep {{

@@ -40,6 +40,19 @@ impl BamlRuntimeManager {
         let env_vars = self.resolve_secrets_as_env_vars();
         let mut executor = BamlExecutor::load_il(&baml_src_dir, env_vars)?;
 
+        let prelude_path = baml_src_dir.join("_baml_runtime.baml");
+        self.state.tool_schema_prelude = match std::fs::read_to_string(&prelude_path) {
+            Ok(s) => Some(std::sync::Arc::<str>::from(s)),
+            Err(e) => {
+                tracing::warn!(
+                    path = %prelude_path.display(),
+                    error = %e,
+                    "tool_schema_prelude: optional merged runtime BAML not loaded"
+                );
+                None
+            }
+        };
+
         // Set effect emitter if available
         if let Some(ref emitter) = self.state.effect_emitter {
             executor.set_effect_emitter(emitter.clone());

@@ -968,6 +968,23 @@ fn is_terminal_state(s: &str) -> bool {
     matches!(s, S_COMPLETED | S_FAILED | S_CANCELED | S_REJECTED)
 }
 
+/// Drop `message.taskId` on `message.sendStream` when the
+/// referenced task is absent from the store or already reached a terminal lifecycle state. Keeping a
+/// stale pin after `TASK_STATE_*` completion makes the host treat the turn like a task resume and
+/// breaks the next conversational hop under the same `contextId`; clients should not need special
+/// cases if the transport normalizes here.
+pub(crate) fn should_strip_wire_task_id_for_message_send_stream(task: Option<&Task>) -> bool {
+    match task {
+        None => true,
+        Some(t) => {
+            let Some(st) = t.status.as_ref().and_then(status_to_string) else {
+                return true;
+            };
+            is_terminal_state(st.as_str())
+        }
+    }
+}
+
 fn is_allowed_transition(from: &str, to: &str) -> bool {
     if from == to {
         return true;
@@ -1249,5 +1266,71 @@ fn matches_task_state(task: &Task, desired: &TaskState) -> bool {
         (TaskState::String(current), TaskState::String(target)) => current == target,
         (TaskState::Integer(current), TaskState::Integer(target)) => current == target,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod strip_wire_task_id_tests {
+    use std::collections::HashMap;
+
+    use super::{Task, TaskState, TaskStatus, should_strip_wire_task_id_for_message_send_stream};
+
+    fn task_with_state(state: &str) -> Task {
+        Task {
+            id: None,
+            context_id: None,
+            artifacts: Vec::new(),
+            history: Vec::new(),
+            status: Some(TaskStatus {
+                state: Some(TaskState::String(state.to_string())),
+                message: None,
+                timestamp: None,
+                extra: HashMap::new(),
+            }),
+            metadata: None,
+            extra: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn strip_when_task_unknown() {
+        assert!(should_strip_wire_task_id_for_message_send_stream(None));
+    }
+
+    #[test]
+    fn strip_when_status_missing() {
+        let task = Task {
+            id: None,
+            context_id: None,
+            artifacts: Vec::new(),
+            history: Vec::new(),
+            status: None,
+            metadata: None,
+            extra: HashMap::new(),
+        };
+        assert!(should_strip_wire_task_id_for_message_send_stream(Some(
+            &task
+        )));
+    }
+
+    #[test]
+    fn strip_when_terminal_completed() {
+        assert!(should_strip_wire_task_id_for_message_send_stream(Some(
+            &task_with_state("TASK_STATE_COMPLETED",)
+        )));
+    }
+
+    #[test]
+    fn keep_when_input_required() {
+        assert!(!should_strip_wire_task_id_for_message_send_stream(Some(
+            &task_with_state("TASK_STATE_INPUT_REQUIRED",)
+        )));
+    }
+
+    #[test]
+    fn keep_when_working() {
+        assert!(!should_strip_wire_task_id_for_message_send_stream(Some(
+            &task_with_state("TASK_STATE_WORKING",)
+        )));
     }
 }

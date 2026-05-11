@@ -49,11 +49,11 @@ export interface ConversationHistoryIngressDeps {
   scheduleHydrateRetry?: () => void;
 }
 
-function deferReasonFromFull(messages: ChatMessage[]) {
+function deferReasonFromFull(messages: ChatMessage[]): ConversationHistoryIngressDeferReason {
   if (liveAgentBubbleBlocksHistoryReplace(messages)) {
-    return "streaming_or_input_required" as const;
+    return "streaming_or_input_required";
   }
-  return "provenance_lags_live" as const;
+  return "provenance_lags_live";
 }
 
 function applyDeferSideEffects(

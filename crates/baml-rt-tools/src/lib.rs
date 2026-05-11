@@ -77,7 +77,10 @@ pub use session_coordination::{
     SessionCoordinationProvider, gather_coordination_fragments,
     get_session_coordination_baml_for_tools,
 };
-pub use session_ctx_tags::{SESSION_STEP_STABLE_PREFIX_BAML, SESSION_STEP_STABLE_PREFIX_VALUE};
+pub use session_ctx_tags::{
+    CONVERSATION_TRANSCRIPT_TAG, SESSION_STEP_STABLE_PREFIX_BAML, SESSION_STEP_STABLE_PREFIX_VALUE,
+    TOOL_SCHEMA_PRELUDE_TAG,
+};
 pub use tool_catalog::{CompositeCatalog, InventoryCatalog, ManifestToolNames, ToolCatalog};
 pub use tool_discovery::search_tools;
 pub use tool_error_classify::{

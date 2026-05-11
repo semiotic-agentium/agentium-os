@@ -89,6 +89,31 @@ export function provenanceSnapshotLagsLiveChat(
   );
 }
 
+/**
+ * Live sends use `user-msg-*` ids (see `useA2aClient`); persisted rows hydrate as `prov-user-*`.
+ * A full provenance replace must not run while GET still omits a client user turn — otherwise the
+ * UI wipes recent history even when an older assistant `message` row is already present (weak lag test).
+ */
+export function provenancePageOmitsPersistedClientUserTurns(
+  messages: ChatMessage[],
+  page: ConversationHistoryPage,
+): boolean {
+  const clientUsers = messages.filter(
+    (m) => m.role === "user" && typeof m.id === "string" && m.id.startsWith("user-msg-"),
+  );
+  if (clientUsers.length === 0) return false;
+  const pageUserTexts = new Set(
+    page.items.flatMap((i) => {
+      if (i.role.toLowerCase() !== "user") return [];
+      const c = i.content;
+      if (c.type !== "message") return [];
+      const t = String(c.text ?? "").trim();
+      return t.length > 0 ? [t] : [];
+    }),
+  );
+  return clientUsers.some((m) => !pageUserTexts.has(String(m.text ?? "").trim()));
+}
+
 /** SSE snapshot/delta: skip rebuild/merge when the in-memory transcript must win. */
 export function shouldDeferProvenanceHistoryRebuild(
   messages: ChatMessage[],
@@ -96,6 +121,7 @@ export function shouldDeferProvenanceHistoryRebuild(
 ): boolean {
   if (liveAgentBubbleBlocksHistoryReplace(messages)) return true;
   if (page !== undefined && provenanceSnapshotLagsLiveChat(messages, page)) return true;
+  if (page !== undefined && provenancePageOmitsPersistedClientUserTurns(messages, page)) return true;
   return false;
 }
 

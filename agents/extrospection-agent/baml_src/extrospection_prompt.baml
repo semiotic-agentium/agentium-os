@@ -83,16 +83,8 @@ function GetDiscoverAgentsPlan(
   client DefaultClient
   prompt #"
     Discover available agents relevant to the user's request.
-    Send input shape and empty-payload cases are defined on `DiscoverAgentsSendInput` in the merged runtime — do not restate those fields here.
 
     Context: {{ user_message }}
-
-    {% if ctx.tags['conversation_transcript'] %}
-    Session history:
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
-
-    {{ ctx.output_format }}
   "#
 }
 
@@ -130,17 +122,11 @@ function BuildExtrospectionPlan(
 ) -> SystemExtrospectionSessionPlan {
   client DefaultClient
   prompt #"
-    Query provenance data matching the intent. Fill `ProvenanceQuerySendInput` (and other step payloads) from the field `@@description` on those types and this hop’s narrowed return union — do not duplicate the JSON field list in prose. Do not set `agentId` from `selected_agent` unless the user gave an explicit provenance agent_id.
+    Query provenance data matching the intent.
+    Do not set `agentId` from `selected_agent` unless the user gave an explicit provenance agent_id.
 
     intent: {{ intent }}
     selected_agent: {{ selected_agent }}
-
-    {% if ctx.tags['conversation_transcript'] %}
-    Session history:
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
-
-    {{ ctx.output_format }}
   "#
 }
 

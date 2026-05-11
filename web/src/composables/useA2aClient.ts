@@ -431,8 +431,8 @@ export function useA2aClient() {
       pendingHydrateRetryTimer = null;
     }
 
-    // Clear input-required state on the last agent message when user replies (resume turn)
     const lastAgent = [...messages.value].reverse().find((m) => m.role === "agent");
+    // Clear input-required UI on the last agent bubble once the user sends a resume reply.
     if (lastAgent?.awaitingInput) {
       lastAgent.awaitingInput = false;
       lastAgent.inputRequiredPrompt = undefined;
@@ -583,39 +583,44 @@ export function useA2aClient() {
     // Track whether this chunk implies new provenance/planning material.
     let sawProvenanceMutation = false;
 
-    // Shape: toolStreamChunk chunks split into two kinds.
-    // - Phase (status): toolStreamChunk true, no tool payload — statusUpdate.status_update.status.message only (e.g. "Calling model: unknown (PhaseName)", "Invoking tool: X"). One block per "segment" (new segment after each message).
-    // - Tool: toolStreamChunk true, has tool payload — toolName and/or events and/or completion. One block per tool invocation (new block when previous for same tool is DONE).
-    // Backend may send tool data at chunk top level (chunk.toolName/events/completion) or inside chunk.task.
-    const toolChunk = result.toolStreamChunk
-      ? (chunk as ChunkPayload & {
-          toolName?: string;
-          events?: ToolEvent[];
-          completion?: ToolCompletion;
-          task?: { toolName?: string; events?: ToolEvent[]; completion?: ToolCompletion };
-        })
-      : null;
-    const toolName = toolChunk?.toolName ?? toolChunk?.task?.toolName;
+    // Tool stream payloads:
+    // - Relay/async path sets `result.toolStreamChunk` (__toolStreamChunk → toolStreamChunk).
+    // - JS `__chat_yield` chunks often carry `task.toolName` / `task.events` without that flag.
+    // We must handle both; otherwise tool/delegation turns show nothing until the terminal chunk.
+    //
+    // Phase-only relay chunks: toolStreamChunk true, no toolName/events/completion — workflow banner only.
+    type ToolishChunk = ChunkPayload & {
+      toolName?: string;
+      events?: ToolEvent[];
+      completion?: ToolCompletion;
+      task?: { toolName?: string; events?: ToolEvent[]; completion?: ToolCompletion };
+      chunk?: { events?: ToolEvent[]; completion?: ToolCompletion };
+    };
+    const ext = chunk as ToolishChunk;
+    const nestedChunk = ext.chunk;
+    const toolName = ext.toolName ?? ext.task?.toolName;
     const toolEvents =
-      toolChunk?.events ??
-      toolChunk?.task?.events ??
-      (toolChunk &&
-      typeof (toolChunk as { chunk?: unknown }).chunk === "object" &&
-      (toolChunk as { chunk?: { events?: ToolEvent[] } }).chunk &&
-      "events" in (toolChunk as { chunk: object }).chunk
-        ? (toolChunk as { chunk: { events?: ToolEvent[] } }).chunk.events
+      ext.events ??
+      ext.task?.events ??
+      (typeof nestedChunk === "object" &&
+      nestedChunk !== null &&
+      "events" in nestedChunk
+        ? nestedChunk.events
         : undefined) ??
       [];
     const toolCompletion =
-      toolChunk?.completion ??
-      toolChunk?.task?.completion ??
-      (toolChunk &&
-      typeof (toolChunk as { chunk?: unknown }).chunk === "object" &&
-      (toolChunk as { chunk?: object }).chunk &&
-      "completion" in (toolChunk as { chunk: object }).chunk
-        ? (toolChunk as { chunk: { completion?: ToolCompletion } }).chunk.completion
+      ext.completion ??
+      ext.task?.completion ??
+      (typeof nestedChunk === "object" &&
+      nestedChunk !== null &&
+      "completion" in nestedChunk
+        ? nestedChunk.completion
         : undefined);
-    if (toolChunk && (!!toolName || toolEvents.length > 0 || !!toolCompletion)) {
+
+    const hasToolStreamPayload =
+      !!toolName || toolEvents.length > 0 || !!toolCompletion;
+
+    if (hasToolStreamPayload) {
       const baseName = toolName ?? "tool";
       const events = withSessionStepDetailEvents(toolEvents);
       const completion = toolCompletion;
@@ -633,7 +638,7 @@ export function useA2aClient() {
         scheduleTraceRefreshBump();
       }
       sawProvenanceMutation = true;
-    } else if (result.toolStreamChunk && toolChunk) {
+    } else if (result.toolStreamChunk) {
       // Relay may still mark toolStreamChunk while attaching real assistant prose on chunk.message.
       // Without this branch, that prose was dropped because phase chunks never reached the handler below.
       let appliedAssistantFromWire = false;

@@ -4,7 +4,8 @@
 // Host tools use a session FSM. Which ops are valid on a given model hop is defined only by the
 // narrowed BAML return type for that function, not by duplicated prose. Step classes (Open/Send/…)
 // and `*SendInput` / `*OpenInput` give field names and @description; see the shared prelude
-// and each session-plan `prompt` order: stable types, task, transcript, then ctx.output_format last.
+// and each session-plan parent `prompt`: task + domain lines only; generated per-phase executors
+// add archive prefix, optional tool_schema_prelude, narrowed union, transcript, and output binding.
 
 // Shared standard planning types
 class StandardAgentPlanStep {
@@ -612,29 +613,33 @@ function ChooseSlackAction__select(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
 
 Open a session with: support/slack.
 
-You execute ONE retrieve step of a read-only Slack plan.
-Overall goal: {{ goal }}
-This step: {{ step_description }}
-
-Looping policy: each reply is EITHER one `SupportSlackSessionPlan` step (narrowed by `ctx.output_format`) or `ReadOnlyResponse` when this step is done. Open/Send payloads use the generated `*OpenInput` and `*SendInput` / union members in the merged runtime — do not restate their JSON in prose. Enum keys: prefer snake_case; match the schema in `ctx.output_format`.
-
-Use session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
-
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
 
 ---
 Narrowed return union for this hop only:
 - ReadOnlyResponse
 - SupportSlackOpenStep
+You execute ONE retrieve step of a read-only Slack plan.
+Overall goal: {{ goal }}
+This step: {{ step_description }}
 
-{{ ctx.output_format }}
+When emitting a session step: respect session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
+When this retrieve step is complete without further tool work, return ReadOnlyResponse instead of a session step.
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
@@ -654,30 +659,34 @@ function ChooseSlackAction__act__support_slack(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: ACT — first post-Open hop for support/slack: SearchRead, PageRead, or Send; legal ops only as below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: ACT — first post-Open hop for support/slack: SearchRead, PageRead, or Send; legal ops only as below.
 
 A support/slack session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
 
-You execute ONE retrieve step of a read-only Slack plan.
-Overall goal: {{ goal }}
-This step: {{ step_description }}
-
-Looping policy: each reply is EITHER one `SupportSlackSessionPlan` step (narrowed by `ctx.output_format`) or `ReadOnlyResponse` when this step is done. Open/Send payloads use the generated `*OpenInput` and `*SendInput` / union members in the merged runtime — do not restate their JSON in prose. Enum keys: prefer snake_case; match the schema in `ctx.output_format`.
-
-Use session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
-
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
 
 ---
 Narrowed return union for this hop only:
 - SupportSlackSendStep
 - SupportSlackSearchReadStep
 - SupportSlackPageReadStep
+You execute ONE retrieve step of a read-only Slack plan.
+Overall goal: {{ goal }}
+This step: {{ step_description }}
 
-{{ ctx.output_format }}
+When emitting a session step: respect session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
+When this retrieve step is complete without further tool work, return ReadOnlyResponse instead of a session step.
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
@@ -697,7 +706,11 @@ function ChooseSlackAction__continue__support_slack(
 
 For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
-Phase: CONTINUE — for support/slack: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: CONTINUE — for support/slack: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
 
 support/slack result is archived.
 Check session history:
@@ -706,18 +719,6 @@ Check session history:
 - See "@N support/slack" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
 - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
 
-You execute ONE retrieve step of a read-only Slack plan.
-Overall goal: {{ goal }}
-This step: {{ step_description }}
-
-Looping policy: each reply is EITHER one `SupportSlackSessionPlan` step (narrowed by `ctx.output_format`) or `ReadOnlyResponse` when this step is done. Open/Send payloads use the generated `*OpenInput` and `*SendInput` / union members in the merged runtime — do not restate their JSON in prose. Enum keys: prefer snake_case; match the schema in `ctx.output_format`.
-
-Use session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
-
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
 
 ---
 Narrowed return union for this hop only:
@@ -725,8 +726,20 @@ Narrowed return union for this hop only:
 - SupportSlackSearchReadStep
 - SupportSlackPageReadStep
 - SupportSlackFinishStep
+You execute ONE retrieve step of a read-only Slack plan.
+Overall goal: {{ goal }}
+This step: {{ step_description }}
 
-{{ ctx.output_format }}
+When emitting a session step: respect session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
+When this retrieve step is complete without further tool work, return ReadOnlyResponse instead of a session step.
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
 
 
 PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).

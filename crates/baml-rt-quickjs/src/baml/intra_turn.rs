@@ -11,6 +11,7 @@ use std::{
 
 use baml_rt_core::{BamlFunctionId, Result, context};
 use baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP;
+use baml_rt_tools::TOOL_SCHEMA_PRELUDE_TAG;
 use baml_types::BamlValue;
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -174,7 +175,15 @@ impl BamlRuntimeManager {
         let prov = exec.provider_conversation_history_lines(scope).await?;
         let merged =
             append_intra_lines_to_provider_then_cap(prov, step_intra_supplement.iter().cloned());
-        exec.tags_from_merged_conversation_lines(merged)
+        let mut tags = exec.tags_from_merged_conversation_lines(merged)?;
+        if let Some(ref prelude) = self.state.tool_schema_prelude {
+            let map = tags.get_or_insert_with(HashMap::new);
+            map.insert(
+                TOOL_SCHEMA_PRELUDE_TAG.to_string(),
+                BamlValue::String(prelude.as_ref().to_string()),
+            );
+        }
+        Ok(tags)
     }
 
     /// Full projected graph lines for step-executor `p_before` / `p_after` (uncapped when the

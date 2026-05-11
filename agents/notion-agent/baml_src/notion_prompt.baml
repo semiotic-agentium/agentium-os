@@ -126,15 +126,6 @@ function ChooseNotionAction(
     You are executing one step of a read-only Notion retrieval plan.
     Overall goal: {{ goal }}
     This step: {{ step_description }}
-
-    The system line may be prefixed with a phase tag like [OPEN] or [SEND] — the JSON you emit for this hop must be one value matching the narrowed return type in `ctx.output_format` and that phase, not a parallel FSM. Notion `Send` payloads use the generated `NotionInput` / block shapes in the merged file.
-
-    {% if ctx.tags['conversation_transcript'] %}
-    Session history:
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
-
-    {{ ctx.output_format }}
   "#
 }
 
