@@ -428,13 +428,14 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         runner: ready.runner(),
     }));
 
-    // Start cluster heartbeat after restore is complete.
-    let _cluster_heartbeat = if let Some(ref mgr) = cluster_mgr {
-        let (_heartbeat_stop, _heartbeat_handle) = mgr.spawn_heartbeat();
-        info!("cluster heartbeat started");
-        Some((_heartbeat_stop, _heartbeat_handle))
-    } else {
-        None
+    let (cluster_heartbeat_health, _cluster_heartbeat_handles) = match cluster_mgr.as_ref() {
+        Some(mgr) => {
+            let health = baml_rt_api::ClusterHeartbeatHealth::new(cluster::HEARTBEAT_INTERVAL);
+            let handles = mgr.spawn_heartbeat(health.clone());
+            info!("cluster heartbeat started");
+            (Some(health), Some(handles))
+        }
+        None => (None, None),
     };
 
     if let Some((agent_name, function_name, json_args)) = config.invoke {
@@ -522,6 +523,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             ready: readyz_for_http,
             runner_token,
             cluster_mode,
+            cluster_heartbeat: cluster_heartbeat_health,
             web_dir,
             ..baml_rt_api::ApiServerConfig::empty(
                 tool_catalog,

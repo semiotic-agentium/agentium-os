@@ -281,5 +281,13 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "internal",
             retryability_for_a2a(error),
         ),
+        BamlRtError::ClusterHeartbeat { .. } => mapping(
+            error,
+            -32603,
+            "Internal error",
+            None,
+            "cluster_heartbeat",
+            retryability_for_a2a(error),
+        ),
     }
 }

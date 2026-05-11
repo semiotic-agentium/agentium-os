@@ -8,11 +8,31 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use baml_rt_core::{AgentRouteKey, BamlRtError, DeploymentContentHash};
+use baml_rt_api::ClusterHeartbeatHealth;
+use baml_rt_core::{AgentRouteKey, BamlRtError, DeploymentContentHash, HeartbeatErrorKind};
 use baml_rt_observability::UNKNOWN_SERVICE_INSTANCE_ID;
 use surrealdb::{Surreal, engine::any::Any};
 
 use crate::routing::{ClusterEndpointResolver, Placement};
+
+/// Heartbeat tick cadence. The health-staleness threshold is owned by
+/// [`ClusterHeartbeatHealth::STALE_LAG_MULTIPLIER`].
+pub(crate) const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Map a SurrealDB error onto the operator-visible [`HeartbeatErrorKind`].
+///
+/// SurrealDB v3 exposes typed `ErrorDetails` covering connection, query,
+/// permission, and other classes; we project them onto the four heartbeat
+/// kinds so `/diagnose` shows a stable label even as upstream variants grow.
+fn classify_surreal_error(err: &surrealdb::Error) -> HeartbeatErrorKind {
+    use surrealdb::types::ErrorDetails;
+    match err.details() {
+        ErrorDetails::Connection(_) => HeartbeatErrorKind::Connection,
+        ErrorDetails::Query(_) => HeartbeatErrorKind::Query,
+        ErrorDetails::NotAllowed(_) => HeartbeatErrorKind::NotAllowed,
+        _ => HeartbeatErrorKind::Other,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Runner identity
@@ -372,10 +392,13 @@ impl ClusterManager {
         )
     }
 
-    /// Spawn a background heartbeat task (5s interval).
+    /// Spawn a background heartbeat task (5s interval) that records its
+    /// success/failure state on the supplied [`ClusterHeartbeatHealth`] so
+    /// `GET /diagnose` can surface degraded heartbeats to operators.
     /// Send on the returned sender (or drop it) to stop the heartbeat.
     pub(crate) fn spawn_heartbeat(
         &self,
+        health: Arc<ClusterHeartbeatHealth>,
     ) -> (
         tokio::sync::oneshot::Sender<()>,
         tokio::task::JoinHandle<()>,
@@ -384,7 +407,7 @@ impl ClusterManager {
         let runner_id = self.identity.runner_id.to_string();
         let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
             loop {
                 tokio::select! {
                     biased;
@@ -402,8 +425,17 @@ impl ClusterManager {
                     .bind(("runner_id", runner_id.clone()))
                     .await
                     .and_then(|mut r| r.take::<Option<serde_json::Value>>(0));
-                if let Err(e) = result {
-                    tracing::warn!(error = %e, "cluster heartbeat failed");
+                match result {
+                    Ok(_) => health.record_ok(),
+                    Err(e) => {
+                        let kind = classify_surreal_error(&e);
+                        let err = BamlRtError::ClusterHeartbeat {
+                            kind,
+                            message: e.to_string(),
+                        };
+                        tracing::warn!(error = %err, "cluster heartbeat failed");
+                        health.record_error(kind);
+                    }
                 }
             }
         });

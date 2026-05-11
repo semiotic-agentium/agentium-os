@@ -25,13 +25,15 @@
 //!
 //! - **T3 — SurrealDB latency injection** *(gated behind `cluster-tests`)*.
 //!   Front a real SurrealDB endpoint (testcontainer) with an in-process
-//!   TCP latency-injecting forwarder that delays every server→client byte
-//!   chunk by 5s, then boot the runner pointed at the proxy in cluster
-//!   mode. Asserts: `/diagnose` surfaces a *named* cluster-heartbeat
-//!   health field so operators can detect heartbeat degradation. Currently
-//!   expected to fail because the heartbeat task is fire-and-forget — its
-//!   only error signal is `tracing::warn!(error = %e, "cluster heartbeat
-//!   failed")` and `/diagnose` has no `cluster_heartbeat_*` field.
+//!   TCP latency-injecting forwarder, boot the runner pointed at the
+//!   proxy in cluster mode (latency disabled so boot is fast), then
+//!   enable per-chunk latency on the proxy and poll `/diagnose`.
+//!   Asserts: `cluster_heartbeat_status` / `cluster_heartbeat_lag_ms` /
+//!   `cluster_heartbeat_last_error_kind` reflect degradation under
+//!   latency. Forward-going regression for the production fix that
+//!   wires `ClusterHeartbeatHealth` into `spawn_heartbeat` and `ApiState`
+//!   so a `BamlRtError::ClusterHeartbeat` surfaces in the HTTP contract,
+//!   not just pod stderr.
 //!
 //! T2 (cgroup-throttled deploy) lives in the e2e/k8s lane.
 
@@ -316,10 +318,7 @@ async fn t1_cpu_peg_deploy_keeps_probes_responsive() {
     .await;
 
     // Drain any baseline lag accumulated during boot before we start probing,
-    // so the measurements only reflect the deploy-time CPU peg. Sized for a
-    // loaded CI worker: too short a drain risks the first probe samples
-    // reading boot-residual lag > 200ms, which would flip invariant 3 from
-    // "expected fail" to "unexpected pass" and trip `#[should_panic]`.
+    // so the measurements only reflect the deploy-time CPU peg.
     sleep(Duration::from_secs(1)).await;
 
     let started_at = Instant::now();
@@ -497,6 +496,7 @@ mod surrealdb_latency {
     use std::net::SocketAddr;
 
     use common::{CLUSTER_SURREALDB_IMAGE_TAG, FAKE_CLUSTER_RUNNER_ENDPOINT};
+    use serde::Deserialize;
     use testcontainers_modules::{
         surrealdb::{SURREALDB_PORT, SurrealDb},
         testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner},
@@ -508,11 +508,34 @@ mod surrealdb_latency {
 
     use super::*;
 
-    /// Latency injected on every server→client byte chunk by the proxy. Matches
-    /// the issue's "5s latency to all queries" — bytes flowing from SurrealDB
-    /// back to the runner are held for this long, so each `db.query(...).await`
-    /// experiences ~5s of artificial round-trip latency.
-    const LATENCY_SECS: u64 = 5;
+    /// Latency injected on every server→client byte chunk by the proxy when
+    /// it is enabled. Sized to push per-tick wall-clock latency past
+    /// `ClusterHeartbeatHealth::STALE_LAG_MULTIPLIER × heartbeat interval`
+    /// (currently 2 × 5s = 10s) so status reliably flips to `degraded` and
+    /// lag crosses [`LAG_DEGRADED_THRESHOLD_MS`]. The original 5s injection
+    /// — matching the issue's literal "5s latency to all queries" — kept
+    /// heartbeats inside the `Ok` envelope (single-chunk responses, so
+    /// per-tick latency tops out at ~one interval) and produced a false
+    /// pass. Boot is not paid through the proxy: latency is toggled on
+    /// after the runner has registered.
+    const LATENCY_SECS: u64 = 12;
+
+    /// Typed slice of `/diagnose` that T3 inspects. Only the heartbeat
+    /// object is checked for schema drift; full-envelope drift is owned by
+    /// the dedicated integration test in `baml-rt-api`.
+    #[derive(Debug, Deserialize)]
+    struct DiagnoseSnapshot {
+        cluster_heartbeat: Option<HeartbeatSnapshot>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct HeartbeatSnapshot {
+        status: String,
+        lag_ms: Option<u64>,
+        #[serde(default)]
+        last_error_kind: Option<String>,
+    }
 
     /// Single SurrealDB container started as a `testcontainers` image.
     /// Mirrors `runner_cluster_test::cluster::SurrealContainer` deliberately
@@ -526,19 +549,43 @@ mod surrealdb_latency {
 
     impl SurrealContainer {
         async fn start() -> Self {
-            let container = SurrealDb::default()
-                .with_tag(CLUSTER_SURREALDB_IMAGE_TAG)
-                .start()
-                .await
-                .expect("start SurrealDB container — cluster-tests require Docker or Podman");
-            let port = container
-                .get_host_port_ipv4(SURREALDB_PORT)
-                .await
-                .expect("get SurrealDB mapped port");
-            Self {
-                endpoint: format!("ws://127.0.0.1:{port}"),
-                _container: container,
+            // Retry transient Docker daemon timeouts (`CreateContainer(RequestTimeoutError)`)
+            // observed under CI runner contention when the cluster-tests
+            // lane brings up many SurrealDB containers in close succession.
+            const MAX_ATTEMPTS: u32 = 3;
+            let mut last_err: Option<String> = None;
+            for attempt in 1..=MAX_ATTEMPTS {
+                match SurrealDb::default()
+                    .with_tag(CLUSTER_SURREALDB_IMAGE_TAG)
+                    .start()
+                    .await
+                {
+                    Ok(container) => {
+                        let port = container
+                            .get_host_port_ipv4(SURREALDB_PORT)
+                            .await
+                            .expect("get SurrealDB mapped port");
+                        return Self {
+                            endpoint: format!("ws://127.0.0.1:{port}"),
+                            _container: container,
+                        };
+                    }
+                    Err(e) => {
+                        let msg = format!("{e}");
+                        eprintln!(
+                            "SurrealContainer::start attempt {attempt}/{MAX_ATTEMPTS} failed: {msg}"
+                        );
+                        last_err = Some(msg);
+                        if attempt < MAX_ATTEMPTS {
+                            sleep(Duration::from_secs(2 * u64::from(attempt))).await;
+                        }
+                    }
+                }
             }
+            panic!(
+                "start SurrealDB container — cluster-tests require Docker or Podman (failed after {MAX_ATTEMPTS} attempts): {}",
+                last_err.unwrap_or_else(|| "unknown error".to_string())
+            );
         }
     }
 
@@ -554,8 +601,16 @@ mod surrealdb_latency {
     /// plane: the issue says "toxiproxy" but the contract is "5s latency on
     /// all queries", and this implementation pins that contract without
     /// adding a non-Rust runtime dependency to the test crate.
+    ///
+    /// Latency injection is gated by an atomic flag so the test can let
+    /// boot traffic pass through unimpeded (otherwise the runner spends
+    /// minutes traversing schema-init / cluster-registration queries
+    /// through the proxy) and only inject latency once `/diagnose` polling
+    /// is about to start. Use [`LatencyProxy::enable`] / [`disable`].
     struct LatencyProxy {
         endpoint: String,
+        latency: Duration,
+        enabled: Arc<std::sync::atomic::AtomicBool>,
         shutdown: Option<tokio::sync::oneshot::Sender<()>>,
         accept_handle: Option<tokio::task::JoinHandle<()>>,
     }
@@ -574,7 +629,9 @@ mod surrealdb_latency {
             let local = listener.local_addr().expect("proxy local addr");
             let endpoint = format!("ws://{local}");
 
+            let enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+            let accept_enabled = enabled.clone();
             let accept_handle = tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -584,6 +641,7 @@ mod surrealdb_latency {
                             let Ok((inbound, _)) = accept else {
                                 continue;
                             };
+                            let session_enabled = accept_enabled.clone();
                             tokio::spawn(async move {
                                 let outbound = match TcpStream::connect(upstream_addr).await {
                                     Ok(stream) => stream,
@@ -597,7 +655,7 @@ mod surrealdb_latency {
                                     }
                                 };
                                 if let Err(e) = forward_with_response_latency(
-                                    inbound, outbound, latency,
+                                    inbound, outbound, latency, session_enabled,
                                 )
                                 .await
                                 {
@@ -618,6 +676,8 @@ mod surrealdb_latency {
 
             Self {
                 endpoint,
+                latency,
+                enabled,
                 shutdown: Some(shutdown_tx),
                 accept_handle: Some(accept_handle),
             }
@@ -625,6 +685,15 @@ mod surrealdb_latency {
 
         fn endpoint(&self) -> &str {
             &self.endpoint
+        }
+
+        fn enable(&self) {
+            self.enabled
+                .store(true, std::sync::atomic::Ordering::Release);
+            tracing::info!(
+                latency_ms = self.latency.as_millis() as u64,
+                "latency proxy enabled"
+            );
         }
     }
 
@@ -640,12 +709,15 @@ mod surrealdb_latency {
     }
 
     /// Copy bytes in both directions. Client→server is forwarded immediately;
-    /// server→client is delayed by `latency` per chunk, simulating "the
-    /// SurrealDB server takes `latency` to begin replying to each query".
+    /// server→client is delayed by `latency` per chunk *only when `enabled`
+    /// is true* — when disabled the proxy is a transparent forwarder, so the
+    /// runner can boot through it at full speed and the test only pays the
+    /// latency cost during the polling window.
     async fn forward_with_response_latency(
         inbound: TcpStream,
         outbound: TcpStream,
         latency: Duration,
+        enabled: Arc<std::sync::atomic::AtomicBool>,
     ) -> std::io::Result<()> {
         let (mut in_r, mut in_w) = inbound.into_split();
         let (mut out_r, mut out_w) = outbound.into_split();
@@ -657,7 +729,7 @@ mod surrealdb_latency {
             res.map(|_| ())
         });
 
-        // Server → client: per-chunk latency injection.
+        // Server → client: per-chunk latency injection (only while enabled).
         let downstream = tokio::spawn(async move {
             let mut buf = vec![0u8; 8 * 1024];
             loop {
@@ -666,7 +738,9 @@ mod surrealdb_latency {
                     Ok(n) => n,
                     Err(e) => return Err(e),
                 };
-                tokio::time::sleep(latency).await;
+                if enabled.load(std::sync::atomic::Ordering::Acquire) {
+                    tokio::time::sleep(latency).await;
+                }
                 in_w.write_all(&buf[..n]).await?;
             }
             in_w.shutdown().await
@@ -687,51 +761,29 @@ mod surrealdb_latency {
         Ok(())
     }
 
-    /// **Regression target — currently expected to panic.**
+    /// Issue #341 T3 — `/diagnose` exposes `cluster_heartbeat_status` and
+    /// `cluster_heartbeat_lag_ms` reflecting heartbeat health under a
+    /// degraded SurrealDB.
     ///
-    /// The cluster heartbeat task in
-    /// `crates/baml-agent-runner/src/cluster.rs` (`spawn_heartbeat`) is
-    /// fire-and-forget. On error it only does
-    /// `tracing::warn!(error = %e, "cluster heartbeat failed")` — there is
-    /// no `BamlRtError::ClusterHeartbeat` variant, no Rust-side state, and
-    /// no operator-visible surface that exposes heartbeat health. The
-    /// `last_heartbeat_ms` field lives only in SurrealDB's `cluster_runners`
-    /// row; the runner does not read it back. So when SurrealDB goes
-    /// degraded, the runner has no way to tell operators "my heartbeats are
-    /// failing" short of reading the runner pod's stderr.
+    /// Setup: real SurrealDB testcontainer fronted by an in-process TCP
+    /// proxy that, **once enabled**, delays every server→client byte chunk
+    /// by [`LATENCY_SECS`] (emulates toxiproxy's `latency` toxin). The
+    /// proxy is a transparent forwarder during boot so the runner can
+    /// register and start its heartbeat at full speed; latency is enabled
+    /// only after boot, before polling starts. This keeps the per-test
+    /// wall-clock inside nextest's slow-test budget while still inducing
+    /// observable heartbeat degradation.
     ///
-    /// This test forces that exact failure. We:
+    /// Polls `/diagnose` over a window sized to capture multiple
+    /// heartbeat ticks under latency; at least one sample must show
+    /// `cluster_heartbeat.status == "degraded"`, OR a typed
+    /// `cluster_heartbeat.last_error_kind`, OR `lag_ms` past the
+    /// staleness threshold. Multi-sample polling avoids a false-pass when
+    /// a heartbeat happens to land just before a single-shot snapshot.
     ///
-    ///   1. Start a real SurrealDB testcontainer.
-    ///   2. Front it with an in-process TCP proxy that delays every
-    ///      server→client byte chunk by 5s — emulating toxiproxy's `latency`
-    ///      toxin in the response direction.
-    ///   3. Boot the runner in cluster mode pointed at the proxy.
-    ///   4. Wait long enough for at least one heartbeat round-trip to land
-    ///      under the latency injection.
-    ///   5. Assert that `/diagnose` exposes a *named* cluster-heartbeat
-    ///      health field (e.g. `cluster_heartbeat_status`,
-    ///      `cluster_heartbeat_lag_ms`, or `cluster_heartbeat_last_ok_ms`)
-    ///      so an operator can detect the degradation.
-    ///
-    /// The assertion fails today because `/diagnose` only returns
-    /// `runtime_progress_lag_ms` and `event_producers_loaded`. The
-    /// `#[should_panic]` keeps CI green while preserving this as a
-    /// regression target. When the heartbeat task is fixed (a named
-    /// `BamlRtError::ClusterHeartbeat{...}` error variant *and* a
-    /// `/diagnose` field that surfaces stale heartbeats) this test will
-    /// fail with "did not panic as expected" — at which point the fixer
-    /// should remove `#[should_panic]` and tighten the assertion to check
-    /// the field's *value* under degradation, not just its presence.
-    ///
-    /// Gated behind `cluster-tests` because it spins up a SurrealDB
-    /// container and matches the same Docker/Podman requirement as the
-    /// existing cluster suite. Sized for a loaded CI worker: the runner
-    /// makes ~10–20 SurrealDB queries during boot (provenance schema +
-    /// cluster registration + config service), each delayed by 5s, so the
-    /// readiness deadline is widened accordingly.
+    /// Gated behind `cluster-tests`: needs Docker/Podman like the rest of
+    /// the cluster suite.
     #[tokio::test]
-    #[should_panic(expected = "expected /diagnose to surface a cluster-heartbeat health field")]
     async fn t3_surrealdb_latency_named_heartbeat_health() {
         let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
@@ -743,7 +795,9 @@ mod surrealdb_latency {
         // existing cluster suite uses to satisfy the SSRF validator). The
         // runner won't actually accept cross-runner traffic on that address —
         // the heartbeat task only writes UPSERTs against `cluster_runners`,
-        // which is what we're stress-testing.
+        // which is what we're stress-testing. Boot runs without latency
+        // injection (proxy in transparent-forward mode), so the readiness
+        // budget mirrors the cluster suite's standard budget.
         let runner = StandaloneRunner::start_with_options(
             &[("SURREAL_USER", "root"), ("SURREAL_PASS", "root")],
             &[
@@ -752,46 +806,81 @@ mod surrealdb_latency {
                 "--runner-endpoint",
                 FAKE_CLUSTER_RUNNER_ENDPOINT,
             ],
-            // Boot has to traverse ~10–20 server→client chunks each held for
-            // LATENCY_SECS, plus the testcontainer pull on cold runners.
-            Some(e2e_secs_ci_or_local(600, 360)),
+            None,
         )
         .await;
 
-        // Wait for at least one heartbeat round-trip under latency so the
-        // task has had a chance to surface either a named error or a stale
-        // signal. Heartbeat interval is 5s; with 5s of injected latency the
-        // first heartbeat completes around T+10s of cluster-mgr lifetime.
-        sleep(Duration::from_secs(LATENCY_SECS * 3)).await;
+        // Enable latency injection now that the runner is up and the
+        // heartbeat task is ticking. Subsequent ticks pay LATENCY_SECS per
+        // server→client chunk, which pushes per-tick wall-clock past
+        // STALE_LAG_MULTIPLIER × interval and flips status to `degraded`.
+        proxy.enable();
 
         let client = reqwest::Client::new();
-        let diagnose: Value = client
-            .get(format!("{}/diagnose", runner.base_url))
-            .send()
-            .await
-            .expect("GET /diagnose")
-            .json()
-            .await
-            .expect("decode /diagnose body");
+        // Threshold sits between the healthy ceiling (lag oscillates
+        // 0..interval = 0..5000ms) and the under-latency ceiling
+        // (per-tick wall-clock ≥ LATENCY_SECS).
+        const LAG_DEGRADED_THRESHOLD_MS: u64 = 8000;
+        // Window = LATENCY_SECS + 2 × interval gives the heartbeat task at
+        // least two full ticks under injection.
+        let poll_window = Duration::from_secs(LATENCY_SECS + 10);
+        let poll_interval = Duration::from_millis(500);
+        let deadline = std::time::Instant::now() + poll_window;
 
-        let exposes_heartbeat_health = ["cluster_heartbeat_status", "cluster_heartbeat_lag_ms"]
-            .iter()
-            .any(|key| diagnose.get(*key).is_some());
+        let mut saw_degraded_status = false;
+        let mut saw_error_kind: Option<String> = None;
+        let mut max_lag_ms: u64 = 0;
+        let mut last_sample: Option<DiagnoseSnapshot> = None;
 
-        // Bounded log tail keeps the panic payload small even when the
+        while std::time::Instant::now() < deadline {
+            let diagnose: DiagnoseSnapshot = client
+                .get(format!("{}/diagnose", runner.base_url))
+                .send()
+                .await
+                .expect("GET /diagnose")
+                .json()
+                .await
+                .expect("decode /diagnose body — schema drift?");
+
+            if let Some(hb) = &diagnose.cluster_heartbeat {
+                if hb.status == "degraded" {
+                    saw_degraded_status = true;
+                }
+                if let Some(kind) = &hb.last_error_kind {
+                    saw_error_kind = Some(kind.clone());
+                }
+                if let Some(lag) = hb.lag_ms {
+                    max_lag_ms = max_lag_ms.max(lag);
+                }
+            }
+            last_sample = Some(diagnose);
+
+            if saw_degraded_status
+                || saw_error_kind.is_some()
+                || max_lag_ms > LAG_DEGRADED_THRESHOLD_MS
+            {
+                break;
+            }
+            sleep(poll_interval).await;
+        }
+
+        // Bounded log tail keeps the failure payload small even when the
         // runner has been booting for minutes under per-query latency
         // (full log can grow to many MB with debug tracing on each query).
         let log_tail = runner.log_tail(100);
         assert!(
-            exposes_heartbeat_health,
-            "expected /diagnose to surface a cluster-heartbeat health field \
-             (e.g. cluster_heartbeat_status / cluster_heartbeat_lag_ms) so \
-             operators can detect heartbeat degradation under SurrealDB \
-             latency, but only got: {diagnose}. Today the heartbeat task \
-             only logs `tracing::warn!(error = %e, \"cluster heartbeat \
-             failed\")` — there is no named error variant on BamlRtError \
-             and no operator-visible surface that exposes stale \
-             last_heartbeat_ms. Runner log tail:\n{log_tail}"
+            saw_degraded_status
+                || saw_error_kind.is_some()
+                || max_lag_ms > LAG_DEGRADED_THRESHOLD_MS,
+            "expected /diagnose to surface heartbeat degradation under \
+             SurrealDB latency injection (status='degraded', or a typed \
+             cluster_heartbeat.last_error_kind, or \
+             cluster_heartbeat.lag_ms > {LAG_DEGRADED_THRESHOLD_MS}ms) over a \
+             {poll_window:?} polling window. \
+             saw_degraded_status={saw_degraded_status}, \
+             saw_error_kind={saw_error_kind:?}, \
+             max_lag_ms={max_lag_ms}, last sample: {last_sample:?}. \
+             Runner log tail:\n{log_tail}"
         );
     }
 }

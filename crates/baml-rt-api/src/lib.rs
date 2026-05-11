@@ -4,6 +4,7 @@
 //! (SSE streaming JSON-RPC responses).
 //! (A2A JSON-RPC forward). Delegates to an internal [`AgentRegistry`](baml_rt_a2a::AgentRegistry) implementation.
 
+pub mod cluster_heartbeat;
 mod config_handlers;
 mod context_index;
 mod context_metrics;
@@ -22,6 +23,8 @@ pub mod runtime_progress;
 pub mod service_error;
 mod spans;
 
+pub use baml_rt_core::HeartbeatErrorKind;
+pub use cluster_heartbeat::{ClusterHeartbeatHealth, HeartbeatStatus};
 pub use context_index::{
     ContextIndexCursorToken, ContextIndexError, ContextIndexQueryParams, ContextIndexRequest,
     ContextIndexRequestParseError, ContextIndexService, ContextPickerItemDto, ContextPickerPageDto,
