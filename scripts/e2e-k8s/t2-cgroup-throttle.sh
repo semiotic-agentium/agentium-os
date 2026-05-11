@@ -79,11 +79,15 @@ capture_diagnostics() {
   local diag_dir="$LOG_DIR/diagnostics"
   mkdir -p "$diag_dir"
   log_step "Capturing cgroup diagnostics from ${RUNNER_POD_0}"
-  kubectl exec -n "$NAMESPACE" "$RUNNER_POD_0" -- cat /sys/fs/cgroup/cpu.stat \
+  # --request-timeout caps each kubectl call so a transitional pod state
+  # (e.g. just SIGKILLed but not yet restarted) can't stretch cleanup into
+  # several wasted minutes of dead-wait on a CI run.
+  local k_timeout="--request-timeout=10s"
+  kubectl exec "$k_timeout" -n "$NAMESPACE" "$RUNNER_POD_0" -- cat /sys/fs/cgroup/cpu.stat \
     > "$diag_dir/cpu.stat" 2>"$diag_dir/cpu.stat.err" || true
-  kubectl exec -n "$NAMESPACE" "$RUNNER_POD_0" -- cat /sys/fs/cgroup/memory.events \
+  kubectl exec "$k_timeout" -n "$NAMESPACE" "$RUNNER_POD_0" -- cat /sys/fs/cgroup/memory.events \
     > "$diag_dir/memory.events" 2>"$diag_dir/memory.events.err" || true
-  kubectl describe pod -n "$NAMESPACE" "$RUNNER_POD_0" \
+  kubectl describe pod "$k_timeout" -n "$NAMESPACE" "$RUNNER_POD_0" \
     > "$diag_dir/pod-describe.txt" 2>"$diag_dir/pod-describe.err" || true
   log_info "Diagnostics written to $diag_dir/"
 }
