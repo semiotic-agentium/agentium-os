@@ -244,7 +244,7 @@ jobs:
           # in this workflow; excluding them here keeps each test in one lane.
           cargo nextest run --workspace --locked --profile ci-merged --no-fail-fast \
             --exclude baml-sandbox-adapter --exclude baml-sandbox-protocol --exclude sandbox-echo-adapter \
-            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
+            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests,baml-agent-runner/cluster-tests
         env:
           RUSTUP_TOOLCHAIN: stable
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
