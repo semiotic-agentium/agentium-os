@@ -248,3 +248,4 @@ The raw manifests under `deploy/k8s/` and the `deploy/demo/run-demo.sh` script a
 - **BAML runtime**: git dependency from `ryan-s-roberts/baml` (`canary` branch); `baml-runtime`, `baml-types`, `internal-baml-core`, `internal-llm-client`
 - **QuickJS**: `quickjs_runtime` crate for JS execution
 - **SurrealDB**: Embedded multi-model database for provenance graph persistence
+- **TypeScript 6.x**: required on `PATH` (or via `npx`) for any code path that exercises the agent build pipeline — `cargo test` on builder fixtures, local `baml-agent-builder package`, and the runner image (Dockerfile installs `typescript@6` globally). The canonical `tsconfig.json` written by bootstrap pins `"ignoreDeprecations": "6.0"`, which TypeScript 5.x rejects. Install with `npm install -g typescript@6`.
