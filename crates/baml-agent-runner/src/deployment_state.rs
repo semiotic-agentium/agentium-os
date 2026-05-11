@@ -1147,27 +1147,8 @@ mod tests {
         store.save_deployment(&record).await.unwrap();
         drop(store);
 
-        let reopened = {
-            let mut reopened = None;
-            for _ in 0..20 {
-                match DeploymentStateStore::open(&path).await {
-                    Ok(store) => {
-                        reopened = Some(store);
-                        break;
-                    }
-                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
-                }
-            }
-            reopened.expect("reopen deployment state store after lock release")
-        };
-        let mut records = Vec::new();
-        for _ in 0..50 {
-            records = reopened.list_deployments().await.unwrap();
-            if !records.is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
+        let reopened = retry_open(&path).await;
+        let records = reopened.list_deployments().await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(
             records[0].content_hash.as_str(),
