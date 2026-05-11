@@ -23,15 +23,18 @@ use crate::builder::{
 ///
 /// **`moduleResolution`** is `node` so `module: "ESNext"` emits script-friendly ESM
 /// instead of CommonJS `exports` assignments, which QuickJS script evaluation does not provide.
-/// `ignoreDeprecations` silences TS 6's warning about legacy node resolution until the
-/// QuickJS packaging path can use an ESM-aware resolver without changing emitted code shape.
+/// `ignoreDeprecations` silences the TS 5.x deprecation warning for legacy node resolution
+/// until the QuickJS packaging path can use an ESM-aware resolver without changing emitted
+/// code shape. `"5.0"` is the only value TypeScript 5.x accepts; TS 6.x will turn the
+/// deprecation into a hard error regardless of the flag, so the canonical tsconfig will
+/// need a real ESM-aware fix at that point (follow-up to issue #356).
 pub const TSCONFIG_JSON: &str = r#"{
   "compilerOptions": {
     "target": "ES2020",
     "lib": ["ES2020"],
     "module": "ESNext",
     "moduleResolution": "node",
-    "ignoreDeprecations": "6.0",
+    "ignoreDeprecations": "5.0",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
