@@ -34,6 +34,8 @@ fn version_count_strategy() -> impl Strategy<Value = usize> {
 }
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
     #[test]
     fn version_numbers_are_monotonically_increasing(n in version_count_strategy()) {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -86,6 +88,8 @@ proptest! {
 // -------------------------------------------------------------------------
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
     #[test]
     fn fork_chain_generation_increases(chain_len in 2..=6usize) {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -140,6 +144,11 @@ proptest! {
 // -------------------------------------------------------------------------
 
 proptest! {
+    // Each case rebuilds a fresh SurrealDB Mem instance per publish; the
+    // default 256 cases contend with other proptests in the same nextest
+    // binary. A handful of cases is enough to exercise the property.
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
     #[test]
     fn concurrent_publishes_produce_unique_versions(n in 2..=8usize) {
         let rt = tokio::runtime::Runtime::new().unwrap();

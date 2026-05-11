@@ -368,10 +368,11 @@ async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        // Continue hop (Finish) can follow Send+Read; default 60s idle is tight when the LLM is slow.
+        // Grok-4.1-fast can stall longer than three minutes between yield
+        // chunks; the default 60s collector idle would trip first.
         .with_quickjs_config(
             baml_rt::QuickJSConfig::new()
-                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(180, 120))),
+                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(300, 120))),
         )
         .with_surreal_store(test_surreal_store().await)
         .build()
@@ -797,6 +798,13 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
         .with_runtime_manager(manager)
         .with_init_js(entry_js)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        // Grok-4.1-fast can produce minute-long gaps between yield chunks on
+        // CI; the default 60s collector idle trips before the agent emits its
+        // terminal frame.
+        .with_quickjs_config(
+            baml_rt::QuickJSConfig::new()
+                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(300, 90))),
+        )
         .with_surreal_store(test_surreal_store().await)
         .build()
         .await

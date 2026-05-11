@@ -42,6 +42,18 @@ filter = 'package(baml-agent-runner) and test(~conversational_context_auto_via_p
 test-group = "provenance"
 slow-timeout = { period = "120s", terminate-after = 10 }
 
+# Embedded SurrealKv on-disk reopen tests release the file lock from a
+# background driver task; under CI disk contention the retry_open
+# exponential backoff (~20s budget) may need to fully elapse, pushing the
+# combined test wall-clock past the default 60s slow-timeout.
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and test(~deployment_state::tests::persists_across_reopen_on_disk)'
+slow-timeout = { period = "120s", terminate-after = 2 }
+
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and test(~deployment_state::tests::scheduled_callbacks_persist_and_clear_after_delivery)'
+slow-timeout = { period = "180s", terminate-after = 2 }
+
 # QuickJS C engine shows rare SIGBUS/SIGSEGV flakes in CI. Retry.
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_stream_baml_tool)'
@@ -56,10 +68,12 @@ retries = { backoff = "fixed", count = 2, delay = "2s" }
 filter = 'package(baml-rt-a2a) and (test(~test_interleaved) or test(~interleaved))'
 retries = { backoff = "fixed", count = 2, delay = "2s" }
 
-# LLM-dependent e2e tests: generous timeouts and retries.
+# LLM-dependent e2e tests: wall-clock budget must exceed the agent-side
+# stream-collector idle (up to 300s for slow grok-4.1-fast yield gaps)
+# before nextest SIGKILLs the test.
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_)'
-slow-timeout = { period = "120s", terminate-after = 2 }
+slow-timeout = { period = "120s", terminate-after = 3 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
 # Notion direct-id e2e: extra retries (LLM plan extraction occasionally skips tool path).
@@ -191,6 +205,18 @@ filter = 'package(baml-agent-runner) and test(~conversational_context_auto_via_p
 test-group = "provenance"
 slow-timeout = { period = "120s", terminate-after = 10 }
 
+# Embedded SurrealKv on-disk reopen tests release the file lock from a
+# background driver task; under CI disk contention the retry_open
+# exponential backoff (~20s budget) may need to fully elapse, pushing the
+# combined test wall-clock past the default 60s slow-timeout.
+[[profile.ci-merged.overrides]]
+filter = 'package(baml-agent-runner) and test(~deployment_state::tests::persists_across_reopen_on_disk)'
+slow-timeout = { period = "120s", terminate-after = 2 }
+
+[[profile.ci-merged.overrides]]
+filter = 'package(baml-agent-runner) and test(~deployment_state::tests::scheduled_callbacks_persist_and_clear_after_delivery)'
+slow-timeout = { period = "180s", terminate-after = 2 }
+
 # QuickJS C engine shows rare SIGBUS/SIGSEGV flakes in CI. Retry.
 [[profile.ci-merged.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_stream_baml_tool)'
@@ -233,6 +259,15 @@ retries = { backoff = "fixed", count = 2, delay = "2s" }
 [[profile.ci-merged.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
 retries = { backoff = "fixed", count = 3, delay = "8s" }
+
+# LLM-dependent e2e tests in ci-merged: wall-clock budget must exceed the
+# agent-side stream-collector idle (up to 300s for slow grok-4.1-fast yield
+# gaps) before nextest SIGKILLs the test. Placed after all specific
+# `test_e2e_*` overrides so first-match-wins lets them take precedence.
+[[profile.ci-merged.overrides]]
+filter = 'package(baml-agent-runner) and test(~test_e2e_)'
+slow-timeout = { period = "120s", terminate-after = 3 }
+retries = { backoff = "fixed", count = 1, delay = "5s" }
 
 # Default timeouts and retries. Earlier overrides take priority per nextest semantics,
 # so this catch-all applies only where no specific override has set the corresponding field.
