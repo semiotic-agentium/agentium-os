@@ -31,7 +31,7 @@ expression: "&redact_stochastic_strings(&report)"
       },
       {
         "role": "tool",
-        "content": "<redacted-@ref> · \"computing 2 + 3\" · 3L · 51B"
+        "content": "<redacted-@ref> · support/calculate:Send(computing=\"2 + 3\") · 3L · 51B"
       }
     ]
   ],

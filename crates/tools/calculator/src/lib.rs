@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::Result;
-use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
+use baml_rt_tools::{ActionIdentity, baml_tool, bundles::Support, tools::BamlTool};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 /// A binary arithmetic expression: left OP right.
 /// Provide integer operands and choose one of the four arithmetic operations.
@@ -85,6 +86,20 @@ impl BamlTool for CalculatorTool {
 
     fn describe_open(&self) -> String {
         "using calculator for arithmetic".to_string()
+    }
+
+    fn action_identity(&self, input: &Self::Input) -> Option<ActionIdentity> {
+        let e = &input.expression;
+        let op = match e.operation {
+            MathOperation::Add => "+",
+            MathOperation::Subtract => "-",
+            MathOperation::Multiply => "*",
+            MathOperation::Divide => "/",
+        };
+        Some(ActionIdentity::new(
+            None,
+            vec![("computing", json!(format!("{} {} {}", e.left, op, e.right)))],
+        ))
     }
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
