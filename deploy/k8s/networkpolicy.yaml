@@ -14,7 +14,7 @@
 #
 # Cross-runner A2A forwarding (runner-to-runner rule) is unauthenticated at
 # the application layer. The trust boundary is the cluster fabric perimeter,
-# not the NetworkPolicy: the external-access rule below is intentionally
+# not the NetworkPolicy. The external-access rule below is intentionally
 # permissive on the runner port, so the runner-to-runner rule is subsumed
 # until the external rule is tightened. Operator endpoints on the same port
 # are protected separately by X-Runner-Token in cluster mode.
@@ -32,8 +32,7 @@ spec:
   ingress:
     # Runner-to-runner: cross-pod A2A forwarding and migration.
     # Keeps forwarding working if the external rule below is later
-    # tightened; not the trust boundary on its own (external rule below
-    # is permissive — see the header comment).
+    # tightened; on its own it is not the trust boundary.
     - from:
         - podSelector:
             matchLabels:
