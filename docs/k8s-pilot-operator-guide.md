@@ -109,6 +109,8 @@ helm upgrade --install agentium deploy/helm/agentium-os/ \
   -f deploy/helm/agentium-os/examples/k3d-values.yaml
 ```
 
+Resource sizing: the chart defaults the runner to 2Gi memory request and 5Gi memory limit. This is the empirically observed floor for publishing a real multi-agent set (e.g. `argument-cleese` + `argument-chapman`) end-to-end — `POST /deploy` runs tar extract, BAML IL load, QuickJS init, and tool registration on top of the resident fastembed ONNX model, SurrealDB client, and provenance backend. Raise `runner.resources.limits.memory` further for heavier workloads; lowering it below 5Gi tends to OOM-kill the runner mid-deploy with a confusing `connection closed before message completed` symptom client-side.
+
 ## Step 4 — Verify pods are running
 
 ```bash
@@ -274,6 +276,7 @@ If `observability.enabled` is `true` and `observability.otlpEndpoint` points at 
 |---|---|---|
 | Pods stuck in `Pending` | `kubectl -n agentium describe pod <name>` | Default `StorageClass` missing, or PVC cannot be satisfied. Set `runner.persistence.storageClass` / `surrealdb.persistence.storageClass`. |
 | Pods in `ImagePullBackOff` | `kubectl -n agentium describe pod <name>` | `runner.image.repository`/`tag` wrong for the cluster's registry reachability. For local k3d image-import flows, confirm `pullPolicy: Never` and that `k3d image import` succeeded. For local k3d-managed-registry flows, confirm the push reached the registry: `docker logs k3d-agentium-registry`. |
+| `POST /deploy` returns `connection closed before message completed`, or pods show `Reason: OOMKilled` / exit code 137 | `kubectl -n agentium describe pod <name>` | Runner exceeded its memory limit during deploy (tar extract + BAML IL load + QuickJS init + tool registration on top of resident fastembed ONNX, SurrealDB client, and provenance backend). The chart default is 5Gi, which fits the documented multi-agent fixtures; raise `runner.resources.limits.memory` if a heavier workload still OOMs. |
 | `readyz` returns 503 for more than a minute | `kubectl -n agentium logs statefulset/agentium-agentium-os-runner` | SurrealDB not up, or runner cannot reach it. Verify `surrealdb-credentials` keys match `values.yaml` (`username`/`password`). |
 | `401 authentication required` from publish/deploy | `kubectl -n agentium get secret runner-token -o yaml` | `RUNNER_TOKEN` missing or wrong. Re-export from the secret (see Step 2). |
 | `400 routing_key must be non-empty` on dispatch | request body | Ensure `routing_key` and `message_type` are present and non-empty strings. |
