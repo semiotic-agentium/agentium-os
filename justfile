@@ -54,32 +54,45 @@ download-models:
 
 # Verify the local host has the system deps required to build agents.
 # On non-Linux hosts, skips Linux-only checks (libdbus / libcap-ng);
-# tsc is required everywhere. Exits non-zero with a clear message if any
-# dep is missing. Run this before build-release on a fresh dev host.
+# tsc 6.x is required everywhere (5.x rejects `"ignoreDeprecations": "6.0"`
+# in the canonical tsconfig). Exits non-zero with a clear message if any
+# dep is missing or out of range. Run this before build-release on a fresh
+# dev host.
 check-host:
     #!/usr/bin/env bash
     set -euo pipefail
     missing=()
+    ok=()
     if [[ "$(uname)" == "Linux" ]]; then
-        pkg-config --exists dbus-1 2>/dev/null \
-            || missing+=("libdbus-1-dev (sudo apt install libdbus-1-dev)")
-        find /usr/lib /usr/lib64 -maxdepth 2 -name "libcap-ng.so" 2>/dev/null \
-            | grep -q . \
-            || missing+=("libcap-ng-dev (sudo apt install libcap-ng-dev)")
+        if pkg-config --exists dbus-1 2>/dev/null; then
+            ok+=("dbus-1:    $(pkg-config --modversion dbus-1)")
+        else
+            missing+=("libdbus-1-dev (sudo apt install libdbus-1-dev)")
+        fi
+        if pkg-config --exists libcap-ng 2>/dev/null; then
+            ok+=("libcap-ng: $(pkg-config --modversion libcap-ng)")
+        else
+            missing+=("libcap-ng-dev (sudo apt install libcap-ng-dev)")
+        fi
     fi
-    command -v tsc >/dev/null 2>&1 \
-        || missing+=("typescript@6 (npm install -g typescript@6)")
+    if ! command -v tsc >/dev/null 2>&1; then
+        missing+=("typescript@6 (npm install -g typescript@6)")
+    else
+        tsc_version=$(tsc --version 2>/dev/null || true)
+        tsc_major=$(printf '%s' "$tsc_version" | grep -oE '[0-9]+' | head -n1)
+        if [[ -z "$tsc_major" || "$tsc_major" -lt 6 ]]; then
+            missing+=("typescript@6 (found '${tsc_version:-unknown}'; upgrade with npm install -g typescript@6)")
+        else
+            ok+=("tsc:       $tsc_version")
+        fi
+    fi
     if [ "${#missing[@]}" -gt 0 ]; then
         echo "Missing host deps:" >&2
         for m in "${missing[@]}"; do echo "  - $m" >&2; done
         exit 1
     fi
     echo "Host deps OK:"
-    if [[ "$(uname)" == "Linux" ]]; then
-        printf "  dbus-1:    %s\n" "$(pkg-config --modversion dbus-1)"
-        printf "  libcap-ng: present\n"
-    fi
-    printf "  tsc:       %s\n" "$(tsc --version)"
+    for line in "${ok[@]}"; do printf "  %s\n" "$line"; done
 
 # Build release versions of builder and runner. Run once before using agent recipes.
 build-release:
