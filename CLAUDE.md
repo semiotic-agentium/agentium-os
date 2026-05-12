@@ -149,6 +149,8 @@ The runner HTTP API has two access tiers:
 - `GET /healthz`, `GET /readyz` — health checks
 - `GET /agents` — agent discovery
 - `POST /agents/{pkg}/{inst}/chat` — A2A JSON-RPC forwarding
+- `POST /agents/{pkg}/{inst}/dispatch` — host-to-agent event delivery
+- `GET /contexts/{id}/*`, `GET /tasks/{id}/episode*`, conversation-history and provenance reads — observability over the provenance graph
 
 **Operator routes** (require `X-Runner-Token` header in cluster mode):
 - `GET /config`, `POST /config` — configuration management
