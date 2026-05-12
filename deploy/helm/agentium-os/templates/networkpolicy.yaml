@@ -12,10 +12,12 @@
 #     to a specific namespace or CIDR is a production-hardening step;
 #     operator auth prevents unauthorised mutations regardless.
 #
-# Cross-runner A2A forwarding is cluster-internal only (runner-to-runner
-# rule) and unauthenticated at the application layer — network isolation
-# is the boundary.  Operator endpoints on the same port are protected by
-# X-Runner-Token and reject requests without a valid token in cluster mode.
+# Cross-runner A2A forwarding (runner-to-runner rule) is unauthenticated at
+# the application layer. The trust boundary is the cluster fabric perimeter,
+# not the NetworkPolicy. The external-access rule below is intentionally
+# permissive on the runner port, so the runner-to-runner rule is subsumed
+# until the external rule is tightened. Operator endpoints on the same port
+# are protected separately by X-Runner-Token in cluster mode.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -30,7 +32,8 @@ spec:
     - Ingress
   ingress:
     # Runner-to-runner: cross-pod A2A forwarding and migration.
-    # This rule is the cluster-internal trust boundary for forwarding.
+    # Keeps forwarding working if the external rule below is later
+    # tightened; on its own it is not the trust boundary.
     - from:
         - podSelector:
             matchLabels:
