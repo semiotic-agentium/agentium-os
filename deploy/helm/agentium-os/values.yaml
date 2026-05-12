@@ -79,41 +79,33 @@ runner:
     # `kubectl set env`.
     rustLog: ""
 
-  # -- Runner startup probe (HTTP GET /healthz). While the startup probe is
-  # running, the kubelet suppresses liveness and readiness probes — only
-  # startup-probe failures can emit `Warning Unhealthy` events, and the pod
-  # cannot be restarted by liveness while still starting. The runner needs
-  # this window because the in-process remote SurrealDB connect retry can
-  # spend ~15–25 s before the HTTP listener binds when SurrealDB hasn't
-  # finished starting (see issue #381 / PR #396).
-  #
-  # NOTE: this does not eliminate `Warning Unhealthy` events during a cold
-  # install — startup-probe failures still emit them. What it does change
-  # is the semantic framing operators see in `kubectl describe pod`:
-  # "Startup probe failed (xN over Xs)" reads as a transient startup event,
-  # whereas "Readiness probe failed" reads as an ongoing problem. The
-  # underlying race (probe fires before HTTP can bind) can only be fully
-  # closed by binding the HTTP listener before the SurrealDB connect retry
-  # — a runner-code change tracked separately.
-  #
-  # 6 attempts × 10 s = 60 s budget — comfortably covers the worst-case
-  # SurrealDB retry (~23 s) plus image-load slop. `/healthz` is the right
-  # path here because the runner logs `GET /healthz always OK` the moment
-  # the HTTP server binds; once that happens, startup is past its critical
-  # section and the readiness probe (which gates on `/readyz` / event
-  # producers loading) can take over.
+  # -- Runner startup probe (HTTP GET /healthz). The kubelet suppresses
+  # liveness and readiness probes while the startup probe is running, so
+  # the runner's slow first-boot window (HTTP-bind delayed by the
+  # in-process SurrealDB connect retry — see issue #381 / PR #396) does
+  # not surface as `Warning Unhealthy` events from liveness or readiness.
+  # `initialDelaySeconds` is deliberately set past the typical HTTP-bind
+  # time so the first probe succeeds on first attempt during cold install
+  # and no startup-probe Warnings are emitted either. See the "Runner
+  # probes" section of `deploy/helm/agentium-os/README.md` for the
+  # underlying timing model.
   startupProbe:
-    # -- Seconds before the first probe is issued.
-    initialDelaySeconds: 0
-    # -- Probe interval. 10 s rather than something tighter so cold-start
-    # produces ~2 deduped probe failures instead of ~7, keeping the
-    # `Warning Unhealthy` event count quiet in `kubectl describe pod`.
+    # -- Seconds before the first probe is issued. Set to comfortably
+    # exceed the worst-case HTTP-bind on cold install (typical ~15 s under
+    # the SurrealDB-retry budget) so the first probe lands after the
+    # listener is up.
+    initialDelaySeconds: 20
+    # -- Probe interval.
     periodSeconds: 10
     # -- Per-probe HTTP timeout.
     timeoutSeconds: 5
     # -- Consecutive failures before the startup probe is considered
     # failing. At that point the kubelet restarts the container, which is
     # the correct outcome if startup genuinely cannot complete.
+    # `initialDelaySeconds` + `failureThreshold * periodSeconds` = 80 s
+    # total budget — covers the worst-case SurrealDB retry (~23 s of
+    # sleeps plus per-attempt connect time) with headroom for image-load
+    # and process-init slop.
     failureThreshold: 6
 
   # -- Runner liveness probe (HTTP GET /healthz).
