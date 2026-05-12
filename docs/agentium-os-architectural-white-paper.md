@@ -407,8 +407,8 @@ cluster topology runs multiple runner replicas backed by shared SurrealDB. Runne
 deployment environment are exported through OpenTelemetry resource attributes. Operator routes
 are token-authenticated in cluster mode while conversational endpoints remain part of the public
 surface and are reachable on the cluster network. Network isolation policies fence the SurrealDB
-ingress to runner pods only; the runner ingress is intentionally cluster-internal, with trust
-resting on the cluster fabric perimeter plus operator-route token gating. Repository storage and
+ingress to runner pods only; the runner ingress is intentionally cluster-internal, secured by the
+cluster fabric perimeter and operator-route token gating. Repository storage and
 runner-local deployment state are intentionally separated so artefacts remain immutable while
 runtime activation evolves. Deployments are hash-centric with restore semantics tied to recorded
 deployment state.
