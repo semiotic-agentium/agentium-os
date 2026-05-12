@@ -717,6 +717,7 @@ async fn connect_remote_config_store_with_retry(
 ) -> anyhow::Result<baml_rt_config::SurrealConfigStore> {
     let max_attempts = max_attempts.get();
     let mut backoff = ExponentialBackoff::new(initial_delay, max_delay);
+    let log_endpoint = redact_endpoint_credentials(endpoint);
 
     for attempt in 1..=max_attempts {
         let outcome = match tokio::time::timeout(
@@ -737,7 +738,8 @@ async fn connect_remote_config_store_with_retry(
                 if attempt > 1 {
                     info!(
                         attempt,
-                        endpoint, "remote config store connected after retry"
+                        endpoint = %log_endpoint,
+                        "remote config store connected after retry"
                     );
                 }
                 return Ok(store);
@@ -749,7 +751,7 @@ async fn connect_remote_config_store_with_retry(
             warn!(
                 attempt,
                 max_attempts,
-                endpoint,
+                endpoint = %log_endpoint,
                 error = %err,
                 "remote config store connect failed; retries exhausted"
             );
@@ -760,7 +762,7 @@ async fn connect_remote_config_store_with_retry(
         warn!(
             attempt,
             max_attempts,
-            endpoint,
+            endpoint = %log_endpoint,
             delay_secs = delay.as_secs_f64(),
             error = %err,
             "remote config store connect failed; retrying after delay"
@@ -769,6 +771,21 @@ async fn connect_remote_config_store_with_retry(
     }
 
     unreachable!("loop returns on the final attempt; NonZeroUsize guarantees at least one")
+}
+
+/// Strip any `userinfo` (username/password) from a URL so it is safe to
+/// include in logs and error messages. Falls back to a sentinel on parse
+/// failure rather than echoing the raw input. Matches the existing pattern
+/// in `crates/baml-agent-runner/src/config.rs` for the provenance store
+/// error path.
+fn redact_endpoint_credentials(endpoint: &str) -> String {
+    url::Url::parse(endpoint)
+        .map(|mut u| {
+            let _ = u.set_username("");
+            let _ = u.set_password(None);
+            u.to_string()
+        })
+        .unwrap_or_else(|_| "<invalid URL>".to_string())
 }
 
 /// Open repository store with bounded retries to absorb transient embedded
@@ -1857,6 +1874,26 @@ globalThis.onChatMessage = async function(_message) {
     fn cluster_endpoint_accepts_cluster_ip() {
         let result = super::validate_cluster_endpoint("http://10.43.0.5:18080");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn redact_endpoint_credentials_strips_userinfo() {
+        let redacted =
+            super::redact_endpoint_credentials("ws://root:hunter2@surreal.svc:8000/path");
+        assert!(
+            !redacted.contains("hunter2") && !redacted.contains("root"),
+            "redacted endpoint must not echo username or password ({redacted})"
+        );
+        assert!(
+            redacted.contains("surreal.svc:8000"),
+            "redacted endpoint must preserve host:port for triage ({redacted})"
+        );
+    }
+
+    #[test]
+    fn redact_endpoint_credentials_falls_back_for_invalid_url() {
+        let redacted = super::redact_endpoint_credentials("not a url");
+        assert_eq!(redacted, "<invalid URL>");
     }
 
     /// Connecting to a closed port should still return Err after exhausting
