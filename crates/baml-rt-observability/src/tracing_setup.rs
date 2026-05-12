@@ -117,7 +117,17 @@ pub fn init_tracing_with_resource(resource: Resource) {
     install_global_propagator();
 
     let console_filter = console_env_filter();
-    let fmt_layer = tracing_subscriber::fmt::layer().with_filter(console_filter);
+    // Write fmt output to stderr so each event flushes promptly.
+    // Rust's std::io::stdout is line-buffered on a TTY but switches to an
+    // 8 KB BufWriter when piped (every container kubelet/CRI does this),
+    // which can swallow the last log lines before a stall — see issue #343.
+    // std::io::stderr is unbuffered in Rust's stdlib, so per-event writes
+    // hit the file descriptor immediately. This also cleanly reserves
+    // stdout for intentional CLI data output (the runner's --list-agents
+    // JSON, etc.) versus stderr for operational logs, per Unix convention.
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(console_filter);
 
     if let Some(tracer) = crate::otel_env::install_otel_collectors_from_env(resource) {
         let otel_filter = otel_trace_env_filter();

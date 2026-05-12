@@ -310,8 +310,13 @@ async fn main() -> Result<()> {
 
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Write logs to stderr so each event flushes promptly under a piped
+    // stdout (containers, CI capture); std::io::stdout switches to an 8 KB
+    // BufWriter when not a TTY, which can swallow the last log lines
+    // before a stall. See issue #343.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_writer(std::io::stderr)
         .with_target(false)
         .try_init();
 }
