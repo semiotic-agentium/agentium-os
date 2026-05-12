@@ -53,6 +53,23 @@ just e2e-k8s-cgroup-throttle                  # adversarial cgroup-throttled dep
 
 API keys for tests are resolved through `fnox.toml` via `FnoxFileSecretResolver`. The file maps secret names to values with a `default` field. CI writes this file from GitHub secrets; locally, create `fnox.toml` in the project root.
 
+## Local Setup (Linux)
+
+Local release builds — `just persona-claude-notion`, `just dev-all-agents`, `cargo test` paths that link the runner binary — need three system-level dependencies that the runner Docker image installs but a fresh Linux host does not:
+
+```bash
+sudo apt install -y libdbus-1-dev libcap-ng-dev pkg-config
+npm install -g typescript@6
+```
+
+- `libdbus-1-dev` — pulled in via `fnox` → `keyring` → `dbus-secret-service` (the secret-resolver chain).
+- `libcap-ng-dev` — pulled in via `microsandbox` for syscall capability filtering at the runner sandbox boundary.
+- `typescript@6` — required on `PATH` for the agent build pipeline; the canonical `tsconfig.json` pins `"ignoreDeprecations": "6.0"`, which TypeScript 5.x rejects.
+
+Run `just check-host` to verify all three are present before kicking off a release build. The recipe exits non-zero with a clear "missing X (install with Y)" message; on non-Linux hosts the Linux-only checks are skipped.
+
+The runner Docker image installs these globally, so the cluster sections (`just e2e-k8s`, `scripts/k8s-pilot-*`) work without host-level installs. This friction is local-only.
+
 ## Architecture
 
 Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchain.toml`) for executing BAML functions, running JavaScript agents via QuickJS, tool orchestration, and serving A2A (agent-to-agent) protocol requests.
