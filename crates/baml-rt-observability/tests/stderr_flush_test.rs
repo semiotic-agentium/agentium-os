@@ -20,8 +20,13 @@ use std::{
 };
 
 const FIXTURE_ENV: &str = "BAML_RT_OBSERVABILITY_STDERR_FLUSH_FIXTURE";
+/// Must match the `#[test] fn` name below — passed to libtest as
+/// `--exact <FIXTURE_TEST_NAME>` when the parent re-invokes the binary.
+/// Renaming the test function silently breaks the spawn at runtime.
 const FIXTURE_TEST_NAME: &str = "stderr_flushes_per_event";
 const MARKER: &str = "stderr_flush_fixture_marker";
+const DEFAULT_N: u64 = 8;
+const DEFAULT_GAP_MS: u64 = 150;
 
 fn run_fixture() {
     // Force the console filter to admit our `info!` events regardless of
@@ -31,14 +36,14 @@ fn run_fixture() {
     }
     baml_rt_observability::init_tracing();
 
-    let n: u32 = std::env::var("STDERR_FLUSH_N")
+    let n: u64 = std::env::var("STDERR_FLUSH_N")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(8);
+        .unwrap_or(DEFAULT_N);
     let gap_ms: u64 = std::env::var("STDERR_FLUSH_GAP_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(150);
+        .unwrap_or(DEFAULT_GAP_MS);
 
     for i in 0..n {
         tracing::info!(target: "baml_rt_observability_test", event_index = i, "{MARKER}");
@@ -53,8 +58,8 @@ fn stderr_flushes_per_event() {
         return;
     }
 
-    let n: u32 = 8;
-    let gap_ms: u64 = 150;
+    let n: u64 = DEFAULT_N;
+    let gap_ms: u64 = DEFAULT_GAP_MS;
 
     let exe = std::env::current_exe().expect("current_exe");
     let mut child = Command::new(&exe)
@@ -101,7 +106,7 @@ fn stderr_flushes_per_event() {
 
     // Expected spread if events flush per-line: (n-1) * gap_ms.
     // Allow 50% slack for CI / scheduling jitter on the floor.
-    let min_span = Duration::from_millis((u64::from(n) - 1) * gap_ms / 2);
+    let min_span = Duration::from_millis((n - 1) * gap_ms / 2);
 
     assert!(
         span >= min_span,
