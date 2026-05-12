@@ -20,6 +20,7 @@ mod services;
 mod stdio;
 
 use std::{
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -30,7 +31,9 @@ use std::{
 
 use anyhow::Context;
 use baml_rt_api::RuntimeProgressMeter;
-use baml_rt_core::{CallbackStore, DeploymentManager, DeploymentStatus, IngressStore};
+use baml_rt_core::{
+    CallbackStore, DeploymentManager, DeploymentStatus, ExponentialBackoff, IngressStore,
+};
 use baml_rt_llm_config::{
     FnoxFileSecretResolver, OverlaySecretResolver, SECRET_LINKS_CONFIG_KEY, SecretLinksState,
     apply_secret_links_state,
@@ -162,9 +165,15 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             let credentials = parse_surreal_credentials(username.as_deref(), password.as_deref())
                 .context("config store")?;
             Arc::new(
-                baml_rt_config::SurrealConfigStore::remote(endpoint, credentials)
-                    .await
-                    .context("Failed to create remote config store")?,
+                connect_remote_config_store_with_retry(
+                    endpoint,
+                    credentials,
+                    REMOTE_CONNECT_MAX_ATTEMPTS,
+                    REMOTE_CONNECT_INITIAL_DELAY,
+                    REMOTE_CONNECT_MAX_DELAY,
+                )
+                .await
+                .context("Failed to create remote config store")?,
             )
         }
         ProvenanceDb::File(path) => Arc::new(
@@ -685,6 +694,98 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
 
     info!("Agent Runner completed successfully");
     Ok(())
+}
+
+/// Tunables for the initial remote SurrealDB connection retry. Sized so the
+/// runner pod absorbs the standard Kubernetes pod-startup race against the
+/// SurrealDB pod (DNS not yet resolvable / WebSocket port not yet accepting
+/// connections) without exiting and triggering a kubelet `BackOff` event.
+/// `PER_ATTEMPT_TIMEOUT` bounds each individual attempt so a half-open TCP
+/// (SYN-ACK with no WebSocket reply) can't hang the whole retry budget —
+/// `SurrealConfigStore::remote` has no built-in handshake timeout.
+const REMOTE_CONNECT_MAX_ATTEMPTS: NonZeroUsize = NonZeroUsize::new(6).unwrap();
+const REMOTE_CONNECT_INITIAL_DELAY: Duration = Duration::from_secs(1);
+const REMOTE_CONNECT_MAX_DELAY: Duration = Duration::from_secs(8);
+const REMOTE_CONNECT_PER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+
+async fn connect_remote_config_store_with_retry(
+    endpoint: &str,
+    credentials: Option<(&str, &str)>,
+    max_attempts: NonZeroUsize,
+    initial_delay: Duration,
+    max_delay: Duration,
+) -> anyhow::Result<baml_rt_config::SurrealConfigStore> {
+    let max_attempts = max_attempts.get();
+    let mut backoff = ExponentialBackoff::new(initial_delay, max_delay);
+    let log_endpoint = redact_endpoint_credentials(endpoint);
+
+    for attempt in 1..=max_attempts {
+        let outcome = match tokio::time::timeout(
+            REMOTE_CONNECT_PER_ATTEMPT_TIMEOUT,
+            baml_rt_config::SurrealConfigStore::remote(endpoint, credentials),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(anyhow::Error::from),
+            Err(_) => Err(anyhow::anyhow!(
+                "connect attempt exceeded {timeout:?}",
+                timeout = REMOTE_CONNECT_PER_ATTEMPT_TIMEOUT,
+            )),
+        };
+
+        let err = match outcome {
+            Ok(store) => {
+                if attempt > 1 {
+                    info!(
+                        attempt,
+                        endpoint = %log_endpoint,
+                        "remote config store connected after retry"
+                    );
+                }
+                return Ok(store);
+            }
+            Err(err) => err,
+        };
+
+        if attempt == max_attempts {
+            warn!(
+                attempt,
+                max_attempts,
+                endpoint = %log_endpoint,
+                error = %err,
+                "remote config store connect failed; retries exhausted"
+            );
+            return Err(err);
+        }
+
+        let delay = backoff.next_delay();
+        warn!(
+            attempt,
+            max_attempts,
+            endpoint = %log_endpoint,
+            delay_secs = delay.as_secs_f64(),
+            error = %err,
+            "remote config store connect failed; retrying after delay"
+        );
+        tokio::time::sleep(delay).await;
+    }
+
+    unreachable!("loop returns on the final attempt; NonZeroUsize guarantees at least one")
+}
+
+/// Strip any `userinfo` (username/password) from a URL so it is safe to
+/// include in logs and error messages. Falls back to a sentinel on parse
+/// failure rather than echoing the raw input. Matches the existing pattern
+/// in `crates/baml-agent-runner/src/config.rs` for the provenance store
+/// error path.
+fn redact_endpoint_credentials(endpoint: &str) -> String {
+    url::Url::parse(endpoint)
+        .map(|mut u| {
+            let _ = u.set_username("");
+            let _ = u.set_password(None);
+            u.to_string()
+        })
+        .unwrap_or_else(|_| "<invalid URL>".to_string())
 }
 
 /// Open repository store with bounded retries to absorb transient embedded
@@ -1773,5 +1874,50 @@ globalThis.onChatMessage = async function(_message) {
     fn cluster_endpoint_accepts_cluster_ip() {
         let result = super::validate_cluster_endpoint("http://10.43.0.5:18080");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn redact_endpoint_credentials_strips_userinfo() {
+        let redacted =
+            super::redact_endpoint_credentials("ws://root:hunter2@surreal.svc:8000/path");
+        assert!(
+            !redacted.contains("hunter2") && !redacted.contains("root"),
+            "redacted endpoint must not echo username or password ({redacted})"
+        );
+        assert!(
+            redacted.contains("surreal.svc:8000"),
+            "redacted endpoint must preserve host:port for triage ({redacted})"
+        );
+    }
+
+    #[test]
+    fn redact_endpoint_credentials_falls_back_for_invalid_url() {
+        let redacted = super::redact_endpoint_credentials("not a url");
+        assert_eq!(redacted, "<invalid URL>");
+    }
+
+    /// Connecting to a closed port should still return Err after exhausting
+    /// retries — operators rely on a definite exit when SurrealDB is genuinely
+    /// unavailable rather than an indefinite hang.
+    #[tokio::test]
+    async fn remote_config_store_retry_exhausts_on_closed_port() {
+        let start = std::time::Instant::now();
+        let result = super::connect_remote_config_store_with_retry(
+            "ws://127.0.0.1:1",
+            None,
+            std::num::NonZeroUsize::new(3).unwrap(),
+            std::time::Duration::from_millis(10),
+            std::time::Duration::from_millis(40),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "retry against closed port must surface Err once attempts are exhausted"
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(20),
+            "retry helper must sleep between attempts (elapsed: {elapsed:?})"
+        );
     }
 }
