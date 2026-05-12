@@ -326,6 +326,16 @@ impl baml_rt_tools::DescribeAction for SlackInput {
     }
 }
 
+baml_rt_tools::impl_describe_action_identity! {
+    for SlackInput {
+        GetThreadReplies(p) => "get_thread_replies" { channel_id: p.channel_id, thread_ts: p.thread_ts },
+        GetConversationHistory(p) => "get_conversation_history" { channel_id: p.channel_id },
+        SearchMessages(p) => "search_messages" { query: p.query },
+        ResolveUsers(p) => "resolve_users" { user_ids: p.user_ids },
+        ListConversations(p) => "list_conversations" { kinds: p.kinds },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Output types
 // ---------------------------------------------------------------------------
@@ -1500,6 +1510,12 @@ impl BamlTool for SlackTool {
         }
         .instrument(span)
         .await
+    }
+
+    fn action_identity(&self, input: &Self::Input) -> Option<baml_rt_tools::ActionIdentity> {
+        Some(baml_rt_tools::DescribeActionIdentity::action_identity(
+            input,
+        ))
     }
 
     fn describe_result(&self, output: &Self::Output) -> String {

@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semiotic.ai/schemas/clickup.schema.json",
+  "tool_abi_version": "1",
+  "name": "support/clickup",
+  "description": "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks.",
+  "bundle": "support",
+  "local_name": "clickup",
+  "access_level": "delete",
+  "tags": ["support", "clickup", "tasks", "project-management"],
+  "invocation_mode": "session",
+  "session_policy": "multi_send",
+  "idempotency": {
+    "default": "idempotent",
+    "operations": {
+      "list_teams": "idempotent",
+      "list_spaces": "idempotent",
+      "list_lists": "idempotent",
+      "list_tasks": "idempotent",
+      "get_task": "idempotent",
+      "create_task": "non_idempotent",
+      "update_task": "non_idempotent",
+      "delete_task": "non_idempotent"
+    }
+  },
+  "schemas": {
+    "input": {
+      "title": "ClickUpInput",
+      "description": "ClickUp action input. Navigation flow: list_teams -> list_spaces -> list_lists -> list_tasks -> get_task/create_task/update_task/delete_task. IDs must come from prior navigation results, not be invented.",
+      "oneOf": [
+        {
+          "title": "ListTeamsInput",
+          "type": "object",
+          "required": ["action"],
+          "properties": {
+            "action": { "const": "list_teams" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "title": "ListSpacesInput",
+          "type": "object",
+          "required": ["action", "team_id"],
+          "properties": {
+            "action": { "const": "list_spaces" },
+            "team_id": {
+              "type": "string",
+              "description": "ClickUp team/workspace ID. Obtain from list_teams."
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "title": "ListListsInput",
+          "type": "object",
+          "required": ["action", "space_id"],
+          "properties": {
+            "action": { "const": "list_lists" },
+            "space_id": {
+              "type": "string",
+              "description": "ClickUp space ID. Obtain from list_spaces."
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "title": "ListTasksInput",
+          "type": "object",
+          "required": ["action", "list_id"],
+          "properties": {
+            "action": { "const": "list_tasks" },
+            "list_id": {
+              "type": "string",
+              "description": "ClickUp list ID. Obtain from list_lists."
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "title": "GetTaskInput",
+          "type": "object",
+          "required": ["action", "task_id"],
+          "properties": {
+            "action": { "const": "get_task" },
+            "task_id": {
+              "type": "string",
+              "description": "ClickUp task ID. Obtain from list_tasks."
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "title": "CreateTaskInput",
+          "type": "object",
+          "required": ["action", "list_id", "name"],
+          "properties": {
+            "action": { "const": "create_task" },
+            "list_id": {
+              "type": "string",
+              "description": "ClickUp list ID where the task will be created. Obtain from list_lists."
+            },
+            "name": {
+              "type": "string",
+              "description": "Task title/name.",
+              "minLength": 1
+            },
+            "description": {
+              "type": ["string", "null"],
+              "description": "Optional long-form task description. Markdown is supported."
+            },
+            "priority": {
+              "type": ["integer", "null"],
+              "description": "ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.",
+              "enum": [1, 2, 3, 4, null]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "title": "UpdateTaskInput",
+          "type": "object",
+          "required": ["action", "task_id"],
+          "properties": {
+            "action": { "const": "update_task" },
+            "task_id": {
+              "type": "string",
+              "description": "ClickUp task ID to update. Obtain from list_tasks or get_task."
+            },
+            "status": {
+              "type": ["string", "null"],
+              "description": "New task status string, e.g. 'in progress' or 'complete'."
+            },
+            "description": {
+              "type": ["string", "null"],
+              "description": "Updated task description. Markdown is supported."
+            },
+            "priority": {
+              "type": ["integer", "null"],
+              "description": "ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.",
+              "enum": [1, 2, 3, 4, null]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "title": "DeleteTaskInput",
+          "type": "object",
+          "required": ["action", "task_id", "confirm_delete"],
+          "properties": {
+            "action": { "const": "delete_task" },
+            "task_id": {
+              "type": "string",
+              "description": "ClickUp task ID to delete. Obtain from list_tasks."
+            },
+            "confirm_delete": {
+              "type": "boolean",
+              "description": "Must be true to proceed. Always confirm deletion with the user first."
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "output": {
+      "title": "ClickUpOutput",
+      "type": "object",
+      "required": ["tasks", "items", "message"],
+      "properties": {
+        "tasks": {
+          "type": "array",
+          "description": "Task actions populate this array.",
+          "items": {
+            "title": "ClickUpTaskSummary",
+            "type": "object",
+            "required": ["id", "name", "status", "url"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "status": { "type": "string" },
+              "description": { "type": ["string", "null"] },
+              "url": { "type": "string" },
+              "assignees": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": []
+              },
+              "priority": { "type": ["string", "null"] },
+              "due_date": { "type": ["string", "null"] }
+            },
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "items": {
+          "type": "array",
+          "description": "Navigation actions populate this array with teams, spaces, or lists.",
+          "items": {
+            "title": "ClickUpItem",
+            "type": "object",
+            "required": ["id", "name", "kind"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "kind": {
+                "type": "string",
+                "description": "The kind of resource returned by navigation actions.",
+                "enum": ["team", "space", "list"]
+              }
+            },
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable status or next-step hint."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "secrets": ["CLICKUP_API_KEY"],
+  "secret_scope": "session",
+  "capabilities": {
+    "http": {
+      "hosts": ["api.clickup.com"]
+    },
+    "grpc": null,
+    "tcp": null,
+    "fs": null,
+    "env": ["CLICKUP_API_KEY"]
+  },
+  "config_bundle": "support",
+  "resource_limits": {
+    "max_memory_mb": 128,
+    "max_cpu_seconds": 30,
+    "max_open_fds": 64,
+    "max_concurrent_invocations": 10
+  }
+}

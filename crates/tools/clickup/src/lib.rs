@@ -138,6 +138,19 @@ impl baml_rt_tools::DescribeAction for ClickUpInput {
     }
 }
 
+baml_rt_tools::impl_describe_action_identity! {
+    for ClickUpInput {
+        ListTeams(_) => "list_teams" {},
+        ListSpaces(p) => "list_spaces" { team_id: p.team_id },
+        ListLists(p) => "list_lists" { space_id: p.space_id },
+        ListTasks(p) => "list_tasks" { list_id: p.list_id },
+        GetTask(p) => "get_task" { task_id: p.task_id },
+        CreateTask(p) => "create_task" { list_id: p.list_id, name: p.name },
+        UpdateTask(p) => "update_task" { task_id: p.task_id },
+        DeleteTask(p) => "delete_task" { task_id: p.task_id },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Output types
 // ---------------------------------------------------------------------------
@@ -728,6 +741,12 @@ impl BamlTool for ClickUpTool {
         }
         .instrument(span)
         .await
+    }
+
+    fn action_identity(&self, input: &Self::Input) -> Option<baml_rt_tools::ActionIdentity> {
+        Some(baml_rt_tools::DescribeActionIdentity::action_identity(
+            input,
+        ))
     }
 
     fn describe_result(&self, output: &Self::Output) -> String {

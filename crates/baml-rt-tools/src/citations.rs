@@ -469,7 +469,7 @@ mod tests {
         let entry = ArchiveEntry::new(
             content,
             "support/crm".into(),
-            "listed 3 accounts".into(),
+            Some("listed 3 accounts".into()),
             "evt-002".into(),
             "tool_result".into(),
         );

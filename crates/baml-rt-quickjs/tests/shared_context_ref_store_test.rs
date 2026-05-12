@@ -33,7 +33,7 @@ fn shared_store_two_managers_same_ref_table_and_visibility() {
     let entry = ArchiveEntry::new(
         content,
         "support/crm".into(),
-        "listed 1 account".into(),
+        Some("listed 1 account".into()),
         String::new(),
         "tool_result".into(),
     );

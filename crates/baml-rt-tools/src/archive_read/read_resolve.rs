@@ -67,7 +67,7 @@ mod tests {
         ArchiveEntry::new(
             content,
             "t/tool".into(),
-            "summary".into(),
+            Some("summary".into()),
             String::new(),
             "tool_result".into(),
         )
@@ -105,7 +105,7 @@ mod tests {
             ArchiveEntry::new(
                 render_to_lines(&json!("other")),
                 "other".into(),
-                "x".into(),
+                Some("x".into()),
                 String::new(),
                 "tool_result".into(),
             ),

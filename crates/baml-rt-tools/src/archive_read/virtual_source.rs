@@ -23,7 +23,8 @@ pub struct VirtualHistoryRow {
 pub struct VirtualArchiveRow {
     pub activity_anchor: String,
     pub tool_name: String,
-    pub summary: String,
+    pub summary: Option<String>,
+    pub action_identity: Option<String>,
     pub content: Arc<RenderedContent>,
 }
 
@@ -39,7 +40,16 @@ impl VirtualArchiveRow {
         } else {
             format!("{kb:.1}KB")
         };
-        format!(r#"{r} · "{}" · {line_count}L · {size_str}"#, self.summary)
+        if let Some(action) = self.action_identity.as_deref() {
+            return format!(
+                "{r} · {}:{action} · {line_count}L · {size_str}",
+                self.tool_name
+            );
+        }
+        if let Some(summary) = self.summary.as_deref() {
+            return format!(r#"{r} · "{summary}" · {line_count}L · {size_str}"#);
+        }
+        format!("{r} · {} · {line_count}L · {size_str}", self.tool_name)
     }
 }
 
@@ -69,6 +79,7 @@ impl VirtualArchiveSource for RefTable {
             activity_anchor: e.activity_anchor.clone(),
             tool_name: e.tool_name.clone(),
             summary: e.summary.clone(),
+            action_identity: e.action_identity.clone(),
             content: Arc::clone(&e.content),
         })
     }

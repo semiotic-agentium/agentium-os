@@ -129,6 +129,17 @@ impl DescribeAction for CrmInput {
     }
 }
 
+baml_rt_tools::impl_describe_action_identity! {
+    for CrmInput {
+        QueryAccounts(p) => "query_accounts" { query: p.query, region: p.region },
+        QueryOpportunities(p) => "query_opportunities" { account_id: p.account_id },
+        GetContact(p) => "get_contact" { contact_id: p.contact_id },
+        CreateNote(p) => "create_note" { account_id: p.account_id, subject: p.subject },
+        DeleteRecord(p) => "delete_record" { record_type: p.record_type, record_id: p.record_id },
+        ExportRecords(p) => "export_records" { query: p.query, format: p.format },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Output types
 // ---------------------------------------------------------------------------
@@ -179,6 +190,12 @@ impl BamlTool for CrmTool {
 
     fn description(&self) -> &'static str {
         "Customer relationship management: query accounts, contacts, opportunities. Create notes and manage records."
+    }
+
+    fn action_identity(&self, input: &Self::Input) -> Option<baml_rt_tools::ActionIdentity> {
+        Some(baml_rt_tools::DescribeActionIdentity::action_identity(
+            input,
+        ))
     }
 
     fn describe_result(&self, output: &Self::Output) -> String {

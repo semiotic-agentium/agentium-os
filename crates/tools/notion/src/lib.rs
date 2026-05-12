@@ -143,6 +143,14 @@ impl baml_rt_tools::DescribeAction for NotionInput {
     }
 }
 
+baml_rt_tools::impl_describe_action_identity! {
+    for NotionInput {
+        SearchPages(p) => "search_pages" { query: p.query },
+        GetPage(p) => "get_page" { page_id: p.page_id },
+        GetPageBlocks(p) => "get_page_blocks" { block_id: p.block_id },
+    }
+}
+
 impl baml_rt_tools::DescribeAction for NotionSearchPagesInput {
     fn describe(&self) -> String {
         match &self.query {
@@ -1034,6 +1042,12 @@ impl BamlTool for NotionTool {
         }?;
         output.operation = None;
         Ok(output)
+    }
+
+    fn action_identity(&self, input: &Self::Input) -> Option<baml_rt_tools::ActionIdentity> {
+        Some(baml_rt_tools::DescribeActionIdentity::action_identity(
+            input,
+        ))
     }
 
     fn describe_result(&self, output: &Self::Output) -> String {
