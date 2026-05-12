@@ -226,7 +226,10 @@ pub fn render_generated_session_baml_from_ir(
              Archive evidence may be read only if SearchRead or PageRead appears in ctx.output_format for this hop; otherwise choose another legal output.\\n\\n"
         );
 
-        write_line(&mut phase_out, "/// Phase: select — entry decision before a tool session is bound; may Open or read archive evidence.")?;
+        write_line(
+            &mut phase_out,
+            "/// Phase: select — entry decision before a tool session is bound; may Open or read archive evidence.",
+        )?;
         write_line(
             &mut phase_out,
             &format!(

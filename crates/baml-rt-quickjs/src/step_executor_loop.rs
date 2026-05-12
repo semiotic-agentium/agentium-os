@@ -540,12 +540,15 @@ pub async fn run_step_executor_loop(
             }
         }
         let read_output = if next_step_context.op == Some("read") {
-            next_step_context.archive_ref.clone().and_then(|archive_ref| {
-                result
-                    .get("output")
-                    .and_then(Value::as_str)
-                    .map(|output| (archive_ref, output.to_string()))
-            })
+            next_step_context
+                .archive_ref
+                .clone()
+                .and_then(|archive_ref| {
+                    result
+                        .get("output")
+                        .and_then(Value::as_str)
+                        .map(|output| (archive_ref, output.to_string()))
+                })
         } else {
             None
         };
@@ -560,25 +563,22 @@ pub async fn run_step_executor_loop(
         }
         last_step_context = next_step_context;
 
-        if repeated_archive_read {
-            if let Phase::Bound { tool, .. } = &phase {
-                let handle = {
-                    let guard = manager.read().await;
-                    guard.tool_session_handle()
-                };
-                if let Some(session_id) = handle
-                    .find_existing_session_for_scope_and_tool(scope, &tool.name.to_string())
-                    .await
-                {
-                    if let Err(err) = handle.tool_session_finish(&session_id).await {
-                        tracing::warn!(
-                            tool = %tool.name,
-                            session_id = %session_id,
-                            error = %err,
-                            "step_executor_loop: failed to finish session after repeated archive read"
-                        );
-                    }
-                }
+        if repeated_archive_read && let Phase::Bound { tool, .. } = &phase {
+            let handle = {
+                let guard = manager.read().await;
+                guard.tool_session_handle()
+            };
+            if let Some(session_id) = handle
+                .find_existing_session_for_scope_and_tool(scope, &tool.name.to_string())
+                .await
+                && let Err(err) = handle.tool_session_finish(&session_id).await
+            {
+                tracing::warn!(
+                    tool = %tool.name,
+                    session_id = %session_id,
+                    error = %err,
+                    "step_executor_loop: failed to finish session after repeated archive read"
+                );
             }
         }
 
