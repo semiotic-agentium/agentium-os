@@ -125,6 +125,8 @@ Override any field via the `runner.livenessProbe.*` and `runner.readinessProbe.*
 
 The chart defaults each runner to `2Gi` request and `5Gi` limit. `POST /deploy` is the binding constraint: tar extract, BAML IL load, QuickJS init, and tool registration run on top of the resident fastembed ONNX model, SurrealDB client, and provenance backend, and in-cluster TypeScript compilation during publish is the heaviest single step. 5Gi is the empirically observed floor for publishing a real multi-agent set end-to-end; below that, the runner tends to be `OOMKilled` mid-deploy and clients see `connection closed before message completed` from `POST /deploy`. Raise `runner.resources.limits.memory` further for heavier workloads.
 
+**Local k3d host memory floor.** Two runner replicas (`2Gi` request each) plus SurrealDB (`256Mi` request) need ≥4.5Gi of schedulable node memory before any pod can come up. On macOS Docker Desktop (default 4 GiB) or colima with similar defaults, that's below the floor — pods stay `Pending` with `0/1 nodes are available: 1 Insufficient memory`. Allocate **≥6 GiB** to Docker Desktop / colima before installing. This is a distinct failure mode from the `OOMKilled` path above: `Insufficient memory` happens before scheduling; `OOMKilled` happens after a pod is running and exceeds its limit.
+
 ## SurrealDB namespaces
 
 The chart provisions a single SurrealDB instance shared by every runner crate. Each crate owns its own namespace / database pair; **there is no single "agentium" namespace**. When debugging or running ad-hoc queries you must target the right pair:
