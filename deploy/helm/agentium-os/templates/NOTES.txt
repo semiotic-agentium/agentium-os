@@ -27,4 +27,12 @@ fnox.toml is mounted from ConfigMap "{{ .Values.fnox.config.existingConfigMap }}
 NOTE: ConfigMap updates via subPath mount require a pod restart to take effect.
 {{- end }}
 
+Runner memory:
+
+  Each runner pod requests {{ .Values.runner.resources.requests.memory }} and is capped at {{ .Values.runner.resources.limits.memory }}.
+  If pods report `OOMKilled` or `POST /deploy` returns `connection closed
+  before message completed`, raise `runner.resources.limits.memory`. See
+  deploy/helm/agentium-os/README.md for the empirical floor and the
+  binding-constraint rationale.
+
 See deploy/helm/agentium-os/README.md for known limitations and next steps.

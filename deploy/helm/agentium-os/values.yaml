@@ -59,13 +59,16 @@ runner:
     storageClass: ""
 
   # -- Runner container resources.
+  # `POST /deploy` is the binding constraint on memory; 5Gi is the
+  # empirically observed floor for publishing a real multi-agent set
+  # end-to-end. See deploy/helm/agentium-os/README.md.
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
+      cpu: 250m
+      memory: 2Gi
     limits:
-      cpu: "1"
-      memory: 1Gi
+      cpu: "2"
+      memory: 5Gi
 
   # -- Runner logging.
   logging:

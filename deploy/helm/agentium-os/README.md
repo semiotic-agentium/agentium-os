@@ -121,6 +121,10 @@ The runner StatefulSet uses HTTP `GET /healthz` for liveness and `GET /readyz` f
 
 Override any field via the `runner.livenessProbe.*` and `runner.readinessProbe.*` keys in your values file. Probe paths and ports are not overridable — they are part of the runner contract.
 
+## Runner memory
+
+The chart defaults each runner to `2Gi` request and `5Gi` limit. `POST /deploy` is the binding constraint: tar extract, BAML IL load, QuickJS init, and tool registration run on top of the resident fastembed ONNX model, SurrealDB client, and provenance backend, and in-cluster TypeScript compilation during publish is the heaviest single step. 5Gi is the empirically observed floor for publishing a real multi-agent set end-to-end; below that, the runner tends to be `OOMKilled` mid-deploy and clients see `connection closed before message completed` from `POST /deploy`. Raise `runner.resources.limits.memory` further for heavier workloads.
+
 ## What this chart does not cover
 
 - **Ingress / TLS**: operator access is via `kubectl port-forward` to the API ClusterIP service. Ingress and TLS termination are out of scope for the pilot.
