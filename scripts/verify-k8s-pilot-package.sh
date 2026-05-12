@@ -59,7 +59,7 @@ Options:
   --image-repository <r>  Bare image name (default: agentium-runner). For
                           --image-strategy=registry the in-cluster registry
                           prefix is added automatically; pass a bare name only.
-                          External registries are tracked in #307.
+                          External registries are out of scope here.
   --image-tag <t>       Override IMAGE_TAG (default: demo)
   --local-port <port>   Local port for the smoke port-forward (default: 18080)
   --values <path>       Extra Helm values file layered on top of the default
@@ -107,7 +107,7 @@ if [[ "$RUNNER_IMAGE_STRATEGY" == "registry" \
    && ( "$IMAGE_NAME" == *"/"* || "$IMAGE_NAME" == *":"* ) ]]; then
   log_fail "--image-strategy=registry expects a bare --image-repository (got '${IMAGE_NAME}')."
   echo "  The local registry prefix is added automatically." >&2
-  echo "  External registries are out of scope here (tracked in #307)." >&2
+  echo "  External registries are out of scope here." >&2
   exit 1
 fi
 

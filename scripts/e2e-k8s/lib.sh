@@ -607,11 +607,11 @@ ensure_runner_image_available() {
     registry)
       # Registry strategy owns the registry prefix; reject fully-qualified
       # inputs so users don't accidentally route to an external registry.
-      # External registries are tracked in #307.
+      # External registries are out of scope for the in-repo validator.
       if [[ "$IMAGE_NAME" == *"/"* || "$IMAGE_NAME" == *":"* ]]; then
         log_fail "--image-strategy=registry expects a bare --image-repository (got '${IMAGE_NAME}')."
         echo "  The local registry prefix is added automatically." >&2
-        echo "  External registries are out of scope here (tracked in #307)." >&2
+        echo "  External registries are out of scope here." >&2
         return 1
       fi
 
