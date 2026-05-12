@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
+use baml_rt_conversation::view::ToolSessionPhase;
 use baml_rt_core::ids::ContextId;
 use serde_json::{Map, Value};
 
@@ -262,6 +263,13 @@ fn ops_row_is_success(row: &Map<String, Value>) -> bool {
     row.get("activity_outcome").and_then(Value::as_str) == Some("Success")
 }
 
+/// Tool rows whose graph `a2a_activity_outcome` was missing or not yet terminal are surfaced as
+/// `Indeterminate` (see outcome mapping above). `Both` historically kept only Success/Failed,
+/// which hid every in-flight or partially-persisted tool call from ops consumers.
+fn ops_row_is_indeterminate(row: &Map<String, Value>) -> bool {
+    row.get("activity_outcome").and_then(Value::as_str) == Some("Indeterminate")
+}
+
 // ---------------------------------------------------------------------------
 // Ops query parameter validation
 // ---------------------------------------------------------------------------
@@ -359,6 +367,47 @@ fn parse_json_field(row: &Map<String, Value>, field: &str) -> Option<Value> {
 /// Parse a JSON-like string into a Value (string fallback).
 fn parse_json_like_string(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+}
+
+/// `tool_call` object for ops API responses: `phase` is always a string label, never JSON null.
+///
+/// Instances exist only after routing payload / row hints through [`ToolSessionPhase`].
+struct OpsToolCallEnrichment {
+    name: String,
+    args: Value,
+    phase: ToolSessionPhase,
+}
+
+impl OpsToolCallEnrichment {
+    fn into_json_value(self) -> Value {
+        serde_json::json!({
+            "name": self.name,
+            "args": self.args,
+            "phase": self.phase.label(),
+        })
+    }
+}
+
+fn resolve_tool_session_phase_for_ops_row(
+    parsed_tool_call_json: Option<&Value>,
+    row: &Map<String, Value>,
+) -> ToolSessionPhase {
+    let phase_str = parsed_tool_call_json
+        .and_then(|v| v.get("phase"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            row.get("a2a_phase")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        });
+    let meta = match phase_str {
+        Some(p) => serde_json::json!({ "phase": p }),
+        None => serde_json::json!({}),
+    };
+    ToolSessionPhase::from_metadata(&meta)
 }
 
 /// Apply agent identity fields (agent_package, agent_version, agent_display) from identity map.
@@ -1066,46 +1115,36 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    let (tool_args, tool_phase) = if let Some(payload_id) =
-                        row.get("a2a_tool_call_payload_id").and_then(Value::as_str)
-                    {
-                        if let Ok(Some(payload)) = self.read_payload_by_id(payload_id).await {
-                            let parsed = parse_json_like_string(&payload.payload_json);
-                            let args = parsed.get("args").cloned().unwrap_or(Value::Null);
-                            let phase = parsed
-                                .get("phase")
-                                .and_then(Value::as_str)
-                                .map(str::trim)
-                                .filter(|v| !v.is_empty())
-                                .map(str::to_string);
-                            (args, phase)
+                    let (tool_args, parsed_for_phase) =
+                        if let Some(payload_id) =
+                            row.get("a2a_tool_call_payload_id").and_then(Value::as_str)
+                        {
+                            if let Ok(Some(payload)) = self.read_payload_by_id(payload_id).await {
+                                let parsed = parse_json_like_string(&payload.payload_json);
+                                let args = parsed.get("args").cloned().unwrap_or(Value::Null);
+                                (args, Some(parsed))
+                            } else {
+                                (
+                                    parse_json_field(row, "a2a_args").unwrap_or(Value::Null),
+                                    None,
+                                )
+                            }
                         } else {
                             (
                                 parse_json_field(row, "a2a_args").unwrap_or(Value::Null),
-                                row.get("a2a_phase")
-                                    .and_then(Value::as_str)
-                                    .map(str::trim)
-                                    .filter(|v| !v.is_empty())
-                                    .map(str::to_string),
+                                None,
                             )
-                        }
-                    } else {
-                        (
-                            parse_json_field(row, "a2a_args").unwrap_or(Value::Null),
-                            row.get("a2a_phase")
-                                .and_then(Value::as_str)
-                                .map(str::trim)
-                                .filter(|v| !v.is_empty())
-                                .map(str::to_string),
-                        )
-                    };
+                        };
+                    let phase =
+                        resolve_tool_session_phase_for_ops_row(parsed_for_phase.as_ref(), row);
                     row.insert(
                         "tool_call".to_string(),
-                        serde_json::json!({
-                            "name": tool_name,
-                            "args": tool_args,
-                            "phase": tool_phase
-                        }),
+                        OpsToolCallEnrichment {
+                            name: tool_name,
+                            args: tool_args,
+                            phase,
+                        }
+                        .into_json_value(),
                     );
 
                     // Structured tool_result (from payload or inline result/error)
@@ -1233,12 +1272,18 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
         }
 
         // Exclude non-terminal "open" phase tool rows from ToolCalls responses.
+        // `tool_call.phase` is always a string (see [`OpsToolCallEnrichment`]).
         if matches!(request.resource, ProvenanceOpsResource::ToolCalls) {
             ops_rows.retain(|row| {
-                row.get("tool_call")
+                let Some(phase_str) = row
+                    .get("tool_call")
                     .and_then(|v| v.get("phase"))
                     .and_then(Value::as_str)
-                    != Some("open")
+                else {
+                    return true;
+                };
+                let phase = ToolSessionPhase::from_metadata(&serde_json::json!({ "phase": phase_str }));
+                !matches!(phase, ToolSessionPhase::Open)
             });
         }
 
@@ -1307,7 +1352,10 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                 crate::store::ProvenanceOutcomeSegment::FailedOnly => ops_row_is_failed(row),
                 crate::store::ProvenanceOutcomeSegment::SuccessfulOnly => ops_row_is_success(row),
                 crate::store::ProvenanceOutcomeSegment::Both => {
-                    ops_row_is_success(row) || ops_row_is_failed(row)
+                    ops_row_is_success(row)
+                        || ops_row_is_failed(row)
+                        || (matches!(request.resource, ProvenanceOpsResource::ToolCalls)
+                            && ops_row_is_indeterminate(row))
                 }
             }
         });
