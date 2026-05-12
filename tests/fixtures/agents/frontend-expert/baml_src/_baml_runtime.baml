@@ -286,17 +286,17 @@ function ChooseClaudeDevAction(
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Phase: select — open a tool session.
+/// Phase: select — entry decision before a tool session is bound; may Open or read archive evidence.
 function ChooseClaudeDevAction__select(
   spec_text: string,
   validation_criteria_json: string,
   last_tool_output: string,
   user_approval_intent: string,
   session_context: SessionContext?
-) -> ClaudeDevReport | ClaudeDevAskUser | ClaudeDevOpenStep {
+) -> ClaudeDevReport | ClaudeDevAskUser | ClaudeDevOpenStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: claude/dev.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
+  prompt #"[RUNTIME PHASE: SELECT] Entry decision before any tool session is bound.\nCandidate tools available to Open if fresh tool work is required: claude/dev.\nEmit exactly one value from this phase narrowed schema. The agent-authored prompt below owns business policy such as reuse, freshness, clarification, and whether tool work is needed.\nArchive evidence may be read only if SearchRead or PageRead appears in ctx.output_format for this hop; otherwise choose another legal output.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
 0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
@@ -339,22 +339,22 @@ OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+PHASE CONSTRAINT (select): Emit exactly one JSON value matching this narrowed return schema. Do not emit operations absent from ctx.output_format. If an OpenStep type is present, Open binds a real tool session for fresh tool work. If non-session result types are present, they may be returned according to the agent-authored policy. Archive reads are legal only when SearchRead or PageRead appears in this narrowed schema. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#
 
 }
 
-/// Phase: act — first post-Open hop: Send, SearchRead, or PageRead (claude/dev).
+/// Phase: act — first post-Open hop: Send, SearchRead, PageRead, or Abort (claude/dev).
 function ChooseClaudeDevAction__act__claude_dev(
   spec_text: string,
   validation_criteria_json: string,
   last_tool_output: string,
   user_approval_intent: string,
   session_context: SessionContext?
-) -> ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep {
+) -> ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep | ClaudeDevAbortStep {
 
   client DefaultClient
-  prompt #"[ACT] A claude/dev session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
+  prompt #"[RUNTIME PHASE: ACT] A claude/dev session is open; this is the first post-Open hop.\nLegal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, or Abort. Finish is not legal in this phase.\nUse Send only when the agent-authored policy requires fresh tool work. Use SearchRead or PageRead only when policy requires inspecting archived evidence.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
 0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
@@ -397,22 +397,22 @@ OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (act — Send or archive read): The JSON root must be exactly one Send, SearchRead, or PageRead step. op must be exactly the string Send, SearchRead, or PageRead — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
+PHASE CONSTRAINT (act): Emit exactly one JSON value matching this narrowed return schema. Legal ops in the current schema are Send, SearchRead, PageRead, or Abort. Finish is not legal in this first post-Open phase. Never emit legacy op Read; use SearchRead with non-empty grep for filtered archive evidence, or PageRead for a contiguous archive window. Archive refs use @N, never #N. Do NOT return Open or non-session response types. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#
 
 }
 
-/// Phase: continue — SearchRead/PageRead, send again, or finish claude/dev.
+/// Phase: continue — SearchRead/PageRead, send again, finish, or abort claude/dev.
 function ChooseClaudeDevAction__continue__claude_dev(
   spec_text: string,
   validation_criteria_json: string,
   last_tool_output: string,
   user_approval_intent: string,
   session_context: SessionContext?
-) -> ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep | ClaudeDevFinishStep {
+) -> ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] claude/dev result is archived.\nPriority rules:\n- If session_context.last_step_op == \"send\" and session_context.last_completion == \"DONE\", emit Finish unless tool-specific instructions explicitly require reading the archive first.\n- If session_context.last_step_op == \"send\" and session_context.last_completion == \"INTERRUPTED\", emit Abort or follow tool-specific interruption guidance.\nArchive fallback when content must be inspected:\n- Use SearchRead or PageRead with archive_ref=session_context.last_archive_ref or the visible @N.\n- A \"more lines\" indicator means paginate with SearchRead/PageRead.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work just because archive body content is not inline.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
+  prompt #"[RUNTIME PHASE: CONTINUE] A claude/dev operation has produced a Done result.\nLegal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, Finish, or Abort.\nIf visible context is sufficient under the agent-authored policy, Finish. If additional archived evidence is required, use the visible @N handle with SearchRead or PageRead. If fresh or different tool work is required, Send is legal in this phase.\nA more-lines indicator means more archive content exists; it is not by itself an instruction to paginate.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
 0. CRITICAL: When emitting ClaudeDevSessionPlan, use one object with step (single FSM step) and citations fields. Per-phase hops are narrowed: emit ONLY the allowed type at the JSON root — often a bare step object with op Open, Send, SearchRead, PageRead, Finish, or Abort, with NO outer step wrapper. Do not emit a steps array.
@@ -455,7 +455,7 @@ OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, or Finish step. op must be Send, SearchRead, PageRead, or Finish — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+PHASE CONSTRAINT (continue): Emit exactly one JSON value matching this narrowed return schema. Legal ops in the current schema are Send, SearchRead, PageRead, Finish, or Abort. Never emit legacy op Read; use SearchRead with non-empty grep for filtered archive evidence, or PageRead for a contiguous archive window. Archive refs use @N, never #N. Do NOT return Open or non-session response types. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#
 
 }

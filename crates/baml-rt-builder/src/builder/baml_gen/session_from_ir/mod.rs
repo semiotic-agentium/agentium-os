@@ -2,13 +2,12 @@
 //!
 //! Per-phase functions (`__select`, `__act__*`, `__continue__*`) share the parent session-plan
 //! BAML function's `prompt_template`. Each hop wraps that template with a **phase-specific
-//! preamble** (describing the operation allowed — Open, Send-or-Read, Send-or-Read-or-Finish —
-//! and teaching the `@N` archive-ref notation) and a **phase-constraint suffix** (restating the
-//! legal JSON root shape for that hop). These bookends are essential: without them the LLM
-//! regularly emits malformed ops (e.g. the nonexistent op `Read` instead of `SearchRead` /
-//! `PageRead`, or `archive_ref = "#0"` instead of `"@0"`) that fail schema validation and stall the
-//! step-executor loop with no assistant output. The narrowed
-//! return type alone is not enough — the model needs the prose as well.
+//! mechanical preamble** (phase facts, legal-op boundary, archive-ref mechanics) and a
+//! **phase-constraint suffix** (JSON root shape for that hop). These bookends should not encode
+//! business behavior such as freshness, whether to paginate, or whether to reuse cached data; that
+//! belongs in the agent-authored prompt or explicit tool metadata. The narrowed return type alone
+//! is not enough — the model needs prose — but generated prose must stay aligned with the schema
+//! and defer policy decisions to the agent author.
 
 use std::{collections::HashMap, ops::Deref};
 
@@ -19,33 +18,33 @@ use super::ir_type_print::{collect_union_type_names, type_ir_to_baml};
 use crate::builder::error::{Result, write_line};
 
 /// Appended to the shared session-coordination prompt on **select** hops so the model does not
-/// emit a step wrapper when the IR return type is a bare Open step (parse failure).
+/// emit a step wrapper when the IR return type is a bare Open/read step (parse failure).
 ///
 /// No ASCII double quotes inside: text is concatenated into BAML `prompt #""#` literals.
 const PHASE_STEP_EXECUTOR_SUFFIX_SELECT: &str = r#"
 
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+PHASE CONSTRAINT (select): Emit exactly one JSON value matching this narrowed return schema. Do not emit operations absent from ctx.output_format. If an OpenStep type is present, Open binds a real tool session for fresh tool work. If non-session result types are present, they may be returned according to the agent-authored policy. Archive reads are legal only when SearchRead or PageRead appears in this narrowed schema. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#;
 
 /// Appended on **act** (first post-Open hop: Send or archive paging) — same archive discipline as continue.
 const PHASE_STEP_EXECUTOR_SUFFIX_ACT: &str = r#"
 
-PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
+PHASE CONSTRAINT (act): Emit exactly one JSON value matching this narrowed return schema. Legal ops in the current schema are Send, SearchRead, PageRead, or Abort. Finish is not legal in this first post-Open phase. Never emit legacy op Read; use SearchRead with non-empty grep for filtered archive evidence, or PageRead for a contiguous archive window. Archive refs use @N, never #N. Do NOT return Open or non-session response types. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#;
 
 /// Appended on **continue** hops (Send | SearchRead | PageRead | Finish | Abort).
 const PHASE_STEP_EXECUTOR_SUFFIX_CONTINUE: &str = r#"
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+PHASE CONSTRAINT (continue): Emit exactly one JSON value matching this narrowed return schema. Legal ops in the current schema are Send, SearchRead, PageRead, Finish, or Abort. Never emit legacy op Read; use SearchRead with non-empty grep for filtered archive evidence, or PageRead for a contiguous archive window. Archive refs use @N, never #N. Do NOT return Open or non-session response types. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#;
 
 /// Injected into **act** and **continue** preambles for `system/discover_agents` only.
 /// Models often add `required_capabilities` / subscription filters from inferred intent; those
 /// filters are strict server-side and frequently yield zero rows, which bypasses query-only
 /// fallback and looks like no agents exist.
-const DISCOVER_AGENTS_SEND_DISCIPLINE: &str = r#"DISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+const DISCOVER_AGENTS_SEND_DISCIPLINE: &str = r#"DISCOVERY INPUT SHAPE NOTE: For broad listing and routing, the query field is the free-text match over name, package, and description. Use required_capabilities, required_schema_versions, or required_source_kinds only when the agent-authored task policy explicitly requires those filters; these filters are strict and can yield zero rows.
 
-PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agents listing at @N, prefer SearchRead or PageRead on that @N (grep/limit/offset) to page or narrow — do not re-Send discover_agents with the same broad query as a substitute for pagination.
+ARCHIVE EVIDENCE NOTE: If a prior discover_agents result is archived at @N, SearchRead or PageRead can inspect that evidence when the agent-authored task policy needs it. Re-send only when fresh or different discovery work is required by policy.
 
 "#;
 
@@ -201,8 +200,18 @@ pub fn render_generated_session_baml_from_ir(
             .iter()
             .map(|t| SessionTypeNames::open_step(&t.class_name))
             .collect();
+        let read_types: Vec<String> = candidates
+            .iter()
+            .flat_map(|t| {
+                [
+                    format!("{}SearchReadStep", t.class_name),
+                    format!("{}PageReadStep", t.class_name),
+                ]
+            })
+            .collect();
         let mut select_return = non_plan_types.clone();
         select_return.extend(open_types);
+        select_return.extend(read_types);
         let select_name = SessionTypeNames::select(func_name);
 
         let tool_list = candidates
@@ -210,9 +219,14 @@ pub fn render_generated_session_baml_from_ir(
             .map(|t| t.name.to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        let select_preamble = format!("[OPEN] Open a session with: {tool_list}.\\n\\n");
+        let select_preamble = format!(
+            "[RUNTIME PHASE: SELECT] Entry decision before any tool session is bound.\\n\
+             Candidate tools available to Open if fresh tool work is required: {tool_list}.\\n\
+             Emit exactly one value from this phase narrowed schema. The agent-authored prompt below owns business policy such as reuse, freshness, clarification, and whether tool work is needed.\\n\
+             Archive evidence may be read only if SearchRead or PageRead appears in ctx.output_format for this hop; otherwise choose another legal output.\\n\\n"
+        );
 
-        write_line(&mut phase_out, "/// Phase: select — open a tool session.")?;
+        write_line(&mut phase_out, "/// Phase: select — entry decision before a tool session is bound; may Open or read archive evidence.")?;
         write_line(
             &mut phase_out,
             &format!(
@@ -243,11 +257,15 @@ pub fn render_generated_session_baml_from_ir(
 
             let act_preamble = if tool_name_str == "system/discover_agents" {
                 format!(
-                    "[ACT] A {tool_name_str} session is open. Emit Send for a new query, or SearchRead/PageRead an existing @N archive from history when listing output is already fetched — do not re-Send the same discover_agents listing without trying SearchRead/PageRead pagination first.\\n\\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
+                    "[RUNTIME PHASE: ACT] A {tool_name_str} session is open; this is the first post-Open hop.\\n\
+                     Legal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, or Abort. Finish is not legal in this phase.\\n\
+                     Use Send only when the agent-authored policy requires fresh tool work. Use SearchRead or PageRead only when policy requires inspecting archived evidence.\\n\\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
                 )
             } else {
                 format!(
-                    "[ACT] A {tool_name_str} session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\\n\\n"
+                    "[RUNTIME PHASE: ACT] A {tool_name_str} session is open; this is the first post-Open hop.\\n\
+                     Legal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, or Abort. Finish is not legal in this phase.\\n\
+                     Use Send only when the agent-authored policy requires fresh tool work. Use SearchRead or PageRead only when policy requires inspecting archived evidence.\\n\\n"
                 )
             };
             let act_name = SessionTypeNames::act(func_name, &slug);
@@ -277,26 +295,18 @@ pub fn render_generated_session_baml_from_ir(
 
             let continue_preamble = if tool_name_str == "system/discover_agents" {
                 format!(
-                    "[CONTINUE] {tool_name_str} result is archived.\\n\
-                     Archive fallback when content must be inspected:\\n\
-                     - Use the visible @N archive handle from conversation/history; do not guess one.\\n\
-                     - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\\n\
-                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit SearchRead or PageRead to paginate.\\n\
-                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead against the visible @N.\\n\
-                     - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\\n\
-                     - Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\\n\\n\
+                    "[RUNTIME PHASE: CONTINUE] A {tool_name_str} operation has produced a Done result.\\n\
+                     Legal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, Finish, or Abort.\\n\
+                     If visible context is sufficient under the agent-authored policy, Finish. If additional archived evidence is required, use the visible @N handle with SearchRead or PageRead. If fresh or different tool work is required, Send is legal in this phase.\\n\
+                     A more-lines indicator means more archive content exists; it is not by itself an instruction to paginate.\\n\\n\
                      {DISCOVER_AGENTS_SEND_DISCIPLINE}"
                 )
             } else {
                 format!(
-                    "[CONTINUE] {tool_name_str} result is archived.\\n\
-                     Archive fallback when content must be inspected:\\n\
-                     - Use the visible @N archive handle from conversation/history; do not guess one.\\n\
-                     - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\\n\
-                     - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit SearchRead or PageRead to paginate.\\n\
-                     - See \\\"@N {tool_name_str}\\\" with no content yet → emit SearchRead or PageRead against the visible @N.\\n\
-                     - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\\n\
-                     - Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\\n\\n"
+                    "[RUNTIME PHASE: CONTINUE] A {tool_name_str} operation has produced a Done result.\\n\
+                     Legal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, Finish, or Abort.\\n\
+                     If visible context is sufficient under the agent-authored policy, Finish. If additional archived evidence is required, use the visible @N handle with SearchRead or PageRead. If fresh or different tool work is required, Send is legal in this phase.\\n\
+                     A more-lines indicator means more archive content exists; it is not by itself an instruction to paginate.\\n\\n"
                 )
             };
             let continue_name = SessionTypeNames::r#continue(func_name, &slug);
@@ -441,26 +451,36 @@ fn generate_polymorphic_session_baml_for_function(
 
 #[cfg(test)]
 #[test]
-fn discover_agents_send_discipline_requires_paging_before_resend() {
+fn discover_agents_send_discipline_defers_policy_to_agent_prompt() {
     assert!(
-        DISCOVER_AGENTS_SEND_DISCIPLINE.contains("PAGING BEFORE RE-SEND"),
-        "expected page-before-resend rule in discover_agents discipline"
+        DISCOVER_AGENTS_SEND_DISCIPLINE.contains("agent-authored task policy"),
+        "generated discovery note should defer reuse/filtering behavior to authored policy"
+    );
+    assert!(
+        !DISCOVER_AGENTS_SEND_DISCIPLINE.contains("PAGING BEFORE RE-SEND"),
+        "generated discovery note should not impose a hidden pagination policy"
     );
 }
 
 #[cfg(test)]
 #[test]
-fn discover_agents_act_preamble_aligns_with_generic_archive_discipline() {
+fn discover_agents_act_preamble_is_mechanical_not_behavioral() {
     let tool = "system/discover_agents";
     let act = format!(
-        "[ACT] A {tool} session is open. Emit Send for a new query, or SearchRead/PageRead an existing @N archive from history when listing output is already fetched — do not re-Send the same discover_agents listing without trying SearchRead/PageRead pagination first.\\n\\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
+        "[RUNTIME PHASE: ACT] A {tool} session is open; this is the first post-Open hop.\\n\
+         Legal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, or Abort. Finish is not legal in this phase.\\n\
+         Use Send only when the agent-authored policy requires fresh tool work. Use SearchRead or PageRead only when policy requires inspecting archived evidence.\\n\\n{DISCOVER_AGENTS_SEND_DISCIPLINE}"
     );
     assert!(
-        act.contains("do not re-Send the same discover_agents listing"),
-        "expected explicit anti-resend for duplicate listing: {act}"
+        act.contains("Legal outputs are exactly the narrowed schema"),
+        "expected mechanical legal-op framing: {act}"
     );
     assert!(
-        act.contains("SearchRead/PageRead"),
-        "expected SearchRead/PageRead coupling: {act}"
+        act.contains("agent-authored policy"),
+        "expected behavior to be delegated to authored policy: {act}"
+    );
+    assert!(
+        !act.contains("do not re-Send"),
+        "generated preamble should not impose anti-resend business policy: {act}"
     );
 }

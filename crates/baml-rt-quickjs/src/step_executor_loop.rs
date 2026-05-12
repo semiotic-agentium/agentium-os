@@ -408,6 +408,7 @@ pub async fn run_step_executor_loop(
     let mut last = Value::Null;
     let mut step_intra_supplement: Vec<Value> = Vec::new();
     let mut last_step_context = LastStepContext::default();
+    let mut previous_read_output: Option<(String, String)> = None;
     // Carries the prior hop's terminal provider snapshot so we do not re-read the graph
     // at the start of the next hop. A fresh read can race async provenance / projection
     // and disagree with the previous hop's `p_after`, breaking strict prefix extension.
@@ -538,48 +539,101 @@ pub async fn run_step_executor_loop(
                 next_step_context.completion = last_step_context.completion.clone();
             }
         }
+        let read_output = if next_step_context.op == Some("read") {
+            next_step_context.archive_ref.clone().and_then(|archive_ref| {
+                result
+                    .get("output")
+                    .and_then(Value::as_str)
+                    .map(|output| (archive_ref, output.to_string()))
+            })
+        } else {
+            None
+        };
+        let repeated_archive_read = match (&previous_read_output, &read_output) {
+            (Some(prev), Some(current)) => prev == current,
+            _ => false,
+        };
+        if let Some(current) = read_output {
+            previous_read_output = Some(current);
+        } else if next_step_context.op != Some("read") {
+            previous_read_output = None;
+        }
         last_step_context = next_step_context;
+
+        if repeated_archive_read {
+            if let Phase::Bound { tool, .. } = &phase {
+                let handle = {
+                    let guard = manager.read().await;
+                    guard.tool_session_handle()
+                };
+                if let Some(session_id) = handle
+                    .find_existing_session_for_scope_and_tool(scope, &tool.name.to_string())
+                    .await
+                {
+                    if let Err(err) = handle.tool_session_finish(&session_id).await {
+                        tracing::warn!(
+                            tool = %tool.name,
+                            session_id = %session_id,
+                            error = %err,
+                            "step_executor_loop: failed to finish session after repeated archive read"
+                        );
+                    }
+                }
+            }
+        }
 
         // Advance FSM based on current phase + status.
         phase = match phase {
             Phase::AwaitingOpen => {
                 if status == StepStatus::Done {
-                    continue;
-                }
-                if status != StepStatus::Open {
+                    // A Done result before Open can only come from a global archive read exposed in
+                    // SELECT. Treat that read as a read-only terminal path: no real tool session was
+                    // opened, and the caller can synthesize from `last`.
+                    Phase::Terminal(TerminalReason::Finished)
+                } else if status != StepStatus::Open {
                     return Err(BamlRtError::InvalidArgument(format!(
                         "step executor contract violation ({current_function}): \
-                         expected Open-first hop to yield status 'open', got '{}'",
+                         expected Open-first hop to yield status 'open' or a read-only archive Done, got '{}'",
                         status.as_str()
                     )));
-                }
-                let tool = extract_tool_binding(&result);
-                match tool {
-                    Some(binding) => Phase::Bound {
-                        tool: binding,
-                        status: OpenStatus::JustOpened,
-                    },
-                    None => {
-                        return Err(BamlRtError::InvalidArgument(format!(
-                            "step executor ({current_function}): Open hop yielded no tool_name"
-                        )));
+                } else {
+                    match extract_tool_binding(&result) {
+                        Some(binding) => Phase::Bound {
+                            tool: binding,
+                            status: OpenStatus::JustOpened,
+                        },
+                        None => {
+                            return Err(BamlRtError::InvalidArgument(format!(
+                                "step executor ({current_function}): Open hop yielded no tool_name"
+                            )));
+                        }
                     }
                 }
             }
-            Phase::Bound { tool, .. } => match status {
-                StepStatus::Finished => Phase::Terminal(TerminalReason::Finished),
-                StepStatus::Aborted => Phase::Terminal(TerminalReason::Aborted),
-                other => match OpenStatus::try_from_step(other) {
-                    Some(os) => Phase::Bound { tool, status: os },
-                    None => {
-                        tracing::warn!(
-                            status = other.as_str(),
-                            "step_executor_loop: unexpected non-open status mapped to None"
-                        );
-                        Phase::Terminal(TerminalReason::MissingStatus)
+            Phase::Bound { tool, .. } => {
+                if repeated_archive_read {
+                    tracing::warn!(
+                        tool = %tool.name,
+                        "step_executor_loop: repeated identical archive read; terminating to avoid loop"
+                    );
+                    Phase::Terminal(TerminalReason::Finished)
+                } else {
+                    match status {
+                        StepStatus::Finished => Phase::Terminal(TerminalReason::Finished),
+                        StepStatus::Aborted => Phase::Terminal(TerminalReason::Aborted),
+                        other => match OpenStatus::try_from_step(other) {
+                            Some(os) => Phase::Bound { tool, status: os },
+                            None => {
+                                tracing::warn!(
+                                    status = other.as_str(),
+                                    "step_executor_loop: unexpected non-open status mapped to None"
+                                );
+                                Phase::Terminal(TerminalReason::MissingStatus)
+                            }
+                        },
                     }
-                },
-            },
+                }
+            }
             Phase::Terminal(_) => break,
         };
 

@@ -174,7 +174,7 @@ impl LLMInterceptor for SlackE2eOpenHopInterceptor {
             return Ok(InterceptorDecision::Allow);
         }
         let prompt_blob = serde_json::to_string(&ctx.prompt).unwrap_or_default();
-        if prompt_blob.contains("[OPEN]") {
+        if prompt_blob.contains("[RUNTIME PHASE: SELECT]") {
             return Ok(InterceptorDecision::Substitute(json!({
                 "op": "Open",
                 "tool_name": "support/slack",

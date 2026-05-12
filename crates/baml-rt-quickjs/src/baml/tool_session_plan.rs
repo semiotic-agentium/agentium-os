@@ -554,7 +554,7 @@ impl BamlRuntimeManager {
                             let o = page.next_offset;
                             let n = page.total_matched - page.next_offset;
                             format!(
-                                "\n--- Not all lines shown — next step: SearchRead (grep) or PageRead {archive_ref} with offset={o} ({n} more lines — use offset={o} for next page) ---",
+                                "\n--- Not all lines shown ({n} more; next offset={o}). If additional evidence is needed, use SearchRead (grep) or PageRead {archive_ref} with offset={o}. ---",
                             )
                         } else {
                             String::new()
@@ -671,7 +671,7 @@ impl BamlRuntimeManager {
                             let o = page.next_offset;
                             let n = page.total_matched - page.next_offset;
                             format!(
-                                "\n--- Not all lines shown — next step: PageRead {archive_ref} with offset={o} ({n} more lines — use offset={o} for next page) ---",
+                                "\n--- Not all lines shown ({n} more; next offset={o}). If additional evidence is needed, use PageRead {archive_ref} with offset={o}. ---",
                             )
                         } else {
                             String::new()

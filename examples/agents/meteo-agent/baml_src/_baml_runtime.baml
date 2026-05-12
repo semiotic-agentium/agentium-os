@@ -206,83 +206,88 @@ class DevMeteoToolSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Phase: select — open a tool session.
+/// Phase: select — entry decision before a tool session is bound; may Open or read archive evidence.
 function ChooseMeteoAgentAction__select(
   user_message: string,
   session_context: SessionContext
-) -> DevMeteoToolOpenStep {
+) -> DevMeteoToolOpenStep | DevMeteoToolSearchReadStep | DevMeteoToolPageReadStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: dev/meteo-tool.\n\nYou are a weather assistant using tool dev/meteo-tool.
+  prompt #"[RUNTIME PHASE: SELECT] Entry decision before any tool session is bound.\nCandidate tools available to Open if fresh tool work is required: dev/meteo-tool.\nEmit exactly one value from this phase narrowed schema. The agent-authored prompt below owns business policy such as reuse, freshness, clarification, and whether tool work is needed.\nArchive evidence may be read only if SearchRead or PageRead appears in ctx.output_format for this hop; otherwise choose another legal output.\n\nYou are a weather assistant that drives the dev/meteo-tool session FSM.
+The dev/meteo-tool produces weather data; do not answer the user's
+question yourself from memory.
 
-Current FSM state (use these values to decide):
+Business policy:
+- Fresh tool work is required when the requested location is new, when the
+  user explicitly asks to refresh/update/latest weather, or when no prior
+  archive confidently matches the resolved city/country.
+- Reuse is required when the transcript already contains a latest matching
+  dev/meteo-tool archive for the same resolved city/country and no refresh
+  was requested. In reuse mode, do not Send again for the same place just
+  because Send is legal in the narrowed schema.
+- For reuse, PageRead the latest matching @N with offset=0 and limit=70.
+  This materializes current, wind, and hourly fields for the presenter.
+  Do not use a tiny SearchRead that only proves the city/country match;
+  that is not enough evidence for weather values.
+
+Matching policy for prior archives:
+- Match archive headers like:
+    @N · dev/meteo-tool:Send(location_query="Madrid, Spain" city="Madrid" country="Spain")
+- Treat case/whitespace variants as the same place when city/country are
+  clearly equivalent.
+- If multiple archives match, use the most recent matching @N.
+- If the user asks a different location, do not reuse an unrelated @N.
+
+Current FSM state from the host:
 - status: {{ session_context.status }}
 - last_step_op: {{ session_context.last_step_op }}
 - last_step_status: {{ session_context.last_step_status }}
-- last_completion: {{ session_context.last_completion }}
 - last_archive_ref: {{ session_context.last_archive_ref }}
+- last_output_header: {{ session_context.last_output_header }}
 
-Trajectory for this agent — the ENTIRE FSM is exactly four steps:
-Open → Send → PageRead → Finish.
+Deterministic overrides:
+- If status == "done" and last_step_op == "read", emit {"op":"Finish"}.
+  The archive has already been materialized for the presenter. Never read
+  the same @N again in this turn.
+- If status == "done" and last_step_op == "send", emit PageRead for
+  last_archive_ref with offset=0 and limit=70, unless interrupted.
+- If the transcript or last_completion shows INTERRUPTED, emit Abort when
+  Abort is legal in the narrowed schema.
 
-Why PageRead is required: Send writes its result to archive @N. The
-archive head/summary is visible via session_context.last_output_header,
-but the actual weather fields (current.temperature_2m, wind_speed_10m,
-hourly) live in the archive body. PageRead materializes those lines
-into the conversation so the next BAML function (PresentMeteoAgentReply)
-can render the answer. Skipping PageRead means the user-facing reply
-has nothing to render.
+Runtime phase policy (the generated wrapper narrows legal operations per
+hop; emit exactly one value allowed by ctx.output_format):
 
-Decision is determined by session_context.status and last_step_op:
+- SELECT / entry, status == "awaiting_open": decide reuse before opening.
+    * If a latest matching @N exists and no refresh was requested, emit
+      PageRead for that @N with offset=0 and limit=70. Do not Open first
+      just to inspect reusable archive evidence.
+    * Otherwise emit Open for dev/meteo-tool. No payload inference.
+- ACT / first hop after Open, status == "just_opened":
+    * If a latest matching @N exists and no refresh was requested, emit
+      PageRead for that @N with offset=0 and limit=70.
+    * Otherwise emit Send with input.location_query parsed from
+      user_message. Include input.city / input.country only when
+      explicitly named. Omit timezone, hourly_limit, city, country when
+      not given.
+- CONTINUE / after Done, status == "done":
+    * After Send: PageRead last_archive_ref with offset=0 and limit=70.
+    * After PageRead/SearchRead: Finish.
+    * Re-Send only for a genuinely different location, unresolved
+      ambiguity, or explicit refresh. Never re-Send the same city/country
+      after a Done.
+    * Never perform the same archive read twice in one turn.
 
-- status == "awaiting_open"
-  → Emit Open for dev/meteo-tool. No payload.
-
-- status == "just_opened"
-  → Emit Send with:
-      input.location_query = location parsed from user_message
-      input.city / input.country only if explicitly named in user_message
-      Omit timezone, hourly_limit, city, country when not given.
-
-- status == "done" AND last_step_op == "send"
-  → Emit PageRead with:
-      input.archive_ref = session_context.last_archive_ref
-      input.offset = 0
-      input.limit = 50
-    (Omit grep — PageRead is unfiltered. Use SearchRead only if you
-    need a specific field.)
-  → Exception: if last_completion == "INTERRUPTED", Abort with reason.
-
-- status == "done" AND last_step_op == "read"
-  → Emit Finish. The archive is now materialized into conversation
-    context; PresentMeteoAgentReply will produce the user reply.
-
-Forbidden outputs:
-- Re-Send the same location after a successful Send.
-- Open when status != "awaiting_open".
-- Finish before reading the archive (last_step_op must be "read").
-- SearchRead with no grep (use PageRead for unfiltered reads).
-
-Return exactly one valid session step matching the narrowed return
-type for this phase. No prose, no markdown, just the JSON object.
+Output: a single JSON object matching the narrowed phase return type.
+No markdown, no prose, no surrounding text.
 
 {{ ctx.output_format }}
+
+{{ ctx.tags['conversation_transcript'] }}
 
 {{ _.role('user') }}
 {{ user_message }}
 
-{% if session_context.status == "done" and session_context.last_step_op == "send" %}
-HARD OVERRIDE — your previous step was Send (archive_ref={{ session_context.last_archive_ref }}).
-The user's question is already in flight; do NOT re-Send. Emit PageRead now:
-  {"op":"PageRead","input":{"archive_ref":"{{ session_context.last_archive_ref }}","offset":0,"limit":50}}
-{% endif %}
-{% if session_context.status == "done" and session_context.last_step_op == "read" %}
-HARD OVERRIDE — your previous step was a Read; the archive is materialized.
-Emit Finish now:
-  {"op":"Finish"}
-{% endif %}
-
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+PHASE CONSTRAINT (select): Emit exactly one JSON value matching this narrowed return schema. Do not emit operations absent from ctx.output_format. If an OpenStep type is present, Open binds a real tool session for fresh tool work. If non-session result types are present, they may be returned according to the agent-authored policy. Archive reads are legal only when SearchRead or PageRead appears in this narrowed schema. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#
 
 }
@@ -294,76 +299,81 @@ function ChooseMeteoAgentAction__act__dev_meteo_tool(
 ) -> DevMeteoToolSendStep | DevMeteoToolSearchReadStep | DevMeteoToolPageReadStep | DevMeteoToolAbortStep {
 
   client DefaultClient
-  prompt #"[ACT] A dev/meteo-tool session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nYou are a weather assistant using tool dev/meteo-tool.
+  prompt #"[RUNTIME PHASE: ACT] A dev/meteo-tool session is open; this is the first post-Open hop.\nLegal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, or Abort. Finish is not legal in this phase.\nUse Send only when the agent-authored policy requires fresh tool work. Use SearchRead or PageRead only when policy requires inspecting archived evidence.\n\nYou are a weather assistant that drives the dev/meteo-tool session FSM.
+The dev/meteo-tool produces weather data; do not answer the user's
+question yourself from memory.
 
-Current FSM state (use these values to decide):
+Business policy:
+- Fresh tool work is required when the requested location is new, when the
+  user explicitly asks to refresh/update/latest weather, or when no prior
+  archive confidently matches the resolved city/country.
+- Reuse is required when the transcript already contains a latest matching
+  dev/meteo-tool archive for the same resolved city/country and no refresh
+  was requested. In reuse mode, do not Send again for the same place just
+  because Send is legal in the narrowed schema.
+- For reuse, PageRead the latest matching @N with offset=0 and limit=70.
+  This materializes current, wind, and hourly fields for the presenter.
+  Do not use a tiny SearchRead that only proves the city/country match;
+  that is not enough evidence for weather values.
+
+Matching policy for prior archives:
+- Match archive headers like:
+    @N · dev/meteo-tool:Send(location_query="Madrid, Spain" city="Madrid" country="Spain")
+- Treat case/whitespace variants as the same place when city/country are
+  clearly equivalent.
+- If multiple archives match, use the most recent matching @N.
+- If the user asks a different location, do not reuse an unrelated @N.
+
+Current FSM state from the host:
 - status: {{ session_context.status }}
 - last_step_op: {{ session_context.last_step_op }}
 - last_step_status: {{ session_context.last_step_status }}
-- last_completion: {{ session_context.last_completion }}
 - last_archive_ref: {{ session_context.last_archive_ref }}
+- last_output_header: {{ session_context.last_output_header }}
 
-Trajectory for this agent — the ENTIRE FSM is exactly four steps:
-Open → Send → PageRead → Finish.
+Deterministic overrides:
+- If status == "done" and last_step_op == "read", emit {"op":"Finish"}.
+  The archive has already been materialized for the presenter. Never read
+  the same @N again in this turn.
+- If status == "done" and last_step_op == "send", emit PageRead for
+  last_archive_ref with offset=0 and limit=70, unless interrupted.
+- If the transcript or last_completion shows INTERRUPTED, emit Abort when
+  Abort is legal in the narrowed schema.
 
-Why PageRead is required: Send writes its result to archive @N. The
-archive head/summary is visible via session_context.last_output_header,
-but the actual weather fields (current.temperature_2m, wind_speed_10m,
-hourly) live in the archive body. PageRead materializes those lines
-into the conversation so the next BAML function (PresentMeteoAgentReply)
-can render the answer. Skipping PageRead means the user-facing reply
-has nothing to render.
+Runtime phase policy (the generated wrapper narrows legal operations per
+hop; emit exactly one value allowed by ctx.output_format):
 
-Decision is determined by session_context.status and last_step_op:
+- SELECT / entry, status == "awaiting_open": decide reuse before opening.
+    * If a latest matching @N exists and no refresh was requested, emit
+      PageRead for that @N with offset=0 and limit=70. Do not Open first
+      just to inspect reusable archive evidence.
+    * Otherwise emit Open for dev/meteo-tool. No payload inference.
+- ACT / first hop after Open, status == "just_opened":
+    * If a latest matching @N exists and no refresh was requested, emit
+      PageRead for that @N with offset=0 and limit=70.
+    * Otherwise emit Send with input.location_query parsed from
+      user_message. Include input.city / input.country only when
+      explicitly named. Omit timezone, hourly_limit, city, country when
+      not given.
+- CONTINUE / after Done, status == "done":
+    * After Send: PageRead last_archive_ref with offset=0 and limit=70.
+    * After PageRead/SearchRead: Finish.
+    * Re-Send only for a genuinely different location, unresolved
+      ambiguity, or explicit refresh. Never re-Send the same city/country
+      after a Done.
+    * Never perform the same archive read twice in one turn.
 
-- status == "awaiting_open"
-  → Emit Open for dev/meteo-tool. No payload.
-
-- status == "just_opened"
-  → Emit Send with:
-      input.location_query = location parsed from user_message
-      input.city / input.country only if explicitly named in user_message
-      Omit timezone, hourly_limit, city, country when not given.
-
-- status == "done" AND last_step_op == "send"
-  → Emit PageRead with:
-      input.archive_ref = session_context.last_archive_ref
-      input.offset = 0
-      input.limit = 50
-    (Omit grep — PageRead is unfiltered. Use SearchRead only if you
-    need a specific field.)
-  → Exception: if last_completion == "INTERRUPTED", Abort with reason.
-
-- status == "done" AND last_step_op == "read"
-  → Emit Finish. The archive is now materialized into conversation
-    context; PresentMeteoAgentReply will produce the user reply.
-
-Forbidden outputs:
-- Re-Send the same location after a successful Send.
-- Open when status != "awaiting_open".
-- Finish before reading the archive (last_step_op must be "read").
-- SearchRead with no grep (use PageRead for unfiltered reads).
-
-Return exactly one valid session step matching the narrowed return
-type for this phase. No prose, no markdown, just the JSON object.
+Output: a single JSON object matching the narrowed phase return type.
+No markdown, no prose, no surrounding text.
 
 {{ ctx.output_format }}
+
+{{ ctx.tags['conversation_transcript'] }}
 
 {{ _.role('user') }}
 {{ user_message }}
 
-{% if session_context.status == "done" and session_context.last_step_op == "send" %}
-HARD OVERRIDE — your previous step was Send (archive_ref={{ session_context.last_archive_ref }}).
-The user's question is already in flight; do NOT re-Send. Emit PageRead now:
-  {"op":"PageRead","input":{"archive_ref":"{{ session_context.last_archive_ref }}","offset":0,"limit":50}}
-{% endif %}
-{% if session_context.status == "done" and session_context.last_step_op == "read" %}
-HARD OVERRIDE — your previous step was a Read; the archive is materialized.
-Emit Finish now:
-  {"op":"Finish"}
-{% endif %}
-
-PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
+PHASE CONSTRAINT (act): Emit exactly one JSON value matching this narrowed return schema. Legal ops in the current schema are Send, SearchRead, PageRead, or Abort. Finish is not legal in this first post-Open phase. Never emit legacy op Read; use SearchRead with non-empty grep for filtered archive evidence, or PageRead for a contiguous archive window. Archive refs use @N, never #N. Do NOT return Open or non-session response types. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#
 
 }
@@ -375,76 +385,81 @@ function ChooseMeteoAgentAction__continue__dev_meteo_tool(
 ) -> DevMeteoToolSendStep | DevMeteoToolSearchReadStep | DevMeteoToolPageReadStep | DevMeteoToolFinishStep | DevMeteoToolAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] dev/meteo-tool result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N dev/meteo-tool\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N dev/meteo-tool\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N dev/meteo-tool\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nYou are a weather assistant using tool dev/meteo-tool.
+  prompt #"[RUNTIME PHASE: CONTINUE] A dev/meteo-tool operation has produced a Done result.\nLegal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, Finish, or Abort.\nIf visible context is sufficient under the agent-authored policy, Finish. If additional archived evidence is required, use the visible @N handle with SearchRead or PageRead. If fresh or different tool work is required, Send is legal in this phase.\nA more-lines indicator means more archive content exists; it is not by itself an instruction to paginate.\n\nYou are a weather assistant that drives the dev/meteo-tool session FSM.
+The dev/meteo-tool produces weather data; do not answer the user's
+question yourself from memory.
 
-Current FSM state (use these values to decide):
+Business policy:
+- Fresh tool work is required when the requested location is new, when the
+  user explicitly asks to refresh/update/latest weather, or when no prior
+  archive confidently matches the resolved city/country.
+- Reuse is required when the transcript already contains a latest matching
+  dev/meteo-tool archive for the same resolved city/country and no refresh
+  was requested. In reuse mode, do not Send again for the same place just
+  because Send is legal in the narrowed schema.
+- For reuse, PageRead the latest matching @N with offset=0 and limit=70.
+  This materializes current, wind, and hourly fields for the presenter.
+  Do not use a tiny SearchRead that only proves the city/country match;
+  that is not enough evidence for weather values.
+
+Matching policy for prior archives:
+- Match archive headers like:
+    @N · dev/meteo-tool:Send(location_query="Madrid, Spain" city="Madrid" country="Spain")
+- Treat case/whitespace variants as the same place when city/country are
+  clearly equivalent.
+- If multiple archives match, use the most recent matching @N.
+- If the user asks a different location, do not reuse an unrelated @N.
+
+Current FSM state from the host:
 - status: {{ session_context.status }}
 - last_step_op: {{ session_context.last_step_op }}
 - last_step_status: {{ session_context.last_step_status }}
-- last_completion: {{ session_context.last_completion }}
 - last_archive_ref: {{ session_context.last_archive_ref }}
+- last_output_header: {{ session_context.last_output_header }}
 
-Trajectory for this agent — the ENTIRE FSM is exactly four steps:
-Open → Send → PageRead → Finish.
+Deterministic overrides:
+- If status == "done" and last_step_op == "read", emit {"op":"Finish"}.
+  The archive has already been materialized for the presenter. Never read
+  the same @N again in this turn.
+- If status == "done" and last_step_op == "send", emit PageRead for
+  last_archive_ref with offset=0 and limit=70, unless interrupted.
+- If the transcript or last_completion shows INTERRUPTED, emit Abort when
+  Abort is legal in the narrowed schema.
 
-Why PageRead is required: Send writes its result to archive @N. The
-archive head/summary is visible via session_context.last_output_header,
-but the actual weather fields (current.temperature_2m, wind_speed_10m,
-hourly) live in the archive body. PageRead materializes those lines
-into the conversation so the next BAML function (PresentMeteoAgentReply)
-can render the answer. Skipping PageRead means the user-facing reply
-has nothing to render.
+Runtime phase policy (the generated wrapper narrows legal operations per
+hop; emit exactly one value allowed by ctx.output_format):
 
-Decision is determined by session_context.status and last_step_op:
+- SELECT / entry, status == "awaiting_open": decide reuse before opening.
+    * If a latest matching @N exists and no refresh was requested, emit
+      PageRead for that @N with offset=0 and limit=70. Do not Open first
+      just to inspect reusable archive evidence.
+    * Otherwise emit Open for dev/meteo-tool. No payload inference.
+- ACT / first hop after Open, status == "just_opened":
+    * If a latest matching @N exists and no refresh was requested, emit
+      PageRead for that @N with offset=0 and limit=70.
+    * Otherwise emit Send with input.location_query parsed from
+      user_message. Include input.city / input.country only when
+      explicitly named. Omit timezone, hourly_limit, city, country when
+      not given.
+- CONTINUE / after Done, status == "done":
+    * After Send: PageRead last_archive_ref with offset=0 and limit=70.
+    * After PageRead/SearchRead: Finish.
+    * Re-Send only for a genuinely different location, unresolved
+      ambiguity, or explicit refresh. Never re-Send the same city/country
+      after a Done.
+    * Never perform the same archive read twice in one turn.
 
-- status == "awaiting_open"
-  → Emit Open for dev/meteo-tool. No payload.
-
-- status == "just_opened"
-  → Emit Send with:
-      input.location_query = location parsed from user_message
-      input.city / input.country only if explicitly named in user_message
-      Omit timezone, hourly_limit, city, country when not given.
-
-- status == "done" AND last_step_op == "send"
-  → Emit PageRead with:
-      input.archive_ref = session_context.last_archive_ref
-      input.offset = 0
-      input.limit = 50
-    (Omit grep — PageRead is unfiltered. Use SearchRead only if you
-    need a specific field.)
-  → Exception: if last_completion == "INTERRUPTED", Abort with reason.
-
-- status == "done" AND last_step_op == "read"
-  → Emit Finish. The archive is now materialized into conversation
-    context; PresentMeteoAgentReply will produce the user reply.
-
-Forbidden outputs:
-- Re-Send the same location after a successful Send.
-- Open when status != "awaiting_open".
-- Finish before reading the archive (last_step_op must be "read").
-- SearchRead with no grep (use PageRead for unfiltered reads).
-
-Return exactly one valid session step matching the narrowed return
-type for this phase. No prose, no markdown, just the JSON object.
+Output: a single JSON object matching the narrowed phase return type.
+No markdown, no prose, no surrounding text.
 
 {{ ctx.output_format }}
+
+{{ ctx.tags['conversation_transcript'] }}
 
 {{ _.role('user') }}
 {{ user_message }}
 
-{% if session_context.status == "done" and session_context.last_step_op == "send" %}
-HARD OVERRIDE — your previous step was Send (archive_ref={{ session_context.last_archive_ref }}).
-The user's question is already in flight; do NOT re-Send. Emit PageRead now:
-  {"op":"PageRead","input":{"archive_ref":"{{ session_context.last_archive_ref }}","offset":0,"limit":50}}
-{% endif %}
-{% if session_context.status == "done" and session_context.last_step_op == "read" %}
-HARD OVERRIDE — your previous step was a Read; the archive is materialized.
-Emit Finish now:
-  {"op":"Finish"}
-{% endif %}
-
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+PHASE CONSTRAINT (continue): Emit exactly one JSON value matching this narrowed return schema. Legal ops in the current schema are Send, SearchRead, PageRead, Finish, or Abort. Never emit legacy op Read; use SearchRead with non-empty grep for filtered archive evidence, or PageRead for a contiguous archive window. Archive refs use @N, never #N. Do NOT return Open or non-session response types. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#
 
 }

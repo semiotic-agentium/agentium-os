@@ -260,10 +260,10 @@ function ChooseDevClaudeExtAction(user_message: string) -> DevClaudeExtSessionPl
 function ChooseDevClaudeExtAction__select(
   user_message: string,
   session_context: SessionContext
-) -> DevClaudeExtOpenStep {
+) -> DevClaudeExtOpenStep | DevClaudeExtSearchReadStep | DevClaudeExtPageReadStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: dev/claude-ext.\n\nYou drive a Claude Code session via the dev/claude-ext tool. Your only
+  prompt #"[RUNTIME PHASE: SELECT] Entry decision before any tool session is bound.\nCandidate tools available to Open if fresh tool work is required: dev/claude-ext.\nEmit exactly one value from this phase narrowed schema. The agent-authored prompt below owns business policy such as reuse, freshness, clarification, and whether tool work is needed.\nArchive evidence may be read only if SearchRead or PageRead appears in ctx.output_format for this hop; otherwise choose another legal output.\n\nYou drive a Claude Code session via the dev/claude-ext tool. Your only
 job is to manage the session FSM: Open the session, Send the user's
 request, then Finish once Claude returns a terminal result. Do NOT
 implement, rewrite, or answer the user's task yourself — Claude Code does
@@ -296,7 +296,7 @@ markdown, no prose, no surrounding text.
 {{ _.role('user') }}
 {{ user_message }}
 
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+PHASE CONSTRAINT (select): Emit exactly one JSON value matching this narrowed return schema. Do not emit operations absent from ctx.output_format. If an OpenStep type is present, Open binds a real tool session for fresh tool work. If non-session result types are present, they may be returned according to the agent-authored policy. Archive reads are legal only when SearchRead or PageRead appears in this narrowed schema. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#
 
 }
@@ -308,7 +308,7 @@ function ChooseDevClaudeExtAction__act__dev_claude_ext(
 ) -> DevClaudeExtSendStep | DevClaudeExtSearchReadStep | DevClaudeExtPageReadStep | DevClaudeExtAbortStep {
 
   client DefaultClient
-  prompt #"[ACT] A dev/claude-ext session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nYou drive a Claude Code session via the dev/claude-ext tool. Your only
+  prompt #"[RUNTIME PHASE: ACT] A dev/claude-ext session is open; this is the first post-Open hop.\nLegal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, or Abort. Finish is not legal in this phase.\nUse Send only when the agent-authored policy requires fresh tool work. Use SearchRead or PageRead only when policy requires inspecting archived evidence.\n\nYou drive a Claude Code session via the dev/claude-ext tool. Your only
 job is to manage the session FSM: Open the session, Send the user's
 request, then Finish once Claude returns a terminal result. Do NOT
 implement, rewrite, or answer the user's task yourself — Claude Code does
@@ -341,7 +341,7 @@ markdown, no prose, no surrounding text.
 {{ _.role('user') }}
 {{ user_message }}
 
-PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
+PHASE CONSTRAINT (act): Emit exactly one JSON value matching this narrowed return schema. Legal ops in the current schema are Send, SearchRead, PageRead, or Abort. Finish is not legal in this first post-Open phase. Never emit legacy op Read; use SearchRead with non-empty grep for filtered archive evidence, or PageRead for a contiguous archive window. Archive refs use @N, never #N. Do NOT return Open or non-session response types. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#
 
 }
@@ -353,7 +353,7 @@ function ChooseDevClaudeExtAction__continue__dev_claude_ext(
 ) -> DevClaudeExtSendStep | DevClaudeExtSearchReadStep | DevClaudeExtPageReadStep | DevClaudeExtFinishStep | DevClaudeExtAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] dev/claude-ext result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N dev/claude-ext\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N dev/claude-ext\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N dev/claude-ext\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nYou drive a Claude Code session via the dev/claude-ext tool. Your only
+  prompt #"[RUNTIME PHASE: CONTINUE] A dev/claude-ext operation has produced a Done result.\nLegal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, Finish, or Abort.\nIf visible context is sufficient under the agent-authored policy, Finish. If additional archived evidence is required, use the visible @N handle with SearchRead or PageRead. If fresh or different tool work is required, Send is legal in this phase.\nA more-lines indicator means more archive content exists; it is not by itself an instruction to paginate.\n\nYou drive a Claude Code session via the dev/claude-ext tool. Your only
 job is to manage the session FSM: Open the session, Send the user's
 request, then Finish once Claude returns a terminal result. Do NOT
 implement, rewrite, or answer the user's task yourself — Claude Code does
@@ -386,7 +386,7 @@ markdown, no prose, no surrounding text.
 {{ _.role('user') }}
 {{ user_message }}
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+PHASE CONSTRAINT (continue): Emit exactly one JSON value matching this narrowed return schema. Legal ops in the current schema are Send, SearchRead, PageRead, Finish, or Abort. Never emit legacy op Read; use SearchRead with non-empty grep for filtered archive evidence, or PageRead for a contiguous archive window. Archive refs use @N, never #N. Do NOT return Open or non-session response types. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#
 
 }

@@ -67,21 +67,23 @@ Generation flow:
 6. Then it generates narrowed per-phase functions back into `_baml_runtime.baml`:
 
    ```baml
-   function ChooseMeteoAgentAction__select(...) -> DevMeteoToolOpenStep
+   function ChooseMeteoAgentAction__select(...) -> DevMeteoToolOpenStep | DevMeteoToolSearchReadStep | DevMeteoToolPageReadStep
    function ChooseMeteoAgentAction__act__dev_meteo_tool(...) -> DevMeteoToolSendStep | DevMeteoToolSearchReadStep | DevMeteoToolPageReadStep | DevMeteoToolAbortStep
    function ChooseMeteoAgentAction__continue__dev_meteo_tool(...) -> DevMeteoToolSendStep | DevMeteoToolSearchReadStep | DevMeteoToolPageReadStep | DevMeteoToolFinishStep | DevMeteoToolAbortStep
    ```
 
 7. Those generated functions **copy the handwritten prompt body verbatim** from `ChooseMeteoAgentAction`, but wrap it with phase-specific preambles/suffixes.
 
-Example generated shape:
+Example generated shape after the prompt-softening pass:
 
 ```baml
-prompt #"[OPEN] Open a session with: dev/meteo-tool.\n\n
+prompt #"[RUNTIME PHASE: SELECT] Entry decision before any tool session is bound.\n...
 <handwritten prompt copied here>
-PHASE CONSTRAINT (select — open): ...
+PHASE CONSTRAINT (select): Emit exactly one JSON value matching this narrowed return schema. ...
 "#
 ```
+
+The generated wrapper is intended to describe mechanics only: phase facts, schema legality, and archive-ref syntax. Business behavior such as freshness, reuse thresholds, whether to paginate, and when to call a tool belongs in the handwritten prompt or explicit tool metadata.
 
 So the dependency is two-way:
 
@@ -145,7 +147,7 @@ Abort
 
 For meteo specifically:
 
-- select phase can return `Open`
+- select phase can return `Open`, `SearchRead`, or `PageRead`
 - act phase can return `Send`, `SearchRead`, `PageRead`, `Abort`
 - continue phase can return `Send`, `SearchRead`, `PageRead`, `Finish`, `Abort`
 
@@ -194,12 +196,12 @@ phase preamble
 + phase constraint suffix
 ```
 
-The active generated meteo prompts use legacy tags:
+The active generated prompts now use runtime phase labels:
 
 ```text
-[OPEN]
-[ACT]
-[CONTINUE]
+[RUNTIME PHASE: SELECT]
+[RUNTIME PHASE: ACT]
+[RUNTIME PHASE: CONTINUE]
 ```
 
 Important note: there is also:
@@ -217,4 +219,4 @@ which defines a newer-looking prompt algebra with:
 - footer listing narrowed union types
 - stripping/re-appending `{{ ctx.output_format }}`
 
-But it does **not** appear wired into `session_from_ir/mod.rs` via `mod phase_prompt;` or calls. The generated meteo file confirms the active output is still the `[OPEN]/[ACT]/[CONTINUE]` style from `mod.rs`, not the `phase_prompt.rs` style.
+But it does **not** appear wired into `session_from_ir/mod.rs` via `mod phase_prompt;` or calls. The active output comes from the prompt builder in `mod.rs`, not from `phase_prompt.rs`.

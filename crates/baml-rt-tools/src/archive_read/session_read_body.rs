@@ -47,7 +47,7 @@ impl ArchiveReadPage<'_> {
             let off = self.page.next_offset;
             let archive_ref = self.archive_ref;
             format!(
-                "  # More lines are not shown below — emit SearchRead (non-empty grep) to narrow {archive_ref}, or PageRead to continue {archive_ref} with offset={off}. Window: lines {first}-{last} of {total} ({rem} more — offset={off} for next page)",
+                "  # Window: lines {first}-{last} of {total}. More lines are available ({rem} more; next offset={off}). If additional evidence is needed, use SearchRead (non-empty grep) to narrow {archive_ref}, or PageRead {archive_ref} with offset={off}.",
                 total = self.page.total_matched,
                 rem = remaining,
                 off = off,

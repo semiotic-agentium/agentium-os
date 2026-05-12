@@ -508,17 +508,17 @@ class SystemInternalA2aSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Phase: select — open a tool session.
+/// Phase: select — entry decision before a tool session is bound; may Open or read archive evidence.
 function ChooseClickUpAction__select(
   goal: string,
   step_description: string,
   operation_kind: string,
   prior_results: string?,
   session_context: SessionContext?
-) -> FinalResponse | SupportClickupOpenStep {
+) -> FinalResponse | SupportClickupOpenStep | SupportClickupSearchReadStep | SupportClickupPageReadStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: support/clickup.\n\nYou are a ClickUp workspace assistant executing one plan step.
+  prompt #"[RUNTIME PHASE: SELECT] Entry decision before any tool session is bound.\nCandidate tools available to Open if fresh tool work is required: support/clickup.\nEmit exactly one value from this phase narrowed schema. The agent-authored prompt below owns business policy such as reuse, freshness, clarification, and whether tool work is needed.\nArchive evidence may be read only if SearchRead or PageRead appears in ctx.output_format for this hop; otherwise choose another legal output.\n\nYou are a ClickUp workspace assistant executing one plan step.
 Stay focused on this step only and use prior tool evidence from this turn.
 
 Overall goal: {{ goal }}
@@ -548,22 +548,22 @@ session_context: {{ session_context }}
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+PHASE CONSTRAINT (select): Emit exactly one JSON value matching this narrowed return schema. Do not emit operations absent from ctx.output_format. If an OpenStep type is present, Open binds a real tool session for fresh tool work. If non-session result types are present, they may be returned according to the agent-authored policy. Archive reads are legal only when SearchRead or PageRead appears in this narrowed schema. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#
 
 }
 
-/// Phase: act — first post-Open hop: Send, SearchRead, or PageRead (support/clickup).
+/// Phase: act — first post-Open hop: Send, SearchRead, PageRead, or Abort (support/clickup).
 function ChooseClickUpAction__act__support_clickup(
   goal: string,
   step_description: string,
   operation_kind: string,
   prior_results: string?,
   session_context: SessionContext?
-) -> SupportClickupSendStep | SupportClickupSearchReadStep | SupportClickupPageReadStep {
+) -> SupportClickupSendStep | SupportClickupSearchReadStep | SupportClickupPageReadStep | SupportClickupAbortStep {
 
   client DefaultClient
-  prompt #"[ACT] A support/clickup session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nYou are a ClickUp workspace assistant executing one plan step.
+  prompt #"[RUNTIME PHASE: ACT] A support/clickup session is open; this is the first post-Open hop.\nLegal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, or Abort. Finish is not legal in this phase.\nUse Send only when the agent-authored policy requires fresh tool work. Use SearchRead or PageRead only when policy requires inspecting archived evidence.\n\nYou are a ClickUp workspace assistant executing one plan step.
 Stay focused on this step only and use prior tool evidence from this turn.
 
 Overall goal: {{ goal }}
@@ -593,22 +593,22 @@ session_context: {{ session_context }}
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (act — Send or archive read): The JSON root must be exactly one Send, SearchRead, or PageRead step. op must be exactly the string Send, SearchRead, or PageRead — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
+PHASE CONSTRAINT (act): Emit exactly one JSON value matching this narrowed return schema. Legal ops in the current schema are Send, SearchRead, PageRead, or Abort. Finish is not legal in this first post-Open phase. Never emit legacy op Read; use SearchRead with non-empty grep for filtered archive evidence, or PageRead for a contiguous archive window. Archive refs use @N, never #N. Do NOT return Open or non-session response types. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#
 
 }
 
-/// Phase: continue — SearchRead/PageRead, send again, or finish support/clickup.
+/// Phase: continue — SearchRead/PageRead, send again, finish, or abort support/clickup.
 function ChooseClickUpAction__continue__support_clickup(
   goal: string,
   step_description: string,
   operation_kind: string,
   prior_results: string?,
   session_context: SessionContext?
-) -> SupportClickupSendStep | SupportClickupSearchReadStep | SupportClickupPageReadStep | SupportClickupFinishStep {
+) -> SupportClickupSendStep | SupportClickupSearchReadStep | SupportClickupPageReadStep | SupportClickupFinishStep | SupportClickupAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/clickup result is archived.\nPriority rules:\n- If session_context.last_step_op == \"send\" and session_context.last_completion == \"DONE\", emit Finish unless tool-specific instructions explicitly require reading the archive first.\n- If session_context.last_step_op == \"send\" and session_context.last_completion == \"INTERRUPTED\", emit Abort or follow tool-specific interruption guidance.\nArchive fallback when content must be inspected:\n- Use SearchRead or PageRead with archive_ref=session_context.last_archive_ref or the visible @N.\n- A \"more lines\" indicator means paginate with SearchRead/PageRead.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work just because archive body content is not inline.\n\nYou are a ClickUp workspace assistant executing one plan step.
+  prompt #"[RUNTIME PHASE: CONTINUE] A support/clickup operation has produced a Done result.\nLegal outputs are exactly the narrowed schema below, typically Send, SearchRead, PageRead, Finish, or Abort.\nIf visible context is sufficient under the agent-authored policy, Finish. If additional archived evidence is required, use the visible @N handle with SearchRead or PageRead. If fresh or different tool work is required, Send is legal in this phase.\nA more-lines indicator means more archive content exists; it is not by itself an instruction to paginate.\n\nYou are a ClickUp workspace assistant executing one plan step.
 Stay focused on this step only and use prior tool evidence from this turn.
 
 Overall goal: {{ goal }}
@@ -638,7 +638,7 @@ session_context: {{ session_context }}
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, or Finish step. op must be Send, SearchRead, PageRead, or Finish — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+PHASE CONSTRAINT (continue): Emit exactly one JSON value matching this narrowed return schema. Legal ops in the current schema are Send, SearchRead, PageRead, Finish, or Abort. Never emit legacy op Read; use SearchRead with non-empty grep for filtered archive evidence, or PageRead for a contiguous archive window. Archive refs use @N, never #N. Do NOT return Open or non-session response types. Do NOT wrap a bare step under a parent step property unless ctx.output_format requires that wrapper.
 "#
 
 }
