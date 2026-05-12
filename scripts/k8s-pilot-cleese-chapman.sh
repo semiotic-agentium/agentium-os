@@ -274,11 +274,16 @@ post_a2a() {
   local base_url="$1" agent_package="$2" text="$3"
   local body
   body="$(jsonrpc_body "$text")"
-  curl -sf --max-time 60 \
+  # Server returns SSE (text/event-stream); convert each `data: <json>` event into
+  # one element of a JSON array so downstream jq filters can treat the response as
+  # the historical buffered JSON-RPC frame list.
+  curl -sf --max-time 120 \
     -X POST \
     -H "Content-Type: application/json" \
     -d "$body" \
-    "${base_url}/agents/${agent_package}/default/a2a"
+    "${base_url}/agents/${agent_package}/default/a2a" \
+    | sed -n 's/^data: //p' \
+    | jq -s '.'
 }
 
 extract_context_id() {
@@ -332,7 +337,7 @@ surreal_query() {
       --database registry \
       --json 2>/dev/null
   )"
-  printf '%s\n' "$raw" | jq '[{result: .[0] // []}]'
+  printf '%s\n' "$raw" | jq '[{result: (.[0] // [])}]'
 }
 
 wait_for_history() {
