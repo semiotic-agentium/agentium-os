@@ -218,7 +218,7 @@ publish_and_deploy() {
 # ---------------------------------------------------------------------------
 
 # Canonical SurrealDB namespaces defined by the agent-platform codebase.
-# Sources (as of issue #388):
+# Sources:
 #   cluster    — baml-agent-runner src/main.rs (cluster routing, placements)
 #   provenance — baml-rt-provenance src/surreal_store/schema.rs
 #   config     — baml-rt-config src/store.rs
@@ -226,7 +226,7 @@ publish_and_deploy() {
 # See deploy/helm/agentium-os/README.md#surrealdb-namespaces for the full
 # NS/DB table. Update both this list and the README when a crate adds a
 # new namespace.
-SURREAL_KNOWN_NAMESPACES=(cluster provenance config baml)
+readonly SURREAL_KNOWN_NAMESPACES=(cluster provenance config baml)
 
 # surreal_query <sql> [namespace] [database]
 # Executes a SurrealQL statement via kubectl exec on the SurrealDB pod.
@@ -249,8 +249,9 @@ SURREAL_KNOWN_NAMESPACES=(cluster provenance config baml)
 #
 # Namespace pre-check: SurrealDB v3 returns the cryptic "Couldn't write
 # to a read only transaction" error when /sql is given a namespace that
-# doesn't exist (issue #388). We guard against typos by checking $ns
-# against SURREAL_KNOWN_NAMESPACES before forwarding the query.
+# doesn't exist — the read-only SELECT transaction can't auto-DEFINE
+# NAMESPACE to satisfy resolution. We guard against typos by checking
+# $ns against SURREAL_KNOWN_NAMESPACES before forwarding the query.
 surreal_query() {
   local sql="$1"
   local ns="${2:-cluster}"
