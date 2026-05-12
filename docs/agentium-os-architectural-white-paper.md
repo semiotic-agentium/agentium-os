@@ -405,9 +405,9 @@ sequenceDiagram
 Kubernetes installs ship through a published Helm chart for Agentium OS. A representative
 cluster topology runs multiple runner replicas backed by shared SurrealDB. Runner identity and
 deployment environment are exported through OpenTelemetry resource attributes. Operator routes
-are token-authenticated in cluster mode. Conversational endpoints (`/chat`, `/dispatch`, discovery,
+are token-authenticated in cluster mode. Conversational endpoints (`/chat`, `/dispatch`, `/agents`,
 provenance reads) remain part of the public surface and are reachable from any pod on the cluster
-network; the SurrealDB ingress policy is the only per-component NetworkPolicy fence. Cross-runner
+network; the SurrealDB ingress policy is the only component-level NetworkPolicy fence. Cross-runner
 forwarding therefore depends on the cluster fabric perimeter plus operator-route token gating.
 Repository storage and runner-local deployment state are intentionally separated so artefacts
 remain immutable while runtime activation evolves. Deployments are hash-centric with restore
