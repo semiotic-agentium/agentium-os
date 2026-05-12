@@ -76,12 +76,15 @@ check-host:
         fi
     fi
     if ! command -v tsc >/dev/null 2>&1; then
-        missing+=("typescript@6 (npm install -g typescript@6)")
+        missing+=("typescript@6 (install with: npm install -g typescript@6)")
     else
         tsc_version=$(tsc --version 2>/dev/null || true)
-        tsc_major=$(printf '%s' "$tsc_version" | grep -oE '[0-9]+' | head -n1)
+        tsc_major=""
+        if [[ "$tsc_version" =~ ([0-9]+) ]]; then
+            tsc_major="${BASH_REMATCH[1]}"
+        fi
         if [[ -z "$tsc_major" || "$tsc_major" -lt 6 ]]; then
-            missing+=("typescript@6 (found '${tsc_version:-unknown}'; upgrade with npm install -g typescript@6)")
+            missing+=("typescript@6 (found '${tsc_version:-unknown}'; install with: npm install -g typescript@6)")
         else
             ok+=("tsc:       $tsc_version")
         fi
@@ -92,7 +95,7 @@ check-host:
         exit 1
     fi
     echo "Host deps OK:"
-    for line in "${ok[@]}"; do printf "  %s\n" "$line"; done
+    printf '  %s\n' "${ok[@]}"
 
 # Build release versions of builder and runner. Run once before using agent recipes.
 build-release:
