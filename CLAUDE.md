@@ -157,7 +157,7 @@ The runner HTTP API has two access tiers:
 - `POST /migrate` — database migration
 - Repository mutation endpoints
 
-The runner token is configured via the `RUNNER_TOKEN` environment variable or `runner-token` Kubernetes secret. In cluster mode, operator routes reject requests without a valid token. Cross-pod A2A forwarding uses network isolation as the trust boundary.
+The runner token is configured via the `RUNNER_TOKEN` environment variable or `runner-token` Kubernetes secret. In cluster mode, operator routes reject requests without a valid token. Public routes — including `/chat` and `/dispatch` for cross-pod A2A — are reachable from any pod on the cluster network; the runner NetworkPolicy does not fence them. SurrealDB ingress is correctly restricted to runner pods. The trust property for cross-pod A2A is therefore the cluster network perimeter plus token-gated operator routes, not a runner-level NetworkPolicy.
 
 ### Feature Flags (baml-rt facade)
 
