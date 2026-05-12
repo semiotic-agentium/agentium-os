@@ -125,6 +125,52 @@ Override any field via the `runner.livenessProbe.*` and `runner.readinessProbe.*
 
 The chart defaults each runner to `2Gi` request and `5Gi` limit. `POST /deploy` is the binding constraint: tar extract, BAML IL load, QuickJS init, and tool registration run on top of the resident fastembed ONNX model, SurrealDB client, and provenance backend, and in-cluster TypeScript compilation during publish is the heaviest single step. 5Gi is the empirically observed floor for publishing a real multi-agent set end-to-end; below that, the runner tends to be `OOMKilled` mid-deploy and clients see `connection closed before message completed` from `POST /deploy`. Raise `runner.resources.limits.memory` further for heavier workloads.
 
+## SurrealDB namespaces
+
+The chart provisions a single SurrealDB instance shared by every runner crate. Each crate owns its own namespace / database pair; **there is no single "agentium" namespace**. When debugging or running ad-hoc queries you must target the right pair:
+
+| Namespace    | Database       | Owner                  | Contents                                            |
+| ------------ | -------------- | ---------------------- | --------------------------------------------------- |
+| `cluster`    | `registry`     | `baml-agent-runner`    | `cluster_runners`, `cluster_agent_placements`       |
+| `provenance` | `store`        | `baml-rt-provenance`   | provenance graph (nodes, edges, payloads, archives) |
+| `config`     | `store`        | `baml-rt-config`       | tool configuration and secrets overview             |
+| `baml`       | `repository`   | `baml-rt-repository`   | content-addressable agent package archive           |
+| `baml`       | `runner_state` | `baml-agent-runner`    | deployment state                                    |
+
+The authoritative list lives at `scripts/e2e-k8s/lib.sh:SURREAL_KNOWN_NAMESPACES`; update it (and this table) when a crate adds a new namespace.
+
+### Querying interactively
+
+```bash
+SURREAL_POD="$(kubectl get pod -n agentium -l app.kubernetes.io/component=surrealdb -o jsonpath='{.items[0].metadata.name}')"
+
+# Cluster routing state
+kubectl exec -n agentium "$SURREAL_POD" -c surrealdb -i -- \
+  /surreal sql --endpoint http://localhost:8000 \
+    --username "$SURREAL_USER" --password "$SURREAL_PASS" \
+    --namespace cluster --database registry --json \
+  <<<"SELECT * FROM cluster_runners;"
+
+# Provenance graph density
+kubectl exec -n agentium "$SURREAL_POD" -c surrealdb -i -- \
+  /surreal sql --endpoint http://localhost:8000 \
+    --username "$SURREAL_USER" --password "$SURREAL_PASS" \
+    --namespace provenance --database store --json \
+  <<<"SELECT count() FROM prov_node GROUP ALL;"
+```
+
+For repeated use, `scripts/e2e-k8s/lib.sh` exposes a `surreal_query <sql> [ns] [db]` helper with a stable output contract and a namespace pre-check that catches typos before they hit SurrealDB.
+
+### Troubleshooting: "Couldn't write to a read only transaction"
+
+If you see this error from `/sql`:
+
+```json
+{"kind":"Internal","result":"There was a problem with the key-value store: Couldn't write to a read only transaction","status":"ERR"}
+```
+
+…the `Surreal-NS:` header (or `--namespace` flag) is targeting a namespace that doesn't exist. SurrealDB v3 opens a read-only transaction for `SELECT` and can't auto-`DEFINE NAMESPACE` to satisfy the resolution, surfacing the storage-layer error instead of a clearer `NamespaceNotFound`. Check the spelling against the table above. This was issue [#388](https://github.com/semiotic-agentium/agentium-os/issues/388).
+
 ## What this chart does not cover
 
 - **Ingress / TLS**: operator access is via `kubectl port-forward` to the API ClusterIP service. Ingress and TLS termination are out of scope for the pilot.

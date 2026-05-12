@@ -217,6 +217,17 @@ publish_and_deploy() {
 # SurrealDB queries
 # ---------------------------------------------------------------------------
 
+# Canonical SurrealDB namespaces defined by the agent-platform codebase.
+# Sources (as of issue #388):
+#   cluster    — baml-agent-runner src/main.rs (cluster routing, placements)
+#   provenance — baml-rt-provenance src/surreal_store/schema.rs
+#   config     — baml-rt-config src/store.rs
+#   baml       — baml-rt-repository + baml-agent-runner deployment_state
+# See deploy/helm/agentium-os/README.md#surrealdb-namespaces for the full
+# NS/DB table. Update both this list and the README when a crate adds a
+# new namespace.
+SURREAL_KNOWN_NAMESPACES=(cluster provenance config baml)
+
 # surreal_query <sql> [namespace] [database]
 # Executes a SurrealQL statement via kubectl exec on the SurrealDB pod.
 # Defaults: namespace=cluster, database=registry.
@@ -225,7 +236,7 @@ publish_and_deploy() {
 # Output contract (stable, machine-readable in artifact dumps):
 #   On success:
 #     [{"result": [...rows...], "_query_status": "ok"}]
-#   On failure (kubectl exec non-zero, or non-JSON output):
+#   On failure (kubectl exec non-zero, non-JSON output, or unknown NS):
 #     [{"result": [], "_query_status": "failed", "_error": "..."}]
 #     and the function returns non-zero.
 #
@@ -235,10 +246,29 @@ publish_and_deploy() {
 # working unchanged. Stderr from the helper itself stays on stderr — the
 # stdout stream is reserved for the structured payload so callers can
 # safely redirect it to a file.
+#
+# Namespace pre-check: SurrealDB v3 returns the cryptic "Couldn't write
+# to a read only transaction" error when /sql is given a namespace that
+# doesn't exist (issue #388). We guard against typos by checking $ns
+# against SURREAL_KNOWN_NAMESPACES before forwarding the query.
 surreal_query() {
   local sql="$1"
   local ns="${2:-cluster}"
   local db="${3:-registry}"
+  local ns_known=0 known_ns
+  for known_ns in "${SURREAL_KNOWN_NAMESPACES[@]}"; do
+    if [[ "$known_ns" == "$ns" ]]; then
+      ns_known=1
+      break
+    fi
+  done
+  if (( ns_known == 0 )); then
+    local known_list
+    known_list="$(IFS=,; echo "${SURREAL_KNOWN_NAMESPACES[*]}")"
+    jq -nc --arg msg "unknown namespace: '${ns}'; known: ${known_list}. See deploy/helm/agentium-os/README.md#surrealdb-namespaces." \
+      '[{result:[], _query_status:"failed", _error:$msg}]'
+    return 1
+  fi
   if [[ -z "$SURREAL_POD_0" ]]; then
     # Soft fail: callers in cleanup paths use `|| true` and expect a
     # non-zero return, not a hard shell exit. ${VAR:?} would kill the
