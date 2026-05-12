@@ -117,9 +117,9 @@ Routes are divided into three tiers:
 | `POST /repository/entries/{hash}/tags` | Add tag |
 | `DELETE /repository/entries/{hash}/tags` | Remove tag |
 
-**Cluster-internal (runner-to-runner only):**
+**Cluster-internal A2A forwarding:**
 
-Cross-runner A2A forwarding uses the same `/agents/.../a2a` routes but relies on K8s NetworkPolicy for isolation. The forwarding path is unauthenticated at the application layer; network isolation is the boundary.
+Cross-runner A2A forwarding uses the same `/agents/.../a2a` routes, normally invoked from another runner pod during routing. The forwarding path is unauthenticated at the application layer; the cluster fabric perimeter is the trust boundary, and the runner NetworkPolicy does not fence the route — the policy has a permissive any-source rule on the runner port (see [`deploy/helm/agentium-os/templates/networkpolicy.yaml`](../deploy/helm/agentium-os/templates/networkpolicy.yaml)). Operator routes on the same port are protected separately by `X-Runner-Token`.
 
 ## Tool Access
 
