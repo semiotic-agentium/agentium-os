@@ -715,11 +715,11 @@ class SupportCalculateSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Phase: select — entry decision before a tool session is bound.
+/// Phase: select — entry decision before a tool session is bound; may Open or read archive evidence.
 function ChooseCalculatoragentTool__select(
   user_message: string,
   session_context: SessionContext
-) -> SupportCalculateOpenStep {
+) -> SupportCalculateOpenStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep {
 
   client DefaultClient
   prompt #"[RUNTIME PHASE: SELECT] Entry decision before any tool session is bound.\nCandidate tools available to Open if fresh tool work is required: support/calculate.\nEmit exactly one value from this phase narrowed schema. The agent-authored prompt below owns business policy such as reuse, freshness, clarification, and whether tool work is needed.\nArchive evidence may be read only if SearchRead or PageRead appears in ctx.output_format for this hop; otherwise choose another legal output.\n\nThe user said: { user_message }
