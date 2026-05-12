@@ -149,6 +149,8 @@ The runner HTTP API has two access tiers:
 - `GET /healthz`, `GET /readyz` — health checks
 - `GET /agents` — agent discovery
 - `POST /agents/{pkg}/{inst}/chat` — A2A JSON-RPC forwarding
+- `POST /agents/{pkg}/{inst}/dispatch` — host-to-agent event delivery
+- `GET /contexts/{id}/*`, `GET /tasks/{id}/episode*`, conversation-history and provenance reads — observability over the provenance graph
 
 **Operator routes** (require `X-Runner-Token` header in cluster mode):
 - `GET /config`, `POST /config` — configuration management
@@ -157,7 +159,7 @@ The runner HTTP API has two access tiers:
 - `POST /migrate` — database migration
 - Repository mutation endpoints
 
-The runner token is configured via the `RUNNER_TOKEN` environment variable or `runner-token` Kubernetes secret. In cluster mode, operator routes reject requests without a valid token. Cross-pod A2A forwarding uses network isolation as the trust boundary.
+The runner token is configured via the `RUNNER_TOKEN` environment variable or `runner-token` Kubernetes secret; operator routes reject requests without a valid token in cluster mode. Public routes (`/chat`, `/dispatch`, `/agents`, health probes) are reachable from any pod on the cluster network — the runner NetworkPolicy does not fence them, though SurrealDB ingress is restricted to runner pods. The trust boundary for cross-pod A2A is therefore the cluster network perimeter plus operator-route token gating, not the runner NetworkPolicy.
 
 ### Feature Flags (baml-rt facade)
 
