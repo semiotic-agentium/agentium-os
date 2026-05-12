@@ -79,6 +79,43 @@ runner:
     # `kubectl set env`.
     rustLog: ""
 
+  # -- Runner startup probe (HTTP GET /healthz). While the startup probe is
+  # running, the kubelet suppresses liveness and readiness probes — only
+  # startup-probe failures can emit `Warning Unhealthy` events, and the pod
+  # cannot be restarted by liveness while still starting. The runner needs
+  # this window because the in-process remote SurrealDB connect retry can
+  # spend ~15–25 s before the HTTP listener binds when SurrealDB hasn't
+  # finished starting (see issue #381 / PR #396).
+  #
+  # NOTE: this does not eliminate `Warning Unhealthy` events during a cold
+  # install — startup-probe failures still emit them. What it does change
+  # is the semantic framing operators see in `kubectl describe pod`:
+  # "Startup probe failed (xN over Xs)" reads as a transient startup event,
+  # whereas "Readiness probe failed" reads as an ongoing problem. The
+  # underlying race (probe fires before HTTP can bind) can only be fully
+  # closed by binding the HTTP listener before the SurrealDB connect retry
+  # — a runner-code change tracked separately.
+  #
+  # 6 attempts × 10 s = 60 s budget — comfortably covers the worst-case
+  # SurrealDB retry (~23 s) plus image-load slop. `/healthz` is the right
+  # path here because the runner logs `GET /healthz always OK` the moment
+  # the HTTP server binds; once that happens, startup is past its critical
+  # section and the readiness probe (which gates on `/readyz` / event
+  # producers loading) can take over.
+  startupProbe:
+    # -- Seconds before the first probe is issued.
+    initialDelaySeconds: 0
+    # -- Probe interval. 10 s rather than something tighter so cold-start
+    # produces ~2 deduped probe failures instead of ~7, keeping the
+    # `Warning Unhealthy` event count quiet in `kubectl describe pod`.
+    periodSeconds: 10
+    # -- Per-probe HTTP timeout.
+    timeoutSeconds: 5
+    # -- Consecutive failures before the startup probe is considered
+    # failing. At that point the kubelet restarts the container, which is
+    # the correct outcome if startup genuinely cannot complete.
+    failureThreshold: 6
+
   # -- Runner liveness probe (HTTP GET /healthz).
   # Defaults are deliberately more forgiving than Kubernetes' own defaults
   # (timeoutSeconds=1, failureThreshold=3). The runner's `POST /deploy` path

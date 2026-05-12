@@ -111,6 +111,14 @@ spec:
               subPath: {{ .Values.fnox.config.key }}
               readOnly: true
             {{- end }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.runner.service.headless.port }}
+            initialDelaySeconds: {{ .Values.runner.startupProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.runner.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.runner.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.runner.startupProbe.failureThreshold }}
           livenessProbe:
             httpGet:
               path: /healthz
