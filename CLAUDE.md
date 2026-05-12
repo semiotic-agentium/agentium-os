@@ -180,6 +180,7 @@ Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 - **nextest (workspace)** — `cargo nextest run --workspace --locked --profile ci` with all feature flags enabled (`http-tools`, `llm-tests`, `memory`). Uses rust-cache with shared key `ci-nextest`. JUnit report published via `mikepenz/action-junit-report`. Secrets written to `fnox.toml` from GitHub secrets. **`regen_fixtures` is not run in CI**; generated `agents/**` and `tests/fixtures/agents/**` outputs stay committed, refreshed locally via `just regen-fixtures` / the pre-commit `regen-fixtures` hook.
 - Toolchain: stable for build/test, nightly for `cargo fmt --check` only.
 - **APT reliability:** CI uses `scripts/ci/apt-update-retry.sh` to mitigate transient Ubuntu mirror sync failures during package installation.
+- **TypeScript 6.x:** CI installs `typescript@6` globally to match the runner image and ensure consistent fixture builds. The canonical `tsconfig.json` uses `"ignoreDeprecations": "6.0"`, which TypeScript 5.x rejects.
 
 ## Testing Conventions
 
