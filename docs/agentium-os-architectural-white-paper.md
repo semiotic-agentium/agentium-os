@@ -406,9 +406,12 @@ Kubernetes installs ship through a published Helm chart for Agentium OS. A repre
 cluster topology runs multiple runner replicas backed by shared SurrealDB. Runner identity and
 deployment environment are exported through OpenTelemetry resource attributes. Operator routes
 are token-authenticated in cluster mode while conversational endpoints remain part of the public
-surface behind network isolation policies. Repository storage and runner-local deployment state
-are intentionally separated so artefacts remain immutable while runtime activation evolves.
-Deployments are hash-centric with restore semantics tied to recorded deployment state.
+surface and are reachable on the cluster network. Network isolation policies fence the SurrealDB
+ingress to runner pods only; the runner ingress is intentionally cluster-internal, with trust
+resting on the cluster fabric perimeter plus operator-route token gating. Repository storage and
+runner-local deployment state are intentionally separated so artefacts remain immutable while
+runtime activation evolves. Deployments are hash-centric with restore semantics tied to recorded
+deployment state.
 
 The router is the durable conversation edge. Runtime work behind that edge is message-oriented.
 Rebalancing and rolling agent updates preserve client-attached conversations. Operational practice
@@ -428,8 +431,10 @@ the **agent runtime** posture predictable for operators.
   planning mutations, executes tool-session finite-state transitions, and performs **host-mediated**
   LLM, tool, A2A, task, message, and artefact actions.
 - **Public conversational surfaces versus operator APIs.** End-user A2A ingress is distinct from
-  token-authenticated operator routes in cluster mode; network isolation policies surround what is
-  exposed where.
+  token-authenticated operator routes in cluster mode. The public surface is reachable on the
+  cluster network without per-route NetworkPolicy; network isolation is applied at the SurrealDB
+  ingress, fencing the persistence tier to runner pods only. The cross-pod forwarding trust
+  boundary is therefore the cluster fabric perimeter plus token-gated operator routes.
 - **Runner cluster versus external networks.** Cross-runner forwarding is validated and intended
   for isolated cluster fabrics; control-plane targets carry SSRF protections.
 - **Guest tool adapters versus host policy.** External tools may run as subprocesses or inside
