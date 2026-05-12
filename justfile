@@ -52,6 +52,35 @@ download-models:
     set +a
     cargo run --release -p baml-rt-embedding --bin download_models
 
+# Verify the local host has the system deps required to build agents.
+# On non-Linux hosts, skips Linux-only checks (libdbus / libcap-ng);
+# tsc is required everywhere. Exits non-zero with a clear message if any
+# dep is missing. Run this before build-release on a fresh dev host.
+check-host:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    missing=()
+    if [[ "$(uname)" == "Linux" ]]; then
+        pkg-config --exists dbus-1 2>/dev/null \
+            || missing+=("libdbus-1-dev (sudo apt install libdbus-1-dev)")
+        find /usr/lib /usr/lib64 -maxdepth 2 -name "libcap-ng.so" 2>/dev/null \
+            | grep -q . \
+            || missing+=("libcap-ng-dev (sudo apt install libcap-ng-dev)")
+    fi
+    command -v tsc >/dev/null 2>&1 \
+        || missing+=("typescript@6 (npm install -g typescript@6)")
+    if [ "${#missing[@]}" -gt 0 ]; then
+        echo "Missing host deps:" >&2
+        for m in "${missing[@]}"; do echo "  - $m" >&2; done
+        exit 1
+    fi
+    echo "Host deps OK:"
+    if [[ "$(uname)" == "Linux" ]]; then
+        printf "  dbus-1:    %s\n" "$(pkg-config --modversion dbus-1)"
+        printf "  libcap-ng: present\n"
+    fi
+    printf "  tsc:       %s\n" "$(tsc --version)"
+
 # Build release versions of builder and runner. Run once before using agent recipes.
 build-release:
     #!/usr/bin/env bash
