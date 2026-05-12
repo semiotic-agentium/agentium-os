@@ -143,6 +143,8 @@ preflight() {
     exit 1
   fi
 
+  preflight_container_runtime
+
   # The values file is selected by RUNNER_IMAGE_STRATEGY (resolved later in
   # ensure_runner_image_available). Surface a missing file here rather than
   # via a noisy helm install.
