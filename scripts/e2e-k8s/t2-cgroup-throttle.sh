@@ -328,18 +328,15 @@ assert_invariants() {
   fi
 
   # ── Invariant 4: runner-0 has not restarted before T2 finishes ─────────
-  # Pre-#396 the runner exited 1 on first boot when SurrealDB's pod wasn't
-  # yet reachable; CPU throttle stretched the wall-clock between attempts
-  # and amplified the race. The kubelet's restart loop covered it, so
-  # I1/I2/I3 (which sample *after* the pod is Ready) all passed even
-  # though the first-boot path was failing. I4 asserts that path is clean.
   local restart_count
-  restart_count=$(kubectl -n "$NAMESPACE" get pod "$RUNNER_POD_0" \
-    -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || echo "?")
-  if [[ "$restart_count" == "0" ]]; then
-    log_pass "I4: $RUNNER_POD_0 restartCount == 0 (no boot-time exit-1)"
+  if ! restart_count=$(kubectl --request-timeout=10s -n "$NAMESPACE" \
+      get pod "$RUNNER_POD_0" \
+      -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>&1); then
+    log_fail "I4: kubectl get pod failed; cannot evaluate restartCount (test-infrastructure issue, not a runner regression): $restart_count"
+  elif [[ "$restart_count" == "0" ]]; then
+    log_pass "I4: $RUNNER_POD_0 restartCount == 0 (no boot-time restart)"
   else
-    log_fail "I4: $RUNNER_POD_0 restartCount == $restart_count; expected 0. Boot-time exit-1 likely regressed — capture 'kubectl -n $NAMESPACE logs $RUNNER_POD_0 --previous' to identify the failing path. See issue #369 and PR #396 for the original mechanism."
+    log_fail "I4: $RUNNER_POD_0 restartCount == $restart_count; expected 0. Capture 'kubectl -n $NAMESPACE logs $RUNNER_POD_0 --previous' for the failing-boot log."
   fi
 }
 
