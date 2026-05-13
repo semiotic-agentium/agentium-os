@@ -653,6 +653,7 @@ fn build_clickup_tool() -> Result<Arc<dyn ToolHandler>> {
     name = "support/clickup",
     description = "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks.",
     tags = ["support", "clickup"],
+    access = Write,
     secrets = [
         { name = "CLICKUP_API_KEY", description = "ClickUp personal API token (pk_...)", reason = "Required to authenticate with the ClickUp v2 API" }
     ],

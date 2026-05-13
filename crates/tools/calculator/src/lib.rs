@@ -70,6 +70,7 @@ pub struct CalculatorTool;
     name = "support/calculate",
     description = "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division.",
     tags = ["support", "calculate"],
+    access = Read,
     baml_types = [Expression, MathOperation, CalculatorInput, CalculatorOutput],
 )]
 #[async_trait]
