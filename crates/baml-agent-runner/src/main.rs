@@ -367,10 +367,26 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             .clone()
             .unwrap_or_else(|| format!("http://{serve_addr}"));
         validate_cluster_endpoint(&runner_http_endpoint)?;
-        let identity = cluster::RunnerIdentity::new(
-            runner_http_endpoint,
-            baml_rt_observability::service_instance_id().to_string(),
-        );
+        let service_instance_id = baml_rt_observability::service_instance_id().to_string();
+        let identity = match baml_rt_observability::pod_identity() {
+            Some((namespace, pod_name)) => {
+                tracing::info!(
+                    namespace = %namespace,
+                    pod_name = %pod_name,
+                    "deriving runner_id from (POD_NAMESPACE, POD_NAME)"
+                );
+                cluster::RunnerIdentity::derived(
+                    runner_http_endpoint,
+                    service_instance_id,
+                    &namespace,
+                    &pod_name,
+                )
+            }
+            None => {
+                tracing::warn!("POD_NAMESPACE/POD_NAME unset; runner_id is random per process");
+                cluster::RunnerIdentity::new(runner_http_endpoint, service_instance_id)
+            }
+        };
         let cluster_db = std::sync::Arc::new(cluster_db);
         let mgr = Arc::new(
             cluster::ClusterManager::new(cluster_db.clone(), identity, config.placement_ttl_ms)
