@@ -19,9 +19,8 @@
 //! unpolluted (§5.3 "logs never multiplexed with control").
 //!
 //! Only compiled under the `sandbox-provider` feature — keeps the
-//! microsandbox crate out of default builds.
-
-#![cfg(feature = "sandbox-provider")]
+//! microsandbox crate out of default builds. The gate lives on the
+//! `pub mod exec_adapter;` declaration in `mod.rs`.
 
 use microsandbox::{ExecEvent, ExecHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
