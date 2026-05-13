@@ -49,6 +49,22 @@ pub fn derive_service_instance_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// `(POD_NAMESPACE, pod_name)` from the K8s downward API, where `pod_name`
+/// resolves to `POD_NAME` then `HOSTNAME`. Empty / whitespace-only values are
+/// treated as absent, matching the semantics of [`derive_service_instance_id`]
+/// so the two derivations cannot disagree on what counts as a valid pod
+/// identifier. Returns `None` outside K8s.
+pub fn pod_identity() -> Option<(String, String)> {
+    let namespace = std::env::var("POD_NAMESPACE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+    let pod_name = std::env::var("POD_NAME")
+        .ok()
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .filter(|v| !v.trim().is_empty())?;
+    Some((namespace, pod_name))
+}
+
 /// Canonical `service.instance.id` for this process. Lazily initialized on first call and
 /// cached for the process lifetime so repeated reads never drift.
 pub fn service_instance_id() -> &'static str {
@@ -170,5 +186,47 @@ mod tests {
         env.set("POD_NAME", Some("pod-fb"));
         env.set("HOSTNAME", None);
         assert_eq!(derive_service_instance_id(), "pod-fb");
+    }
+
+    #[test]
+    fn pod_identity_returns_namespace_and_pod_name_when_both_set() {
+        let mut env = EnvScope::new();
+        env.set("POD_NAMESPACE", Some("agentium"));
+        env.set("POD_NAME", Some("runner-0"));
+        env.set("HOSTNAME", Some("hostname-ignored"));
+        assert_eq!(
+            pod_identity(),
+            Some(("agentium".to_string(), "runner-0".to_string()))
+        );
+    }
+
+    #[test]
+    fn pod_identity_falls_back_to_hostname_for_pod_name() {
+        let mut env = EnvScope::new();
+        env.set("POD_NAMESPACE", Some("agentium"));
+        env.set("POD_NAME", None);
+        env.set("HOSTNAME", Some("ci-runner"));
+        assert_eq!(
+            pod_identity(),
+            Some(("agentium".to_string(), "ci-runner".to_string()))
+        );
+    }
+
+    #[test]
+    fn pod_identity_returns_none_without_namespace() {
+        let mut env = EnvScope::new();
+        env.set("POD_NAMESPACE", None);
+        env.set("POD_NAME", Some("runner-0"));
+        env.set("HOSTNAME", Some("ci-runner"));
+        assert_eq!(pod_identity(), None);
+    }
+
+    #[test]
+    fn pod_identity_treats_whitespace_as_absent() {
+        let mut env = EnvScope::new();
+        env.set("POD_NAMESPACE", Some("   "));
+        env.set("POD_NAME", Some("runner-0"));
+        env.set("HOSTNAME", None);
+        assert_eq!(pod_identity(), None);
     }
 }

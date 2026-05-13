@@ -44,6 +44,27 @@ fn classify_surreal_error(err: &surrealdb::Error) -> HeartbeatErrorKind {
 pub(crate) struct RunnerId(String);
 
 impl RunnerId {
+    /// UUID v5 namespace for the `cluster_runners.runner_id` domain. Derived
+    /// from `NAMESPACE_OID` and the literal byte string
+    /// `agentium.cluster.runner.id` so the seed is reproducible from source
+    /// and anyone can audit it with `Uuid::new_v5(&NAMESPACE_OID, b"…")`.
+    /// Editing this seed re-keys every runner row across the cluster.
+    fn namespace() -> &'static uuid::Uuid {
+        static NS: std::sync::OnceLock<uuid::Uuid> = std::sync::OnceLock::new();
+        NS.get_or_init(|| {
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"agentium.cluster.runner.id")
+        })
+    }
+
+    /// Deterministic id derived from `(namespace, pod_name)` so a pod
+    /// restart re-UPSERTs the same `cluster_runners` row.
+    pub(crate) fn derive(namespace: &str, pod_name: &str) -> Self {
+        let name = format!("{namespace}/{pod_name}");
+        Self(uuid::Uuid::new_v5(Self::namespace(), name.as_bytes()).to_string())
+    }
+
+    /// Random fallback for non-K8s deployments where `(namespace, pod_name)`
+    /// is not a stable identity.
     pub(crate) fn new_random() -> Self {
         Self(uuid::Uuid::new_v4().to_string())
     }
@@ -80,6 +101,19 @@ pub(crate) struct RunnerIdentity {
 }
 
 impl RunnerIdentity {
+    pub(crate) fn derived(
+        endpoint: String,
+        service_instance_id: String,
+        namespace: &str,
+        pod_name: &str,
+    ) -> Self {
+        Self {
+            runner_id: RunnerId::derive(namespace, pod_name),
+            endpoint,
+            service_instance_id,
+        }
+    }
+
     pub(crate) fn new(endpoint: String, service_instance_id: String) -> Self {
         Self {
             runner_id: RunnerId::new_random(),
@@ -278,7 +312,35 @@ impl ClusterManager {
                     "cluster: schema init statement: {e}"
                 )))
             })?;
+        self.sweep_stale_runners().await;
         Ok(())
+    }
+
+    /// Sweep `cluster_runners` rows whose heartbeat exceeded the
+    /// freshness threshold. Catches the upgrade-time leftover from boots
+    /// that wrote a random-per-process `runner_id` (now replaced by the
+    /// deterministic derivation) and any rare scale-down event. The
+    /// predicate matches the resolver's freshness join, so a row that
+    /// would already be filtered out of routing is removed from storage.
+    /// A sweep failure is non-fatal — routing remains correct regardless.
+    async fn sweep_stale_runners(&self) {
+        let ttl = self.placement_ttl_ms as i64;
+        let result = self
+            .db
+            .query(
+                "DELETE cluster_runners \
+                 WHERE last_heartbeat_ms < (time::millis(time::now()) - $ttl)",
+            )
+            .bind(("ttl", ttl))
+            .await
+            .and_then(|r| r.check());
+        match result {
+            Ok(_) => tracing::debug!("swept stale cluster_runners rows during boot"),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "failed to sweep stale cluster_runners rows; routing still filters via freshness join"
+            ),
+        }
     }
 
     async fn register_runner(&self) -> Result<(), BamlRtError> {
@@ -488,6 +550,110 @@ mod tests {
             format!("http://runner-{n}:18080"),
             format!("runner-{n}-sid"),
         )
+    }
+
+    fn derived_identity(n: u8) -> RunnerIdentity {
+        RunnerIdentity::derived(
+            format!("http://runner-{n}:18080"),
+            format!("runner-{n}-sid"),
+            "agentium",
+            &format!("agentium-agentium-os-runner-{n}"),
+        )
+    }
+
+    #[test]
+    fn derive_is_deterministic_for_same_inputs() {
+        let a = RunnerId::derive("agentium", "agentium-agentium-os-runner-0");
+        let b = RunnerId::derive("agentium", "agentium-agentium-os-runner-0");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn derive_distinguishes_pod_name() {
+        let a = RunnerId::derive("agentium", "agentium-agentium-os-runner-0");
+        let b = RunnerId::derive("agentium", "agentium-agentium-os-runner-1");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn derive_distinguishes_namespace() {
+        let a = RunnerId::derive("agentium", "runner-0");
+        let b = RunnerId::derive("other-tenant", "runner-0");
+        assert_ne!(a, b);
+    }
+
+    /// Pre-PR-B random-UUID rows must be swept at boot. Pre-installs a
+    /// stale row whose `last_heartbeat_ms` is older than `placement_ttl_ms`,
+    /// then boots `ClusterManager` and asserts only the freshly-registered
+    /// derived-UUID row remains.
+    #[tokio::test]
+    async fn init_schema_sweeps_stale_random_uuid_rows() {
+        let db = test_db().await;
+
+        // Stale row from a hypothetical earlier process: random UUID,
+        // heartbeat older than the test TTL.
+        db.query(
+            "CREATE cluster_runners SET \
+               runner_id = '00000000-0000-4000-8000-000000000000', \
+               pod_name = 'agentium-agentium-os-runner-0', \
+               endpoint = 'http://stale:18080', \
+               last_heartbeat_ms = 0",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        let _mgr = ClusterManager::new(db.clone(), derived_identity(0), TEST_TTL_MS)
+            .await
+            .unwrap();
+
+        let rows: Vec<serde_json::Value> = db
+            .query("SELECT runner_id FROM cluster_runners")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let runner_ids: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| r.get("runner_id").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(
+            runner_ids.len(),
+            1,
+            "stale row must be swept; got {runner_ids:?}"
+        );
+        assert_ne!(
+            runner_ids[0], "00000000-0000-4000-8000-000000000000",
+            "the surviving row must be the freshly-registered derived one"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_re_upserts_same_cluster_runner_row() {
+        let db = test_db().await;
+
+        let _first = ClusterManager::new(db.clone(), derived_identity(0), TEST_TTL_MS)
+            .await
+            .unwrap();
+        let _second = ClusterManager::new(db.clone(), derived_identity(0), TEST_TTL_MS)
+            .await
+            .unwrap();
+        let _third = ClusterManager::new(db.clone(), derived_identity(0), TEST_TTL_MS)
+            .await
+            .unwrap();
+
+        let rows: Vec<serde_json::Value> = db
+            .query("SELECT * FROM cluster_runners")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "restart simulations must collapse onto a single cluster_runners row; got {rows:?}"
+        );
     }
 
     #[tokio::test]
