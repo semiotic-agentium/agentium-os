@@ -135,8 +135,10 @@ pub struct LlmClientConfig {
 }
 
 impl LlmClientConfig {
-    /// Sensible default for UI and API when no config is stored: OpenRouter (OpenAPI-compatible)
-    /// plus Grok (x-ai/grok-4.1-fast via OpenRouter). Default client is "OpenRouter".
+    /// Sensible default for UI and API when no config is stored: OpenRouter
+    /// (OpenAPI-compatible) plus a second OpenRouter client whose model is the
+    /// env-controlled test model (see [`crate::test_model_default`] and issue
+    /// #429). Default client is "OpenRouter".
     pub fn sensible_default() -> Self {
         let mut clients = HashMap::new();
         clients.insert(
@@ -154,12 +156,12 @@ impl LlmClientConfig {
             },
         );
         clients.insert(
-            "Grok".to_string(),
+            "TestModel".to_string(),
             ClientDef {
-                name: "Grok".to_string(),
+                name: "TestModel".to_string(),
                 provider: LlmProvider::Openrouter,
                 options: [
-                    ("model".to_string(), "x-ai/grok-4.1-fast".to_string()),
+                    ("model".to_string(), crate::test_model_default()),
                     ("api_key".to_string(), "env.OPENROUTER_API_KEY".to_string()),
                 ]
                 .into_iter()

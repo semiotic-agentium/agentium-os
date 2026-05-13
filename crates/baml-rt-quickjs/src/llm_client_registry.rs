@@ -228,8 +228,18 @@ pub fn build_llm_client_registry(
         // temperature/top_p) from the IR. Fall back to provider defaults only when the user
         // omitted the field. `fill_missing_env_vars=true` lets unresolved env refs (e.g. the
         // api_key env var, which we overlay below) become placeholders instead of aborting.
-        let empty_env: HashMap<String, String> = HashMap::new();
-        let eval_ctx = EvaluationContext::new(&empty_env, true);
+        //
+        // Seed the env with `BAML_TEST_MODEL` so `model env.BAML_TEST_MODEL` in BAML test
+        // fixtures resolves to a concrete model id rather than the `$BAML_TEST_MODEL`
+        // placeholder string — see `baml_rt_llm_config::test_model_default` and issue
+        // #429. The api_key env var is intentionally left out of this map so it remains
+        // a placeholder that the api_key overlay below replaces.
+        let mut resolve_env: HashMap<String, String> = HashMap::new();
+        resolve_env.insert(
+            "BAML_TEST_MODEL".to_string(),
+            baml_rt_llm_config::test_model_default(),
+        );
+        let eval_ctx = EvaluationContext::new(&resolve_env, true);
         let user_parts = match client.options().resolve(&provider, &eval_ctx) {
             Ok(resolved) => resolved_property_to_parts(&resolved),
             Err(e) => {
@@ -285,7 +295,7 @@ fn build_client_options(
                 _ => None,
             })
         })
-        .unwrap_or_else(|| default_model_for_provider(provider).to_string());
+        .unwrap_or_else(|| default_model_for_provider(provider));
     options.insert("model".to_string(), BamlValue::String(model));
 
     options.insert("api_key".to_string(), BamlValue::String(api_key));
@@ -412,25 +422,28 @@ fn json_to_baml_value(v: serde_json::Value) -> BamlValue {
     }
 }
 
-fn default_model_for_provider(provider: &ClientProvider) -> &'static str {
+fn default_model_for_provider(provider: &ClientProvider) -> String {
     use internal_llm_client::OpenAIClientProviderVariant;
     match provider {
         ClientProvider::OpenAI(variant) => match variant {
-            // OpenRouter and openai-generic both route through OpenRouter — use grok.
+            // OpenRouter and openai-generic both route through OpenRouter — pick
+            // the env-controlled test model so CI can swap it under provider /
+            // account policy changes (see baml_rt_llm_config::test_model and
+            // issue #429).
             OpenAIClientProviderVariant::OpenRouter | OpenAIClientProviderVariant::Generic => {
-                "x-ai/grok-4.1-fast"
+                baml_rt_llm_config::test_model_default()
             }
             // Native OpenAI base, Azure, Responses, Ollama stay on the OpenAI model family.
             OpenAIClientProviderVariant::Base
             | OpenAIClientProviderVariant::Responses
             | OpenAIClientProviderVariant::Azure
-            | OpenAIClientProviderVariant::Ollama => "gpt-4o-mini",
+            | OpenAIClientProviderVariant::Ollama => "gpt-4o-mini".to_string(),
         },
-        ClientProvider::Anthropic => "claude-3-5-sonnet-20241022",
-        ClientProvider::GoogleAi => "gemini-2.0-flash",
+        ClientProvider::Anthropic => "claude-3-5-sonnet-20241022".to_string(),
+        ClientProvider::GoogleAi => "gemini-2.0-flash".to_string(),
         // Vertex/AWS are skipped before this function is called; value is unreachable.
         ClientProvider::Vertex | ClientProvider::AwsBedrock | ClientProvider::Strategy(_) => {
-            "gpt-4o-mini"
+            "gpt-4o-mini".to_string()
         }
     }
 }
@@ -578,7 +591,7 @@ mod tests {
 
         let options = build_client_options(&provider, "sk-test".to_string(), user_parts);
 
-        assert_string_option(&options, "model", default_model_for_provider(&provider));
+        assert_string_option(&options, "model", &default_model_for_provider(&provider));
     }
 
     /// When user omits `base_url` for an OpenRouter/openai-generic client, the default

@@ -363,9 +363,12 @@ async fn test_blocking_interception_integration() {
     let baml_manager = setup_baml_runtime_manager_default();
 
     // Register blocking interceptor first so it can block; stub runs after (substitutes if not blocked).
-    // Block model containing "grok" so SimpleGreeting (x-ai/grok-4.1-fast) gets blocked.
+    // Block on the client name (not the model id) so this stays decoupled from
+    // the env-controlled BAML_TEST_MODEL — the interceptor matches either
+    // `context.model` or `context.client`, and SimpleGreeting always points at
+    // `client OpenRouterGPT` in `baml_src/simple_prompt.baml`.
     baml_manager
-        .register_llm_interceptor(BlockingInterceptor::new(vec!["grok".to_string()]))
+        .register_llm_interceptor(BlockingInterceptor::new(vec!["OpenRouterGPT".to_string()]))
         .await;
     baml_manager
         .register_llm_interceptor(StubSimpleGreetingInterceptor)
@@ -388,7 +391,8 @@ async fn test_blocking_interception_integration() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // If blocking worked, we should get an error containing "blocked"
-    // The blocking interceptor checks if model contains "grok"; SimpleGreeting uses x-ai/grok-4.1-fast.
+    // The blocking interceptor matches the client name `OpenRouterGPT` declared
+    // by SimpleGreeting in `baml_src/simple_prompt.baml`.
     match result {
         Ok(_) => {
             // If we get here, blocking didn't work - the model pattern might not have matched

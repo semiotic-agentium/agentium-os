@@ -26,6 +26,10 @@ env:
   OTEL_SDK_DISABLED: "true"
   OTEL_TRACES_EXPORTER: "none"
   OTEL_METRICS_EXPORTER: "none"
+  # Model id the llm-tests lane targets. Source: `vars.BAML_TEST_MODEL` repo
+  # variable; fallback to the historical literal so behaviour matches main
+  # when the variable is unset. See issue #429.
+  BAML_TEST_MODEL: ${{ vars.BAML_TEST_MODEL || 'x-ai/grok-4.1-fast' }}
   OTEL_LOGS_EXPORTER: "none"
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
 
@@ -211,17 +215,24 @@ jobs:
       - name: Write fnox secrets
         # Generates fnox.toml with explicit `default` values from CI secret variables.
         # FnoxFileSecretResolver reads values directly from the file — no env var fallback.
+        # BAML_TEST_MODEL is the env-controlled test-model knob from issue #429 —
+        # source: `vars.BAML_TEST_MODEL` repo variable, fallback `x-ai/grok-4.1-fast`.
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           CLICKUP_API_KEY: ${{ secrets.CLICKUP_API_KEY }}
           NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
+          BAML_TEST_MODEL: ${{ vars.BAML_TEST_MODEL || 'x-ai/grok-4.1-fast' }}
         run: |
           cat > fnox.toml << EOF
           [secrets.OPENROUTER_API_KEY]
           description = "OpenRouter API key"
           default = "$OPENROUTER_API_KEY"
+
+          [secrets.BAML_TEST_MODEL]
+          description = "Test model id (BAML env.BAML_TEST_MODEL)"
+          default = "$BAML_TEST_MODEL"
 
           [secrets.CLICKUP_API_KEY]
           description = "ClickUp personal API token"
