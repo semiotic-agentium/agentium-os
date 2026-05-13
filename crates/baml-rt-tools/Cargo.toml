@@ -50,3 +50,4 @@ sandbox-e2e-kvm = ["sandbox-provider"]
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
 baml-tools-calculator = { path = "../tools/calculator" }
+tempfile = { workspace = true }

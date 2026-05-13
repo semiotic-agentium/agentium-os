@@ -1,0 +1,25 @@
+[package]
+name = "baml-tools-mcp"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "MCP client and importer for the BAML runtime"
+
+[dependencies]
+baml-rt-core = { path = "../../baml-rt-core" }
+baml-rt-tools = { path = "../../baml-rt-tools" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_jcs = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+tempfile = { workspace = true }
+
+[[bin]]
+name = "fake-mcp-stdio"
+path = "src/bin/fake_mcp_stdio.rs"
+
+[dev-dependencies]

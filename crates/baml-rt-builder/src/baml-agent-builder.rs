@@ -118,6 +118,20 @@ enum Commands {
         #[arg(long)]
         runner_token: Option<String>,
     },
+    /// Import and approve an MCP server's tool schemas into the local snapshot cache.
+    McpEnable {
+        /// Server id to enable (must match an entry under `mcpServers` in the config file).
+        server_id: String,
+        /// Path to mcp-servers.json (default: $HOME/.agent-platform/mcp-servers.json).
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Snapshot cache root (default: $HOME/.agent-platform/mcp).
+        #[arg(long)]
+        cache_root: Option<PathBuf>,
+        /// Skip the interactive approval prompt.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Bootstrap a new BAML agent package (interactive TUI, or non-interactive with --name/--description)
     Bootstrap {
         /// Directory to create the package in (default: current directory)
@@ -181,6 +195,14 @@ async fn main() -> Result<()> {
                 runner_token.as_deref(),
             )
             .await?;
+        }
+        Commands::McpEnable {
+            server_id,
+            config,
+            cache_root,
+            yes,
+        } => {
+            mcp_enable(&server_id, config.as_deref(), cache_root.as_deref(), yes).await?;
         }
         Commands::Bootstrap {
             path,
@@ -703,6 +725,142 @@ async fn load_agent_package(
         agent_id: temp_agent_id,
         js_bridge: Arc::new(Mutex::new(js_bridge)),
     })
+}
+
+async fn mcp_enable(
+    server_id: &str,
+    config_path: Option<&std::path::Path>,
+    cache_root: Option<&std::path::Path>,
+    skip_prompt: bool,
+) -> Result<()> {
+    use anyhow::bail;
+    use baml_rt_tools::{
+        mcp_cache::{default_cache_root, write_snapshot},
+        mcp_config::McpServersFile,
+        mcp_snapshot::McpApprovalState,
+    };
+    use baml_tools_mcp::importer::{EnvSecretResolver, ImportOptions, Importer};
+
+    let config_path: PathBuf = match config_path {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --config explicitly"))?;
+            home.join(".agent-platform").join("mcp-servers.json")
+        }
+    };
+    let cache_root: PathBuf = match cache_root {
+        Some(p) => p.to_path_buf(),
+        None => default_cache_root()
+            .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --cache-root explicitly"))?,
+    };
+
+    let raw = fs::read_to_string(&config_path)
+        .with_context(|| format!("reading mcp-servers config at {}", config_path.display()))?;
+    let parsed = McpServersFile::parse(&raw)
+        .with_context(|| format!("parsing {}", config_path.display()))?;
+    let Some(server_config) = parsed.servers.get(server_id) else {
+        bail!(
+            "server `{server_id}` not found in {}; available: {:?}",
+            config_path.display(),
+            parsed.servers.keys().collect::<Vec<_>>()
+        );
+    };
+
+    println!(
+        "Importing MCP server `{server_id}` from {}",
+        config_path.display()
+    );
+    let importer = Importer::new(&EnvSecretResolver);
+    let mut snapshot = importer
+        .import(
+            server_config,
+            ImportOptions {
+                server_id: server_id.to_string(),
+                sandbox_profile: None,
+            },
+        )
+        .await
+        .with_context(|| format!("importing MCP server `{server_id}`"))?;
+
+    println!();
+    println!(
+        "Server: {server_id}\n  protocol_version: {}\n  server_config_digest: {}",
+        snapshot.protocol_version, snapshot.server_config_digest,
+    );
+    if let Some(info) = &snapshot.server_info {
+        println!("  server_info: {}", info);
+    }
+    if !snapshot.secret_refs.is_empty() {
+        println!(
+            "  secret_refs: {}",
+            snapshot
+                .secret_refs
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!("\nTools ({}):", snapshot.tools.len());
+    for tool in &snapshot.tools {
+        println!(
+            "  - {}\n      mcp_name: {}\n      access: {}\n      schema_digest: {}\n      output_mode: {:?}{}",
+            tool.platform_tool_name,
+            tool.mcp_tool_name,
+            tool.access_level,
+            tool.input_schema_digest,
+            tool.output_mode,
+            tool.opaque_fallback_reason
+                .as_deref()
+                .map(|r| format!("\n      opaque_fallback: {r}"))
+                .unwrap_or_default(),
+        );
+    }
+    println!();
+
+    let approve = if skip_prompt {
+        true
+    } else {
+        let answer = inquire::Confirm::new("Approve this server and all tools?")
+            .with_default(false)
+            .prompt()
+            .unwrap_or(false);
+        answer
+    };
+
+    if !approve {
+        println!("Aborted. No snapshot written.");
+        return Ok(());
+    }
+
+    let owner = std::env::var("MCP_APPROVER_EMAIL")
+        .ok()
+        .or_else(|| std::env::var("GIT_AUTHOR_EMAIL").ok());
+    let reviewed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| format!("epoch:{}", d.as_secs()))
+        .ok();
+    snapshot.approval.state = McpApprovalState::Approved;
+    snapshot.approval.owner = owner.clone();
+    snapshot.approval.reviewed_at = reviewed_at.clone();
+    for tool in &mut snapshot.tools {
+        tool.approval.state = McpApprovalState::Approved;
+        tool.approval.owner = owner.clone();
+        tool.approval.reviewed_at = reviewed_at.clone();
+    }
+
+    fs::create_dir_all(&cache_root)
+        .with_context(|| format!("creating cache root at {}", cache_root.display()))?;
+    write_snapshot(&cache_root, &snapshot)
+        .with_context(|| format!("writing snapshot under {}", cache_root.display()))?;
+    println!(
+        "Approved and wrote {} tool(s) under {}",
+        snapshot.tools.len(),
+        cache_root.display()
+    );
+    Ok(())
 }
 
 #[cfg(test)]

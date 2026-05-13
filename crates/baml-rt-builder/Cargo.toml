@@ -17,6 +17,7 @@ baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 baml-rt-tools-claude = { path = "../tools/claude" }
 baml-tools-system = { path = "../tools/system" }
 baml-tools-calculator = { path = "../tools/calculator" }
+baml-tools-mcp = { path = "../tools/mcp" }
 baml-tools-clickup = { path = "../tools/clickup", optional = true }
 baml-tools-memory = { path = "../tools/memory", optional = true }
 baml-tools-notion = { path = "../tools/notion", optional = true }

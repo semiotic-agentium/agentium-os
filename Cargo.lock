@@ -1736,6 +1736,7 @@ dependencies = [
  "baml-runtime",
  "baml-tools-calculator",
  "baml-tools-clickup",
+ "baml-tools-mcp",
  "baml-tools-memory",
  "baml-tools-notion",
  "baml-tools-security-eval",
@@ -2043,6 +2044,7 @@ dependencies = [
  "serde_jcs",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "test-support",
  "thiserror 2.0.18",
  "tokio",
@@ -2292,6 +2294,22 @@ dependencies = [
  "inventory",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "baml-tools-mcp"
+version = "0.1.0"
+dependencies = [
+ "baml-rt-core",
+ "baml-rt-tools",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
