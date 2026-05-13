@@ -112,6 +112,8 @@ jobs:
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Install nightly rustfmt
         uses: dtolnay/rust-toolchain@nightly
@@ -238,6 +240,24 @@ jobs:
           default = "$SLACK_USER_TOKEN"
           EOF
 
+      - name: Clippy (workspace)
+        run: |
+          # Lints the same artifact graph the nextest step below compiles, so
+          # the workspace `target/` warmed by this step is reused — net cost
+          # is the rmeta diff, not a second cold workspace build.
+          # Feature set must stay aligned with the nextest step's --features
+          # list; `--all-features` is explicitly forbidden (see comment there)
+          # because `sandbox-e2e-kvm` must only compile in the dedicated KVM
+          # workflow. Catches workspace-clippy regressions like #419 on every
+          # PR — the bar `CLAUDE.md` and the pre-commit hook prescribe.
+          cargo clippy --workspace --all-targets --locked \
+            --exclude baml-sandbox-adapter --exclude baml-sandbox-protocol --exclude sandbox-echo-adapter \
+            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests \
+            -- -D warnings
+        env:
+          RUSTUP_TOOLCHAIN: stable
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+
       - name: Run nextest (workspace)
         run: |
           # Single workspace pass with the union feature set (LLM + non-LLM).
@@ -286,6 +306,8 @@ jobs:
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
