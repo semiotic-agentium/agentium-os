@@ -631,6 +631,70 @@ mod tests {
         );
     }
 
+    /// Booting against a cluster that already carries the pre-migration
+    /// schema (narrower UNIQUE index plus rows keyed by `{pkg}/{inst}`)
+    /// must succeed, install the wider index, sweep the legacy rows, and
+    /// allow new placements without a uniqueness collision.
+    #[tokio::test]
+    async fn init_schema_migrates_pre_existing_narrow_index_and_rows() {
+        let db = test_db().await;
+
+        db.query(
+            "DEFINE TABLE cluster_agent_placements SCHEMALESS;\
+             DEFINE INDEX idx_placement_agent ON cluster_agent_placements \
+               FIELDS agent_package, agent_instance_id UNIQUE;\
+             CREATE cluster_agent_placements:`legacy-agent/default` SET \
+               agent_package = 'legacy-agent', \
+               agent_instance_id = 'default', \
+               runner_id = 'dead-uuid-from-a-prior-process', \
+               runner_endpoint = 'http://gone:18080', \
+               status = 'active'",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        let mgr = ClusterManager::new(db.clone(), identity(1), TEST_TTL_MS)
+            .await
+            .expect("boot must succeed against pre-migration state");
+
+        let legacy_rows: Vec<serde_json::Value> = db
+            .query("SELECT * FROM cluster_agent_placements WHERE agent_package = 'legacy-agent'")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert!(
+            legacy_rows.is_empty(),
+            "legacy two-segment-id rows must be swept; found {legacy_rows:?}"
+        );
+
+        let indexes: Vec<serde_json::Value> = db
+            .query("INFO FOR TABLE cluster_agent_placements")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let indexes_json = serde_json::to_string(&indexes).unwrap();
+        assert!(
+            indexes_json.contains("idx_placement_agent_runner"),
+            "wider index must be present after migration: {indexes_json}"
+        );
+        assert!(
+            !indexes_json.contains("idx_placement_agent ON"),
+            "narrower index must be removed after migration: {indexes_json}"
+        );
+
+        // record_placement on the same logical key as the legacy row must
+        // succeed under the wider UNIQUE without colliding.
+        let key = AgentRouteKey::new(
+            AgentPackageName::parse("legacy-agent").unwrap(),
+            AgentInstanceId::default(),
+        );
+        mgr.record_placement(&key, &test_hash()).await.unwrap();
+    }
+
     /// Resolver picks the same placement on every call when cluster state is
     /// unchanged, so cross-runner routing does not flap between requests.
     #[tokio::test]
