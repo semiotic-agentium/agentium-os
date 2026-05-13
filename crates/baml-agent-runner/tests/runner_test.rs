@@ -18,7 +18,7 @@ use baml_rt_core::{
     BamlRtError,
     bus::BusWithEffects,
     context::{self, InvocationScope},
-    ids::{AgentId, ContextId, UuidId},
+    ids::{AgentId, ContextId, ExternalId, TaskId, UuidId},
 };
 use baml_rt_provenance::{ProvenanceContextReader, SurrealProvenanceStore};
 use baml_rt_tools::bundles::BundleType;
@@ -1738,6 +1738,7 @@ async fn test_internal_a2a_parallel_same_context_child_tasks_and_provenance() {
         "Expected {request_count} fanout results"
     );
     let mut child_ids_from_summary: HashSet<String> = HashSet::new();
+    let mut child_id_by_input: HashMap<String, String> = HashMap::new();
     for i in 0..request_count {
         let expected_input = format!("ping parallel {i}");
         let expected = format!("Responder saw: ping parallel {i}");
@@ -1776,7 +1777,12 @@ async fn test_internal_a2a_parallel_same_context_child_tasks_and_provenance() {
             1,
             "Expected exactly one child task id for index {i}, got {ids:?}"
         );
-        child_ids_from_summary.extend(ids);
+        let child_id = ids
+            .into_iter()
+            .next()
+            .expect("exactly one child task id enforced above");
+        child_ids_from_summary.insert(child_id.clone());
+        child_id_by_input.insert(expected_input, child_id);
     }
     assert_eq!(
         child_ids_from_summary.len(),
@@ -1784,26 +1790,38 @@ async fn test_internal_a2a_parallel_same_context_child_tasks_and_provenance() {
         "Expected one unique child task id per fanout branch, got {child_ids_from_summary:?}"
     );
 
-    // Provenance regression: all delegated user messages must be queryable under the same root context.
-    let mut matched_messages = 0usize;
-    for _ in 0..60 {
-        let messages = responder_store
-            .context_messages(&context_id, Some(200))
-            .await
-            .expect("read responder context messages");
-        matched_messages = messages
-            .iter()
-            .filter(|m| m.content.iter().any(|c| c.starts_with("ping parallel ")))
-            .count();
-        if matched_messages >= request_count {
-            break;
+    // Provenance regression: each delegated child task must materialize its inbound user
+    // message under that child context, not collapse onto the root caller context.
+    for i in 0..request_count {
+        let expected_input = format!("ping parallel {i}");
+        let child_task_id = child_id_by_input
+            .get(&expected_input)
+            .expect("child task id recorded for each fanout input");
+        let child_context_id = ContextId::for_a2a_child(
+            &context_id,
+            "responder-agent",
+            "default",
+            &TaskId::from_external(ExternalId::new(child_task_id.clone())),
+        );
+        let mut found = false;
+        for _ in 0..60 {
+            let messages = responder_store
+                .context_messages(&child_context_id, Some(50))
+                .await
+                .expect("read responder child-context messages");
+            found = messages
+                .iter()
+                .any(|m| m.content.iter().any(|c| c == &expected_input));
+            if found {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            found,
+            "Expected delegated user message '{expected_input}' in responder child context {child_context_id}"
+        );
     }
-    assert!(
-        matched_messages >= request_count,
-        "Expected at least {request_count} delegated user messages in responder provenance context, got {matched_messages}"
-    );
 }
 
 #[tokio::test]

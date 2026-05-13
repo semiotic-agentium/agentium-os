@@ -153,6 +153,25 @@ impl ContextId {
         let counter = parts.next()?.parse::<u64>().ok()?;
         Some(Self::new(millis, counter))
     }
+
+    /// Stable delegated child context for an internal A2A session.
+    ///
+    /// The child task id is part of the encoding so parallel delegated sessions
+    /// from the same caller to the same target do not collide on one stream key.
+    pub fn for_a2a_child(
+        caller_context_id: &ContextId,
+        target_package: &str,
+        target_instance_id: &str,
+        child_task_id: &TaskId,
+    ) -> Self {
+        Self(format!(
+            "a2a:{caller}:{pkg}/{inst}:{child}",
+            caller = caller_context_id.as_str(),
+            pkg = target_package,
+            inst = target_instance_id,
+            child = child_task_id.as_str(),
+        ))
+    }
 }
 
 impl CorrelationId {
@@ -403,6 +422,18 @@ mod tests {
         assert_eq!(
             TaskId::for_stdio_context(&context_id).as_str(),
             "cli-task-ctx-731-1"
+        );
+    }
+
+    #[test]
+    fn context_id_a2a_child_constructor_is_stable_per_child_task() {
+        let caller = ContextId::new(88, 1);
+        let child_task_id = TaskId::from_external(ExternalId::new("a2a-child-fixed".to_string()));
+        let context_id =
+            ContextId::for_a2a_child(&caller, "responder-agent", "default", &child_task_id);
+        assert_eq!(
+            context_id.as_str(),
+            "a2a:ctx-88-1:responder-agent/default:a2a-child-fixed"
         );
     }
 }

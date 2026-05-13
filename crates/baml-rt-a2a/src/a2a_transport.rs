@@ -1660,6 +1660,16 @@ fn strip_message_send_stream_task_id_from_wire(request: &mut Value) {
     msg.remove("taskId");
 }
 
+fn should_preserve_wire_task_id_for_message_send_stream(parsed: &a2a::A2aRequest) -> bool {
+    parsed
+        .params
+        .as_send_message()
+        .and_then(|params| params.metadata.as_ref())
+        .and_then(|metadata| metadata.get("kind"))
+        .and_then(Value::as_str)
+        == Some("agent-to-agent")
+}
+
 fn resolve_scope_for_outcome(
     parsed: &a2a::A2aRequest,
     ctx: &OutcomeInvocationContext,
@@ -1792,6 +1802,7 @@ impl A2aAgent {
         if let Some(tid) = parsed.task_id_opt() {
             let stored = self.task_store.get(tid.as_str(), None).await;
             if crate::a2a_store::should_strip_wire_task_id_for_message_send_stream(stored.as_ref())
+                && !should_preserve_wire_task_id_for_message_send_stream(&parsed)
             {
                 tracing::debug!(
                     task_id = %tid.as_str(),
@@ -2767,7 +2778,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        A2aAgent, SurrealRuntimeStore, TaskRepository, synthesized_live_task_id,
+        A2aAgent, SurrealRuntimeStore, TaskRepository,
+        should_preserve_wire_task_id_for_message_send_stream, synthesized_live_task_id,
         synthetic_input_required_chunk,
     };
     use crate::a2a_types::{A2aMessageId, Message, MessageRole, Part};
@@ -2836,6 +2848,53 @@ mod tests {
             left, right,
             "same context/message scope must map to one task identity"
         );
+    }
+
+    #[test]
+    fn preserves_wire_task_id_for_internal_agent_to_agent_send() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "a2a-1",
+            "method": "message.sendStream",
+            "params": {
+                "message": {
+                    "messageId": "msg-a2a-1",
+                    "role": "ROLE_USER",
+                    "parts": [{ "text": "delegate" }],
+                    "contextId": "ctx-a2a",
+                    "taskId": "a2a-child-123"
+                },
+                "metadata": {
+                    "kind": "agent-to-agent"
+                }
+            }
+        });
+        let parsed = crate::a2a::A2aRequest::from_value(request).expect("parse request");
+        assert!(should_preserve_wire_task_id_for_message_send_stream(
+            &parsed
+        ));
+    }
+
+    #[test]
+    fn does_not_preserve_wire_task_id_for_plain_client_send() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "user-1",
+            "method": "message.sendStream",
+            "params": {
+                "message": {
+                    "messageId": "msg-user-1",
+                    "role": "ROLE_USER",
+                    "parts": [{ "text": "hello" }],
+                    "contextId": "ctx-user",
+                    "taskId": "task-user-1"
+                }
+            }
+        });
+        let parsed = crate::a2a::A2aRequest::from_value(request).expect("parse request");
+        assert!(!should_preserve_wire_task_id_for_message_send_stream(
+            &parsed
+        ));
     }
 
     #[tokio::test]
