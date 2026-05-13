@@ -256,12 +256,19 @@ impl ClusterManager {
         // multi-runner placements. The wider replacement is safe to apply
         // in place: the narrower UNIQUE prevented any row that would now
         // violate the new key.
+        //
+        // The trailing DELETE clears rows written under the old key shape
+        // (`{pkg}/{inst}`) so the table is not left holding graveyard
+        // entries whose `runner_id` field references a long-dead process.
+        // Post-PR rows have id `{pkg}/{inst}/{runner_id}` (three slash-
+        // separated segments); legacy rows have two and are discarded.
         self.db
             .query(
                 "DEFINE TABLE IF NOT EXISTS cluster_runners SCHEMALESS;\
                  DEFINE TABLE IF NOT EXISTS cluster_agent_placements SCHEMALESS;\
                  REMOVE INDEX IF EXISTS idx_placement_agent ON cluster_agent_placements;\
-                 DEFINE INDEX IF NOT EXISTS idx_placement_agent_runner ON cluster_agent_placements FIELDS agent_package, agent_instance_id, runner_id UNIQUE",
+                 DEFINE INDEX IF NOT EXISTS idx_placement_agent_runner ON cluster_agent_placements FIELDS agent_package, agent_instance_id, runner_id UNIQUE;\
+                 DELETE cluster_agent_placements WHERE !string::matches(meta::id(id), '^[^/]+/[^/]+/[^/]+$')",
             )
             .await
             .map_err(|e| BamlRtError::Io(std::io::Error::other(format!("cluster: schema init transport: {e}"))))?
