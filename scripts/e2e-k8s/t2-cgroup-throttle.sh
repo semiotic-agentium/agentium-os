@@ -3,11 +3,18 @@
 #
 # Constrains the runner pod to runner.resources.limits.cpu=500m and probes
 # /readyz + /diagnose at ~100ms cadence during a cpu-peg-agent deploy.
-# Asserts the same three runner-readiness invariants as
-# crates/baml-agent-runner/tests/runner_starvation_test.rs:
-#   1. every /readyz returns 200 within 1s,
-#   2. no probe response is dropped at the TCP level,
-#   3. runtime_progress_lag_ms > 200 for at least one sample.
+# Asserts four runner-readiness invariants:
+#   I1. every /readyz returns 200 within 1s,
+#   I2. no probe response is dropped at the TCP level,
+#   I3. runtime_progress_lag_ms > 200 for at least one sample,
+#   I4. runner-0 has Restart Count == 0 at the point T2 finishes
+#       — locks in #369's fix (PR #396): boot-time exit-1 under CPU
+#       throttle no longer happens, because the in-process SurrealDB
+#       connect retry absorbs the DNS / accept race that CPU throttle
+#       used to amplify into a kubelet-visible restart.
+# I1/I2/I3 mirror crates/baml-agent-runner/tests/runner_starvation_test.rs
+# at the in-process level. I4 has no in-process analogue there — that test
+# spawns the runner as a subprocess, with no kubelet to observe restarts.
 #
 # Usage: bash scripts/e2e-k8s/t2-cgroup-throttle.sh [--no-build] [--keep-cluster]
 
@@ -41,7 +48,7 @@ Options:
   -h, --help       Show this message and exit
 
 Exit codes:
-  0  all three invariants passed
+  0  all four invariants passed
   1  precondition / transport / bringup failure
   2  invariant assertion failed
 EOF
@@ -319,6 +326,21 @@ assert_invariants() {
   if (( i2_failed == 0 )); then
     log_pass "I2: no /diagnose transport-level drops (${diagnose_count} samples)"
   fi
+
+  # ── Invariant 4: runner-0 has not restarted before T2 finishes ─────────
+  # Pre-#396 the runner exited 1 on first boot when SurrealDB's pod wasn't
+  # yet reachable; CPU throttle stretched the wall-clock between attempts
+  # and amplified the race. The kubelet's restart loop covered it, so
+  # I1/I2/I3 (which sample *after* the pod is Ready) all passed even
+  # though the first-boot path was failing. I4 asserts that path is clean.
+  local restart_count
+  restart_count=$(kubectl -n "$NAMESPACE" get pod "$RUNNER_POD_0" \
+    -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || echo "?")
+  if [[ "$restart_count" == "0" ]]; then
+    log_pass "I4: $RUNNER_POD_0 restartCount == 0 (no boot-time exit-1)"
+  else
+    log_fail "I4: $RUNNER_POD_0 restartCount == $restart_count; expected 0. Boot-time exit-1 likely regressed — capture 'kubectl -n $NAMESPACE logs $RUNNER_POD_0 --previous' to identify the failing path. See issue #369 and PR #396 for the original mechanism."
+  fi
 }
 
 main() {
@@ -379,7 +401,7 @@ main() {
     log_fail "Invariant assertions failed — see ${LOG_DIR}/ for samples and pod logs"
     exit 2
   fi
-  log_pass "All three invariants passed"
+  log_pass "All four invariants passed"
 }
 
 main "$@"
