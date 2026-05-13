@@ -84,7 +84,7 @@ impl McpSnapshotCatalog {
             }
             tools.push(project_tool(&server.server_id, record)?);
         }
-        tools.sort_by(|a, b| a.name.to_string().cmp(&b.name.to_string()));
+        tools.sort_by_key(|a| a.name.to_string());
         Ok(Self { tools })
     }
 
@@ -118,7 +118,10 @@ impl ToolCatalog for McpSnapshotCatalog {
     }
 }
 
-fn project_tool(server_id: &str, record: ToolRecord) -> Result<ToolFunctionMetadata> {
+/// Project a per-tool cache record into platform `ToolFunctionMetadata`.
+/// Exposed so the runtime resolver (PR 4) builds handlers with the same
+/// metadata the builder used at codegen time.
+pub fn project_tool(server_id: &str, record: ToolRecord) -> Result<ToolFunctionMetadata> {
     let tool_name = ToolName::parse(&record.tool.platform_tool_name)?;
     let class_name = ToolFunctionMetadata::derive_class_name(tool_name.bundle(), tool_name.local());
 
