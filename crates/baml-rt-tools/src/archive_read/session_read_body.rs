@@ -190,15 +190,17 @@ mod tests {
     }
 
     #[test]
-    fn format_grep_page_puts_paging_on_line_after_command() {
+    fn format_grep_page_puts_non_imperative_paging_hint_after_command() {
         let lines: Vec<String> = (0..10).map(|i| format!("line {i}")).collect();
         let rendered = RenderedContent::from_lines(lines);
         let s = format_session_read_body_from_rendered(&rendered, "@1", None, 0, PageLimit::new(2));
         let lines: Vec<_> = s.split('\n').collect();
         assert_eq!(lines[0], "cat -n @1", "synthetic command on its own line");
         assert!(
-            lines[1].contains("offset=") && lines[1].contains("for next page"),
-            "paging line after command, got: {:?}",
+            lines[1].contains("More lines are available")
+                && lines[1].contains("next offset=2")
+                && lines[1].contains("If additional evidence is needed"),
+            "non-imperative paging hint after command, got: {:?}",
             lines[1]
         );
         assert!(
