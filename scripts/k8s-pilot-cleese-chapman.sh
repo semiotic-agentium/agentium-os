@@ -441,7 +441,7 @@ deploy_hash "$HASH_CLEESE" "$RUNNER_BASE_URL_0"
 deploy_hash "$HASH_CHAPMAN" "$RUNNER_BASE_URL_1"
 
 log "step 8: verifying placement state in SurrealDB"
-placements="$(surreal_query "SELECT agent_package, runner_endpoint FROM cluster_agent_placements WHERE agent_package IN ['argument-cleese', 'argument-chapman']")"
+placements="$(surreal_query "SELECT agent_package, agent_instance_id, runner_id, runner_endpoint FROM cluster_agent_placements WHERE agent_package IN ['argument-cleese', 'argument-chapman']")"
 placement_count="$(printf '%s' "$placements" | jq '[.[] | .result | .[]] | length')"
 [[ "$placement_count" == "2" ]] || fail "expected 2 placement rows for argument-cleese / argument-chapman, got ${placement_count}" 1
 
@@ -449,6 +449,10 @@ cleese_endpoint="$(printf '%s' "$placements" | jq -r '[.[] | .result | .[] | sel
 chapman_endpoint="$(printf '%s' "$placements" | jq -r '[.[] | .result | .[] | select(.agent_package == "argument-chapman")] | .[0].runner_endpoint')"
 [[ "$cleese_endpoint" == *"runner-0"* ]] || fail "argument-cleese is not placed on runner-0: ${cleese_endpoint}" 1
 [[ "$chapman_endpoint" == *"runner-1"* ]] || fail "argument-chapman is not placed on runner-1: ${chapman_endpoint}" 1
+
+# Every placement row must carry runner_id; the UNIQUE index is keyed on it.
+missing_runner_id="$(printf '%s' "$placements" | jq -r '[.[] | .result | .[] | select(.runner_id == null)] | length')"
+[[ "$missing_runner_id" == "0" ]] || fail "expected every placement row to carry runner_id, got ${missing_runner_id} row(s) missing it" 1
 
 log "step 9: sending A2A request to argument-cleese on runner-0"
 response_json="$(post_a2a "$RUNNER_BASE_URL_0" "argument-cleese" "This is a test argument.")"
