@@ -298,10 +298,13 @@ pub struct ConversationHistoryPageDto {
     /// LLM prompt operations through `max_event_order` (delta may contain only new rows).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub llm_prompt_operations: Vec<LlmPromptOperationDto>,
-    /// True when `a2a_task.status_json` for the effective task is `TASK_STATE_INPUT_REQUIRED`.
+    /// True when the effective task's most recent
+    /// [`baml_rt_provenance::metamodel::A2ATaskStateProps`] carries
+    /// `TaskStatusKind::InputRequired`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub awaiting_input: bool,
-    /// First text part from the status message when [Self::awaiting_input] is true.
+    /// Prompt body from the latest `InputRequired` state. Clients must
+    /// treat absence as unknown rather than as a signal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_required_prompt: Option<String>,
 }

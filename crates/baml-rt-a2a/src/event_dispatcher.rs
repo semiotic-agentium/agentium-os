@@ -209,6 +209,11 @@ impl EventDispatcher {
                 failures: Vec::new(),
             };
             let mut short_circuit: Option<(BamlRtError, &'static str)> = None;
+            // `CallbackEventProducer` checkpoint payload reconciles rows as delivered on the next
+            // poll. Advancing after a zero-subscriber "delivery" would mark callbacks delivered
+            // without `handle_dispatch` ever running.
+            const SYSTEM_CALLBACK_PRODUCER_KEY: &str = "system/callback";
+            let mut system_callback_blocked_on_zero_subscribers = false;
 
             let declared_kinds = producer.source_kinds();
             for event in events {
@@ -235,6 +240,9 @@ impl EventDispatcher {
                     .await
                 {
                     Ok(outcome) => {
+                        if key == SYSTEM_CALLBACK_PRODUCER_KEY && outcome.subscribers_matched == 0 {
+                            system_callback_blocked_on_zero_subscribers = true;
+                        }
                         aggregate.subscribers_matched += outcome.subscribers_matched;
                         aggregate.subscribers_accepted += outcome.subscribers_accepted;
                         aggregate.failures.extend(outcome.failures);
@@ -256,7 +264,7 @@ impl EventDispatcher {
                 results.push((key, Err(err)));
             } else {
                 // Only advance cursor if every event was delivered without failures.
-                if aggregate.failures.is_empty() {
+                if aggregate.failures.is_empty() && !system_callback_blocked_on_zero_subscribers {
                     self.producers.advance_checkpoint(&key, poll_checkpoint);
                     metrics::record_event_poll_producer(
                         &key,
@@ -264,10 +272,22 @@ impl EventDispatcher {
                         producer_start.elapsed(),
                         batch_len,
                     );
-                } else {
+                } else if !aggregate.failures.is_empty() {
                     metrics::record_event_poll_producer(
                         &key,
                         "partial_rejection",
+                        producer_start.elapsed(),
+                        batch_len,
+                    );
+                } else {
+                    warn!(
+                        producer_key = %key,
+                        "system/callback produced events but no agent subscription matched; \
+                         not advancing checkpoint (callbacks must not be reconciled as delivered)"
+                    );
+                    metrics::record_event_poll_producer(
+                        &key,
+                        "callback_no_subscribers",
                         producer_start.elapsed(),
                         batch_len,
                     );

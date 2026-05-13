@@ -15,8 +15,15 @@ function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
 
 function ChatWithContext(user_message: string) -> string {
   client DefaultClient
-  prompt #"
-    You are in a multi-turn conversation.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are in a multi-turn conversation.
     Use prior turns if present in the structured conversation history block below.
     If the user asks what to remember or asks for the codeword:
     - Locate the most recent `role: user` entry in the structured history that contains the word "codeword".
@@ -25,11 +32,17 @@ function ChatWithContext(user_message: string) -> string {
     - If no such token exists, reply exactly: UNKNOWN
 
     Structured conversation history:
-    {{ ctx.tags['conversation_transcript'] }}
 
     {{ _.role('user') }}
     {{ user_message }}
-  "#
+
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+{{ ctx.output_format }}
+"#
 }
 
 client DefaultClient {

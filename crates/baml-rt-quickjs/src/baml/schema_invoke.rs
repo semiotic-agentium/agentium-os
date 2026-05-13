@@ -40,14 +40,19 @@ impl BamlRuntimeManager {
         let env_vars = self.resolve_secrets_as_env_vars();
         let mut executor = BamlExecutor::load_il(&baml_src_dir, env_vars)?;
 
-        let prelude_path = baml_src_dir.join("_baml_runtime.baml");
-        self.state.tool_schema_prelude = match std::fs::read_to_string(&prelude_path) {
+        // Load the rendered agent-wide tool schema catalog produced by the builder. This is
+        // the JSON-shape catalog text emitted via BAML's `{{ ctx.output_format }}` renderer
+        // over the synthetic `__AgentToolSchemaCatalog__` function — never the raw
+        // `_baml_runtime.baml` source. Old packages without the sidecar simply load no
+        // prelude (graceful degradation; no source dump fallback).
+        let catalog_path = baml_src_dir.join(baml_rt_tools::TOOL_SCHEMA_CATALOG_SIDECAR_FILE);
+        self.state.tool_schema_prelude = match std::fs::read_to_string(&catalog_path) {
             Ok(s) => Some(std::sync::Arc::<str>::from(s)),
             Err(e) => {
-                tracing::warn!(
-                    path = %prelude_path.display(),
+                tracing::debug!(
+                    path = %catalog_path.display(),
                     error = %e,
-                    "tool_schema_prelude: optional merged runtime BAML not loaded"
+                    "tool_schema_prelude: rendered catalog sidecar not present — step prompts will omit the prelude block"
                 );
                 None
             }

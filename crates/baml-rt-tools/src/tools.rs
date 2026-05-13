@@ -708,7 +708,7 @@ impl From<ToolName> for String {
 
 /// Codegen-safe identifier derived from a `ToolName`: `"support/calculate"` -> `"support_calculate"`.
 ///
-/// Used in generated BAML function names (`__act__support_calculate`) and as keys in
+/// Used in generated BAML function names (`__active__support_calculate`) and as keys in
 /// phase function mappings. Constructed only via `ToolName::slug()`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -792,7 +792,7 @@ impl<'de> Deserialize<'de> for SessionPlanTypeName {
 pub type SessionPlanFunctionsMap = std::collections::HashMap<String, Vec<SessionPlanTypeName>>;
 
 /// Authoring/build manifest: base BAML function names that use the unified structured step
-/// executor (`__select` only, `run_step_executor_loop` unified mode — plan/synthesis/archive/AskUser).
+/// executor (`__entry` only, `run_step_executor_loop` unified mode — plan/synthesis/archive/AskUser).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UnifiedStepExecutorRootConfig {
     #[serde(default = "default_include_archive_reads")]
@@ -825,14 +825,12 @@ pub fn parse_unified_step_executors_authoring_json(text: &str) -> UnifiedStepExe
 pub enum FunctionRole {
     /// User-authored root step executor (e.g. `ExecuteStep`).
     Root,
-    /// Generated tool-selection phase function (`__select`).
-    Select,
-    /// Generated post-Open action phase function (`__act__<slug>`).
-    Act,
+    /// Generated entry phase (`__entry`): archive reuse, read-only finish, or Open.
+    Entry,
+    /// Generated active session phase (`__active__<slug>`): Send, reads, Finish, Abort after Open.
+    Active,
     /// Reserved: `__consume__<slug>` phase (manifest only if such functions exist in IR; builder does not emit them yet).
     Consume,
-    /// Generated done/continue phase function (`__continue__<slug>`).
-    Continue,
 }
 
 /// Enriched binding for a function in the session plan manifest.
@@ -849,14 +847,14 @@ pub struct FunctionPlanBinding {
 pub struct SessionTypeNames;
 
 impl SessionTypeNames {
-    pub fn select(base: &str) -> String {
-        BamlFunctionId::variant(BamlPromptName::new(base), VariantPhase::Select).full_name()
+    pub fn entry(base: &str) -> String {
+        BamlFunctionId::variant(BamlPromptName::new(base), VariantPhase::Entry).full_name()
     }
 
-    pub fn act(base: &str, slug: &ToolSlug) -> String {
+    pub fn active(base: &str, slug: &ToolSlug) -> String {
         BamlFunctionId::variant(
             BamlPromptName::new(base),
-            VariantPhase::Act {
+            VariantPhase::Active {
                 tool_slug: slug.as_str().to_string(),
             },
         )
@@ -867,16 +865,6 @@ impl SessionTypeNames {
         BamlFunctionId::variant(
             BamlPromptName::new(base),
             VariantPhase::Consume {
-                tool_slug: slug.as_str().to_string(),
-            },
-        )
-        .full_name()
-    }
-
-    pub fn r#continue(base: &str, slug: &ToolSlug) -> String {
-        BamlFunctionId::variant(
-            BamlPromptName::new(base),
-            VariantPhase::Continue {
                 tool_slug: slug.as_str().to_string(),
             },
         )
@@ -3529,20 +3517,38 @@ mod session_type_names_alignment_tests {
     use super::{SessionTypeNames, ToolName};
 
     #[test]
-    fn select_act_continue_round_trip_parse() {
+    fn entry_active_consume_round_trip_parse() {
         let base = "ExecuteStep";
         let tn = ToolName::parse("support/calculate").unwrap();
         let slug = tn.slug();
 
         for name in [
-            SessionTypeNames::select(base),
-            SessionTypeNames::act(base, &slug),
-            SessionTypeNames::r#continue(base, &slug),
+            SessionTypeNames::entry(base),
+            SessionTypeNames::active(base, &slug),
             SessionTypeNames::consume(base, &slug),
         ] {
             let id = BamlFunctionId::parse(&name);
             assert_eq!(id.full_name(), name, "parse round-trip for {name}");
         }
+    }
+
+    #[test]
+    fn legacy_select_act_continue_still_parse() {
+        let id = BamlFunctionId::parse("ExecuteStep__select");
+        assert!(matches!(
+            id.phase(),
+            Some(baml_rt_core::VariantPhase::Select)
+        ));
+        let id = BamlFunctionId::parse("ExecuteStep__act__support_calculate");
+        assert!(matches!(
+            id.phase(),
+            Some(baml_rt_core::VariantPhase::Act { .. })
+        ));
+        let id = BamlFunctionId::parse("ExecuteStep__continue__support_calculate");
+        assert!(matches!(
+            id.phase(),
+            Some(baml_rt_core::VariantPhase::Continue { .. })
+        ));
     }
 }
 

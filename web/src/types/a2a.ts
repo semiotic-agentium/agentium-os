@@ -78,8 +78,18 @@ export interface ConversationHistoryPage {
   promptContextBytesSessionCurrent?: number | null;
   promptMessageCharsSessionCurrent?: number | null;
   llmPromptOperations?: LlmPromptOperation[];
-  /** From `a2a_task.status_json` when the task is TASK_STATE_INPUT_REQUIRED */
+  /**
+   * True when the latest A2ATaskState head-pointer for the effective task is
+   * TaskStatusKind.InputRequired. Sourced from the provenance graph
+   * (TaskGraphReader.latest_state) — the legacy a2a_task / a2a_message /
+   * a2a_update shadow tables have been excised.
+   */
   awaitingInput?: boolean;
+  /**
+   * Prompt body carried directly inside TaskStatusKind.InputRequired { prompt }.
+   * May be null/empty for transitions written before the typed enum migration;
+   * treat absence as "unknown", not as a signal.
+   */
   inputRequiredPrompt?: string | null;
 }
 

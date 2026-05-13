@@ -1022,6 +1022,7 @@ fn to_ops_request(
             context_id: q.context_id,
             task_id: q.task_id,
             agent_id: q.agent_id,
+            agent_package: None,
             provider: q.provider,
             model: q.model,
             tool_name: q.tool_name,

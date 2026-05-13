@@ -3,7 +3,8 @@
 //! Implements:
 //! - [`ProvenanceWriter`] + [`ProvenanceContextReader`]
 //! - [`ProvenanceQueryApi`]
-//! - [`A2aGraphStore`]
+//! - [`crate::task_graph_reader::TaskGraphReader`] (graph-only A2A task surface;
+//!   the previous relational shadow store and `A2aGraphStore` trait have been excised)
 //! - [`ProvenancePlanningQuery`]
 //! - [`ProvenanceOpsQuery`]
 //!
@@ -23,9 +24,14 @@
 //! | `prov_edge` | All graph edges (Used, WasGeneratedBy, etc.) with `rel_type` + `props` |
 //! | `provenance_payload` | Payload pointers + `search_text` for BM25 |
 //! | `provenance_payload_blob` | Content-addressed JSON bodies (large tool/LLM results) |
-//! | `a2a_task` | A2A task subgraph nodes |
-//! | `a2a_message` | A2A task message nodes |
-//! | `a2a_update` | A2A task update nodes |
+//!
+//! A2A tasks, messages, status transitions, and artifacts are modelled
+//! directly as `prov_node` + `prov_edge` rows; the previous relational
+//! mirror tables (`a2a_task` / `a2a_message` / `a2a_update`) have been
+//! removed. Live SSE updates are buffered in
+//! [`crate::task_graph_reader::TaskUpdateFrame`] streams (see
+//! `baml-rt-a2a::task_update_broadcaster`) rather than the old
+//! `a2a_update` queue.
 //!
 //! ## Query patterns
 //!
@@ -55,7 +61,6 @@
 //! relational-crutch properties in query WHERE clauses. These properties exist as
 //! informational attributes for display/audit only; relationships are expressed as edges.
 
-mod a2a_store;
 mod archive_ref;
 mod builder;
 mod context_reader;
@@ -65,6 +70,7 @@ mod ops_query;
 mod payload;
 mod planning_query;
 mod schema;
+mod task_graph_reader_impl;
 mod writer;
 
 use std::{
@@ -72,10 +78,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use baml_rt_core::{
-    backoff::backoff_delay,
-    ids::{AgentId, ContextId, TaskId},
-};
+use baml_rt_core::{backoff::backoff_delay, ids::ContextId};
 pub use builder::{RemoteConfig, RemoteCredentials, SurrealBackend, SurrealStoreBuilder};
 use dashmap::DashMap;
 pub(crate) use helpers::{check_and_take_zero, map_surreal_error};
@@ -159,11 +162,6 @@ pub struct SurrealProvenanceStore {
     db: Surreal<Any>,
     normalizer: Arc<dyn ProvNormalizer>,
     mermaid_cache: Option<Arc<MermaidCache>>,
-    /// In-process cache of successful task → agent resolution for [`SurrealProvenanceStore::get_task_agent_id`].
-    ///
-    /// Only [`crate::store::TaskAgentResolution::Resolved`] outcomes are stored so that a transient
-    /// [`crate::store::TaskAgentResolution::NotLinked`] (edges not yet written) is never pinned.
-    task_agent_id_cache: DashMap<TaskId, AgentId>,
     /// Immutable after first successful `archive_ensure_prefix` in this process.
     archive_prefix_cache: DashMap<(String, String), u32>,
     /// Serializes `archive_next_local` per `(context_id, archive_prefix)` to cut MVCC/CREATE races.
@@ -293,12 +291,5 @@ impl SurrealProvenanceStore {
             }
         }
         unreachable!("retry loop returns on every iteration");
-    }
-}
-
-#[cfg(test)]
-impl SurrealProvenanceStore {
-    pub(crate) fn task_agent_id_cache_len_for_test(&self) -> usize {
-        self.task_agent_id_cache.len()
     }
 }

@@ -7,8 +7,8 @@
 //!
 //! ## Deployment invariant
 //!
-//! Each hop **requires** the generated per-phase BAML functions (e.g. `ExecuteStep__select`,
-//! `__act__`, …) to exist in the agent IR. An older tarball or snapshot built without the
+//! Each hop **requires** the generated per-phase BAML functions (e.g. `ExecuteStep__entry`,
+//! `ExecuteStep__active__…`, …) to exist in the agent IR. An older tarball or snapshot built without the
 //! current builder fails **deterministically** on the first hop with a clear error — there is
 //! no fallback to the base polymorphic function.
 //!
@@ -78,27 +78,6 @@ impl StepStatus {
     }
 }
 
-/// Status values that are valid while a session is still active.
-/// Only `JustOpened` (pre-Send) and `Done` (post-Send result) are visible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OpenStatus {
-    JustOpened,
-    Done,
-}
-
-impl OpenStatus {
-    fn try_from_step(s: StepStatus) -> Option<Self> {
-        match s {
-            StepStatus::Open => Some(Self::JustOpened),
-            // All of Done/Sent/Streaming/Suspended normalise to Done from the FSM's perspective
-            StepStatus::Done | StepStatus::Sent | StepStatus::Streaming | StepStatus::Suspended => {
-                Some(Self::Done)
-            }
-            StepStatus::Finished | StepStatus::Aborted => None,
-        }
-    }
-}
-
 /// Why did the session terminate?
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
@@ -117,15 +96,15 @@ struct ToolBinding {
 }
 
 /// Step executor FSM phase. Impossible states are unrepresentable:
-/// - `AwaitingOpen` has no tool identity (pre-selection)
-/// - `Bound` always carries tool identity + a non-terminal status
+/// - `Entry` has no host tool session bound (archive reuse, read-only finish, or Open)
+/// - `Active` always carries tool identity; `has_done` is true after at least one Send completed with Done
 /// - `Terminal` cannot transition further
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Phase {
-    AwaitingOpen,
-    Bound {
+    Entry,
+    Active {
         tool: ToolBinding,
-        status: OpenStatus,
+        has_done: bool,
     },
     #[allow(dead_code)]
     Terminal(TerminalReason),
@@ -133,12 +112,12 @@ enum Phase {
 
 impl Phase {
     fn is_session_open(&self) -> bool {
-        matches!(self, Self::Bound { .. })
+        matches!(self, Self::Active { .. })
     }
 
     fn selected_tool(&self) -> Option<&ToolName> {
         match self {
-            Self::Bound { tool, .. } => Some(&tool.name),
+            Self::Active { tool, .. } => Some(&tool.name),
             _ => None,
         }
     }
@@ -146,7 +125,7 @@ impl Phase {
     #[allow(dead_code)]
     fn tool_slug(&self) -> Option<&ToolSlug> {
         match self {
-            Self::Bound { tool, .. } => Some(&tool.slug),
+            Self::Active { tool, .. } => Some(&tool.slug),
             _ => None,
         }
     }
@@ -195,23 +174,18 @@ const SESSION_CONTEXT_CONTRACT_VERSION: &str = "session_context_v2";
 
 fn session_status_for_phase(phase: &Phase) -> SessionStatus {
     match phase {
-        Phase::AwaitingOpen => SessionStatus::AwaitingOpen,
-        Phase::Bound {
-            status: OpenStatus::JustOpened,
-            ..
+        Phase::Entry => SessionStatus::AwaitingOpen,
+        Phase::Active {
+            has_done: false, ..
         } => SessionStatus::JustOpened,
-        Phase::Bound {
-            status: OpenStatus::Done,
-            ..
-        }
-        | Phase::Terminal(_) => SessionStatus::Done,
+        Phase::Active { has_done: true, .. } | Phase::Terminal(_) => SessionStatus::Done,
     }
 }
 
 /// Build the `session_context` JSON injected into BAML function args.
 ///
 /// FSM facts only — which operation is legal is expressed by the **per-phase**
-/// BAML function's narrowed return type (`ExecuteStep__select`, `__act__`, …).
+/// BAML function's narrowed return type (`ExecuteStep__entry`, `ExecuteStep__active__…`, …).
 fn build_session_context(phase: &Phase, last_step: &LastStepContext) -> Value {
     let wire = SessionContextWire {
         contract_version: SESSION_CONTEXT_CONTRACT_VERSION,
@@ -232,10 +206,23 @@ fn infer_last_step_context(
     result: &Value,
 ) -> LastStepContext {
     let op = match phase_before_hop {
-        Phase::AwaitingOpen => Some("open"),
-        Phase::Bound {
-            status: OpenStatus::JustOpened,
-            ..
+        Phase::Entry => {
+            if status == StepStatus::Open {
+                Some("open")
+            } else if status == StepStatus::Done {
+                if result.get("has_more").is_some() {
+                    Some("read")
+                } else if result.get("archive_ref").is_some() {
+                    Some("send")
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        Phase::Active {
+            has_done: false, ..
         } => {
             if result.get("archive_ref").is_some() {
                 Some("send")
@@ -245,10 +232,7 @@ fn infer_last_step_context(
                 None
             }
         }
-        Phase::Bound {
-            status: OpenStatus::Done,
-            ..
-        } => match status {
+        Phase::Active { has_done: true, .. } => match status {
             StepStatus::Finished => Some("finish"),
             StepStatus::Aborted => Some("abort"),
             _ if result.get("archive_ref").is_some() => Some("send"),
@@ -289,6 +273,34 @@ fn extract_status(result: &Value) -> Option<StepStatus> {
     StepStatus::parse(s)
 }
 
+fn result_is_read_only_finish(result: &Value) -> bool {
+    matches!(
+        result.get("op").and_then(Value::as_str),
+        Some("ReadOnlyFinish")
+    ) || matches!(
+        result
+            .get("step")
+            .and_then(|s| s.get("op"))
+            .and_then(Value::as_str),
+        Some("ReadOnlyFinish")
+    )
+}
+
+/// Unified-primary `__entry` hops return structured variants without tool-session `status`.
+fn unified_entry_status_fallback(result: &Value) -> Option<StepStatus> {
+    let v = result
+        .get("output")
+        .filter(|x| !x.is_null())
+        .unwrap_or(result);
+    if v.get("action").and_then(Value::as_str) == Some("AskUser") {
+        return Some(StepStatus::Done);
+    }
+    if v.get("goal").is_some() && v.get("nodes").is_some() {
+        return Some(StepStatus::Finished);
+    }
+    None
+}
+
 /// Result of a completed step executor loop (FSM hops only — not the chat-layer user reply).
 #[derive(Debug, serde::Serialize)]
 pub struct StepExecutorResult {
@@ -301,22 +313,10 @@ pub struct StepExecutorResult {
 /// Select the per-phase BAML function identity for polymorphic narrowing.
 fn phase_function_id(base: &BamlPromptName, phase: &Phase) -> BamlFunctionId {
     match phase {
-        Phase::AwaitingOpen => BamlFunctionId::variant(base.clone(), VariantPhase::Select),
-        Phase::Bound {
-            tool,
-            status: OpenStatus::JustOpened,
-        } => BamlFunctionId::variant(
+        Phase::Entry => BamlFunctionId::variant(base.clone(), VariantPhase::Entry),
+        Phase::Active { tool, .. } => BamlFunctionId::variant(
             base.clone(),
-            VariantPhase::Act {
-                tool_slug: tool.slug.to_string(),
-            },
-        ),
-        Phase::Bound {
-            tool,
-            status: OpenStatus::Done,
-        } => BamlFunctionId::variant(
-            base.clone(),
-            VariantPhase::Continue {
+            VariantPhase::Active {
                 tool_slug: tool.slug.to_string(),
             },
         ),
@@ -403,7 +403,7 @@ pub async fn run_step_executor_loop(
     step_intra_supplement_mirror: Option<Arc<Mutex<Vec<Value>>>>,
 ) -> Result<StepExecutorResult> {
     let base = BamlPromptName::new(function_name);
-    let mut phase = Phase::AwaitingOpen;
+    let mut phase = Phase::Entry;
     let mut steps: Vec<Value> = Vec::new();
     let mut last = Value::Null;
     let mut step_intra_supplement: Vec<Value> = Vec::new();
@@ -481,9 +481,26 @@ pub async fn run_step_executor_loop(
 
         let result = result?;
 
-        let Some(status) = extract_status(&result) else {
-            phase = Phase::Terminal(TerminalReason::MissingStatus);
-            break;
+        let read_only_finish = result_is_read_only_finish(&result);
+        let status = match extract_status(&result) {
+            Some(s) => s,
+            None => {
+                if read_only_finish {
+                    // Passthrough LLM shape without tool-session status — drive graph growth like Done.
+                    StepStatus::Done
+                } else if matches!(phase, Phase::Entry) {
+                    match unified_entry_status_fallback(&result) {
+                        Some(s) => s,
+                        None => {
+                            phase = Phase::Terminal(TerminalReason::MissingStatus);
+                            break;
+                        }
+                    }
+                } else {
+                    phase = Phase::Terminal(TerminalReason::MissingStatus);
+                    break;
+                }
+            }
         };
 
         let p_after = if status == StepStatus::Open {
@@ -523,12 +540,29 @@ pub async fn run_step_executor_loop(
         // Capture the last result with meaningful output (Done has output,
         // Finished/Open/Sent are status-only). This ensures `last` contains
         // the tool data, not a bare `{"status":"finished"}`.
-        let has_content = result.get("output").is_some() || result.get("message").is_some();
-        if has_content || last.is_null() {
+        let has_content = result.get("output").is_some()
+            || result.get("message").is_some()
+            || result.get("reply").is_some();
+        if matches!(
+            status,
+            StepStatus::Finished | StepStatus::Aborted | StepStatus::Open
+        ) || has_content
+            || last.is_null()
+        {
             last = result.clone();
         }
         steps.push(result.clone());
-        let mut next_step_context = infer_last_step_context(&phase, status, &result);
+        let mut next_step_context = if read_only_finish {
+            LastStepContext {
+                op: Some("readonly_finish"),
+                status: Some("finished"),
+                archive_ref: None,
+                output_header: None,
+                completion: None,
+            }
+        } else {
+            infer_last_step_context(&phase, status, &result)
+        };
         if next_step_context.op == Some("read") {
             if next_step_context.archive_ref.is_none() {
                 next_step_context.archive_ref = last_step_context.archive_ref.clone();
@@ -540,46 +574,77 @@ pub async fn run_step_executor_loop(
         last_step_context = next_step_context;
 
         // Advance FSM based on current phase + status.
-        phase = match phase {
-            Phase::AwaitingOpen => {
-                if status == StepStatus::Done {
-                    continue;
-                }
-                if status != StepStatus::Open {
-                    return Err(BamlRtError::InvalidArgument(format!(
-                        "step executor contract violation ({current_function}): \
-                         expected Open-first hop to yield status 'open', got '{}'",
-                        status.as_str()
-                    )));
-                }
-                let tool = extract_tool_binding(&result);
-                match tool {
-                    Some(binding) => Phase::Bound {
-                        tool: binding,
-                        status: OpenStatus::JustOpened,
-                    },
-                    None => {
+        phase = if read_only_finish {
+            Phase::Terminal(TerminalReason::Finished)
+        } else {
+            match phase {
+                Phase::Entry => {
+                    if status == StepStatus::Done {
+                        continue;
+                    }
+                    if status == StepStatus::Finished {
+                        Phase::Terminal(TerminalReason::Finished)
+                    } else if status == StepStatus::Aborted {
+                        Phase::Terminal(TerminalReason::Aborted)
+                    } else if status != StepStatus::Open {
                         return Err(BamlRtError::InvalidArgument(format!(
-                            "step executor ({current_function}): Open hop yielded no tool_name"
+                            "step executor contract violation ({current_function}): \
+                             expected ENTRY hop to yield status 'open', 'done', or unified terminal, got '{}'",
+                            status.as_str()
+                        )));
+                    } else {
+                        let tool = extract_tool_binding(&result);
+                        match tool {
+                            Some(binding) => Phase::Active {
+                                tool: binding,
+                                has_done: false,
+                            },
+                            None => {
+                                return Err(BamlRtError::InvalidArgument(format!(
+                                    "step executor ({current_function}): Open hop yielded no tool_name"
+                                )));
+                            }
+                        }
+                    }
+                }
+                Phase::Active { tool, has_done } => match status {
+                    StepStatus::Finished => {
+                        if !has_done {
+                            return Err(BamlRtError::InvalidArgument(format!(
+                                "step executor contract violation ({current_function}): \
+                                 Finish is invalid before any Send completed with status done — emit Send first"
+                            )));
+                        }
+                        Phase::Terminal(TerminalReason::Finished)
+                    }
+                    StepStatus::Aborted => Phase::Terminal(TerminalReason::Aborted),
+                    StepStatus::Open => {
+                        return Err(BamlRtError::InvalidArgument(format!(
+                            "step executor contract violation ({current_function}): \
+                             unexpected nested Open while session is active"
                         )));
                     }
-                }
-            }
-            Phase::Bound { tool, .. } => match status {
-                StepStatus::Finished => Phase::Terminal(TerminalReason::Finished),
-                StepStatus::Aborted => Phase::Terminal(TerminalReason::Aborted),
-                other => match OpenStatus::try_from_step(other) {
-                    Some(os) => Phase::Bound { tool, status: os },
-                    None => {
-                        tracing::warn!(
-                            status = other.as_str(),
-                            "step_executor_loop: unexpected non-open status mapped to None"
+                    StepStatus::Done
+                    | StepStatus::Sent
+                    | StepStatus::Streaming
+                    | StepStatus::Suspended => {
+                        let inferred = infer_last_step_context(
+                            &Phase::Active {
+                                tool: tool.clone(),
+                                has_done,
+                            },
+                            status,
+                            &result,
                         );
-                        Phase::Terminal(TerminalReason::MissingStatus)
+                        let send_completed = inferred.op == Some("send");
+                        Phase::Active {
+                            tool,
+                            has_done: has_done || send_completed,
+                        }
                     }
                 },
-            },
-            Phase::Terminal(_) => break,
+                Phase::Terminal(_) => break,
+            }
         };
 
         if matches!(phase, Phase::Terminal(_)) {
@@ -587,7 +652,7 @@ pub async fn run_step_executor_loop(
         }
     }
 
-    if matches!(phase, Phase::AwaitingOpen | Phase::Bound { .. }) && steps.len() >= max_steps {
+    if matches!(phase, Phase::Entry | Phase::Active { .. }) && steps.len() >= max_steps {
         phase = Phase::Terminal(TerminalReason::MaxStepsExhausted);
     }
 

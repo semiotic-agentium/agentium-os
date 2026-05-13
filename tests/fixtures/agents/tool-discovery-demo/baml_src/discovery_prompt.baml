@@ -1,5 +1,5 @@
 // Fixture: Tool discovery demo. Generated phase executors supply narrowed unions, transcript, and constraints.
-function ChooseDiscoverToolsQuery(user_message: string) -> SystemDiscover_toolsSessionPlan {
+function ChooseDiscoverToolsQuery(user_message: string) -> SystemDiscoverToolsSessionPlan {
   client DefaultClient
   prompt #"
     Find tools that can help with: {{ user_message }}

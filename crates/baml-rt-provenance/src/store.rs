@@ -155,16 +155,14 @@ pub trait ProvenanceContextReader: Send + Sync {
     /// Conversation rows for prompt-adjacent logic that must align with a **task transcript**
     /// (same filtering as [ProvenanceQueryApi::query_conversation_context] when `task_id` is `Some`).
     ///
-    /// Default implementation ignores `task_id` and delegates to [Self::conversation_context].
+    /// Implementations must preserve the task filter; widening to full-context
+    /// history is not an acceptable fallback on this surface.
     async fn conversation_context_with_task(
         &self,
         context_id: &ContextId,
         limit: Option<usize>,
         task_id: Option<&TaskId>,
-    ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        let _ = task_id;
-        self.conversation_context(context_id, limit).await
-    }
+    ) -> Result<Vec<ProvenanceConversationContextItem>>;
 }
 
 /// Query API for provenance context: **does not** guarantee no-stale-read.
@@ -326,6 +324,15 @@ pub struct ProvenanceOpsFilters {
     pub task_id: Option<TaskId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<AgentId>,
+    /// Filter rows by the owning agent's *package* identifier (the value
+    /// written to `AgentArchive.props.a2a_agent_type`). For Messages this is
+    /// resolved by traversing the two-hop edge chain
+    /// `Message ↔ A2AMessageProcessing -[:WAS_EXECUTED_BY]-> AgentRuntimeInstance -[:WAS_SPAWNED_BY]-> AgentBoot -[:WAS_BOOTSTRAPPED_BY]-> AgentArchive`,
+    /// matching `AgentArchive.props.a2a_agent_type = $package`. For
+    /// LlmCalls/ToolCalls the same chain is followed via the activity's
+    /// `WAS_EXECUTED_BY` edge to AgentRuntimeInstance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_package: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

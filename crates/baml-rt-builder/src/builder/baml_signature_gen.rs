@@ -5,6 +5,7 @@
 
 use std::ops::Deref;
 
+use baml_rt_core::{BamlFunctionId, VariantPhase};
 use baml_rt_tools::{
     FunctionPlanBinding, FunctionRole, SessionPlanFunctionsMap, SessionPlanTypeName,
 };
@@ -81,7 +82,7 @@ pub type SessionPlanManifest = std::collections::HashMap<String, FunctionPlanBin
 /// Build an enriched manifest that annotates each session-plan function with its role.
 ///
 /// Root functions are user-authored (present in the raw IR). Generated phase functions
-/// (`__select`, `__act__`, `__consume__`, `__continue__`) are annotated by suffix pattern.
+/// (`__entry`, `__active__`, `__consume__`, and legacy `__select` / `__act__` / `__continue__`) are annotated by suffix pattern.
 pub fn session_plan_manifest(ir: &IRSignature) -> SessionPlanManifest {
     let mut manifest = SessionPlanManifest::new();
 
@@ -104,15 +105,12 @@ pub fn session_plan_manifest(ir: &IRSignature) -> SessionPlanManifest {
 /// `Consume` is reserved: the IR phase generator does not emit `__consume__` functions yet, but
 /// hand-authored BAML or future codegen may; the manifest annotates them when present.
 fn infer_function_role(name: &str) -> FunctionRole {
-    if name.contains("__select") {
-        FunctionRole::Select
-    } else if name.contains("__act__") {
-        FunctionRole::Act
-    } else if name.contains("__consume__") {
-        FunctionRole::Consume
-    } else if name.contains("__continue__") {
-        FunctionRole::Continue
-    } else {
-        FunctionRole::Root
+    match BamlFunctionId::parse(name).phase() {
+        Some(VariantPhase::Consume { .. }) => FunctionRole::Consume,
+        Some(VariantPhase::Entry | VariantPhase::Select) => FunctionRole::Entry,
+        Some(
+            VariantPhase::Active { .. } | VariantPhase::Act { .. } | VariantPhase::Continue { .. },
+        ) => FunctionRole::Active,
+        None => FunctionRole::Root,
     }
 }

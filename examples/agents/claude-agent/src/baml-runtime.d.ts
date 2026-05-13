@@ -387,7 +387,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseDevClaudeExtAction" | "ChooseDevClaudeExtAction__act__dev_claude_ext" | "ChooseDevClaudeExtAction__continue__dev_claude_ext" | "ChooseDevClaudeExtAction__select";
+export type StepExecutorFunctionName = "ChooseDevClaudeExtAction" | "ChooseDevClaudeExtAction__active__dev_claude_ext" | "ChooseDevClaudeExtAction__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -438,9 +438,8 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ChooseDevClaudeExtAction: { args: Parameters<typeof ChooseDevClaudeExtAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction>>; };
-  ChooseDevClaudeExtAction__act__dev_claude_ext: { args: Parameters<typeof ChooseDevClaudeExtAction__act__dev_claude_ext>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__act__dev_claude_ext>>; };
-  ChooseDevClaudeExtAction__continue__dev_claude_ext: { args: Parameters<typeof ChooseDevClaudeExtAction__continue__dev_claude_ext>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__continue__dev_claude_ext>>; };
-  ChooseDevClaudeExtAction__select: { args: Parameters<typeof ChooseDevClaudeExtAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__select>>; };
+  ChooseDevClaudeExtAction__active__dev_claude_ext: { args: Parameters<typeof ChooseDevClaudeExtAction__active__dev_claude_ext>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__active__dev_claude_ext>>; };
+  ChooseDevClaudeExtAction__entry: { args: Parameters<typeof ChooseDevClaudeExtAction__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__entry>>; };
 }
 
 declare global {

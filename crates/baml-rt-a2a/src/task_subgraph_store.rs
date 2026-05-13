@@ -1,31 +1,41 @@
-//! A2A adapter over provenance-owned graph persistence.
+//! A2A task store backed entirely by the provenance graph.
 //!
-//! The boundary lives in the **provenance crate**: [baml_rt_provenance::A2aGraphStore] and
-//! [baml_rt_provenance::TaskSubgraphNode]. This module implements a store that calls that
-//! interface; wire→graph conversion is local to this adapter.
+//! Reads route through the typed [`TaskGraphReader`] surface
+//! ([`TaskGraphReader::hydrate`] /
+//! [`TaskGraphReader::hydrate_batch`] /
+//! [`TaskGraphReader::latest_in_context`]); writes route through
+//! [`ProvenanceWriter::add_event`] using the canonical
+//! [`ProvEvent::task_status_changed`] /
+//! [`ProvEvent::task_artifact_generated`] constructors. The previous
+//! relational mirror tables (`a2a_task` / `a2a_message` /
+//! `a2a_update`) are no longer touched.
+//!
+//! Live task-update delivery (replacing the durable `a2a_update` SSE
+//! replay queue) flows through the in-memory
+//! [`TaskUpdateBroadcaster`]; durable replay-on-reconnect uses
+//! [`TaskGraphReader::replay_since`].
 
-use std::{collections::HashMap, convert::TryFrom, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    BamlRtError, Result,
+    BamlRtError, Result, clock_events,
     ids::{ContextId, ExternalId, TaskId},
 };
 use baml_rt_provenance::{
-    A2aGraphStore, A2aGraphStoreError, ArtifactUpdateContext, StatusUpdateContext,
-    TaskSubgraphNode, record_artifact_update as prov_record_artifact_update,
-    record_status_update as prov_record_status_update,
+    ProvenanceWriter, TaskGraphReader, events::ProvEvent, metamodel::ScopedTaskRef,
 };
 
 use crate::{
     a2a_store::{
-        TaskChunkApplier, TaskEventRecorder, TaskRepository, TaskUpdateEvent, TaskUpdateQueue,
+        TaskChunkApplier, TaskEventRecorder, TaskRepository, TaskUpdateEvent,
+        transcript_text_from_wire_status_message, wire_status_to_kind,
     },
     a2a_types::{
-        A2aMessageId, Artifact, ListTasksRequest, ListTasksResponse, Message, MessageRole, Part,
-        Task, TaskArtifactUpdateEvent, TaskState, TaskStatus, TaskStatusUpdateEvent,
-        ValidatedTaskChunk,
+        Artifact, ListTasksRequest, ListTasksResponse, Message, Part, Task,
+        TaskArtifactUpdateEvent, TaskState, TaskStatus, TaskStatusUpdateEvent, ValidatedTaskChunk,
     },
+    task_update_broadcaster::{ArtifactRef, TaskStreamKey, TaskUpdateBroadcaster, TaskUpdateFrame},
 };
 
 const S_SUBMITTED: &str = "TASK_STATE_SUBMITTED";
@@ -41,33 +51,21 @@ fn is_terminal_state(s: &str) -> bool {
     matches!(s, S_COMPLETED | S_FAILED | S_CANCELED | S_REJECTED)
 }
 
+/// Recover a wire `ContextId` from the on-disk
+/// `"context:<context_id>"` encoding used by the normalizer (mirror of
+/// [`baml_rt_provenance::SurrealProvenanceStore`]'s
+/// `context_id_from_node_id` helper, kept here so we don't have to
+/// expose the encoding through `ScopedTaskRef`).
+fn context_id_from_node_id(raw: &str) -> ContextId {
+    let stripped = raw.strip_prefix("context:").unwrap_or(raw);
+    ContextId::parse_temporal(stripped).unwrap_or_else(|| ContextId::from(stripped))
+}
+
 fn status_is_input_required(status: &TaskStatus) -> bool {
     matches!(
         &status.state,
         Some(TaskState::String(s)) if s == S_INPUT_REQUIRED
     )
-}
-
-/// Non-empty text carried on `task.status.message` (INPUT_REQUIRED prompts often omit top-level `message`).
-fn transcript_text_from_wire_status_message(msg: &Message) -> Option<String> {
-    let mut lines = Vec::new();
-    for p in &msg.parts {
-        if let Some(t) = msg_part_trimmed_text(p) {
-            lines.push(t.to_string());
-        }
-    }
-    if lines.is_empty() {
-        return None;
-    }
-    Some(lines.join("\n"))
-}
-
-fn msg_part_trimmed_text(p: &Part) -> Option<&str> {
-    let t = p.text.as_deref()?.trim();
-    if t.is_empty() {
-        return None;
-    }
-    Some(t)
 }
 
 fn input_required_transcript_message(
@@ -82,8 +80,8 @@ fn input_required_transcript_message(
     let text = transcript_text_from_wire_status_message(wire)?;
     let mid = ir_transcript_external_id(task_id, &text);
     Some(Message {
-        message_id: A2aMessageId::incoming(mid),
-        role: MessageRole::Agent,
+        message_id: crate::a2a_types::A2aMessageId::incoming(mid),
+        role: crate::a2a_types::MessageRole::Agent,
         parts: vec![Part {
             text: Some(text),
             ..Default::default()
@@ -95,6 +93,25 @@ fn input_required_transcript_message(
         metadata: None,
         extra: HashMap::new(),
     })
+}
+
+fn prompt_to_status_message(task_id: &TaskId, context_id: &ContextId, prompt: &str) -> Message {
+    Message {
+        message_id: crate::a2a_types::A2aMessageId::incoming(ir_transcript_external_id(
+            task_id, prompt,
+        )),
+        role: crate::a2a_types::MessageRole::Agent,
+        parts: vec![Part {
+            text: Some(prompt.to_string()),
+            ..Default::default()
+        }],
+        context_id: Some(context_id.clone()),
+        task_id: Some(task_id.clone()),
+        reference_task_ids: Vec::new(),
+        extensions: Vec::new(),
+        metadata: None,
+        extra: HashMap::new(),
+    }
 }
 
 fn ir_transcript_external_id(task_id: &TaskId, prompt: &str) -> ExternalId {
@@ -143,132 +160,143 @@ fn is_allowed_transition(from: &str, to: &str) -> bool {
     )
 }
 
-fn status_to_string(status: &TaskStatus) -> Option<String> {
-    status.state.as_ref().map(|state| match state {
-        TaskState::String(value) => value.clone(),
-        TaskState::Integer(value) => value.to_string(),
-    })
-}
-
-fn map_store_err(e: A2aGraphStoreError) -> BamlRtError {
-    BamlRtError::ProvenanceContextRead {
-        source: Box::new(e),
-    }
-}
-
-/// Wire Task converted for A2aGraphStore. Use [TryFrom]/[TryInto] at the boundary.
-struct TaskNodeForProv(TaskSubgraphNode);
-
-impl TaskNodeForProv {
-    fn as_node(&self) -> &TaskSubgraphNode {
-        &self.0
-    }
-    fn as_node_mut(&mut self) -> &mut TaskSubgraphNode {
-        &mut self.0
-    }
-}
-
-impl TryFrom<&Task> for TaskNodeForProv {
-    type Error = BamlRtError;
-
-    fn try_from(task: &Task) -> Result<Self> {
-        let id = task
-            .id
-            .as_ref()
-            .ok_or_else(|| {
-                BamlRtError::InvalidArgument("task.id required for provenance upsert".into())
-            })?
-            .as_str()
-            .to_string();
-        let context_id = task
-            .context_id
-            .as_ref()
-            .map(|c| c.as_str().to_string())
-            .unwrap_or_default();
-        let status_json = task
-            .status
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize status: {e}")))?
-            .unwrap_or_default();
-        let metadata_json = task
-            .metadata
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize metadata: {e}")))?
-            .unwrap_or_default();
-        let extra_json = serde_json::to_string(&task.extra)
-            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize extra: {e}")))?;
-        let artifacts_json = serde_json::to_string(&task.artifacts)
-            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize artifacts: {e}")))?;
-        Ok(TaskNodeForProv(TaskSubgraphNode {
-            id,
-            context_id,
-            status_json,
-            metadata_json,
-            extra_json,
-            artifacts_json,
-        }))
-    }
-}
-
-/// task_id extracted from Message for A2aGraphStore::insert_message_node. Use [TryFrom]/[TryInto] at the boundary.
-struct MessageTaskIdForProv(String);
-
-impl TryFrom<&Message> for MessageTaskIdForProv {
-    type Error = BamlRtError;
-
-    fn try_from(message: &Message) -> Result<Self> {
-        message
-            .task_id
-            .as_ref()
-            .ok_or_else(|| {
-                BamlRtError::InvalidArgument(
-                    "message.task_id required for provenance insert".into(),
-                )
-            })
-            .map(|t| MessageTaskIdForProv(t.as_str().to_string()))
-    }
-}
-
+/// Graph-only A2A task store. Combines a [`TaskGraphReader`] (read
+/// surface), a [`ProvenanceWriter`] (write surface — `add_event`
+/// emissions), and an optional [`TaskUpdateBroadcaster`] (live SSE
+/// notification surface).
+///
+/// The broadcaster is optional: callers running in tests or
+/// integrations that do not host SSE subscribers may pass [`None`];
+/// the store falls back to a dedicated default broadcaster so writes
+/// remain idempotent.
 pub struct TaskSubgraphStore {
-    graph: Arc<dyn A2aGraphStore>,
+    reader: Arc<dyn TaskGraphReader>,
+    writer: Arc<dyn ProvenanceWriter>,
+    broadcaster: Arc<TaskUpdateBroadcaster>,
 }
 
 impl TaskSubgraphStore {
-    pub fn new(graph: Arc<dyn A2aGraphStore>) -> Self {
-        Self { graph }
+    pub fn new(reader: Arc<dyn TaskGraphReader>, writer: Arc<dyn ProvenanceWriter>) -> Self {
+        Self {
+            reader,
+            writer,
+            broadcaster: Arc::new(TaskUpdateBroadcaster::default()),
+        }
     }
+
+    pub fn with_broadcaster(
+        reader: Arc<dyn TaskGraphReader>,
+        writer: Arc<dyn ProvenanceWriter>,
+        broadcaster: Arc<TaskUpdateBroadcaster>,
+    ) -> Self {
+        Self {
+            reader,
+            writer,
+            broadcaster,
+        }
+    }
+
+    pub fn broadcaster(&self) -> Arc<TaskUpdateBroadcaster> {
+        self.broadcaster.clone()
+    }
+
+    fn map_writer_err(source: baml_rt_provenance::ProvenanceError) -> BamlRtError {
+        BamlRtError::ProvenanceContextRead {
+            source: Box::new(source),
+        }
+    }
+
+    /// Resolve the canonical `ScopedTaskRef` for `(ctx, tid)`. Returns
+    /// `None` when either the task does not exist or it is not
+    /// `SCOPED_TO` `ctx` (cross-context forgery is structurally
+    /// rejected by the typestate).
+    async fn scoped(&self, ctx: &ContextId, tid: &TaskId) -> Result<Option<ScopedTaskRef>> {
+        self.reader
+            .resolve_scoped(ctx, tid)
+            .await
+            .map_err(Self::map_writer_err)
+    }
+}
+
+/// Convert a hydrated graph view into the wire-shaped
+/// [`crate::a2a_types::Task`]. The historical `metadata` / `extra`
+/// fields are deliberately dropped because the graph-backed task view
+/// does not model them as typed provenance data.
+fn hydrated_to_wire_task(
+    h: baml_rt_provenance::HydratedTask,
+    history_messages: Vec<Message>,
+) -> Task {
+    let status = h
+        .status
+        .as_ref()
+        .map(|state| status_kind_to_wire_status(&h.task_id, &h.context_id, state));
+    let artifacts = h
+        .artifacts
+        .into_iter()
+        .map(|aref| Artifact {
+            artifact_id: aref.artifact_id,
+            name: None,
+            description: None,
+            parts: Vec::new(),
+            extensions: Vec::new(),
+            metadata: aref.artifact_type.map(|t| {
+                let mut map = HashMap::new();
+                map.insert("artifact_type".to_string(), serde_json::Value::String(t));
+                map
+            }),
+            extra: HashMap::new(),
+        })
+        .collect();
+    Task {
+        id: Some(h.task_id),
+        context_id: Some(h.context_id),
+        artifacts,
+        history: history_messages,
+        status,
+        metadata: None,
+        extra: HashMap::new(),
+    }
+}
+
+fn status_kind_to_wire_status(
+    task_id: &TaskId,
+    context_id: &ContextId,
+    state: &baml_rt_provenance::metamodel::A2ATaskStateProps,
+) -> TaskStatus {
+    let mut status = TaskStatus {
+        state: Some(TaskState::String(
+            state.new_status.as_wire_str().to_string(),
+        )),
+        message: None,
+        timestamp: Some(state.transitioned_at_ms.to_string()),
+        extra: HashMap::new(),
+    };
+    match &state.new_status {
+        baml_rt_provenance::metamodel::TaskStatusKind::InputRequired { prompt } => {
+            status.message = Some(prompt_to_status_message(task_id, context_id, prompt));
+        }
+        baml_rt_provenance::metamodel::TaskStatusKind::Failed { reason } => {
+            status.extra.insert(
+                "error_reason".to_string(),
+                serde_json::Value::String(reason.as_str().to_string()),
+            );
+        }
+        _ => {}
+    }
+    status
 }
 
 #[async_trait]
 impl TaskRepository for TaskSubgraphStore {
     async fn upsert(&self, task: Task) -> Result<Option<Task>> {
-        let mut node: TaskNodeForProv = (&task).try_into()?;
-        let preserve_status = self
-            .graph
-            .get_task_node(&node.as_node().id)
-            .await
-            .map_err(map_store_err)?
-            .and_then(|n| (!n.status_json.is_empty()).then_some(n.status_json))
-            .and_then(|raw| serde_json::from_str::<TaskStatus>(&raw).ok());
-        let status_to_store = preserve_status.clone().or(task.status.clone());
-        node.as_node_mut().status_json = status_to_store
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize status: {e}")))?
-            .unwrap_or_default();
-        let ord = self.graph.max_task_ord().await.map_err(map_store_err)? + 1;
-        self.graph
-            .upsert_task_node(node.as_node(), ord)
-            .await
-            .map_err(map_store_err)?;
-        let mut out = task;
-        out.status = status_to_store;
-        Ok(Some(out))
+        // Graph-native: tasks come into existence through `TaskExists`
+        // / `TaskExecutionStarted` provenance events. The wire-side
+        // upsert is a no-op write because the wire `Task` has no
+        // round-tripped fields anymore (`metadata` / `extra` were
+        // intentionally dropped). Return the
+        // input unchanged so the caller's pipeline observes the
+        // post-upsert shape it expects.
+        Ok(Some(task))
     }
 
     async fn ensure_task_exists(
@@ -276,64 +304,64 @@ impl TaskRepository for TaskSubgraphStore {
         task_id: &TaskId,
         context_id: Option<&ContextId>,
     ) -> Result<()> {
-        let ord = self.graph.max_task_ord().await.map_err(map_store_err)?;
-        self.graph
-            .ensure_task_node(
-                task_id.as_str(),
-                context_id.map(|c| c.as_str()).unwrap_or_default(),
-                ord + 1,
-            )
+        // Idempotent. Emits `ProvEvent::TaskExists` when both
+        // context and task ids are present so the graph carries a
+        // first-class node and `SCOPED_TO` edge; degrades silently
+        // (with a `tracing::warn!` breadcrumb) when context is absent
+        // because graph-only writes require context.
+        let Some(cid) = context_id else {
+            tracing::warn!(
+                task_id = %task_id.as_str(),
+                "ensure_task_exists: no context_id — graph emission skipped"
+            );
+            return Ok(());
+        };
+        let event = ProvEvent::task_exists(cid.clone(), task_id.clone());
+        self.writer
+            .add_event(event)
             .await
-            .map_err(map_store_err)
+            .map_err(Self::map_writer_err)?;
+        Ok(())
     }
 
     async fn get(&self, id: &str, history_length: Option<usize>) -> Option<Task> {
-        let node = self.graph.get_task_node(id).await.ok().flatten()?;
-        let mut history: Vec<Message> = self
-            .graph
-            .list_message_json(id)
-            .await
-            .ok()?
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect();
-        if let Some(limit) = history_length {
-            if limit == 0 {
-                history.clear();
-            } else if history.len() > limit {
-                history = history.split_off(history.len() - limit);
+        // The wire `tasks.get` JSON-RPC carries only `{ id }`; the
+        // owning context is reconstructed by walking the `SCOPED_TO`
+        // edge from the Task node via
+        // [`TaskGraphReader::resolve_by_task_id`].
+        let task_id = TaskId::from_external(ExternalId::new(id));
+        let scoped = match self.reader.resolve_by_task_id(&task_id).await {
+            Ok(Some(s)) => s,
+            Ok(None) => return None,
+            Err(err) => {
+                tracing::warn!(
+                    task_id = %task_id.as_str(),
+                    error = %err,
+                    "TaskSubgraphStore::get resolve_by_task_id failed"
+                );
+                return None;
+            }
+        };
+        match self.reader.hydrate(scoped, history_length).await {
+            Ok(h) => Some(hydrated_to_wire_task(h, Vec::new())),
+            Err(err) => {
+                tracing::warn!(
+                    task_id = %task_id.as_str(),
+                    error = %err,
+                    "TaskSubgraphStore::get hydrate failed"
+                );
+                None
             }
         }
-        let status = if node.status_json.is_empty() {
-            None
-        } else {
-            serde_json::from_str(&node.status_json).ok()
-        };
-        let metadata = if node.metadata_json.is_empty() {
-            None
-        } else {
-            serde_json::from_str(&node.metadata_json).ok()
-        };
-        let extra = serde_json::from_str(&node.extra_json).ok()?;
-        let artifacts = serde_json::from_str(&node.artifacts_json).ok()?;
-        Some(Task {
-            id: Some(TaskId::from_external(ExternalId::new(node.id))),
-            context_id: ContextId::parse_temporal(&node.context_id),
-            artifacts,
-            history,
-            status,
-            metadata,
-            extra,
-        })
     }
 
     async fn list(&self, request: &ListTasksRequest) -> ListTasksResponse {
-        let rows = match self
-            .graph
-            .list_task_nodes(request.context_id.as_ref().map(|c| c.as_str()))
-            .await
-        {
-            Ok(r) => r,
+        let scoped_result = match request.context_id.as_ref() {
+            Some(ctx) => self.reader.list_scoped(ctx).await,
+            None => self.reader.list_all().await,
+        };
+        let scoped = match scoped_result {
+            Ok(v) => v,
             Err(_) => {
                 return ListTasksResponse {
                     tasks: vec![],
@@ -344,13 +372,18 @@ impl TaskRepository for TaskSubgraphStore {
                 };
             }
         };
+
         let history_limit = request.history_length.as_ref().and_then(|v| v.as_usize());
-        let mut tasks = Vec::new();
-        for node in rows {
-            if let Some(task) = self.get(&node.id, history_limit).await {
-                tasks.push(task);
-            }
-        }
+        let hydrated: Vec<baml_rt_provenance::HydratedTask> = self
+            .reader
+            .hydrate_batch(&scoped, history_limit)
+            .await
+            .unwrap_or_default();
+
+        let mut tasks: Vec<Task> = hydrated
+            .into_iter()
+            .map(|h| hydrated_to_wire_task(h, Vec::new()))
+            .collect();
 
         if let Some(status) = &request.status {
             tasks.retain(|task| {
@@ -405,36 +438,62 @@ impl TaskRepository for TaskSubgraphStore {
     }
 
     async fn cancel(&self, id: &str) -> Option<Task> {
-        let task = self.get(id, None).await?;
-        let task_id = task.id.clone()?;
-        let context_id = task.context_id.clone();
-        let status = TaskStatus {
-            state: Some(TaskState::String(S_CANCELED.to_string())),
-            message: None,
-            timestamp: None,
-            extra: HashMap::new(),
+        // Resolve the owning context via the SCOPED_TO edge, emit a
+        // TASK_STATE_CANCELED transition, then return the freshly
+        // hydrated task. The canonical cancel flow inside
+        // `apply_task_chunk` is unchanged; this entrypoint exists for
+        // the wire-level `tasks.cancel` JSON-RPC handler that has only
+        // `{ id }`.
+        let task_id = TaskId::from_external(ExternalId::new(id));
+        let scoped = match self.reader.resolve_by_task_id(&task_id).await {
+            Ok(Some(s)) => s,
+            Ok(None) => return None,
+            Err(err) => {
+                tracing::warn!(
+                    task_id = %task_id.as_str(),
+                    error = %err,
+                    "TaskSubgraphStore::cancel resolve_by_task_id failed"
+                );
+                return None;
+            }
         };
-        if let Err(e) = self.record_status_update(task_id, context_id, status).await {
-            tracing::warn!(task_id = %id, error = ?e, "cancel: record_status_update failed, provenance may be incomplete");
+        let context_id = context_id_from_node_id(scoped.ctx().as_str());
+        let event = ProvEvent::task_status_changed_typed(
+            context_id.clone(),
+            task_id.clone(),
+            None,
+            None,
+            Some(baml_rt_provenance::metamodel::TaskStatusKind::Canceled),
+        );
+        if let Err(err) = self.writer.add_event(event).await {
+            tracing::warn!(
+                task_id = %task_id.as_str(),
+                error = %err,
+                "TaskSubgraphStore::cancel write failed"
+            );
+            return None;
         }
-        self.get(id, None).await
+        match self.reader.hydrate(scoped, None).await {
+            Ok(h) => Some(hydrated_to_wire_task(h, Vec::new())),
+            Err(err) => {
+                tracing::warn!(
+                    task_id = %task_id.as_str(),
+                    error = %err,
+                    "TaskSubgraphStore::cancel hydrate failed"
+                );
+                None
+            }
+        }
     }
 
-    async fn insert_message(&self, message: &Message) -> Result<()> {
-        let task_id: MessageTaskIdForProv = message.try_into()?;
-        let seq = self
-            .graph
-            .max_message_seq(&task_id.0)
-            .await
-            .map_err(map_store_err)?
-            + 1;
-        let message_json = serde_json::to_string(message)
-            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize message: {e}")))?;
-        let node_id = format!("{}:msg:{seq}", task_id.0);
-        self.graph
-            .insert_message_node(&node_id, &task_id.0, seq, &message_json)
-            .await
-            .map_err(map_store_err)
+    async fn insert_message(&self, _message: &Message) -> Result<()> {
+        // Graph-native: messages are persisted by the
+        // `MessageReceived` / `MessageSent` ProvEvent emission already
+        // performed by the surrounding boundary
+        // (`SurrealRuntimeStore::emit_message_lifecycle_event`).
+        // Calling this method is harmless; the relational
+        // `a2a_message` mirror it previously wrote no longer exists.
+        Ok(())
     }
 }
 
@@ -443,23 +502,27 @@ impl TaskEventRecorder for TaskSubgraphStore {
     async fn record_status_update(
         &self,
         task_id: TaskId,
-        context_id: Option<ContextId>,
+        context_id: ContextId,
         status: TaskStatus,
     ) -> Result<Option<TaskUpdateEvent>> {
-        let new_state = match status_to_string(&status) {
-            Some(s) => s,
-            None => return Ok(None),
+        let new_status_kind = wire_status_to_kind(&status)?;
+        let new_state = new_status_kind.as_wire_str().to_string();
+
+        // FSM gate: read the current head state from the graph and
+        // apply the transition table.
+        let scoped = self.scoped(&context_id, &task_id).await?;
+        let current_state = if let Some(scoped) = &scoped {
+            self.reader
+                .latest_state(scoped.clone())
+                .await
+                .map_err(Self::map_writer_err)?
+        } else {
+            None
         };
-        let current_state = self
-            .graph
-            .get_task_node(task_id.as_str())
-            .await
-            .ok()
-            .flatten()
-            .and_then(|n| (!n.status_json.is_empty()).then_some(n.status_json))
-            .and_then(|raw| serde_json::from_str::<TaskStatus>(&raw).ok())
-            .and_then(|current_status| status_to_string(&current_status));
-        let allowed = match current_state.as_deref() {
+        let allowed = match current_state
+            .as_ref()
+            .map(|state| state.new_status.as_wire_str())
+        {
             None => new_state == S_SUBMITTED,
             Some(current) if is_terminal_state(current) => false,
             Some(current) => is_allowed_transition(current, &new_state),
@@ -467,19 +530,53 @@ impl TaskEventRecorder for TaskSubgraphStore {
         if !allowed {
             return Ok(None);
         }
-        let status_json = serde_json::to_string(&status)
-            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize status: {e}")))?;
-        let prov_ctx = match &context_id {
-            Some(c) => StatusUpdateContext::Scoped {
-                context_id: c.clone(),
-            },
-            None => StatusUpdateContext::TaskOnly,
+
+        // Emit the canonical ProvEvent. The normalizer's
+        // `TaskStatusChanged` writes the immutable TaskState node,
+        // links it to the previous state when known, and re-points the
+        // latest-state head pointer in the same transaction.
+        let event = ProvEvent::task_status_changed_typed(
+            context_id.clone(),
+            task_id.clone(),
+            current_state.as_ref().map(|state| state.new_status.clone()),
+            current_state
+                .as_ref()
+                .map(|state| state.activity_anchor.clone()),
+            Some(new_status_kind.clone()),
+        );
+        let cursor = match &event {
+            ProvEvent::Task(t) => {
+                baml_rt_provenance::TaskReplayCursor::from_anchor(t.id.clone())
+                    .map_err(|source| BamlRtError::InvalidArgument(source.to_string()))?
+            }
+            other => unreachable!("task_status_changed is always task-scoped: {other:?}"),
         };
-        prov_record_status_update(self.graph.as_ref(), &task_id, &prov_ctx, &status_json)
+        self.writer
+            .add_event(event)
             .await
-            .map_err(map_store_err)?;
+            .map_err(Self::map_writer_err)?;
+
+        // Mirror onto the live broadcaster for SSE subscribers.
+        let key = TaskStreamKey::new(context_id.clone(), task_id.clone());
+        let writer = self.broadcaster.writer(key);
+        let task_node = baml_rt_provenance::metamodel::TaskNodeId::for_task_id(&task_id);
+        let frame = TaskUpdateFrame::StatusTransition {
+            state: baml_rt_provenance::metamodel::A2ATaskStateProps::new(
+                task_node,
+                new_status_kind,
+                current_state.as_ref().map(|state| state.new_status.clone()),
+                status_timestamp_ms(&status),
+                cursor.anchor().clone(),
+            ),
+            cursor,
+        };
+        let _ = writer.send(frame);
+        if is_terminal_state(&new_state) {
+            writer.retire_task();
+        }
+
         Ok(Some(TaskUpdateEvent::Status(TaskStatusUpdateEvent {
-            context_id,
+            context_id: Some(context_id),
             task_id: Some(task_id),
             status: Some(status),
             metadata: None,
@@ -490,31 +587,49 @@ impl TaskEventRecorder for TaskSubgraphStore {
     async fn record_artifact_update(
         &self,
         task_id: TaskId,
-        context_id: Option<ContextId>,
+        context_id: ContextId,
         artifact: Artifact,
         append: Option<bool>,
         last_chunk: Option<bool>,
     ) -> Result<Option<TaskUpdateEvent>> {
-        let artifact_json = serde_json::to_string(&artifact)
-            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize artifact: {e}")))?;
-        let prov_ctx = match &context_id {
-            Some(c) => ArtifactUpdateContext::Scoped {
-                context_id: c.clone(),
-            },
-            None => ArtifactUpdateContext::TaskOnly,
+        let artifact_type = artifact
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("artifact_type"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let event = ProvEvent::task_artifact_generated(
+            context_id.clone(),
+            task_id.clone(),
+            artifact.artifact_id.clone(),
+            artifact_type.clone(),
+        );
+        let cursor = match &event {
+            ProvEvent::Task(t) => {
+                baml_rt_provenance::TaskReplayCursor::from_anchor(t.id.clone())
+                    .map_err(|source| BamlRtError::InvalidArgument(source.to_string()))?
+            }
+            other => unreachable!("task_artifact_generated is always task-scoped: {other:?}"),
         };
-        prov_record_artifact_update(
-            self.graph.as_ref(),
-            &task_id,
-            &prov_ctx,
-            &artifact_json,
-            append,
-            last_chunk,
-        )
-        .await
-        .map_err(map_store_err)?;
+        self.writer
+            .add_event(event)
+            .await
+            .map_err(Self::map_writer_err)?;
+
+        let key = TaskStreamKey::new(context_id.clone(), task_id.clone());
+        let writer = self.broadcaster.writer(key);
+        let frame = TaskUpdateFrame::ArtifactGenerated {
+            artifact: ArtifactRef {
+                task_id: task_id.clone(),
+                artifact_id: artifact.artifact_id.clone(),
+                artifact_type,
+            },
+            cursor,
+        };
+        let _ = writer.send(frame);
+
         Ok(Some(TaskUpdateEvent::Artifact(TaskArtifactUpdateEvent {
-            context_id,
+            context_id: Some(context_id),
             task_id: Some(task_id),
             last_chunk,
             append,
@@ -525,38 +640,12 @@ impl TaskEventRecorder for TaskSubgraphStore {
     }
 }
 
-#[async_trait]
-impl TaskUpdateQueue for TaskSubgraphStore {
-    async fn drain_updates(&self, task_id: &str) -> Vec<TaskUpdateEvent> {
-        let rows = match self.graph.list_update_nodes(task_id).await {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
-        let mut ids = Vec::new();
-        let events: Vec<TaskUpdateEvent> = rows
-            .iter()
-            .filter_map(|row| {
-                ids.push(row.id.clone());
-                match row.kind.as_str() {
-                    "status" => serde_json::from_str::<TaskStatusUpdateEvent>(&row.payload_json)
-                        .ok()
-                        .map(TaskUpdateEvent::Status),
-                    "artifact" => {
-                        serde_json::from_str::<TaskArtifactUpdateEvent>(&row.payload_json)
-                            .ok()
-                            .map(TaskUpdateEvent::Artifact)
-                    }
-                    _ => None,
-                }
-            })
-            .collect();
-        for id in ids {
-            if let Err(e) = self.graph.delete_update_node(&id).await {
-                tracing::warn!(update_node_id = %id, error = ?e, "delete_update_node failed during apply_task_delta cleanup");
-            }
-        }
-        events
-    }
+fn status_timestamp_ms(status: &TaskStatus) -> u64 {
+    status
+        .timestamp
+        .as_deref()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or_else(|| baml_rt_core::now_unix_ms(clock_events::A2A_STORE))
 }
 
 #[async_trait]
@@ -567,27 +656,37 @@ impl TaskChunkApplier for TaskSubgraphStore {
         let status_update = chunk.status_update().cloned();
         let artifact_update = chunk.artifact_update().cloned();
         let mut out = Vec::new();
-        // When a chunk has both task.status and status_update (e.g. make_submitted_chunk), record
-        // status only once to avoid duplicate provenance/sequence notes.
         let mut status_recorded_from_task: Option<(Option<TaskId>, Option<ContextId>, String)> =
             None;
         let mut input_required_transcript: Option<Message> = None;
+
         if let Some(mut t) = task {
             let status_snapshot = t.status.clone();
             let status = t.status.take();
             let context_id = t.context_id.clone();
             let task_id = t.id.clone();
             let artifacts = std::mem::take(&mut t.artifacts);
+            // upsert is a no-op under the graph-only model.
             let _ = self.upsert(t).await?;
             if let Some(status) = status
                 && let Some(tid) = &task_id
-                && let Some(ev) = self
-                    .record_status_update(tid.clone(), context_id.clone(), status.clone())
-                    .await?
             {
-                let state_str = status_to_string(&status).unwrap_or_default();
-                status_recorded_from_task = Some((task_id.clone(), context_id.clone(), state_str));
-                out.push(ev);
+                if let Some(ref cid) = context_id {
+                    if let Some(ev) = self
+                        .record_status_update(tid.clone(), cid.clone(), status.clone())
+                        .await?
+                    {
+                        let state_str = wire_status_to_kind(&status)?.as_wire_str().to_string();
+                        status_recorded_from_task =
+                            Some((task_id.clone(), context_id.clone(), state_str));
+                        out.push(ev);
+                    }
+                } else {
+                    tracing::warn!(
+                        task_id = %tid.as_str(),
+                        "skipping task.status recording: chunk has no context_id"
+                    );
+                }
             }
             if message.is_none()
                 && let (Some(tid), Some(cid), Some(st)) = (&task_id, &context_id, &status_snapshot)
@@ -596,10 +695,17 @@ impl TaskChunkApplier for TaskSubgraphStore {
             }
             if let Some(tid) = task_id {
                 for artifact in artifacts {
+                    let Some(ref cid) = context_id else {
+                        tracing::warn!(
+                            task_id = %tid.as_str(),
+                            "skipping artifact recording: chunk has no context_id"
+                        );
+                        continue;
+                    };
                     if let Some(ev) = self
                         .record_artifact_update(
                             tid.clone(),
-                            None,
+                            cid.clone(),
                             artifact,
                             Some(false),
                             Some(true),
@@ -627,35 +733,284 @@ impl TaskChunkApplier for TaskSubgraphStore {
         if let Some(ref up) = status_update
             && let Some(status) = up.status.clone()
         {
-            let state_str = status_to_string(&status).unwrap_or_default();
+            let state_str = wire_status_to_kind(&status)?.as_wire_str().to_string();
             let is_duplicate = status_recorded_from_task
                 .as_ref()
                 .is_some_and(|(tid, cid, s)| {
                     tid == &up.task_id && cid == &up.context_id && *s == state_str
                 });
-            if !is_duplicate
-                && let Some(ref tid) = up.task_id
-                && let Some(ev) = self
-                    .record_status_update(tid.clone(), up.context_id.clone(), status)
-                    .await?
-            {
-                out.push(ev);
+            if !is_duplicate && let Some(ref tid) = up.task_id {
+                if let Some(ref cid) = up.context_id {
+                    if let Some(ev) = self
+                        .record_status_update(tid.clone(), cid.clone(), status)
+                        .await?
+                    {
+                        out.push(ev);
+                    }
+                } else {
+                    tracing::warn!(
+                        task_id = %tid.as_str(),
+                        "skipping status_update: chunk has no context_id"
+                    );
+                }
             }
         }
         if let Some(ref up) = artifact_update
             && let Some(ref tid) = up.task_id
-            && let Some(ev) = self
-                .record_artifact_update(
-                    tid.clone(),
-                    up.context_id.clone(),
-                    up.artifact.clone().unwrap_or_default(),
-                    up.append,
-                    up.last_chunk,
-                )
-                .await?
         {
-            out.push(ev);
+            if let Some(ref cid) = up.context_id {
+                if let Some(ev) = self
+                    .record_artifact_update(
+                        tid.clone(),
+                        cid.clone(),
+                        up.artifact.clone().unwrap_or_default(),
+                        up.append,
+                        up.last_chunk,
+                    )
+                    .await?
+                {
+                    out.push(ev);
+                }
+            } else {
+                tracing::warn!(
+                    task_id = %tid.as_str(),
+                    "skipping artifact_update: chunk has no context_id"
+                );
+            }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use baml_rt_core::ids::{AgentId, ExternalId, UuidId};
+    use baml_rt_provenance::{SurrealStoreBuilder, events::ProvEvent};
+
+    use super::*;
+
+    fn make_agent_id() -> AgentId {
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000ab").unwrap())
+    }
+
+    fn wire_input_required_status(prompt: &str) -> TaskStatus {
+        TaskStatus {
+            state: Some(TaskState::String(S_INPUT_REQUIRED.to_string())),
+            message: Some(Message {
+                message_id: crate::a2a_types::A2aMessageId::incoming(ExternalId::new(
+                    "msg-input-required",
+                )),
+                role: crate::a2a_types::MessageRole::Agent,
+                parts: vec![Part {
+                    text: Some(prompt.to_string()),
+                    ..Default::default()
+                }],
+                context_id: None,
+                task_id: None,
+                reference_task_ids: Vec::new(),
+                extensions: Vec::new(),
+                metadata: None,
+                extra: HashMap::new(),
+            }),
+            timestamp: Some("1234".to_string()),
+            extra: HashMap::new(),
+        }
+    }
+
+    fn wire_failed_status(reason: &str) -> TaskStatus {
+        let mut extra = HashMap::new();
+        extra.insert(
+            "error_reason".to_string(),
+            serde_json::Value::String(reason.to_string()),
+        );
+        TaskStatus {
+            state: Some(TaskState::String(S_FAILED.to_string())),
+            message: None,
+            timestamp: Some("5678".to_string()),
+            extra,
+        }
+    }
+
+    async fn build_task_store() -> (
+        Arc<baml_rt_provenance::SurrealProvenanceStore>,
+        TaskSubgraphStore,
+        ContextId,
+        TaskId,
+    ) {
+        let provenance = SurrealStoreBuilder::in_memory_isolated()
+            .build()
+            .await
+            .expect("build isolated provenance store");
+        let reader: Arc<dyn TaskGraphReader> = provenance.clone();
+        let writer: Arc<dyn ProvenanceWriter> = provenance.clone();
+        let task_store = TaskSubgraphStore::new(reader, writer);
+        let context_id = ContextId::new(7_001, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-status-totality"));
+        provenance
+            .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+            .await
+            .expect("task_exists");
+        provenance
+            .add_event(ProvEvent::task_execution_started(
+                context_id.clone(),
+                task_id.clone(),
+                make_agent_id(),
+            ))
+            .await
+            .expect("task_execution_started");
+        (provenance, task_store, context_id, task_id)
+    }
+
+    #[tokio::test]
+    async fn get_and_list_preserve_input_required_prompt() {
+        let (_provenance, task_store, context_id, task_id) = build_task_store().await;
+
+        task_store
+            .record_status_update(
+                task_id.clone(),
+                context_id.clone(),
+                TaskStatus {
+                    state: Some(TaskState::String(S_SUBMITTED.to_string())),
+                    message: None,
+                    timestamp: Some("1000".to_string()),
+                    extra: HashMap::new(),
+                },
+            )
+            .await
+            .expect("submitted status");
+        task_store
+            .record_status_update(
+                task_id.clone(),
+                context_id.clone(),
+                wire_input_required_status("Please confirm the deploy window"),
+            )
+            .await
+            .expect("input required status");
+
+        let task = task_store
+            .get(task_id.as_str(), None)
+            .await
+            .expect("task snapshot");
+        let prompt = task
+            .status
+            .as_ref()
+            .and_then(|status| status.message.as_ref())
+            .and_then(|message| message.parts.first())
+            .and_then(|part| part.text.as_deref());
+        assert_eq!(
+            prompt,
+            Some("Please confirm the deploy window"),
+            "tasks.get must preserve the input-required prompt",
+        );
+
+        let listed = task_store
+            .list(&ListTasksRequest {
+                context_id: Some(context_id),
+                history_length: None,
+                include_artifacts: Some(true),
+                page_size: None,
+                page_token: None,
+                status: None,
+                status_timestamp_after: None,
+                tenant: None,
+                extra: HashMap::new(),
+            })
+            .await;
+        let listed_prompt = listed
+            .tasks
+            .first()
+            .and_then(|task| task.status.as_ref())
+            .and_then(|status| status.message.as_ref())
+            .and_then(|message| message.parts.first())
+            .and_then(|part| part.text.as_deref());
+        assert_eq!(
+            listed_prompt,
+            Some("Please confirm the deploy window"),
+            "tasks.list must preserve the input-required prompt",
+        );
+    }
+
+    #[tokio::test]
+    async fn get_preserves_failed_reason() {
+        let (_provenance, task_store, context_id, task_id) = build_task_store().await;
+
+        task_store
+            .record_status_update(
+                task_id.clone(),
+                context_id.clone(),
+                TaskStatus {
+                    state: Some(TaskState::String(S_SUBMITTED.to_string())),
+                    message: None,
+                    timestamp: Some("1000".to_string()),
+                    extra: HashMap::new(),
+                },
+            )
+            .await
+            .expect("submitted status");
+        task_store
+            .record_status_update(
+                task_id.clone(),
+                context_id,
+                wire_failed_status("quota exhausted"),
+            )
+            .await
+            .expect("failed status");
+
+        let task = task_store
+            .get(task_id.as_str(), None)
+            .await
+            .expect("failed task snapshot");
+        let reason = task
+            .status
+            .as_ref()
+            .and_then(|status| status.extra.get("error_reason"))
+            .and_then(serde_json::Value::as_str);
+        assert_eq!(
+            reason,
+            Some("quota exhausted"),
+            "tasks.get must preserve the original failed reason",
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_payload_bearing_statuses_are_rejected() {
+        let (_provenance, task_store, context_id, task_id) = build_task_store().await;
+
+        let err = task_store
+            .record_status_update(
+                task_id.clone(),
+                context_id.clone(),
+                TaskStatus {
+                    state: Some(TaskState::String(S_INPUT_REQUIRED.to_string())),
+                    message: None,
+                    timestamp: Some("1000".to_string()),
+                    extra: HashMap::new(),
+                },
+            )
+            .await
+            .expect_err("missing input-required prompt must be rejected");
+        assert!(
+            err.to_string()
+                .contains("TASK_STATE_INPUT_REQUIRED requires"),
+            "strict prompt error should mention the missing prompt payload, got: {err}",
+        );
+
+        let err = task_store
+            .record_status_update(
+                task_id,
+                context_id,
+                TaskStatus {
+                    state: Some(TaskState::String(S_FAILED.to_string())),
+                    message: None,
+                    timestamp: Some("1001".to_string()),
+                    extra: HashMap::new(),
+                },
+            )
+            .await
+            .expect_err("missing failed reason must be rejected");
+        assert!(
+            err.to_string().contains("TASK_STATE_FAILED requires"),
+            "strict failure error should mention the missing reason payload, got: {err}",
+        );
     }
 }

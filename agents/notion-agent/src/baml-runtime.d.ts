@@ -423,7 +423,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseNotionAction" | "ChooseNotionAction__act__support_notion" | "ChooseNotionAction__continue__support_notion" | "ChooseNotionAction__select";
+export type StepExecutorFunctionName = "ChooseNotionAction" | "ChooseNotionAction__active__support_notion" | "ChooseNotionAction__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -474,9 +474,8 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ChooseNotionAction: { args: Parameters<typeof ChooseNotionAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseNotionAction>>; };
-  ChooseNotionAction__act__support_notion: { args: Parameters<typeof ChooseNotionAction__act__support_notion>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseNotionAction__act__support_notion>>; };
-  ChooseNotionAction__continue__support_notion: { args: Parameters<typeof ChooseNotionAction__continue__support_notion>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseNotionAction__continue__support_notion>>; };
-  ChooseNotionAction__select: { args: Parameters<typeof ChooseNotionAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseNotionAction__select>>; };
+  ChooseNotionAction__active__support_notion: { args: Parameters<typeof ChooseNotionAction__active__support_notion>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseNotionAction__active__support_notion>>; };
+  ChooseNotionAction__entry: { args: Parameters<typeof ChooseNotionAction__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseNotionAction__entry>>; };
 }
 
 declare global {

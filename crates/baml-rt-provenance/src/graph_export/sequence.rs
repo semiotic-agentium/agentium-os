@@ -1591,11 +1591,13 @@ fn prop_f64(node: &ExportedNode, key: &str) -> Option<f64> {
     })
 }
 
-/// Strip known tool name prefixes (`support/`, `system/`) for brevity in
+/// Strip known tool name prefixes (`support/`, `system/`, and slug forms `support_`, `system_`) for brevity in
 /// diagram labels.
 fn strip_tool_prefix(name: &str) -> &str {
     name.strip_prefix("support/")
         .or_else(|| name.strip_prefix("system/"))
+        .or_else(|| name.strip_prefix("support_"))
+        .or_else(|| name.strip_prefix("system_"))
         .unwrap_or(name)
 }
 
@@ -1755,6 +1757,16 @@ fn tool_display_label(raw: &str) -> String {
 }
 
 fn humanize_function_label(raw: &str) -> String {
+    if let Some(base) = raw.strip_suffix("__entry") {
+        return format!("{} Entry", humanize_identifier(base));
+    }
+    if let Some((base, tool)) = raw.split_once("__active__") {
+        return format!(
+            "{} Active {}",
+            humanize_identifier(base),
+            tool_display_label(strip_tool_prefix(tool))
+        );
+    }
     if let Some(base) = raw.strip_suffix("__select") {
         return format!("{} Select", humanize_identifier(base));
     }
@@ -2955,6 +2967,14 @@ mod tests {
 
     #[test]
     fn humanize_function_label_patterns() {
+        assert_eq!(
+            humanize_function_label("coordinator__entry"),
+            "Coordinator Entry"
+        );
+        assert_eq!(
+            humanize_function_label("coordinator__active__support_crm"),
+            "Coordinator Active CRM"
+        );
         assert_eq!(
             humanize_function_label("coordinator__select"),
             "Coordinator Select"

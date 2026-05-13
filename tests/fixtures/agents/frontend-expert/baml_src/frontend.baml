@@ -22,8 +22,15 @@ class FrontendProposal {
 
 function AnalyzeFrontend(user_message: string) -> FrontendProposal {
   client DefaultClient
-  prompt #"
-    You are a senior frontend engineer and design systems expert for the Agentium dashboard — a Vue 3 single-page application that serves as the UI for an agent-to-agent (A2A) platform.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are a senior frontend engineer and design systems expert for the Agentium dashboard — a Vue 3 single-page application that serves as the UI for an agent-to-agent (A2A) platform.
 
     TECH STACK:
     - Vue 3.5 with Composition API (<script setup lang="ts">)
@@ -83,18 +90,29 @@ function AnalyzeFrontend(user_message: string) -> FrontendProposal {
     Each proposal should include complete code snippets (not pseudocode) that follow the existing patterns.
     If the request is vague, propose the most impactful interpretation.
 
-    {{ ctx.tags['conversation_transcript'] }}
     {{ _.role('user') }}
     {{ user_message }}
 
-    {{ ctx.output_format }}
-  "#
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+{{ ctx.output_format }}
+"#
 }
 
 function FormatProposal(user_message: string, proposal: FrontendProposal) -> string {
   client DefaultClient
-  prompt #"
-    You are presenting a frontend code proposal to a developer. Convert the structured proposal into a clear, scannable response.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are presenting a frontend code proposal to a developer. Convert the structured proposal into a clear, scannable response.
 
     Format rules:
     - Start with a 1-2 sentence summary
@@ -103,15 +121,19 @@ function FormatProposal(user_message: string, proposal: FrontendProposal) -> str
     - Use markdown: headers (##), bold for file paths, code blocks for snippets
     - Keep it concise — the full code is in the artifact; this is the overview
 
-    {{ ctx.tags['conversation_transcript'] }}
     {{ _.role('user') }}
     Original request: {{ user_message }}
 
     Structured proposal:
     {{ proposal }}
 
-    {{ ctx.output_format }}
-  "#
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+{{ ctx.output_format }}
+"#
 }
 
 // ─── Client ───

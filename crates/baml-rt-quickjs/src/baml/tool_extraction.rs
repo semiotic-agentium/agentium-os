@@ -265,6 +265,11 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
         }
     };
 
+    // Read-only terminal: no host tool session — not an FSM extractable plan.
+    if op_str == "readonlyfinish" {
+        return Ok(None);
+    }
+
     let reason = step_obj
         .get("reason")
         .and_then(|v| v.as_str())
@@ -572,6 +577,15 @@ mod tests {
         });
         let result = extract_tool_session_plan(&json);
         assert!(result.is_err(), "invalid tool_name format must be rejected");
+    }
+
+    #[test]
+    fn extract_tool_session_plan_read_only_finish_not_a_session_plan() {
+        let json: Value = serde_json::json!({
+            "op": "ReadOnlyFinish",
+            "reply": { "parts": [{"type": "text", "text": "from archive"}], "citations": ["@1"] }
+        });
+        assert!(extract_tool_session_plan(&json).unwrap().is_none());
     }
 
     #[test]

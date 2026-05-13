@@ -383,7 +383,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseMeteoAgentAction" | "ChooseMeteoAgentAction__act__dev_meteo_tool" | "ChooseMeteoAgentAction__continue__dev_meteo_tool" | "ChooseMeteoAgentAction__select";
+export type StepExecutorFunctionName = "ChooseMeteoAgentAction" | "ChooseMeteoAgentAction__active__dev_meteo_tool" | "ChooseMeteoAgentAction__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -434,9 +434,8 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ChooseMeteoAgentAction: { args: Parameters<typeof ChooseMeteoAgentAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseMeteoAgentAction>>; };
-  ChooseMeteoAgentAction__act__dev_meteo_tool: { args: Parameters<typeof ChooseMeteoAgentAction__act__dev_meteo_tool>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseMeteoAgentAction__act__dev_meteo_tool>>; };
-  ChooseMeteoAgentAction__continue__dev_meteo_tool: { args: Parameters<typeof ChooseMeteoAgentAction__continue__dev_meteo_tool>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseMeteoAgentAction__continue__dev_meteo_tool>>; };
-  ChooseMeteoAgentAction__select: { args: Parameters<typeof ChooseMeteoAgentAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseMeteoAgentAction__select>>; };
+  ChooseMeteoAgentAction__active__dev_meteo_tool: { args: Parameters<typeof ChooseMeteoAgentAction__active__dev_meteo_tool>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseMeteoAgentAction__active__dev_meteo_tool>>; };
+  ChooseMeteoAgentAction__entry: { args: Parameters<typeof ChooseMeteoAgentAction__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseMeteoAgentAction__entry>>; };
 }
 
 declare global {

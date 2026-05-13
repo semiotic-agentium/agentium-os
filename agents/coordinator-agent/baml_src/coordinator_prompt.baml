@@ -26,8 +26,15 @@ class CoordinatorMetaOnly {
 
 function ClassifyCoordinatorTurn(user_message: string) -> CoordinatorReadyIntent | CoordinatorNeedTaskClarification | CoordinatorMetaOnly {
   client DefaultClient
-  prompt #"
-    You classify this turn for a **coordinator agent** that routes **real work** to specialist agents (after discovery). **Discovery of specialists runs only after** a delegatable task exists OR the user explicitly asks what agents or tools exist (capabilities orientation).
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You classify this turn for a **coordinator agent** that routes **real work** to specialist agents (after discovery). **Discovery of specialists runs only after** a delegatable task exists OR the user explicitly asks what agents or tools exist (capabilities orientation).
 
     Return **exactly one** variant:
 
@@ -42,11 +49,16 @@ function ClassifyCoordinatorTurn(user_message: string) -> CoordinatorReadyIntent
     - If torn between Ready and Clarification, choose **CoordinatorNeedTaskClarification**.
     - Do not emit Ready with a hand-wavy generic intent when the user gave no actionable anchor.
 
-    {{ ctx.tags['conversation_transcript'] }}
     {{ _.role('user') }}
     {{ user_message }}
-    {{ ctx.output_format }}
-  "#
+
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+{{ ctx.output_format }}
+"#
 }
 
 // StructuredReply: shared synthesis shape in `_baml_runtime.baml` (builder prelude).
@@ -55,18 +67,30 @@ function ClassifyCoordinatorTurn(user_message: string) -> CoordinatorReadyIntent
 // The session history carries the Read result from the preceding GetDiscoverAgentsPlan call.
 function FormatCapabilities(user_message: string) -> StructuredReply {
   client DefaultClient
-  prompt #"
-    You are the coordinator agent: calm, precise, and brief. Use prior turns from the transcript below when present for continuity.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are the coordinator agent: calm, precise, and brief. Use prior turns from the transcript below when present for continuity.
 
     If the session history includes a tool discovery **Read** result, summarize those agents in clear professional language (what each is for, major capabilities).
     If there is **no** discovery listing in history (meta-only turn without specialist search), answer briefly: greet if appropriate and explain you are ready when they name a task or ask what coordination does — **do not invent** agent package names.
     Match the output schema exactly (StructuredReply: parts + citations). Two to five sentences in the text part; no internal tool jargon.
 
-    {{ ctx.tags['conversation_transcript'] }}
     {{ _.role('user') }}
     {{ user_message }}
-    {{ ctx.output_format }}
-  "#
+
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+{{ ctx.output_format }}
+"#
 }
 
 // Planning step: output a structured plan against discovered agents.
@@ -74,8 +98,15 @@ function FormatCapabilities(user_message: string) -> StructuredReply {
 // Never plan a step for coordinator-agent. For capability/meta requests, return plan_steps as [].
 function MakeStructuredPlan(user_message: string) -> StandardStructuredPlan {
   client DefaultClient
-  prompt #"
-    You are PLANNING what to do; you do not perform the task yourself.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are PLANNING what to do; you do not perform the task yourself.
     When discovery ran, the session history contains the list of available agents; when it did **not** run (greeting/meta-only path), there may be **no** agent listing — treat `plan_steps` as `[]` unless the user clearly stated routable work that implies delegation without that listing.
 
     **Coordinator rule:** Non-empty `plan_steps` means at least one specialist conversation is justified by the user's message **and** (when present) the discovery list. If the user only wants orientation (capabilities, greetings, small talk), or discovery did not run and they did not state concrete work, `plan_steps` MUST be `[]`. If the user gave a concrete task matching one or more agents **in history**, include at least one step. Never invent agent packages not grounded in history.
@@ -96,11 +127,16 @@ function MakeStructuredPlan(user_message: string) -> StandardStructuredPlan {
     - If the user is asking what is available, what you can do, greetings/help, casual social chat, set plan_steps to [].
     A task may need one agent chat (one step) or multiple (multiple steps). Never plan a step for coordinator-agent. Output only the structured plan.
 
-    {{ ctx.tags['conversation_transcript'] }}
     {{ _.role('user') }}
     {{ user_message }}
-    {{ ctx.output_format }}
-  "#
+
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+{{ ctx.output_format }}
+"#
 }
 
 /// Coordinate with a specialist agent to achieve a goal.
@@ -124,8 +160,15 @@ function CoordinatorSynthesizeReply(
   plan_objective: string,
 ) -> StructuredReply {
   client DefaultClient
-  prompt #"
-    You are the coordinator agent: professional, concise, and accurate. Use prior turns from the transcript below when present for continuity.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are the coordinator agent: professional, concise, and accurate. Use prior turns from the transcript below when present for continuity.
 
     The user asked: {{ user_message }}
     Plan objective: {{ plan_objective }}
@@ -134,9 +177,13 @@ function CoordinatorSynthesizeReply(
     Match the output schema exactly (StructuredReply: parts + citations).
     Synthesize across steps when needed; prefer bullet structure in markdown only when it improves clarity.
 
-    {{ ctx.tags['conversation_transcript'] }}
-    {{ ctx.output_format }}
-  "#
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+{{ ctx.output_format }}
+"#
 }
 
 client DefaultClient {

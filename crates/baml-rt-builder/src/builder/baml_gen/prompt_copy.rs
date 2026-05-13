@@ -53,7 +53,7 @@ pub(crate) const ARCHIVE_READ_LIMIT: &str = "Max lines in this read window. Pref
 /// per turn, blank line between turns. This is the **only** history tag BAML receives.
 ///
 /// **Session-plan parents** (`Choose*` → `*SessionPlan`): do **not** paste transcript `{% if %}` blocks
-/// or Open/Send/SearchRead field-shape litanies — generated `__select` / `__act__*` / `__continue__*`
+/// or Open/Send/SearchRead field-shape litanies — generated `__entry` / `__active__*`
 /// inject archive policy, optional `tool_schema_prelude`, narrowed-type footer, transcript, and phase
 /// constraints. Author only task- and domain-specific lines (IDs, safety rules, channel/thread form).
 ///
@@ -192,6 +192,13 @@ class ArchiveSearchReadStep {{
 class ArchivePageReadStep {{
   op "PageRead"
   input ArchivePageReadInput @description("{page_desc}")
+}}
+
+/// Terminal hop without a host tool session: answer from visible conversation archives only.
+/// Do not emit when you need a fresh Open/Send — use ENTRY Open or ACTIVE Send instead.
+class ReadOnlyFinishStep {{
+  op "ReadOnlyFinish"
+  reply StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
 }}
 "#,
         c_plan = c_plan,

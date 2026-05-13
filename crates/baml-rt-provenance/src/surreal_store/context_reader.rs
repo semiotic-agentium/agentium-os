@@ -171,11 +171,9 @@ impl SurrealProvenanceStore {
                          SELECT VALUE to_id FROM {TBL_EDGE} \
                          WHERE from_id = $task_exec_id AND rel_type = '{tc}'\
                        ))\
-                       OR (label = 'SessionStep' AND (\
-                         node_id IN (\
-                           SELECT VALUE to_id FROM {TBL_EDGE} \
-                           WHERE from_id = $task_entity_id AND rel_type = '{ts}'\
-                         ) OR props.a2a_task_id = $task_id_str\
+                       OR (label = 'SessionStep' AND node_id IN (\
+                         SELECT VALUE to_id FROM {TBL_EDGE} \
+                         WHERE from_id = $task_entity_id AND rel_type = '{ts}'\
                        ))\
                      )"
                 )
@@ -210,7 +208,6 @@ impl SurrealProvenanceStore {
                 "task_exec_id",
                 task_execution_activity_id_string(tid.as_str()),
             ));
-            q = q.bind(("task_id_str", tid.as_str().to_string()));
         }
         if let Some(after) = after_event_order {
             q = q.bind(("after_event_order", after));

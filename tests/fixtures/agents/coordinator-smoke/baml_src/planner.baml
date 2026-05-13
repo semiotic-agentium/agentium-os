@@ -50,8 +50,15 @@ function PlanCoordinatorWorkflow(
   available_agents: AgentCandidate[],
 ) -> WorkflowPlan {
   client OpenRouterGPT
-  prompt #"
-    You are a coordinator planner that decomposes user requests into a workflow DAG.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are a coordinator planner that decomposes user requests into a workflow DAG.
     Return a WorkflowPlan with explicit dependencies and node kinds.
 
     Rules:
@@ -73,21 +80,20 @@ function PlanCoordinatorWorkflow(
     - `clarify` and `direct_answer` require prompt_template.
     - Use references like n1.output_text only when there is a dependency on n1.
 
-    {{ ctx.output_format }}
-
     ---AVAILABLE AGENTS---
     {{ available_agents }}
     ---END AVAILABLE AGENTS---
-
-    {% if ctx.tags['conversation_transcript'] %}
-    ---CONVERSATION CONTEXT---
-    {{ ctx.tags['conversation_transcript'] }}
-    ---END CONVERSATION CONTEXT---
-    {% endif %}
 
     {{ _.role('user') }}
     ---BEGIN USER REQUEST---
     {{ user_message }}
     ---END USER REQUEST---
-  "#
+
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+{{ ctx.output_format }}
+"#
 }

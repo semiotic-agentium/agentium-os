@@ -1,31 +1,40 @@
 #![recursion_limit = "256"]
-//! I2: Concurrency test for apply_task_delta. Ensures no interleaving violations:
-//! concurrent apply_task_delta calls for the same task result in a valid store state.
+//! I2: concurrent chunk application on the graph-backed task store.
 
 mod common;
 
 use std::{collections::HashMap, sync::Arc};
 
 use baml_rt_a2a::{
-    a2a_store::{TaskChunkApplier, TaskStore},
+    a2a_store::{TaskChunkApplier, TaskRepository},
     a2a_types::{StreamResponse, TaskState, ValidatedTaskChunk},
+    task_subgraph_store::TaskSubgraphStore,
 };
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
-use tokio::sync::Mutex;
+use baml_rt_provenance::{ProvenanceWriter, SurrealStoreBuilder, TaskGraphReader};
+
+async fn build_store() -> Arc<TaskSubgraphStore> {
+    let prov = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("isolated provenance store");
+    let reader: Arc<dyn TaskGraphReader> = prov.clone();
+    let writer: Arc<dyn ProvenanceWriter> = prov.clone();
+    Arc::new(TaskSubgraphStore::new(reader, writer))
+}
 
 #[tokio::test]
 async fn apply_task_delta_concurrent_same_task_valid_final_state() {
-    let store: Arc<Mutex<TaskStore>> = Arc::new(Mutex::new(TaskStore::new()));
+    let store = build_store().await;
     let task_id = TaskId::from_external(ExternalId::new("concurrent-task-1"));
     let context_id = ContextId::new(1, 1);
 
-    // Chunk 1: create task and set SUBMITTED (task shell + first status)
     let chunk1_task = common::minimal_task(
         &task_id,
         &context_id,
         Some(common::task_status("TASK_STATE_SUBMITTED")),
     );
-    let _ = (*store)
+    store
         .apply_task_chunk(
             ValidatedTaskChunk::try_from(StreamResponse {
                 task: Some(chunk1_task),
@@ -35,9 +44,9 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
         )
         .await
         .unwrap();
-    // Chunk 2: move to WORKING (task required when status_update present)
+
     let chunk2_task = common::minimal_task(&task_id, &context_id, None);
-    let _ = (*store)
+    store
         .apply_task_chunk(
             ValidatedTaskChunk::try_from(StreamResponse {
                 task: Some(chunk2_task),
@@ -55,21 +64,19 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
         .await
         .unwrap();
 
-    // Run two apply_task_delta concurrently: one moves to INPUT_REQUIRED, one to COMPLETED.
-    // Both are valid from WORKING; one will win. Final state must be valid (one status).
-    let store2 = store.clone();
-    let task_id2 = task_id.clone();
-    let context_id2 = context_id.clone();
-    let chunk_h1 = common::minimal_task(&task_id2, &context_id2, None);
-    let h1 = tokio::spawn(async move {
-        (*store2)
+    let store_a = store.clone();
+    let task_id_a = task_id.clone();
+    let context_id_a = context_id.clone();
+    let chunk_a = common::minimal_task(&task_id_a, &context_id_a, None);
+    let handle_a = tokio::spawn(async move {
+        store_a
             .apply_task_chunk(
                 ValidatedTaskChunk::try_from(StreamResponse {
-                    task: Some(chunk_h1),
+                    task: Some(chunk_a),
                     status_update: Some(baml_rt_a2a::a2a_types::TaskStatusUpdateEvent {
-                        context_id: Some(context_id2.clone()),
-                        task_id: Some(task_id2.clone()),
-                        status: Some(common::task_status("TASK_STATE_INPUT_REQUIRED")),
+                        context_id: Some(context_id_a.clone()),
+                        task_id: Some(task_id_a.clone()),
+                        status: Some(common::task_status("TASK_STATE_AUTH_REQUIRED")),
                         metadata: None,
                         extra: HashMap::new(),
                     }),
@@ -79,18 +86,19 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
             )
             .await
     });
-    let store3 = store.clone();
-    let task_id3 = task_id.clone();
-    let context_id3 = context_id.clone();
-    let chunk_h2 = common::minimal_task(&task_id3, &context_id3, None);
-    let h2 = tokio::spawn(async move {
-        (*store3)
+
+    let store_b = store.clone();
+    let task_id_b = task_id.clone();
+    let context_id_b = context_id.clone();
+    let chunk_b = common::minimal_task(&task_id_b, &context_id_b, None);
+    let handle_b = tokio::spawn(async move {
+        store_b
             .apply_task_chunk(
                 ValidatedTaskChunk::try_from(StreamResponse {
-                    task: Some(chunk_h2),
+                    task: Some(chunk_b),
                     status_update: Some(baml_rt_a2a::a2a_types::TaskStatusUpdateEvent {
-                        context_id: Some(context_id3.clone()),
-                        task_id: Some(task_id3.clone()),
+                        context_id: Some(context_id_b.clone()),
+                        task_id: Some(task_id_b.clone()),
                         status: Some(common::task_status("TASK_STATE_COMPLETED")),
                         metadata: None,
                         extra: HashMap::new(),
@@ -102,27 +110,27 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
             .await
     });
 
-    let _r1 = h1.await.unwrap();
-    let _r2 = h2.await.unwrap();
+    let _ = handle_a.await.unwrap();
+    let _ = handle_b.await.unwrap();
 
-    let st = store.lock().await;
-    let task = st.get(task_id.as_str(), None).expect("task exists");
-    let state_str = task
+    let task = store
+        .get(task_id.as_str(), None)
+        .await
+        .expect("task exists");
+    let state = task
         .status
         .as_ref()
-        .and_then(|s| s.state.as_ref())
-        .and_then(|st| match st {
-            TaskState::String(s) => Some(s.as_str()),
-            _ => None,
+        .and_then(|status| status.state.as_ref())
+        .and_then(|state| match state {
+            TaskState::String(value) => Some(value.as_str()),
+            TaskState::Integer(_) => None,
         });
+    assert!(state.is_some(), "final state must be present");
     assert!(
-        state_str.is_some(),
-        "I2: final state must be set (no interleaving corruption)"
-    );
-    let s = state_str.unwrap();
-    assert!(
-        s == "TASK_STATE_INPUT_REQUIRED" || s == "TASK_STATE_COMPLETED",
-        "I2: final state must be one of the two applied (got {})",
-        s
+        matches!(
+            state,
+            Some("TASK_STATE_AUTH_REQUIRED" | "TASK_STATE_COMPLETED")
+        ),
+        "final state must be one of the concurrent writes, got {state:?}",
     );
 }

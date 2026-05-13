@@ -8,8 +8,15 @@
 /// become the committed plan against which drift is measured.
 function PlanReportingWork(user_message: string) -> ReportingPlan {
   client DefaultClient
-  prompt #"
-    You are a business operations planner. Given the user's request,
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are a business operations planner. Given the user's request,
     produce a structured reporting plan.
 
     Rules:
@@ -27,8 +34,13 @@ function PlanReportingWork(user_message: string) -> ReportingPlan {
 
     User request: {{ user_message }}
 
-    {{ ctx.output_format }}
-  "#
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+{{ ctx.output_format }}
+"#
 }
 
 class ReportingPlan {
@@ -70,21 +82,29 @@ function PresentReportingToUser(
   objective: string,
 ) -> StructuredReply {
   client DefaultClient
-  prompt #"
-    Summarize the reporting outcome for the user. Match the JSON shape in the output schema exactly.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Summarize the reporting outcome for the user. Match the JSON shape in the output schema exactly.
 
     Original user request: {{ user_message }}
     Plan objective: {{ objective }}
 
-    {% if ctx.tags['conversation_transcript'] %}
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
-
     Ground the answer in the history and objective only. Do not invent CRM figures or email
     actions that are not reflected above. If the history is thin, say what finished and suggest next steps.
 
-    {{ ctx.output_format }}
-  "#
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+{{ ctx.output_format }}
+"#
 }
 
 class CrmStepResult {

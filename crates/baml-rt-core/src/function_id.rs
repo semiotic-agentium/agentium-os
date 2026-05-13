@@ -5,10 +5,11 @@
 //!
 //! | Variant pattern                  | Example                                           |
 //! |----------------------------------|---------------------------------------------------|
-//! | `{Base}__select`                 | `GetDiscoverAgentsPlan__select`                   |
-//! | `{Base}__act__{tool_slug}`       | `GetDiscoverAgentsPlan__act__system_discover_agents`   |
+//! | `{Base}__entry`                  | `GetDiscoverAgentsPlan__entry` (archive reuse or Open) |
+//! | `{Base}__active__{tool_slug}`    | `GetDiscoverAgentsPlan__active__system_discover_agents` |
 //! | `{Base}__consume__{tool_slug}`   | Reserved for future consume-phase codegen (not emitted today) |
-//! | `{Base}__continue__{tool_slug}`  | `GetDiscoverAgentsPlan__continue__system_discover_agents` |
+//!
+//! Legacy parsed names (no longer generated): `__select`, `__act__*`, `__continue__*`.
 //!
 //! These narrowed names are a runtime implementation detail. For display,
 //! configuration, and provenance attribution the **logical prompt name**
@@ -26,7 +27,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// The logical BAML prompt name as authored by the user.
 ///
 /// Identical to the `function Foo(...)` declaration name in BAML source.
-/// Never contains `__select`, `__act__`, or `__continue__` suffixes.
+/// Never contains phase suffixes such as `__entry` or `__active__`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BamlPromptName(Arc<str>);
 
@@ -63,13 +64,17 @@ impl From<String> for BamlPromptName {
 /// Mirrors `SessionTypeNames` in `baml-rt-tools` — keep naming in sync.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VariantPhase {
-    /// Initial step selection (`__select`).
+    /// Entry hop: archive reads, read-only finish, or Open (`__entry`).
+    Entry,
+    /// Active tool session after Open (`__active__{slug}`).
+    Active { tool_slug: String },
+    /// Legacy: parsed from `{base}__select` (historical codegen).
     Select,
-    /// Tool action invocation (`__act__{slug}`).
+    /// Legacy: parsed from `{base}__act__{slug}`.
     Act { tool_slug: String },
     /// Output-consumption phase (`__consume__{slug}`) — reserved; builder does not emit these yet.
     Consume { tool_slug: String },
-    /// Tool session continuation (`__continue__{slug}`).
+    /// Legacy: parsed from `{base}__continue__{slug}`.
     Continue { tool_slug: String },
 }
 
@@ -77,6 +82,8 @@ impl VariantPhase {
     /// The suffix appended to the base name to form the full variant name.
     pub fn suffix(&self) -> String {
         match self {
+            Self::Entry => "__entry".to_string(),
+            Self::Active { tool_slug } => format!("__active__{tool_slug}"),
             Self::Select => "__select".to_string(),
             Self::Act { tool_slug } => format!("__act__{tool_slug}"),
             Self::Consume { tool_slug } => format!("__consume__{tool_slug}"),
@@ -124,18 +131,38 @@ impl BamlFunctionId {
 
     /// Parse from a raw function name string.
     ///
-    /// Recognises `__select`, `__act__<slug>`, `__continue__<slug>` suffixes.
+    /// Recognises `__entry`, `__active__<slug>`, and legacy `__select` / `__act__` / `__continue__`.
     /// Falls back to base (non-narrowed) if no suffix matches.
     pub fn parse(raw: &str) -> Self {
-        // Try __select suffix
-        if let Some(base) = raw.strip_suffix("__select") {
-            // Guard against accidental match on names that contain "__select" mid-name
-            if !base.is_empty() {
-                return Self::variant(BamlPromptName::new(base), VariantPhase::Select);
+        // Try __entry (before legacy __select)
+        if let Some(base) = raw.strip_suffix("__entry")
+            && !base.is_empty()
+        {
+            return Self::variant(BamlPromptName::new(base), VariantPhase::Entry);
+        }
+
+        // Try __active__<slug> before __act__<slug> (__active__ does not contain __act__ as substring)
+        if let Some(pos) = raw.find("__active__") {
+            let (base, rest) = raw.split_at(pos);
+            let slug = &rest["__active__".len()..];
+            if !base.is_empty() && !slug.is_empty() {
+                return Self::variant(
+                    BamlPromptName::new(base),
+                    VariantPhase::Active {
+                        tool_slug: slug.to_string(),
+                    },
+                );
             }
         }
 
-        // Try __act__<slug>
+        // Legacy: __select
+        if let Some(base) = raw.strip_suffix("__select")
+            && !base.is_empty()
+        {
+            return Self::variant(BamlPromptName::new(base), VariantPhase::Select);
+        }
+
+        // Legacy: __act__<slug>
         if let Some(pos) = raw.find("__act__") {
             let (base, rest) = raw.split_at(pos);
             let slug = &rest["__act__".len()..];
@@ -163,7 +190,7 @@ impl BamlFunctionId {
             }
         }
 
-        // Try __continue__<slug>
+        // Legacy: __continue__<slug>
         if let Some(pos) = raw.find("__continue__") {
             let (base, rest) = raw.split_at(pos);
             let slug = &rest["__continue__".len()..];
@@ -248,7 +275,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_select() {
+    fn parse_entry() {
+        let id = BamlFunctionId::parse("GetDiscoverAgentsPlan__entry");
+        assert_eq!(id.prompt_name().as_str(), "GetDiscoverAgentsPlan");
+        assert_eq!(id.full_name(), "GetDiscoverAgentsPlan__entry");
+        assert!(id.is_variant());
+        assert_eq!(id.phase(), Some(&VariantPhase::Entry));
+    }
+
+    #[test]
+    fn parse_active() {
+        let id = BamlFunctionId::parse("GetDiscoverAgentsPlan__active__system_discover_agents");
+        assert_eq!(id.prompt_name().as_str(), "GetDiscoverAgentsPlan");
+        assert_eq!(
+            id.phase(),
+            Some(&VariantPhase::Active {
+                tool_slug: "system_discover_agents".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn parse_select_legacy() {
         let id = BamlFunctionId::parse("GetDiscoverAgentsPlan__select");
         assert_eq!(id.prompt_name().as_str(), "GetDiscoverAgentsPlan");
         assert_eq!(id.full_name(), "GetDiscoverAgentsPlan__select");
@@ -257,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_act() {
+    fn parse_act_legacy() {
         let id = BamlFunctionId::parse("GetDiscoverAgentsPlan__act__system_discover_agents");
         assert_eq!(id.prompt_name().as_str(), "GetDiscoverAgentsPlan");
         assert_eq!(
@@ -273,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_continue() {
+    fn parse_continue_legacy() {
         let id = BamlFunctionId::parse("BuildExtrospectionPlan__continue__system_extrospection");
         assert_eq!(id.prompt_name().as_str(), "BuildExtrospectionPlan");
         assert_eq!(
@@ -299,7 +347,7 @@ mod tests {
 
     #[test]
     fn serde_round_trip() {
-        let original = "DetermineExtrospectionIntent__select";
+        let original = "DetermineExtrospectionIntent__entry";
         let id: BamlFunctionId = serde_json::from_str(&format!("\"{original}\"")).unwrap();
         let serialized = serde_json::to_string(&id).unwrap();
         assert_eq!(serialized, format!("\"{original}\""));

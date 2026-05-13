@@ -13,7 +13,7 @@ use baml_rt_core::{
     AgentDispatchRequest, AgentDispatchRoutingKey, AgentLister, AgentRouteKey, BamlRtError,
     BusStream, EventSchemaVersion, EventSourceKind, ProducedEvent, Result,
     bus::BusWithEffects,
-    event_subscription::{EventSourceKey, EventSubscription},
+    event_subscription::{EventSourceKey, EventSourceKeyPrefix, EventSubscription},
 };
 use baml_rt_quickjs::BamlRuntimeManager;
 use baml_rt_tools::{EventProducer, ProducerCheckpoint, ProducerPoll};
@@ -122,6 +122,36 @@ fn dispatch_echo_discovery_entry() -> AgentDiscoveryEntry {
                     EventSourceKind::parse("github_issues").unwrap(),
                 ],
                 ..EventSubscription::default()
+            }],
+        },
+    }
+}
+
+fn dispatch_echo_callback_subscription_discovery_entry() -> AgentDiscoveryEntry {
+    AgentDiscoveryEntry {
+        agent_package: "dispatch-echo".into(),
+        agent_instance_id: "default".into(),
+        name: "dispatch-echo".into(),
+        version: "1.0.0".into(),
+        agent_card: AgentCard {
+            name: "dispatch-echo".into(),
+            version: "1.0.0".into(),
+            content_hash: None,
+            repository_version: None,
+            agent_package: "dispatch-echo".into(),
+            agent_instance_id: "default".into(),
+            tools: vec![],
+            baml_functions: vec![],
+            description: Some("Fixture: callback subscription only".into()),
+            capabilities: vec!["dispatch:echo".into()],
+            tags: vec![],
+            subscriptions: vec![EventSubscription {
+                schema_versions: vec![EventSchemaVersion::parse("system.callback.v1").unwrap()],
+                source_kinds: vec![EventSourceKind::parse("system/callback").unwrap()],
+                source_key_prefixes: vec![
+                    EventSourceKeyPrefix::parse("dispatch-echo:callback:").unwrap(),
+                ],
+                ..Default::default()
             }],
         },
     }
@@ -367,6 +397,108 @@ async fn checkpoint_advances_when_no_subscribers() {
         Some("cursor-no-subscribers".to_string()),
         "second poll should receive the advanced checkpoint"
     );
+}
+
+#[tokio::test]
+async fn system_callback_checkpoint_not_advanced_without_subscribers() {
+    ensure_fixture_runtime_types();
+    let (agent, built_dir) = setup_fixture_agent("dispatch-echo").await;
+    let _cleanup = TempDirCleanup::new(built_dir);
+
+    let registry: Arc<dyn AgentRegistry> = Arc::new(TestRegistry {
+        agent,
+        entries: vec![],
+    });
+
+    let received = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+    let producer = RecordingProducer {
+        key: "system/callback".into(),
+        kinds: vec![EventSourceKind::parse("system/callback").unwrap()],
+        events: vec![ProducedEvent {
+            routing_key: AgentDispatchRoutingKey::parse("system:callback").unwrap(),
+            schema_version: EventSchemaVersion::parse("system.callback.v1").unwrap(),
+            source_kind: EventSourceKind::parse("system/callback").unwrap(),
+            source_key: EventSourceKey::parse("dispatch-echo:callback:testtoken").unwrap(),
+            messages: vec![json!({"test": true})],
+            context_id: None,
+            task_id: None,
+            message_id: None,
+            metadata: None,
+        }],
+        next_checkpoint: ProducerCheckpoint::some("cursor-after-callback-delivery"),
+        received_checkpoints: Arc::clone(&received),
+    };
+
+    let mut dispatcher = EventDispatcher::new(registry);
+    dispatcher
+        .register_producer(Arc::new(producer))
+        .expect("register producer");
+
+    let results = dispatcher.poll_and_deliver().await;
+    let outcome = results[0].1.as_ref().expect("poll should succeed");
+    assert!(outcome.failures.is_empty());
+    assert_eq!(outcome.subscribers_matched, 0);
+    assert_eq!(
+        dispatcher.checkpoint("system/callback").value(),
+        None,
+        "checkpoint must not advance when no agent matched system/callback"
+    );
+
+    dispatcher.poll_and_deliver().await;
+    assert_eq!(
+        dispatcher.checkpoint("system/callback").value(),
+        None,
+        "checkpoint must still not advance on repeated polls"
+    );
+
+    let checkpoints = received.lock().unwrap();
+    assert_eq!(checkpoints.as_slice(), &[None, None]);
+}
+
+#[tokio::test]
+async fn system_callback_checkpoint_advances_when_subscriber_matches() {
+    ensure_fixture_runtime_types();
+    let (agent, built_dir) = setup_fixture_agent("dispatch-echo").await;
+    let _cleanup = TempDirCleanup::new(built_dir);
+
+    let registry: Arc<dyn AgentRegistry> = Arc::new(TestRegistry {
+        agent,
+        entries: vec![dispatch_echo_callback_subscription_discovery_entry()],
+    });
+
+    let received = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+    let producer = RecordingProducer {
+        key: "system/callback".into(),
+        kinds: vec![EventSourceKind::parse("system/callback").unwrap()],
+        events: vec![ProducedEvent {
+            routing_key: AgentDispatchRoutingKey::parse("system:callback").unwrap(),
+            schema_version: EventSchemaVersion::parse("system.callback.v1").unwrap(),
+            source_kind: EventSourceKind::parse("system/callback").unwrap(),
+            source_key: EventSourceKey::parse("dispatch-echo:callback:testtoken").unwrap(),
+            messages: vec![json!({"test": true})],
+            context_id: None,
+            task_id: None,
+            message_id: None,
+            metadata: None,
+        }],
+        next_checkpoint: ProducerCheckpoint::some("cursor-after-callback-delivery"),
+        received_checkpoints: Arc::clone(&received),
+    };
+
+    let mut dispatcher = EventDispatcher::new(registry);
+    dispatcher
+        .register_producer(Arc::new(producer))
+        .expect("register producer");
+
+    dispatcher.poll_and_deliver().await;
+    assert_eq!(
+        dispatcher.checkpoint("system/callback").value(),
+        Some("cursor-after-callback-delivery"),
+        "checkpoint should advance once a subscriber accepts the dispatch"
+    );
+
+    let checkpoints = received.lock().unwrap();
+    assert_eq!(checkpoints.as_slice(), &[None]);
 }
 
 #[tokio::test]

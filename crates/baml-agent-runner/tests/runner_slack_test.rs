@@ -156,7 +156,7 @@ async fn start_slack_mock_server() -> std::io::Result<(RunningHttpServer, MockSl
     Ok((server, state))
 }
 
-/// `ChooseSlackAction__select` in the **AwaitingOpen** phase only allows `Open | ReadOnlyResponse` in the
+/// `ChooseSlackAction__entry` in the **Entry** phase only allows `Open | ReadOnlyResponse` in the
 /// generated schema, but capable models often skip straight to `Send` (valid FSM intent, invalid for that
 /// hop's union). That yields "Parsed result conversion failed" — a **codegen/schema vs prompt** tension, not
 /// product slack. Pin the open hop so this E2E exercises the local Slack API fixture + synthesis; all later hops still hit
@@ -170,11 +170,11 @@ impl LLMInterceptor for SlackE2eOpenHopInterceptor {
         &self,
         ctx: &LLMCallContext,
     ) -> baml_rt_core::Result<InterceptorDecision> {
-        if ctx.function_id.full_name() != "ChooseSlackAction__select" {
+        if ctx.function_id.full_name() != "ChooseSlackAction__entry" {
             return Ok(InterceptorDecision::Allow);
         }
         let prompt_blob = serde_json::to_string(&ctx.prompt).unwrap_or_default();
-        if prompt_blob.contains("[OPEN]") {
+        if prompt_blob.contains("Phase: ENTRY") {
             return Ok(InterceptorDecision::Substitute(json!({
                 "op": "Open",
                 "tool_name": "support/slack",

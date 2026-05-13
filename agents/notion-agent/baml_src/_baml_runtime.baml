@@ -105,6 +105,13 @@ class ArchivePageReadStep {
   op "PageRead"
   input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
 }
+
+/// Terminal hop without a host tool session: answer from visible conversation archives only.
+/// Do not emit when you need a fresh Open/Send — use ENTRY Open or ACTIVE Send instead.
+class ReadOnlyFinishStep {
+  op "ReadOnlyFinish"
+  reply StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
+}
 // Domain types generated from #[derive(BamlType)]
 /// Search Notion pages by keyword. Returns a list of page titles and IDs.
 /// Does NOT return page content — use GetPageBlocks to read actual content.
@@ -499,12 +506,12 @@ class SystemInternalA2aSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Phase: select — open a tool session.
-function ChooseNotionAction__select(
+/// Phase: entry — archive reuse, read-only finish, or Open a tool session.
+function ChooseNotionAction__entry(
   goal: string,
   step_description: string,
   session_context: SessionContext
-) -> SupportNotionOpenStep {
+) -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportNotionOpenStep {
 
   client OpenRouterGPT
   prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
@@ -515,78 +522,36 @@ For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object.
 Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.
+{% endif %}Phase: ENTRY — reuse a visible archive (@N), ReadOnlyFinish without Open, or Open a tool session; legal ops only as in the narrowed union below.
 
-Open a session with: support/notion.
+ENTRY: reuse a visible tool archive (@N) via SearchRead/PageRead, answer with ReadOnlyFinish when no new Open is needed, or Open a session with: support/notion.
 
+You are executing one step of a read-only Notion retrieval plan.
+Overall goal: {{ goal }}
+This step: {{ step_description }}
+
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
 ---
 Narrowed return union for this hop only:
+- ArchivePageReadStep
+- ArchiveSearchReadStep
+- ReadOnlyFinishStep
 - SupportNotionOpenStep
-You are executing one step of a read-only Notion retrieval plan.
-Overall goal: {{ goal }}
-This step: {{ step_description }}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+
+Emit exactly one JSON object matching one of the named types above, using the field shapes defined in the Tool and session-step types catalog at the top of this prompt. No markdown, no prose.
 
 
-Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
-
-
-
-PHASE CONSTRAINT (select — open only): The JSON root must be exactly one bare Open step: op must be Open; set tool_name and initial_input per the narrowed return type for this hop. Do NOT emit Report or AskUser. Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+PHASE CONSTRAINT (entry): The JSON root must match ONLY this hop: Report, AskUser, ReadOnlyFinish (StructuredReply), ArchiveSearchReadStep, ArchivePageReadStep, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for session plans on the full Choose* function, not this narrowed hop. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). ReadOnlyFinish is terminal — no host tool session; cite every @N used.
 "#
 
 }
 
-/// Phase: act — first post-Open hop: Send, SearchRead, PageRead, or Abort (support/notion).
-function ChooseNotionAction__act__support_notion(
-  goal: string,
-  step_description: string,
-  session_context: SessionContext
-) -> SupportNotionSendStep | SupportNotionSearchReadStep | SupportNotionPageReadStep | SupportNotionAbortStep {
-
-  client OpenRouterGPT
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
-
-{% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
-{{ ctx.tags['tool_schema_prelude'] }}
-
-{% endif %}Phase: ACT — first post-Open hop for support/notion: SearchRead, PageRead, or Send; legal ops only as below.
-
-A support/notion session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
-
-
----
-Narrowed return union for this hop only:
-- SupportNotionSendStep
-- SupportNotionSearchReadStep
-- SupportNotionPageReadStep
-You are executing one step of a read-only Notion retrieval plan.
-Overall goal: {{ goal }}
-This step: {{ step_description }}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
-
-
-Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
-
-
-
-PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
-"#
-
-}
-
-/// Phase: continue — SearchRead/PageRead, send again, finish, or abort support/notion.
-function ChooseNotionAction__continue__support_notion(
+/// Phase: active — Send, archive reads, Finish, or Abort (support/notion).
+function ChooseNotionAction__active__support_notion(
   goal: string,
   step_description: string,
   session_context: SessionContext
@@ -601,8 +566,9 @@ For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object.
 Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}Phase: CONTINUE — for support/notion: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.
+{% endif %}Phase: ACTIVE — for support/notion: Send, SearchRead, PageRead, Finish (after Done Send only), or Abort; legal ops only as below.
 
+A support/notion session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
 support/notion result is archived.
 Check session history:
 - See "@N support/notion" followed by numbered lines → content is inline; emit Finish
@@ -610,6 +576,14 @@ Check session history:
 - See "@N support/notion" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
 - Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
 
+You are executing one step of a read-only Notion retrieval plan.
+Overall goal: {{ goal }}
+This step: {{ step_description }}
+
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
 ---
 Narrowed return union for this hop only:
@@ -617,20 +591,26 @@ Narrowed return union for this hop only:
 - SupportNotionSearchReadStep
 - SupportNotionPageReadStep
 - SupportNotionFinishStep
-You are executing one step of a read-only Notion retrieval plan.
-Overall goal: {{ goal }}
-This step: {{ step_description }}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+- SupportNotionAbortStep
+
+Emit exactly one JSON object matching one of the named types above, using the field shapes defined in the Tool and session-step types catalog at the top of this prompt. No markdown, no prose.
 
 
-Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
-
-
-
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+PHASE CONSTRAINT (active): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Include input and citations per schema. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). Finish is legal only after the host has a Done result from Send for this session (the runtime enforces this).
 "#
 
+}
+
+
+
+// ── builder: agent-wide tool schema catalog (from IR) ──
+
+/// Auto-generated agent-wide tool schema catalog.
+/// Rendered once at build time into _baml_tool_schema_catalog.txt and loaded as ctx.tags['tool_schema_prelude'].
+/// Never invoked against an LLM — exists only to drive BAML's ctx.output_format renderer.
+function AgentToolSchemaCatalog__bamlrt() -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportNotionAbortStep | SupportNotionFinishStep | SupportNotionOpenStep | SupportNotionSendStep | SystemDiscoverAgentsAbortStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverToolsAbortStep | SystemDiscoverToolsFinishStep | SystemDiscoverToolsOpenStep | SystemDiscoverToolsSendStep | SystemInternalA2aAbortStep | SystemInternalA2aFinishStep | SystemInternalA2aOpenStep | SystemInternalA2aSendStep {
+  client OpenRouterGPT
+  prompt #"
+{{ ctx.output_format }}
+"#
 }

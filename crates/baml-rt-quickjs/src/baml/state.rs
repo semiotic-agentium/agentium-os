@@ -54,7 +54,11 @@ pub(in crate::baml) struct BamlRuntimeState {
     pub(in crate::baml) planning_resolver: Arc<dyn PlanningResolver>,
     pub(in crate::baml) execution_sessions:
         Arc<DashMap<String, crate::quickjs_bridge::ExecutionSession>>,
-    /// Merged `baml_src/_baml_runtime.baml` for `ctx.tags['tool_schema_prelude']` on step-executor hops.
+    /// Rendered tool / session-step JSON schema catalog (loaded from
+    /// `baml_src/_baml_tool_schema_catalog.txt` at runtime startup) injected as
+    /// `ctx.tags['tool_schema_prelude']` for every BAML invocation — both plain
+    /// `invoke_function` and step-executor `invoke_function_with_intra` paths.
+    /// Single source of truth lives in `BamlRuntimeManager::enrich_with_tool_schema_prelude`.
     pub(in crate::baml) tool_schema_prelude: Option<Arc<str>>,
 }
 

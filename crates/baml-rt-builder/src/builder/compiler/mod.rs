@@ -11,6 +11,8 @@
 //! Submodules: `tsc`, `quickjs_post_process`, `runtime_type_gen`, and `atomic_io`.
 
 mod atomic_io;
+mod codegen_pipeline;
+mod prompt_rewrite;
 mod quickjs_post_process;
 mod runtime_type_gen;
 mod tsc;

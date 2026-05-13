@@ -7,6 +7,7 @@ use baml_rt_core::{
 use baml_rt_provenance::{
     AgentType, GraphExporter, LlmUsage, ProvEvent, ProvenanceWriter, SurrealStoreBuilder,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
+    metamodel::TaskStatusKind,
     normalize_event,
 };
 use insta::assert_snapshot;
@@ -17,6 +18,13 @@ async fn build_isolated_store(_test_name: &str) -> Arc<baml_rt_provenance::Surre
         .build()
         .await
         .expect("build isolated in-memory store")
+}
+
+fn event_anchor(event: &ProvEvent) -> baml_rt_core::ids::ActivityAnchorId {
+    match event {
+        ProvEvent::Task(task) => task.id.clone(),
+        other => panic!("expected task-scoped event, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -211,15 +219,15 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
         ))
         .await
         .expect("message_received_1");
-    store
-        .add_event(ProvEvent::task_status_changed(
-            context_id.clone(),
-            task_id.clone(),
-            None,
-            Some("submitted".to_string()),
-        ))
-        .await
-        .expect("status_submitted");
+    let submitted = ProvEvent::task_status_changed_typed(
+        context_id.clone(),
+        task_id.clone(),
+        None,
+        None,
+        Some(TaskStatusKind::Submitted),
+    );
+    let submitted_anchor = event_anchor(&submitted);
+    store.add_event(submitted).await.expect("status_submitted");
 
     store
         .add_event(ProvEvent::message_sent_task(
@@ -235,13 +243,19 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
         ))
         .await
         .expect("message_sent_1");
+    let input_required_prompt = "Need project scope before I can proceed.".to_string();
+    let input_required = ProvEvent::task_status_changed_typed(
+        context_id.clone(),
+        task_id.clone(),
+        Some(TaskStatusKind::Submitted),
+        Some(submitted_anchor),
+        Some(TaskStatusKind::InputRequired {
+            prompt: input_required_prompt.clone(),
+        }),
+    );
+    let input_required_anchor = event_anchor(&input_required);
     store
-        .add_event(ProvEvent::task_status_changed(
-            context_id.clone(),
-            task_id.clone(),
-            Some("submitted".to_string()),
-            Some("input-required".to_string()),
-        ))
+        .add_event(input_required)
         .await
         .expect("status_input_required");
     store
@@ -258,11 +272,14 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
         .await
         .expect("message_received_2");
     store
-        .add_event(ProvEvent::task_status_changed(
+        .add_event(ProvEvent::task_status_changed_typed(
             context_id.clone(),
             task_id.clone(),
-            Some("input-required".to_string()),
-            Some("working".to_string()),
+            Some(TaskStatusKind::InputRequired {
+                prompt: input_required_prompt,
+            }),
+            Some(input_required_anchor),
+            Some(TaskStatusKind::Working),
         ))
         .await
         .expect("status_working");

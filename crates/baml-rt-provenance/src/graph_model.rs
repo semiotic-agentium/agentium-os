@@ -1,6 +1,6 @@
 use crate::{
     events::ProvEventData,
-    vocabulary::{a2a, a2a_roles, a2a_types, prov, prov_relations, semantic_labels},
+    vocabulary::{a2a, a2a_relations, a2a_roles, a2a_types, prov, prov_relations, semantic_labels},
 };
 
 /// Canonical node labels in the persisted provenance graph.
@@ -95,9 +95,26 @@ pub const EDGE_WAS_GENERATED_BY: &str = semantic_labels::WAS_GENERATED_BY;
 pub const EDGE_WAS_CREATED_BY: &str = semantic_labels::WAS_CREATED_BY;
 pub const EDGE_WAS_UPDATED_BY: &str = semantic_labels::WAS_UPDATED_BY;
 pub const EDGE_WAS_TRANSITIONED_FROM: &str = semantic_labels::WAS_TRANSITIONED_FROM;
+/// Head-pointer edge `Task -> TaskState` naming the head of the
+/// `WAS_TRANSITIONED_FROM` chain. Re-pointed atomically by the normalizer
+/// on every `TaskStatusChanged` event.
+pub const EDGE_WAS_LAST_TRANSITIONED_TO: &str = semantic_labels::WAS_LAST_TRANSITIONED_TO;
+/// Head-pointer edge `Task -> AgentRuntimeInstance` naming the
+/// most-recent execution-owning agent. Re-pointed atomically by the
+/// normalizer on every `TaskExecutionStarted` event.
+pub const EDGE_WAS_LAST_EXECUTED_BY: &str = semantic_labels::WAS_LAST_EXECUTED_BY;
 pub const EDGE_WAS_SPAWNED_BY: &str = semantic_labels::WAS_SPAWNED_BY;
-pub const EDGE_TASK_TRIGGERED_BY_MESSAGE: &str = semantic_labels::TASK_TRIGGERED_BY_MESSAGE;
-pub const EDGE_TASK_EMITTED_MESSAGE: &str = semantic_labels::TASK_EMITTED_MESSAGE;
+/// Canonical edge label for `A2ATask → Message` linkage in either direction.
+///
+/// Sourced from [`a2a_relations::TASK_MESSAGE`] (`"A2A_TASK_MESSAGE"`). The
+/// previously-defined `EDGE_TASK_TRIGGERED_BY_MESSAGE` and
+/// `EDGE_TASK_EMITTED_MESSAGE` constants pointed at edge labels
+/// (`TASK_TRIGGERED_BY_MESSAGE` / `TASK_EMITTED_MESSAGE`) that the normalizer
+/// has never written. Both directions of the task↔message relation are
+/// persisted as `A2A_TASK_MESSAGE` derived edges (see
+/// [`crate::normalizer`] `A2aRelationType::TaskHasMessage`); the
+/// `direction` attribute distinguishes received-vs-sent.
+pub const EDGE_A2A_TASK_MESSAGE: &str = a2a_relations::TASK_MESSAGE;
 pub const EDGE_WAS_SCHEDULED_FROM: &str = semantic_labels::WAS_SCHEDULED_FROM;
 pub const EDGE_WAS_ASSOCIATED_WITH: &str = prov_relations::WAS_ASSOCIATED_WITH;
 
@@ -174,6 +191,16 @@ pub struct EventGraphMapping {
     pub required_properties: &'static [&'static str],
 }
 
+/// LLM call started.
+///
+/// **Edge endpoints** (LlmCall is `c`, prompt is `pr`, parent activity is
+/// `p`):
+/// - `(c:LlmCall) -[:WAS_USED_BY]-> (pr:LlmPrompt)` — LlmCall is from-end.
+/// - `(p:A2AMessageProcessing|A2ATaskExecution) -[:WAS_INVOKED_BY]-> (c:LlmCall)`
+///   — LlmCall is *to-end*; the parent activity owns the invocation.
+///
+/// **There is NO `LlmCall → AgentRuntimeInstance` edge.** The agent traversal
+/// is two-hop via the parent activity. See [`ConversationGraphTraversal`].
 const MAPPING_LLM_CALL_STARTED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::LlmCallStarted,
     primary_node: GraphNodeLabel::LlmCall,
@@ -223,6 +250,13 @@ const MAPPING_PROMPT_REJECTED: EventGraphMapping = EventGraphMapping {
     required_properties: &[a2a::REASON],
 };
 
+/// Tool call started.
+///
+/// **Edge endpoints** (ToolCall is `c`, args is `args`, agent is `a`):
+/// - `(c:ToolCall) -[:WAS_USED_BY]-> (args:ToolArgs)` — ToolCall is from-end.
+/// - `(c:ToolCall) -[:WAS_EXECUTED_BY]-> (a:AgentRuntimeInstance)` — ToolCall
+///   is from-end. **CONDITIONAL**: only emitted when the executing agent's id
+///   resolves through `metadata.agent_id` or `NormalizeContext::task_agent_id`.
 const MAPPING_TOOL_CALL_STARTED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::ToolCallStarted,
     primary_node: GraphNodeLabel::ToolCall,
@@ -230,6 +264,7 @@ const MAPPING_TOOL_CALL_STARTED: EventGraphMapping = EventGraphMapping {
     required_properties: &[a2a::TOOL_NAME, a2a::AGENT_ID],
 };
 
+/// Tool call completed. Same edge contract as [`MAPPING_TOOL_CALL_STARTED`].
 const MAPPING_TOOL_CALL_COMPLETED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::ToolCallCompleted,
     primary_node: GraphNodeLabel::ToolCall,
@@ -298,17 +333,40 @@ const MAPPING_TASK_ARTIFACT_GENERATED: EventGraphMapping = EventGraphMapping {
     required_properties: &[a2a::TASK_ID],
 };
 
+/// Inbound message arrival.
+///
+/// **Edge endpoints** (Message is `m`, processing activity is `p`, agent is `a`,
+/// task is `t`):
+/// - `(p:A2AMessageProcessing) -[:WAS_RECEIVED_BY]-> (m:Message)` — the
+///   processing activity records receipt of the inbound message. The
+///   `Message` node is the *to-end* of this edge, not the from-end.
+/// - `(t:A2ATask) -[:A2A_TASK_MESSAGE {direction: "inbound"}]-> (m:Message)` —
+///   only when the inbound message is task-scoped.
+///
+/// **There is NO direct `Message → AgentRuntimeInstance` edge.** The agent
+/// traversal is two-hop via the processing activity:
+/// `(m:Message) <-[:WAS_RECEIVED_BY]- (p:A2AMessageProcessing) -[:WAS_EXECUTED_BY]-> (a:AgentRuntimeInstance)`.
+/// See [`ConversationGraphTraversal`] for the canonical paths.
 const MAPPING_MESSAGE_RECEIVED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::MessageReceived,
     primary_node: GraphNodeLabel::Message,
-    expected_edges: &[EDGE_WAS_RECEIVED_BY, EDGE_TASK_TRIGGERED_BY_MESSAGE],
+    expected_edges: &[EDGE_WAS_RECEIVED_BY, EDGE_A2A_TASK_MESSAGE],
     required_properties: &[a2a::MESSAGE_ID, a2a::ROLE, a2a::CONTENT, a2a::DIRECTION],
 };
 
+/// Outbound message emission.
+///
+/// **Edge endpoints**:
+/// - `(m:Message) -[:WAS_EMITTED_BY]-> (p:A2AMessageProcessing)` — note the
+///   `Message` is the *from-end* here, opposite to `MessageReceived`.
+/// - `(t:A2ATask) -[:A2A_TASK_MESSAGE {direction: "outbound"}]-> (m:Message)` —
+///   only when the outbound message is task-scoped.
+///
+/// Same two-hop traversal rule as `MessageReceived` for Message → Agent.
 const MAPPING_MESSAGE_SENT: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::MessageSent,
     primary_node: GraphNodeLabel::Message,
-    expected_edges: &[EDGE_WAS_EMITTED_BY, EDGE_TASK_EMITTED_MESSAGE],
+    expected_edges: &[EDGE_WAS_EMITTED_BY, EDGE_A2A_TASK_MESSAGE],
     required_properties: &[a2a::MESSAGE_ID, a2a::ROLE, a2a::CONTENT, a2a::DIRECTION],
 };
 
@@ -415,4 +473,69 @@ impl ConversationReadModel {
              ORDER BY s.a2a_activity_anchor";
         (query.to_string(), serde_json::json!({ "context": context }))
     }
+}
+
+/// Doc-only catalogue of canonical multi-hop graph traversals.
+///
+/// Read paths must traverse these edges rather than filter by denormalised
+/// properties (`a2a_context_id`, `a2a_agent_id`, `a2a_task_id`, …). The Phase
+/// 0.5 typed-metamodel surface (`metamodel::query::GraphQuery`) encodes each
+/// of these paths as a named constructor; this struct documents the canonical
+/// shape for human readers and serves as a doctrinal anchor when extending the
+/// typed surface.
+///
+/// **Why two-hop matters:** there is NO direct `Message → AgentRuntimeInstance`,
+/// `LlmCall → AgentRuntimeInstance`, or `ToolCall → AgentArchive` edge in the
+/// persisted graph. Those traversals route through intermediate activities
+/// (`A2AMessageProcessing`, `A2ATaskExecution`) and identity nodes
+/// (`AgentBoot`).
+pub struct ConversationGraphTraversal;
+
+impl ConversationGraphTraversal {
+    /// Message → owning agent (two hops via the processing activity).
+    ///
+    /// `(m:Message) <-[:WAS_RECEIVED_BY|:WAS_EMITTED_BY]- (p:A2AMessageProcessing) -[:WAS_EXECUTED_BY]-> (a:AgentRuntimeInstance)`
+    ///
+    /// `WAS_RECEIVED_BY` direction: `p → m` (message was received by the
+    /// processing activity). `WAS_EMITTED_BY` direction: `m → p` (message was
+    /// emitted *by* the processing activity, so the message is the from-end).
+    /// Reads should follow either edge depending on the direction filter.
+    pub const MESSAGE_TO_AGENT: &'static str = "(m:Message) <-[:WAS_RECEIVED_BY]- (p:A2AMessageProcessing) -[:WAS_EXECUTED_BY]-> (a:AgentRuntimeInstance) \
+         UNION \
+         (m:Message) -[:WAS_EMITTED_BY]-> (p:A2AMessageProcessing) -[:WAS_EXECUTED_BY]-> (a:AgentRuntimeInstance)";
+
+    /// Agent runtime instance → archive (two hops via boot activity).
+    ///
+    /// `(a:AgentRuntimeInstance) -[:WAS_SPAWNED_BY]-> (b:AgentBoot) -[:WAS_BOOTSTRAPPED_BY]-> (arc:AgentArchive)`
+    ///
+    /// The `agent_package` and `archive_path` attributes live on the archive,
+    /// not on the runtime instance. Reads needing `agent_package` must take
+    /// this two-hop traversal.
+    pub const AGENT_TO_ARCHIVE: &'static str = "(a:AgentRuntimeInstance) -[:WAS_SPAWNED_BY]-> (b:AgentBoot) -[:WAS_BOOTSTRAPPED_BY]-> (arc:AgentArchive)";
+
+    /// LlmCall → invoking agent (two hops via parent activity).
+    ///
+    /// `(c:LlmCall) <-[:WAS_INVOKED_BY]- (p:A2AMessageProcessing|A2ATaskExecution) -[:WAS_EXECUTED_BY]-> (a:AgentRuntimeInstance)`
+    pub const LLM_CALL_TO_AGENT: &'static str = "(c:LlmCall) <-[:WAS_INVOKED_BY]- (p:A2AMessageProcessing|A2ATaskExecution) -[:WAS_EXECUTED_BY]-> (a:AgentRuntimeInstance)";
+
+    /// Any scoped node → its owning context (one hop via SCOPED_TO).
+    ///
+    /// `(n:Subject) -[:SCOPED_TO]-> (ctx:Context)`
+    ///
+    /// Emitted by `surreal_write_batch` for every entity / activity / agent
+    /// in a normalized fragment when the event carries a context, except for
+    /// labels in `vocabulary::context_scope::SCOPE_EXEMPT_LABELS`
+    /// (`AgentBoot`, `AgentArchive`, `AgentStop`).
+    pub const SCOPED_TO_CONTEXT: &'static str = "(n) -[:SCOPED_TO]-> (ctx:Context)";
+
+    /// Task → message linkage (single hop, single semantic edge label).
+    ///
+    /// `(t:A2ATask) -[:A2A_TASK_MESSAGE {direction: 'inbound'|'outbound'}]-> (m:Message)`
+    ///
+    /// The `direction` edge attribute distinguishes inbound (was triggered by
+    /// the message) and outbound (emitted the message). The previously
+    /// documented `TASK_TRIGGERED_BY_MESSAGE` / `TASK_EMITTED_MESSAGE` edge
+    /// labels do not exist on disk.
+    pub const TASK_TO_MESSAGE: &'static str =
+        "(t:A2ATask) -[:A2A_TASK_MESSAGE {direction}]-> (m:Message)";
 }

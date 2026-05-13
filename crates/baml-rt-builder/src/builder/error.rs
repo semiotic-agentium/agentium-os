@@ -85,6 +85,10 @@ pub enum BamlBuilderError {
         source: tokio::task::JoinError,
     },
 
+    /// Catalog prompt rendering through the BAML runtime failed.
+    #[error("tool schema catalog render failed: {message}")]
+    CatalogRender { message: String },
+
     // ── Pass-through for runtime library errors ────────────────────────
     /// Any `BamlRtError` that propagates through builder code via `?`.
     #[error(transparent)]

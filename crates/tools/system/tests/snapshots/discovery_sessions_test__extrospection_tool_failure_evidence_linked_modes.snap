@@ -147,7 +147,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"llm_linked_prompt_
             "objective": "linked emitted message evidence"
           },
           "name": "support/delegate",
-          "phase": null
+          "phase": "unknown"
         },
         "tool_call_ref": "[prov_payload_ref]",
         "tool_name": "support/delegate",

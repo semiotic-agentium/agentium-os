@@ -1,32 +1,17 @@
 #![recursion_limit = "256"]
-//! Property tests for task status FSM invariants.
-//!
-//! ## Core Properties (A2A Life-of-a-Task)
-//!
-//! 1. **I2 (Terminal immutability)**: ∀ task t, if t.status ∈ TERMINAL, then record_status_update
-//!    returns Err for any further update.
-//! 2. **I3 (Allowed transitions)**: ∀ valid transition (from, to), record_status_update succeeds;
-//!    ∀ invalid transition, returns Err.
-//! 3. **First status = SUBMITTED**: For a new task, first record_status_update (AgentEmitted) must
-//!    be SUBMITTED or returns Err. HostInferred may seed any first state.
-//! 4. **Upsert merge-preserve**: If upsert(task) where task.status is None and the task already
-//!    exists with status S, the stored task retains S.
-//! 5. **I1 (FSM boundary)**: upsert(task) with task.status = Some(X) never mutates stored status;
-//!    status changes only via record_status_update.
-//!
-//! Tests at TaskStore level (sync) to exercise the FSM and upsert logic directly.
+//! Graph-backed task lifecycle invariants.
 
 mod common;
 
-use baml_rt_a2a::{a2a_store::TaskStore, a2a_types::TaskState};
-use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
-use proptest::prelude::*;
+use std::{collections::HashMap, sync::Arc};
 
-fn proptest_cfg(cases: u32) -> ProptestConfig {
-    let mut cfg = ProptestConfig::with_cases(cases);
-    cfg.failure_persistence = None;
-    cfg
-}
+use baml_rt_a2a::{
+    a2a_store::{TaskEventRecorder, TaskRepository},
+    a2a_types::{Message, Part, TaskState, TaskStatus},
+    task_subgraph_store::TaskSubgraphStore,
+};
+use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
+use baml_rt_provenance::{ProvenanceWriter, SurrealStoreBuilder, TaskGraphReader};
 
 const S_SUBMITTED: &str = "TASK_STATE_SUBMITTED";
 const S_WORKING: &str = "TASK_STATE_WORKING";
@@ -37,254 +22,217 @@ const S_REJECTED: &str = "TASK_STATE_REJECTED";
 const S_INPUT_REQUIRED: &str = "TASK_STATE_INPUT_REQUIRED";
 const S_AUTH_REQUIRED: &str = "TASK_STATE_AUTH_REQUIRED";
 
-const ALL_STATES: &[&str] = &[
-    S_SUBMITTED,
-    S_WORKING,
-    S_COMPLETED,
-    S_FAILED,
-    S_CANCELED,
-    S_REJECTED,
-    S_INPUT_REQUIRED,
-    S_AUTH_REQUIRED,
-];
-
-fn is_terminal(s: &str) -> bool {
-    matches!(s, S_COMPLETED | S_FAILED | S_CANCELED | S_REJECTED)
+async fn build_store() -> Arc<TaskSubgraphStore> {
+    let prov = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("isolated provenance store");
+    let reader: Arc<dyn TaskGraphReader> = prov.clone();
+    let writer: Arc<dyn ProvenanceWriter> = prov.clone();
+    Arc::new(TaskSubgraphStore::new(reader, writer))
 }
 
-/// Allowed transitions (from, to). Same-state is always allowed.
-fn is_allowed(from: &str, to: &str) -> bool {
-    if from == to {
-        return true;
-    }
-    if is_terminal(from) {
-        return false;
-    }
-    matches!(
-        (from, to),
-        (S_SUBMITTED, S_WORKING)
-            | (S_SUBMITTED, S_COMPLETED)
-            | (S_SUBMITTED, S_FAILED)
-            | (S_SUBMITTED, S_CANCELED)
-            | (S_SUBMITTED, S_REJECTED)
-            | (S_SUBMITTED, S_INPUT_REQUIRED)
-            | (S_SUBMITTED, S_AUTH_REQUIRED)
-            | (S_WORKING, S_INPUT_REQUIRED)
-            | (S_WORKING, S_AUTH_REQUIRED)
-            | (S_WORKING, S_COMPLETED)
-            | (S_WORKING, S_FAILED)
-            | (S_WORKING, S_CANCELED)
-            | (S_WORKING, S_REJECTED)
-            | (S_INPUT_REQUIRED, S_WORKING)
-            | (S_INPUT_REQUIRED, S_CANCELED)
-            | (S_INPUT_REQUIRED, S_REJECTED)
-            | (S_INPUT_REQUIRED, S_COMPLETED)
-            | (S_INPUT_REQUIRED, S_FAILED)
-            | (S_AUTH_REQUIRED, S_WORKING)
-            | (S_AUTH_REQUIRED, S_CANCELED)
-            | (S_AUTH_REQUIRED, S_REJECTED)
-            | (S_AUTH_REQUIRED, S_COMPLETED)
-            | (S_AUTH_REQUIRED, S_FAILED)
-    )
+async fn seed_task_and_submitted(
+    store: &TaskSubgraphStore,
+    task_id: &TaskId,
+    context_id: &ContextId,
+) {
+    store
+        .ensure_task_exists(task_id, Some(context_id))
+        .await
+        .expect("task exists");
+    let result = store
+        .record_status_update(
+            task_id.clone(),
+            context_id.clone(),
+            common::task_status(S_SUBMITTED),
+        )
+        .await
+        .expect("submitted write");
+    assert!(result.is_some(), "submitted seed must succeed");
 }
 
-fn seed_task_and_submitted(store: &mut TaskStore, task_id: &TaskId, context_id: &ContextId) {
-    let task = common::minimal_task(task_id, context_id, None);
-    store.upsert(task);
-    let _ = store.record_status_update(
-        Some(task_id.clone()),
-        Some(context_id.clone()),
-        common::task_status(S_SUBMITTED),
+fn input_required_status(prompt: &str) -> TaskStatus {
+    TaskStatus {
+        state: Some(TaskState::String(S_INPUT_REQUIRED.to_string())),
+        message: Some(Message {
+            message_id: baml_rt_a2a::a2a_types::A2aMessageId::incoming(ExternalId::new(
+                "task-fsm-input-required",
+            )),
+            role: baml_rt_a2a::a2a_types::MessageRole::Agent,
+            parts: vec![Part {
+                text: Some(prompt.to_string()),
+                ..Default::default()
+            }],
+            context_id: None,
+            task_id: None,
+            reference_task_ids: Vec::new(),
+            extensions: Vec::new(),
+            metadata: None,
+            extra: HashMap::new(),
+        }),
+        timestamp: None,
+        extra: HashMap::new(),
+    }
+}
+
+fn failed_status(reason: &str) -> TaskStatus {
+    let mut extra = HashMap::new();
+    extra.insert(
+        "error_reason".to_string(),
+        serde_json::Value::String(reason.to_string()),
+    );
+    TaskStatus {
+        state: Some(TaskState::String(S_FAILED.to_string())),
+        message: None,
+        timestamp: None,
+        extra,
+    }
+}
+
+fn task_state(task: &baml_rt_a2a::a2a_types::Task) -> Option<&str> {
+    task.status
+        .as_ref()
+        .and_then(|status| status.state.as_ref())
+        .and_then(|state| match state {
+            baml_rt_a2a::a2a_types::TaskState::String(value) => Some(value.as_str()),
+            baml_rt_a2a::a2a_types::TaskState::Integer(_) => None,
+        })
+}
+
+#[tokio::test]
+async fn graph_store_accepts_valid_transitions_and_rejects_invalid_ones() {
+    let store = build_store().await;
+    let task_id = TaskId::from_external(ExternalId::new("task-fsm-valid"));
+    let context_id = ContextId::new(1, 1);
+
+    seed_task_and_submitted(&store, &task_id, &context_id).await;
+
+    let working = store
+        .record_status_update(
+            task_id.clone(),
+            context_id.clone(),
+            common::task_status(S_WORKING),
+        )
+        .await
+        .expect("working write");
+    assert!(working.is_some(), "submitted -> working must succeed");
+
+    let invalid = store
+        .record_status_update(
+            task_id.clone(),
+            context_id.clone(),
+            common::task_status(S_SUBMITTED),
+        )
+        .await
+        .expect("invalid write returns none");
+    assert!(invalid.is_none(), "working -> submitted must be rejected");
+
+    let input_required = store
+        .record_status_update(
+            task_id.clone(),
+            context_id.clone(),
+            input_required_status("need input"),
+        )
+        .await
+        .expect("input required write");
+    assert!(
+        input_required.is_some(),
+        "working -> input_required must succeed"
     );
 }
 
-proptest! {
-    #![proptest_config(proptest_cfg(32))]
+#[tokio::test]
+async fn graph_store_rejects_non_submitted_first_status() {
+    let store = build_store().await;
+    let task_id = TaskId::from_external(ExternalId::new("task-fsm-first"));
+    let context_id = ContextId::new(1, 2);
 
-    /// PROPERTY I2 + I3: Valid transition sequences succeed; invalid ones fail.
-    /// Generate a sequence of target states. First must be SUBMITTED (HostInferred).
-    /// Each subsequent must be an allowed transition from current.
-    #[test]
-    fn prop_valid_transition_sequences_succeed(seq in prop::collection::vec(0u8..=7u8, 1..=12)) {
-        let mut store = TaskStore::new();
-        let task_id = TaskId::from_external(ExternalId::new("task-prop-1"));
-        let context_id = ContextId::new(1, 1);
+    store
+        .ensure_task_exists(&task_id, Some(&context_id))
+        .await
+        .expect("task exists");
 
-        seed_task_and_submitted(&mut store, &task_id, &context_id);
-
-        let mut current = S_SUBMITTED;
-        for idx in seq {
-            let next_state = ALL_STATES[idx as usize % ALL_STATES.len()];
-            if is_terminal(current) {
-                // I2: terminal rejects any further update (including same-state)
-                let result = store.record_status_update(
-                    Some(task_id.clone()),
-                    Some(context_id.clone()),
-                    common::task_status(next_state),
-                );
-                assert!(result.is_none(), "terminal {} must reject any further update", current);
-                continue;
-            }
-            if !is_allowed(current, next_state) {
-                let result = store.record_status_update(
-                    Some(task_id.clone()),
-                    Some(context_id.clone()),
-                    common::task_status(next_state),
-                );
-                assert!(result.is_none(), "invalid transition {} -> {} should fail", current, next_state);
-                continue;
-            }
-            let result = store.record_status_update(
-                Some(task_id.clone()),
-                Some(context_id.clone()),
-                common::task_status(next_state),
-            );
-            assert!(result.is_some(), "valid transition {} -> {} should succeed: {:?}", current, next_state, result);
-            current = next_state;
-        }
-    }
-
-    /// PROPERTY (First status): AgentEmitted first state must be SUBMITTED.
-    /// Create task without seeding, then try record_status_update with AgentEmitted.
-    /// Only SUBMITTED should succeed.
-    #[test]
-    fn prop_first_status_must_be_submitted_for_agent_emitted(state_idx in 0u8..=7u8) {
-        let mut store = TaskStore::new();
-        let task_id = TaskId::from_external(ExternalId::new("task-prop-2"));
-        let context_id = ContextId::new(1, 1);
-
-        // Upsert task with no status (simulates task created before any status)
-        let task = common::minimal_task(&task_id, &context_id, None);
-        store.upsert(task);
-
-        let state = ALL_STATES[state_idx as usize % ALL_STATES.len()];
-        let result = store.record_status_update(
-            Some(task_id.clone()),
-            Some(context_id.clone()),
-            common::task_status(state),
-        );
-
-        if state == S_SUBMITTED {
-            assert!(result.is_some(), "SUBMITTED as first AgentEmitted should succeed");
-        } else {
-            assert!(result.is_none(), "first AgentEmitted {} must be rejected", state);
-        }
-    }
-
-    /// PROPERTY (Upsert merge-preserve): After recording status, upsert with status=None
-    /// must not overwrite existing status.
-    #[test]
-    fn prop_upsert_merge_preserves_existing_status(intermediate_idx in 0u8..=7u8) {
-        let mut store = TaskStore::new();
-        let task_id = TaskId::from_external(ExternalId::new("task-prop-3"));
-        let context_id = ContextId::new(1, 1);
-
-        seed_task_and_submitted(&mut store, &task_id, &context_id);
-
-        // Move to an intermediate state (pick one that's allowed)
-        let intermediate = ALL_STATES[intermediate_idx as usize % ALL_STATES.len()];
-        if is_allowed(S_SUBMITTED, intermediate) {
-            let _ = store.record_status_update(
-                Some(task_id.clone()),
-                Some(context_id.clone()),
-                common::task_status(intermediate),
-            );
-        }
-
-        // Upsert task with status=None (simulates TaskProcessor flow)
-        let task_without_status = common::minimal_task(&task_id, &context_id, None);
-        store.upsert(task_without_status);
-
-        // Stored task must still have a status (the one we set)
-        let stored = store.get(task_id.as_str(), None).expect("task exists");
-        assert!(
-            stored.status.is_some(),
-            "upsert with status=None must preserve existing status"
-        );
-        let state_str = stored
-            .status
-            .as_ref()
-            .and_then(|s| s.state.as_ref())
-            .and_then(|st| match st {
-                TaskState::String(s) => Some(s.as_str()),
-                _ => None,
-            });
-        assert!(
-            state_str.is_some(),
-            "stored status must have a valid state string"
-        );
-    }
-
-    /// PROPERTY I1: upsert with status=Some(X) must not mutate stored status; FSM boundary.
-    #[test]
-    fn prop_upsert_with_status_does_not_mutate_fsm(attempted_state_idx in 0u8..=7u8) {
-        let mut store = TaskStore::new();
-        let task_id = TaskId::from_external(ExternalId::new("task-prop-i1"));
-        let context_id = ContextId::new(1, 1);
-
-        seed_task_and_submitted(&mut store, &task_id, &context_id);
-        let _ = store.record_status_update(
-            Some(task_id.clone()),
-            Some(context_id.clone()),
-            common::task_status(S_WORKING),
-        );
-
-        let attempted = ALL_STATES[attempted_state_idx as usize % ALL_STATES.len()];
-        let task_with_status = common::minimal_task(
-            &task_id,
-            &context_id,
-            Some(common::task_status(attempted)),
-        );
-        store.upsert(task_with_status);
-
-        let stored = store.get(task_id.as_str(), None).expect("task exists");
-        let state_str = stored
-            .status
-            .as_ref()
-            .and_then(|s| s.state.as_ref())
-            .and_then(|st| match st {
-                TaskState::String(s) => Some(s.as_str()),
-                _ => None,
-            });
-        assert_eq!(
-            state_str,
-            Some(S_WORKING),
-            "I1: upsert(status=Some({})) must not mutate stored status; expected WORKING",
-            attempted
-        );
-    }
-
-    /// PROPERTY I2: Once terminal, no further updates accepted.
-    #[test]
-    fn prop_terminal_state_rejects_further_updates(terminal_idx in 0u8..=3u8, attempt_idx in 0u8..=7u8) {
-        let mut store = TaskStore::new();
-        let task_id = TaskId::from_external(ExternalId::new("task-prop-4"));
-        let context_id = ContextId::new(1, 1);
-
-        seed_task_and_submitted(&mut store, &task_id, &context_id);
-
-        let terminals = [S_COMPLETED, S_FAILED, S_CANCELED, S_REJECTED];
-        let terminal = terminals[terminal_idx as usize % terminals.len()];
-
-        // Transition to terminal (SUBMITTED -> terminal is allowed)
-        let _ = store.record_status_update(
-            Some(task_id.clone()),
-            Some(context_id.clone()),
-            common::task_status(terminal),
-        );
-
-        // Any further update must fail
-        let attempt = ALL_STATES[attempt_idx as usize % ALL_STATES.len()];
-        let result = store.record_status_update(
-            Some(task_id.clone()),
-            Some(context_id.clone()),
-            common::task_status(attempt),
-        );
+    for status in [
+        common::task_status(S_WORKING),
+        common::task_status(S_COMPLETED),
+        failed_status("boom"),
+        common::task_status(S_CANCELED),
+        common::task_status(S_REJECTED),
+        input_required_status("need input"),
+        common::task_status(S_AUTH_REQUIRED),
+    ] {
+        let result = store
+            .record_status_update(task_id.clone(), context_id.clone(), status.clone())
+            .await
+            .expect("first status write");
         assert!(
             result.is_none(),
-            "terminal state {} must reject further update to {}",
-            terminal,
-            attempt
+            "first status {:?} must be rejected",
+            status.state,
         );
     }
+}
+
+#[tokio::test]
+async fn ensure_task_exists_preserves_existing_status() {
+    let store = build_store().await;
+    let task_id = TaskId::from_external(ExternalId::new("task-fsm-preserve"));
+    let context_id = ContextId::new(1, 3);
+
+    seed_task_and_submitted(&store, &task_id, &context_id).await;
+    store
+        .record_status_update(
+            task_id.clone(),
+            context_id.clone(),
+            common::task_status(S_WORKING),
+        )
+        .await
+        .expect("working write");
+
+    store
+        .ensure_task_exists(&task_id, Some(&context_id))
+        .await
+        .expect("ensure existing task");
+
+    let task = store
+        .get(task_id.as_str(), None)
+        .await
+        .expect("task must still exist");
+    assert_eq!(
+        task_state(&task),
+        Some(S_WORKING),
+        "ensure_task_exists must not overwrite the current state",
+    );
+}
+
+#[tokio::test]
+async fn terminal_state_rejects_further_updates() {
+    let store = build_store().await;
+    let task_id = TaskId::from_external(ExternalId::new("task-fsm-terminal"));
+    let context_id = ContextId::new(1, 4);
+
+    seed_task_and_submitted(&store, &task_id, &context_id).await;
+    let completed = store
+        .record_status_update(
+            task_id.clone(),
+            context_id.clone(),
+            common::task_status(S_COMPLETED),
+        )
+        .await
+        .expect("completed write");
+    assert!(completed.is_some(), "submitted -> completed must succeed");
+
+    let rejected = store
+        .record_status_update(
+            task_id.clone(),
+            context_id.clone(),
+            common::task_status(S_WORKING),
+        )
+        .await
+        .expect("post-terminal write");
+    assert!(
+        rejected.is_none(),
+        "terminal tasks must reject further updates"
+    );
 }

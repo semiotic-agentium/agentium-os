@@ -3,13 +3,27 @@
 
 function ArgumentReply(other_message: string) -> string {
   client DefaultClient
-  prompt #"
-    You are in the Monty Python argument sketch. The other person just said: "{{ other_message }}"
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are in the Monty Python argument sketch. The other person just said: "{{ other_message }}"
     Reply with ONLY one short contradiction. Examples: "No it isn't.", "Yes it is.", "I didn't.", "You did."
     No other text. One short sentence.
     {{ _.role('user') }}
     They said: {{ other_message }}. Your one-line contradiction:
-  "#
+
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+{{ ctx.output_format }}
+"#
 }
 
 // Send Cleese's line to Chapman via internal_a2a. Generated phase executors supply FSM hardness and session history; op shape comes from {{ ctx.output_format }} per hop.

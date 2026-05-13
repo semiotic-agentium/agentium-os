@@ -460,7 +460,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseSlackAction" | "ChooseSlackAction__act__support_slack" | "ChooseSlackAction__continue__support_slack" | "ChooseSlackAction__select";
+export type StepExecutorFunctionName = "ChooseSlackAction" | "ChooseSlackAction__active__support_slack" | "ChooseSlackAction__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -511,9 +511,8 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ChooseSlackAction: { args: Parameters<typeof ChooseSlackAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseSlackAction>>; };
-  ChooseSlackAction__act__support_slack: { args: Parameters<typeof ChooseSlackAction__act__support_slack>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseSlackAction__act__support_slack>>; };
-  ChooseSlackAction__continue__support_slack: { args: Parameters<typeof ChooseSlackAction__continue__support_slack>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseSlackAction__continue__support_slack>>; };
-  ChooseSlackAction__select: { args: Parameters<typeof ChooseSlackAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseSlackAction__select>>; };
+  ChooseSlackAction__active__support_slack: { args: Parameters<typeof ChooseSlackAction__active__support_slack>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseSlackAction__active__support_slack>>; };
+  ChooseSlackAction__entry: { args: Parameters<typeof ChooseSlackAction__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseSlackAction__entry>>; };
 }
 
 declare global {

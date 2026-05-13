@@ -11,7 +11,6 @@ use std::{
 
 use baml_rt_core::{BamlFunctionId, Result, context};
 use baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP;
-use baml_rt_tools::TOOL_SCHEMA_PRELUDE_TAG;
 use baml_types::BamlValue;
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -163,7 +162,9 @@ impl BamlRuntimeManager {
 
     /// BAML conversation tags (transcript): graph provider + optional loop-local supplement
     /// (no duplicate `Value` lines vs the provider slice; same merge as
-    /// `append_intra_lines_to_provider_then_cap` in this module).
+    /// `append_intra_lines_to_provider_then_cap` in this module). The catalog injection comes
+    /// from the shared [`Self::enrich_with_tool_schema_prelude`] helper, so plain and
+    /// step-executor invocations produce byte-identical `tool_schema_prelude` tags.
     pub(in crate::baml) async fn build_conversation_context_tags_with_intra(
         &self,
         scope: &context::RuntimeScope,
@@ -176,13 +177,7 @@ impl BamlRuntimeManager {
         let merged =
             append_intra_lines_to_provider_then_cap(prov, step_intra_supplement.iter().cloned());
         let mut tags = exec.tags_from_merged_conversation_lines(merged)?;
-        if let Some(ref prelude) = self.state.tool_schema_prelude {
-            let map = tags.get_or_insert_with(HashMap::new);
-            map.insert(
-                TOOL_SCHEMA_PRELUDE_TAG.to_string(),
-                BamlValue::String(prelude.as_ref().to_string()),
-            );
-        }
+        self.enrich_with_tool_schema_prelude(&mut tags);
         Ok(tags)
     }
 

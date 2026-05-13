@@ -411,7 +411,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseCalcTool" | "ChooseCalcTool__act__support_calculate" | "ChooseCalcTool__continue__support_calculate" | "ChooseCalcTool__select" | "UnifiedHarnessPick";
+export type StepExecutorFunctionName = "ChooseCalcTool" | "ChooseCalcTool__active__support_calculate" | "ChooseCalcTool__entry" | "UnifiedHarnessPick";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -462,9 +462,8 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ChooseCalcTool: { args: Parameters<typeof ChooseCalcTool>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool>>; };
-  ChooseCalcTool__act__support_calculate: { args: Parameters<typeof ChooseCalcTool__act__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool__act__support_calculate>>; };
-  ChooseCalcTool__continue__support_calculate: { args: Parameters<typeof ChooseCalcTool__continue__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool__continue__support_calculate>>; };
-  ChooseCalcTool__select: { args: Parameters<typeof ChooseCalcTool__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool__select>>; };
+  ChooseCalcTool__active__support_calculate: { args: Parameters<typeof ChooseCalcTool__active__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool__active__support_calculate>>; };
+  ChooseCalcTool__entry: { args: Parameters<typeof ChooseCalcTool__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool__entry>>; };
   UnifiedHarnessPick: { args: Parameters<typeof UnifiedHarnessPick>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof UnifiedHarnessPick>>; };
 }
 

@@ -1,7 +1,7 @@
 // Unified step-executor harness: `GetDiscoverAgentsPlan` / `BuildExtrospectionPlan` are *SessionPlan roots —
 // drive them with `runGeneratedStepExecutor` (same Rust loop, prefix algebra, transcript-only tags, intra supplement
 // as unified-primary). IR narrows host-tool Open/act/continue. Direct invokes (`DetermineExtrospectionIntent`, …)
-// stay plain `invoke`; planner-only unions opt into `unified_step_executors.json` for single-hop `FuncName__select`.
+// stay plain `invoke`; planner-only unions opt into `unified_step_executors.json` for single-hop `FuncName__entry`.
 
 enum QueryResource {
   Auto
@@ -39,8 +39,15 @@ class SelectedAgent {
 
 function DetermineExtrospectionIntent(user_message: string) -> NeedClarification | QueryIntent {
   client DefaultClient
-  prompt #"
-    You are an austere frontier magistrate-analyst: severe, prophetic, and precise.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are an austere frontier magistrate-analyst: severe, prophetic, and precise.
     Keep voice original and non-derivative; do not imitate named copyrighted characters.
 
     Classify the user request for extrospection:
@@ -68,12 +75,13 @@ function DetermineExtrospectionIntent(user_message: string) -> NeedClarification
     {{ _.role('user') }}
     {{ user_message }}
 
-    {% if ctx.tags['conversation_transcript'] %}
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-    {{ ctx.output_format }}
-  "#
+{{ ctx.output_format }}
+"#
 }
 
 // FSM phase instructions are injected by codegen — this prompt carries goal context only.
@@ -93,8 +101,15 @@ function SelectAgentFocus(
   agents: AgentCardDto[],
 ) -> SelectedAgent | null {
   client DefaultClient
-  prompt #"
-    Choose at most one discovered agent that best matches the user's target-of-interest.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Choose at most one discovered agent that best matches the user's target-of-interest.
     Return null when the user did not identify or imply a specific agent.
 
     Selection signals:
@@ -107,12 +122,13 @@ function SelectAgentFocus(
     {{ user_message }}
     Agents: {{ agents }}
 
-    {% if ctx.tags['conversation_transcript'] %}
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-    {{ ctx.output_format }}
-  "#
+{{ ctx.output_format }}
+"#
 }
 
 // FSM phase instructions are injected by codegen — this prompt carries goal context only.
@@ -141,8 +157,15 @@ function SummarizeExtrospectionReport(
   secondary_payload_json: string,
 ) -> StructuredReply {
   client DefaultClient
-  prompt #"
-    You are an operations analyst. Be precise, restrained, and useful.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are an operations analyst. Be precise, restrained, and useful.
     Match the output schema exactly (StructuredReply: parts + citations).
 
     Produce a concise operator report in prose that explicitly separates:
@@ -185,12 +208,13 @@ function SummarizeExtrospectionReport(
     primary_payload_json: {{ primary_payload_json }}
     secondary_payload_json: {{ secondary_payload_json }}
 
-    {% if ctx.tags['conversation_transcript'] %}
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-    {{ ctx.output_format }}
-  "#
+{{ ctx.output_format }}
+"#
 }
 
 client DefaultClient {

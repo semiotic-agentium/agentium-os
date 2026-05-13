@@ -105,6 +105,13 @@ class ArchivePageReadStep {
   op "PageRead"
   input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
 }
+
+/// Terminal hop without a host tool session: answer from visible conversation archives only.
+/// Do not emit when you need a fresh Open/Send — use ENTRY Open or ACTIVE Send instead.
+class ReadOnlyFinishStep {
+  op "ReadOnlyFinish"
+  reply StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
+}
 // Domain types generated from #[derive(BamlType)]
 /// Which Slack API token to use.
 /// Auto selects bot for most calls, user token for search (required in most orgs).

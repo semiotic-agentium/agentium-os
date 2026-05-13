@@ -115,7 +115,7 @@ impl AutoWorkingStatusSubscriber {
             .expect("make_working_status_event sets status");
         match self
             .task_store
-            .record_status_update(task_id.clone(), Some(context_id.clone()), status)
+            .record_status_update(task_id.clone(), context_id.clone(), status)
             .await
         {
             Ok(Some(event)) => {

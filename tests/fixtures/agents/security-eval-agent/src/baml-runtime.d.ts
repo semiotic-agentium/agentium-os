@@ -463,7 +463,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ExecuteStep" | "ExecuteStep__act__support_crm" | "ExecuteStep__act__support_email" | "ExecuteStep__continue__support_crm" | "ExecuteStep__continue__support_email" | "ExecuteStep__select";
+export type StepExecutorFunctionName = "ExecuteStep" | "ExecuteStep__active__support_crm" | "ExecuteStep__active__support_email" | "ExecuteStep__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -514,11 +514,9 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ExecuteStep: { args: Parameters<typeof ExecuteStep>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep>>; };
-  ExecuteStep__act__support_crm: { args: Parameters<typeof ExecuteStep__act__support_crm>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__act__support_crm>>; };
-  ExecuteStep__act__support_email: { args: Parameters<typeof ExecuteStep__act__support_email>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__act__support_email>>; };
-  ExecuteStep__continue__support_crm: { args: Parameters<typeof ExecuteStep__continue__support_crm>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__continue__support_crm>>; };
-  ExecuteStep__continue__support_email: { args: Parameters<typeof ExecuteStep__continue__support_email>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__continue__support_email>>; };
-  ExecuteStep__select: { args: Parameters<typeof ExecuteStep__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__select>>; };
+  ExecuteStep__active__support_crm: { args: Parameters<typeof ExecuteStep__active__support_crm>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__active__support_crm>>; };
+  ExecuteStep__active__support_email: { args: Parameters<typeof ExecuteStep__active__support_email>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__active__support_email>>; };
+  ExecuteStep__entry: { args: Parameters<typeof ExecuteStep__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__entry>>; };
 }
 
 declare global {

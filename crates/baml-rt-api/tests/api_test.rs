@@ -35,7 +35,7 @@ use baml_rt_core::{
 use baml_rt_provenance::{
     CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceOpsQueryRequest,
     ProvenanceOpsQueryResponse, ProvenanceWriter, SurrealStoreBuilder, events::LlmDriftInfo,
-    serialized_prompt_utf8_len,
+    metamodel::TaskStatusKind, serialized_prompt_utf8_len,
 };
 use baml_rt_tools::prompt_message_char_count;
 use common::cluster_topology_for_test;
@@ -607,13 +607,22 @@ async fn conversation_history_retains_resume_user_turn_after_input_required() {
         ))
         .await
         .expect("message_sent_clarify");
+    let input_required_prompt = "What specific issues do you need help fixing?".to_string();
+    let input_required = ProvEvent::task_status_changed_typed(
+        context_id.clone(),
+        task_id.clone(),
+        Some(TaskStatusKind::Working),
+        None,
+        Some(TaskStatusKind::InputRequired {
+            prompt: input_required_prompt.clone(),
+        }),
+    );
+    let input_required_anchor = match &input_required {
+        ProvEvent::Task(task) => task.id.clone(),
+        other => panic!("expected task event, got {other:?}"),
+    };
     store
-        .add_event(ProvEvent::task_status_changed(
-            context_id.clone(),
-            task_id.clone(),
-            Some("working".into()),
-            Some("input-required".into()),
-        ))
+        .add_event(input_required)
         .await
         .expect("status_input_required");
     store
@@ -630,11 +639,14 @@ async fn conversation_history_retains_resume_user_turn_after_input_required() {
         .await
         .expect("message_received_resume");
     store
-        .add_event(ProvEvent::task_status_changed(
+        .add_event(ProvEvent::task_status_changed_typed(
             context_id.clone(),
             task_id.clone(),
-            Some("input-required".into()),
-            Some("working".into()),
+            Some(TaskStatusKind::InputRequired {
+                prompt: input_required_prompt,
+            }),
+            Some(input_required_anchor),
+            Some(TaskStatusKind::Working),
         ))
         .await
         .expect("status_working_after_resume");

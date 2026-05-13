@@ -47,9 +47,10 @@ impl Drop for TempFileCleanup {
 struct RunningRunnerProcess {
     base_url: String,
     child: Child,
-    log_path: PathBuf,
+    pub log_path: PathBuf,
     repository_dir: PathBuf,
     state_dir: PathBuf,
+    provenance_dir: PathBuf,
 }
 
 impl RunningRunnerProcess {
@@ -67,8 +68,14 @@ impl RunningRunnerProcess {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
+        let provenance_dir = std::env::temp_dir().join(format!(
+            "callback-runner-provenance-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(&repository_dir).expect("create temp repository dir");
         fs::create_dir_all(&state_dir).expect("create temp state dir");
+        fs::create_dir_all(&provenance_dir).expect("create temp provenance dir");
         let log_path = std::env::temp_dir().join(format!(
             "callback-runner-{}-{}.log",
             std::process::id(),
@@ -91,10 +98,13 @@ impl RunningRunnerProcess {
             .arg(&repository_dir)
             .arg("--state-dir")
             .arg(&state_dir)
+            .arg("--provenance-db")
+            .arg(&provenance_dir)
             .arg("--runner-token")
             .arg(TEST_RUNNER_TOKEN)
             .arg("--event-poll-interval-secs")
             .arg(event_poll_interval_secs.to_string())
+            .env("RUST_LOG", "info")
             .env_remove("BAML_FNOX_CONFIG")
             .env_remove("OPENROUTER_API_KEY")
             .env_remove("CLICKUP_API_KEY")
@@ -128,6 +138,7 @@ impl RunningRunnerProcess {
                     log_path,
                     repository_dir,
                     state_dir,
+                    provenance_dir,
                 };
             }
 
@@ -148,10 +159,56 @@ impl Drop for RunningRunnerProcess {
         let _ = fs::remove_file(&self.log_path);
         let _ = fs::remove_dir_all(&self.repository_dir);
         let _ = fs::remove_dir_all(&self.state_dir);
+        let _ = fs::remove_dir_all(&self.provenance_dir);
     }
 }
 
 /// Publishes a built `.tar.gz` through the runner's `/repository/publish` then deploys via `POST /deploy`.
+async fn assert_dispatch_echo_callback_subscription_visible(
+    client: &reqwest::Client,
+    base_url: &str,
+) {
+    let url = format!("{base_url}/agents");
+    let resp = client.get(&url).send().await.expect("GET /agents");
+    assert!(
+        resp.status().is_success(),
+        "GET /agents failed: {}",
+        resp.status()
+    );
+    let json: Value = resp.json().await.expect("GET /agents JSON");
+    let entries = json.as_array().expect("/agents must return a JSON array");
+    let echo = entries
+        .iter()
+        .find(|e| {
+            e.get("agent_package")
+                .and_then(Value::as_str)
+                .is_some_and(|p| p == "dispatch-echo")
+        })
+        .unwrap_or_else(|| panic!("dispatch-echo not in /agents: {json}"));
+    let subs = echo
+        .get("agent_card")
+        .and_then(|c| c.get("subscriptions"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let has_callback = subs.iter().any(|s| {
+        s.get("schema_versions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|v| v.as_str() == Some("system.callback.v1"))
+            && s.get("source_kinds")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .any(|v| v.as_str() == Some("system/callback"))
+    });
+    assert!(
+        has_callback,
+        "dispatch-echo must subscribe to system.callback.v1 + system/callback for runner callback tests; subs={subs:?}"
+    );
+}
+
 async fn publish_and_deploy_fixture(client: &reqwest::Client, base_url: &str, tar_path: &Path) {
     let bytes = fs::read(tar_path).expect("read package tar");
     let (_, source) =
@@ -248,7 +305,9 @@ async fn wait_for_provenance_tool_call_status(
     expected_has_rows: bool,
 ) -> Value {
     let start = Instant::now();
-    let timeout = Duration::from_secs(15);
+    // Callback delivery + discover_tools session + Surreal indexing can exceed 15s on cold CI
+    // runners (especially under parallel `cargo test --workspace` load).
+    let timeout = Duration::from_secs(60);
     let url = format!("{base_url}/provenance/tool-calls");
 
     loop {
@@ -290,7 +349,7 @@ async fn wait_for_provenance_tool_call_status(
             );
         }
 
-        sleep(Duration::from_millis(250)).await;
+        sleep(Duration::from_millis(150)).await;
     }
 }
 
@@ -324,6 +383,7 @@ async fn runner_callback_delivery_honors_continuation_policy() {
     let runner = RunningRunnerProcess::start(1).await;
     let client = reqwest::Client::new();
     publish_and_deploy_fixture(&client, &runner.base_url, &package_path).await;
+    assert_dispatch_echo_callback_subscription_visible(&client, &runner.base_url).await;
 
     let detached_task_id = TaskId::from_external(ExternalId::new("dispatch-echo-detached-task"));
     let detached_context_id = ContextId::new(730, 1);
@@ -355,6 +415,10 @@ async fn runner_callback_delivery_honors_continuation_policy() {
         .expect("detached schedule should surface minted dispatch scope in assistant text");
     let (child_ctx, child_task) = parse_minted_dispatch_scope(schedule_line)
         .expect("parse minted dispatch context_id and task_id");
+
+    sleep(Duration::from_secs(3)).await;
+    let log_tail = std::fs::read_to_string(&runner.log_path).unwrap_or_default();
+    eprintln!("--- runner log (tail) ---\n{log_tail}\n---");
 
     wait_for_provenance_tool_call_status(
         &client,
@@ -435,6 +499,7 @@ async fn runner_callback_resume_current_task_defers_immediate_delivery_until_tur
     let runner = RunningRunnerProcess::start(1).await;
     let client = reqwest::Client::new();
     publish_and_deploy_fixture(&client, &runner.base_url, &package_path).await;
+    assert_dispatch_echo_callback_subscription_visible(&client, &runner.base_url).await;
 
     let task_id = TaskId::from_external(ExternalId::new("dispatch-echo-immediate-resume-task"));
     let context_id = ContextId::new(731, 1);

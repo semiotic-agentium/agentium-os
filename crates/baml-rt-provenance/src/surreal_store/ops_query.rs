@@ -20,48 +20,60 @@ use super::{
 };
 use crate::{
     error::{ProvenanceError, Result},
-    id_semantics::context_entity_id_string,
-    store::{
-        ArchiveRef, ProvenanceArchiveRecord, ProvenanceOpsQuery, ProvenanceOpsQueryRequest,
-        ProvenanceOpsQueryResponse, ProvenanceOpsResource, ProvenanceResponseProfile,
+    metamodel::{
+        AgentPackage, AgentRuntimeInstanceNodeId, ContextNodeId, EdgeProjection, FilterOp,
+        GraphQuery, ScopeState, SemanticEdge, TaskExecutionNodeId, TaskNodeId, keys, labels,
     },
-    surreal_tables::{TBL_EDGE, TBL_NODE},
-    vocabulary::{context_scope, semantic_labels},
+    store::{
+        ArchiveRef, ProvenanceArchiveRecord, ProvenanceOpsFilters, ProvenanceOpsQuery,
+        ProvenanceOpsQueryRequest, ProvenanceOpsQueryResponse, ProvenanceOpsResource,
+        ProvenanceResponseProfile,
+    },
 };
 
 impl SurrealProvenanceStore {
     /// Load agent identity map: agent_id -> (agent_package, agent_version).
     /// Queries AgentRuntimeInstance nodes for package/version metadata.
+    /// Routed through the typed [`GraphQuery`] surface — no
+    /// `format!`-of-edge-labels or raw label literals leak into the SQL
+    /// builder.
     async fn load_agent_identity_map(&self) -> Result<HashMap<String, (String, String)>> {
-        let query = format!(
-            "SELECT props.a2a_agent_id AS agent_id, \
-                    props.a2a_agent_type AS agent_package, \
-                    props.a2a_agent_version AS agent_version \
-             FROM {TBL_NODE} WHERE label = 'AgentRuntimeInstance'"
-        );
-        let rows: Vec<Value> = self.query_sql_rows(&query).await?;
+        let (sql, binds) = GraphQuery::<labels::AgentRuntimeInstance, _>::new()
+            .all()
+            .into_surreal();
+        let rows = self.execute_typed_node_query(&sql, &binds).await?;
 
         let mut out: HashMap<String, (String, String)> = HashMap::new();
         for row in rows {
-            let Some(agent_id) = row
-                .get("agent_id")
+            let Some(props) = row.get("props").and_then(Value::as_object) else {
+                continue;
+            };
+            let Some(agent_id) = props
+                .get("a2a_agent_id")
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
             else {
                 continue;
             };
             let agent_id = agent_id.to_string();
-            let agent_package =
-                normalize_agent_field(row.get("agent_package").and_then(Value::as_str), "unknown");
-            let agent_version =
-                normalize_agent_field(row.get("agent_version").and_then(Value::as_str), "unknown");
+            let agent_package = normalize_agent_field(
+                props.get("a2a_agent_type").and_then(Value::as_str),
+                "unknown",
+            );
+            let agent_version = normalize_agent_field(
+                props.get("a2a_agent_version").and_then(Value::as_str),
+                "unknown",
+            );
             out.insert(agent_id, (agent_package, agent_version));
         }
         Ok(out)
     }
 
-    /// Load failure classification for the given activity node ids only (failed LLM/tool rows).
-    /// Traverses `WAS_CLASSIFIED_BY` → `FailureClassification` entity; no global graph scan.
+    /// Load failure classification for the given activity node ids only
+    /// (failed LLM/tool rows). Traverses `WAS_CLASSIFIED_BY` →
+    /// `FailureClassification` entity via the typed [`EdgeProjection`]
+    /// surface; no global graph scan and no raw edge-label string
+    /// interpolation.
     async fn load_failure_classification_for_activity_ids(
         &self,
         activity_ids: &[String],
@@ -70,20 +82,13 @@ impl SurrealProvenanceStore {
             return Ok(HashMap::new());
         }
 
-        let classified_by = semantic_labels::WAS_CLASSIFIED_BY;
-        let edge_query = format!(
-            "SELECT from_id, to_id OMIT id FROM {TBL_EDGE} \
-             WHERE rel_type = '{classified_by}' \
-               AND from_id IN $ids \
-               AND to_label = 'FailureClassification'"
-        );
-        let edge_response = self
-            .db
-            .query(&edge_query)
-            .bind(("ids", activity_ids.to_vec()))
-            .await
-            .map_err(map_surreal_error)?;
-        let edge_rows: Vec<Value> = check_and_take_zero(edge_response, map_surreal_error)?;
+        let (edge_sql, edge_binds) = EdgeProjection::for_edge(SemanticEdge::WasClassifiedBy)
+            .from_id_in(activity_ids)
+            .with_to_label::<labels::FailureClassification>()
+            .into_surreal();
+        let edge_rows = self
+            .execute_typed_node_query(&edge_sql, &edge_binds)
+            .await?;
 
         if edge_rows.is_empty() {
             return Ok(HashMap::new());
@@ -101,17 +106,11 @@ impl SurrealProvenanceStore {
             .into_iter()
             .collect();
 
-        let fc_query = format!(
-            "SELECT node_id, props.a2a_failure_class AS failure_class, props.a2a_failure_evidence AS failure_evidence \
-             FROM {TBL_NODE} WHERE node_id IN $ids"
-        );
-        let fc_response = self
-            .db
-            .query(&fc_query)
-            .bind(("ids", fc_node_ids))
-            .await
-            .map_err(map_surreal_error)?;
-        let fc_rows: Vec<Value> = check_and_take_zero(fc_response, map_surreal_error)?;
+        let (fc_sql, fc_binds) = GraphQuery::<labels::FailureClassification, _>::new()
+            .all()
+            .by_node_ids(&fc_node_ids)
+            .into_surreal();
+        let fc_rows = self.execute_typed_node_query(&fc_sql, &fc_binds).await?;
 
         let mut fc_map: HashMap<String, (String, String)> = HashMap::new();
         for row in fc_rows {
@@ -123,12 +122,17 @@ impl SurrealProvenanceStore {
             if node_id.is_empty() {
                 continue;
             }
+            let props = row.get("props").and_then(Value::as_object);
             let class = normalize_agent_field(
-                row.get("failure_class").and_then(Value::as_str),
+                props
+                    .and_then(|p| p.get("a2a_failure_class"))
+                    .and_then(Value::as_str),
                 "failed_graph_incomplete",
             );
             let evidence = normalize_agent_field(
-                row.get("failure_evidence").and_then(Value::as_str),
+                props
+                    .and_then(|p| p.get("a2a_failure_evidence"))
+                    .and_then(Value::as_str),
                 "failed_graph_incomplete",
             );
             fc_map.insert(node_id, (class, evidence));
@@ -172,83 +176,74 @@ impl SurrealProvenanceStore {
         Ok(out)
     }
 
-    /// Aggregate LLM call durations by message_id for a context.
-    /// Returns message_id -> total_llm_duration_ms map.
+    /// Aggregate LLM call durations by message_id for a context. Routed
+    /// through the typed [`GraphQuery`] surface — the SCOPED_TO traversal
+    /// is sourced from [`crate::metamodel::query::ScopedToContext`] and
+    /// not stitched in via raw `context_scope::SCOPED_TO` interpolation.
     async fn load_llm_duration_by_message(
         &self,
         context_id: &ContextId,
     ) -> Result<HashMap<String, u64>> {
-        let ctx_node = context_entity_id_string(context_id.as_str());
-        let scoped = context_scope::SCOPED_TO;
-        let query = format!(
-            "SELECT props.a2a_message_id AS message_id, props.a2a_duration_ms AS duration_ms \
-             FROM {TBL_NODE} WHERE label = 'LlmCall' \
-               AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
-                 WHERE to_id = $ctx_node AND rel_type = '{scoped}' AND from_label = 'LlmCall') \
-               AND props.a2a_duration_ms IS NOT NULL"
-        );
-        let response = self
-            .db
-            .query(&query)
-            .bind(("ctx_node", ctx_node))
-            .await
-            .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-
-        let mut out: HashMap<String, u64> = HashMap::new();
-        for row in rows {
-            let message_id = row
-                .get("message_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            if message_id.is_empty() {
-                continue;
-            }
-            let duration = row.get("duration_ms").and_then(Value::as_u64).unwrap_or(0);
-            *out.entry(message_id).or_insert(0) += duration;
-        }
-        Ok(out)
+        let ctx_node = ContextNodeId::for_context_id(context_id);
+        let (sql, binds) = GraphQuery::<labels::LlmCall, _>::new()
+            .scoped_to_ctx(ctx_node)
+            .into_surreal();
+        let rows = self.execute_typed_node_query(&sql, &binds).await?;
+        Ok(aggregate_duration_by_message(&rows))
     }
 
     /// Aggregate tool call durations by message_id for a context.
-    /// Returns message_id -> total_tool_duration_ms map.
     async fn load_tool_duration_by_message(
         &self,
         context_id: &ContextId,
     ) -> Result<HashMap<String, u64>> {
-        let ctx_node = context_entity_id_string(context_id.as_str());
-        let scoped = context_scope::SCOPED_TO;
-        let query = format!(
-            "SELECT props.a2a_message_id AS message_id, props.a2a_duration_ms AS duration_ms \
-             FROM {TBL_NODE} WHERE label = 'ToolCall' \
-               AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
-                 WHERE to_id = $ctx_node AND rel_type = '{scoped}' AND from_label = 'ToolCall') \
-               AND props.a2a_duration_ms IS NOT NULL"
-        );
-        let response = self
-            .db
-            .query(&query)
-            .bind(("ctx_node", ctx_node))
-            .await
-            .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-
-        let mut out: HashMap<String, u64> = HashMap::new();
-        for row in rows {
-            let message_id = row
-                .get("message_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            if message_id.is_empty() {
-                continue;
-            }
-            let duration = row.get("duration_ms").and_then(Value::as_u64).unwrap_or(0);
-            *out.entry(message_id).or_insert(0) += duration;
-        }
-        Ok(out)
+        let ctx_node = ContextNodeId::for_context_id(context_id);
+        let (sql, binds) = GraphQuery::<labels::ToolCall, _>::new()
+            .scoped_to_ctx(ctx_node)
+            .into_surreal();
+        let rows = self.execute_typed_node_query(&sql, &binds).await?;
+        Ok(aggregate_duration_by_message(&rows))
     }
+
+    /// Helper: bind the JSON object produced by [`GraphQuery::into_surreal`]
+    /// or [`EdgeProjection::into_surreal`] and execute the query.
+    async fn execute_typed_node_query(&self, sql: &str, binds: &Value) -> Result<Vec<Value>> {
+        let mut q = self.db.query(sql);
+        if let Some(obj) = binds.as_object() {
+            for (k, v) in obj {
+                q = q.bind((k.clone(), v.clone()));
+            }
+        }
+        let response = q.await.map_err(map_surreal_error)?;
+        check_and_take_zero(response, map_surreal_error)
+    }
+}
+
+/// Sum `props.a2a_duration_ms` per `props.a2a_message_id` from raw
+/// `SELECT *` rows produced by the typed `GraphQuery`. Rows without a
+/// message id or duration field are silently skipped (the typed query
+/// fetches all scoped rows; missing-duration filtering is post-processed
+/// here rather than in SQL).
+fn aggregate_duration_by_message(rows: &[Value]) -> HashMap<String, u64> {
+    let mut out: HashMap<String, u64> = HashMap::new();
+    for row in rows {
+        let Some(props) = row.get("props").and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(message_id) = props
+            .get("a2a_message_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let duration = props
+            .get("a2a_duration_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        *out.entry(message_id.to_string()).or_insert(0) += duration;
+    }
+    out
 }
 
 fn ops_row_timestamp_ms(row: &Map<String, Value>) -> u64 {
@@ -667,6 +662,132 @@ fn provenance_ops_query_op_label(r: &ProvenanceOpsResource) -> &'static str {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Typed per-resource query builders.
+//
+// Each `build_*_query` chooses a `GraphQuery<labels::Subject, _>` shape
+// matching the resource semantics, applies the filterable subset of
+// `ProvenanceOpsFilters` via the typed surface, and returns the
+// emitted `(SQL, bindings)` pair. There is intentionally no shared
+// generic builder — the per-Subject `for_agent` / `for_task` variants
+// differ structurally, and the metamodel rejects cross-subject misuse
+// at compile time.
+// ---------------------------------------------------------------------------
+
+fn build_messages_query(filters: &ProvenanceOpsFilters) -> (String, Value) {
+    if let Some(ref ctx) = filters.context_id {
+        let q = GraphQuery::<labels::Message, _>::new()
+            .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
+        apply_message_filters(q, filters).into_surreal()
+    } else {
+        let q = GraphQuery::<labels::Message, _>::new().all();
+        apply_message_filters(q, filters).into_surreal()
+    }
+}
+
+fn apply_message_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
+    mut q: GraphQuery<labels::Message, S>,
+    filters: &ProvenanceOpsFilters,
+) -> GraphQuery<labels::Message, S> {
+    if let Some(ref agent_id) = filters.agent_id {
+        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
+    }
+    if let Some(ref agent_package) = filters.agent_package {
+        q = q.for_agent_package(AgentPackage::new(agent_package.clone()));
+    }
+    if let Some(ref task_id) = filters.task_id {
+        q = q.for_task(TaskNodeId::for_task_id(task_id));
+    }
+    q
+}
+
+fn build_llm_query(filters: &ProvenanceOpsFilters) -> (String, Value) {
+    if let Some(ref ctx) = filters.context_id {
+        let q = GraphQuery::<labels::LlmCall, _>::new()
+            .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
+        apply_llm_filters(q, filters).into_surreal()
+    } else {
+        let q = GraphQuery::<labels::LlmCall, _>::new().all();
+        apply_llm_filters(q, filters).into_surreal()
+    }
+}
+
+fn apply_llm_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
+    mut q: GraphQuery<labels::LlmCall, S>,
+    filters: &ProvenanceOpsFilters,
+) -> GraphQuery<labels::LlmCall, S> {
+    if let Some(ref agent_id) = filters.agent_id {
+        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
+    }
+    if let Some(ref agent_package) = filters.agent_package {
+        q = q.for_agent_package(AgentPackage::new(agent_package.clone()));
+    }
+    if let Some(ref task_id) = filters.task_id {
+        q = q.for_task_execution(TaskExecutionNodeId::for_task_id(task_id));
+    }
+    if let Some(ref provider) = filters.provider {
+        q = q.filter(keys::Provider, FilterOp::Eq, provider.clone());
+    }
+    if let Some(ref model) = filters.model {
+        q = q.filter(keys::Model, FilterOp::Eq, model.clone());
+    }
+    q
+}
+
+fn build_tool_query(filters: &ProvenanceOpsFilters) -> (String, Value) {
+    if let Some(ref ctx) = filters.context_id {
+        let q = GraphQuery::<labels::ToolCall, _>::new()
+            .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
+        apply_tool_filters(q, filters).into_surreal()
+    } else {
+        let q = GraphQuery::<labels::ToolCall, _>::new().all();
+        apply_tool_filters(q, filters).into_surreal()
+    }
+}
+
+fn apply_tool_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
+    mut q: GraphQuery<labels::ToolCall, S>,
+    filters: &ProvenanceOpsFilters,
+) -> GraphQuery<labels::ToolCall, S> {
+    if let Some(ref agent_id) = filters.agent_id {
+        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
+    }
+    if let Some(ref agent_package) = filters.agent_package {
+        q = q.for_agent_package(AgentPackage::new(agent_package.clone()));
+    }
+    if let Some(ref task_id) = filters.task_id {
+        q = q.for_task_execution(TaskExecutionNodeId::for_task_id(task_id));
+    }
+    if let Some(ref tool_name) = filters.tool_name {
+        q = q.filter(keys::ToolName, FilterOp::Eq, tool_name.clone());
+    }
+    q
+}
+
+fn build_lifecycle_query(filters: &ProvenanceOpsFilters) -> (String, Value) {
+    if let Some(ref ctx) = filters.context_id {
+        let q = GraphQuery::<labels::AgentStop, _>::new()
+            .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
+        apply_lifecycle_filters(q, filters).into_surreal()
+    } else {
+        let q = GraphQuery::<labels::AgentStop, _>::new().all();
+        apply_lifecycle_filters(q, filters).into_surreal()
+    }
+}
+
+fn apply_lifecycle_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
+    mut q: GraphQuery<labels::AgentStop, S>,
+    filters: &ProvenanceOpsFilters,
+) -> GraphQuery<labels::AgentStop, S> {
+    if let Some(ref agent_id) = filters.agent_id {
+        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
+    }
+    if let Some(ref agent_package) = filters.agent_package {
+        q = q.for_agent_package(AgentPackage::new(agent_package.clone()));
+    }
+    q
+}
+
 #[async_trait]
 impl ProvenanceOpsQuery for SurrealProvenanceStore {
     async fn query_ops(
@@ -698,71 +819,19 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
         // Load enrichment maps for row post-processing.
         let identity_by_agent_id = self.load_agent_identity_map().await?;
 
-        let label = match request.resource {
-            ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates => "LlmCall",
-            ProvenanceOpsResource::ToolCalls => "ToolCall",
-            ProvenanceOpsResource::Messages => "Message",
-            ProvenanceOpsResource::LifecycleEvents => "AgentStop",
+        // Per-resource typed dispatch. Each `build_*_query` returns a
+        // `(SQL, bindings)` pair from `GraphQuery::into_surreal()` — the
+        // only legal SQL emitter for graph-targeted reads in this crate.
+        // No `format!` of edge labels appears below.
+        let (query, binds_value) = match request.resource {
+            ProvenanceOpsResource::Messages => build_messages_query(&request.filters),
+            ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates => {
+                build_llm_query(&request.filters)
+            }
+            ProvenanceOpsResource::ToolCalls => build_tool_query(&request.filters),
+            ProvenanceOpsResource::LifecycleEvents => build_lifecycle_query(&request.filters),
         };
-
-        // Build WHERE clause with bind params only.
-        let mut where_clauses = vec!["label = $label".to_string()];
-        let mut binds: Vec<(String, Value)> =
-            vec![("label".to_string(), Value::String(label.to_string()))];
-
-        if let Some(ref ctx) = request.filters.context_id {
-            let ctx_node = context_entity_id_string(ctx.as_str());
-            let scoped = context_scope::SCOPED_TO;
-            where_clauses.push(format!(
-                "node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
-                 WHERE to_id = $ctx_node AND rel_type = '{scoped}')"
-            ));
-            binds.push(("ctx_node".to_string(), Value::String(ctx_node)));
-        }
-        if !matches!(request.resource, ProvenanceOpsResource::Messages)
-            && let Some(ref tid) = request.filters.task_id
-        {
-            let task_exec = crate::id_semantics::task_execution_activity_id_string(tid.as_str());
-            let task_call = crate::vocabulary::a2a_relations::TASK_CALL;
-            where_clauses.push(format!(
-                "node_id IN (SELECT VALUE to_id FROM {TBL_EDGE} \
-                 WHERE from_id = $task_exec_node AND rel_type = '{task_call}')"
-            ));
-            binds.push(("task_exec_node".to_string(), Value::String(task_exec)));
-        }
-        if let Some(ref tool_name) = request.filters.tool_name {
-            where_clauses.push("props.a2a_tool_name = $tool_name".to_string());
-            binds.push((
-                "tool_name".to_string(),
-                Value::String(tool_name.to_string()),
-            ));
-        }
-        if let Some(ref model) = request.filters.model {
-            where_clauses.push("props.a2a_model = $model".to_string());
-            binds.push(("model".to_string(), Value::String(model.to_string())));
-        }
-        if let Some(ref provider) = request.filters.provider {
-            where_clauses.push("props.a2a_client = $provider".to_string());
-            binds.push(("provider".to_string(), Value::String(provider.to_string())));
-        }
-        if let Some(ref agent_id) = request.filters.agent_id {
-            where_clauses.push("props.a2a_agent_id = $agent_id".to_string());
-            binds.push((
-                "agent_id".to_string(),
-                Value::String(agent_id.as_str().to_string()),
-            ));
-        }
-
-        let query = format!(
-            "SELECT node_id, props FROM {TBL_NODE} WHERE {}",
-            where_clauses.join(" AND ")
-        );
-        let mut q = self.db.query(&query);
-        for (k, v) in binds {
-            q = q.bind((k, v));
-        }
-        let response = q.await.map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
+        let rows = self.execute_typed_node_query(&query, &binds_value).await?;
 
         // Canonicalize rows to the public ops shape.
         let mut ops_rows: Vec<Map<String, Value>> = rows

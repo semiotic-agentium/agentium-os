@@ -444,7 +444,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseClickUpAction" | "ChooseClickUpAction__act__support_clickup" | "ChooseClickUpAction__continue__support_clickup" | "ChooseClickUpAction__select";
+export type StepExecutorFunctionName = "ChooseClickUpAction" | "ChooseClickUpAction__active__support_clickup" | "ChooseClickUpAction__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -495,9 +495,8 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ChooseClickUpAction: { args: Parameters<typeof ChooseClickUpAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction>>; };
-  ChooseClickUpAction__act__support_clickup: { args: Parameters<typeof ChooseClickUpAction__act__support_clickup>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__act__support_clickup>>; };
-  ChooseClickUpAction__continue__support_clickup: { args: Parameters<typeof ChooseClickUpAction__continue__support_clickup>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__continue__support_clickup>>; };
-  ChooseClickUpAction__select: { args: Parameters<typeof ChooseClickUpAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__select>>; };
+  ChooseClickUpAction__active__support_clickup: { args: Parameters<typeof ChooseClickUpAction__active__support_clickup>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__active__support_clickup>>; };
+  ChooseClickUpAction__entry: { args: Parameters<typeof ChooseClickUpAction__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__entry>>; };
 }
 
 declare global {

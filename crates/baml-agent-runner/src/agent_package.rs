@@ -930,8 +930,9 @@ mod tests {
         let describe = format!(
             "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"]}}}}"
         );
-        let script =
-            format!("#!/bin/sh\nwhile IFS= read -r _; do :; done\nprintf '%s\\n' '{describe}'\n");
+        // Drain stdin to EOF then emit one JSON-RPC frame (matches stdio invoker: one line + shutdown).
+        // `cat` is faster and less flaky under parallel test load than a shell read loop.
+        let script = format!("#!/bin/sh\ncat >/dev/null 2>&1\nprintf '%s\\n' '{describe}'\n");
         let bin = dir.join("tool-server");
         fs::write(&bin, script.as_bytes()).expect("write tool-server");
         let mut perms = fs::metadata(&bin).expect("stat tool-server").permissions();

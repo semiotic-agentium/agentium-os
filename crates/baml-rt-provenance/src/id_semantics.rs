@@ -356,7 +356,8 @@ pub fn plan_step_entity_id_string(task_id: &str, plan_id: &str, step_id: &str) -
     DerivedId::from_parts("plan_step", [task_id, plan_id, step_id]).into_string()
 }
 
-/// Entity representing a task state. One node per (task_id, status). Idempotent MERGE.
+/// Entity representing one immutable task-state transition. One node per
+/// `(task_id, activity_anchor)`.
 pub struct TaskStateEntityId;
 impl DerivedConstructible for TaskStateEntityId {}
 impl ProvIdSemantics for TaskStateEntityId {
@@ -370,12 +371,12 @@ impl ProvVocabularyType for TaskStateEntityId {
 
 pub struct TaskStateEntityInput<'a> {
     pub task_id: &'a TaskId,
-    pub status: &'a str,
+    pub activity_anchor: &'a ActivityAnchorId,
 }
 
-/// Canonical TaskState entity ID. One node per (task_id, status). Idempotent MERGE.
-pub fn task_state_entity_id_string(task_id: &str, status: &str) -> String {
-    format!("task_state:{task_id}:{status}")
+/// Canonical TaskState entity ID. One node per `(task_id, activity_anchor)`.
+pub fn task_state_entity_id_string(task_id: &str, activity_anchor: &str) -> String {
+    format!("task_state:{task_id}:{activity_anchor}")
 }
 
 impl ProvDerivedIdTemplate for TaskStateEntityId {
@@ -384,7 +385,7 @@ impl ProvDerivedIdTemplate for TaskStateEntityId {
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
         DerivedId::new(task_state_entity_id_string(
             input.task_id.as_str(),
-            input.status,
+            input.activity_anchor.as_str(),
         ))
     }
 }

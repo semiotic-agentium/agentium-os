@@ -493,7 +493,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "BuildExtrospectionPlan" | "BuildExtrospectionPlan__act__system_extrospection" | "BuildExtrospectionPlan__continue__system_extrospection" | "BuildExtrospectionPlan__select" | "GetDiscoverAgentsPlan" | "GetDiscoverAgentsPlan__act__system_discover_agents" | "GetDiscoverAgentsPlan__continue__system_discover_agents" | "GetDiscoverAgentsPlan__select";
+export type StepExecutorFunctionName = "BuildExtrospectionPlan" | "BuildExtrospectionPlan__active__system_extrospection" | "BuildExtrospectionPlan__entry" | "GetDiscoverAgentsPlan" | "GetDiscoverAgentsPlan__active__system_discover_agents" | "GetDiscoverAgentsPlan__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -544,13 +544,11 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   BuildExtrospectionPlan: { args: Parameters<typeof BuildExtrospectionPlan>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan>>; };
-  BuildExtrospectionPlan__act__system_extrospection: { args: Parameters<typeof BuildExtrospectionPlan__act__system_extrospection>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__act__system_extrospection>>; };
-  BuildExtrospectionPlan__continue__system_extrospection: { args: Parameters<typeof BuildExtrospectionPlan__continue__system_extrospection>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__continue__system_extrospection>>; };
-  BuildExtrospectionPlan__select: { args: Parameters<typeof BuildExtrospectionPlan__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__select>>; };
+  BuildExtrospectionPlan__active__system_extrospection: { args: Parameters<typeof BuildExtrospectionPlan__active__system_extrospection>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__active__system_extrospection>>; };
+  BuildExtrospectionPlan__entry: { args: Parameters<typeof BuildExtrospectionPlan__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__entry>>; };
   GetDiscoverAgentsPlan: { args: Parameters<typeof GetDiscoverAgentsPlan>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan>>; };
-  GetDiscoverAgentsPlan__act__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__act__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__act__system_discover_agents>>; };
-  GetDiscoverAgentsPlan__continue__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__continue__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__continue__system_discover_agents>>; };
-  GetDiscoverAgentsPlan__select: { args: Parameters<typeof GetDiscoverAgentsPlan__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__select>>; };
+  GetDiscoverAgentsPlan__active__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__active__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__active__system_discover_agents>>; };
+  GetDiscoverAgentsPlan__entry: { args: Parameters<typeof GetDiscoverAgentsPlan__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__entry>>; };
 }
 
 declare global {

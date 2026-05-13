@@ -2287,7 +2287,7 @@ expression: snapshot
           "properties": {
             "awaitingInput": {
               "type": "boolean",
-              "description": "True when `a2a_task.status_json` for the effective task is `TASK_STATE_INPUT_REQUIRED`."
+              "description": "True when the effective task's most recent\n[`baml_rt_provenance::metamodel::A2ATaskStateProps`] carries\n`TaskStatusKind::InputRequired`."
             },
             "contextId": {
               "type": "string"
@@ -2297,7 +2297,7 @@ expression: snapshot
                 "string",
                 "null"
               ],
-              "description": "First text part from the status message when [Self::awaiting_input] is true."
+              "description": "Prompt body from the latest `InputRequired` state. Clients must\ntreat absence as unknown rather than as a signal."
             },
             "items": {
               "type": "array",

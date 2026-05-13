@@ -79,7 +79,7 @@ pub use session_coordination::{
 };
 pub use session_ctx_tags::{
     CONVERSATION_TRANSCRIPT_TAG, SESSION_STEP_STABLE_PREFIX_BAML, SESSION_STEP_STABLE_PREFIX_VALUE,
-    TOOL_SCHEMA_PRELUDE_TAG,
+    TOOL_SCHEMA_CATALOG_SIDECAR_FILE, TOOL_SCHEMA_PRELUDE_TAG,
 };
 pub use tool_catalog::{CompositeCatalog, InventoryCatalog, ManifestToolNames, ToolCatalog};
 pub use tool_discovery::search_tools;

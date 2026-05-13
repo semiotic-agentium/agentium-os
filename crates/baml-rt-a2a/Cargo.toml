@@ -20,11 +20,13 @@ baml-rt-provenance = { path = "../baml-rt-provenance" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+dashmap = { workspace = true }
 async-channel = { workspace = true }
 async-trait = { workspace = true }
 async-stream = { workspace = true }
 futures-util = { workspace = true }
 tracing = { workspace = true }
+thiserror = { workspace = true }
 uuid = { workspace = true }
 ts-rs = { workspace = true }
 

@@ -1,48 +1,30 @@
-//! Generate `baml-runtime.d.ts`, generated BAML fragments, and session-plan metadata.
+//! Orchestrator for the runtime codegen pipeline. The real work lives in
+//! [`super::codegen_pipeline`]; this file contains only the [`TypeGenerator`] impl that wires
+//! the named phases together and bridges between blocking and async halves.
 
-use std::{collections::HashMap, fs, path::Path, sync::Arc};
+use std::sync::Arc;
 
 use baml_rt_repository::RepositoryService;
-use baml_rt_tools::{
-    UnifiedStepExecutorFunctionsMap,
-    external_tools::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolsLockfile, external_dirs_from_env},
-    gather_coordination_fragments,
-};
-use baml_runtime::BamlRuntime;
 use tokio::task;
 
-use super::atomic_io::atomic_write;
+use super::codegen_pipeline::WorkspaceReady;
 use crate::builder::{
-    baml_gen::{
-        GENERATED_BAML_PRELUDE_FILE, purge_managed_generated_baml_files,
-        render_baml_tool_interfaces_with_mcp_root, render_generated_session_baml_from_ir,
-    },
-    baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
     error::{BamlBuilderError, Result},
     traits::TypeGenerator,
-    ts_gen::{load_manifest_tools, render_ts_declarations},
+    ts_gen::load_manifest_tools,
     types::{AgentDir, BuildDir},
 };
 
 /// Type generator for runtime declarations.
 ///
-/// Writes `baml-runtime.d.ts` into the agent's `src/` directory so that both
-/// `tsc` and IDEs can resolve the types without any temp-dir indirection.
+/// Writes `baml-runtime.d.ts` into the agent's `src/` directory so that both `tsc` and IDEs
+/// can resolve the types without any temp-dir indirection. All other artifacts (generated BAML
+/// prelude, session-plan / unified-primary / tool-step-executor manifests, external-tools
+/// lockfile, and the rendered tool-schema catalog sidecar) land under `build_dir/`.
 #[derive(Clone, Default)]
 pub struct RuntimeTypeGenerator {
     mcp_registry_service: Option<Arc<RepositoryService>>,
     mcp_registry_url: Option<String>,
-}
-
-fn load_unified_step_executors_authoring(baml_src: &Path) -> UnifiedStepExecutorFunctionsMap {
-    let path = baml_src.join("unified_step_executors.json");
-    if !path.is_file() {
-        return UnifiedStepExecutorFunctionsMap::new();
-    }
-    let Ok(text) = fs::read_to_string(&path) else {
-        return UnifiedStepExecutorFunctionsMap::new();
-    };
-    baml_rt_tools::parse_unified_step_executors_authoring_json(&text)
 }
 
 impl RuntimeTypeGenerator {
@@ -78,234 +60,30 @@ impl TypeGenerator for RuntimeTypeGenerator {
         let agent_dir = agent_dir.clone();
         let build_dir = build_dir.clone();
 
-        task::spawn_blocking(move || {
-            let baml_src = agent_dir.baml_src();
-
-            // Generate BAML tool interfaces into build_dir/baml_src so the packaged baml_src
-            // contains them (packager adds build_dir/baml_src to the tar).
-            // When build_dir/baml_src does not exist (e.g. bootstrap), copy source baml_src so the runtime can load it.
-            let baml_src_build = build_dir.join("baml_src");
-            if !baml_src_build.exists() {
-                copy_dir_all_impl(&baml_src, &baml_src_build)?;
-            }
-            // Agent trees may still contain legacy `generated_tools.baml` etc.; remove so the new
-            // single prelude is the only copy (avoids duplicate `StandardAgentPlanStep` / FSM types).
-            purge_managed_generated_baml_files(&baml_src_build).map_err(BamlBuilderError::Io)?;
-
-            let tool_names = load_manifest_tools(&baml_src)?;
-            let mcp_root = build_dir.join("mcp");
-            let mcp_root = if mcp_root.exists() {
-                tracing::info!(
-                    mcp_root = %mcp_root.display(),
-                    "using packaged MCP registry snapshots during type generation"
-                );
-                Some(mcp_root)
-            } else {
-                None
-            };
-
-            // Resolve tool metadata once — used for the coordination prelude,
-            // polymorphic type generation, and per-phase function generation.
-            // Coordination BAML is sourced from `metadata.coordination_baml`,
-            // which is populated by the catalog from inventory providers
-            // (internal tools) or `coordination.baml_file` (external bundles).
-            let tool_metadata = if !tool_names.is_empty() {
-                let catalog = baml_rt_tools::external_tools::build_builder_catalog_with_mcp_root(
-                    mcp_root.as_deref(),
-                )?;
-                baml_rt_tools::tool_catalog::resolve_manifest_tools_with_catalog(
-                    &catalog,
-                    &tool_names,
-                )?
-            } else {
-                Vec::new()
-            };
-
-            // Single `_baml_runtime.baml` prelude (mirrors `baml-runtime.d.ts`): tools + coordination + IR sections.
-            let mut generated_baml =
-                render_baml_tool_interfaces_with_mcp_root(&tool_names, mcp_root.as_deref())?;
-            if !tool_metadata.is_empty()
-                && let Some(coord_baml) = gather_coordination_fragments(&tool_metadata)?
-            {
-                generated_baml
-                    .push_str("\n\n// ── builder: session coordination (tool crates) ──\n\n");
-                generated_baml.push_str(&coord_baml);
-            }
-
-            let prelude_path = baml_src_build.join(GENERATED_BAML_PRELUDE_FILE);
-            if let Some(parent) = prelude_path.parent() {
-                fs::create_dir_all(parent).map_err(BamlBuilderError::Io)?;
-            }
-            atomic_write(&prelude_path, generated_baml.as_bytes())?;
-
-            // First compile: user BAML + generated tool interfaces.
-            // Polymorphic session types are generated from the IR *after* this compile,
-            // so we do not need a pre-compile source scan.
-            let env_vars: HashMap<String, String> = HashMap::new();
-            let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
-
-            let runtime = BamlRuntime::from_directory(&baml_src_build, env_vars, feature_flags)
-                .map_err(|e| BamlBuilderError::RuntimeLoadFailed { source: e })?;
-
-            let ir_signature = extract_baml_signatures(&runtime)?;
-            let session_plan_map = session_plan_functions_map(&ir_signature);
-            let unified_roots = load_unified_step_executors_authoring(&baml_src);
-
-            // Generate polymorphic session types AND per-phase step executor functions
-            // from the compiled IR — single pass, no source text parsing.
-            let mut session_plan_map = session_plan_map;
-            let session_baml =
-                render_generated_session_baml_from_ir(&runtime, &tool_metadata, &unified_roots)?;
-
-            if !tool_metadata.is_empty() || !unified_roots.is_empty() {
-                if !session_baml.polymorphic_types.is_empty() {
-                    generated_baml
-                        .push_str("\n\n// ── builder: polymorphic session unions (from IR) ──\n\n");
-                    generated_baml.push_str(&session_baml.polymorphic_types);
-                }
-                if !session_baml.phase_functions.is_empty() {
-                    generated_baml
-                        .push_str("\n\n// ── builder: per-phase step executors (from IR) ──\n\n");
-                    generated_baml.push_str(&session_baml.phase_functions);
-
-                    // Register phase functions for all session functions (single- and multi-tool).
-                    if !tool_metadata.is_empty() {
-                        let poly_entries: Vec<(String, Vec<baml_rt_tools::SessionPlanTypeName>)> =
-                            session_plan_map
-                                .iter()
-                                .filter(|(_, v)| !v.is_empty())
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect();
-                        for (func_name, plan_types) in &poly_entries {
-                            session_plan_map.insert(
-                                baml_rt_tools::SessionTypeNames::select(func_name),
-                                plan_types.clone(),
-                            );
-                            for tool in &tool_metadata {
-                                let slug = tool.name.slug();
-                                let tool_plan: Vec<baml_rt_tools::SessionPlanTypeName> = plan_types
-                                    .iter()
-                                    .filter(|pt| pt.class_name() == tool.class_name)
-                                    .cloned()
-                                    .collect();
-                                if !tool_plan.is_empty() {
-                                    session_plan_map.insert(
-                                        baml_rt_tools::SessionTypeNames::act(func_name, &slug),
-                                        tool_plan.clone(),
-                                    );
-                                    // No __consume__ phase: Send blocks until Done.
-                                    session_plan_map.insert(
-                                        baml_rt_tools::SessionTypeNames::r#continue(
-                                            func_name, &slug,
-                                        ),
-                                        tool_plan,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Second compile to include polymorphic unions and phase functions in the prelude.
-                if !session_baml.polymorphic_types.is_empty()
-                    || !session_baml.phase_functions.is_empty()
-                {
-                    atomic_write(&prelude_path, generated_baml.as_bytes())?;
-                    let env_vars2: HashMap<String, String> = HashMap::new();
-                    let feature_flags2 = internal_baml_core::feature_flags::FeatureFlags::default();
-                    let _runtime2 =
-                        BamlRuntime::from_directory(&baml_src_build, env_vars2, feature_flags2)
-                            .map_err(|e| BamlBuilderError::RuntimeLoadFailed { source: e })?;
-                }
-            }
-            let declarations = render_ts_declarations(
-                &ir_signature,
-                &tool_names,
-                &session_plan_map,
-                &unified_roots,
-            )?;
-
-            // Write baml-runtime.d.ts into agent's src/ so tsc resolves it directly.
-            let src_dts = agent_dir.src().join("baml-runtime.d.ts");
-            if let Some(parent) = src_dts.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            atomic_write(&src_dts, declarations.as_bytes())?;
-
-            // Also write to build_dir/dist/ for packaging (the .d.ts is included in the tar).
-            let dist_dts = build_dir.join("dist").join("baml-runtime.d.ts");
-            if let Some(parent) = dist_dts.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            atomic_write(&dist_dts, declarations.as_bytes())?;
-
-            // Emit session-plan function map so the runtime can resolve tool from the invoking
-            // function name (no reliance on __type in prompt output).
-            // Values are always arrays of plan type names (length 1 = single-tool, >1 = polymorphic).
-            if !session_plan_map.is_empty() {
-                let manifest_path = build_dir.join("session_plan_functions.json");
-                let json = serde_json::to_string_pretty(&session_plan_map)
-                    .map_err(BamlBuilderError::Json)?;
-                atomic_write(&manifest_path, json.as_bytes())?;
-            }
-
-            if !unified_roots.is_empty() {
-                let unified_path = build_dir.join("unified_step_executor_functions.json");
-                let json =
-                    serde_json::to_string_pretty(&unified_roots).map_err(BamlBuilderError::Json)?;
-                atomic_write(&unified_path, json.as_bytes())?;
-            }
-
-            // Emit tool-to-step-executor mapping for polymorphic shim auto-narrowing.
-            // Direct tool_name → single-tool step executor function name.
-            let tool_step_executors =
-                build_tool_step_executors_map(&session_plan_map, &tool_metadata);
-            if !tool_step_executors.is_empty() {
-                let executors_path = build_dir.join("tool_step_executors.json");
-                let json = serde_json::to_string_pretty(&tool_step_executors)
-                    .map_err(BamlBuilderError::Json)?;
-                atomic_write(&executors_path, json.as_bytes())?;
-            }
-
-            // Always emit external_tools.lock.json at package root (empty if no externals).
-            let lockfile = build_external_tools_lockfile(&tool_metadata)?;
-            let lockfile_json =
-                serde_json::to_string_pretty(&lockfile).map_err(BamlBuilderError::Json)?;
-            let lockfile_path = build_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
-            atomic_write(&lockfile_path, lockfile_json.as_bytes())?;
-
-            Ok(())
+        // Sync half: workspace materialise, BAML compiles (with the universal authored-prompt
+        // rewriter in between), session artifact generation, stable catalog planning, manifest
+        // + .d.ts emission.
+        let catalog_render_inputs = task::spawn_blocking(move || {
+            let workspace = WorkspaceReady::materialize(agent_dir, build_dir)?;
+            let prelude = workspace.emit_tool_interfaces_prelude()?;
+            let compiled = prelude.compile_first_pass()?;
+            let normalized = compiled.normalize_authored_prompts()?;
+            let session_emitted = normalized.emit_session_artifacts()?;
+            let runtime_finalized = session_emitted.append_catalog_function_and_finalize()?;
+            runtime_finalized.emit_typescript_declarations()?;
+            runtime_finalized.emit_runtime_manifests()?;
+            Ok::<_, BamlBuilderError>(runtime_finalized.into_catalog_render_inputs())
         })
         .await
-        .map_err(|e| BamlBuilderError::BlockingTaskJoin { source: e })?
-    }
-}
+        .map_err(|e| BamlBuilderError::BlockingTaskJoin { source: e })??;
 
-/// Build a mapping from tool_name to single-tool step executor function name.
-///
-/// For each single-tool entry (Vec length 1) in the session plan map, maps the
-/// tool's qualified name (e.g. "support/calculate") to the BAML function name
-/// (e.g. "ChooseCalcAction"). Used by the shim to auto-narrow after a polymorphic
-/// Open selects a tool — one direct lookup, no reverse index.
-fn build_tool_step_executors_map(
-    session_plan_map: &baml_rt_tools::SessionPlanFunctionsMap,
-    tool_metadata: &[baml_rt_tools::tools::ToolFunctionMetadata],
-) -> HashMap<String, String> {
-    let class_to_tool: HashMap<&str, String> = tool_metadata
-        .iter()
-        .map(|m| (m.class_name.as_str(), m.name.to_string()))
-        .collect();
-
-    let mut map = HashMap::new();
-    for (func_name, plan_types) in session_plan_map {
-        if plan_types.len() == 1 {
-            let class_name = plan_types[0].class_name();
-            if let Some(tool_name) = class_to_tool.get(class_name) {
-                map.insert(tool_name.clone(), func_name.clone());
-            }
+        // Async tail: persist the IR-derived stable tool / operation vocabulary sidecar that the
+        // runtime loads into `ctx.tags['tool_schema_prelude']` at agent load time.
+        if let Some(inputs) = catalog_render_inputs {
+            inputs.render_sidecar().await?;
         }
+        Ok(())
     }
-    map
 }
 
 async fn prepare_mcp_registry_cache(
@@ -390,43 +168,6 @@ async fn prepare_mcp_registry_cache(
             "resolved MCP snapshot for agent build"
         );
         baml_rt_tools::mcp_cache::write_snapshot(&root, &snapshot).map_err(BamlBuilderError::Io)?;
-    }
-    Ok(())
-}
-
-fn build_external_tools_lockfile(
-    tool_metadata: &[baml_rt_tools::tools::ToolFunctionMetadata],
-) -> Result<ExternalToolsLockfile> {
-    let external_tool_count = tool_metadata
-        .iter()
-        .filter(|meta| matches!(meta.backend, baml_rt_tools::ToolBackend::External))
-        .count();
-
-    if external_tool_count == 0 {
-        return Ok(ExternalToolsLockfile::empty());
-    }
-
-    let dirs = external_dirs_from_env().ok_or_else(|| {
-        BamlBuilderError::InvalidArgument(
-            "manifest uses external tools, but BAML_EXTERNAL_TOOLS_DIR is not set; builder must hash local tool artifacts to produce external_tools.lock.json"
-                .to_string(),
-        )
-    })?;
-
-    ExternalToolsLockfile::from_tool_dirs(&dirs).map_err(BamlBuilderError::from)
-}
-
-fn copy_dir_all_impl(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst).map_err(BamlBuilderError::Io)?;
-    for entry in fs::read_dir(src).map_err(BamlBuilderError::Io)? {
-        let entry = entry.map_err(BamlBuilderError::Io)?;
-        let path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if path.is_dir() {
-            copy_dir_all_impl(&path, &dst_path)?;
-        } else {
-            fs::copy(&path, &dst_path).map_err(BamlBuilderError::Io)?;
-        }
     }
     Ok(())
 }

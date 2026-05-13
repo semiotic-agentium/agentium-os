@@ -11,10 +11,18 @@
 mod escape;
 mod ir_type_print;
 mod prelude;
+mod prompt_compositor;
 mod prompt_copy;
-mod session_from_ir;
+mod prompt_normalize;
+pub mod prompt_skeleton;
+pub mod session_from_ir;
 mod tool_interfaces;
 pub mod writer;
+
+pub(crate) use prompt_compositor::{
+    PromptCompositor, ToolSessionPhaseSpec, UnifiedPrimaryPhaseSpec,
+};
+pub(crate) use prompt_normalize::AuthorBodySanitizer;
 
 /// Single generated BAML bundle: shared types, tool interfaces, optional session coordination,
 /// polymorphic session unions, and per-phase executors (same role as `baml-runtime.d.ts` for TS).
@@ -25,6 +33,7 @@ pub const GENERATED_BAML_PRELUDE_FILE: &str = "_baml_runtime.baml";
 /// Filenames produced by this or older builder versions (remove from `baml_src` before a fresh emit).
 pub fn is_managed_generated_baml_filename(file_name: &str) -> bool {
     file_name == GENERATED_BAML_PRELUDE_FILE
+        || file_name == CATALOG_SIDECAR_FILE
         || matches!(
             file_name,
             "generated_tools.baml"
@@ -62,6 +71,7 @@ pub fn purge_managed_generated_baml_files(dir: &std::path::Path) -> std::io::Res
 }
 
 pub use session_from_ir::{
-    GeneratedSessionBaml, SessionPlanIrInspector, render_generated_session_baml_from_ir,
+    CATALOG_FUNCTION_NAME, CATALOG_SIDECAR_FILE, CatalogPlan, GeneratedSessionBaml,
+    SessionPlanIrInspector, catalog::render_catalog_prompt, render_generated_session_baml_from_ir,
 };
 pub use tool_interfaces::{render_baml_tool_interfaces, render_baml_tool_interfaces_with_mcp_root};

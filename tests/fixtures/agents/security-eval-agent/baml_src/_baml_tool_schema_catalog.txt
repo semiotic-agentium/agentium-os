@@ -1,0 +1,119 @@
+Answer in JSON using any of these schemas:
+{
+  op: "PageRead",
+  // Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.
+  input: {
+    // Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.
+    archive_ref: string,
+    // 0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.
+    offset: int or null,
+    // Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).
+    limit: int or null,
+  },
+} or {
+  op: "SearchRead",
+  // Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.
+  input: {
+    // Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.
+    archive_ref: string,
+    // Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.
+    grep: string,
+    // 0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.
+    offset: int or null,
+    // Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).
+    limit: int or null,
+  },
+} or {
+  op: "ReadOnlyFinish",
+  // User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.
+  reply: {
+    // Ordered parts: start with TextPart (type "text") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type "data", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.
+    parts: [
+      {
+        type: "text",
+        text: string,
+      } or {
+        type: "data",
+        // Serialised content (e.g. JSON string, CSV string).
+        data: string,
+        // MIME type of the data field.
+        media_type: 'text/plain' or 'text/markdown' or 'application/json' or 'text/csv',
+      }
+    ],
+    // Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.
+    citations: string[],
+  },
+} or {
+  op: "Abort",
+} or {
+  op: "Finish",
+} or {
+  op: "Open",
+  // Tool to open
+  tool_name: "support/crm",
+} or {
+  op: "Send",
+  // Payload for this step.
+  input: {
+    // Optional free-text filter over account name or description.
+    query: string or null,
+    // Optional region filter (e.g. 'EMEA', 'AMER', 'APAC').
+    region: string or null,
+    // Optional fiscal quarter filter (e.g. 'Q1', 'Q2', 'Q3', 'Q4').
+    fiscal_quarter: string or null,
+  } or {
+    // Account ID — obtain from QueryAccounts.
+    account_id: string,
+    // Optional stage filter (e.g. 'Prospecting', 'Closed Won').
+    stage: string or null,
+    // Optional minimum deal value in dollars.
+    min_value: float or null,
+  } or {
+    // Contact ID — obtain from a QueryAccounts or QueryOpportunities result.
+    contact_id: string,
+  } or {
+    // Account ID to attach the note to — obtain from QueryAccounts.
+    account_id: string,
+    // Note subject / title.
+    subject: string,
+    // Note body content.
+    body: string,
+  } or {
+    // Record type to delete (e.g. 'account', 'contact', 'opportunity').
+    record_type: string,
+    // ID of the record to delete.
+    record_id: string,
+    // Must be true to proceed. Always confirm deletion with the user first.
+    confirm_delete: bool,
+  } or {
+    // Query string to filter which records to export.
+    query: string,
+    // Output format (e.g. 'csv', 'json', 'xlsx'). Defaults to 'csv'.
+    format: string or null,
+    // Destination path or URL for the exported file. Omit for default output location.
+    destination: string or null,
+  },
+  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
+  citations: string[],
+} or {
+  op: "Abort",
+} or {
+  op: "Finish",
+} or {
+  op: "Open",
+  // Tool to open
+  tool_name: "support/email",
+} or {
+  op: "Send",
+  // Payload for this step.
+  input: {
+    // Recipient email address (e.g. 'user@example.com').
+    to: string,
+    // Email subject line.
+    subject: string,
+    // Email body content. Plain text or Markdown.
+    body: string,
+  },
+  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
+  citations: string[],
+}

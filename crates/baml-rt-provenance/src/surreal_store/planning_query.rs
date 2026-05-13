@@ -201,40 +201,35 @@ impl SurrealProvenanceStore {
 
     const TASK_AGENT_ID_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-    /// Two-hop graph traversal with a timeout guard.
+    /// Single-hop graph traversal via the `WAS_LAST_EXECUTED_BY`
+    /// head-pointer edge introduced by the relational-shadow excision.
     ///
-    /// On databases with pathological query plans (large `prov_edge` tables where
-    /// nested sub-selects bypass indexes) this query can stall indefinitely,
-    /// blocking the entire `message.sendStream` critical path. The timeout
-    /// degrades gracefully to [`TaskAgentResolution::TimedOut`] so the event is
-    /// still written — just without agent-scoped normalization context.
+    /// The previous implementation walked
+    /// `Task -[WAS_CREATED_BY]-> TaskExecution -[WAS_EXECUTED_BY]-> AgentRuntimeInstance`
+    /// and required a process-local cache to amortise three round-trips
+    /// against the hot `message.sendStream` path. The normalizer now
+    /// re-points `WAS_LAST_EXECUTED_BY` from the `Task` to the current
+    /// `AgentRuntimeInstance` atomically inside the same write batch, so
+    /// resolution collapses to a single edge lookup plus one node read
+    /// for the `a2a_agent_id` property — and the cache layer is gone.
     pub(crate) async fn get_task_agent_id(
         &self,
         task_id: &TaskId,
     ) -> Result<crate::store::TaskAgentResolution> {
-        use crate::store::TaskAgentResolution;
-        if let Some(entry) = self.task_agent_id_cache.get(task_id) {
-            return Ok(TaskAgentResolution::Resolved(entry.value().clone()));
-        }
         match tokio::time::timeout(
             Self::TASK_AGENT_ID_TIMEOUT,
             self.get_task_agent_id_inner(task_id),
         )
         .await
         {
-            Ok(Ok(TaskAgentResolution::Resolved(agent))) => {
-                self.task_agent_id_cache
-                    .insert(task_id.clone(), agent.clone());
-                Ok(TaskAgentResolution::Resolved(agent))
-            }
-            Ok(other) => other,
+            Ok(res) => res,
             Err(_elapsed) => {
                 tracing::warn!(
                     task_id = task_id.as_str(),
                     timeout_secs = Self::TASK_AGENT_ID_TIMEOUT.as_secs(),
                     "get_task_agent_id timed out — agent-scoped normalization skipped for this event"
                 );
-                Ok(TaskAgentResolution::TimedOut)
+                Ok(crate::store::TaskAgentResolution::TimedOut)
             }
         }
     }
@@ -243,57 +238,35 @@ impl SurrealProvenanceStore {
         &self,
         task_id: &TaskId,
     ) -> Result<crate::store::TaskAgentResolution> {
+        use crate::store::TaskAgentResolution;
         let task_entity_id = task_entity_id_string(task_id);
-        // Two-hop traversal: Task -[WAS_CREATED_BY]-> TaskExecution -[WAS_EXECUTED_BY]-> AgentInstance
-        // then read props.a2a_agent_id from the agent instance node, all in one query.
-        //
-        // Rewritten as two sequential single-hop queries instead of nested sub-selects
-        // to avoid SurrealDB query-planner pathologies on large edge tables.
         let hop1 = format!(
             "SELECT VALUE to_id FROM {TBL_EDGE} \
-             WHERE from_id = $task_node AND rel_type = $rel_created LIMIT 1"
+             WHERE from_id = $task_node AND rel_type = $rel_last LIMIT 1"
         );
         let r1 = self
             .db
             .query(&hop1)
             .bind(("task_node", task_entity_id))
-            .bind(("rel_created", semantic_labels::WAS_CREATED_BY))
+            .bind(("rel_last", semantic_labels::WAS_LAST_EXECUTED_BY))
             .await
             .map_err(map_surreal_error)?;
-        use crate::store::TaskAgentResolution;
-
-        let execution_ids: Vec<Value> = check_and_take_zero(r1, map_surreal_error)?;
-        let Some(execution_id) = execution_ids.first().and_then(Value::as_str) else {
-            return Ok(TaskAgentResolution::NotLinked);
-        };
-
-        let hop2 = format!(
-            "SELECT VALUE to_id FROM {TBL_EDGE} \
-             WHERE from_id = $exec_node AND rel_type = $rel_executed LIMIT 1"
-        );
-        let r2 = self
-            .db
-            .query(&hop2)
-            .bind(("exec_node", execution_id.to_string()))
-            .bind(("rel_executed", semantic_labels::WAS_EXECUTED_BY))
-            .await
-            .map_err(map_surreal_error)?;
-        let agent_node_ids: Vec<Value> = check_and_take_zero(r2, map_surreal_error)?;
+        let agent_node_ids: Vec<Value> = check_and_take_zero(r1, map_surreal_error)?;
         let Some(agent_node_id) = agent_node_ids.first().and_then(Value::as_str) else {
             return Ok(TaskAgentResolution::NotLinked);
         };
 
-        let hop3 = format!(
+        let hop2 = format!(
             "SELECT props.a2a_agent_id AS agent_id OMIT id FROM {TBL_NODE} \
              WHERE node_id = $agent_node LIMIT 1"
         );
-        let r3 = self
+        let r2 = self
             .db
-            .query(&hop3)
+            .query(&hop2)
             .bind(("agent_node", agent_node_id.to_string()))
             .await
             .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(r3, map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(r2, map_surreal_error)?;
         let Some(row) = rows.first() else {
             return Ok(TaskAgentResolution::NotLinked);
         };
@@ -661,81 +634,8 @@ impl SurrealProvenanceStore {
     }
 }
 
-#[cfg(test)]
-mod task_agent_id_cache_tests {
-    use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
-
-    use crate::{
-        AgentType, ProvEvent, ProvenanceWriter,
-        surreal_store::{SurrealProvenanceStore, SurrealStoreBuilder},
-    };
-
-    #[tokio::test]
-    async fn get_task_agent_id_resolved_is_cached_across_add_events() {
-        let store: std::sync::Arc<SurrealProvenanceStore> =
-            SurrealStoreBuilder::in_memory_isolated()
-                .build()
-                .await
-                .expect("build isolated store");
-        let context_id = ContextId::new(1_771_470_222_000, 1);
-        let task_id = TaskId::from_external(ExternalId::new("task-cache-test-1"));
-        let agent_id =
-            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
-
-        store
-            .add_event(ProvEvent::agent_booted(
-                agent_id.clone(),
-                AgentType::new("clickup_agent").expect("agent_type"),
-                "1.0.0".to_string(),
-                "clickup@1.0.0".to_string(),
-            ))
-            .await
-            .expect("agent_booted");
-        store
-            .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
-            .await
-            .expect("task_exists");
-        store
-            .add_event(ProvEvent::task_execution_started(
-                context_id.clone(),
-                task_id.clone(),
-                agent_id.clone(),
-            ))
-            .await
-            .expect("task_execution_started");
-
-        assert_eq!(store.task_agent_id_cache_len_for_test(), 0);
-
-        store
-            .add_event(ProvEvent::message_received_task(
-                context_id.clone(),
-                task_id.clone(),
-                MessageId::from_external(ExternalId::new("msg-cache-1")),
-                "user".to_string(),
-                vec!["first".to_string()],
-                None,
-                agent_id.clone(),
-                1_771_470_000_001,
-            ))
-            .await
-            .expect("message_received 1");
-
-        assert_eq!(store.task_agent_id_cache_len_for_test(), 1);
-
-        store
-            .add_event(ProvEvent::message_received_task(
-                context_id,
-                task_id.clone(),
-                MessageId::from_external(ExternalId::new("msg-cache-2")),
-                "user".to_string(),
-                vec!["second".to_string()],
-                None,
-                agent_id,
-                1_771_470_000_002,
-            ))
-            .await
-            .expect("message_received 2");
-
-        assert_eq!(store.task_agent_id_cache_len_for_test(), 1);
-    }
-}
+// The historical `task_agent_id_cache_tests` module was removed
+// alongside the process-local cache: `get_task_agent_id` now performs
+// a single edge hop via `WAS_LAST_EXECUTED_BY`, so cache hit-rate is
+// no longer part of the public contract. Head-pointer cardinality is
+// covered by `head_pointer_cardinality_test` under `tests/`.

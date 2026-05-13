@@ -8,7 +8,7 @@ These separate **what happened** in the graph from **how the model is guided** i
 
 | Boundary | Owns | Must not |
 |----------|------|----------|
-| **CanonicalHistory** | Ordered, graph-derived view of `Message` / `ToolCall` / `SessionStep` rows (via `ProvenanceConversationContextItem` → `PromptProjectionItem`). | Contain hand-written FSM paragraphs, `[ACT]` / `[CONTINUE]` preambles, or merge heuristics that invent or drop activities. |
+| **CanonicalHistory** | Ordered, graph-derived view of `Message` / `ToolCall` / `SessionStep` rows (via `ProvenanceConversationContextItem` → `PromptProjectionItem`). | Contain hand-written FSM paragraphs, legacy `[OPEN]` / `[ACT]` / `[CONTINUE]` line preambles (stripped from parent IR when generating phase executors — authors should omit them), or merge heuristics that invent or drop activities. |
 | **PhaseOverlay** (session step executors) | Transient, phase-specific *prompt* material (if any) outside the parent function’s `prompt_template` from IR. | Be concatenated into **`conversation_transcript`** or be mistaken for canonical `system` history. Today, generated phase functions use an **empty** preamble so FSM is expressed by **narrowed return types** and BAML `@@description` / class docs, not by injected prose in the `prompt` string. |
 | **StableHistoryRefResolver** | `RefTable` mapping from `(a2a_activity_anchor, source)` to `#N` for `Message` and `ToolCall` lines; monotonic `insert` for new `@N` archives. | Advance `#N` on a full-graph re-read when the same activities are projected again — [`RefTable::insert_history`](../../crates/baml-rt-tools/src/archive_refs.rs) is idempotent per that key. |
 
@@ -20,7 +20,7 @@ These separate **what happened** in the graph from **how the model is guided** i
 4. **Render** — [`project_prompt_context`](../crates/baml-rt-tools/src/prompt_projection.rs) assigns `#N` via idempotent `RefTable::insert_history` (stable per activity + source).
 5. **Provider** — [`ProjectingConversationContextProvider`](../crates/baml-rt-a2a/src/a2a_transport.rs) → merged rows → `ctx.tags['conversation_transcript']` in [`BamlExecutor`](../crates/baml-rt-quickjs/src/baml_execution.rs).
 6. **Intra-turn** — [`baml/intra_turn.rs`](../crates/baml-rt-quickjs/src/baml/intra_turn.rs) may merge a loop-local supplement with the provider; dedup is by full JSON line equality (stable refs make re-reads match).
-7. **Phase executors (codegen)** — [`session_from_ir/mod.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/mod.rs) generates per-phase BAML **without** long `[OPEN]` / `[ACT]` / `[CONTINUE]` preambles; IR `prompt_template` is the only inlined task text in the default path.
+7. **Phase executors (codegen)** — [`session_from_ir/mod.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/mod.rs) generates per-phase BAML with **`Phase: ENTRY` / `ACTIVE` / `STRUCTURED`** cues (not legacy bracket preambles); parent IR `prompt_template` is inlined after [`strip_phase_executor_ir_template`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/phase_prompt.rs) so duplicate transcript/`output_format`/legacy lines are dropped (error correction — see `docs/how-to-write-agents.md` §3.3.1).
 8. **Citation drift** — [`compute_citation_drift_section`](../crates/baml-rt-provenance/src/effect_subscriber.rs) re-runs `project_prompt_context` on the live `RefTable`; idempotent history refs keep `#N` aligned with the last build.
 
 ## Non-negotiable invariants
@@ -31,11 +31,71 @@ These separate **what happened** in the graph from **how the model is guided** i
 - **Stable `#N` for reprojection:** repeated `project_prompt_context` on the same items with the same `RefTable` produces identical rendered line content for those activities (and thus identical transcript segments).
 - **Merge / supplement:** step-executor merge uses graph-backed line objects; with stable refs, provider and supplement lines match when they represent the same activity.
 
+## Live A2A update durability (post-relational-shadow excision)
+
+Live A2A task updates (`StatusChanged`, `ArtifactGenerated`, `MessageReceived`,
+`MessageSent`) are delivered to SSE subscribers through an in-process
+[`TaskUpdateBroadcaster`](../crates/baml-rt-a2a/src/task_update_broadcaster.rs)
+(`tokio::sync::broadcast` per `(ContextId, TaskId)`). The previous
+`a2a_update` SurrealDB table is excised; the provenance graph
+(`prov_node` / `prov_edge`) remains the **sole durable** source of truth
+for everything an `A2ATaskState` / `Artifact` / `Message` row encodes.
+
+Concrete consequences:
+
+- **In-flight loss window.** A frame that has been committed to the
+  graph but not yet flushed through the SSE connection is lost on a
+  runner restart. Subscribers that reconnect supply
+  `since: ActivityAnchorId` to
+  [`TaskUpdateSession::open`](../crates/baml-rt-a2a/src/task_update_session.rs);
+  the session backfills from the durable graph until caught up, then
+  joins the live broadcast. No frame committed to the graph is ever
+  lost across reconnect.
+- **Lag handling.** A subscriber that drains slower than the producer
+  fills `capacity` frames (default 256, configurable via
+  [`TaskUpdateBroadcaster::with_capacity`](../crates/baml-rt-a2a/src/task_update_broadcaster.rs))
+  observes `RecvError::Lagged` on the live channel; the session
+  transparently re-replays from the last successfully delivered anchor
+  before resuming live delivery. The consumer never observes a gap.
+- **Cross-pod clusters.** The broadcast leg is single-process. In a
+  multi-pod runner deployment, live frames committed by pod A do not
+  reach a subscriber attached to pod B over the broadcast channel; the
+  graph-replay leg of `TaskUpdateSession` covers that gap because the
+  graph is shared across pods. SSE clients that reconnect to a
+  different pod see the same backfill semantics.
+
+This is the deliberate Phase B durability / latency trade-off: writers
+commit once to the durable graph and emit one in-memory frame; readers
+get sub-millisecond live latency in the common case and the graph
+guarantees zero data loss in the failure case.
+
+### `Task.metadata` and `Task.extra` round-trip drop
+
+Alongside the relational shadow excision, `Task.metadata` and
+`Task.extra` are no longer persisted in any store. The graph encodes
+identity (`Task` node), scope (`SCOPED_TO` edge to context), wire
+status (`A2ATaskState` head-pointer via `WAS_LAST_TRANSITIONED_TO`),
+artifacts (`A2A_TASK_ARTIFACT` edges), and history (`A2A_TASK_MESSAGE`
+edges). Anything else clients place in `Task.metadata` or `Task.extra`
+on the inbound wire is ignored on read and not surfaced by
+[`TaskGraphReader::hydrate`](../crates/baml-rt-provenance/src/task_graph_reader.rs).
+Outbound `Task` payloads omit both fields.
+
+Rationale: `Task.metadata` was a free-form bag the previous
+`a2a_task.metadata_json` mirror happened to round-trip; no internal
+component depended on it surviving a re-hydrate. Re-introducing it as
+a graph property would re-introduce the relational-crutch pattern
+(graph node carrying opaque JSON instead of typed edges) that the
+excision was designed to eliminate. If a future workflow needs to
+attach typed information to a task, it must be modelled as a typed
+edge (e.g. `Task -[HAS_LABEL]-> Label`) and exposed through
+[`TaskGraphReader`](../crates/baml-rt-provenance/src/task_graph_reader.rs).
+
 ## Known fault lines (where bugs surface)
 
 - **Provenance write:** duplicate `Message` nodes or bad `event_order` → wrong order or repeated lines in the graph; fix the write path, not the projector.
 - **Ref churn (mitigated):** previously, `insert_history` allocated a new `#N` on every full pass, breaking intra-turn `Value` equality; now idempotent per `(activity_anchor, source)`.
-- **Builder preambles (mitigated for generated phase tools):** long `[ACT]` / `[CONTINUE]` blocks in the `prompt` string conflated **PhaseOverlay** with the task template; removed from [`session_from_ir/mod.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/mod.rs) — hand-written BAML in agent repos may still document FSM in `@@description` or comments.
+- **Builder preambles (mitigated for generated phase tools):** long `[OPEN]` / `[ACT]` / `[CONTINUE]` **lines** or pasted `Phase: SELECT|ACT|CONTINUE` cues in the parent IR template duplicated **PhaseOverlay** material; [`strip_phase_executor_ir_template`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/phase_prompt.rs) strips them when emitting `__entry` / `__active__*`. Hand-written BAML should still document FSM in `@@description` or comments rather than relying on stripping.
 - **Intra-turn async:** `LlmCompleted` can lag; the step executor supplement exists until the graph catches up; this is not non-monotonic *provenance*, but a composite read until sync.
 
 ## R9 — Prefix cacheability (append-only before compaction)
@@ -95,7 +155,8 @@ The episode reader sorts merged status + conversation + artifacts with a **total
 - **Idempotent history refs** — `baml-rt-tools` unit tests: `RefTable::insert_history` and `project_prompt_context` re-run (see `repeat_projection_byte_identical_when_graph_unchanged`).
 - **“One user utterance → one row” (product)** — still host/store responsibility; **faithful** projection: three `Message` activities with the same text → three `#N` lines ([Live projected history JSON](#live-projected-history-json-wire-array)). Add integration tests on the **write path** to catch duplicate `Message` emissions.
 - **Live ordering** — `ORDER BY event_order ASC, node_id ASC` in [`context_reader.rs`](../crates/baml-rt-provenance/src/surreal_store/context_reader.rs) for deterministic ties; add a regression test if the store is ever found to assign duplicate `event_order` to distinct nodes in one context.
-- **Phase preambles** — generated phase BAML in **builder** uses an empty preamble; `baml-rt-builder` test `phase_executor_prompt_body_uses_empty_preamble_for_full_cutover`. Re-run `regen_fixtures` / `baml-rt-builder` to refresh committed `agents/**/baml_src/_baml_runtime.baml` when the generator changes. Hand-written agent BAML is unchanged by this.
+- **Phase preambles** — generated phase BAML in **builder** uses an empty preamble; `baml-rt-builder` test `phase_executor_prompt_body_uses_empty_preamble_for_full_cutover`. Re-run `regen_fixtures` / `baml-rt-builder` to refresh committed `agents/**/baml_src/_baml_runtime.baml` and the rendered `agents/**/baml_src/_baml_tool_schema_catalog.txt` (model-facing schema; loaded into `ctx.tags['tool_schema_prelude']` — see `docs/how-to-write-agents.md` §3.3.2) when the generator changes. Hand-written agent BAML is unchanged by this.
+- **Catalog source-free invariant** — `baml-rt-builder` integration tests `catalog_text_is_source_free`, `phase_function_prompts_inject_catalog_before_ir_body`, and `phase_function_prompts_have_no_per_hop_output_format_for_tool_phases` enforce that the rendered catalog contains no BAML keywords and that tool-session prompts never duplicate `{{ ctx.output_format }}`.
 - **High `@N` for new archives** — new archive rows still advance the shared per-context counter; only **history** lines are idempotent per activity.
 
 **What existing snapshots still primarily cover:** JSON shape, `SessionStep` Open + reads (SendDone present on graph only), `ArchiveReader` wiring, episode `session_history` goldens, step-executor merged history growth.

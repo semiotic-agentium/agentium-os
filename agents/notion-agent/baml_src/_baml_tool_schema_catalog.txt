@@ -1,0 +1,157 @@
+Answer in JSON using any of these schemas:
+{
+  op: "PageRead",
+  // Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.
+  input: {
+    // Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.
+    archive_ref: string,
+    // 0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.
+    offset: int or null,
+    // Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).
+    limit: int or null,
+  },
+} or {
+  op: "SearchRead",
+  // Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.
+  input: {
+    // Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.
+    archive_ref: string,
+    // Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.
+    grep: string,
+    // 0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.
+    offset: int or null,
+    // Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).
+    limit: int or null,
+  },
+} or {
+  op: "ReadOnlyFinish",
+  // User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.
+  reply: {
+    // Ordered parts: start with TextPart (type "text") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type "data", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.
+    parts: [
+      {
+        type: "text",
+        text: string,
+      } or {
+        type: "data",
+        // Serialised content (e.g. JSON string, CSV string).
+        data: string,
+        // MIME type of the data field.
+        media_type: 'text/plain' or 'text/markdown' or 'application/json' or 'text/csv',
+      }
+    ],
+    // Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.
+    citations: string[],
+  },
+} or {
+  op: "Abort",
+} or {
+  op: "Finish",
+} or {
+  op: "Open",
+  // Tool to open
+  tool_name: "support/notion",
+} or {
+  op: "Send",
+  // Payload for this step.
+  input: {
+    // Search keyword. Omit to list all pages.
+    query: string or null,
+    // Pagination cursor from a previous search result.
+    start_cursor: string or null,
+    // Max pages to return per call (default 100). Use start_cursor to paginate.
+    page_size: int or null,
+  } or {
+    // Notion page UUID from a SearchPages result, e.g. '238cff78-8181-80c8-8273-cc5fbdd8c7da'.
+    page_id: string,
+  } or {
+    // Page UUID to read blocks from — same value as the page id from SearchPages.
+    block_id: string,
+    // Pagination cursor for large pages.
+    start_cursor: string or null,
+    page_size: int or null,
+    // Block render mode (omit for default enriched rendering).
+    raw_blocks: 'raw' or 'enriched' or null,
+    // Max child block depth to expand (omit to expand all children).
+    max_depth: int or null,
+  },
+  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
+  citations: string[],
+} or {
+  op: "Abort",
+} or {
+  op: "Finish",
+} or {
+  op: "Open",
+  // Tool to open
+  tool_name: "system/discover_agents",
+  // Optional open payload.
+  initial_input: {
+    reason: string or null,
+  } or null,
+} or {
+  op: "Send",
+  // Payload for this step.
+  input: {
+    query: string or null,
+    required_capabilities: string[] or null,
+    required_schema_versions: string[] or null,
+    required_source_kinds: string[] or null,
+    limit: int or null,
+    offset: int or null,
+  },
+  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
+  citations: string[],
+} or {
+  op: "Abort",
+} or {
+  op: "Finish",
+} or {
+  op: "Open",
+  // Tool to open
+  tool_name: "system/discover_tools",
+  // Optional open payload.
+  initial_input: {
+    reason: string or null,
+  } or null,
+} or {
+  op: "Send",
+  // Payload for this step.
+  input: {
+    query: string or null,
+    limit: int or null,
+  },
+  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
+  citations: string[],
+} or {
+  op: "Abort",
+} or {
+  op: "Finish",
+} or {
+  op: "Open",
+  // Tool to open
+  tool_name: "system/internal_a2a",
+  // Required open payload.
+  initial_input: {
+    target: {
+      agent_package: string,
+      agent_instance_id: string,
+    },
+  },
+} or {
+  op: "Send",
+  // Conversational message payload. Set text to a non-empty string. Never null, never omit text.
+  input: {
+    parts: [
+      {
+        text: string or null,
+        raw: string or null,
+        url: string or null,
+        filename: string or null,
+        media_type: string or null,
+      }
+    ],
+  },
+  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
+  citations: string[],
+}

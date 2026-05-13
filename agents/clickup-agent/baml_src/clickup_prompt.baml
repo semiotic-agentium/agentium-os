@@ -1,6 +1,6 @@
 // Unified step-executor harness: `ChooseClickUpAction` is a *SessionPlan root — `runGeneratedStepExecutor`
 // is the same Rust-hosted mechanism as coordinator planning (prefix, transcript, intra supplement); IR here
-// narrows the host-tool Open/act/continue phases instead of unified-primary `FuncName__select` only.
+// narrows the host-tool Open/active phases instead of unified-primary `FuncName__entry` only.
 
 /// Phase 1 — Intent inference.
 /// Classifies whether the message is a valid ClickUp request, asks for clarification
@@ -20,8 +20,15 @@ class ClickUpIntent {
 
 function InferClickUpIntent(user_message: string) -> NeedClarification | NotRelevant | ClickUpIntent {
   client DefaultClient
-  prompt #"
-    You are the intent classifier for a ClickUp workspace assistant.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are the intent classifier for a ClickUp workspace assistant.
     Your only job is to categorise the user's message — do NOT fetch data or execute actions.
 
     A message is a ClickUp request whenever it mentions tasks, lists, spaces, workspaces, assignments,
@@ -59,21 +66,28 @@ function InferClickUpIntent(user_message: string) -> NeedClarification | NotRele
     {{ _.role('user') }}
     {{ user_message }}
 
-    {% if ctx.tags['conversation_transcript'] %}
-    Prior conversation (context only — classify the LATEST user message):
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-    {{ ctx.output_format }}
-  "#
+{{ ctx.output_format }}
+"#
 }
 
 /// Phase 2 — Plan using shared StandardStructuredPlan / StandardAgentPlanStep (same contract as Slack, Notion, etc.).
 /// Sentinels are host-local: clickup-execute vs clickup-format.
 function PlanClickUpWork(intent: string, operation_kind: string) -> StandardStructuredPlan {
   client DefaultClient
-  prompt #"
-    You are the planner for a ClickUp workspace assistant.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}You are the planner for a ClickUp workspace assistant.
     Validated intent: {{ intent }}
     Operation kind: {{ operation_kind }}
     Plan only — do NOT call tools or fetch data.
@@ -99,13 +113,13 @@ function PlanClickUpWork(intent: string, operation_kind: string) -> StandardStru
     - citations (optional): when the session transcript below is present, set citations to #N line refs; you may shorten later
       execute sub_messages when IDs are already in history, but you MUST still include ≥1 clickup-execute before clickup-format.
 
-    {% if ctx.tags['conversation_transcript'] %}
-    Prior turn results — reuse known IDs in execute sub_messages; still end with [execute..., format]:
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-    {{ ctx.output_format }}
-  "#
+{{ ctx.output_format }}
+"#
 }
 
 /// Step executor: called repeatedly by runGeneratedStepExecutor for ONE plan step at a time.

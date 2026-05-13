@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::{
     graph_model::GraphNodeLabel,
     id_semantics::context_entity_id_string,
-    normalizer::{A2aRelationType, NormalizedProv},
+    normalizer::{A2aRelationType, HeadPointerRepoint, NormalizedProv},
     payload_record::PayloadRecord,
     payload_storage,
     prov_write_semantics::{
@@ -245,6 +245,63 @@ fn push_edge_upsert(
     ));
 }
 
+/// Emit a `DELETE prov_edge WHERE from_id = ? AND rel_type = ?`
+/// statement. Used by [`push_head_pointer_repoint`] to clear any prior
+/// head-pointer edge from `from_id` before inserting the new one. The two
+/// statements run inside the same `BEGIN..COMMIT` transaction as the rest
+/// of the event's graph writes, so a concurrent reader cannot observe a
+/// gap with zero edges or a window with two competing edges.
+fn push_edge_delete_by_from_rel(
+    stmts: &mut Vec<String>,
+    binds: &mut Vec<TxBind>,
+    di: &mut usize,
+    from_id: &str,
+    rel_type: &str,
+) {
+    let i = *di;
+    *di += 1;
+    let fk = format!("hd{i}_fid");
+    let rk = format!("hd{i}_rel");
+    push_bind(binds, &fk, Value::String(from_id.to_string()));
+    push_bind(binds, &rk, Value::String(rel_type.to_string()));
+    stmts.push(format!(
+        "DELETE {TBL_EDGE} WHERE from_id = ${fk} AND rel_type = ${rk}"
+    ));
+}
+
+/// Emit the DELETE-then-UPSERT pair that re-points one head-pointer edge
+/// (`WAS_LAST_TRANSITIONED_TO` or `WAS_LAST_EXECUTED_BY`) to a new head
+/// inside the current event transaction. Cardinality (exactly one
+/// `(from_id, rel_type)` row per head-pointer per Task) is enforced
+/// procedurally by the DELETE preceding the UPSERT inside `BEGIN..COMMIT`;
+/// SurrealDB v3 does not yet support partial / WHERE-filtered UNIQUE
+/// indexes, so an index-level backstop on `(rel_type, from_id)` is not
+/// available without breaking the existing chain edges that legitimately
+/// fan out from the same `from_id`.
+fn push_head_pointer_repoint(
+    stmts: &mut Vec<String>,
+    binds: &mut Vec<TxBind>,
+    di: &mut usize,
+    ei: &mut usize,
+    repoint: &HeadPointerRepoint,
+) {
+    let rel_type = repoint.rel.as_rel_str();
+    push_edge_delete_by_from_rel(stmts, binds, di, &repoint.from_id, rel_type);
+    push_edge_upsert(
+        stmts,
+        binds,
+        ei,
+        EdgeUpsertSpec {
+            from_id: &repoint.from_id,
+            from_label: &repoint.from_label,
+            rel_type,
+            to_id: &repoint.to_id,
+            to_label: &repoint.to_label,
+        },
+        &HashMap::new(),
+    );
+}
+
 fn push_blob_upsert(
     stmts: &mut Vec<String>,
     binds: &mut Vec<TxBind>,
@@ -367,6 +424,7 @@ fn build_graph_fragment(normalized: &NormalizedProv, context_id: Option<&str>) -
     let mut binds: Vec<TxBind> = Vec::new();
     let mut ni = 0usize;
     let mut ei = 0usize;
+    let mut di = 0usize;
 
     for (id, entity) in normalized.document.entities() {
         let label = entity_labels
@@ -657,6 +715,14 @@ fn build_graph_fragment(normalized: &NormalizedProv, context_id: Option<&str>) -
         );
     }
 
+    // Head-pointer re-points (`WAS_LAST_TRANSITIONED_TO`,
+    // `WAS_LAST_EXECUTED_BY`): emit DELETE-then-UPSERT inside the same
+    // transaction so the cardinality-one invariant holds without an
+    // index backstop.
+    for repoint in &normalized.head_pointer_repoints {
+        push_head_pointer_repoint(&mut stmts, &mut binds, &mut di, &mut ei, repoint);
+    }
+
     if let Some(ctx_id) = context_id {
         let ctx_node_id = context_entity_id_string(ctx_id);
         let ctx_props: HashMap<String, Value> = HashMap::new();
@@ -823,6 +889,7 @@ mod tests {
             document: doc,
             derived_relations: vec![],
             agent_labels: HashMap::new(),
+            head_pointer_repoints: vec![],
         };
         let payloads: Vec<PayloadRecord> = (0..11)
             .map(|i| PayloadRecord {

@@ -120,7 +120,7 @@ expression: snapshot
             "args": {
               "objective": "narrow evidence fixture"
             },
-            "phase": null
+            "phase": "unknown"
           },
           "prov_endTime": "[timestamp_ms]",
           "prov_type": "a2a:ToolCall",

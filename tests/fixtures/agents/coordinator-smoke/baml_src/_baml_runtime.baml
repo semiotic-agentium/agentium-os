@@ -105,6 +105,13 @@ class ArchivePageReadStep {
   op "PageRead"
   input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
 }
+
+/// Terminal hop without a host tool session: answer from visible conversation archives only.
+/// Do not emit when you need a fresh Open/Send — use ENTRY Open or ACTIVE Send instead.
+class ReadOnlyFinishStep {
+  op "ReadOnlyFinish"
+  reply StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
+}
 // Domain types generated from JSON schemas
 class AgentEventSubscriptionDto {
   schema_versions string[]
@@ -376,4 +383,18 @@ type SystemInternalA2aSessionStep = SystemInternalA2aOpenStep | SystemInternalA2
 class SystemInternalA2aSessionPlan {
   step SystemInternalA2aSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes above — do not paraphrase them in prose. A @N in history is a handle until you read it. For A2A Send, `input.text` is required when sending. Access: write.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
+}
+
+
+
+// ── builder: agent-wide tool schema catalog (from IR) ──
+
+/// Auto-generated agent-wide tool schema catalog.
+/// Rendered once at build time into _baml_tool_schema_catalog.txt and loaded as ctx.tags['tool_schema_prelude'].
+/// Never invoked against an LLM — exists only to drive BAML's ctx.output_format renderer.
+function AgentToolSchemaCatalog__bamlrt() -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemDiscoverAgentsAbortStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverToolsAbortStep | SystemDiscoverToolsFinishStep | SystemDiscoverToolsOpenStep | SystemDiscoverToolsSendStep | SystemInternalA2aAbortStep | SystemInternalA2aFinishStep | SystemInternalA2aOpenStep | SystemInternalA2aSendStep {
+  client OpenRouterGPT
+  prompt #"
+{{ ctx.output_format }}
+"#
 }
