@@ -21,8 +21,6 @@
 //! Only compiled under the `sandbox-provider` feature — keeps the
 //! microsandbox crate out of default builds.
 
-#![cfg(feature = "sandbox-provider")]
-
 use microsandbox::{ExecEvent, ExecHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, info, warn};
