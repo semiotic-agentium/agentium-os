@@ -291,18 +291,25 @@ impl ClusterManager {
         // in place: the narrower UNIQUE prevented any row that would now
         // violate the new key.
         //
-        // The trailing DELETE clears rows written under the old key shape
-        // (`{pkg}/{inst}`) so the table is not left holding graveyard
-        // entries whose `runner_id` field references a long-dead process.
-        // Post-PR rows have id `{pkg}/{inst}/{runner_id}` (three slash-
-        // separated segments); legacy rows have two and are discarded.
+        // `DELETE cluster_agent_placements WHERE ...` clears rows written
+        // under the old key shape (`{pkg}/{inst}`) so the table is not
+        // left holding graveyard entries whose `runner_id` field references
+        // a long-dead process. Post-PR rows have id
+        // `{pkg}/{inst}/{runner_id}` (three slash-separated segments);
+        // legacy rows have two and are discarded.
+        //
+        // The trailing `UPDATE cluster_runners UNSET last_heartbeat_at`
+        // drops an orphan column left over from an earlier write path. No
+        // code reads or writes it today, so leftover values surface as
+        // `NONE` in operator queries and look like broken liveness.
         self.db
             .query(
                 "DEFINE TABLE IF NOT EXISTS cluster_runners SCHEMALESS;\
                  DEFINE TABLE IF NOT EXISTS cluster_agent_placements SCHEMALESS;\
                  REMOVE INDEX IF EXISTS idx_placement_agent ON cluster_agent_placements;\
                  DEFINE INDEX IF NOT EXISTS idx_placement_agent_runner ON cluster_agent_placements FIELDS agent_package, agent_instance_id, runner_id UNIQUE;\
-                 DELETE cluster_agent_placements WHERE !string::matches(meta::id(id), '^[^/]+/[^/]+/[^/]+$')",
+                 DELETE cluster_agent_placements WHERE !string::matches(meta::id(id), '^[^/]+/[^/]+/[^/]+$');\
+                 UPDATE cluster_runners UNSET last_heartbeat_at",
             )
             .await
             .map_err(|e| BamlRtError::Io(std::io::Error::other(format!("cluster: schema init transport: {e}"))))?
@@ -626,6 +633,51 @@ mod tests {
         assert_ne!(
             runner_ids[0], "00000000-0000-4000-8000-000000000000",
             "the surviving row must be the freshly-registered derived one"
+        );
+    }
+
+    /// Earlier deploys wrote a `last_heartbeat_at` field that no code path
+    /// reads or maintains today. Booting `ClusterManager` must scrub it
+    /// from any pre-existing rows so operators querying `cluster_runners`
+    /// do not see a stale `NONE` value that looks like broken liveness.
+    ///
+    /// The seeded row is given a fresh `last_heartbeat_ms` so the boot-time
+    /// stale-row sweep (`sweep_stale_runners`) leaves it in place; otherwise
+    /// the assertion would pass vacuously against the new runner's own row,
+    /// which never had `last_heartbeat_at` to begin with.
+    #[tokio::test]
+    async fn init_schema_unsets_orphan_last_heartbeat_at_column() {
+        let db = test_db().await;
+
+        db.query(
+            "CREATE cluster_runners:`orphan-seed` SET \
+               runner_id = 'orphan-seed', \
+               pod_name = 'agentium-agentium-os-runner-0', \
+               endpoint = 'http://orphan:18080', \
+               last_heartbeat_ms = time::millis(time::now()), \
+               last_heartbeat_at = time::now()",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        let _mgr = ClusterManager::new(db.clone(), derived_identity(0), TEST_TTL_MS)
+            .await
+            .unwrap();
+
+        let seed: Vec<serde_json::Value> = db
+            .query("SELECT * FROM cluster_runners WHERE runner_id = 'orphan-seed'")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let seed_row = seed
+            .first()
+            .expect("seeded row must survive boot to actually exercise UNSET");
+        assert!(
+            seed_row.get("last_heartbeat_at").is_none(),
+            "init_schema must drop last_heartbeat_at from the seeded row; survivor: {seed_row:?}"
         );
     }
 

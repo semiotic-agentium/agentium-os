@@ -154,6 +154,15 @@ scenario_01_cluster_boot() {
   local ids
   ids=$(echo "$result" | jq -r '[.[] | .result | .[].runner_id] | unique | length')
   assert_eq "$ids" "2" "distinct runner_id count" || return 1
+
+  # Orphan `last_heartbeat_at` column was retired; init_schema must drop it
+  # from every row so operator queries do not show stale `NONE` values.
+  local orphans
+  orphans=$(surreal_query "SELECT id FROM cluster_runners WHERE last_heartbeat_at IS NOT NONE")
+  local orphan_count
+  orphan_count=$(echo "$orphans" | jq '[.[] | .result | .[]] | length')
+  assert_eq "$orphan_count" "0" "cluster_runners.last_heartbeat_at must be absent" || return 1
+
   log_info "cluster_runners: 2 rows with correct endpoints"
 }
 

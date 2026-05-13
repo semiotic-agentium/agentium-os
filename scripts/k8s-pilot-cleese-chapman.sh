@@ -445,6 +445,13 @@ placements="$(surreal_query "SELECT agent_package, agent_instance_id, runner_id,
 placement_count="$(printf '%s' "$placements" | jq '[.[] | .result | .[]] | length')"
 [[ "$placement_count" == "2" ]] || fail "expected 2 placement rows for argument-cleese / argument-chapman, got ${placement_count}" 1
 
+# Orphan `last_heartbeat_at` column was retired; init_schema must drop it
+# from every cluster_runners row so operator queries do not show stale
+# `NONE` values that look like broken liveness.
+orphan_runners="$(surreal_query "SELECT id FROM cluster_runners WHERE last_heartbeat_at IS NOT NONE")"
+orphan_count="$(printf '%s' "$orphan_runners" | jq '[.[] | .result | .[]] | length')"
+[[ "$orphan_count" == "0" ]] || fail "expected no cluster_runners rows to expose last_heartbeat_at, got ${orphan_count}" 1
+
 cleese_endpoint="$(printf '%s' "$placements" | jq -r '[.[] | .result | .[] | select(.agent_package == "argument-cleese")] | .[0].runner_endpoint')"
 chapman_endpoint="$(printf '%s' "$placements" | jq -r '[.[] | .result | .[] | select(.agent_package == "argument-chapman")] | .[0].runner_endpoint')"
 [[ "$cleese_endpoint" == *"runner-0"* ]] || fail "argument-cleese is not placed on runner-0: ${cleese_endpoint}" 1
