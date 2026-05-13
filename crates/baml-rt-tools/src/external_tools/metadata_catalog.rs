@@ -14,6 +14,7 @@ use baml_rt_core::{BamlRtError, Result};
 use super::metadata::{build_tool_metadata, read_external_metadata};
 use crate::{
     ToolName,
+    mcp_builder_catalog::McpSnapshotCatalog,
     tool_catalog::{CompositeCatalog, InventoryCatalog, ToolCatalog},
     tools::ToolFunctionMetadata,
 };
@@ -62,10 +63,35 @@ pub fn build_builder_catalog() -> Result<CompositeCatalog> {
         }
     }
 
+    let mcp = McpSnapshotCatalog::from_env()?.filter(|c| !c.is_empty());
+
+    let mut existing_names: std::collections::HashSet<ToolName> = std::collections::HashSet::new();
+    for meta in inventory.iter() {
+        existing_names.insert(meta.name.clone());
+    }
+    if let Some(ext) = &external {
+        for meta in ext.iter() {
+            existing_names.insert(meta.name.clone());
+        }
+    }
+    if let Some(mcp) = &mcp {
+        for meta in mcp.iter() {
+            if !existing_names.insert(meta.name.clone()) {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "MCP tool name collision at build time: '{}' already exists in inventory or external sources.",
+                    meta.name
+                )));
+            }
+        }
+    }
+
     let mut composite = CompositeCatalog::new();
     composite.add(Box::new(inventory));
     if let Some(ext) = external {
         composite.add(Box::new(ext));
+    }
+    if let Some(mcp) = mcp {
+        composite.add(Box::new(mcp));
     }
     Ok(composite)
 }
