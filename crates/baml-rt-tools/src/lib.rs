@@ -17,6 +17,7 @@ pub mod external_tools;
 pub mod host_registration;
 pub mod ingress_store;
 pub mod llm_request_display;
+pub mod mcp_snapshot;
 mod metrics;
 pub mod opaque_json;
 pub mod open_input_schema;
@@ -57,6 +58,11 @@ pub use ingress_store::{
 };
 pub use llm_request_display::{
     flatten_chat_completion_request_for_display, flatten_message_content_value,
+};
+pub use mcp_snapshot::{
+    ApprovalRecord, Digest as McpDigest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState,
+    McpImportedTool, McpOutputMode, McpServerSnapshot, McpTransportRef, SecretRef,
+    approved_tools as approved_mcp_tools, is_tool_projectable as is_mcp_tool_projectable,
 };
 pub use opaque_json::{
     OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY, OpaqueJson, opaque_json_map_from_object,
