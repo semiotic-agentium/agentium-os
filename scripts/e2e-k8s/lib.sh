@@ -65,6 +65,39 @@ log_warn()  { echo "  [WARN]  $*" >&2; }
 log_step()  { echo ""; echo "--- $* ---"; }
 
 # ---------------------------------------------------------------------------
+# Container-runtime preflight
+# ---------------------------------------------------------------------------
+
+# preflight_container_runtime
+# Detects whether the host's `docker` socket is actually Podman and, if so,
+# verifies the two prerequisites k3d needs:
+#   1. Rootful Podman Machine — rootless can't open privileged ports / kernel
+#      modules that k3s containers expect; bringup otherwise fails opaquely.
+#   2. `k8s-file` log driver instead of the systemd default `journald` —
+#      k3s containers fail to start on `journald`.
+# No-op for real Docker users (the grep -qi podman gate). Exits with a
+# clear actionable error on failure rather than letting cluster bringup
+# fail mysteriously further into the flow. See issue #408 (Podman parity
+# in verify-k8s-pilot-package.sh).
+preflight_container_runtime() {
+  if ! docker info 2>/dev/null | grep -qi podman; then
+    return 0
+  fi
+  if podman machine inspect 2>/dev/null | grep -q '"Rootful": false'; then
+    log_fail "Podman Machine is running in rootless mode."
+    echo "  Fix: podman machine stop && podman machine set --rootful --memory 8192 && podman machine start"
+    exit 1
+  fi
+  local log_driver
+  log_driver="$(podman info --format '{{.Host.LogDriver}}' 2>/dev/null || true)"
+  if [[ "$log_driver" == "journald" ]]; then
+    log_fail "Podman log driver is 'journald' — k3d needs 'k8s-file'."
+    echo "  Fix: podman machine ssh -- 'sudo mkdir -p /etc/containers && echo -e \"[containers]\nlog_driver = \\\"k8s-file\\\"\" | sudo tee /etc/containers/containers.conf'"
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Port-forward management
 # ---------------------------------------------------------------------------
 # start_port_forward <pod> <local_port> <remote_port>

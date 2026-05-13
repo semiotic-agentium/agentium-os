@@ -67,21 +67,7 @@ preflight() {
     exit 1
   fi
 
-  # Podman preflight (same checks as deploy/demo/run-demo.sh)
-  if docker info 2>/dev/null | grep -qi podman; then
-    if podman machine inspect 2>/dev/null | grep -q '"Rootful": false'; then
-      log_fail "Podman Machine is running in rootless mode."
-      echo "  Fix: podman machine stop && podman machine set --rootful --memory 8192 && podman machine start"
-      exit 1
-    fi
-    local log_driver
-    log_driver="$(podman info --format '{{.Host.LogDriver}}' 2>/dev/null || true)"
-    if [[ "$log_driver" == "journald" ]]; then
-      log_fail "Podman log driver is 'journald' — k3d needs 'k8s-file'."
-      echo "  Fix: podman machine ssh -- 'sudo mkdir -p /etc/containers && echo -e \"[containers]\nlog_driver = \\\"k8s-file\\\"\" | sudo tee /etc/containers/containers.conf'"
-      exit 1
-    fi
-  fi
+  preflight_container_runtime
 
   log_info "All preflight checks passed."
 }
