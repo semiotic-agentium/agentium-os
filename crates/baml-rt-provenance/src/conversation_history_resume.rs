@@ -54,12 +54,7 @@ pub async fn resolve_resume_ui_hints(
         return Ok(ConversationResumeUiHints::default());
     };
 
-    // Strip canonical "task:" prefix for the wire representation.
-    let effective_task_id_wire = scoped
-        .task_node_id()
-        .strip_prefix("task:")
-        .unwrap_or(scoped.task_node_id())
-        .to_string();
+    let effective_task_id_wire = scoped.task_id().into_string();
 
     let Some(state) = store.latest_state(scoped.clone()).await? else {
         return Ok(ConversationResumeUiHints {

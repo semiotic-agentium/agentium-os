@@ -273,26 +273,15 @@ impl TaskUpdateSession {
 }
 
 // ---------------------------------------------------------------------------
-// ScopedTaskRef → TaskStreamKey adapter. `ScopedTaskRef` still exposes
-// the canonical node ids rather than the wire ids needed by
-// TaskStreamKey, so the A2A layer mirrors the on-disk encoding here.
+// ScopedTaskRef → TaskStreamKey adapter.
 // ---------------------------------------------------------------------------
 
 fn stream_key_ctx_from_scoped(scoped: &ScopedTaskRef) -> baml_rt_core::ids::ContextId {
-    // `ScopedTaskRef::ctx()` returns the `ContextNodeId` ("context:<id>"
-    // encoded). The wire `ContextId` is recoverable by stripping the
-    // `"context:"` prefix; the typed surface owns this transform but
-    // does not yet expose it as a method.
-    let raw = scoped.ctx().as_str();
-    let stripped = raw.strip_prefix("context:").unwrap_or(raw);
-    baml_rt_core::ids::ContextId::parse_temporal(stripped)
-        .unwrap_or_else(|| baml_rt_core::ids::ContextId::from(stripped))
+    scoped.context_id()
 }
 
 fn stream_key_task_from_scoped(scoped: &ScopedTaskRef) -> baml_rt_core::ids::TaskId {
-    let raw = scoped.task().as_str();
-    let stripped = raw.strip_prefix("task:").unwrap_or(raw);
-    baml_rt_core::ids::TaskId::from_external(baml_rt_core::ids::ExternalId::new(stripped))
+    scoped.task_id()
 }
 
 #[cfg(test)]

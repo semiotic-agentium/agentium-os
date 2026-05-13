@@ -109,6 +109,36 @@ impl TaskId {
     pub fn from_external(id: ExternalId) -> Self {
         Self(id.into_string())
     }
+
+    /// Host-minted live stream task for the first `message.sendStream` turn when the
+    /// caller did not supply an explicit task id.
+    pub fn for_live_stream(context_id: &ContextId, message_id: &MessageId) -> Self {
+        Self::from_external(ExternalId::new(format!(
+            "live-task:{}:{}",
+            context_id.as_str(),
+            message_id.as_str()
+        )))
+    }
+
+    /// Synthetic task id for CLI/test-only task scopes.
+    pub fn for_synthetic_counter(counter: u64) -> Self {
+        Self::from_external(ExternalId::new(format!("syn-task-{counter}")))
+    }
+
+    /// Fallback task id when JS emits task-bearing chunks without an explicit task identity.
+    pub fn for_js_runtime(id: UuidId) -> Self {
+        Self::from_external(ExternalId::new(format!("js-task-{id}")))
+    }
+
+    /// Child task id for delegated internal A2A sessions.
+    pub fn for_delegated_child(id: UuidId) -> Self {
+        Self::from_external(ExternalId::new(format!("a2a-child-{id}")))
+    }
+
+    /// Stable task id for the runner stdio conversation scope.
+    pub fn for_stdio_context(context_id: &ContextId) -> Self {
+        Self::from_external(ExternalId::new(format!("cli-task-{}", context_id.as_str())))
+    }
 }
 
 impl ContextId {
@@ -343,5 +373,36 @@ mod tests {
             assert_ne!(PlanId::from(a.clone()),   PlanId::from(b.clone()));
             assert_ne!(PlanStepId::from(a.clone()), PlanStepId::from(b.clone()));
         }
+    }
+
+    #[test]
+    fn task_id_live_stream_constructor_is_deterministic() {
+        let context_id = ContextId::new(730, 2);
+        let message_id = MessageId::from("dispatch-echo-resume-msg");
+        let task_id = TaskId::for_live_stream(&context_id, &message_id);
+        assert_eq!(
+            task_id.as_str(),
+            "live-task:ctx-730-2:dispatch-echo-resume-msg"
+        );
+    }
+
+    #[test]
+    fn task_id_named_runtime_constructors_encode_expected_prefixes() {
+        let context_id = ContextId::new(731, 1);
+        let uuid = UuidId::parse_str("00000000-0000-0000-0000-000000000123").expect("uuid");
+        assert_eq!(TaskId::for_synthetic_counter(7).as_str(), "syn-task-7");
+        assert_eq!(
+            TaskId::for_js_runtime(uuid).as_str(),
+            "js-task-00000000-0000-0000-0000-000000000123"
+        );
+        let uuid = UuidId::parse_str("00000000-0000-0000-0000-000000000456").expect("uuid");
+        assert_eq!(
+            TaskId::for_delegated_child(uuid).as_str(),
+            "a2a-child-00000000-0000-0000-0000-000000000456"
+        );
+        assert_eq!(
+            TaskId::for_stdio_context(&context_id).as_str(),
+            "cli-task-ctx-731-1"
+        );
     }
 }

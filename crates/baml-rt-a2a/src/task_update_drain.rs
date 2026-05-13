@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use baml_rt_core::ids::{ContextId, MessageId, TaskId};
+use baml_rt_core::ids::{ContextId, MessageId};
 use baml_rt_provenance::ReplayError;
 
 use crate::{
@@ -94,16 +94,8 @@ fn status_props_to_event(
     };
 
     TaskStatusUpdateEvent {
-        // The broadcaster carries the immutable TaskState projection,
-        // whose task identity is the canonical Task node id. The wire
-        // TaskId is recovered by stripping the on-disk prefix.
         context_id: None,
-        task_id: Some(TaskId::from_external(baml_rt_core::ids::ExternalId::new(
-            task.as_str()
-                .strip_prefix("task:")
-                .unwrap_or(task.as_str())
-                .to_string(),
-        ))),
+        task_id: Some(task.to_task_id()),
         status: Some(status),
         metadata: None,
         extra,

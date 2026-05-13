@@ -14,7 +14,7 @@ use baml_rt_a2a::{
 };
 use baml_rt_core::{
     BamlRtError, ContextId, Result, clock_events, context,
-    ids::{DerivedId, ExternalId, TaskId},
+    ids::{DerivedId, TaskId},
 };
 use serde_json::Value;
 
@@ -32,13 +32,7 @@ pub(crate) fn stdio_context_id() -> ContextId {
 
 pub(crate) fn stdio_task_id() -> TaskId {
     STDIO_TASK_ID
-        .get_or_init(|| {
-            let context_id = stdio_context_id();
-            TaskId::from_external(ExternalId::new(format!(
-                "cli-task-{context_id}",
-                context_id = context_id.as_str()
-            )))
-        })
+        .get_or_init(|| TaskId::for_stdio_context(&stdio_context_id()))
         .clone()
 }
 

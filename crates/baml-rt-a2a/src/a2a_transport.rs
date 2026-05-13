@@ -1647,11 +1647,7 @@ fn build_stream_sessions_and_relay(
 /// This keeps MessageReceived attributed to the receiver's (agent_id, task_id) without collapsing
 /// task_id to context_id.
 fn synthesized_live_task_id(context_id: &ContextId, message_id: &MessageId) -> TaskId {
-    TaskId::from_external(ExternalId::new(format!(
-        "live-task:{}:{}",
-        context_id.as_str(),
-        message_id.as_str()
-    )))
+    TaskId::for_live_stream(context_id, message_id)
 }
 
 fn strip_message_send_stream_task_id_from_wire(request: &mut Value) {

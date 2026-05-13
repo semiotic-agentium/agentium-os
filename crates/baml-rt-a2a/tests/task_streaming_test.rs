@@ -230,8 +230,10 @@ async fn test_message_send_deterministic_task() {
     // Live path first turn may synthesize a deterministic live-task id from (context_id,message_id),
     // remain context-stable, or use js-task-* when emitted directly by JS fixture.
     assert!(
-        task_id.as_deref().is_some_and(|id| {
-            id.starts_with("js-task-") || id == context_id.as_str() || id.starts_with("live-task:")
+        task_id.as_ref().is_some_and(|id| {
+            id.as_str().starts_with("js-task-")
+                || id.as_str() == context_id.as_str()
+                || id.as_str().starts_with("live-task:")
         }),
         "expected deterministic task id (js-task-*, context-stable, or live-task:*), got {:?}",
         task_id

@@ -359,10 +359,7 @@ pub struct JsChunkNormalizer {
 impl JsChunkNormalizer {
     pub fn new(scope: &InvocationScope) -> Self {
         let task_id = scope.task_id_opt().cloned().unwrap_or_else(|| {
-            TaskId::from_external(ExternalId::new(format!(
-                "js-task-{uuid}",
-                uuid = Uuid::new_v4()
-            )))
+            TaskId::for_js_runtime(baml_rt_core::ids::UuidId::new(Uuid::new_v4()))
         });
         Self {
             context_id: scope.context_id().clone(),

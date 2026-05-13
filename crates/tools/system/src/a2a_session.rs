@@ -5,7 +5,7 @@ use std::{collections::VecDeque, sync::Arc};
 use async_trait::async_trait;
 use baml_rt_core::{
     A2aRequestHandler, A2aWireRequest, Result, context,
-    ids::{ExternalId, TaskId},
+    ids::{TaskId, UuidId},
 };
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
@@ -125,10 +125,7 @@ impl ToolHandler for A2aSessionToolHandler {
             ctx,
             handler: self.handler.clone(),
             target: open.target,
-            child_task_id: TaskId::from_external(ExternalId::new(format!(
-                "a2a-child-{id}",
-                id = uuid::Uuid::new_v4()
-            ))),
+            child_task_id: TaskId::for_delegated_child(UuidId::new(uuid::Uuid::new_v4())),
             queue: VecDeque::new(),
             output_rx: None,
             stream_handle: None,
@@ -691,7 +688,7 @@ impl Drop for A2aSession {
 
 #[cfg(test)]
 mod tests {
-    use baml_rt_core::ids::ContextId;
+    use baml_rt_core::ids::{ContextId, ExternalId};
 
     use super::*;
 

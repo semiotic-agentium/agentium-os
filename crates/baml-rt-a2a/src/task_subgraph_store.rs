@@ -57,8 +57,7 @@ fn is_terminal_state(s: &str) -> bool {
 /// `context_id_from_node_id` helper, kept here so we don't have to
 /// expose the encoding through `ScopedTaskRef`).
 fn context_id_from_node_id(raw: &str) -> ContextId {
-    let stripped = raw.strip_prefix("context:").unwrap_or(raw);
-    ContextId::parse_temporal(stripped).unwrap_or_else(|| ContextId::from(stripped))
+    baml_rt_provenance::metamodel::ContextNodeId::new(raw.to_string()).to_context_id()
 }
 
 fn status_is_input_required(status: &TaskStatus) -> bool {

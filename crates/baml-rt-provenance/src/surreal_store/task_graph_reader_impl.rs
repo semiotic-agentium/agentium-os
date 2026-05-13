@@ -850,15 +850,11 @@ fn cursor_from_props(props: &serde_json::Map<String, Value>) -> Option<TaskRepla
 /// `crate::id_semantics::context_entity_id_string`); the inverse is
 /// purely syntactic.
 fn context_id_from_node_id(ctx: &ContextNodeId) -> ContextId {
-    let raw = ctx.as_str();
-    let stripped = raw.strip_prefix("context:").unwrap_or(raw);
-    ContextId::parse_temporal(stripped).unwrap_or_else(|| ContextId::from(stripped))
+    ctx.to_context_id()
 }
 
 /// Recover a wire `TaskId` from a `TaskNodeId`. On-disk encoding is
 /// `"task:<task_id>"` (`crate::id_semantics::task_entity_id_string_raw`).
 fn task_id_from_node_id(task: &TaskNodeId) -> TaskId {
-    let raw = task.as_str();
-    let stripped = raw.strip_prefix("task:").unwrap_or(raw);
-    TaskId::from_external(ExternalId::new(stripped))
+    task.to_task_id()
 }

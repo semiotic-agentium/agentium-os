@@ -235,7 +235,7 @@ impl InvocationScope {
         let counter = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
         let context_id = ContextId::new(crate::now_unix_ms(clock_events::SYNTHETIC_TASK), counter);
         let message_id = MessageId::from_external(ExternalId::new(format!("syn-msg-{}", counter)));
-        let task_id = TaskId::from_external(ExternalId::new(format!("syn-task-{}", counter)));
+        let task_id = TaskId::for_synthetic_counter(counter);
         Self(RuntimeScope::task_scope(
             context_id, agent_id, message_id, task_id,
         ))

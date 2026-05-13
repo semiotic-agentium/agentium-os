@@ -18,7 +18,7 @@ use baml_rt_core::{
     BamlRtError,
     bus::BusWithEffects,
     context::{self, InvocationScope},
-    ids::{AgentId, ContextId, ExternalId, TaskId, UuidId},
+    ids::{AgentId, ContextId, UuidId},
 };
 use baml_rt_provenance::{ProvenanceContextReader, SurrealProvenanceStore};
 use baml_rt_tools::bundles::BundleType;
@@ -1454,8 +1454,7 @@ async fn run_argument_sketch_two_agents_body() {
         .iter()
         .filter_map(|c| task_state(c))
         .collect();
-    let chapman_task_id = first_task_id_from_stream(&chapman_first_responses)
-        .map(|s| TaskId::from_external(ExternalId::new(s)));
+    let chapman_task_id = first_task_id_from_stream(&chapman_first_responses);
     assert!(
         chapman_first_states.contains(&"TASK_STATE_INPUT_REQUIRED".to_string()),
         "Expected TASK_STATE_INPUT_REQUIRED from Chapman (awaitInput after first line); states: {:?}",
@@ -1912,7 +1911,6 @@ async fn test_e2e_task_lifecycle_demo() {
         first_texts
     );
     let lifecycle_task_id = first_task_id_from_stream(&first_responses)
-        .map(|task_id| TaskId::from_external(ExternalId::new(task_id)))
         .expect("Expected task id in first stream for resume turns");
 
     let second_params = SendMessageRequest {

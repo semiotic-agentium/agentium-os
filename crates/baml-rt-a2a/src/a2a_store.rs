@@ -650,7 +650,7 @@ mod nested_assistant_message_persistence_tests {
     use std::collections::HashMap;
 
     use baml_rt::BamlRuntimeManager;
-    use baml_rt_core::ids::{AgentId, ContextId, ExternalId, TaskId, UuidId};
+    use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
     use baml_rt_provenance::{ProvenanceContextReader, SurrealStoreBuilder, surreal_store};
     use uuid::Uuid;
 
@@ -702,8 +702,7 @@ mod nested_assistant_message_persistence_tests {
             .expect("graph-backed agent");
         let task_store = agent.task_store();
         let ctx = ContextId::new(20240512, 1);
-        let task =
-            TaskId::from_external(ExternalId::new(format!("live-task:{}:probe", ctx.as_str())));
+        let task = TaskId::for_live_stream(&ctx, &MessageId::from("probe"));
         (prov, task_store, ctx, task)
     }
 

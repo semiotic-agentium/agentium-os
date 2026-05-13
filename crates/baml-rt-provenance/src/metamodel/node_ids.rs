@@ -43,6 +43,13 @@ impl ContextNodeId {
     pub fn into_string(self) -> String {
         self.0
     }
+
+    /// Recover the wire `ContextId` from the persisted `context:<context_id>` node id.
+    pub fn to_context_id(&self) -> ContextId {
+        let raw = self.as_str();
+        let stripped = raw.strip_prefix("context:").unwrap_or(raw);
+        ContextId::parse_temporal(stripped).unwrap_or_else(|| ContextId::from(stripped))
+    }
 }
 
 /// On-disk identifier for a `Message` node.
@@ -123,6 +130,13 @@ impl TaskNodeId {
     }
     pub fn into_string(self) -> String {
         self.0
+    }
+
+    /// Recover the wire `TaskId` from the persisted `task:<task_id>` node id.
+    pub fn to_task_id(&self) -> TaskId {
+        let raw = self.as_str();
+        let stripped = raw.strip_prefix("task:").unwrap_or(raw);
+        TaskId::from_external(baml_rt_core::ids::ExternalId::new(stripped.to_string()))
     }
 }
 
@@ -229,6 +243,14 @@ impl ScopedTaskRef {
     /// Borrow the on-disk task node id as a `&str`.
     pub fn task_node_id(&self) -> &str {
         self.task.as_str()
+    }
+
+    pub fn context_id(&self) -> ContextId {
+        self.ctx.to_context_id()
+    }
+
+    pub fn task_id(&self) -> TaskId {
+        self.task.to_task_id()
     }
 
     /// Borrow the on-disk context node id as a `&str`.
