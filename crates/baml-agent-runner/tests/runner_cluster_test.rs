@@ -1057,15 +1057,18 @@ mod cluster {
         );
     }
 
+    /// Two runners can each host the same agent and serve A2A traffic.
     #[tokio::test]
-    async fn placement_follows_last_deploy() {
+    async fn multi_runner_deploy_succeeds_with_coexisting_placements() {
         let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
         ensure_fixture_runtime_types();
 
         let ip = match detect_non_loopback_ip() {
             Some(ip) => ip,
             None => {
-                eprintln!("SKIPPED placement_follows_last_deploy: no non-loopback private IP");
+                eprintln!(
+                    "SKIPPED multi_runner_deploy_succeeds_with_coexisting_placements: no non-loopback private IP"
+                );
                 return;
             }
         };
@@ -1123,28 +1126,21 @@ mod cluster {
         .await;
         assert_eq!(hash_a, hash_b, "same fixture should produce same hash");
 
-        // Deploy on runner-A first, then runner-B (last writer wins).
         deploy_hash(&client, &runner_a.base_url, &hash_a, DEFAULT_TOKEN).await;
         deploy_hash(&client, &runner_b.base_url, &hash_b, DEFAULT_TOKEN).await;
 
-        // Send A2A to runner-A. With last-writer-wins, placement points to runner-B,
-        // so runner-A should forward to runner-B.
         let a2a_url = format!("{}/agents/dispatch-echo/default/a2a", runner_a.base_url);
-        let body = send_stream_request("test placement last writer");
+        let body = send_stream_request("test multi-runner placement");
         let resp = client
             .post(&a2a_url)
             .json(&body)
             .send()
             .await
             .expect("A2A to runner-A");
-
-        // Runner-A has dispatch-echo locally too, so it may handle locally.
-        // The key assertion is that the request succeeds — in a real cluster with
-        // only one runner hosting the agent, the placement resolver determines routing.
         assert!(
             resp.status().is_success(),
-            "A2A via runner-A should succeed, got {}",
-            resp.status()
+            "A2A via runner-A should succeed, got {status}",
+            status = resp.status()
         );
     }
 

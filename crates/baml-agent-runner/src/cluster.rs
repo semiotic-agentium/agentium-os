@@ -121,9 +121,10 @@ impl ClusterEndpointResolver for PlacementResolver {
         let inst = key.agent_instance_id.as_str();
         let ttl = self.placement_ttl_ms as i64;
         // Two-stage lookup: fetch the placement, then the serving runner's
-        // `service_instance_id`. Attempts at a correlated sub-select on
-        // `cluster_runners` inside the SELECT projection of the first query
-        // did not resolve `runner_id` from the outer row in SurrealDB v3.
+        // `service_instance_id`. A correlated sub-select on `cluster_runners`
+        // inside the projection of the first query does not resolve
+        // `runner_id` from the outer row in SurrealDB v3. `ORDER BY id ASC`
+        // makes the LIMIT 1 pick stable when multiple rows match.
         let result: Result<Vec<serde_json::Value>, _> = self
             .db
             .query(
@@ -135,6 +136,7 @@ impl ClusterEndpointResolver for PlacementResolver {
                    SELECT VALUE runner_id FROM cluster_runners \
                    WHERE last_heartbeat_ms > (time::millis(time::now()) - $ttl)\
                  ) \
+                 ORDER BY id ASC \
                  LIMIT 1",
             )
             .bind(("pkg", pkg.to_string()))
@@ -249,25 +251,33 @@ impl ClusterManager {
     }
 
     async fn init_schema(&self) -> Result<(), BamlRtError> {
-        let mut resp = self
-            .db
+        // `REMOVE INDEX IF EXISTS idx_placement_agent` retires the
+        // (agent_package, agent_instance_id) UNIQUE that collapsed
+        // multi-runner placements. The wider replacement is safe to apply
+        // in place: the narrower UNIQUE prevented any row that would now
+        // violate the new key.
+        //
+        // The trailing DELETE clears rows written under the old key shape
+        // (`{pkg}/{inst}`) so the table is not left holding graveyard
+        // entries whose `runner_id` field references a long-dead process.
+        // Post-PR rows have id `{pkg}/{inst}/{runner_id}` (three slash-
+        // separated segments); legacy rows have two and are discarded.
+        self.db
             .query(
                 "DEFINE TABLE IF NOT EXISTS cluster_runners SCHEMALESS;\
                  DEFINE TABLE IF NOT EXISTS cluster_agent_placements SCHEMALESS;\
-                 DEFINE INDEX IF NOT EXISTS idx_placement_agent ON cluster_agent_placements FIELDS agent_package, agent_instance_id UNIQUE",
+                 REMOVE INDEX IF EXISTS idx_placement_agent ON cluster_agent_placements;\
+                 DEFINE INDEX IF NOT EXISTS idx_placement_agent_runner ON cluster_agent_placements FIELDS agent_package, agent_instance_id, runner_id UNIQUE;\
+                 DELETE cluster_agent_placements WHERE !string::matches(meta::id(id), '^[^/]+/[^/]+/[^/]+$')",
             )
             .await
-            .map_err(|e| BamlRtError::Io(std::io::Error::other(format!("cluster: schema init transport: {e}"))))?;
-
-        // Check each DDL statement individually — transport-level Ok does not
-        // guarantee individual statements succeeded.
-        for i in 0..3usize {
-            resp.take::<Option<serde_json::Value>>(i).map_err(|e| {
+            .map_err(|e| BamlRtError::Io(std::io::Error::other(format!("cluster: schema init transport: {e}"))))?
+            .check()
+            .map_err(|e| {
                 BamlRtError::Io(std::io::Error::other(format!(
-                    "cluster: schema init statement {i}: {e}"
+                    "cluster: schema init statement: {e}"
                 )))
             })?;
-        }
         Ok(())
     }
 
@@ -320,12 +330,13 @@ impl ClusterManager {
         key: &AgentRouteKey,
         content_hash: &DeploymentContentHash,
     ) -> Result<(), BamlRtError> {
-        // Use `/` as separator: it is rejected by AgentPackageName and AgentInstanceId
-        // validators so it cannot appear in either component, preventing ambiguity.
+        // `/` is rejected by both ID validators and `runner_id` is a UUID,
+        // so the triple round-trips unambiguously.
         let placement_key = format!(
-            "{pkg}/{inst}",
+            "{pkg}/{inst}/{runner}",
             pkg = key.agent_package.as_str(),
             inst = key.agent_instance_id.as_str(),
+            runner = self.identity.runner_id,
         );
         let mut resp = self
             .db
@@ -582,35 +593,135 @@ mod tests {
         assert_eq!(resolver.resolve(&key).await.unwrap(), None);
     }
 
+    /// Distinct runners hosting the same agent produce distinct placement rows.
     #[tokio::test]
-    async fn placement_overwrite_last_writer_wins() {
+    async fn placements_coexist_for_distinct_runners() {
         let db = test_db().await;
-        let id1 = identity(1);
-        let id2 = identity(2);
-        let mgr1 = ClusterManager::new(db.clone(), id1, TEST_TTL_MS)
+        let mgr1 = ClusterManager::new(db.clone(), identity(1), TEST_TTL_MS)
             .await
             .unwrap();
-        let mgr2 = ClusterManager::new(db.clone(), id2, TEST_TTL_MS)
+        let mgr2 = ClusterManager::new(db.clone(), identity(2), TEST_TTL_MS)
             .await
             .unwrap();
 
         let key = test_route_key();
         let hash = test_hash();
-
-        // Runner 1 places first, runner 2 overwrites.
         mgr1.record_placement(&key, &hash).await.unwrap();
         mgr2.record_placement(&key, &hash).await.unwrap();
 
-        // Observer sees runner 2's placement (last writer wins via UPSERT).
-        let observer = RunnerId::new_random();
-        let resolver = PlacementResolver::new(db.clone(), observer, TEST_TTL_MS);
-        let placement = resolver
-            .resolve(&key)
+        let rows: Vec<serde_json::Value> = db
+            .query(
+                "SELECT runner_endpoint FROM cluster_agent_placements \
+                 WHERE agent_package = $pkg AND agent_instance_id = $inst \
+                 ORDER BY runner_endpoint ASC",
+            )
+            .bind(("pkg", key.agent_package.as_str().to_string()))
+            .bind(("inst", key.agent_instance_id.as_str().to_string()))
             .await
             .unwrap()
-            .expect("placement should resolve");
-        assert_eq!(placement.endpoint, "http://runner-2:18080");
-        assert_eq!(placement.service_instance_id, "runner-2-sid");
+            .take(0)
+            .unwrap();
+        let endpoints: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| r.get("runner_endpoint").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(
+            endpoints,
+            vec!["http://runner-1:18080", "http://runner-2:18080"]
+        );
+    }
+
+    /// Booting against a cluster that already carries the pre-migration
+    /// schema (narrower UNIQUE index plus rows keyed by `{pkg}/{inst}`)
+    /// must succeed, install the wider index, sweep the legacy rows, and
+    /// allow new placements without a uniqueness collision.
+    #[tokio::test]
+    async fn init_schema_migrates_pre_existing_narrow_index_and_rows() {
+        let db = test_db().await;
+
+        db.query(
+            "DEFINE TABLE cluster_agent_placements SCHEMALESS;\
+             DEFINE INDEX idx_placement_agent ON cluster_agent_placements \
+               FIELDS agent_package, agent_instance_id UNIQUE;\
+             CREATE cluster_agent_placements:`legacy-agent/default` SET \
+               agent_package = 'legacy-agent', \
+               agent_instance_id = 'default', \
+               runner_id = 'dead-uuid-from-a-prior-process', \
+               runner_endpoint = 'http://gone:18080', \
+               status = 'active'",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+        let mgr = ClusterManager::new(db.clone(), identity(1), TEST_TTL_MS)
+            .await
+            .expect("boot must succeed against pre-migration state");
+
+        let legacy_rows: Vec<serde_json::Value> = db
+            .query("SELECT * FROM cluster_agent_placements WHERE agent_package = 'legacy-agent'")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        assert!(
+            legacy_rows.is_empty(),
+            "legacy two-segment-id rows must be swept; found {legacy_rows:?}"
+        );
+
+        let indexes: Vec<serde_json::Value> = db
+            .query("INFO FOR TABLE cluster_agent_placements")
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        let indexes_json = serde_json::to_string(&indexes).unwrap();
+        assert!(
+            indexes_json.contains("idx_placement_agent_runner"),
+            "wider index must be present after migration: {indexes_json}"
+        );
+        assert!(
+            !indexes_json.contains("idx_placement_agent ON"),
+            "narrower index must be removed after migration: {indexes_json}"
+        );
+
+        // record_placement on the same logical key as the legacy row must
+        // succeed under the wider UNIQUE without colliding.
+        let key = AgentRouteKey::new(
+            AgentPackageName::parse("legacy-agent").unwrap(),
+            AgentInstanceId::default(),
+        );
+        mgr.record_placement(&key, &test_hash()).await.unwrap();
+    }
+
+    /// Resolver picks the same placement on every call when cluster state is
+    /// unchanged, so cross-runner routing does not flap between requests.
+    #[tokio::test]
+    async fn placement_resolver_is_deterministic_across_calls() {
+        let db = test_db().await;
+        let mgr1 = ClusterManager::new(db.clone(), identity(1), TEST_TTL_MS)
+            .await
+            .unwrap();
+        let mgr2 = ClusterManager::new(db.clone(), identity(2), TEST_TTL_MS)
+            .await
+            .unwrap();
+
+        let key = test_route_key();
+        let hash = test_hash();
+        mgr1.record_placement(&key, &hash).await.unwrap();
+        mgr2.record_placement(&key, &hash).await.unwrap();
+
+        let observer = RunnerId::new_random();
+        let resolver = PlacementResolver::new(db.clone(), observer, TEST_TTL_MS);
+        let first = resolver.resolve(&key).await.unwrap().unwrap();
+        for _ in 0..5 {
+            let next = resolver.resolve(&key).await.unwrap().unwrap();
+            assert_eq!(
+                next.endpoint, first.endpoint,
+                "resolver must not flap between calls when cluster state is unchanged"
+            );
+        }
     }
 
     #[tokio::test]
