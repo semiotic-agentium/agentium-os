@@ -108,18 +108,20 @@ For the full first-run operator flow (including building the runner image, creat
 
 ## Runner probes
 
-The runner StatefulSet uses HTTP `GET /healthz` for liveness and `GET /readyz` for readiness. The chart sets explicit, conservative defaults:
+The runner StatefulSet uses HTTP `GET /healthz` for startup and liveness, and `GET /readyz` for readiness. The chart sets explicit, conservative defaults:
 
-| Knob                  | livenessProbe | readinessProbe |
-| --------------------- | ------------- | -------------- |
-| `initialDelaySeconds` | `10`          | `5`            |
-| `periodSeconds`       | `15`          | `10`           |
-| `timeoutSeconds`      | `5`           | `5`            |
-| `failureThreshold`    | `6`           | `6`            |
+| Knob                  | startupProbe | livenessProbe | readinessProbe |
+| --------------------- | ------------ | ------------- | -------------- |
+| `initialDelaySeconds` | `20`         | `10`          | `5`            |
+| `periodSeconds`       | `10`         | `15`          | `10`           |
+| `timeoutSeconds`      | `5`          | `5`           | `5`            |
+| `failureThreshold`    | `6`          | `6`           | `6`            |
 
 `timeoutSeconds` and `failureThreshold` are higher than the Kubernetes defaults (`1` and `3`) because `POST /deploy` does meaningful synchronous work (QuickJS init, BAML schema parse, tool wrapping, agent boot) that can starve the HTTP server long enough for tight probes to fail under contention. When a readiness probe fails, the kubelet removes the pod from the runner Service endpoints and any in-flight Service-routed client connection (including `kubectl port-forward svc/...`) is reset mid-deploy.
 
-Override any field via the `runner.livenessProbe.*` and `runner.readinessProbe.*` keys in your values file. Probe paths and ports are not overridable — they are part of the runner contract.
+The startup probe exists because the runner's HTTP listener doesn't bind until after the in-process SurrealDB connect retry has succeeded (issue #381 / PR #396), which on a cold install can take ~15 s while DNS / the SurrealDB pod itself come up. While the startup probe is running, the kubelet suppresses liveness and readiness probes — neither can emit `Warning Unhealthy` events nor restart the pod until startup completes. `initialDelaySeconds: 20` is set just past the typical HTTP-bind time so the first probe succeeds on first attempt during a cold install. Total startup budget = `initialDelaySeconds + failureThreshold * periodSeconds = 80 s` before the kubelet restarts the container, which comfortably covers the SurrealDB retry's worst case.
+
+Override any field via the `runner.startupProbe.*`, `runner.livenessProbe.*`, and `runner.readinessProbe.*` keys in your values file. Probe paths and ports are not overridable — they are part of the runner contract.
 
 ## Runner memory
 
