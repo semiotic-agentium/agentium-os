@@ -105,6 +105,12 @@ docker push your-registry.example.com/agentium-runner:0.1.0
 
 For any real design-partner or shared-cluster install, that means supplying a cluster-reachable OCI image reference, typically via a private registry. The `k3d image import` flow above is a fast dev fallback for local iteration; the k3d-managed-registry flow above mirrors the real install contract end-to-end.
 
+### Image pull policy
+
+The chart sets `runner.image.pullPolicy: Always` by default. The pilot install posture has no published runner image: every operator builds and pushes their own, and same-tag rebuilds are the common case. Under `IfNotPresent`, the kubelet silently reuses the layer cached on the node after a `kubectl rollout restart`, so a fresh push to the same tag is invisible to the running pod.
+
+If you pin to immutable tags (or content digests) and want to avoid the per-restart registry round-trip, override `runner.image.pullPolicy: IfNotPresent` in your values file. The `k3d-values.yaml` image-import example overrides to `Never` because that flow bypasses the kubelet pull entirely.
+
 ## Next step
 
 For the full first-run operator flow (including building the runner image, creating the required objects, authenticated publish/deploy, and the packaged smoke script), see [`docs/k8s-pilot-operator-guide.md`](../../../docs/k8s-pilot-operator-guide.md).
