@@ -553,14 +553,14 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — first post-Open hop: Send, SearchRead, or PageRead (support/clickup).
+/// Phase: act — first post-Open hop: Send, SearchRead, PageRead, or Abort (support/clickup).
 function ChooseClickUpAction__act__support_clickup(
   goal: string,
   step_description: string,
   operation_kind: string,
   prior_results: string?,
   session_context: SessionContext?
-) -> SupportClickupSendStep | SupportClickupSearchReadStep | SupportClickupPageReadStep {
+) -> SupportClickupSendStep | SupportClickupSearchReadStep | SupportClickupPageReadStep | SupportClickupAbortStep {
 
   client DefaultClient
   prompt #"[ACT] A support/clickup session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nYou are a ClickUp workspace assistant executing one plan step.
@@ -593,22 +593,22 @@ session_context: {{ session_context }}
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (act — Send or archive read): The JSON root must be exactly one Send, SearchRead, or PageRead step. op must be exactly the string Send, SearchRead, or PageRead — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
+PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
 "#
 
 }
 
-/// Phase: continue — SearchRead/PageRead, send again, or finish support/clickup.
+/// Phase: continue — SearchRead/PageRead, send again, finish, or abort support/clickup.
 function ChooseClickUpAction__continue__support_clickup(
   goal: string,
   step_description: string,
   operation_kind: string,
   prior_results: string?,
   session_context: SessionContext?
-) -> SupportClickupSendStep | SupportClickupSearchReadStep | SupportClickupPageReadStep | SupportClickupFinishStep {
+) -> SupportClickupSendStep | SupportClickupSearchReadStep | SupportClickupPageReadStep | SupportClickupFinishStep | SupportClickupAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/clickup result is archived.\nPriority rules:\n- If session_context.last_step_op == \"send\" and session_context.last_completion == \"DONE\", emit Finish unless tool-specific instructions explicitly require reading the archive first.\n- If session_context.last_step_op == \"send\" and session_context.last_completion == \"INTERRUPTED\", emit Abort or follow tool-specific interruption guidance.\nArchive fallback when content must be inspected:\n- Use SearchRead or PageRead with archive_ref=session_context.last_archive_ref or the visible @N.\n- A \"more lines\" indicator means paginate with SearchRead/PageRead.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work just because archive body content is not inline.\n\nYou are a ClickUp workspace assistant executing one plan step.
+  prompt #"[CONTINUE] support/clickup result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N support/clickup\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N support/clickup\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N support/clickup\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nYou are a ClickUp workspace assistant executing one plan step.
 Stay focused on this step only and use prior tool evidence from this turn.
 
 Overall goal: {{ goal }}
@@ -638,7 +638,7 @@ session_context: {{ session_context }}
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, or Finish step. op must be Send, SearchRead, PageRead, or Finish — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
 "#
 
 }

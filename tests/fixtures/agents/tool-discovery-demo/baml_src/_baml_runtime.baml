@@ -305,11 +305,11 @@ PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Repo
 
 }
 
-/// Phase: act — first post-Open hop: Send, SearchRead, or PageRead (system/discover_tools).
+/// Phase: act — first post-Open hop: Send, SearchRead, PageRead, or Abort (system/discover_tools).
 function ChooseDiscoverToolsQuery__act__system_discover_tools(
   user_message: string,
   session_context: SessionContext
-) -> SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep {
+) -> SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsAbortStep {
 
   client DefaultClient
   prompt #"[ACT] A system/discover_tools session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nFind tools that can help with: {{ user_message }}
@@ -326,19 +326,19 @@ Do not issue extra Reads or Sends unless the archive explicitly indicates more p
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (act — Send or archive read): The JSON root must be exactly one Send, SearchRead, or PageRead step. op must be exactly the string Send, SearchRead, or PageRead — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
+PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
 "#
 
 }
 
-/// Phase: continue — SearchRead/PageRead, send again, or finish system/discover_tools.
+/// Phase: continue — SearchRead/PageRead, send again, finish, or abort system/discover_tools.
 function ChooseDiscoverToolsQuery__continue__system_discover_tools(
   user_message: string,
   session_context: SessionContext
-) -> SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsFinishStep {
+) -> SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsFinishStep | SystemDiscoverToolsAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/discover_tools result is archived.\nPriority rules:\n- If session_context.last_step_op == \"send\" and session_context.last_completion == \"DONE\", emit Finish unless tool-specific instructions explicitly require reading the archive first.\n- If session_context.last_step_op == \"send\" and session_context.last_completion == \"INTERRUPTED\", emit Abort or follow tool-specific interruption guidance.\nArchive fallback when content must be inspected:\n- Use SearchRead or PageRead with archive_ref=session_context.last_archive_ref or the visible @N.\n- A \"more lines\" indicator means paginate with SearchRead/PageRead.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work just because archive body content is not inline.\n\nFind tools that can help with: {{ user_message }}
+  prompt #"[CONTINUE] system/discover_tools result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N system/discover_tools\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N system/discover_tools\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N system/discover_tools\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nFind tools that can help with: {{ user_message }}
 For Send: set input.query to a concise search term derived from the user message.
 
 Session discipline: discover_tools returns matching tools in the Send (and optional Read) archive.
@@ -352,7 +352,7 @@ Do not issue extra Reads or Sends unless the archive explicitly indicates more p
 
 {{ ctx.output_format }}
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, or Finish step. op must be Send, SearchRead, PageRead, or Finish — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
 "#
 
 }
