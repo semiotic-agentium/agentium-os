@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "name": "host-effects-jail",
+  "entry_point": "src/index.ts",
+  "signature": "host-effects-jail@1.0.0",
+  "tools": [],
+  "discovery": {
+    "description": "Adversarial fixture: attempts host-side effects (network I/O, dynamic module require, websockets, XHR) and reports which were rejected. Asserts the QuickJS host boundary on the runtime side rather than the documented one (issue #393 sub-task A).",
+    "capabilities": []
+  },
+  "tags": [
+    "fixture",
+    "adversarial"
+  ]
+}
