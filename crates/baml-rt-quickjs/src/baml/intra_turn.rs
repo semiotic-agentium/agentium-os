@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use baml_rt_core::{Result, context};
+use baml_rt_core::{BamlFunctionId, Result, context};
 use baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP;
 use baml_rt_tools::{CTX_TAG_SESSION_STEP_STABLE_PREFIX, SESSION_STEP_STABLE_PREFIX_VALUE};
 use baml_types::BamlValue;
@@ -34,10 +34,11 @@ fn take_prefix_growth(p_before: &[Value], p_after: &[Value]) -> Option<Vec<Value
 /// Capped provider projection first, then the loop supplement **in order**, appending
 /// only lines whose [`Value`] is not already in the provider slice.
 ///
-/// The graph row is authoritative: when the provider read catches up, the same
-/// `Value` must not appear again from the supplement (same object may sit in the
-/// supplement until the next invoke if reads transiently lag the writer; merge **elides** that
-/// overlap, not "dedup two arbitrary sources" in the ad‑hoc sense).
+/// The graph row is authoritative: a `Value` already on the provider side must
+/// not reappear from the supplement. With the awaitable
+/// `ProvenanceEffectSubscriber` persisting before `emit` returns, the provider
+/// read after each hop already reflects LLM-backed projection — the merge is
+/// belt-and-braces against transient projection lag, not load-bearing.
 /// Then tail to [`DEFAULT_LLM_CONTEXT_ITEM_CAP`].
 pub(crate) fn append_intra_lines_to_provider_then_cap(
     mut prov: Vec<Value>,
@@ -61,7 +62,7 @@ pub(crate) fn append_step_intra_deltas(
     supplement: &mut Vec<Value>,
     p_before: &[Value],
     p_after: &[Value],
-    phase_function: &str,
+    phase_function: &BamlFunctionId,
 ) -> baml_rt_core::Result<()> {
     let deltas = hop_lines_from_provider_delta(p_before, p_after, phase_function)?;
     supplement.extend(deltas);
@@ -76,7 +77,7 @@ pub(crate) fn append_step_intra_deltas(
 fn hop_lines_from_provider_delta(
     p_before: &[Value],
     p_after: &[Value],
-    phase_function: &str,
+    phase_function: &BamlFunctionId,
 ) -> baml_rt_core::Result<Vec<Value>> {
     // Stable `#N` in history rows means a re-read can be byte-for-byte identical to
     // `p_before` when the graph has not yet appended a new projected row (or the last hop
@@ -124,17 +125,17 @@ fn hop_lines_from_provider_delta(
 /// [`crate::step_executor_loop::run_step_executor_loop`] still merges a loop-local supplement at
 /// each invoke via [`BamlRuntimeManager::invoke_function_with_intra`] when line-level merge needs
 /// rows before the next graph round-trip.
-pub(crate) async fn await_provider_conversation_strict_growth(
+pub(crate) async fn read_provider_conversation_after_hop(
     manager: &Arc<RwLock<BamlRuntimeManager>>,
     scope: &context::RuntimeScope,
     p_before: &[Value],
-    phase_function: &str,
+    phase_function: &BamlFunctionId,
 ) -> baml_rt_core::Result<Vec<Value>> {
     let p_after = {
         let g = manager.read().await;
         g.read_provider_conversation_array(scope).await?
     };
-    let _ = hop_lines_from_provider_delta(p_before, &p_after, phase_function)?;
+    hop_lines_from_provider_delta(p_before, &p_after, phase_function)?;
     Ok(p_after)
 }
 
@@ -200,11 +201,16 @@ impl BamlRuntimeManager {
 
 #[cfg(test)]
 mod tests {
+    use baml_rt_core::BamlFunctionId;
     use serde_json::{Value as JsonValue, json};
 
     use super::{
         append_intra_lines_to_provider_then_cap, hop_lines_from_provider_delta, take_prefix_growth,
     };
+
+    fn fid() -> BamlFunctionId {
+        BamlFunctionId::base("F")
+    }
 
     #[test]
     fn prefix_growth_suffix() {
@@ -237,7 +243,7 @@ mod tests {
     fn identical_before_after_yields_zero_deltas() {
         let a: Vec<JsonValue> = vec![];
         let p_after = a.clone();
-        let d = hop_lines_from_provider_delta(&a, &p_after, "F").expect("no supplement rows");
+        let d = hop_lines_from_provider_delta(&a, &p_after, &fid()).expect("no supplement rows");
         assert!(d.is_empty());
     }
 
@@ -245,7 +251,7 @@ mod tests {
     fn set_delta_picks_new_line_value_when_not_strict_prefix() {
         let a = [json!({"a":1})];
         let b = [json!({"b":2})];
-        let d = hop_lines_from_provider_delta(&a, &b, "F").expect("one novel line value");
+        let d = hop_lines_from_provider_delta(&a, &b, &fid()).expect("one novel line value");
         assert_eq!(d, vec![json!({"b":2})]);
     }
 
@@ -254,6 +260,6 @@ mod tests {
         let a = [json!({"x":1}), json!({"y":2})];
         // Same multiset as `a` but reordered: no novel `Value` vs the set of lines in a.
         let p_after = [json!({"y":2}), json!({"x":1})];
-        assert!(hop_lines_from_provider_delta(&a, &p_after, "F").is_err());
+        assert!(hop_lines_from_provider_delta(&a, &p_after, &fid()).is_err());
     }
 }
