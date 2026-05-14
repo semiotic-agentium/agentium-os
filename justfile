@@ -692,5 +692,4 @@ demo-rehearsal: demo-rehearsal-no-llm
 
 # verify + smoke only; no LLM required.
 demo-rehearsal-no-llm:
-    just verify-k8s-pilot-package --image-strategy registry --keep-cluster
-    just k8s-pilot-smoke --port-forward --keep-deployed
+    just verify-k8s-pilot-package --image-strategy registry --keep-cluster --smoke-keep-deployed
