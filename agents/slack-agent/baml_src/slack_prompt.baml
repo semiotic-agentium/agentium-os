@@ -36,6 +36,10 @@ function InferSlackIntent(user_message: string) -> NeedClarification | NotReleva
     NeedClarification: Slack-related but missing essentials (which channel, thread link, search query, time range, etc.).
     NotRelevant: nothing to do with Slack or workspace messages (creative writing, unrelated domains).
 
+    A Slack message URL of the form `https://*.slack.com/archives/<channel>/p<ts>` already supplies the channel
+    and thread — when the user message contains one, classify as SlackIntent (do not ask which channel or which
+    thread).
+
     If history shows you already asked a clarifying question and the user replied vaguely, reuse earlier context
     and prefer SlackIntent when a reasonable read-only goal exists.
 
