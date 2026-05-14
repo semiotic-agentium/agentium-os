@@ -33,7 +33,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::baml::{
-    BamlRuntimeManager, append_step_intra_deltas, await_provider_conversation_strict_growth,
+    BamlRuntimeManager, append_step_intra_deltas, read_provider_conversation_after_hop,
 };
 
 /// FSM status extracted from a tool session plan execution result.
@@ -494,7 +494,7 @@ pub async fn run_step_executor_loop(
             let guard = manager.read().await;
             guard.read_provider_conversation_array(scope).await?
         } else {
-            await_provider_conversation_strict_growth(manager, scope, &p_before, &current_function)
+            read_provider_conversation_after_hop(manager, scope, &p_before, &current_function)
                 .await?
         };
         if status == StepStatus::Open {

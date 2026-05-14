@@ -34,10 +34,11 @@ fn take_prefix_growth(p_before: &[Value], p_after: &[Value]) -> Option<Vec<Value
 /// Capped provider projection first, then the loop supplement **in order**, appending
 /// only lines whose [`Value`] is not already in the provider slice.
 ///
-/// The graph row is authoritative: when the provider read catches up, the same
-/// `Value` must not appear again from the supplement (same object may sit in the
-/// supplement until the next invoke if reads transiently lag the writer; merge **elides** that
-/// overlap, not "dedup two arbitrary sources" in the ad‑hoc sense).
+/// The graph row is authoritative: a `Value` already on the provider side must
+/// not reappear from the supplement. With the awaitable
+/// `ProvenanceEffectSubscriber` persisting before `emit` returns, the provider
+/// read after each hop already reflects LLM-backed projection — the merge is
+/// belt-and-braces against transient projection lag, not load-bearing.
 /// Then tail to [`DEFAULT_LLM_CONTEXT_ITEM_CAP`].
 pub(crate) fn append_intra_lines_to_provider_then_cap(
     mut prov: Vec<Value>,
@@ -124,7 +125,7 @@ fn hop_lines_from_provider_delta(
 /// [`crate::step_executor_loop::run_step_executor_loop`] still merges a loop-local supplement at
 /// each invoke via [`BamlRuntimeManager::invoke_function_with_intra`] when line-level merge needs
 /// rows before the next graph round-trip.
-pub(crate) async fn await_provider_conversation_strict_growth(
+pub(crate) async fn read_provider_conversation_after_hop(
     manager: &Arc<RwLock<BamlRuntimeManager>>,
     scope: &context::RuntimeScope,
     p_before: &[Value],
@@ -134,7 +135,7 @@ pub(crate) async fn await_provider_conversation_strict_growth(
         let g = manager.read().await;
         g.read_provider_conversation_array(scope).await?
     };
-    let _ = hop_lines_from_provider_delta(p_before, &p_after, phase_function)?;
+    hop_lines_from_provider_delta(p_before, &p_after, phase_function)?;
     Ok(p_after)
 }
 

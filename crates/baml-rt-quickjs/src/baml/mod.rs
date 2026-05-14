@@ -27,7 +27,7 @@ pub(crate) mod tool_extraction;
 mod builder;
 mod constructor;
 mod intra_turn;
-pub(crate) use intra_turn::{append_step_intra_deltas, await_provider_conversation_strict_growth};
+pub(crate) use intra_turn::{append_step_intra_deltas, read_provider_conversation_after_hop};
 mod manager_prelude;
 mod manager_traits;
 mod open_input;
