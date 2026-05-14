@@ -47,10 +47,11 @@ Usage:
 Options:
   --no-build            Skip the `docker build` step (reuse cached image)
   --keep-cluster        Do not delete the k3d cluster on exit
-  --smoke-keep-deployed Forward --keep-deployed into the inner k8s-pilot-smoke
-                        invocation so dispatch-echo stays deployed on exit.
-                        Use for demo prep flows that need the fixture to
-                        remain pointable after verify finishes.
+  --smoke-keep-deployed Keep dispatch-echo deployed after verify completes.
+                        By default the inner smoke run undeploys the fixture
+                        on exit. Pass this when a follow-on demo step (e.g.
+                        k8s-pilot-cleese-chapman) needs the fixture reachable
+                        without a fresh publish + deploy cycle.
   --image-strategy <s>  How the cluster gets the runner image. Choices:
                           local-k3d-import (default)
                               docker save + k3d image import; pullPolicy=Never.
