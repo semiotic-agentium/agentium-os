@@ -294,7 +294,7 @@ function ChooseClaudeDevAction(
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Entry step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function ChooseClaudeDevAction__entry(
   spec_text: string,
   validation_criteria_json: string,
@@ -308,7 +308,7 @@ function ChooseClaudeDevAction__entry(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -355,10 +355,9 @@ Session open (host FSM): {{ session_context.session_open }}
 
 OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ClaudeDevAskUser | ClaudeDevOpenStep | ClaudeDevReport | ReadOnlyFinishStep`.
 
-Return exactly one JSON object.
-Choose one object shape:
+Choose the matching object type.
 - `ArchivePageReadStep` uses fields like `input`, `op`
 - `ArchiveSearchReadStep` uses fields like `input`, `op`
 - `ClaudeDevAskUser` uses fields like `action`, `prompt`
@@ -374,7 +373,7 @@ Phase policy:
 
 }
 
-/// Active step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function ChooseClaudeDevAction__active__claude_dev(
   spec_text: string,
   validation_criteria_json: string,
@@ -388,7 +387,7 @@ function ChooseClaudeDevAction__active__claude_dev(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -435,11 +434,9 @@ Session open (host FSM): {{ session_context.session_open }}
 
 OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `ClaudeDevAbortStep | ClaudeDevFinishStep | ClaudeDevPageReadStep | ClaudeDevSearchReadStep | ClaudeDevSendStep`.
 
-Return exactly one JSON object.
-Use only the schema above.
-Legal operation discriminator values derived from this return union: `op` in "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
 Do not add text before or after the JSON object.
 
 Phase policy:

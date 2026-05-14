@@ -298,7 +298,7 @@ class ExecuteStepSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Entry step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function ExecuteStep__entry(
   objective: string,
   step_description: string,
@@ -310,7 +310,7 @@ function ExecuteStep__entry(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -329,10 +329,9 @@ Current step: {{ step_description }}
 
 Session open (host FSM): {{ session_context.session_open }}
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | CrmStepResult | ReadOnlyFinishStep | SupportCrmOpenStep | SupportEmailOpenStep`.
 
-Return exactly one JSON object.
-Choose one object shape:
+Choose the matching object type.
 - `ArchivePageReadStep` uses fields like `input`, `op`
 - `ArchiveSearchReadStep` uses fields like `input`, `op`
 - `CrmStepResult` uses fields like `data`, `message`
@@ -348,7 +347,7 @@ Phase policy:
 
 }
 
-/// Active step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function ExecuteStep__active__support_crm(
   objective: string,
   step_description: string,
@@ -360,7 +359,7 @@ function ExecuteStep__active__support_crm(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -379,11 +378,9 @@ Current step: {{ step_description }}
 
 Session open (host FSM): {{ session_context.session_open }}
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `SupportCrmAbortStep | SupportCrmFinishStep | SupportCrmPageReadStep | SupportCrmSearchReadStep | SupportCrmSendStep`.
 
-Return exactly one JSON object.
-Use only the schema above.
-Legal operation discriminator values derived from this return union: `op` in "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
 Do not add text before or after the JSON object.
 
 Phase policy:
@@ -392,7 +389,7 @@ Phase policy:
 
 }
 
-/// Active step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function ExecuteStep__active__support_email(
   objective: string,
   step_description: string,
@@ -404,7 +401,7 @@ function ExecuteStep__active__support_email(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -423,11 +420,9 @@ Current step: {{ step_description }}
 
 Session open (host FSM): {{ session_context.session_open }}
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `SupportEmailAbortStep | SupportEmailFinishStep | SupportEmailPageReadStep | SupportEmailSearchReadStep | SupportEmailSendStep`.
 
-Return exactly one JSON object.
-Use only the schema above.
-Legal operation discriminator values derived from this return union: `op` in "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
 Do not add text before or after the JSON object.
 
 Phase policy:

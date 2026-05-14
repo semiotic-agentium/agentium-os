@@ -359,7 +359,7 @@ fn format_relative_ms(elapsed_ms: i64) -> String {
     }
 }
 
-/// Rewrite a session citation (`#1`, `@2:3`) into episode-local form (`abcd#1`, `abcd@2:3`).
+/// Rewrite a session citation (`#1`, `@2:L3`) into episode-local form (`abcd#1`, `abcd@2:L3`).
 #[must_use]
 pub fn prefix_wire_citation(raw: &str, prefix: &EpisodeRefPrefix) -> String {
     let s = raw.trim();
@@ -424,6 +424,9 @@ fn try_parse_wire_citation_prefix(s: &str) -> Option<(ParsedCitation, usize)> {
     }
     if first == b'@' && end < b.len() && b[end] == b':' {
         end += 1;
+        if end < b.len() && b[end] == b'L' {
+            end += 1;
+        }
         let start_line = end;
         while end < b.len() && b[end].is_ascii_digit() {
             end += 1;
@@ -433,6 +436,9 @@ fn try_parse_wire_citation_prefix(s: &str) -> Option<(ParsedCitation, usize)> {
         }
         if end < b.len() && b[end] == b'-' {
             end += 1;
+            if end < b.len() && b[end] == b'L' {
+                end += 1;
+            }
             let start2 = end;
             while end < b.len() && b[end].is_ascii_digit() {
                 end += 1;
@@ -461,7 +467,7 @@ fn format_parsed_episode_citation(c: &ParsedCitation, prefix: &EpisodeRefPrefix)
         ParsedCitation::Archive { n, lines, negated } => {
             let mut core = format!("{p}@{n}");
             if let Some(r) = lines {
-                core.push(':');
+                core.push_str(":L");
                 if r.start() == r.end() {
                     core.push_str(&r.start().to_string());
                 } else {
@@ -491,17 +497,26 @@ mod tests {
         let p = EpisodeRefPrefix::from_task_id(&TaskId::from_external(ExternalId::new("t1")));
         assert_eq!(prefix_wire_citation("#3", &p), format!("{}#3", p.as_str()));
         assert_eq!(
-            prefix_wire_citation("!@4:1-3", &p),
-            format!("!{}@4:1-3", p.as_str())
+            prefix_wire_citation("!@4:L1-L3", &p),
+            format!("!{}@4:L1-3", p.as_str())
+        );
+    }
+
+    #[test]
+    fn prefix_citation_legacy_archive_range_canonicalizes_to_l_form() {
+        let p = EpisodeRefPrefix::from_task_id(&TaskId::from_external(ExternalId::new("t1")));
+        assert_eq!(
+            prefix_wire_citation("@4:1-3", &p),
+            format!("{}@4:L1-3", p.as_str())
         );
     }
 
     #[test]
     fn prefix_citations_embedded_in_session_line() {
         let p = EpisodeRefPrefix::from_task_id(&TaskId::from_external(ExternalId::new("t1")));
-        let s = prefix_wire_citations_in_text("#1 hello grep -n 'x' @2", &p);
+        let s = prefix_wire_citations_in_text("#1 hello grep -n 'x' @2:L4-L7", &p);
         assert!(s.contains(&format!("{}#1", p.as_str())));
-        assert!(s.contains(&format!("{}@2", p.as_str())));
+        assert!(s.contains(&format!("{}@2:L4-7", p.as_str())));
     }
 
     #[test]

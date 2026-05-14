@@ -19,7 +19,8 @@ impl CitationParseError {
     }
 }
 
-/// A **validated** ref-table citation string exactly as emitted by the model / shim (`#1`, `@4:2`, …).
+/// A **validated** ref-table citation string exactly as emitted by the model / shim
+/// (`#1`, `@4:L2`, `@4:L2-L5`, …).
 ///
 /// Invariant: [`Citation::as_str`] always parses successfully as [`ParsedCitation`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -192,9 +193,24 @@ impl ParsedCitation {
     }
 }
 
-/// Parse `"L"` or `"L1-L2"` into a 1-based inclusive range.
+/// Parse `"L"`, `"L1-L2"`, `"1"`, or `"1-2"` into a 1-based inclusive range.
+///
+/// The `L` prefix is canonical in current prompt surfaces (`@N:L1-L2`), but the bare
+/// numeric form remains accepted for backward compatibility with older stored citations.
 fn parse_line_range(s: &str) -> Result<RangeInclusive<usize>, String> {
-    if let Some((l1, l2)) = s.split_once('-') {
+    let normalized = s
+        .strip_prefix('L')
+        .or_else(|| s.strip_prefix('l'))
+        .unwrap_or(s);
+    if let Some((l1_raw, l2_raw)) = normalized.split_once('-') {
+        let l1 = l1_raw
+            .strip_prefix('L')
+            .or_else(|| l1_raw.strip_prefix('l'))
+            .unwrap_or(l1_raw);
+        let l2 = l2_raw
+            .strip_prefix('L')
+            .or_else(|| l2_raw.strip_prefix('l'))
+            .unwrap_or(l2_raw);
         let start = l1
             .parse::<usize>()
             .map_err(|_| format!("bad start line: '{l1}'"))?;
@@ -209,7 +225,7 @@ fn parse_line_range(s: &str) -> Result<RangeInclusive<usize>, String> {
         }
         Ok(start..=end)
     } else {
-        let l = s
+        let l = normalized
             .parse::<usize>()
             .map_err(|_| format!("bad line number: '{s}'"))?;
         if l == 0 {
@@ -288,6 +304,50 @@ mod tests {
                 lines: Some(2..=5),
                 negated: false
             }
+        );
+        assert_eq!(
+            ParsedCitation::parse("@4:L2-L5").unwrap(),
+            ParsedCitation::Archive {
+                n: 4,
+                lines: Some(2..=5),
+                negated: false
+            }
+        );
+    }
+
+    #[test]
+    fn parse_archive_ref_single_line_with_l_prefix() {
+        assert_eq!(
+            ParsedCitation::parse("@4:L2").unwrap(),
+            ParsedCitation::Archive {
+                n: 4,
+                lines: Some(2..=2),
+                negated: false
+            }
+        );
+    }
+
+    #[test]
+    fn parse_archive_ref_line_range_accepts_repeated_l_prefix() {
+        assert_eq!(
+            ParsedCitation::parse("@4:L2-L5").unwrap(),
+            ParsedCitation::Archive {
+                n: 4,
+                lines: Some(2..=5),
+                negated: false
+            }
+        );
+    }
+
+    #[test]
+    fn parse_archive_ref_line_range_accepts_l_on_end_bound() {
+        assert_eq!(
+            ParsedCitation::parse("@4:L2-L5").unwrap(),
+            ParsedCitation::parse("@4:2-L5").unwrap()
+        );
+        assert_eq!(
+            ParsedCitation::parse("@4:L2-L5").unwrap(),
+            ParsedCitation::parse("@4:l2-l5").unwrap()
         );
     }
 }

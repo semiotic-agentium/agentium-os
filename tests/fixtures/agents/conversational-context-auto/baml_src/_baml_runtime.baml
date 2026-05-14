@@ -192,7 +192,7 @@ class SupportCalculateSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Entry step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function ChooseCalcTool__entry(
   user_message: string,
   session_context: SessionContext
@@ -203,7 +203,7 @@ function ChooseCalcTool__entry(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -216,11 +216,9 @@ Extract the mathematical calculation. If they mention numbers, use those; otherw
 {{ _.role('user') }}
 {{ user_message }}
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep`.
 
-Return exactly one JSON object.
-Use only the schema above.
-Legal operation discriminator values derived from this return union: `op` in "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
 Do not add text before or after the JSON object.
 
 Phase policy:
@@ -229,7 +227,7 @@ Phase policy:
 
 }
 
-/// Active step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function ChooseCalcTool__active__support_calculate(
   user_message: string,
   session_context: SessionContext
@@ -240,7 +238,7 @@ function ChooseCalcTool__active__support_calculate(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -253,11 +251,9 @@ Extract the mathematical calculation. If they mention numbers, use those; otherw
 {{ _.role('user') }}
 {{ user_message }}
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `SupportCalculateAbortStep | SupportCalculateFinishStep | SupportCalculatePageReadStep | SupportCalculateSearchReadStep | SupportCalculateSendStep`.
 
-Return exactly one JSON object.
-Use only the schema above.
-Legal operation discriminator values derived from this return union: `op` in "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
 Do not add text before or after the JSON object.
 
 Phase policy:

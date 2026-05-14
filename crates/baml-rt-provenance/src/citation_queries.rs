@@ -7,7 +7,7 @@
 //!   `props.citations IS NOT NONE` and do emptiness checks in Rust instead.
 //!
 //! Queries citations recorded on LLM activity nodes and plan step entities.
-//! Citations are stored as a `citations` attribute (raw strings like `"#1"`, `"@4:2"`)
+//! Citations are stored as a `citations` attribute (raw strings like `"#1"`, `"@4:L2"`)
 //! on:
 //! - LLM call activities (`label = 'LlmCall'`)
 //! - Plan step entities (`label = 'PlanStep'`)

@@ -238,7 +238,7 @@ mod tests {
             step_id: step_id(),
             citations: vec![
                 Citation::from_str("#1").unwrap(),
-                Citation::from_str("@4:2").unwrap(),
+                Citation::from_str("@4:L2").unwrap(),
             ],
         };
         insta::assert_json_snapshot!(

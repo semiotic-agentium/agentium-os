@@ -5,7 +5,7 @@
 //! 1. **Stable sidecar is source-free and IR-derived.**
 //! 2. **All manifest tools and shared operation types are represented.**
 //! 3. **Generated prompts share the same byte-identical prefix up to `Session history`.**
-//! 4. **Per-hop schema binding lives after history, with no phase cue or union footer before it.**
+//! 4. **Per-hop compact contracts live after history, with no phase cue or inline union dump.**
 
 use std::fs;
 
@@ -191,7 +191,7 @@ async fn generated_prompts_share_stable_prefix_before_history() {
 }
 
 #[tokio::test]
-async fn phase_function_prompts_place_schema_after_history_and_task_body() {
+async fn phase_function_prompts_place_contract_after_history_and_task_body() {
     let root = build_calculator_agent().await;
     let generated = read_generated_baml(root.path());
 
@@ -212,9 +212,9 @@ async fn phase_function_prompts_place_schema_after_history_and_task_body() {
     let task_pos = entry_body
         .find("The user said: { user_message }")
         .expect("entry prompt must include the stripped task body");
-    let schema_pos = entry_body
-        .find("{{ ctx.output_format }}")
-        .expect("entry prompt must bind the narrowed schema after history");
+    let contract_pos = entry_body
+        .find("Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep`.")
+        .expect("entry prompt must bind the compact contract after history");
 
     assert!(
         prelude_pos < history_pos,
@@ -225,18 +225,22 @@ async fn phase_function_prompts_place_schema_after_history_and_task_body() {
         "session history must precede task body: {entry_body}"
     );
     assert!(
-        task_pos < schema_pos,
-        "task body must precede the per-hop schema binding: {entry_body}"
+        task_pos < contract_pos,
+        "task body must precede the per-hop compact contract: {entry_body}"
     );
     assert!(
         !entry_body.contains("Phase: ENTRY")
             && !entry_body.contains("Narrowed return union for this hop only:"),
         "entry prompt must not contain legacy phase cues or union footers: {entry_body}"
     );
+    assert!(
+        !entry_body.contains("Answer in JSON using any of these schemas:"),
+        "entry prompt must not contain the expanded inline union schema dump: {entry_body}"
+    );
 }
 
 #[tokio::test]
-async fn phase_function_prompts_have_exactly_one_per_hop_output_format() {
+async fn phase_function_prompts_omit_per_hop_output_format() {
     let root = build_calculator_agent().await;
     let generated = read_generated_baml(root.path());
 
@@ -250,14 +254,20 @@ async fn phase_function_prompts_have_exactly_one_per_hop_output_format() {
 
     let direct_output_format_count = active_body.matches("{{ ctx.output_format }}").count();
     assert_eq!(
-        direct_output_format_count, 1,
-        "tool-session phase prompts must render exactly one per-hop ctx.output_format: {active_body}"
+        direct_output_format_count, 0,
+        "tool-session phase prompts must not render per-hop ctx.output_format: {active_body}"
     );
 
     assert!(
         !active_body.contains("Phase: ACTIVE")
             && !active_body.contains("Narrowed return union for this hop only:"),
         "active prompt must not keep the old phase cue or union footer: {active_body}"
+    );
+    assert!(
+        active_body.contains(
+            "Return exactly one JSON object of type `SupportCalculateAbortStep | SupportCalculateFinishStep | SupportCalculatePageReadStep | SupportCalculateSearchReadStep | SupportCalculateSendStep`."
+        ),
+        "active prompt must use the compact type-reference contract: {active_body}"
     );
 }
 

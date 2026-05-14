@@ -4,7 +4,7 @@
 //!
 //! - The IR-template stripper alias to [`AuthorBodySanitizer::for_phase_ir`].
 //! - The `client … prompt #""#` BAML wrapper that frames the composed prompt body.
-//! - The compact, state-indexed phase-policy strings rendered after `{{ ctx.output_format }}`.
+//! - The compact, state-indexed phase-policy strings rendered after the post-history contract.
 
 use internal_baml_core::ir::ir_hasher::IRSignature;
 
@@ -12,7 +12,10 @@ use crate::builder::{
     baml_gen::{
         AuthorBodySanitizer, PromptCompositor, ToolSessionPhaseSpec, UnifiedPrimaryPhaseSpec,
     },
-    selection_hint::render_selection_hint_for_named_union,
+    selection_hint::{
+        render_step_executor_selection_hint_for_named_union,
+        render_type_reference_contract_for_named_union,
+    },
 };
 
 /// Which FSM hop this executor represents — entry, active session, or unified structured hop.
@@ -31,7 +34,7 @@ fn strip_phase_executor_ir_template(template: &str) -> String {
     AuthorBodySanitizer::for_phase_ir(template)
 }
 
-/// Appended after `{{ ctx.output_format }}` on unified-primary generated functions.
+/// Appended after the post-history output contract on unified-primary generated functions.
 ///
 /// No ASCII double quotes inside: concatenated into BAML `prompt #""#` literals.
 const PHASE_STEP_EXECUTOR_SUFFIX_UNIFIED_PRIMARY: &str = r#"
@@ -65,10 +68,14 @@ impl ToolSessionPhasePromptSpec<'_> {
     /// Render the full BAML `client … prompt #"..."#` block via [`PromptCompositor::tool_session_phase`].
     pub(crate) fn emit_baml_prompt_body(self, client_name: &str, prompt_template: &str) -> String {
         let stripped = AuthorBodySanitizer::for_phase_ir(prompt_template);
-        let selection_hint =
-            render_selection_hint_for_named_union(self.legal_type_names, self.ir_signature);
+        let output_contract = render_type_reference_contract_for_named_union(self.legal_type_names);
+        let selection_hint = render_step_executor_selection_hint_for_named_union(
+            self.legal_type_names,
+            self.ir_signature,
+        );
         let inner = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
             stripped_ir_body: &stripped,
+            output_contract: &output_contract,
             selection_hint: &selection_hint,
             phase_policy: self.phase_policy,
         });
@@ -88,7 +95,9 @@ fn phase_executor_prompt_body(
     ir_signature: &IRSignature,
 ) -> String {
     let stripped = AuthorBodySanitizer::for_phase_ir(prompt_template);
-    let selection_hint = render_selection_hint_for_named_union(legal_type_names, ir_signature);
+    let output_contract = render_type_reference_contract_for_named_union(legal_type_names);
+    let selection_hint =
+        render_step_executor_selection_hint_for_named_union(legal_type_names, ir_signature);
     let phase_policy = match phase {
         PhaseHop::Entry => {
             crate::builder::baml_gen::session_from_ir::entry_phase_executor_suffix(legal_type_names)
@@ -99,6 +108,7 @@ fn phase_executor_prompt_body(
     };
     let inner = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
         stripped_ir_body: &stripped,
+        output_contract: &output_contract,
         selection_hint: &selection_hint,
         phase_policy,
     });
@@ -113,9 +123,12 @@ pub(crate) fn phase_executor_prompt_body_unified_primary(
     ir_signature: &IRSignature,
 ) -> String {
     let stripped = AuthorBodySanitizer::for_phase_ir(prompt_template);
-    let selection_hint = render_selection_hint_for_named_union(legal_type_names, ir_signature);
+    let output_contract = render_type_reference_contract_for_named_union(legal_type_names);
+    let selection_hint =
+        render_step_executor_selection_hint_for_named_union(legal_type_names, ir_signature);
     let inner = PromptCompositor::unified_primary_phase(UnifiedPrimaryPhaseSpec {
         stripped_ir_body: &stripped,
+        output_contract: &output_contract,
         selection_hint: &selection_hint,
         phase_policy: PHASE_STEP_EXECUTOR_SUFFIX_UNIFIED_PRIMARY,
     });
@@ -245,8 +258,8 @@ client DefaultClient {
             "expected IR body in prompt: {out}"
         );
         assert!(
-            out.matches("{{ ctx.output_format }}").count() == 1,
-            "tool-session phases must render the narrowed per-hop schema after history: {out}"
+            out.matches("{{ ctx.output_format }}").count() == 0,
+            "tool-session phases must not render the expanded per-hop schema after history: {out}"
         );
         assert!(
             out.contains("tool_schema_prelude"),
@@ -261,18 +274,20 @@ client DefaultClient {
             .find("Only the IR template.")
             .expect("IR template fragment");
         let hist_pos = out.find("Session history:").expect("session history");
-        let schema_pos = out.find("{{ ctx.output_format }}").expect("schema binding");
+        let contract_pos = out
+            .find("Return exactly one JSON object of type `ArchiveSearchReadStep | XOpenStep`.")
+            .expect("contract binding");
         assert!(
             hist_pos < ir_pos,
             "session history must precede IR task body: {out}"
         );
         assert!(
-            ir_pos < schema_pos,
-            "IR task body must precede the per-hop schema binding: {out}"
+            ir_pos < contract_pos,
+            "IR task body must precede the per-hop contract: {out}"
         );
         assert!(
-            out.contains("Return exactly one JSON object."),
-            "expected generated selection hint after schema binding: {out}"
+            out.contains("Use `op` as the discriminator: \"Open\" | \"SearchRead\"."),
+            "expected compact op-selection hint after contract binding: {out}"
         );
         assert!(
             out.contains("Archive refs: `@N`"),
@@ -392,11 +407,15 @@ Old label:
         assert!(out.contains("Phase policy:"), "phase policy: {out}");
         assert!(!out.contains("[ACT]") && !out.contains("[CONTINUE]"));
         assert!(
-            out.matches("{{ ctx.output_format }}").count() == 1,
-            "tool-session active must render exactly one per-hop output_format: {out}"
+            out.matches("{{ ctx.output_format }}").count() == 0,
+            "tool-session active must not render the expanded per-hop output_format: {out}"
         );
         assert!(
-            out.contains("Legal operation discriminator values derived from this return union"),
+            out.contains("Return exactly one JSON object of type `FooAbortStep | FooFinishStep | FooPageReadStep | FooSearchReadStep | FooSendStep`."),
+            "expected compact type-reference contract: {out}"
+        );
+        assert!(
+            out.contains("Use `op` as the discriminator: \"Abort\" | \"Finish\" | \"PageRead\" | \"SearchRead\" | \"Send\"."),
             "expected compact op-selection hint: {out}"
         );
     }
@@ -419,19 +438,23 @@ Old label:
         assert!(out.contains("Planner body."), "template: {out}");
         assert!(out.contains("Phase policy:"), "{out}");
         assert!(
-            out.matches("{{ ctx.output_format }}").count() == 1,
-            "expected single output_format: {out}"
+            out.matches("{{ ctx.output_format }}").count() == 0,
+            "expected compact contract instead of output_format: {out}"
         );
         let hist_pos = out.find("Session history:").expect("session history");
         let task_pos = out.find("Planner body.").expect("task body");
-        let of_pos = out.find("{{ ctx.output_format }}").expect("output_format");
+        let contract_pos = out
+            .find(
+                "Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | CoordinatorStructuredAskUser | WorkflowPlan`.",
+            )
+            .expect("contract");
         assert!(
             hist_pos < task_pos,
             "session history must precede the task body on unified-primary hops: {out}"
         );
         assert!(
-            task_pos < of_pos,
-            "task body must precede output_format on unified-primary hops: {out}"
+            task_pos < contract_pos,
+            "task body must precede the output contract on unified-primary hops: {out}"
         );
     }
 }

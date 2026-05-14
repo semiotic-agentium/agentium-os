@@ -392,7 +392,7 @@ class SystemInternalA2aSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Entry step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function DecideDelegationAction__entry(
   goal: string,
   agent_package: string,
@@ -405,7 +405,7 @@ function DecideDelegationAction__entry(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -416,11 +416,9 @@ Session history:
 Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
 Return `null` when the goal is satisfied or after 2+ exchanges.
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemInternalA2aOpenStep`.
 
-Return exactly one JSON object.
-Use only the schema above.
-Legal operation discriminator values derived from this return union: `op` in "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
 Do not add text before or after the JSON object.
 
 Phase policy:
@@ -429,7 +427,7 @@ Phase policy:
 
 }
 
-/// Active step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function DecideDelegationAction__active__system_internal_a2a(
   goal: string,
   agent_package: string,
@@ -442,7 +440,7 @@ function DecideDelegationAction__active__system_internal_a2a(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -453,11 +451,9 @@ Session history:
 Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
 Return `null` when the goal is satisfied or after 2+ exchanges.
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `SystemInternalA2aAbortStep | SystemInternalA2aFinishStep | SystemInternalA2aPageReadStep | SystemInternalA2aSearchReadStep | SystemInternalA2aSendStep`.
 
-Return exactly one JSON object.
-Use only the schema above.
-Legal operation discriminator values derived from this return union: `op` in "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
 Do not add text before or after the JSON object.
 
 Phase policy:
@@ -466,7 +462,7 @@ Phase policy:
 
 }
 
-/// Entry step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function GetDiscoverAgentsPlan__entry(
   inferred_intent: string,
   session_context: SessionContext
@@ -477,7 +473,7 @@ function GetDiscoverAgentsPlan__entry(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -488,11 +484,9 @@ Session history:
 Discover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemDiscoverAgentsOpenStep`.
 
-Return exactly one JSON object.
-Use only the schema above.
-Legal operation discriminator values derived from this return union: `op` in "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
 Do not add text before or after the JSON object.
 
 Phase policy:
@@ -501,7 +495,7 @@ Phase policy:
 
 }
 
-/// Active step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function GetDiscoverAgentsPlan__active__system_discover_agents(
   inferred_intent: string,
   session_context: SessionContext
@@ -512,7 +506,7 @@ function GetDiscoverAgentsPlan__active__system_discover_agents(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -523,11 +517,9 @@ Session history:
 Discover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `SystemDiscoverAgentsAbortStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsSendStep`.
 
-Return exactly one JSON object.
-Use only the schema above.
-Legal operation discriminator values derived from this return union: `op` in "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
 Do not add text before or after the JSON object.
 
 Phase policy:

@@ -18,8 +18,14 @@ use super::prompt_normalize::AuthorBodySanitizer;
 #[derive(Clone, Copy)]
 pub(crate) struct StablePrefixSpec;
 
+pub(crate) enum OutputContractSpec<'a> {
+    OutputFormat,
+    Text(&'a str),
+}
+
 pub(crate) struct PostHistorySpec<'a> {
     pub task_body: &'a str,
+    pub output_contract: OutputContractSpec<'a>,
     pub selection_hint: &'a str,
     pub phase_policy: Option<&'a str>,
 }
@@ -33,17 +39,20 @@ pub(crate) struct PromptLayout<'a> {
 pub struct ToolSessionPhaseSpec<'a> {
     /// IR `prompt_template` text **after** [`AuthorBodySanitizer::for_phase_ir`] has cleaned it.
     pub stripped_ir_body: &'a str,
-    /// Generated selection hint derived from the narrowed return shape.
+    /// Compact post-history contract that references the legal named return members directly.
+    pub output_contract: &'a str,
+    /// Generated discriminator / shape hint derived from the narrowed return shape.
     pub selection_hint: &'a str,
-    /// Compact state-indexed phase policy rendered after the schema binding.
+    /// Compact state-indexed phase policy rendered after the post-history contract.
     pub phase_policy: &'a str,
 }
 
 /// Spec for unified-primary phase executor prompts (`__entry` for unified roots).
 pub struct UnifiedPrimaryPhaseSpec<'a> {
     pub stripped_ir_body: &'a str,
+    pub output_contract: &'a str,
     pub selection_hint: &'a str,
-    /// Compact state-indexed phase policy rendered after the schema binding.
+    /// Compact state-indexed phase policy rendered after the post-history contract.
     pub phase_policy: &'a str,
 }
 
@@ -59,6 +68,7 @@ impl PromptCompositor {
             stable_prefix: StablePrefixSpec,
             post_history: PostHistorySpec {
                 task_body: "",
+                output_contract: OutputContractSpec::OutputFormat,
                 selection_hint: "",
                 phase_policy: None,
             },
@@ -86,6 +96,7 @@ impl PromptCompositor {
             stable_prefix: StablePrefixSpec,
             post_history: PostHistorySpec {
                 task_body: trimmed,
+                output_contract: OutputContractSpec::OutputFormat,
                 selection_hint,
                 phase_policy: None,
             },
@@ -93,13 +104,14 @@ impl PromptCompositor {
     }
 
     /// Render a tool-session phase executor (`__entry` / `__active__*`) prompt body. Same
-    /// opening as authored non-FSM, then the IR task body, post-history `{{ ctx.output_format }}`,
+    /// opening as authored non-FSM, then the IR task body, a compact type-reference contract,
     /// the generated selection hint, and a compact state-indexed phase policy.
     pub fn tool_session_phase(spec: ToolSessionPhaseSpec<'_>) -> String {
         Self::render_layout(PromptLayout {
             stable_prefix: StablePrefixSpec,
             post_history: PostHistorySpec {
                 task_body: spec.stripped_ir_body.trim(),
+                output_contract: OutputContractSpec::Text(spec.output_contract),
                 selection_hint: spec.selection_hint,
                 phase_policy: Some(spec.phase_policy),
             },
@@ -113,6 +125,7 @@ impl PromptCompositor {
             stable_prefix: StablePrefixSpec,
             post_history: PostHistorySpec {
                 task_body: spec.stripped_ir_body.trim(),
+                output_contract: OutputContractSpec::Text(spec.output_contract),
                 selection_hint: spec.selection_hint,
                 phase_policy: Some(spec.phase_policy),
             },
@@ -124,7 +137,7 @@ impl PromptCompositor {
         push_stable_prefix(&mut out, layout.stable_prefix);
         push_transcript_if_block(&mut out);
         push_task_body(&mut out, layout.post_history.task_body);
-        push_canonical_output_format_line(&mut out);
+        push_output_contract(&mut out, layout.post_history.output_contract);
         push_selection_hint(&mut out, layout.post_history.selection_hint);
         push_phase_policy(&mut out, layout.post_history.phase_policy);
         out
@@ -157,8 +170,17 @@ fn push_transcript_if_block(out: &mut String) {
     out.push_str("'] }}\n{% endif %}\n");
 }
 
-fn push_canonical_output_format_line(out: &mut String) {
-    out.push_str("{{ ctx.output_format }}\n");
+fn push_output_contract(out: &mut String, contract: OutputContractSpec<'_>) {
+    match contract {
+        OutputContractSpec::OutputFormat => out.push_str("{{ ctx.output_format }}\n"),
+        OutputContractSpec::Text(text) => {
+            let trimmed = text.trim_end();
+            if !trimmed.is_empty() {
+                out.push_str(trimmed);
+                out.push('\n');
+            }
+        }
+    }
 }
 
 fn push_selection_hint(out: &mut String, selection_hint: &str) {
@@ -184,7 +206,7 @@ fn push_phase_policy(out: &mut String, phase_policy: Option<&str>) {
 fn push_tool_schema_prelude_if_block(out: &mut String) {
     out.push_str("{% if ctx.tags['");
     out.push_str(TOOL_SCHEMA_PRELUDE_TAG);
-    out.push_str("'] %}\nStable tool and operation types (IR-derived):\n{{ ctx.tags['");
+    out.push_str("'] %}\nTool and operation types:\n{{ ctx.tags['");
     out.push_str(TOOL_SCHEMA_PRELUDE_TAG);
     out.push_str("'] }}\n\n{% endif %}\n");
 }
@@ -202,12 +224,14 @@ mod tests {
         );
         let tool_session = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
             stripped_ir_body: "IR body.",
-            selection_hint: "Return exactly one JSON object.\n",
+            output_contract: "Return exactly one JSON object of type `XOpenStep | ArchiveSearchReadStep`.\n",
+            selection_hint: "Use `op` as the discriminator: \"Open\" | \"SearchRead\".\nDo not add text before or after the JSON object.\n",
             phase_policy: "Phase policy:\n- Entry excludes Send.\n",
         });
         let unified = PromptCompositor::unified_primary_phase(UnifiedPrimaryPhaseSpec {
             stripped_ir_body: "IR body.",
-            selection_hint: "Return exactly one JSON object.\n",
+            output_contract: "Return exactly one JSON object of type `WorkflowPlan | CoordinatorStructuredAskUser`.\n",
+            selection_hint: "Choose the matching object type.\nDo not add text before or after the JSON object.\n",
             phase_policy: "Phase policy:\n- Structured only.\n",
         });
         assert!(authored.starts_with(&opening));
@@ -229,38 +253,49 @@ mod tests {
     }
 
     #[test]
-    fn tool_session_phase_includes_per_hop_output_format_after_history() {
+    fn tool_session_phase_includes_compact_contract_after_history() {
         let s = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
             stripped_ir_body: "IR body.",
-            selection_hint: "Return exactly one JSON object.\n",
+            output_contract: "Return exactly one JSON object of type `XOpenStep | ArchiveSearchReadStep`.\n",
+            selection_hint: "Use `op` as the discriminator: \"Open\" | \"SearchRead\".\nDo not add text before or after the JSON object.\n",
             phase_policy: "Phase policy:\n- Entry excludes Send.\n",
         });
-        assert_eq!(s.matches("{{ ctx.output_format }}").count(), 1);
-        assert!(s.contains("Return exactly one JSON object."));
+        assert_eq!(s.matches("{{ ctx.output_format }}").count(), 0);
+        assert!(s.contains(
+            "Return exactly one JSON object of type `XOpenStep | ArchiveSearchReadStep`."
+        ));
         assert!(s.contains("Phase policy:"));
         let hist_pos = s.find("Session history:").expect("history");
         let task_pos = s.find("IR body.").expect("task");
-        let schema_pos = s.find("{{ ctx.output_format }}").expect("schema");
+        let contract_pos = s
+            .find("Return exactly one JSON object of type `XOpenStep | ArchiveSearchReadStep`.")
+            .expect("contract");
         assert!(hist_pos < task_pos, "history must precede task body");
         assert!(
-            task_pos < schema_pos,
-            "task body must precede output format"
+            task_pos < contract_pos,
+            "task body must precede output contract"
         );
     }
 
     #[test]
-    fn unified_primary_includes_output_format_after_history() {
+    fn unified_primary_includes_compact_contract_after_history() {
         let s = PromptCompositor::unified_primary_phase(UnifiedPrimaryPhaseSpec {
             stripped_ir_body: "IR body.",
-            selection_hint: "Return exactly one JSON object.\n",
+            output_contract: "Return exactly one JSON object of type `WorkflowPlan | CoordinatorStructuredAskUser`.\n",
+            selection_hint: "Choose the matching object type.\nDo not add text before or after the JSON object.\n",
             phase_policy: "Phase policy:\n- Structured only.\n",
         });
-        assert_eq!(s.matches("{{ ctx.output_format }}").count(), 1);
+        assert_eq!(s.matches("{{ ctx.output_format }}").count(), 0);
         assert!(s.contains("Phase policy:"));
         let hist_pos = s.find("Session history:").expect("history");
         let task_pos = s.find("IR body.").expect("task");
-        let of_pos = s.find("{{ ctx.output_format }}").expect("of present");
+        let contract_pos = s
+            .find("Return exactly one JSON object of type `WorkflowPlan | CoordinatorStructuredAskUser`.")
+            .expect("contract present");
         assert!(hist_pos < task_pos, "history must precede task body");
-        assert!(task_pos < of_pos, "task body must precede output_format");
+        assert!(
+            task_pos < contract_pos,
+            "task body must precede output contract"
+        );
     }
 }

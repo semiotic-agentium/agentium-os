@@ -39,7 +39,7 @@ function InferSlackIntent(user_message: string) -> NeedClarification | NotReleva
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -81,7 +81,7 @@ function PlanSlackWork(intent: string) -> SlackStructuredPlan {
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -131,7 +131,7 @@ function ReactToSlackResults(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}

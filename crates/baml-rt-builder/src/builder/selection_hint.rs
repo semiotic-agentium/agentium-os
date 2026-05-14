@@ -14,11 +14,26 @@ pub(crate) fn render_selection_hint_for_type(ty: &TypeNonStreaming, ir: &IRSigna
     render_selection_hint(&analyze_return_shape(ty, ir))
 }
 
-pub(crate) fn render_selection_hint_for_named_union(
+pub(crate) fn render_type_reference_contract_for_named_union(
+    legal_type_names: &[String],
+) -> String {
+    let mut type_names = legal_type_names.to_vec();
+    type_names.sort();
+    type_names.dedup();
+    if type_names.len() == 1 {
+        return format!("Return exactly one `{}` JSON object.\n", type_names[0]);
+    }
+    format!(
+        "Return exactly one JSON object of type `{}`.\n",
+        type_names.join(" | ")
+    )
+}
+
+pub(crate) fn render_step_executor_selection_hint_for_named_union(
     legal_type_names: &[String],
     ir: &IRSignature,
 ) -> String {
-    render_selection_hint(&analyze_named_union_shape(legal_type_names, ir))
+    render_step_executor_selection_hint(&analyze_named_union_shape(legal_type_names, ir))
 }
 
 pub(crate) fn render_selection_hint(shape: &ReturnShape) -> String {
@@ -34,6 +49,22 @@ pub(crate) fn render_selection_hint(shape: &ReturnShape) -> String {
         }
         ReturnShape::TaggedUnion(tagged) => render_tagged_union_hint(tagged),
         ReturnShape::UntaggedUnion(union) => render_untagged_union_hint(union),
+    }
+}
+
+fn render_step_executor_selection_hint(shape: &ReturnShape) -> String {
+    match shape {
+        ReturnShape::Scalar | ReturnShape::SingleObject(_) => {
+            "Do not add text before or after the JSON object.\n".to_string()
+        }
+        ReturnShape::TaggedUnion(tagged) => format!(
+            "{}Do not add text before or after the JSON object.\n",
+            render_compact_tagged_union_hint(tagged)
+        ),
+        ReturnShape::UntaggedUnion(union) => format!(
+            "{}Do not add text before or after the JSON object.\n",
+            render_compact_untagged_union_hint(union)
+        ),
     }
 }
 
@@ -71,6 +102,21 @@ fn render_tagged_union_hint(tagged: &TaggedUnionShape) -> String {
     out
 }
 
+fn render_compact_tagged_union_hint(tagged: &TaggedUnionShape) -> String {
+    let mut values: Vec<String> = tagged
+        .variants
+        .iter()
+        .map(|variant| format!("{:?}", variant.literal_value))
+        .collect();
+    values.sort();
+    values.dedup();
+    format!(
+        "Use `{}` as the discriminator: {}.\n",
+        tagged.discriminator,
+        values.join(" | ")
+    )
+}
+
 fn render_untagged_union_hint(union: &UntaggedUnionShape) -> String {
     let mut out = "Return exactly one JSON object.\nChoose one object shape:\n".to_string();
     for variant in &union.variants {
@@ -90,6 +136,27 @@ fn render_untagged_union_hint(union: &UntaggedUnionShape) -> String {
     }
     out.push_str("Do not mix fields from different object shapes.\n");
     out.push_str("Do not add text before or after the JSON object.\n");
+    out
+}
+
+fn render_compact_untagged_union_hint(union: &UntaggedUnionShape) -> String {
+    let mut out = "Choose the matching object type.\n".to_string();
+    for variant in &union.variants {
+        out.push_str("- `");
+        out.push_str(&variant.type_name);
+        out.push('`');
+        if !variant.distinguishing_fields.is_empty() {
+            out.push_str(" uses fields like ");
+            let fields: Vec<String> = variant
+                .distinguishing_fields
+                .iter()
+                .map(|field| format!("`{field}`"))
+                .collect();
+            out.push_str(&fields.join(", "));
+        }
+        out.push('\n');
+    }
+    out.push_str("Do not mix fields from different object shapes.\n");
     out
 }
 
@@ -183,5 +250,39 @@ mod tests {
         }));
         assert!(hint.contains("`NeedClarification` uses fields like `question`"));
         assert!(hint.contains("`NotRelevant` uses fields like `reason`"));
+    }
+
+    #[test]
+    fn type_reference_contract_sorts_named_members() {
+        let contract = render_type_reference_contract_for_named_union(&[
+            "FooSendStep".to_string(),
+            "FooAbortStep".to_string(),
+            "FooPageReadStep".to_string(),
+        ]);
+        assert!(contract.contains(
+            "Return exactly one JSON object of type `FooAbortStep | FooPageReadStep | FooSendStep`."
+        ));
+        assert!(!contract.contains("Do not add text before or after the JSON object."));
+    }
+
+    #[test]
+    fn compact_tagged_union_hint_is_discriminator_only() {
+        let hint =
+            render_step_executor_selection_hint(&ReturnShape::TaggedUnion(TaggedUnionShape {
+                discriminator: "kind".to_string(),
+                variants: vec![
+                    TaggedVariantShape {
+                        type_name: "Ready".to_string(),
+                        literal_value: "ready".to_string(),
+                    },
+                    TaggedVariantShape {
+                        type_name: "Clarify".to_string(),
+                        literal_value: "clarify".to_string(),
+                    },
+                ],
+            }));
+        assert!(hint.contains("Use `kind` as the discriminator: \"clarify\" | \"ready\"."));
+        assert!(!hint.contains("Select the object shape"));
+        assert!(!hint.contains("Return exactly one JSON object."));
     }
 }

@@ -103,7 +103,7 @@ export type DriftSeverity = "acceptable" | "warn" | "block";
 
 /** One resolved citation: the raw ref the LLM emitted plus the actual evidence text. */
 export interface CitationDetail {
-  /** Exact string the LLM emitted, e.g. `"#1"`, `"@2:3-5"`, `"!@1"`. */
+  /** Exact string the LLM emitted, e.g. `"#1"`, `"@2:L3-L5"`, `"!@1"`. */
   raw: string;
   n: number;
   /** `true` = history ref (`#N`), `false` = archive ref (`@N`). */

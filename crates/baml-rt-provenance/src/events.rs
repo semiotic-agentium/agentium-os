@@ -189,7 +189,7 @@ pub struct ResolvedCitationTarget {
     /// For history refs (`#N`): `"message:{context_id}:{message_id}"`.
     /// For archive refs (`@N`): `"session-step:{activity_anchor}"` of the SendDone.
     pub target_node_id: String,
-    /// Original citation string exactly as the model emitted it (`"#7"`, `"@8"`, `"@4:2-5"`).
+    /// Original citation string exactly as the model emitted it (`"#7"`, `"@8"`, `"@4:L2-L5"`).
     /// Stored as the `raw` attribute on the CITED graph edge so graph traversal consumers
     /// can reconstruct the citation without re-resolving ref numbers.
     #[serde(default)]
@@ -230,7 +230,7 @@ pub struct LlmCitationSimilarity {
     pub negated: bool,
     /// Cosine similarity between the decision text and the cited content.
     pub similarity: f32,
-    /// Raw citation string exactly as the LLM emitted it (e.g. `"#1"`, `"@2:3-5"`, `"!@1"`).
+    /// Raw citation string exactly as the LLM emitted it (e.g. `"#1"`, `"@2:L3-L5"`, `"!@1"`).
     #[serde(default)]
     pub raw: String,
     /// Stable event ID of the cited activity — usable for provenance graph lookup.

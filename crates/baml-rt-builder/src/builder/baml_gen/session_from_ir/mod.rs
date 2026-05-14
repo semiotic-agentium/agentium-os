@@ -2,10 +2,10 @@
 //!
 //! Per-phase functions (`__entry`, `__active__*`) share the parent session-plan
 //! BAML function's `prompt_template`. Each hop is wrapped for BAML with a byte-stable prefix
-//! (`SESSION_STEP_STABLE_PREFIX_BAML` + IR-derived `tool_schema_prelude` + canonical session
-//! history block), then post-history task text, `{{ ctx.output_format }}`, the generated
-//! selection hint, and a compact state-indexed phase policy. No phase cue, legal-union footer,
-//! or tool-specific narrative is allowed before `Session history`.
+//! (`SESSION_STEP_STABLE_PREFIX_BAML` + stable `tool_schema_prelude` + canonical session
+//! history block), then post-history task text, a compact type-reference contract, the generated
+//! selection hint, and a compact state-indexed phase policy. No phase cue, inline union schema
+//! dump, or tool-specific narrative is allowed before `Session history`.
 //!
 //! **Phase policy ↔ generated return types (tool phases):**
 //! - **entry** — [`entry_phase_executor_suffix`] must agree with the `function __entry -> …` union.
@@ -243,7 +243,7 @@ pub fn render_generated_session_baml_from_ir(
 
         write_line(
             &mut phase_out,
-            "/// Entry step executor: stable prefix, transcript, task body, schema, and compact phase policy.",
+            "/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.",
         )?;
         write_line(
             &mut phase_out,
@@ -283,7 +283,7 @@ pub fn render_generated_session_baml_from_ir(
             let active_name = SessionTypeNames::active(func_name, &slug);
             write_line(
                 &mut phase_out,
-                "/// Active step executor: stable prefix, transcript, task body, schema, and compact phase policy.",
+                "/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.",
             )?;
             write_line(
                 &mut phase_out,

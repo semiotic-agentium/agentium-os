@@ -506,7 +506,7 @@ class SystemInternalA2aSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Entry step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function ChooseNotionAction__entry(
   goal: string,
   step_description: string,
@@ -518,7 +518,7 @@ function ChooseNotionAction__entry(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -530,11 +530,9 @@ You are executing one step of a read-only Notion retrieval plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportNotionOpenStep`.
 
-Return exactly one JSON object.
-Use only the schema above.
-Legal operation discriminator values derived from this return union: `op` in "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
 Do not add text before or after the JSON object.
 
 Phase policy:
@@ -543,7 +541,7 @@ Phase policy:
 
 }
 
-/// Active step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function ChooseNotionAction__active__support_notion(
   goal: string,
   step_description: string,
@@ -555,7 +553,7 @@ function ChooseNotionAction__active__support_notion(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -567,11 +565,9 @@ You are executing one step of a read-only Notion retrieval plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `SupportNotionAbortStep | SupportNotionFinishStep | SupportNotionPageReadStep | SupportNotionSearchReadStep | SupportNotionSendStep`.
 
-Return exactly one JSON object.
-Use only the schema above.
-Legal operation discriminator values derived from this return union: `op` in "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
 Do not add text before or after the JSON object.
 
 Phase policy:

@@ -443,7 +443,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseCalculatoragentTool" | "ChooseCalculatoragentTool__act__support_calculate" | "ChooseCalculatoragentTool__continue__support_calculate" | "ChooseCalculatoragentTool__select";
+export type StepExecutorFunctionName = "ChooseCalculatoragentTool" | "ChooseCalculatoragentTool__active__support_calculate" | "ChooseCalculatoragentTool__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -494,9 +494,8 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ChooseCalculatoragentTool: { args: Parameters<typeof ChooseCalculatoragentTool>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool>>; };
-  ChooseCalculatoragentTool__act__support_calculate: { args: Parameters<typeof ChooseCalculatoragentTool__act__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool__act__support_calculate>>; };
-  ChooseCalculatoragentTool__continue__support_calculate: { args: Parameters<typeof ChooseCalculatoragentTool__continue__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool__continue__support_calculate>>; };
-  ChooseCalculatoragentTool__select: { args: Parameters<typeof ChooseCalculatoragentTool__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool__select>>; };
+  ChooseCalculatoragentTool__active__support_calculate: { args: Parameters<typeof ChooseCalculatoragentTool__active__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool__active__support_calculate>>; };
+  ChooseCalculatoragentTool__entry: { args: Parameters<typeof ChooseCalculatoragentTool__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool__entry>>; };
 }
 
 declare global {
@@ -515,7 +514,7 @@ declare global {
     "lib": ["ES2020"],
     "module": "ESNext",
     "moduleResolution": "node",
-    "ignoreDeprecations": "6.0",
+    "ignoreDeprecations": "5.0",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -535,7 +534,8 @@ declare global {
 // Host tools use a session FSM. Which ops are valid on a given model hop is defined only by the
 // narrowed BAML return type for that function, not by duplicated prose. Step classes (Open/Send/…)
 // and `*SendInput` / `*OpenInput` give field names and @description; see the shared prelude
-// and each session-plan `prompt` order: stable types, task, transcript, then ctx.output_format last.
+// and each session-plan parent `prompt`: task + domain lines only; generated per-phase executors
+// add archive prefix, optional tool_schema_prelude, narrowed union, transcript, and output binding.
 
 // Shared standard planning types
 class StandardAgentPlanStep {
@@ -635,6 +635,13 @@ class ArchivePageReadStep {
   op "PageRead"
   input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
 }
+
+/// Terminal hop without a host tool session: answer from visible conversation archives only.
+/// Do not emit when you need a fresh Open/Send — use ENTRY Open or ACTIVE Send instead.
+class ReadOnlyFinishStep {
+  op "ReadOnlyFinish"
+  reply StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
+}
 // Domain types generated from #[derive(BamlType)]
 /// A binary arithmetic expression: left OP right.
 /// Provide integer operands and choose one of the four arithmetic operations.
@@ -704,7 +711,7 @@ class SupportCalculateAbortStep {
 type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep
 
 class SupportCalculateSessionPlan {
-  step SupportCalculateSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. A @N in history is a handle until you read it. Access: read.")
+  step SupportCalculateSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. A @N in history is a handle until you read it.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -715,62 +722,177 @@ class SupportCalculateSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Phase: select — open a tool session.
-function ChooseCalculatoragentTool__select(
+/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.
+function ChooseCalculatoragentTool__entry(
   user_message: string,
   session_context: SessionContext
-) -> SupportCalculateOpenStep {
+) -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: support/calculate.\n\nThe user said: { user_message }
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and operation types:
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+The user said: { user_message }
 Decide whether to use a tool and produce a session plan.
 
-{ ctx.output_format }
-
-{ _.role('user') }
 { user_message }
 
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep`.
+
+Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Do not add text before or after the JSON object.
+
+Phase policy:
+- Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
 "#
 
 }
 
-/// Phase: act — first post-Open hop: Send, SearchRead, PageRead, or Abort (support/calculate).
-function ChooseCalculatoragentTool__act__support_calculate(
-  user_message: string,
-  session_context: SessionContext
-) -> SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateAbortStep {
-
-  client DefaultClient
-  prompt #"[ACT] A support/calculate session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nThe user said: { user_message }
-Decide whether to use a tool and produce a session plan.
-
-{ ctx.output_format }
-
-{ _.role('user') }
-{ user_message }
-
-PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
-"#
-
-}
-
-/// Phase: continue — SearchRead/PageRead, send again, finish, or abort support/calculate.
-function ChooseCalculatoragentTool__continue__support_calculate(
+/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
+function ChooseCalculatoragentTool__active__support_calculate(
   user_message: string,
   session_context: SessionContext
 ) -> SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/calculate result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N support/calculate\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N support/calculate\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N support/calculate\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nThe user said: { user_message }
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and operation types:
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+The user said: { user_message }
 Decide whether to use a tool and produce a session plan.
 
-{ ctx.output_format }
-
-{ _.role('user') }
 { user_message }
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+Return exactly one JSON object of type `SupportCalculateAbortStep | SupportCalculateFinishStep | SupportCalculatePageReadStep | SupportCalculateSearchReadStep | SupportCalculateSendStep`.
+
+Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Do not add text before or after the JSON object.
+
+Phase policy:
+- Derived state rule: this active return union has no `Open` variant.
 "#
 
+}
+
+
+
+=== baml_src/_baml_tool_schema_catalog.txt ===
+Generated from compiled BAML IR.
+Tool metadata selects availability only; field shapes and nested types come from IR.
+
+Available tool types for this agent:
+
+tool support/calculate
+  purpose: Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division.
+  open: None
+  send: CalculatorInput
+  operations: SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep
+
+Type definitions:
+
+type ArchivePageReadInput = {
+  archive_ref: string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
+  offset?: int @description("0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.")
+  limit?: int @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
+}
+
+type ArchivePageReadStep = {
+  op: "PageRead"
+  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+}
+
+type ArchiveSearchReadInput = {
+  archive_ref: string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
+  grep: string @description("Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.")
+  offset?: int @description("0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.")
+  limit?: int @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
+}
+
+type ArchiveSearchReadStep = {
+  op: "SearchRead"
+  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+}
+
+type CalculatorInput = {
+  expression: Expression @description("The binary expression to evaluate.")
+}
+
+type DataPart = {
+  type: "data"
+  data: string @description("Serialised content (e.g. JSON string, CSV string).")
+  media_type: ReplyMediaType @description("MIME type of the data field.")
+}
+
+type Expression = {
+  left: int @description("Left-hand integer operand.")
+  operation: MathOperation @description("Arithmetic operation to apply.")
+  right: int @description("Right-hand integer operand. Must not be 0 when operation is Divide.")
+}
+
+type MathOperation = "Add" | "Subtract" | "Multiply" | "Divide"
+
+type ReadOnlyFinishStep = {
+  op: "ReadOnlyFinish"
+  reply: StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
+}
+
+type ReplyMediaType = "TextPlain" | "TextMarkdown" | "ApplicationJson" | "TextCsv"
+
+type ReplyPart = (TextPart | DataPart)
+
+type StructuredReply = {
+  parts: (TextPart | DataPart)[] @description("Ordered parts: start with TextPart (type \"text\") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type \"data\", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.")
+  citations: string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
+}
+
+type SupportCalculateAbortStep = {
+  op: "Abort"
+}
+
+type SupportCalculateFinishStep = {
+  op: "Finish"
+}
+
+type SupportCalculateOpenStep = {
+  op: "Open"
+  tool_name: "support/calculate" @description("Tool to open")
+}
+
+type SupportCalculatePageReadStep = {
+  op: "PageRead"
+  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+}
+
+type SupportCalculateSearchReadStep = {
+  op: "SearchRead"
+  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+}
+
+type SupportCalculateSendStep = {
+  op: "Send"
+  input: CalculatorInput @description("Payload for this step.")
+  citations: string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+}
+
+type TextPart = {
+  type: "text"
+  text: string
 }

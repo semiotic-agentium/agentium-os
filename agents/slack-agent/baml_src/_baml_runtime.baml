@@ -608,7 +608,7 @@ class SystemInternalA2aSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Entry step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function ChooseSlackAction__entry(
   goal: string,
   step_description: string,
@@ -620,7 +620,7 @@ function ChooseSlackAction__entry(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -635,10 +635,9 @@ This step: {{ step_description }}
 When emitting a session step: respect session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
 When this retrieve step is complete without further tool work, return ReadOnlyResponse instead of a session step.
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | ReadOnlyResponse | SupportSlackOpenStep`.
 
-Return exactly one JSON object.
-Choose one object shape:
+Choose the matching object type.
 - `ArchivePageReadStep` uses fields like `input`, `op`
 - `ArchiveSearchReadStep` uses fields like `input`, `op`
 - `ReadOnlyFinishStep` uses fields like `op`, `reply`
@@ -653,7 +652,7 @@ Phase policy:
 
 }
 
-/// Active step executor: stable prefix, transcript, task body, schema, and compact phase policy.
+/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
 function ChooseSlackAction__active__support_slack(
   goal: string,
   step_description: string,
@@ -665,7 +664,7 @@ function ChooseSlackAction__active__support_slack(
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Stable tool and operation types (IR-derived):
+Tool and operation types:
 {{ ctx.tags['tool_schema_prelude'] }}
 
 {% endif %}
@@ -680,11 +679,9 @@ This step: {{ step_description }}
 When emitting a session step: respect session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
 When this retrieve step is complete without further tool work, return ReadOnlyResponse instead of a session step.
 
-{{ ctx.output_format }}
+Return exactly one JSON object of type `SupportSlackAbortStep | SupportSlackFinishStep | SupportSlackPageReadStep | SupportSlackSearchReadStep | SupportSlackSendStep`.
 
-Return exactly one JSON object.
-Use only the schema above.
-Legal operation discriminator values derived from this return union: `op` in "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
 Do not add text before or after the JSON object.
 
 Phase policy:
