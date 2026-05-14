@@ -21,6 +21,7 @@ pub mod error;
 pub mod event_producer;
 pub mod event_subscription;
 pub mod function_id;
+pub mod history_text;
 pub mod ids;
 pub mod ingress_store;
 pub mod json;
@@ -34,9 +35,10 @@ pub mod time;
 pub mod types;
 
 pub use a2a_handler::{
-    A2aJsChatHost, A2aRequestHandler, collect_a2a_stream, collect_a2a_stream_until,
+    A2aJsChatHost, A2aRequestHandler, collect_a2a_stream_one_shot,
+    collect_a2a_stream_until_one_shot,
 };
-pub use a2a_sse::{A2aSseParseError, parse_a2a_sse_json_rpc_chunks};
+pub use a2a_sse::{A2aSseDecoder, A2aSseParseError, parse_a2a_sse_json_rpc_chunks};
 pub use a2a_wire::{A2aStreamChunk, A2aWireRequest};
 pub use agent_routing::{
     AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey,
@@ -48,7 +50,7 @@ pub use bus::{
     A2aEffectMetadata, A2aKind, Bus, BusApi, BusStream, BusWithEffects, Command, DomainEvent,
     EffectEmitter, EffectEvent, EffectKind, EffectLiveness, EffectRuntime, EffectStartToken,
     EffectSubscriber, EffectSubscriberTier, Envelope, InFlightCounts, LlmEffectMetadata, LlmKind,
-    LlmUsage, Payload, Subscriber, ToolEffectMetadata, ToolKind,
+    LlmUsage, Payload, Subscriber, ToolEffectMetadata, ToolKind, bus_stream_channel,
 };
 pub use callback_store::{
     CallbackDeliveryGate, CallbackStore, CancelCallbackSelector, ScheduleCallbackRequest,
@@ -80,6 +82,7 @@ pub use event_subscription::{
     subscriptions_match_filter,
 };
 pub use function_id::{BamlFunctionId, BamlPromptName, VariantPhase};
+pub use history_text::is_history_infrastructure_notice;
 pub use ids::{
     ActivityAnchorId, AgentId, ArtifactId, ContextId, CorrelationId, ExecutionSessionId, IntentId,
     MessageId, PlanId, PlanStepId, TaskId,

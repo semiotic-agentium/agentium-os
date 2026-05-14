@@ -294,7 +294,7 @@ async fn collect_stream_responses(
     let stream = agent
         .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request_value))
         .await?;
-    let chunks = baml_rt::collect_a2a_stream_until(stream, |item| {
+    let chunks = baml_rt::collect_a2a_stream_until_one_shot(stream, |item| {
         let v = item.as_ref();
         let chunk = v.get("result").and_then(|r| r.get("chunk").or(Some(r)));
         let state = chunk.and_then(chunk_state);
@@ -1540,7 +1540,7 @@ async fn test_e2e_stream_js_tool() {
         ))
         .await
         .unwrap();
-    let responses: Vec<serde_json::Value> = baml_rt::collect_a2a_stream(stream)
+    let responses: Vec<serde_json::Value> = baml_rt::collect_a2a_stream_one_shot(stream)
         .await
         .into_iter()
         .map(baml_rt_core::A2aStreamChunk::into_inner)

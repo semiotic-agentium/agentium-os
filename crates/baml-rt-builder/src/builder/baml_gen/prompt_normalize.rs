@@ -16,6 +16,8 @@ use std::sync::LazyLock;
 use baml_rt_tools::SESSION_STEP_STABLE_PREFIX_BAML;
 use regex::Regex;
 
+const AUTHORED_SELECTION_HINT: &str = "Return exactly one output matching the schema below. Do not add extra text before or after it.";
+
 static EXTRA_BLANK_RUNS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\n{3,}").expect("EXTRA_BLANK_RUNS: fixed \n{3,} pattern"));
 
@@ -61,6 +63,7 @@ impl AuthorBodySanitizer {
     pub fn for_authored(inner: &str) -> String {
         let s = strip_tool_schema_prelude_jinja_blocks(inner);
         let s = strip_canonical_archive_prefix_paragraph(&s);
+        let s = strip_authored_selection_hint(&s);
         let s = strip_conversation_transcript_jinja_blocks(&s);
         let s = strip_standalone_directive_lines(&s);
         collapse_blank_runs(&s)
@@ -146,6 +149,31 @@ fn strip_canonical_archive_prefix_paragraph(template: &str) -> String {
     }
 }
 
+fn strip_authored_selection_hint(template: &str) -> String {
+    template
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            trimmed != AUTHORED_SELECTION_HINT && !is_generated_selection_hint_line(trimmed)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_generated_selection_hint_line(line: &str) -> bool {
+    line.starts_with("Return exactly one `")
+        || line == "Return exactly one JSON object."
+        || line.starts_with("Select the object shape with discriminator `")
+        || line == "Choose one object shape:"
+        || (line.starts_with("If `") && line.contains("choose each item with discriminator `"))
+        || line.starts_with("- `")
+        || (line.starts_with("Set `")
+            && line.contains("Do not mix fields from different object shapes."))
+        || (line.starts_with("Set `") && line.contains("exactly for each `"))
+        || line == "Do not mix fields from different object shapes."
+        || line == "Do not add text before or after the JSON object."
+}
+
 fn collapse_blank_runs(template: &str) -> String {
     EXTRA_BLANK_RUNS.replace_all(template, "\n\n").into_owned()
 }
@@ -193,6 +221,31 @@ mod tests {
         let once = AuthorBodySanitizer::for_authored("Body.\n");
         let twice = AuthorBodySanitizer::for_authored(&once);
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn for_authored_strips_existing_selection_hint() {
+        let s = AuthorBodySanitizer::for_authored(
+            "Body.\n\nReturn exactly one output matching the schema below. Do not add extra text before or after it.\n\n",
+        );
+        assert!(!s.contains(AUTHORED_SELECTION_HINT));
+        assert!(s.contains("Body."));
+    }
+
+    #[test]
+    fn for_authored_strips_generated_tagged_union_hint_block() {
+        let s = AuthorBodySanitizer::for_authored(
+            "Body.\n\
+             Return exactly one JSON object.\n\
+             Select the object shape with discriminator `kind`:\n\
+             - `kind: \"ready\"` -> Ready\n\
+             - `kind: \"meta\"` -> Meta\n\
+             Set `kind` exactly. Do not mix fields from different object shapes.\n\
+             Do not add text before or after the JSON object.\n",
+        );
+        assert!(s.contains("Body."));
+        assert!(!s.contains("Select the object shape with discriminator"));
+        assert!(!s.contains("Do not add text before or after the JSON object."));
     }
 
     #[test]

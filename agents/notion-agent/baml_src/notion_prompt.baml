@@ -4,17 +4,20 @@
 // coordinator-style unions instead opt in via `unified_step_executors.json` (single `__entry` hop shape).
 
 class NeedClarification {
+  kind "clarify"
   question string @description("A clarifying question to ask when the request is too vague to identify what the user wants.")
 }
 
 /// The message is not a Notion question — nothing to retrieve or summarize.
 class NotRelevant {
+  kind "not_relevant"
   reason string @description("Brief explanation of why this doesn't relate to Notion content.")
 }
 
 /// A validated, distilled statement of what the user wants from Notion.
 /// Produced by InferNotionIntent once we know the request is valid and clear.
 class NotionIntent {
+  kind "intent"
   intent string @description("Clean, distilled goal statement — what the user wants to find or understand.")
 }
 
@@ -59,6 +62,14 @@ Tool and session-step types (authoritative field shapes):
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+
+Return exactly one JSON object.
+Select the object shape with discriminator `kind`:
+- `kind: "clarify"` -> NeedClarification
+- `kind: "not_relevant"` -> NotRelevant
+- `kind: "intent"` -> NotionIntent
+Set `kind` exactly. Do not mix fields from different object shapes.
+Do not add text before or after the JSON object.
 
 {{ ctx.output_format }}
 "#
@@ -121,6 +132,9 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+Return exactly one `NotionPlan` JSON object.
+Do not add text before or after the JSON object.
+
 {{ ctx.output_format }}
 "#
 }
@@ -182,6 +196,13 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+Return exactly one `StructuredReply` JSON object.
+If `parts[]` is present, choose each item with discriminator `type`:
+- `type: "text"` -> TextPart
+- `type: "data"` -> DataPart
+Set `type` exactly for each `parts[]` item.
+Do not add text before or after the JSON object.
+
 {{ ctx.output_format }}
 "#
 }
@@ -232,6 +253,9 @@ Tool and session-step types (authoritative field shapes):
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+
+Return exactly one `NotionSummary` JSON object.
+Do not add text before or after the JSON object.
 
 {{ ctx.output_format }}
 "#

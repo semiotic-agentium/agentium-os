@@ -181,8 +181,8 @@ async fn phase_function_prompts_inject_catalog_before_ir_body() {
         .find("Narrowed return union for this hop only:")
         .expect("entry prompt must contain narrowed-union footer");
     let emit_pos = entry_body
-        .find("Emit exactly one JSON object matching one of the named types above")
-        .expect("entry prompt must contain emit instruction at bottom");
+        .find("Return exactly one JSON object.")
+        .expect("entry prompt must contain generated selection hint at bottom");
 
     assert!(
         prelude_pos < cue_pos,

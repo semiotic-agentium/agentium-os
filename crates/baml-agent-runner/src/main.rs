@@ -1171,7 +1171,9 @@ globalThis.onChatMessage = async function(_message) {
 
     #[tokio::test]
     async fn test_scoped_internal_router_routes_to_agent() {
-        use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey, collect_a2a_stream};
+        use baml_rt_core::{
+            AgentInstanceId, AgentPackageName, AgentRouteKey, collect_a2a_stream_one_shot,
+        };
         let prov = test_provenance_config().await;
         let (_dir, state) = test_deployment_state().await;
         let runner = make_runner(prov, state);
@@ -1205,7 +1207,7 @@ globalThis.onChatMessage = async function(_message) {
         });
         let wire = baml_rt_core::A2aWireRequest::from(request_val);
         let stream = scoped.handle_a2a_stream(wire).await.expect("stream");
-        let chunks = collect_a2a_stream(stream).await;
+        let chunks = collect_a2a_stream_one_shot(stream).await;
         assert!(!chunks.is_empty());
     }
 

@@ -27,6 +27,8 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+Return exactly one output matching the schema below. Do not add extra text before or after it.
+
 {{ ctx.output_format }}
 "#
 }

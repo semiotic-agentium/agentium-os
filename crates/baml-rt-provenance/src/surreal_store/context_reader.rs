@@ -11,6 +11,7 @@ use baml_rt_conversation::view::{
 use baml_rt_core::{
     Citation,
     ids::{ActivityAnchorId, ContextId, MessageId, TaskId},
+    is_history_infrastructure_notice,
 };
 use serde_json::{Map, Value};
 
@@ -36,6 +37,19 @@ use crate::{
     surreal_tables::{PAYLOAD_ROW_SELECT, TBL_EDGE, TBL_NODE, TBL_PAYLOAD},
     vocabulary::{a2a_relations, context_scope, semantic_labels},
 };
+
+fn is_session_bookkeeping_result(phase: &ToolSessionPhase, value: &Value) -> bool {
+    if !phase.is_session_phase() {
+        return false;
+    }
+    match value {
+        Value::Object(map) if map.len() == 1 => matches!(
+            map.get("status").and_then(Value::as_str),
+            Some("sent" | "finished" | "aborted" | "opened")
+        ),
+        _ => false,
+    }
+}
 
 #[async_trait]
 impl ProvenanceContextReader for SurrealProvenanceStore {
@@ -79,7 +93,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
             let content_raw = props.get("a2a_content").cloned().unwrap_or(Value::Null);
             let content_value = json_value_from_embedded_string(&content_raw);
             let content = normalize_message_content(&content_value);
-            if content.trim().is_empty() {
+            if content.trim().is_empty() || is_history_infrastructure_notice(&content) {
                 continue;
             }
             messages.push(ProvenanceContextMessage {
@@ -503,7 +517,9 @@ impl SurrealProvenanceStore {
                         (result, error)
                     };
 
-                    let has_outcome = has_meaningful_result(&result) || error.is_some();
+                    let has_outcome = (has_meaningful_result(&result)
+                        && !is_session_bookkeeping_result(&phase, &result))
+                        || error.is_some();
                     // Non-session (execute/unknown) invocations always surface so the UI can render
                     // tool cards even when args/results are empty. Session FSM phases are usually
                     // narrated by SessionStep rows; still emit ToolCall pairs when the send carries
@@ -531,7 +547,9 @@ impl SurrealProvenanceStore {
 
                         let outcome = if let Some(error) = error {
                             ToolOutcome::Error(error)
-                        } else if has_meaningful_result(&result) {
+                        } else if has_meaningful_result(&result)
+                            && !is_session_bookkeeping_result(&phase, &result)
+                        {
                             ToolOutcome::Result(result)
                         } else {
                             ToolOutcome::StatusOnly

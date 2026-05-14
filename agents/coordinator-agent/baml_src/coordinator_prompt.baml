@@ -13,14 +13,17 @@ function GetDiscoverAgentsPlan(
 // Exactly one variant: delegatable task ready, need user input to form a task, or meta-only (no routing).
 
 class CoordinatorReadyIntent {
+  kind "ready"
   inferred_intent string @description("Single goal-level sentence for agent discovery — coordinated outcome only. No agent names, tools, or delegation mechanics.")
 }
 
 class CoordinatorNeedTaskClarification {
+  kind "clarify"
   question string @description("One concrete question whose answer would yield a delegatable specialist task.")
 }
 
 class CoordinatorMetaOnly {
+  kind "meta"
   reason string @description("Short label for logging: e.g. greeting, capabilities_list, casual_chat — no specialist work request.")
 }
 
@@ -36,7 +39,7 @@ Tool and session-step types (authoritative field shapes):
 
 {% endif %}You classify this turn for a **coordinator agent** that routes **real work** to specialist agents (after discovery). **Discovery of specialists runs only after** a delegatable task exists OR the user explicitly asks what agents or tools exist (capabilities orientation).
 
-    Return **exactly one** variant:
+    Use these meanings:
 
     **CoordinatorReadyIntent** — The user stated or strongly implies a **concrete task** a specialist could execute: lookups, searches, summaries scoped to a system, ticket or issue work, analysis with a defined goal, multi-step investigation with identifiable deliverables. Fill `inferred_intent`: one sentence, **goal-level outcome only** (no agent names, tools, or \"tell X to …\").
 
@@ -56,6 +59,14 @@ Tool and session-step types (authoritative field shapes):
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+
+Return exactly one JSON object.
+Select the object shape with discriminator `kind`:
+- `kind: "ready"` -> CoordinatorReadyIntent
+- `kind: "clarify"` -> CoordinatorNeedTaskClarification
+- `kind: "meta"` -> CoordinatorMetaOnly
+Set `kind` exactly. Do not mix fields from different object shapes.
+Do not add text before or after the JSON object.
 
 {{ ctx.output_format }}
 "#
@@ -88,6 +99,13 @@ Tool and session-step types (authoritative field shapes):
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+
+Return exactly one `StructuredReply` JSON object.
+If `parts[]` is present, choose each item with discriminator `type`:
+- `type: "text"` -> TextPart
+- `type: "data"` -> DataPart
+Set `type` exactly for each `parts[]` item.
+Do not add text before or after the JSON object.
 
 {{ ctx.output_format }}
 "#
@@ -135,6 +153,9 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+Return exactly one `StandardStructuredPlan` JSON object.
+Do not add text before or after the JSON object.
+
 {{ ctx.output_format }}
 "#
 }
@@ -181,6 +202,13 @@ Tool and session-step types (authoritative field shapes):
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+
+Return exactly one `StructuredReply` JSON object.
+If `parts[]` is present, choose each item with discriminator `type`:
+- `type: "text"` -> TextPart
+- `type: "data"` -> DataPart
+Set `type` exactly for each `parts[]` item.
+Do not add text before or after the JSON object.
 
 {{ ctx.output_format }}
 "#

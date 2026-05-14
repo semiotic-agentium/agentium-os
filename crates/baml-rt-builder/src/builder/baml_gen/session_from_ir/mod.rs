@@ -330,6 +330,7 @@ pub fn render_generated_session_baml_from_ir(
             legal_type_names: &entry_return,
             constraint_suffix: entry_suffix,
             supplement_after_cue: Some(entry_supplement.as_str()),
+            ir_signature: &ir_sig,
         };
         write_line(
             &mut phase_out,
@@ -375,6 +376,7 @@ pub fn render_generated_session_baml_from_ir(
                 legal_type_names: &legal_active,
                 constraint_suffix: PHASE_STEP_EXECUTOR_SUFFIX_ACTIVE,
                 supplement_after_cue: Some(active_supplement.as_str()),
+                ir_signature: &ir_sig,
             };
             write_line(
                 &mut phase_out,
@@ -494,6 +496,7 @@ fn append_unified_primary_step_executors(
                 client_name.as_str(),
                 prompt_template,
                 &legal,
+                ir_sig,
             ),
         )?;
         write_line(phase_out, "}")?;

@@ -17,10 +17,6 @@ expression: history
   },
   {
     "role": "tool",
-    "content": "system/discover_agents session opened"
-  },
-  {
-    "role": "tool",
     "content": "grep -n 'name description' @1\n# no matches"
   },
   {

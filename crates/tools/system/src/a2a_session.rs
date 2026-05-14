@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use baml_rt_core::{
     A2aRequestHandler, A2aWireRequest, Result, context,
     ids::{TaskId, UuidId},
+    is_history_infrastructure_notice,
 };
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
@@ -350,8 +351,7 @@ fn is_conversational_chunk(chunk: &ConversationChunk) -> bool {
         part.text
             .as_deref()
             .filter(|t| !t.trim().is_empty())
-            .filter(|t| !t.starts_with("Calling model:"))
-            .filter(|t| !t.starts_with("Invoking tool:"))
+            .filter(|t| !is_history_infrastructure_notice(t))
             .is_some()
     })
 }

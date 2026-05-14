@@ -43,6 +43,7 @@ use crate::builder::{
     },
     baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
     error::{BamlBuilderError, Result},
+    selection_hint::render_selection_hint_for_type,
     ts_gen::{load_manifest_tools, render_ts_declarations},
     types::{AgentDir, BuildDir},
 };
@@ -203,11 +204,13 @@ impl CompiledFirstPass {
             self.session_plan_map.keys().cloned().collect();
         let unified_primary_root_names: std::collections::HashSet<String> =
             self.unified_roots.keys().cloned().collect();
+        let selection_hints = authored_selection_hints(&self.ir_signature);
         let policy = DefaultPromptRewritePolicy {
             session_plan_parent_names: &session_plan_parent_names,
             unified_primary_root_names: &unified_primary_root_names,
         };
-        let summary = rewrite_authored_prompts_in_dir(&self.paths.baml_src_build, &policy)?;
+        let summary =
+            rewrite_authored_prompts_in_dir(&self.paths.baml_src_build, &policy, &selection_hints)?;
         tracing::debug!(
             rewritten = summary.rewritten,
             skipped = summary.skipped,
@@ -226,6 +229,18 @@ impl CompiledFirstPass {
             session_plan_map: self.session_plan_map,
         })
     }
+}
+
+fn authored_selection_hints(ir: &IRSignature) -> HashMap<String, String> {
+    ir.functions
+        .iter()
+        .map(|(name, func_sig)| {
+            (
+                name.clone(),
+                render_selection_hint_for_type(func_sig.output.as_ref(), ir),
+            )
+        })
+        .collect()
 }
 
 // ── Phase 4: prompts normalized ─────────────────────────────────────────────

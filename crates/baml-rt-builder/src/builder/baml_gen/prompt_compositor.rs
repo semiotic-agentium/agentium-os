@@ -25,6 +25,8 @@ pub struct ToolSessionPhaseSpec<'a> {
     pub stripped_ir_body: &'a str,
     /// Variant names admissible for this hop. Their JSON shapes live in the catalog at the top.
     pub legal_type_names: &'a [String],
+    /// Generated selection hint derived from the narrowed return shape.
+    pub selection_hint: &'a str,
     /// Phase FSM constraint suffix (entry / active prose).
     pub constraint_suffix: &'static str,
 }
@@ -34,6 +36,7 @@ pub struct UnifiedPrimaryPhaseSpec<'a> {
     pub phase_cue: &'a str,
     pub stripped_ir_body: &'a str,
     pub legal_type_names: &'a [String],
+    pub selection_hint: &'a str,
     /// Phase-constraint suffix appended after the narrowed-union footer.
     pub extra_suffix: &'static str,
 }
@@ -61,7 +64,7 @@ impl PromptCompositor {
     /// stable prefix → catalog if-block → sanitized author body → transcript if-block → output
     /// binding line. Used by the BAML source rewriter on every authored function except the
     /// synthetic catalog and the IR-inlined parents (session-plan + unified-primary).
-    pub fn authored_non_fsm(author_inner: &str) -> String {
+    pub fn authored_non_fsm(author_inner: &str, selection_hint: &str) -> String {
         let sanitized = AuthorBodySanitizer::for_authored(author_inner);
         let trimmed = sanitized.trim();
 
@@ -70,6 +73,7 @@ impl PromptCompositor {
         push_tool_schema_prelude_if_block(&mut out);
         push_task_body(&mut out, trimmed);
         push_transcript_if_block(&mut out);
+        push_selection_hint(&mut out, selection_hint);
         push_canonical_output_format_line(&mut out);
         out
     }
@@ -86,7 +90,7 @@ impl PromptCompositor {
         push_supplement(&mut out, spec.supplement_after_cue);
         push_task_body(&mut out, spec.stripped_ir_body.trim());
         push_transcript_if_block(&mut out);
-        push_narrowed_union_footer(&mut out, spec.legal_type_names);
+        push_narrowed_union_footer(&mut out, spec.legal_type_names, spec.selection_hint);
         out.push_str(spec.constraint_suffix);
         out
     }
@@ -102,17 +106,11 @@ impl PromptCompositor {
         push_task_body(&mut out, spec.stripped_ir_body.trim());
         push_transcript_if_block(&mut out);
         push_canonical_output_format_line(&mut out);
-        push_narrowed_union_footer(&mut out, spec.legal_type_names);
+        push_narrowed_union_footer(&mut out, spec.legal_type_names, spec.selection_hint);
         out.push_str(spec.extra_suffix);
         out
     }
 }
-
-/// Bottom-of-prompt emit instruction. Pairs with the narrowed-union footer to tell the model
-/// only the listed type names are admissible for this hop, and that their JSON shapes are
-/// defined once in the rendered catalog at the top of the prompt (see `tool_schema_prelude`).
-const EMIT_INSTRUCTION: &str = "\nEmit exactly one JSON object matching one of the named types above, using the field shapes \
-defined in the Tool and session-step types catalog at the top of this prompt. No markdown, no prose.\n";
 
 fn push_stable_archive_prefix(out: &mut String) {
     out.push_str(SESSION_STEP_STABLE_PREFIX_BAML);
@@ -164,7 +162,16 @@ fn push_canonical_output_format_line(out: &mut String) {
     out.push_str("{{ ctx.output_format }}\n");
 }
 
-fn push_narrowed_union_footer(out: &mut String, legal_type_names: &[String]) {
+fn push_selection_hint(out: &mut String, selection_hint: &str) {
+    if selection_hint.is_empty() {
+        return;
+    }
+    out.push('\n');
+    out.push_str(selection_hint.trim_end());
+    out.push('\n');
+}
+
+fn push_narrowed_union_footer(out: &mut String, legal_type_names: &[String], selection_hint: &str) {
     out.push_str("\n---\n");
     out.push_str("Narrowed return union for this hop only:\n");
     for name in legal_type_names {
@@ -172,7 +179,9 @@ fn push_narrowed_union_footer(out: &mut String, legal_type_names: &[String]) {
         out.push_str(name);
         out.push('\n');
     }
-    out.push_str(EMIT_INSTRUCTION);
+    out.push('\n');
+    out.push_str(selection_hint.trim_end());
+    out.push('\n');
 }
 
 #[cfg(test)]
@@ -182,18 +191,23 @@ mod tests {
     #[test]
     fn canonical_opening_is_byte_identical_across_shapes() {
         let opening = PromptCompositor::canonical_opening();
-        let authored = PromptCompositor::authored_non_fsm("Body.");
+        let authored = PromptCompositor::authored_non_fsm(
+            "Body.",
+            "Return exactly one output matching the schema below.\n",
+        );
         let tool_session = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
             phase_cue: "Phase: ENTRY\n",
             supplement_after_cue: None,
             stripped_ir_body: "IR body.",
             legal_type_names: &["StepType".to_string()],
+            selection_hint: "Return exactly one JSON object.\n",
             constraint_suffix: "",
         });
         let unified = PromptCompositor::unified_primary_phase(UnifiedPrimaryPhaseSpec {
             phase_cue: "Phase: STRUCTURED\n",
             stripped_ir_body: "IR body.",
             legal_type_names: &["UnifiedOut".to_string()],
+            selection_hint: "Return exactly one JSON object.\n",
             extra_suffix: "",
         });
         assert!(authored.starts_with(&opening));
@@ -203,7 +217,10 @@ mod tests {
 
     #[test]
     fn authored_non_fsm_emits_one_output_format_binding() {
-        let s = PromptCompositor::authored_non_fsm("Plan things.");
+        let s = PromptCompositor::authored_non_fsm(
+            "Plan things.",
+            "Return exactly one output matching the schema below.\n",
+        );
         assert_eq!(s.matches("{{ ctx.output_format }}").count(), 1);
         assert!(s.contains("Plan things."));
     }
@@ -215,11 +232,13 @@ mod tests {
             supplement_after_cue: None,
             stripped_ir_body: "IR body.",
             legal_type_names: &["A".to_string(), "B".to_string()],
+            selection_hint: "Return exactly one JSON object.\n",
             constraint_suffix: "",
         });
         assert!(!s.contains("{{ ctx.output_format }}"));
         assert!(s.contains("- A\n"));
         assert!(s.contains("- B\n"));
+        assert!(s.contains("Return exactly one JSON object."));
     }
 
     #[test]
@@ -228,6 +247,7 @@ mod tests {
             phase_cue: "Phase: STRUCTURED\n",
             stripped_ir_body: "IR body.",
             legal_type_names: &["A".to_string()],
+            selection_hint: "Return exactly one JSON object.\n",
             extra_suffix: "",
         });
         assert_eq!(s.matches("{{ ctx.output_format }}").count(), 1);

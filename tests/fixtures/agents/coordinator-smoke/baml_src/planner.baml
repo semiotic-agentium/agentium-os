@@ -75,9 +75,6 @@ Tool and session-step types (authoritative field shapes):
     - Cap nodes at 30.
 
     Planner expectations:
-    - `call_agent` requires target and prompt_template.
-    - `foreach` requires foreach_from and foreach_template.
-    - `clarify` and `direct_answer` require prompt_template.
     - Use references like n1.output_text only when there is a dependency on n1.
 
     ---AVAILABLE AGENTS---
@@ -93,6 +90,9 @@ Tool and session-step types (authoritative field shapes):
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+
+Return exactly one `WorkflowPlan` JSON object.
+Do not add text before or after the JSON object.
 
 {{ ctx.output_format }}
 "#

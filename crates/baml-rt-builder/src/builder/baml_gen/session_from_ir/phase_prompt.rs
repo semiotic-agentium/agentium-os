@@ -7,8 +7,13 @@
 //! - The `client … prompt #""#` BAML wrapper that frames the composed prompt body.
 //! - The phase-FSM constraint suffix constants (entry / active / unified-primary).
 
-use crate::builder::baml_gen::{
-    AuthorBodySanitizer, PromptCompositor, ToolSessionPhaseSpec, UnifiedPrimaryPhaseSpec,
+use internal_baml_core::ir::ir_hasher::IRSignature;
+
+use crate::builder::{
+    baml_gen::{
+        AuthorBodySanitizer, PromptCompositor, ToolSessionPhaseSpec, UnifiedPrimaryPhaseSpec,
+    },
+    selection_hint::render_selection_hint_for_named_union,
 };
 
 /// Which FSM hop this executor represents — entry, active session, or unified structured hop.
@@ -84,6 +89,8 @@ pub(crate) struct ToolSessionPhasePromptSpec<'a> {
     pub constraint_suffix: &'static str,
     /// Optional prose immediately after the phase cue; empty or `None` is skipped.
     pub supplement_after_cue: Option<&'a str>,
+    /// Compiled IR used to derive a centralized selection hint from `legal_type_names`.
+    pub ir_signature: &'a IRSignature,
 }
 
 impl ToolSessionPhasePromptSpec<'_> {
@@ -91,11 +98,14 @@ impl ToolSessionPhasePromptSpec<'_> {
     pub(crate) fn emit_baml_prompt_body(self, client_name: &str, prompt_template: &str) -> String {
         let stripped = AuthorBodySanitizer::for_phase_ir(prompt_template);
         let cue = phase_cue_line(self.phase);
+        let selection_hint =
+            render_selection_hint_for_named_union(self.legal_type_names, self.ir_signature);
         let inner = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
             phase_cue: &cue,
             supplement_after_cue: self.supplement_after_cue,
             stripped_ir_body: &stripped,
             legal_type_names: self.legal_type_names,
+            selection_hint: &selection_hint,
             constraint_suffix: self.constraint_suffix,
         });
         wrap_client_baml_prompt_body(client_name, &inner)
@@ -111,14 +121,17 @@ fn phase_executor_prompt_body(
     phase: PhaseHop<'_>,
     legal_type_names: &[String],
     supplement_after_cue: Option<&str>,
+    ir_signature: &IRSignature,
 ) -> String {
     let stripped = AuthorBodySanitizer::for_phase_ir(prompt_template);
     let cue = phase_cue_line(phase);
+    let selection_hint = render_selection_hint_for_named_union(legal_type_names, ir_signature);
     let inner = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
         phase_cue: &cue,
         supplement_after_cue,
         stripped_ir_body: &stripped,
         legal_type_names,
+        selection_hint: &selection_hint,
         constraint_suffix: "",
     });
     wrap_client_baml_prompt_body(client_name, &inner)
@@ -129,13 +142,16 @@ pub(crate) fn phase_executor_prompt_body_unified_primary(
     client_name: &str,
     prompt_template: &str,
     legal_type_names: &[String],
+    ir_signature: &IRSignature,
 ) -> String {
     let stripped = AuthorBodySanitizer::for_phase_ir(prompt_template);
     let cue = phase_cue_line(PhaseHop::UnifiedPrimary);
+    let selection_hint = render_selection_hint_for_named_union(legal_type_names, ir_signature);
     let inner = PromptCompositor::unified_primary_phase(UnifiedPrimaryPhaseSpec {
         phase_cue: &cue,
         stripped_ir_body: &stripped,
         legal_type_names,
+        selection_hint: &selection_hint,
         extra_suffix: PHASE_STEP_EXECUTOR_SUFFIX_UNIFIED_PRIMARY,
     });
     wrap_client_baml_prompt_body(client_name, &inner)
@@ -143,7 +159,88 @@ pub(crate) fn phase_executor_prompt_body_unified_primary(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use baml_runtime::BamlRuntime;
+    use tempfile::TempDir;
+
     use super::*;
+
+    fn test_ir_signature() -> IRSignature {
+        let dir = TempDir::new().expect("tempdir");
+        let baml_src = dir.path().join("baml_src");
+        fs::create_dir_all(&baml_src).expect("mkdir baml_src");
+        let source = r##"
+class ArchiveSearchReadStep {
+  op "SearchRead"
+  input string
+}
+
+class ArchivePageReadStep {
+  op "PageRead"
+  input string
+}
+
+class XOpenStep {
+  op "Open"
+  tool_name string
+}
+
+class FooSendStep {
+  op "Send"
+  input string
+}
+
+class FooSearchReadStep {
+  op "SearchRead"
+  input string
+}
+
+class FooPageReadStep {
+  op "PageRead"
+  input string
+}
+
+class FooFinishStep {
+  op "Finish"
+}
+
+class FooAbortStep {
+  op "Abort"
+}
+
+class WorkflowPlan {
+  steps string[]
+}
+
+class CoordinatorStructuredAskUser {
+  action "AskUser"
+  question string
+}
+
+function TestShape() -> WorkflowPlan {
+  client DefaultClient
+  prompt #"test"#
+}
+
+client DefaultClient {
+  provider openai
+  options {
+    model "gpt-4o-mini"
+    api_key env.OPENAI_API_KEY
+  }
+}
+"##;
+        let path = baml_src.join("shape_test.baml");
+        fs::write(&path, source).expect("write baml");
+        let runtime = BamlRuntime::from_directory(
+            &baml_src,
+            std::collections::HashMap::<String, String>::new(),
+            internal_baml_core::feature_flags::FeatureFlags::default(),
+        )
+        .expect("runtime");
+        IRSignature::new_from_ir(runtime.ir.as_ref()).expect("signature")
+    }
 
     #[test]
     fn wrap_client_baml_prompt_body_frames_prompt_literal() {
@@ -169,12 +266,14 @@ mod tests {
     #[test]
     fn phase_executor_prompt_body_includes_archive_preamble_before_template() {
         let legal = vec!["ArchiveSearchReadStep".to_string(), "XOpenStep".to_string()];
+        let ir = test_ir_signature();
         let out = phase_executor_prompt_body(
             "TestClient",
             "Only the IR template.\n{{ ctx.output_format }}",
             PhaseHop::Entry,
             &legal,
             None,
+            &ir,
         );
         assert!(
             out.contains("Only the IR template."),
@@ -214,8 +313,8 @@ mod tests {
             "expected footer bullet: {out}"
         );
         assert!(
-            out.contains("Emit exactly one JSON object matching one of the named types above"),
-            "expected emit instruction at bottom: {out}"
+            out.contains("Return exactly one JSON object."),
+            "expected generated selection hint at bottom: {out}"
         );
         assert!(
             out.contains("Archive: a `tool: @N`"),
@@ -288,13 +387,15 @@ Tail"#;
     #[test]
     fn phase_executor_injects_session_history_once_even_if_author_had_block() {
         let legal = vec!["XOpenStep".to_string()];
+        let ir = test_ir_signature();
         let template = r#"Do work.
 {% if ctx.tags['conversation_transcript'] %}
 Old label:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 {{ ctx.output_format }}"#;
-        let out = phase_executor_prompt_body("TestClient", template, PhaseHop::Entry, &legal, None);
+        let out =
+            phase_executor_prompt_body("TestClient", template, PhaseHop::Entry, &legal, None, &ir);
         assert_eq!(
             out.matches("Session history:").count(),
             1,
@@ -321,6 +422,7 @@ Old label:
             "FooFinishStep".to_string(),
             "FooAbortStep".to_string(),
         ];
+        let ir = test_ir_signature();
         const ACTIVE_SUFFIX: &str = "\n\nPHASE CONSTRAINT (active — test stub)";
         let supplement = "A foo/tool session is open. Emit Send.\n\n";
         let spec = ToolSessionPhasePromptSpec {
@@ -330,6 +432,7 @@ Old label:
             legal_type_names: &legal,
             constraint_suffix: ACTIVE_SUFFIX,
             supplement_after_cue: Some(supplement),
+            ir_signature: &ir,
         };
         let out = spec.emit_baml_prompt_body("TestClient", "Body.\n{{ ctx.output_format }}");
         assert!(out.contains("Phase: ACTIVE"), "cue: {out}");
@@ -358,10 +461,12 @@ Old label:
             "WorkflowPlan".to_string(),
             "CoordinatorStructuredAskUser".to_string(),
         ];
+        let ir = test_ir_signature();
         let out = phase_executor_prompt_body_unified_primary(
             "TestClient",
             "Planner body.\n{{ ctx.output_format }}",
             &legal,
+            &ir,
         );
         assert!(out.contains("Phase: STRUCTURED"), "cue: {out}");
         assert!(out.contains("Planner body."), "template: {out}");

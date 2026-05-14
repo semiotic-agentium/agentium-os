@@ -17,7 +17,7 @@ mod lexer;
 pub(crate) mod policy;
 mod transform;
 
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 
 use function_scanner::parse_function_declaration;
 use lexer::scan_trivia;
@@ -28,6 +28,7 @@ use crate::builder::{
     baml_gen::GENERATED_BAML_PRELUDE_FILE,
     compiler::atomic_io::atomic_write,
     error::{BamlBuilderError, Result},
+    selection_hint::default_selection_hint,
 };
 
 /// Aggregate counters returned by [`rewrite_authored_prompts_in_dir`]; useful for build telemetry
@@ -52,6 +53,7 @@ impl RewriteSummary {
 pub fn rewrite_authored_prompts_in_dir<P: PromptRewritePolicy>(
     baml_src_build: &Path,
     policy: &P,
+    selection_hints: &HashMap<String, String>,
 ) -> Result<RewriteSummary> {
     let mut summary = RewriteSummary::default();
     if !baml_src_build.is_dir() {
@@ -73,7 +75,7 @@ pub fn rewrite_authored_prompts_in_dir<P: PromptRewritePolicy>(
             continue;
         }
         let original = fs::read_to_string(&path).map_err(BamlBuilderError::Io)?;
-        let (rewritten, file_summary) = rewrite_baml_source(&original, policy);
+        let (rewritten, file_summary) = rewrite_baml_source(&original, policy, selection_hints);
         summary.merge(file_summary);
         if rewritten != original {
             atomic_write(&path, rewritten.as_bytes())?;
@@ -93,6 +95,7 @@ pub fn rewrite_authored_prompts_in_dir<P: PromptRewritePolicy>(
 pub(crate) fn rewrite_baml_source<P: PromptRewritePolicy>(
     source: &str,
     policy: &P,
+    selection_hints: &HashMap<String, String>,
 ) -> (String, RewriteSummary) {
     let mut summary = RewriteSummary::default();
     let mut out = String::with_capacity(source.len() + 256);
@@ -110,7 +113,11 @@ pub(crate) fn rewrite_baml_source<P: PromptRewritePolicy>(
             out.push_str(&source[i..decl.body_open_brace_inclusive]);
             let body = &source[decl.body_open_brace_inclusive..decl.body_close_brace_exclusive];
             let processed = if policy.should_rewrite_prompt(&decl.fn_name) {
-                match transform_function_body(body) {
+                let selection_hint = selection_hints
+                    .get(&decl.fn_name)
+                    .map(String::as_str)
+                    .unwrap_or(default_selection_hint());
+                match transform_function_body(body, selection_hint) {
                     BodyTransformOutcome::Rewritten(s) => {
                         summary.rewritten += 1;
                         s
@@ -137,6 +144,8 @@ pub(crate) fn rewrite_baml_source<P: PromptRewritePolicy>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use policy::AllowAllPolicy;
 
     use super::*;
@@ -152,11 +161,12 @@ mod tests {
   "#
 }
 "##;
-        let (out, summary) = rewrite_baml_source(src, &AllowAllPolicy);
+        let (out, summary) = rewrite_baml_source(src, &AllowAllPolicy, &HashMap::new());
         assert_eq!(summary.rewritten, 1);
         assert!(out.contains("Hello {{ name }}"));
         assert!(out.contains("ctx.tags['tool_schema_prelude']"));
         assert!(out.contains("Session history:"));
+        assert!(out.contains("Return exactly one output matching the schema below."));
         assert_eq!(out.matches("{{ ctx.output_format }}").count(), 1);
     }
 
@@ -176,7 +186,7 @@ function B(y: string) -> string {
   "#
 }
 "##;
-        let (out, summary) = rewrite_baml_source(src, &AllowAllPolicy);
+        let (out, summary) = rewrite_baml_source(src, &AllowAllPolicy, &HashMap::new());
         assert_eq!(summary.rewritten, 2);
         assert!(out.contains("A body"));
         assert!(out.contains("B body"));
@@ -200,7 +210,7 @@ function F(x: string) -> string {
   "#
 }
 "##;
-        let (out, summary) = rewrite_baml_source(src, &AllowAllPolicy);
+        let (out, summary) = rewrite_baml_source(src, &AllowAllPolicy, &HashMap::new());
         assert_eq!(summary.rewritten, 1);
         assert!(out.contains("class Foo"));
         assert!(out.contains("client X"));
@@ -215,8 +225,8 @@ function F(x: string) -> string {
   "#
 }
 "##;
-        let (once, _) = rewrite_baml_source(src, &AllowAllPolicy);
-        let (twice, _) = rewrite_baml_source(&once, &AllowAllPolicy);
+        let (once, _) = rewrite_baml_source(src, &AllowAllPolicy, &HashMap::new());
+        let (twice, _) = rewrite_baml_source(&once, &AllowAllPolicy, &HashMap::new());
         assert_eq!(once, twice);
     }
 
@@ -226,7 +236,7 @@ function F(x: string) -> string {
   client C
 }
 "##;
-        let (out, summary) = rewrite_baml_source(src, &AllowAllPolicy);
+        let (out, summary) = rewrite_baml_source(src, &AllowAllPolicy, &HashMap::new());
         assert_eq!(summary.no_prompt, 1);
         assert_eq!(out, src);
     }
@@ -237,7 +247,7 @@ function F(x: string) -> string {
             "function {name}(x: string) -> string {{\n  client C\n  prompt #\"\n    Catalog body.\n  \"#\n}}\n",
             name = CATALOG_FUNCTION_NAME,
         );
-        let (out, summary) = rewrite_baml_source(&src, &AllowAllPolicy);
+        let (out, summary) = rewrite_baml_source(&src, &AllowAllPolicy, &HashMap::new());
         assert_eq!(summary.skipped, 1);
         assert_eq!(summary.rewritten, 0);
         assert_eq!(out, src);

@@ -707,7 +707,7 @@ impl AgentRunner {
                 .handle_a2a_stream(A2aWireRequest::from(prepared_request))
                 .await
             {
-                Ok(stream) => baml_rt_core::collect_a2a_stream(stream)
+                Ok(stream) => baml_rt_core::collect_a2a_stream_one_shot(stream)
                     .await
                     .into_iter()
                     .map(baml_rt_core::A2aStreamChunk::into_inner)

@@ -5,7 +5,7 @@
  * TypeScript sequences execution-session steps and FSM loops; conversation history carries context.
  *
  * Flow:
- *   1. ClassifyCoordinatorTurn — Ready (delegatable task) | NeedTaskClarification | MetaOnly
+ *   1. ClassifyCoordinatorTurn — tagged union: ready | clarify | meta
  *      Loop with awaitInput until Ready (with delegatable inferred_intent), MetaOnly, or clarified.
  *   2. GetDiscoverAgentsPlan — **only if** step 1 chose a delegatable task (skip for greetings/meta).
  *   3. MakeStructuredPlan — LLM plans from history; returns plan_steps or []
@@ -28,35 +28,38 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
 }
 
-/** BAML union CoordinatorReadyIntent — concrete delegatable task for discovery. */
-function isCoordinatorReadyIntent(v: unknown): v is { inferred_intent: string } {
-  return (
-    isObject(v) &&
-    typeof v.inferred_intent === "string" &&
-    v.inferred_intent.trim().length > 0
-  );
-}
+type CoordinatorTurn =
+  | { kind: "ready"; inferred_intent: string }
+  | { kind: "clarify"; question: string }
+  | { kind: "meta"; reason: string };
 
-/** BAML union CoordinatorMetaOnly — greetings / capabilities / chat with no work request. */
-function isCoordinatorMetaOnly(v: unknown): v is { reason: string } {
-  return (
-    isObject(v) &&
-    typeof v.reason === "string" &&
-    typeof v.inferred_intent !== "string" &&
-    typeof v.question !== "string"
-  );
+function parseCoordinatorTurn(v: unknown): CoordinatorTurn | null {
+  if (!isObject(v) || typeof v.kind !== "string") return null;
+  switch (v.kind) {
+    case "ready":
+      return typeof v.inferred_intent === "string" && v.inferred_intent.trim().length > 0
+        ? { kind: "ready", inferred_intent: v.inferred_intent }
+        : null;
+    case "clarify":
+      return typeof v.question === "string" && v.question.trim().length > 0
+        ? { kind: "clarify", question: v.question }
+        : null;
+    case "meta":
+      return typeof v.reason === "string"
+        ? { kind: "meta", reason: v.reason }
+        : null;
+    default:
+      return null;
+  }
 }
 
 /**
- * Model-only Ready labels still need a gate: do not treat greetings or generic discovery prose as work.
+ * Minimal defensive rail: reject empty or obviously greeting-only Ready strings.
  */
-function looksDelegatableIntent(raw: string): boolean {
+function isUsableReadyIntent(raw: string): boolean {
   const s = raw.trim();
-  if (s.length < 12) return false;
-  if (/^(hi|hello|hey|thanks|thank you|good morning|good afternoon)\b/i.test(s)) return false;
-  if (/^(identify|list|find|discover)\s+(available\s+)?agents?\b/i.test(s)) return false;
-  if (/list and orient\b/i.test(s)) return false;
-  if (/\b(capabilities only|what can you do|who are you)\b/i.test(s)) return false;
+  if (s.length < 8) return false;
+  if (/^(hi|hello|hey|thanks|thank you)\b/i.test(s)) return false;
   return true;
 }
 
@@ -68,28 +71,29 @@ __chat_register({
     let intentText = "";
 
     while (true) {
-      const turn = await ClassifyCoordinatorTurn({ user_message: text });
-      if (isObject(turn) && typeof turn.question === "string" && turn.question.trim().length > 0) {
+      const rawTurn = await ClassifyCoordinatorTurn({ user_message: text });
+      const turn = parseCoordinatorTurn(rawTurn);
+      if (turn?.kind === "clarify") {
         const reply = await ctx.emit.awaitInput(turn.question.trim());
         const next = messageText(reply).trim();
         if (next) text = next;
         continue;
       }
-      if (isCoordinatorReadyIntent(turn)) {
+      if (turn?.kind === "ready") {
         const cand = turn.inferred_intent.trim();
-        if (looksDelegatableIntent(cand)) {
+        if (isUsableReadyIntent(cand)) {
           intentText = cand;
           runDiscovery = true;
           break;
         }
         const reply = await ctx.emit.awaitInput(
-          "That still doesn't sound like a concrete outcome I can route to a specialist. What system, artifact, or deliverable should we target?",
+          "What concrete outcome should I route to a specialist?",
         );
         const next = messageText(reply).trim();
         if (next) text = next;
         continue;
       }
-      if (isCoordinatorMetaOnly(turn)) {
+      if (turn?.kind === "meta") {
         runDiscovery = false;
         break;
       }

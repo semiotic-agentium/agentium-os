@@ -17,7 +17,8 @@ offset: number | null;
 limit: number | null;
  }
 
-export interface ClickUpIntent { intent: string;
+export interface ClickUpIntent { kind: "intent";
+intent: string;
 operation_kind: "read" | "write" | "delete";
  }
 
@@ -50,10 +51,12 @@ export interface ListTasksInput { list_id: string;
 
 export interface ListTeamsInput { }
 
-export interface NeedClarification { question: string;
+export interface NeedClarification { kind: "clarify";
+question: string;
  }
 
-export interface NotRelevant { reason: string;
+export interface NotRelevant { kind: "not_relevant";
+reason: string;
  }
 
 export interface SessionContext { contract_version: string;

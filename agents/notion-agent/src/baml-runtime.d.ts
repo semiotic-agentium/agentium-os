@@ -19,10 +19,12 @@ limit: number | null;
 
 export type BlockRenderMode = "Raw" | "Enriched";
 
-export interface NeedClarification { question: string;
+export interface NeedClarification { kind: "clarify";
+question: string;
  }
 
-export interface NotRelevant { reason: string;
+export interface NotRelevant { kind: "not_relevant";
+reason: string;
  }
 
 export interface NotionGetPageBlocksInput { block_id: string;
@@ -35,7 +37,8 @@ max_depth: number | null;
 export interface NotionGetPageInput { page_id: string;
  }
 
-export interface NotionIntent { intent: string;
+export interface NotionIntent { kind: "intent";
+intent: string;
  }
 
 export interface NotionPlan { goal: string;

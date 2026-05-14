@@ -24,13 +24,13 @@ pub(super) enum BodyTransformOutcome {
 
 /// Locate the function's `prompt #"..."#` literal and replace its inner content with the
 /// canonical authored-non-FSM skeleton via [`PromptCompositor::authored_non_fsm`].
-pub(super) fn transform_function_body(body: &str) -> BodyTransformOutcome {
+pub(super) fn transform_function_body(body: &str, selection_hint: &str) -> BodyTransformOutcome {
     let bytes = body.as_bytes();
     let Some(span) = locate_prompt_literal(bytes) else {
         return BodyTransformOutcome::NoPromptLiteral;
     };
     let inner = &body[span.inner_start..span.inner_end];
-    let rewritten_inner = PromptCompositor::authored_non_fsm(inner);
+    let rewritten_inner = PromptCompositor::authored_non_fsm(inner, selection_hint);
 
     let mut out = String::with_capacity(body.len() + rewritten_inner.len());
     out.push_str(&body[..span.inner_start]);
@@ -90,11 +90,15 @@ mod tests {
     #[test]
     fn rewrites_prompt_inner_only() {
         let body = "{ client C\n  prompt #\"\n    Hello.\n  \"#\n}";
-        match transform_function_body(body) {
+        match transform_function_body(
+            body,
+            "Return exactly one output matching the schema below.\n",
+        ) {
             BodyTransformOutcome::Rewritten(out) => {
                 assert!(out.contains("Hello."));
                 assert!(out.contains("ctx.tags['tool_schema_prelude']"));
                 assert!(out.contains("Session history:"));
+                assert!(out.contains("Return exactly one output matching the schema below."));
                 assert_eq!(out.matches("{{ ctx.output_format }}").count(), 1);
                 // Header bytes preserved.
                 assert!(out.starts_with("{ client C\n  prompt #\""));
@@ -108,7 +112,10 @@ mod tests {
     fn returns_no_prompt_literal_for_bodyless_function() {
         let body = "{ client C\n}";
         assert!(matches!(
-            transform_function_body(body),
+            transform_function_body(
+                body,
+                "Return exactly one output matching the schema below.\n"
+            ),
             BodyTransformOutcome::NoPromptLiteral
         ));
     }
@@ -117,7 +124,10 @@ mod tests {
     fn ignores_word_promptly() {
         let body = "{ client C\n  // promptly do thing\n}";
         assert!(matches!(
-            transform_function_body(body),
+            transform_function_body(
+                body,
+                "Return exactly one output matching the schema below.\n"
+            ),
             BodyTransformOutcome::NoPromptLiteral
         ));
     }

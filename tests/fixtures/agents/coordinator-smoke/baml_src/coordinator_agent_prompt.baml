@@ -72,6 +72,9 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+Return exactly one `CoordinatorAnswer` JSON object.
+Do not add text before or after the JSON object.
+
 {{ ctx.output_format }}
 "#
 }

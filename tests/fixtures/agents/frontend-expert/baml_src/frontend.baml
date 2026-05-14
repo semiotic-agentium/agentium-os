@@ -98,6 +98,9 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+Return exactly one `FrontendProposal` JSON object.
+Do not add text before or after the JSON object.
+
 {{ ctx.output_format }}
 "#
 }
@@ -131,6 +134,8 @@ Tool and session-step types (authoritative field shapes):
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+
+Return exactly one output matching the schema below. Do not add extra text before or after it.
 
 {{ ctx.output_format }}
 "#

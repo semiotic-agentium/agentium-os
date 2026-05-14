@@ -48,10 +48,12 @@ include_num_members: boolean | null;
 auth: SlackAuthPreference | null;
  }
 
-export interface NeedClarification { question: string;
+export interface NeedClarification { kind: "clarify";
+question: string;
  }
 
-export interface NotRelevant { reason: string;
+export interface NotRelevant { kind: "not_relevant";
+reason: string;
  }
 
 export interface ReadOnlyResponse { message: string;
@@ -77,7 +79,8 @@ export type SlackConversationKind = "PublicChannel" | "PrivateChannel" | "Im" | 
 
 export type SlackHistoryOrder = "LatestFirst" | "OldestFirst";
 
-export interface SlackIntent { intent: string;
+export interface SlackIntent { kind: "intent";
+intent: string;
  }
 
 export interface SlackPlanStep { agent_package: string;

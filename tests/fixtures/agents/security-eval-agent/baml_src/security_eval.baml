@@ -39,6 +39,9 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+Return exactly one `ReportingPlan` JSON object.
+Do not add text before or after the JSON object.
+
 {{ ctx.output_format }}
 "#
 }
@@ -102,6 +105,13 @@ Tool and session-step types (authoritative field shapes):
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+
+Return exactly one `StructuredReply` JSON object.
+If `parts[]` is present, choose each item with discriminator `type`:
+- `type: "text"` -> TextPart
+- `type: "data"` -> DataPart
+Set `type` exactly for each `parts[]` item.
+Do not add text before or after the JSON object.
 
 {{ ctx.output_format }}
 "#

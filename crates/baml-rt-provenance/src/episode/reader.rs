@@ -758,13 +758,7 @@ fn conv_item_to_entries(
             )
         }
         ConversationItemContent::SessionStep(ss) => match &ss.op {
-            SessionStepOp::Open => (
-                StepType::ToolCall,
-                EpisodeContent::ToolInvocation {
-                    tool_name: ss.tool_name.clone(),
-                    description: format!("{} session opened", ss.tool_name),
-                },
-            ),
+            SessionStepOp::Open => return Ok(Vec::new()),
             SessionStepOp::SendDone { .. } => return Ok(Vec::new()),
             SessionStepOp::SearchRead {
                 archive_ref,

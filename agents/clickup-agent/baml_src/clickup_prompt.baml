@@ -6,14 +6,17 @@
 /// Classifies whether the message is a valid ClickUp request, asks for clarification
 /// if ambiguous, rejects non-ClickUp requests, or distills a clean intent statement.
 class NeedClarification {
+  kind "clarify"
   question string @description("A clarifying question when the request is too vague to act on.")
 }
 
 class NotRelevant {
+  kind "not_relevant"
   reason string @description("Why this message isn't a ClickUp request.")
 }
 
 class ClickUpIntent {
+  kind "intent"
   intent string @description("Clean, distilled goal statement — what the user wants to do in ClickUp.")
   operation_kind "read" | "write" | "delete" @description("Broad category: read (list/get), write (create/update), delete.")
 }
@@ -71,6 +74,14 @@ Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
 
+Return exactly one JSON object.
+Select the object shape with discriminator `kind`:
+- `kind: "clarify"` -> NeedClarification
+- `kind: "not_relevant"` -> NotRelevant
+- `kind: "intent"` -> ClickUpIntent
+Set `kind` exactly. Do not mix fields from different object shapes.
+Do not add text before or after the JSON object.
+
 {{ ctx.output_format }}
 "#
 }
@@ -117,6 +128,9 @@ Tool and session-step types (authoritative field shapes):
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+
+Return exactly one `StandardStructuredPlan` JSON object.
+Do not add text before or after the JSON object.
 
 {{ ctx.output_format }}
 "#

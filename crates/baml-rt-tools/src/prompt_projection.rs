@@ -12,21 +12,23 @@
 //!   top-level and nested `citations: []` are stripped before render (no vacuous lines in history)
 //! - `ToolError`   → archive_read render of error value (same `citations` strip as tool results)
 //! - `SessionStep` → same rendering as above; items use role **`tool`** in `conversation_history`
-//!   (not `assistant`). `Open` is a **summary** row; **`SendDone` is omitted** from projected history
+//!   (not `assistant`). `Open` and **`SendDone` are omitted** from projected history
 //!   (FSM bookkeeping only — graph rows stay). Archive **content** appears only for explicit
 //!   `SearchRead` / `PageRead` via [`ArchiveReader`] and `grep_paginate` — never raw JSON dumps.
 //! - `StatusOnly` items are discarded at the conversion boundary before reaching here.
 
 use std::{borrow::Cow, fmt};
 
+use baml_rt_core::is_history_infrastructure_notice;
 use serde_json::{Map, Value, json};
 
 use crate::{
     archive_read::{
-        DEFAULT_TOOL_RESULT_INLINE_LINES, PageLimit, RenderedContent,
-        format_session_read_body_from_rendered, session_read_command_line,
+        DEFAULT_TOOL_RESULT_INLINE_LINES, PageLimit, RenderedContent, ShortRef,
+        format_session_read_body_from_rendered, format_session_read_from_vtable, render_to_lines,
+        session_read_command_line,
     },
-    archive_refs::{HistoryEntry, RefTable},
+    archive_refs::{ArchiveEntry, HistoryEntry, RefTable},
     llm_request_display::flatten_message_content_value,
     tools::ToolRegistry,
 };
@@ -350,6 +352,17 @@ fn tool_value_to_rendered_entry(
     is_error: bool,
     page_limit: PageLimit,
 ) -> RenderedEntry {
+    if matches!(
+        value,
+        Value::Object(map)
+            if map.len() == 1
+                && matches!(
+                    map.get("status").and_then(Value::as_str),
+                    Some("sent" | "finished" | "aborted" | "opened")
+                )
+    ) {
+        return RenderedEntry::Filtered;
+    }
     let sanitized = strip_vacuous_citation_fields(value);
     let rendered = crate::archive_read::render_to_lines(&sanitized);
     let page = crate::archive_read::grep_paginate(
@@ -380,6 +393,32 @@ fn tool_value_to_rendered_entry(
     }
 }
 
+fn seed_send_done_replay_archive(
+    ref_table: &RefTable,
+    item: &PromptProjectionItem,
+    payload: &SessionStepPayload,
+    archive_ref: &str,
+) {
+    let Some(replay_payload) = payload.send_done_replay_payload.as_ref() else {
+        return;
+    };
+    let Some(short_ref) = ShortRef::parse(archive_ref) else {
+        return;
+    };
+    let rendered = render_to_lines(replay_payload);
+    if rendered.is_empty() {
+        return;
+    }
+    let entry = ArchiveEntry::new(
+        rendered,
+        payload.tool_name.clone(),
+        Some(format!("{} replayed result", payload.tool_name)),
+        item.activity_anchor.clone(),
+        "tool_result".to_string(),
+    );
+    ref_table.insert_virtual_archive_ref(short_ref, entry);
+}
+
 fn render_projection_content(
     item: &PromptProjectionItem,
     registry: &ToolRegistry,
@@ -389,7 +428,7 @@ fn render_projection_content(
 ) -> RenderedEntry {
     match &item.content {
         PromptProjectionContent::Message { text, citations } => {
-            if text.trim().is_empty() {
+            if text.trim().is_empty() || is_history_infrastructure_notice(text) {
                 return RenderedEntry::Filtered;
             }
             let h = ref_table.insert_history(
@@ -434,94 +473,109 @@ fn render_projection_content(
             tool_value_to_rendered_entry(error, tool_name, true, opts.tool_error)
         }
 
-        PromptProjectionContent::SessionStep(s) => {
-            let tool_name = s.tool_name.as_str();
-            match &s.op {
-                SessionStepProjection::Open => RenderedEntry::One {
-                    content: registry
-                        .describe_open_for(tool_name)
-                        .unwrap_or_else(|| format!("{tool_name} session opened")),
-                    message_citations: None,
-                },
-                SessionStepProjection::SendDone {
-                    archive_ref: _,
-                    header: _,
-                } => RenderedEntry::Filtered,
-                SessionStepProjection::SearchRead {
-                    archive_ref,
-                    grep,
-                    offset,
-                    limit,
-                } => {
-                    let cmd = session_read_command_line(archive_ref, Some(grep.as_str()));
-                    if let Some(ref lines) = s.read_replay_lines
-                        && !lines.is_empty()
-                    {
-                        let rendered = RenderedContent::from_lines(
-                            lines.iter().filter(|l| !l.is_empty()).cloned(),
-                        );
-                        let out = format_session_read_body_from_rendered(
-                            &rendered,
-                            archive_ref,
-                            Some(grep.as_str()),
-                            *offset,
-                            PageLimit::new(*limit),
-                        );
-                        return RenderedEntry::One {
-                            content: out,
-                            message_citations: None,
-                        };
-                    }
-                    match archive_reader
-                        .and_then(|r| r(archive_ref, Some(grep.as_str()), *offset, *limit))
-                    {
-                        Some(output) => RenderedEntry::One {
-                            content: output,
-                            message_citations: None,
-                        },
-                        None => RenderedEntry::One {
-                            content: cmd,
-                            message_citations: None,
-                        },
-                    }
+        PromptProjectionContent::SessionStep(s) => match &s.op {
+            SessionStepProjection::Open => RenderedEntry::Filtered,
+            SessionStepProjection::SendDone {
+                archive_ref,
+                header: _,
+            } => {
+                seed_send_done_replay_archive(ref_table, item, s, archive_ref);
+                RenderedEntry::Filtered
+            }
+            SessionStepProjection::SearchRead {
+                archive_ref,
+                grep,
+                offset,
+                limit,
+            } => {
+                let cmd = session_read_command_line(archive_ref, Some(grep.as_str()));
+                if let Some(ref lines) = s.read_replay_lines
+                    && !lines.is_empty()
+                {
+                    let rendered = RenderedContent::from_lines(
+                        lines.iter().filter(|l| !l.is_empty()).cloned(),
+                    );
+                    let out = format_session_read_body_from_rendered(
+                        &rendered,
+                        archive_ref,
+                        Some(grep.as_str()),
+                        *offset,
+                        PageLimit::new(*limit),
+                    );
+                    return RenderedEntry::One {
+                        content: out,
+                        message_citations: None,
+                    };
                 }
-                SessionStepProjection::PageRead {
+                if let Some(output) = format_session_read_from_vtable(
+                    ref_table,
                     archive_ref,
-                    offset,
-                    limit,
-                } => {
-                    let cmd = session_read_command_line(archive_ref, None);
-                    if let Some(ref lines) = s.read_replay_lines
-                        && !lines.is_empty()
-                    {
-                        let rendered = RenderedContent::from_lines(
-                            lines.iter().filter(|l| !l.is_empty()).cloned(),
-                        );
-                        let out = format_session_read_body_from_rendered(
-                            &rendered,
-                            archive_ref,
-                            None,
-                            *offset,
-                            PageLimit::new(*limit),
-                        );
-                        return RenderedEntry::One {
-                            content: out,
-                            message_citations: None,
-                        };
-                    }
-                    match archive_reader.and_then(|r| r(archive_ref, None, *offset, *limit)) {
-                        Some(output) => RenderedEntry::One {
-                            content: output,
-                            message_citations: None,
-                        },
-                        None => RenderedEntry::One {
-                            content: cmd,
-                            message_citations: None,
-                        },
-                    }
+                    Some(grep.as_str()),
+                    *offset,
+                    *limit,
+                ) {
+                    return RenderedEntry::One {
+                        content: output,
+                        message_citations: None,
+                    };
+                }
+                match archive_reader
+                    .and_then(|r| r(archive_ref, Some(grep.as_str()), *offset, *limit))
+                {
+                    Some(output) => RenderedEntry::One {
+                        content: output,
+                        message_citations: None,
+                    },
+                    None => RenderedEntry::One {
+                        content: cmd,
+                        message_citations: None,
+                    },
                 }
             }
-        }
+            SessionStepProjection::PageRead {
+                archive_ref,
+                offset,
+                limit,
+            } => {
+                let cmd = session_read_command_line(archive_ref, None);
+                if let Some(ref lines) = s.read_replay_lines
+                    && !lines.is_empty()
+                {
+                    let rendered = RenderedContent::from_lines(
+                        lines.iter().filter(|l| !l.is_empty()).cloned(),
+                    );
+                    let out = format_session_read_body_from_rendered(
+                        &rendered,
+                        archive_ref,
+                        None,
+                        *offset,
+                        PageLimit::new(*limit),
+                    );
+                    return RenderedEntry::One {
+                        content: out,
+                        message_citations: None,
+                    };
+                }
+                if let Some(output) =
+                    format_session_read_from_vtable(ref_table, archive_ref, None, *offset, *limit)
+                {
+                    return RenderedEntry::One {
+                        content: output,
+                        message_citations: None,
+                    };
+                }
+                match archive_reader.and_then(|r| r(archive_ref, None, *offset, *limit)) {
+                    Some(output) => RenderedEntry::One {
+                        content: output,
+                        message_citations: None,
+                    },
+                    None => RenderedEntry::One {
+                        content: cmd,
+                        message_citations: None,
+                    },
+                }
+            }
+        },
     }
 }
 
@@ -537,6 +591,19 @@ mod tests {
             tool_name: tool_name.to_string(),
             op,
             send_done_replay_payload: None,
+            read_replay_lines: None,
+        })
+    }
+
+    fn session_step_with_replay(
+        tool_name: &str,
+        op: SessionStepProjection,
+        replay_payload: Value,
+    ) -> PromptProjectionContent {
+        PromptProjectionContent::SessionStep(SessionStepPayload {
+            tool_name: tool_name.to_string(),
+            op,
+            send_done_replay_payload: Some(replay_payload),
             read_replay_lines: None,
         })
     }
@@ -567,6 +634,99 @@ mod tests {
             arr.is_empty(),
             "SendDone must not appear in conversation_history JSON: {history}"
         );
+    }
+
+    #[test]
+    fn send_done_replay_payload_seeds_page_read_without_archive_reader() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![
+            PromptProjectionItem {
+                timestamp_ms: 1,
+                activity_anchor: "evt-send-done".to_string(),
+                role: "tool".to_string(),
+                content: session_step_with_replay(
+                    "system/internal_a2a",
+                    SessionStepProjection::SendDone {
+                        archive_ref: "@8".to_string(),
+                        header: "@8 · \"delegated result\" · 2L · 64B".to_string(),
+                    },
+                    json!([
+                        {"agent": "cleese", "answer": "argument accepted"},
+                        {"agent": "chapman", "answer": "counterpoint found"}
+                    ]),
+                ),
+            },
+            PromptProjectionItem {
+                timestamp_ms: 2,
+                activity_anchor: "evt-page-read".to_string(),
+                role: "tool".to_string(),
+                content: session_step(
+                    "system/internal_a2a",
+                    SessionStepProjection::PageRead {
+                        archive_ref: "@8".to_string(),
+                        offset: 0,
+                        limit: 20,
+                    },
+                ),
+            },
+        ];
+
+        let history = project_prompt_context(items, &registry, &ref_table, None);
+        let rows = history.as_array().expect("array");
+
+        assert_eq!(rows.len(), 1, "SendDone stays filtered after seeding");
+        let content = rows[0]["content"].as_str().expect("content");
+        assert!(content.contains("cat -n @8"), "{content}");
+        assert!(content.contains("argument accepted"), "{content}");
+        assert!(content.contains("counterpoint found"), "{content}");
+    }
+
+    #[test]
+    fn send_done_replay_payload_seeds_search_read_without_archive_reader() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![
+            PromptProjectionItem {
+                timestamp_ms: 1,
+                activity_anchor: "evt-send-done".to_string(),
+                role: "tool".to_string(),
+                content: session_step_with_replay(
+                    "system/internal_a2a",
+                    SessionStepProjection::SendDone {
+                        archive_ref: "@8".to_string(),
+                        header: "@8 · \"delegated result\" · 2L · 64B".to_string(),
+                    },
+                    json!([
+                        {"agent": "cleese", "answer": "argument accepted"},
+                        {"agent": "chapman", "answer": "counterpoint found"}
+                    ]),
+                ),
+            },
+            PromptProjectionItem {
+                timestamp_ms: 2,
+                activity_anchor: "evt-search-read".to_string(),
+                role: "tool".to_string(),
+                content: session_step(
+                    "system/internal_a2a",
+                    SessionStepProjection::SearchRead {
+                        archive_ref: "@8".to_string(),
+                        grep: "counterpoint".to_string(),
+                        offset: 0,
+                        limit: 20,
+                    },
+                ),
+            },
+        ];
+
+        let history = project_prompt_context(items, &registry, &ref_table, None);
+        let rows = history.as_array().expect("array");
+
+        assert_eq!(rows.len(), 1, "SendDone stays filtered after seeding");
+        let content = rows[0]["content"].as_str().expect("content");
+        assert!(content.contains("grep -n"), "{content}");
+        assert!(content.contains("counterpoint found"), "{content}");
+        assert!(!content.contains("argument accepted"), "{content}");
     }
 
     #[test]
@@ -694,6 +854,65 @@ mod tests {
             !content.to_lowercase().contains("citations"),
             "vacuous citations key should not appear: {content}"
         );
+    }
+
+    #[test]
+    fn session_open_step_is_filtered_from_history() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![PromptProjectionItem {
+            timestamp_ms: 0,
+            activity_anchor: "evt-open".to_string(),
+            role: "tool".to_string(),
+            content: session_step("system/discover_agents", SessionStepProjection::Open),
+        }];
+        let history = project_prompt_context(items, &registry, &ref_table, None);
+        assert_eq!(history, json!([]));
+    }
+
+    #[test]
+    fn history_filters_numbered_model_and_tool_notices() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![
+            PromptProjectionItem {
+                timestamp_ms: 0,
+                activity_anchor: "evt-msg-1".to_string(),
+                role: "assistant".to_string(),
+                content: PromptProjectionContent::Message {
+                    text: "#2 Calling model: openai/gpt-4o-mini".to_string(),
+                    citations: Vec::new(),
+                },
+            },
+            PromptProjectionItem {
+                timestamp_ms: 1,
+                activity_anchor: "evt-msg-2".to_string(),
+                role: "assistant".to_string(),
+                content: PromptProjectionContent::Message {
+                    text: "#3 Invoking tool: system/discover_agents".to_string(),
+                    citations: Vec::new(),
+                },
+            },
+        ];
+        let history = project_prompt_context(items, &registry, &ref_table, None);
+        assert_eq!(history, json!([]));
+    }
+
+    #[test]
+    fn status_only_tool_payload_is_filtered_from_history() {
+        let registry = ToolRegistry::new();
+        let ref_table = RefTable::new();
+        let items = vec![PromptProjectionItem {
+            timestamp_ms: 0,
+            activity_anchor: "evt-status".to_string(),
+            role: "tool".to_string(),
+            content: PromptProjectionContent::ToolResult {
+                tool_name: "system/discover_agents".to_string(),
+                result: json!({ "status": "sent" }),
+            },
+        }];
+        let history = project_prompt_context(items, &registry, &ref_table, None);
+        assert_eq!(history, json!([]));
     }
 
     #[test]

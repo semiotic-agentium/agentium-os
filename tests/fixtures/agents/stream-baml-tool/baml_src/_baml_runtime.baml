@@ -225,7 +225,14 @@ Narrowed return union for this hop only:
 - ReadOnlyFinishStep
 - SupportCalculateOpenStep
 
-Emit exactly one JSON object matching one of the named types above, using the field shapes defined in the Tool and session-step types catalog at the top of this prompt. No markdown, no prose.
+Return exactly one JSON object.
+Select the object shape with discriminator `op`:
+- `op: "PageRead"` -> ArchivePageReadStep
+- `op: "SearchRead"` -> ArchiveSearchReadStep
+- `op: "ReadOnlyFinish"` -> ReadOnlyFinishStep
+- `op: "Open"` -> SupportCalculateOpenStep
+Set `op` exactly. Do not mix fields from different object shapes.
+Do not add text before or after the JSON object.
 
 
 PHASE CONSTRAINT (entry): The JSON root must match ONLY this hop: Report, AskUser, ReadOnlyFinish (StructuredReply), ArchiveSearchReadStep, ArchivePageReadStep, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for session plans on the full Choose* function, not this narrowed hop. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). ReadOnlyFinish is terminal — no host tool session; cite every @N used.
@@ -273,7 +280,15 @@ Narrowed return union for this hop only:
 - SupportCalculateFinishStep
 - SupportCalculateAbortStep
 
-Emit exactly one JSON object matching one of the named types above, using the field shapes defined in the Tool and session-step types catalog at the top of this prompt. No markdown, no prose.
+Return exactly one JSON object.
+Select the object shape with discriminator `op`:
+- `op: "Send"` -> SupportCalculateSendStep
+- `op: "SearchRead"` -> SupportCalculateSearchReadStep
+- `op: "PageRead"` -> SupportCalculatePageReadStep
+- `op: "Finish"` -> SupportCalculateFinishStep
+- `op: "Abort"` -> SupportCalculateAbortStep
+Set `op` exactly. Do not mix fields from different object shapes.
+Do not add text before or after the JSON object.
 
 
 PHASE CONSTRAINT (active): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Include input and citations per schema. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). Finish is legal only after the host has a Done result from Send for this session (the runtime enforces this).

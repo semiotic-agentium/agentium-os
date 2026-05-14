@@ -20,7 +20,7 @@
 use std::{fs, sync::Arc};
 
 use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig, baml::BamlRuntimeManager};
-use baml_rt_core::{A2aWireRequest, collect_a2a_stream};
+use baml_rt_core::{A2aWireRequest, collect_a2a_stream_one_shot};
 use baml_rt_provenance::{ProvenanceContextReader, SurrealStoreBuilder};
 use test_support::common::{
     build_fixture_package_to_temp, ensure_fixture_runtime_types, send_stream_request,
@@ -31,7 +31,7 @@ async fn drain(agent: &A2aAgent, request: serde_json::Value) -> Vec<baml_rt_core
         .handle_a2a_stream(A2aWireRequest::from(request))
         .await
         .expect("open stream");
-    collect_a2a_stream(stream).await
+    collect_a2a_stream_one_shot(stream).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

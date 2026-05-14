@@ -50,8 +50,13 @@ impl A2aRequestHandler for DeferredHolder<dyn A2aJsChatHost> {
 
 impl A2aJsChatHost for DeferredHolder<dyn A2aJsChatHost> {}
 
-/// Collects a stream at the callsite that needs buffered responses.
-pub async fn collect_a2a_stream(mut stream: BusStream<A2aStreamChunk>) -> Vec<A2aStreamChunk> {
+/// Explicit one-shot/test boundary: collect a stream into memory.
+///
+/// Use only where buffering is the contract (e.g. stdio compatibility or tests). Live HTTP/SSE
+/// forwarding must preserve the stream and must not call this helper.
+pub async fn collect_a2a_stream_one_shot(
+    mut stream: BusStream<A2aStreamChunk>,
+) -> Vec<A2aStreamChunk> {
     let mut out = Vec::new();
     while let Some(item) = stream.next().await {
         out.push(item);
@@ -59,8 +64,8 @@ pub async fn collect_a2a_stream(mut stream: BusStream<A2aStreamChunk>) -> Vec<A2
     out
 }
 
-/// Collects a stream until the provided predicate matches an item.
-pub async fn collect_a2a_stream_until<F>(
+/// Explicit one-shot/test boundary: collect until a predicate matches.
+pub async fn collect_a2a_stream_until_one_shot<F>(
     mut stream: BusStream<A2aStreamChunk>,
     mut should_stop: F,
 ) -> Vec<A2aStreamChunk>

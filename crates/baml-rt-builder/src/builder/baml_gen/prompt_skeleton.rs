@@ -7,6 +7,7 @@
 //! - [`rewrite_authored_prompt_body`] delegates to [`PromptCompositor::authored_non_fsm`].
 
 use super::prompt_compositor::PromptCompositor;
+use crate::builder::selection_hint::default_selection_hint;
 
 /// Stable archive prefix + catalog if-block. Same bytes for every prompt — generated phase
 /// executors and rewritten author prompts share this opening so OpenAI prefix-cache aligns.
@@ -16,5 +17,5 @@ pub fn canonical_prompt_prefix_jinja() -> String {
 
 /// Wrap a hand-authored prompt body in the canonical structured skeleton.
 pub fn rewrite_authored_prompt_body(author_inner: &str) -> String {
-    PromptCompositor::authored_non_fsm(author_inner)
+    PromptCompositor::authored_non_fsm(author_inner, default_selection_hint())
 }

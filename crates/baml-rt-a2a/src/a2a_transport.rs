@@ -438,26 +438,15 @@ impl ProjectingConversationContextProvider {
             let ctx = context_id_str.clone();
             let boxed: BoxedArchiveReader =
                 Box::new(move |archive_ref_str, grep_str, offset, limit| {
-                    let short_ref = baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
                     let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
-                    let entry = ref_table.get(short_ref)?;
-                    let grep = grep_str
-                        .filter(|s| !s.is_empty())
-                        .and_then(|s| baml_rt_tools::archive_read::GrepPattern::parse(s).ok());
-                    let page = baml_rt_tools::archive_read::grep_paginate(
-                        &entry.content,
-                        grep.as_ref(),
-                        baml_rt_tools::archive_read::LineOffset(offset),
-                        baml_rt_tools::archive_read::PageLimit::new(limit),
-                    );
                     // CLI invocation without $ — role attribution is handled by the
                     // separate history entry that carries this as content.
-                    Some(
-                        baml_rt_tools::archive_read::format_grep_page_as_session_read_body(
-                            &page,
-                            archive_ref_str,
-                            grep_str,
-                        ),
+                    baml_rt_tools::archive_read::format_session_read_from_vtable(
+                        &ref_table,
+                        archive_ref_str,
+                        grep_str,
+                        offset,
+                        limit,
                     )
                 });
             boxed

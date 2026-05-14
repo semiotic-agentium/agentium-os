@@ -47,7 +47,8 @@ limit: number | null;
 offset: number | null;
  }
 
-export interface NeedClarification { question: string;
+export interface NeedClarification { kind: "clarify";
+question: string;
  }
 
 export interface ProvenanceQueryOpenInput { reason: string | null;
@@ -72,7 +73,8 @@ cursor: string | null;
 top_k: number | null;
  }
 
-export interface QueryIntent { resource: QueryResource;
+export interface QueryIntent { kind: "query";
+resource: QueryResource;
 outcome: QueryOutcome;
 priority_sort: string;
 page_size: number;

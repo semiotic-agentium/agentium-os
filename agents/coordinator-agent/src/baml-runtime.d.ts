@@ -24,13 +24,16 @@ filename: string | null;
 media_type: string | null;
  }
 
-export interface CoordinatorMetaOnly { reason: string;
+export interface CoordinatorMetaOnly { kind: "meta";
+reason: string;
  }
 
-export interface CoordinatorNeedTaskClarification { question: string;
+export interface CoordinatorNeedTaskClarification { kind: "clarify";
+question: string;
  }
 
-export interface CoordinatorReadyIntent { inferred_intent: string;
+export interface CoordinatorReadyIntent { kind: "ready";
+inferred_intent: string;
  }
 
 export interface DiscoverAgentsOpenInput { reason: string | null;
