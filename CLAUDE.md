@@ -99,7 +99,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence, cluster-safe archive refs with activity-anchor idempotency, effect subscriber observability
 - **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search
 - **baml-rt-router** — Cluster routing, SSRF validation, token auth, cross-pod A2A forwarding with distributed trace propagation
-- **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors, operator auth boundary, OpenTelemetry middleware for distributed tracing, conversation history endpoints, context metrics
+- **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors, operator auth boundary, OpenTelemetry middleware for distributed tracing, conversation history endpoints, context metrics, runtime-progress-gated readiness probe
 
 **Derive macros**
 - **baml-derive-core** — Core types and rendering for derive macro (`BamlType` trait)
@@ -165,7 +165,7 @@ Other fixtures (stream-js-tool, stream-baml-tool, conversational-context-auto, e
 The runner HTTP API has two access tiers:
 
 **Public routes** (no authentication required):
-- `GET /healthz`, `GET /readyz` — health checks
+- `GET /healthz`, `GET /readyz` — health checks (readiness gated on runtime-progress meter)
 - `GET /agents` — agent discovery
 - `POST /agents/{pkg}/{inst}/chat` — A2A JSON-RPC forwarding
 - `POST /agents/{pkg}/{inst}/dispatch` — host-to-agent event delivery
@@ -179,6 +179,10 @@ The runner HTTP API has two access tiers:
 - Repository mutation endpoints
 
 The runner token is configured via the `RUNNER_TOKEN` environment variable or `runner-token` Kubernetes secret; operator routes reject requests without a valid token in cluster mode. Public routes (`/chat`, `/dispatch`, `/agents`, health probes) are reachable from any pod on the cluster network — the runner NetworkPolicy does not fence them, though SurrealDB ingress is restricted to runner pods. The trust boundary for cross-pod A2A is therefore the cluster network perimeter plus operator-route token gating, not the runner NetworkPolicy.
+
+### Readiness Probe Contract
+
+`GET /readyz` returns `200` when both the boot latch is set (event producers registered) and the runtime-progress meter indicates the system is within the readiness threshold (lag below 1000ms). The meter aggregates the tokio ticker and QuickJS event-loop probe, so stalls on either side flip the gate to `503`. This prevents kubelet from routing traffic to pods with stalled runtimes (cgroup-throttled deploys, wedged QuickJS loops, deadlocked tasks).
 
 ### Feature Flags (baml-rt facade)
 
@@ -213,7 +217,7 @@ Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 - **Snapshot tests**: `insta::assert_json_snapshot!` in provenance crate; update with `cargo insta review`
 - **Property tests**: scope attribution, tool session lifecycle, stream ordering (using proptest)
 - **Test fixtures**: `tests/fixtures/agents/` (agent packages), `baml_src/` (BAML schemas)
-- **E2E testing**: `just e2e-k8s` runs the full k3d cluster harness; `just e2e-k8s-cgroup-throttle` runs adversarial cgroup-throttled deploy fixture testing runner readiness under CPU constraints (see `docs/testing/e2e-k8s.md`)
+- **E2E testing**: `just e2e-k8s` runs the full k3d cluster harness; `just e2e-k8s-cgroup-throttle` runs adversarial cgroup-throttled deploy fixture testing runner readiness under CPU constraints with relaxed readiness probe expectations (accepts both `200` and `503` responses during CPU starvation, defending transport-level liveness rather than gate verdict) (see `docs/testing/e2e-k8s.md`)
 
 ## Rust Conventions
 
