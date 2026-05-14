@@ -577,10 +577,6 @@ async fn readyz_returns_503_then_200() {
 #[tokio::test]
 async fn healthz_always_200() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
-    // Wait for full readiness via the same deadline-and-retry loop the other
-    // cluster tests use. Probing `/healthz` directly from a `spawn_no_wait`
-    // subprocess flaked under concurrent load because the runner could exit
-    // (e.g. ephemeral-port races) before the bespoke loop saw the listener.
     let runner = RunnerProcess::start(RunnerProcessConfig::standalone().without_token()).await;
     let resp = reqwest::Client::new()
         .get(format!("{}/healthz", runner.base_url))
