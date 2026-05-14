@@ -721,7 +721,10 @@ ensure_runner_image_available() {
       fi
       docker push "${push_args[@]}" "$host_ref"
 
-      IMAGE_PULL_POLICY="IfNotPresent"
+      # `Always` matches the install contract in k3d-registry-values.yaml:
+      # a same-tag rebuild + rollout-restart must pick up the new digest
+      # rather than the layer already cached on the node.
+      IMAGE_PULL_POLICY="Always"
       HELM_VALUES_FILE="$(values_file_for_strategy registry)"
       IMAGE_REPOSITORY_FOR_INSTALL="$cluster_repo"
       ;;

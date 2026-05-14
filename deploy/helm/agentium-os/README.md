@@ -54,7 +54,10 @@ docker build -t agentium-runner:demo .
 The host pushes to `localhost:5400` and the cluster pulls from
 `k3d-agentium-registry:5000`. No external registry is required. The
 chart is installed with
-[`examples/k3d-registry-values.yaml`](examples/k3d-registry-values.yaml).
+[`examples/k3d-registry-values.yaml`](examples/k3d-registry-values.yaml),
+which sets `runner.image.pullPolicy: Always` so that rebuilding under
+the same tag and running `kubectl rollout restart` pulls the new digest
+instead of silently reusing the layer already cached on the node.
 
 ### Local k3d (image import — fast dev fallback)
 
