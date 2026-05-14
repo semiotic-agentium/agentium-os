@@ -41,7 +41,7 @@ function CleeseSendToChapman(first_line: string) -> SystemInternalA2aSessionPlan
 client DefaultClient {
   provider openai-generic
   options {
-    model "openai/gpt-4o-mini"
+    model env.BAML_TEST_MODEL
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }
