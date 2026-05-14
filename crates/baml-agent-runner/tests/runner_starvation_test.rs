@@ -18,7 +18,11 @@
 //!        least one sample (proves the meter is sensitive to a CPU-pegged
 //!        deploy boot — and detects the regression where `spawn_blocking`
 //!        only isolates the future-driver thread, not the QuickJS
-//!        evaluation thread).
+//!        evaluation thread). Since I1 was relaxed from `== 200` to
+//!        `{200, 503}` for the #339 contract, I3 is now the sole
+//!        regression guard for meter sensitivity — a probe-unwiring bug
+//!        would leave the gate open at `200`, pass I1, but fail I3. Do
+//!        not weaken I3 without replacing that coverage.
 //!
 //! - **T4 — listener-task-death.** Start the runner in K8s-pilot mode
 //!   (`a2a_stdio=false, http_handle=Some`) and force the spawned
