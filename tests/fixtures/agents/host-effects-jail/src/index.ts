@@ -62,9 +62,14 @@ function probeForbidden(): Record<string, AttemptResult> {
   };
 }
 
+// Wrap the JSON payload in sentinels so the Rust test slices reliably
+// even if a future stream frame emits a `{` ahead of the report.
+const REPORT_OPEN = "__HOST_EFFECTS_JAIL_BEGIN__";
+const REPORT_CLOSE = "__HOST_EFFECTS_JAIL_END__";
+
 __chat_register({
   run: async (): Promise<SessionResult> => {
     const report = probeForbidden();
-    return { message: JSON.stringify(report) };
+    return { message: `${REPORT_OPEN}${JSON.stringify(report)}${REPORT_CLOSE}` };
   },
 });
