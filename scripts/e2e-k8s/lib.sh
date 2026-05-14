@@ -868,6 +868,14 @@ wait_for_runner_readyz() {
 # `k3d image import` + pullPolicy=Never, so the pod imageID does not carry a
 # registry-resolved digest and the comparison is not applicable.
 #
+# Assumes a single-platform image push. The registry's
+# Docker-Content-Digest header returns the manifest-list digest for a
+# buildx multi-arch push, while pod imageID carries the per-platform
+# manifest digest — those don't match. `docker build` in
+# verify-k8s-pilot-package.sh is single-platform today; if that ever
+# moves to buildx, this assertion must resolve the manifest list to the
+# platform-specific manifest before comparing.
+#
 # Manual repro of the failure path (run after a successful demo-rehearsal,
 # with --keep-cluster):
 #   docker tag docker.io/library/busybox:latest \
