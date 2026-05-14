@@ -95,7 +95,10 @@ pub const CLUSTER_SURREALDB_IMAGE_TAG: &str = "v3.0.4";
 /// cluster-mode tests. Satisfies the SSRF validator's private-range
 /// allowance without the test runner actually accepting traffic on that
 /// address — the cluster path under test only needs the URL to be
-/// validation-clean.
+/// validation-clean. The port is a placeholder and is *not* bound by the
+/// runner subprocess: cluster-test harnesses allocate an ephemeral local
+/// port for the actual listener, so this constant can be shared across
+/// tests and test binaries without colliding on a fixed local port.
 #[allow(dead_code)] // Only cluster-tests binaries reach this constant.
 pub const FAKE_CLUSTER_RUNNER_ENDPOINT: &str = "http://10.0.0.1:18080";
 

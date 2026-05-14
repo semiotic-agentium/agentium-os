@@ -107,15 +107,21 @@ impl PreparedRunner {
 }
 
 fn prepare_runner_subprocess(config: &RunnerProcessConfig) -> PreparedRunner {
+    // Cross-runner tests (`with_bind_addr`) need the bound port to equal the
+    // port in the advertised `runner_endpoint`; loopback tests share a
+    // validation-only placeholder URL (#454) and must bind ephemeral.
+    let cross_runner = config.bind_addr.is_some();
     let bind_host = config.bind_addr.as_deref().unwrap_or("127.0.0.1");
-    // When the caller pre-advertised a runner endpoint, bind that port so
-    // the URL registered with the cluster matches the actual listener.
-    let desired_port = config
-        .runner_endpoint
-        .as_deref()
-        .and_then(|ep| url::Url::parse(ep).ok())
-        .and_then(|u| u.port())
-        .unwrap_or(0);
+    let desired_port = if cross_runner {
+        config
+            .runner_endpoint
+            .as_deref()
+            .and_then(|ep| url::Url::parse(ep).ok())
+            .and_then(|u| u.port())
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let reserved =
         TcpListener::bind(format!("{bind_host}:{desired_port}")).expect("bind ephemeral port");
     let addr = reserved.local_addr().expect("local address");
@@ -124,7 +130,7 @@ fn prepare_runner_subprocess(config: &RunnerProcessConfig) -> PreparedRunner {
     // In cluster mode, bind 0.0.0.0 so cross-runner traffic routed via the
     // advertised non-loopback IP still reaches the socket when the host
     // application firewall refuses inbound on specific-IP binds.
-    let serve_bind = if config.bind_addr.is_some() {
+    let serve_bind = if cross_runner {
         format!("0.0.0.0:{}", addr.port())
     } else {
         addr.to_string()
