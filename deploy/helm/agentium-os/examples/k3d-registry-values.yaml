@@ -8,8 +8,10 @@
 #
 # `runner.image.repository` uses the in-cluster registry hostname k3d
 # injects into the containerd mirror config (k3d-agentium-registry:5000).
-# `pullPolicy: IfNotPresent` exercises a real kubelet pull, which is the
-# property this strategy is meant to verify.
+# `pullPolicy: Always` exercises a real kubelet pull every pod start and
+# guarantees the registry digest wins over any image already cached on
+# the node — without it, a same-tag rebuild + `kubectl rollout restart`
+# silently runs the previously-cached image.
 #
 # scripts/e2e-k8s/lib.sh re-applies `runner.image.repository`,
 # `runner.image.tag`, and `runner.image.pullPolicy` via `--set-string`
@@ -30,7 +32,7 @@ runner:
   image:
     repository: k3d-agentium-registry:5000/agentium-runner
     tag: demo
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   replicaCount: 2
   auth:
     existingSecret: runner-token
