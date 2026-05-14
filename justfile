@@ -676,3 +676,21 @@ verify-k8s-pilot-package *args='':
 # artifacts/load-test/<timestamp>/. See docs/k8s-pilot-load-testing.md.
 k8s-load-test *args='':
     ./scripts/k8s-load-test.sh {{args}}
+
+# Cross-pod cleese/chapman conversation on a Helm-installed pilot.
+# Requires OPENROUTER_API_KEY in the mounted fnox ConfigMap.
+k8s-pilot-cleese-chapman *args='':
+    ./scripts/k8s-pilot-cleese-chapman.sh {{args}}
+
+# Ford-pilot demo prep flow (see agentium-os-ford-demo-guide.md).
+# Steps chain via --keep-cluster / --keep-deployed so the cluster
+# persists across all three. cleese/chapman needs OPENROUTER_API_KEY
+# in the mounted fnox ConfigMap; use `demo-rehearsal-no-llm` to stop
+# after smoke when LLM credentials are not configured.
+demo-rehearsal: demo-rehearsal-no-llm
+    just k8s-pilot-cleese-chapman --keep-deployed
+
+# verify + smoke only; no LLM required.
+demo-rehearsal-no-llm:
+    just verify-k8s-pilot-package --image-strategy registry --keep-cluster
+    just k8s-pilot-smoke --port-forward --keep-deployed
