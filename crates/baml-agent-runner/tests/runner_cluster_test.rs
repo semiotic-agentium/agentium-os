@@ -575,7 +575,56 @@ async fn readyz_returns_503_then_200() {
 }
 
 #[tokio::test]
-async fn healthz_always_200() {
+async fn healthz_returns_200_before_ready() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    let (mut runner, base_url) =
+        RunnerProcess::spawn_no_wait(RunnerProcessConfig::standalone().without_token());
+    let client = reqwest::Client::new();
+    let healthz_url = format!("{base_url}/healthz");
+    let readyz_url = format!("{base_url}/readyz");
+
+    let mut caught_pre_ready_window = false;
+    let deadline = Instant::now() + Duration::from_secs(e2e_secs_ci_or_local(240, 60));
+    while Instant::now() < deadline {
+        if let Some(status) = runner.child.try_wait().expect("poll runner") {
+            let log =
+                fs::read_to_string(&runner.log_path).unwrap_or_else(|_| "<unreadable>".into());
+            panic!("runner exited (status: {status}). Log:\n{log}");
+        }
+        let (readyz_result, healthz_result) = tokio::join!(
+            client.get(&readyz_url).send(),
+            client.get(&healthz_url).send(),
+        );
+        if let Ok(readyz_resp) = readyz_result {
+            if readyz_resp.status() == StatusCode::SERVICE_UNAVAILABLE {
+                let healthz_resp =
+                    healthz_result.expect("GET /healthz during pre-ready window");
+                assert_eq!(
+                    healthz_resp.status(),
+                    StatusCode::OK,
+                    "healthz must be 200 while readyz is 503"
+                );
+                caught_pre_ready_window = true;
+            } else if readyz_resp.status() == StatusCode::OK {
+                break;
+            }
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    if caught_pre_ready_window {
+        eprintln!(
+            "healthz_returns_200_before_ready: verified /healthz is 200 while /readyz is 503"
+        );
+    } else {
+        eprintln!(
+            "healthz_returns_200_before_ready: 503 window missed (runner booted too fast)"
+        );
+    }
+}
+
+#[tokio::test]
+async fn healthz_returns_200_when_ready() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let runner = RunnerProcess::start(RunnerProcessConfig::standalone().without_token()).await;
     let resp = reqwest::Client::new()
@@ -583,11 +632,7 @@ async fn healthz_always_200() {
         .send()
         .await
         .expect("GET /healthz");
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "healthz should always be 200"
-    );
+    assert_eq!(resp.status(), StatusCode::OK, "healthz should be 200");
 }
 
 #[tokio::test]
