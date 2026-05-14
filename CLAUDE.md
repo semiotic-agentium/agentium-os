@@ -53,6 +53,8 @@ just e2e-k8s-cgroup-throttle                  # adversarial cgroup-throttled dep
 
 API keys for tests are resolved through `fnox.toml` via `FnoxFileSecretResolver`. The file maps secret names to values with a `default` field. CI writes this file from GitHub secrets; locally, create `fnox.toml` in the project root.
 
+The test model for LLM tests is controlled by the `BAML_TEST_MODEL` environment variable, which defaults to `anthropic/claude-3-5-haiku-20241022`. This can be overridden to use different models for testing.
+
 ## Local Setup (Linux)
 
 Local release builds — `just persona-claude-notion`, `just dev-all-agents`, `cargo test` paths that link the runner binary — need three system-level dependencies that the runner Docker image installs but a fresh Linux host does not:
@@ -83,7 +85,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-id** — Newtype ID wrappers (UUID-based)
 - **baml-rt-hash** — Canonical content-addressable hashing for agent source bundles
 - **baml-rt-config** — Tool configuration storage and resolution
-- **baml-rt-llm-config** — Centralised LLM client configuration; `FnoxFileSecretResolver` for API keys
+- **baml-rt-llm-config** — Centralised LLM client configuration; `FnoxFileSecretResolver` for API keys; test model configuration via `test_model_default()` helper
 - **baml-rt-vocabulary** — Vocabulary types (minimal)
 - **baml-rt-embedding** — Embedding and drift detection
 
@@ -200,6 +202,7 @@ Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 - Toolchain: stable for build/test, nightly for `cargo fmt --check` only.
 - **APT reliability:** CI uses `scripts/ci/apt-update-retry.sh` to mitigate transient Ubuntu mirror sync failures during package installation.
 - **TypeScript 6.x:** CI installs `typescript@6` globally to match the runner image and ensure consistent fixture builds. The canonical `tsconfig.json` uses `"ignoreDeprecations": "6.0"`, which TypeScript 5.x rejects.
+- **Test model configuration:** CI sets `BAML_TEST_MODEL` from the `vars.BAML_TEST_MODEL` repository variable with fallback to `x-ai/grok-4.1-fast` for backward compatibility.
 
 ## Testing Conventions
 
