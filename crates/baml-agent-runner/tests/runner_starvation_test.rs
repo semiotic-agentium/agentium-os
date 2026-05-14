@@ -51,7 +51,6 @@ mod common;
 
 use std::{
     fs,
-    net::TcpListener,
     path::PathBuf,
     process::{Child, Command, ExitStatus, Stdio},
     sync::{Arc, Mutex},
@@ -63,6 +62,7 @@ use reqwest::StatusCode;
 use serde_json::Value;
 use test_support::common::{
     agent_fixture, build_agent_package_archive_to_temp, ensure_fixture_runtime_types,
+    reserve_ephemeral_addr,
 };
 use tokio::time::sleep;
 
@@ -125,9 +125,7 @@ impl StandaloneRunner {
         extra_args: &[&str],
         readiness_secs: Option<u64>,
     ) -> Self {
-        let reserved = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-        let addr = reserved.local_addr().expect("local address");
-        drop(reserved);
+        let addr = reserve_ephemeral_addr("127.0.0.1");
 
         let base_url = format!("http://{addr}");
         let uid = uuid::Uuid::new_v4();
@@ -509,13 +507,14 @@ mod surrealdb_latency {
 
     use common::{CLUSTER_SURREALDB_IMAGE_TAG, FAKE_CLUSTER_RUNNER_ENDPOINT};
     use serde::Deserialize;
+    use test_support::common::bind_ephemeral_tokio;
     use testcontainers_modules::{
         surrealdb::{SURREALDB_PORT, SurrealDb},
         testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner},
     };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
-        net::{TcpListener as TokioTcpListener, TcpStream},
+        net::TcpStream,
     };
 
     use super::*;
@@ -635,10 +634,9 @@ mod surrealdb_latency {
                 .parse()
                 .expect("upstream endpoint must parse as SocketAddr");
 
-            let listener = TokioTcpListener::bind("127.0.0.1:0")
+            let (listener, local) = bind_ephemeral_tokio("127.0.0.1")
                 .await
                 .expect("bind latency proxy listener");
-            let local = listener.local_addr().expect("proxy local addr");
             let endpoint = format!("ws://{local}");
 
             let enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));

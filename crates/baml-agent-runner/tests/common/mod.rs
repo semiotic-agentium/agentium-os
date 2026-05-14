@@ -757,8 +757,7 @@ pub async fn start_http_server(
     app: axum::Router,
     base_path: Option<&str>,
 ) -> std::io::Result<RunningHttpServer> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
+    let (listener, addr) = test_support::common::bind_ephemeral_tokio("127.0.0.1").await?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, app)

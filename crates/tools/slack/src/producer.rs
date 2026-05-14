@@ -1216,8 +1216,7 @@ mod tests {
     }
 
     async fn start_mock_server(app: Router) -> std::io::Result<String> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
+        let (listener, addr) = test_support::common::bind_ephemeral_tokio("127.0.0.1").await?;
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });

@@ -3,7 +3,6 @@ mod common;
 
 use std::{
     fs,
-    net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     str::FromStr,
@@ -24,7 +23,8 @@ use reqwest::StatusCode;
 use serde_json::Value;
 use test_support::common::{
     agent_fixture, build_agent_package_archive_to_temp, chunks_from_responses,
-    ensure_fixture_runtime_types, message_texts_from_chunks, send_stream_request_with_task,
+    ensure_fixture_runtime_types, message_texts_from_chunks, reserve_ephemeral_addr,
+    send_stream_request_with_task,
 };
 use tokio::time::sleep;
 
@@ -54,9 +54,7 @@ struct RunningRunnerProcess {
 
 impl RunningRunnerProcess {
     async fn start(event_poll_interval_secs: u64) -> Self {
-        let reserved = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-        let addr = reserved.local_addr().expect("local address");
-        drop(reserved);
+        let addr = reserve_ephemeral_addr("127.0.0.1");
 
         let base_url = format!("http://{addr}");
         let repository_dir = std::env::temp_dir().join(format!(

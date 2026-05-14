@@ -3,7 +3,7 @@ mod common;
 
 use std::{
     fs,
-    net::TcpListener,
+    net::SocketAddr,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -14,6 +14,7 @@ use reqwest::StatusCode;
 use serde_json::Value;
 use test_support::common::{
     agent_fixture, build_agent_package_archive_to_temp, ensure_fixture_runtime_types,
+    reserve_ephemeral_addr,
 };
 use tokio::time::sleep;
 
@@ -107,9 +108,9 @@ impl PreparedRunner {
 }
 
 fn prepare_runner_subprocess(config: &RunnerProcessConfig) -> PreparedRunner {
-    // Cross-runner tests (`with_bind_addr`) need the bound port to equal the
-    // port in the advertised `runner_endpoint`; loopback tests share a
-    // validation-only placeholder URL (#454) and must bind ephemeral.
+    // Cross-runner tests pre-reserve a port and advertise it via
+    // `runner_endpoint`, so the bound port must equal the endpoint's port.
+    // Loopback tests have no advertised endpoint and bind ephemeral.
     let cross_runner = config.bind_addr.is_some();
     let bind_host = config.bind_addr.as_deref().unwrap_or("127.0.0.1");
     let desired_port = if cross_runner {
@@ -122,10 +123,16 @@ fn prepare_runner_subprocess(config: &RunnerProcessConfig) -> PreparedRunner {
     } else {
         0
     };
-    let reserved =
-        TcpListener::bind(format!("{bind_host}:{desired_port}")).expect("bind ephemeral port");
-    let addr = reserved.local_addr().expect("local address");
-    drop(reserved);
+    let addr = if desired_port == 0 {
+        reserve_ephemeral_addr(bind_host)
+    } else {
+        // Caller already reserved this port via `reserve_ephemeral_addr` and
+        // advertised it as `runner_endpoint`; the subprocess will bind it.
+        SocketAddr::new(
+            bind_host.parse().expect("bind_host parses as IP"),
+            desired_port,
+        )
+    };
 
     // In cluster mode, bind 0.0.0.0 so cross-runner traffic routed via the
     // advertised non-loopback IP still reaches the socket when the host
@@ -893,12 +900,8 @@ mod cluster {
         let surreal = SurrealContainer::start().await;
 
         // Allocate ports for both runners.
-        let reserved_a = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-A port");
-        let port_a = reserved_a.local_addr().expect("runner-A addr").port();
-        drop(reserved_a);
-        let reserved_b = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-B port");
-        let port_b = reserved_b.local_addr().expect("runner-B addr").port();
-        drop(reserved_b);
+        let port_a = reserve_ephemeral_addr(&bind_addr).port();
+        let port_b = reserve_ephemeral_addr(&bind_addr).port();
 
         let endpoint_a = format!("http://{bind_addr}:{port_a}");
         let endpoint_b = format!("http://{bind_addr}:{port_b}");
@@ -986,12 +989,8 @@ mod cluster {
 
         let surreal = SurrealContainer::start().await;
 
-        let reserved_a = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-A port");
-        let port_a = reserved_a.local_addr().expect("runner-A addr").port();
-        drop(reserved_a);
-        let reserved_b = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-B port");
-        let port_b = reserved_b.local_addr().expect("runner-B addr").port();
-        drop(reserved_b);
+        let port_a = reserve_ephemeral_addr(&bind_addr).port();
+        let port_b = reserve_ephemeral_addr(&bind_addr).port();
 
         let endpoint_a = format!("http://{bind_addr}:{port_a}");
         let endpoint_b = format!("http://{bind_addr}:{port_b}");
@@ -1116,12 +1115,8 @@ mod cluster {
 
         let surreal = SurrealContainer::start().await;
 
-        let reserved_a = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-A port");
-        let port_a = reserved_a.local_addr().expect("runner-A addr").port();
-        drop(reserved_a);
-        let reserved_b = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-B port");
-        let port_b = reserved_b.local_addr().expect("runner-B addr").port();
-        drop(reserved_b);
+        let port_a = reserve_ephemeral_addr(&bind_addr).port();
+        let port_b = reserve_ephemeral_addr(&bind_addr).port();
 
         let endpoint_a = format!("http://{bind_addr}:{port_a}");
         let endpoint_b = format!("http://{bind_addr}:{port_b}");
@@ -1199,12 +1194,8 @@ mod cluster {
 
         let surreal = SurrealContainer::start().await;
 
-        let reserved_a = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-A port");
-        let port_a = reserved_a.local_addr().expect("runner-A addr").port();
-        drop(reserved_a);
-        let reserved_b = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-B port");
-        let port_b = reserved_b.local_addr().expect("runner-B addr").port();
-        drop(reserved_b);
+        let port_a = reserve_ephemeral_addr(&bind_addr).port();
+        let port_b = reserve_ephemeral_addr(&bind_addr).port();
 
         let endpoint_a = format!("http://{bind_addr}:{port_a}");
         let endpoint_b = format!("http://{bind_addr}:{port_b}");
@@ -1350,12 +1341,8 @@ mod cluster {
 
         let surreal = SurrealContainer::start().await;
 
-        let reserved_a = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-A port");
-        let port_a = reserved_a.local_addr().expect("runner-A addr").port();
-        drop(reserved_a);
-        let reserved_b = TcpListener::bind(format!("{bind_addr}:0")).expect("bind runner-B port");
-        let port_b = reserved_b.local_addr().expect("runner-B addr").port();
-        drop(reserved_b);
+        let port_a = reserve_ephemeral_addr(&bind_addr).port();
+        let port_b = reserve_ephemeral_addr(&bind_addr).port();
 
         let endpoint_a = format!("http://{bind_addr}:{port_a}");
         let endpoint_b = format!("http://{bind_addr}:{port_b}");

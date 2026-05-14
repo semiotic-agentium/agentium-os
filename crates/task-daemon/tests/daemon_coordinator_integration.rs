@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
     Json, Router,
@@ -51,8 +51,7 @@ impl DispatchMockState {
 }
 
 async fn start_http_server(app: Router) -> std::io::Result<RunningServer> {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
-    let addr: SocketAddr = listener.local_addr()?;
+    let (listener, addr) = test_support::common::bind_ephemeral_tokio("127.0.0.1").await?;
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
     tokio::spawn(async move {
