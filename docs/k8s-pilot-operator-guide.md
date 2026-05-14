@@ -52,6 +52,33 @@ For local k3d development you can either:
   k3d image import agentium-runner:demo -c <your-k3d-cluster-name>
   ```
 
+### Re-pushing the same tag
+
+The chart defaults `runner.image.pullPolicy` to `Always` so a same-tag
+rebuild + `kubectl rollout restart` always fetches the new digest. The
+bundled example values files (`design-partner-values.yaml`,
+`k3d-registry-values.yaml`) inherit that default.
+
+If you override `runner.image.pullPolicy` to `IfNotPresent` in your own
+values, kubelet reuses whatever layer is cached on the node — the
+StatefulSet reports rollout complete and the pods are still on the old
+code. Either keep `pullPolicy: Always`, or commit to a unique tag per
+build (e.g. `agentium-runner:<commit-sha>`) and update
+`runner.image.tag` on each upgrade.
+
+`scripts/verify-k8s-pilot-package.sh --image-strategy registry`
+asserts this automatically: after rollout it compares each runner
+pod's `containerStatuses[].imageID` against the digest just pushed and
+exits 4 on mismatch. To verify manually after a rebuild + restart:
+
+```bash
+kubectl -n agentium get pod -l app.kubernetes.io/component=runner \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}'
+```
+
+Compare the trailing `sha256:…` digests against the one printed by
+`docker push` (or the registry's manifest).
+
 ## Step 2 — Create the three required objects
 
 The chart references pre-existing objects by name. Create them before installing.
@@ -279,6 +306,7 @@ If `observability.enabled` is `true` and `observability.otlpEndpoint` points at 
 | Pods stuck in `Pending` with `pod has unbound immediate PersistentVolumeClaims` event | `kubectl -n agentium describe pod <name>` | Default `StorageClass` missing, or PVC cannot be satisfied. Set `runner.persistence.storageClass` / `surrealdb.persistence.storageClass`. |
 | Pods stuck in `Pending` with `0/N nodes are available: N Insufficient memory` event | `kubectl -n agentium describe pod <name>` | Cluster host doesn't have enough schedulable memory. Two runner replicas (2Gi request each) plus SurrealDB (256Mi request) account for 4.25Gi of requests; kube-system pods consume more on top. On local k3d, raise Docker Desktop / colima allocation to ≥6 GiB. Distinct from `OOMKilled` below — this happens before scheduling. |
 | Pods in `ImagePullBackOff` | `kubectl -n agentium describe pod <name>` | `runner.image.repository`/`tag` wrong for the cluster's registry reachability. For local k3d image-import flows, confirm `pullPolicy: Never` and that `k3d image import` succeeded. For local k3d-managed-registry flows, confirm the push reached the registry: `docker logs k3d-agentium-registry`. |
+| Same-tag rebuild + `rollout restart` reports complete but pods still run the old code | `kubectl -n agentium get pod -l app.kubernetes.io/component=runner -o jsonpath='{.items[*].status.containerStatuses[0].imageID}'` | `runner.image.pullPolicy` is `IfNotPresent` in the values you installed with. Either set it to `Always` (chart default) or use a unique tag per build. See [Re-pushing the same tag](#re-pushing-the-same-tag). |
 | `POST /deploy` returns `connection closed before message completed`, or pods show `Reason: OOMKilled` / exit code 137 | `kubectl -n agentium describe pod <name>` | Runner exceeded its memory limit during deploy (tar extract + BAML IL load + QuickJS init + tool registration on top of resident fastembed ONNX, SurrealDB client, and provenance backend). The chart default is 5Gi, which fits the documented multi-agent fixtures; raise `runner.resources.limits.memory` if a heavier workload still OOMs. |
 | `readyz` returns 503 for more than a minute | `kubectl -n agentium logs statefulset/agentium-agentium-os-runner` | SurrealDB not up, or runner cannot reach it. Verify `surrealdb-credentials` keys match `values.yaml` (`username`/`password`). |
 | `401 authentication required` from publish/deploy | `kubectl -n agentium get secret runner-token -o yaml` | `RUNNER_TOKEN` missing or wrong. Re-export from the secret (see Step 2). |
