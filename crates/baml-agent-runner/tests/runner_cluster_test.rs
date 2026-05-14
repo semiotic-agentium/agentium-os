@@ -577,30 +577,21 @@ async fn readyz_returns_503_then_200() {
 #[tokio::test]
 async fn healthz_always_200() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
-    let (mut runner, base_url) =
-        RunnerProcess::spawn_no_wait(RunnerProcessConfig::standalone().without_token());
-    let client = reqwest::Client::new();
-    let healthz_url = format!("{base_url}/healthz");
-
-    // Poll until we get a response (server needs to start listening first).
-    let deadline = Instant::now() + Duration::from_secs(e2e_secs_ci_or_local(240, 60));
-    loop {
-        if let Some(status) = runner.child.try_wait().expect("poll runner") {
-            let log =
-                fs::read_to_string(&runner.log_path).unwrap_or_else(|_| "<unreadable>".into());
-            panic!("runner exited (status: {status}). Log:\n{log}");
-        }
-        if let Ok(resp) = client.get(&healthz_url).send().await {
-            assert_eq!(
-                resp.status(),
-                StatusCode::OK,
-                "healthz should always be 200"
-            );
-            return;
-        }
-        assert!(Instant::now() < deadline, "healthz never responded");
-        sleep(Duration::from_millis(100)).await;
-    }
+    // Wait for full readiness via the same deadline-and-retry loop the other
+    // cluster tests use. Probing `/healthz` directly from a `spawn_no_wait`
+    // subprocess flaked under concurrent load because the runner could exit
+    // (e.g. ephemeral-port races) before the bespoke loop saw the listener.
+    let runner = RunnerProcess::start(RunnerProcessConfig::standalone().without_token()).await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/healthz", runner.base_url))
+        .send()
+        .await
+        .expect("GET /healthz");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "healthz should always be 200"
+    );
 }
 
 #[tokio::test]
