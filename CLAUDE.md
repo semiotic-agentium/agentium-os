@@ -53,7 +53,7 @@ just e2e-k8s-cgroup-throttle                  # adversarial cgroup-throttled dep
 
 API keys for tests are resolved through `fnox.toml` via `FnoxFileSecretResolver`. The file maps secret names to values with a `default` field. CI writes this file from GitHub secrets; locally, create `fnox.toml` in the project root.
 
-The test model for LLM tests is controlled by the `BAML_TEST_MODEL` environment variable, which defaults to `anthropic/claude-3-5-haiku-20241022`. This can be overridden to use different models for testing.
+The test model for LLM tests is controlled by the `BAML_TEST_MODEL` environment variable, which defaults to `x-ai/grok-4.1-fast`. This can be overridden to use different models for testing.
 
 ## Local Setup (Linux)
 
