@@ -3,7 +3,7 @@ mod common;
 
 use std::{
     fs,
-    net::TcpListener,
+    net::SocketAddr,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -126,14 +126,12 @@ fn prepare_runner_subprocess(config: &RunnerProcessConfig) -> PreparedRunner {
     let addr = if desired_port == 0 {
         reserve_ephemeral_addr(bind_host)
     } else {
-        // Cross-runner test pre-reserved this exact port via the helper; we
-        // re-bind/drop here to confirm it's still claimable on this host before
-        // the subprocess inherits it.
-        let reserved = TcpListener::bind(format!("{bind_host}:{desired_port}"))
-            .expect("bind reserved cross-runner port");
-        let a = reserved.local_addr().expect("local address");
-        drop(reserved);
-        a
+        // Caller already reserved this port via `reserve_ephemeral_addr` and
+        // advertised it as `runner_endpoint`; the subprocess will bind it.
+        SocketAddr::new(
+            bind_host.parse().expect("bind_host parses as IP"),
+            desired_port,
+        )
     };
 
     // In cluster mode, bind 0.0.0.0 so cross-runner traffic routed via the
