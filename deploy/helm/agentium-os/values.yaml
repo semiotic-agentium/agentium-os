@@ -27,8 +27,11 @@ runner:
     repository: ""
     # -- Container image tag (REQUIRED).
     tag: ""
-    # -- Image pull policy.
-    pullPolicy: IfNotPresent
+    # -- Image pull policy. Defaults to `Always` because no runner image is
+    # published and operators rebuild under their own tag; `IfNotPresent`
+    # would silently reuse the layer cached on the node after a same-tag
+    # rebuild + `kubectl rollout restart`.
+    pullPolicy: Always
 
   # -- Number of runner replicas.
   replicaCount: 2
