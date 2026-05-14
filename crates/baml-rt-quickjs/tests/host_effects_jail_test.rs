@@ -15,11 +15,11 @@ use std::{
 };
 
 use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig, baml::BamlRuntimeManager};
-use baml_rt_core::{A2aStreamChunk, A2aWireRequest, collect_a2a_stream};
+use baml_rt_core::{A2aStreamChunk, A2aWireRequest, bus::BusStream};
+use futures_util::StreamExt;
 use serde_json::Value;
 use test_support::common::{
-    build_fixture_package_to_temp, chunks_from_responses, ensure_fixture_runtime_types,
-    message_visible_content_from_chunks, send_stream_request,
+    build_fixture_package_to_temp, ensure_fixture_runtime_types, send_stream_request,
 };
 
 const FORBIDDEN_OPS: &[&str] = &["fetch", "require", "WebSocket", "XMLHttpRequest"];
@@ -63,28 +63,43 @@ async fn setup_host_effects_jail_agent() -> A2aAgent {
         .expect("build host-effects-jail agent")
 }
 
-async fn collect_stream(agent: &A2aAgent, request: Value) -> baml_rt::Result<Vec<Value>> {
-    let stream = agent
-        .handle_a2a_stream(A2aWireRequest::from(request))
-        .await?;
-    let chunks: Vec<A2aStreamChunk> = collect_a2a_stream(stream).await;
-    Ok(chunks.into_iter().map(A2aStreamChunk::into_inner).collect())
+/// Walks a `serde_json::Value` and returns the first `&str` leaf containing
+/// `needle`. Recursive over arrays and objects; non-string leaves are skipped.
+fn first_string_containing<'a>(value: &'a Value, needle: &str) -> Option<&'a str> {
+    match value {
+        Value::String(s) if s.contains(needle) => Some(s.as_str()),
+        Value::Array(arr) => arr.iter().find_map(|v| first_string_containing(v, needle)),
+        Value::Object(obj) => obj
+            .values()
+            .find_map(|v| first_string_containing(v, needle)),
+        _ => None,
+    }
 }
 
-fn extract_report(merged: &str) -> serde_json::Map<String, Value> {
-    let open = merged
-        .find(REPORT_OPEN)
-        .unwrap_or_else(|| panic!("missing {REPORT_OPEN} sentinel in: {merged:?}"));
-    let after_open = open + REPORT_OPEN.len();
-    let close_rel = merged[after_open..]
-        .find(REPORT_CLOSE)
-        .unwrap_or_else(|| panic!("missing {REPORT_CLOSE} sentinel after open in: {merged:?}"));
-    let json = &merged[after_open..after_open + close_rel];
-    serde_json::from_str::<Value>(json)
-        .unwrap_or_else(|e| panic!("payload between sentinels is not valid JSON ({e}): {json:?}"))
-        .as_object()
-        .unwrap_or_else(|| panic!("payload between sentinels is not a JSON object: {json:?}"))
-        .clone()
+/// Consume the stream chunk-by-chunk until a chunk carries the sentinel-wrapped
+/// payload, then slice it out and return. The stream is dropped on return; we
+/// never accumulate a `Vec<chunk>` or merge content across chunks.
+///
+/// The agent's `SessionResult.message` is emitted in a single wire `Message`,
+/// so the open and close sentinels are guaranteed to land in the same chunk
+/// (and the same string leaf within it). Multi-chunk reassembly is YAGNI here.
+async fn await_report(mut stream: BusStream<A2aStreamChunk>) -> String {
+    let mut chunks_seen = 0usize;
+    while let Some(chunk) = stream.next().await {
+        chunks_seen += 1;
+        if let Some(text) = first_string_containing(AsRef::<Value>::as_ref(&chunk), REPORT_OPEN) {
+            let after_open =
+                text.find(REPORT_OPEN).expect("contains check held") + REPORT_OPEN.len();
+            let close_rel = text[after_open..].find(REPORT_CLOSE).unwrap_or_else(|| {
+                panic!(
+                    "found {REPORT_OPEN} but no matching {REPORT_CLOSE} in same chunk; \
+                     agent must emit both sentinels in one wire message"
+                )
+            });
+            return text[after_open..after_open + close_rel].to_owned();
+        }
+    }
+    panic!("stream ended without {REPORT_OPEN} sentinel after {chunks_seen} chunks");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -98,20 +113,20 @@ async fn host_effects_jail_rejects_forbidden_globals() {
         "corr-1-1",
         Some(baml_rt_core::ids::ContextId::new(1, 1)),
     );
-    let responses = collect_stream(&agent, request).await.expect("stream");
-    assert!(
-        !responses.is_empty(),
-        "stream returned no responses; check fixture build"
-    );
+    let stream = agent
+        .handle_a2a_stream(A2aWireRequest::from(request))
+        .await
+        .expect("open stream");
 
-    let chunks = chunks_from_responses(&responses);
-    let merged = message_visible_content_from_chunks(&chunks).join("");
-    assert!(
-        !merged.is_empty(),
-        "merged visible content is empty; raw responses: {responses:?}"
-    );
+    let payload = await_report(stream).await;
 
-    let report = extract_report(&merged);
+    let report: serde_json::Map<String, Value> = serde_json::from_str::<Value>(&payload)
+        .unwrap_or_else(|e| {
+            panic!("payload between sentinels is not valid JSON ({e}): {payload:?}")
+        })
+        .as_object()
+        .unwrap_or_else(|| panic!("payload between sentinels is not a JSON object: {payload:?}"))
+        .clone();
 
     let mut leaks: Vec<String> = Vec::new();
     for op in FORBIDDEN_OPS {
