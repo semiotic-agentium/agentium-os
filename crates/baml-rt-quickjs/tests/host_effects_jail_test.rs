@@ -116,7 +116,10 @@ async fn host_effects_jail_rejects_forbidden_globals() {
     let mut leaks: Vec<String> = Vec::new();
     for op in FORBIDDEN_OPS {
         let Some(entry) = report.get(*op) else {
-            leaks.push(format!("`{op}`: report missing entry; report keys: {:?}", report.keys().collect::<Vec<_>>()));
+            leaks.push(format!(
+                "`{op}`: report missing entry; report keys: {:?}",
+                report.keys().collect::<Vec<_>>()
+            ));
             continue;
         };
         let Some(rejected) = entry.get("rejected").and_then(Value::as_bool) else {
@@ -125,7 +128,9 @@ async fn host_effects_jail_rejects_forbidden_globals() {
         };
         if !rejected {
             let detail = entry.get("detail").and_then(Value::as_str).unwrap_or("?");
-            leaks.push(format!("`{op}` is reachable from agent JS. detail: {detail}"));
+            leaks.push(format!(
+                "`{op}` is reachable from agent JS. detail: {detail}"
+            ));
         }
     }
     assert!(
