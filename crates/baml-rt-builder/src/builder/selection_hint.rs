@@ -38,6 +38,19 @@ pub(crate) fn render_selection_hint(shape: &ReturnShape) -> String {
 }
 
 fn render_tagged_union_hint(tagged: &TaggedUnionShape) -> String {
+    if tagged.discriminator == "op" {
+        let mut values: Vec<String> = tagged
+            .variants
+            .iter()
+            .map(|variant| format!("{:?}", variant.literal_value))
+            .collect();
+        values.sort();
+        values.dedup();
+        return format!(
+            "Return exactly one JSON object.\nUse only the schema above.\nLegal operation discriminator values derived from this return union: `op` in {}.\nDo not add text before or after the JSON object.\n",
+            values.join(" | ")
+        );
+    }
     let mut out = format!(
         "Return exactly one JSON object.\nSelect the object shape with discriminator `{}`:\n",
         tagged.discriminator

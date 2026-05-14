@@ -114,11 +114,11 @@ class ReadOnlyFinishStep {
 }
 // Domain types generated from JSON schemas
 class ConversationPart {
-  text string | null?
-  raw string | null?
-  url string | null?
-  filename string | null?
-  media_type string | null?
+  text string | null? @description("Plain text content for this conversation part.")
+  raw string | null? @description("Raw provider-native content when plain text would be lossy or unavailable.")
+  url string | null? @description("Remote URL for this part when the content points to a web or attachment resource.")
+  filename string | null? @description("Attachment filename when this part refers to a file.")
+  media_type string | null? @description("MIME type for this part, for example text/plain or image/png.")
 }
 
 class ConversationMessage {
@@ -228,18 +228,4 @@ type SystemInternalA2aSessionStep = SystemInternalA2aOpenStep | SystemInternalA2
 class SystemInternalA2aSessionPlan {
   step SystemInternalA2aSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes above — do not paraphrase them in prose. A @N in history is a handle until you read it. For A2A Send, `input.text` is required when sending. Access: write.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
-}
-
-
-
-// ── builder: agent-wide tool schema catalog (from IR) ──
-
-/// Auto-generated agent-wide tool schema catalog.
-/// Rendered once at build time into _baml_tool_schema_catalog.txt and loaded as ctx.tags['tool_schema_prelude'].
-/// Never invoked against an LLM — exists only to drive BAML's ctx.output_format renderer.
-function AgentToolSchemaCatalog__bamlrt() -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemInternalA2aAbortStep | SystemInternalA2aFinishStep | SystemInternalA2aOpenStep | SystemInternalA2aSendStep {
-  client DefaultClient
-  prompt #"
-{{ ctx.output_format }}
-"#
 }

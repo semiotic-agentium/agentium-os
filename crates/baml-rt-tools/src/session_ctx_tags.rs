@@ -1,4 +1,4 @@
-//! Archive / read-before-repeat policy prepended to **generated** step-executor phase prompts.
+//! Archive / citation micro-grammar prepended to **generated** step-executor phase prompts.
 //!
 //! The policy text is embedded **literally** at the start of each per-phase `prompt` body (see
 //! [`SESSION_STEP_STABLE_PREFIX_BAML`]).
@@ -7,26 +7,25 @@
 //! step-executor `invoke_function_with_intra` path — receive `ctx.tags['tool_schema_prelude']`
 //! when the agent package ships a rendered catalog sidecar
 //! ([`TOOL_SCHEMA_CATALOG_SIDECAR_FILE`]). The prelude is the JSON-shape catalog text built at
-//! build time from the synthetic `AgentToolSchemaCatalog__bamlrt` BAML function via
-//! `{{ ctx.output_format }}`. Tag injection is centralised in
+//! build time by walking the compiled BAML IR for stable tool / operation vocabulary. Tag
+//! injection is centralised in
 //! `BamlRuntimeManager::enrich_with_tool_schema_prelude` so adding a new invocation surface
 //! cannot accidentally drop the catalog prefix.
 
-/// Place at the **start** of generated step-executor `prompt` bodies (before the phase cue and
-/// parent IR template). Same prose historically injected under `session_step_stable_prefix`; now
-/// inlined so `ctx.tags` carries history only via `conversation_transcript`.
-pub const SESSION_STEP_STABLE_PREFIX_BAML: &str = "Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.\n\n\
-     For `op: \"Open\"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.\n\n";
+/// Place at the **start** of generated step-executor `prompt` bodies. This is the stable
+/// pre-history archive/citation grammar; operation field shapes live in the IR-derived
+/// `tool_schema_prelude` vocabulary, not in this prose.
+pub const SESSION_STEP_STABLE_PREFIX_BAML: &str = "Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.\n\
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.\n\n";
 
 /// Alias for callers that referred to the injected-string constant by value name.
 pub const SESSION_STEP_STABLE_PREFIX_VALUE: &str = SESSION_STEP_STABLE_PREFIX_BAML;
 
 /// `ctx.tags` key for the rendered agent-wide tool schema catalog on step-executor hops.
 ///
-/// The value is the JSON-shape catalog text rendered at build time from the synthetic
-/// `__AgentToolSchemaCatalog__` BAML function via BAML's standard `{{ ctx.output_format }}`
-/// machinery. Stable per agent package — used as the cacheable prefix of every step-executor
-/// prompt. Replaces the legacy practice of dumping `_baml_runtime.baml` source text here.
+/// The value is the IR-derived stable tool / operation vocabulary rendered at build time into
+/// `_baml_tool_schema_catalog.txt`. Stable per agent package — used as the cacheable prefix of
+/// every step-executor prompt.
 pub const TOOL_SCHEMA_PRELUDE_TAG: &str = "tool_schema_prelude";
 
 /// Filename of the rendered tool schema catalog sidecar inside an agent's `baml_src/` directory.

@@ -1,18 +1,11 @@
-//! Integration tests for the agent-wide tool schema catalog.
+//! Integration tests for the stable tool-schema sidecar and prompt layout invariants.
 //!
-//! Verifies the four invariants the catalog must hold for the model-facing prompt to remain
-//! cacheable, source-free, and IR-derived:
+//! Verifies the key properties of the model-facing prompt surface:
 //!
-//! 1. **No raw BAML source.** The rendered catalog text contains no `function `, `prompt #`,
-//!    `client `, `class `, or `ctx.tags` tokens — those are compiler artefacts, not model input.
-//! 2. **All manifest tools represented.** Every tool in the agent manifest has its `*OpenStep`,
-//!    `*SendStep`, `*FinishStep`, and `*AbortStep` rendered, plus the shared archive-read and
-//!    read-only-finish steps.
-//! 3. **Phase prompt at the top.** The generated entry / active phase functions inject the
-//!    catalog via `{% if ctx.tags['tool_schema_prelude'] %}` *before* IR task body / session
-//!    history / output-format directives.
-//! 4. **Narrowed-union footer at the bottom.** The narrowed return union appears after the
-//!    session-history Jinja block and is paired with the bottom-of-prompt emit instruction.
+//! 1. **Stable sidecar is source-free and IR-derived.**
+//! 2. **All manifest tools and shared operation types are represented.**
+//! 3. **Generated prompts share the same byte-identical prefix up to `Session history`.**
+//! 4. **Per-hop schema binding lives after history, with no phase cue or union footer before it.**
 
 use std::fs;
 
@@ -110,14 +103,7 @@ async fn catalog_text_is_source_free() {
     let root = build_calculator_agent().await;
     let catalog = read_catalog_text(root.path());
 
-    let forbidden = [
-        "function ",
-        "prompt #",
-        "client ",
-        "class ",
-        "ctx.tags",
-        "ctx.output_format",
-    ];
+    let forbidden = ["function ", "prompt #", "client ", "class ", "ctx.tags"];
     for needle in forbidden {
         assert!(
             !catalog.contains(needle),
@@ -126,8 +112,8 @@ async fn catalog_text_is_source_free() {
     }
 
     assert!(
-        catalog.contains("Answer in JSON"),
-        "catalog should be a JSON-shape schema rendered by ctx.output_format: \n{catalog}"
+        catalog.contains("Generated from compiled BAML IR."),
+        "catalog should declare its IR-derived origin: \n{catalog}"
     );
 }
 
@@ -136,30 +122,76 @@ async fn catalog_includes_every_manifest_tool_step_kind() {
     let root = build_calculator_agent().await;
     let catalog = read_catalog_text(root.path());
 
-    for op in ["Open", "Send", "Finish", "Abort"] {
-        let needle = format!("op: \"{op}\"");
+    for ty in [
+        "type SupportCalculateOpenStep = {",
+        "type SupportCalculateSendStep = {",
+        "type SupportCalculateFinishStep = {",
+        "type SupportCalculateAbortStep = {",
+    ] {
         assert!(
-            catalog.contains(&needle),
-            "catalog must render the {op} step shape for every manifest tool: \n{catalog}"
+            catalog.contains(ty),
+            "catalog must render the stable operation type `{ty}`: \n{catalog}"
         );
     }
 
-    for shared in ["SearchRead", "PageRead", "ReadOnlyFinish"] {
-        let needle = format!("op: \"{shared}\"");
+    for shared in [
+        "type ArchiveSearchReadStep = {",
+        "type ArchivePageReadStep = {",
+        "type ReadOnlyFinishStep = {",
+    ] {
         assert!(
-            catalog.contains(&needle),
-            "catalog must render the shared {shared} archive/read-only step shape: \n{catalog}"
+            catalog.contains(shared),
+            "catalog must render the shared stable type `{shared}`: \n{catalog}"
         );
     }
 
     assert!(
-        catalog.contains("\"support/calculate\""),
-        "catalog must reference the manifest tool by qualified name in the Open shape: \n{catalog}"
+        catalog.contains("tool support/calculate"),
+        "catalog must reference the manifest tool by qualified name: \n{catalog}"
+    );
+    assert!(
+        catalog.contains(r#"@description("The binary expression to evaluate.")"#),
+        "catalog must preserve IR-derived field descriptions instead of flattening to bare types: \n{catalog}"
     );
 }
 
 #[tokio::test]
-async fn phase_function_prompts_inject_catalog_before_ir_body() {
+async fn generated_prompts_share_stable_prefix_before_history() {
+    let root = build_calculator_agent().await;
+    let generated = read_generated_baml(root.path());
+
+    let entry_idx = find_phase_function(&generated, "__entry").unwrap_or_else(|| {
+        panic!(
+            "expected an entry phase function (`__entry`) in generated baml; functions found:\n{}",
+            list_functions(&generated)
+        )
+    });
+    let entry_body = function_body(&generated, entry_idx);
+    let active_idx = find_phase_function(&generated, "__active__support_calculate").unwrap_or_else(|| {
+        panic!(
+            "expected an active phase function for support/calculate in generated baml; functions found:\n{}",
+            list_functions(&generated)
+        )
+    });
+    let active_body = function_body(&generated, active_idx);
+
+    let entry_prompt_start = entry_body.find("prompt #\"").expect("entry prompt body");
+    let active_prompt_start = active_body.find("prompt #\"").expect("active prompt body");
+    let entry_prefix_end = entry_body
+        .find("Session history:")
+        .expect("entry history marker");
+    let active_prefix_end = active_body
+        .find("Session history:")
+        .expect("active history marker");
+    assert_eq!(
+        &entry_body[entry_prompt_start..entry_prefix_end],
+        &active_body[active_prompt_start..active_prefix_end],
+        "entry and active prompts must share the same pre-history prefix"
+    );
+}
+
+#[tokio::test]
+async fn phase_function_prompts_place_schema_after_history_and_task_body() {
     let root = build_calculator_agent().await;
     let generated = read_generated_baml(root.path());
 
@@ -174,32 +206,37 @@ async fn phase_function_prompts_inject_catalog_before_ir_body() {
     let prelude_pos = entry_body
         .find("{% if ctx.tags['tool_schema_prelude'] %}")
         .expect("entry prompt must inject catalog via tool_schema_prelude tag");
-    let cue_pos = entry_body
-        .find("Phase: ENTRY")
-        .expect("entry prompt must include phase cue");
-    let footer_pos = entry_body
-        .find("Narrowed return union for this hop only:")
-        .expect("entry prompt must contain narrowed-union footer");
-    let emit_pos = entry_body
-        .find("Return exactly one JSON object.")
-        .expect("entry prompt must contain generated selection hint at bottom");
+    let history_pos = entry_body
+        .find("Session history:")
+        .expect("entry prompt must include history");
+    let task_pos = entry_body
+        .find("The user said: { user_message }")
+        .expect("entry prompt must include the stripped task body");
+    let schema_pos = entry_body
+        .find("{{ ctx.output_format }}")
+        .expect("entry prompt must bind the narrowed schema after history");
 
     assert!(
-        prelude_pos < cue_pos,
-        "catalog prelude block must precede phase cue (cache prefix discipline): {entry_body}"
+        prelude_pos < history_pos,
+        "catalog prelude block must precede session history: {entry_body}"
     );
     assert!(
-        cue_pos < footer_pos,
-        "phase cue must precede narrowed-union footer: {entry_body}"
+        history_pos < task_pos,
+        "session history must precede task body: {entry_body}"
     );
     assert!(
-        footer_pos < emit_pos,
-        "narrowed-union footer must precede emit instruction: {entry_body}"
+        task_pos < schema_pos,
+        "task body must precede the per-hop schema binding: {entry_body}"
+    );
+    assert!(
+        !entry_body.contains("Phase: ENTRY")
+            && !entry_body.contains("Narrowed return union for this hop only:"),
+        "entry prompt must not contain legacy phase cues or union footers: {entry_body}"
     );
 }
 
 #[tokio::test]
-async fn phase_function_prompts_have_no_per_hop_output_format_for_tool_phases() {
+async fn phase_function_prompts_have_exactly_one_per_hop_output_format() {
     let root = build_calculator_agent().await;
     let generated = read_generated_baml(root.path());
 
@@ -213,13 +250,14 @@ async fn phase_function_prompts_have_no_per_hop_output_format_for_tool_phases() 
 
     let direct_output_format_count = active_body.matches("{{ ctx.output_format }}").count();
     assert_eq!(
-        direct_output_format_count, 0,
-        "tool-session phase prompts must not duplicate per-hop ctx.output_format — schemas live in the catalog at the top: {active_body}"
+        direct_output_format_count, 1,
+        "tool-session phase prompts must render exactly one per-hop ctx.output_format: {active_body}"
     );
 
     assert!(
-        active_body.contains("Narrowed return union for this hop only:"),
-        "active prompt must keep the narrowed-union footer: {active_body}"
+        !active_body.contains("Phase: ACTIVE")
+            && !active_body.contains("Narrowed return union for this hop only:"),
+        "active prompt must not keep the old phase cue or union footer: {active_body}"
     );
 }
 
@@ -229,7 +267,7 @@ async fn authored_non_fsm_function_gets_canonical_prefix_after_rewrite() {
     let authored = read_authored_prompt(root.path(), "plain_agent_prompt.baml");
 
     assert!(
-        authored.contains("Archive: a `tool: @N`"),
+        authored.contains("Archive refs: `@N`"),
         "authored prompt must open with the canonical archive prefix after the rewriter runs:\n{authored}"
     );
     assert!(
@@ -246,14 +284,17 @@ async fn authored_non_fsm_function_gets_canonical_prefix_after_rewrite() {
     );
 
     let prefix_pos = authored
-        .find("Archive: a `tool: @N`")
+        .find("Archive refs: `@N`")
         .expect("canonical prefix");
+    let history_pos = authored
+        .find("{% if ctx.tags['conversation_transcript'] %}")
+        .expect("history block");
     let author_pos = authored
         .find("You are a helpful agent.")
         .expect("author body");
     assert!(
-        prefix_pos < author_pos,
-        "canonical prefix must precede author task body:\n{authored}"
+        prefix_pos < history_pos && history_pos < author_pos,
+        "canonical prefix and history must precede author task body:\n{authored}"
     );
 }
 
@@ -274,9 +315,12 @@ async fn authored_non_fsm_function_has_one_canonical_output_format() {
     let transcript_pos = authored
         .find("{% if ctx.tags['conversation_transcript'] %}")
         .expect("transcript block");
+    let author_pos = authored
+        .find("You are a helpful agent.")
+        .expect("author body");
     assert!(
-        transcript_pos < of_pos,
-        "transcript block must precede the canonical output_format line:\n{authored}"
+        transcript_pos < author_pos && author_pos < of_pos,
+        "transcript block must precede author body, which must precede the canonical output_format line:\n{authored}"
     );
 }
 
@@ -299,31 +343,5 @@ async fn session_plan_parent_function_is_not_rewritten() {
     assert_eq!(
         archive_count, 0,
         "session-plan parent must not have the canonical archive prefix injected:\n{authored}"
-    );
-}
-
-#[tokio::test]
-async fn catalog_function_in_generated_baml_uses_output_format_only() {
-    let root = build_calculator_agent().await;
-    let generated = read_generated_baml(root.path());
-
-    let catalog_fn = "function AgentToolSchemaCatalog__bamlrt";
-    let idx = generated
-        .find(catalog_fn)
-        .expect("synthetic catalog function must be appended to generated baml");
-    let tail = &generated[idx..];
-    assert!(
-        tail.contains("{{ ctx.output_format }}"),
-        "catalog function prompt must be exactly `{{{{ ctx.output_format }}}}` so BAML's renderer drives the schema: {tail}"
-    );
-    let union_pos = tail
-        .find("->")
-        .expect("catalog function must declare a return union");
-    let body_open = tail
-        .find('{')
-        .expect("catalog function must declare a body");
-    assert!(
-        union_pos < body_open,
-        "catalog return union must precede body in declaration: {tail}"
     );
 }

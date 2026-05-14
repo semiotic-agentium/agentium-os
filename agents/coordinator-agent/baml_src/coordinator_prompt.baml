@@ -29,36 +29,41 @@ class CoordinatorMetaOnly {
 
 function ClassifyCoordinatorTurn(user_message: string) -> CoordinatorReadyIntent | CoordinatorNeedTaskClarification | CoordinatorMetaOnly {
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You classify this turn for a **coordinator agent** that routes **real work** to specialist agents (after discovery). **Discovery of specialists runs only after** a delegatable task exists OR the user explicitly asks what agents or tools exist (capabilities orientation).
-
-    Use these meanings:
-
-    **CoordinatorReadyIntent** — The user stated or strongly implies a **concrete task** a specialist could execute: lookups, searches, summaries scoped to a system, ticket or issue work, analysis with a defined goal, multi-step investigation with identifiable deliverables. Fill `inferred_intent`: one sentence, **goal-level outcome only** (no agent names, tools, or \"tell X to …\").
-
-    **CoordinatorNeedTaskClarification** — The user may want help but you **cannot** name a routable task yet: vague \"help me\", \"do something\", \"fix it\" without referent, missing target (which channel, document, list), ambiguous scope, **or** a bare greeting / filler with no ask (e.g. \"hi\", \"hey\", \"yo\" alone). Output **one** sharp `question` that would unlock a Ready turn next time. Prefer this over guessing a fake Ready intent.
-
-    **CoordinatorMetaOnly** — **No task to coordinate**: hello or thanks alone, jokes, pure social chat, \"what can you do\" / capabilities browsing without naming work, or meta discussion without asking for work product.
-
-    Rules:
-    - **Bare greetings** (\"hi\", \"hello\", \"hey\") with no other ask → **CoordinatorNeedTaskClarification** with one question such as what they want coordinated, **not** Ready.
-    - If torn between Ready and Clarification, choose **CoordinatorNeedTaskClarification**.
-    - Do not emit Ready with a hand-wavy generic intent when the user gave no actionable anchor.
-
-    {{ _.role('user') }}
-    {{ user_message }}
-
+{% endif %}
 {% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+You classify this turn for a **coordinator agent** that routes **real work** to specialist agents (after discovery). **Discovery of specialists runs only after** a delegatable task exists OR the user explicitly asks what agents or tools exist (capabilities orientation).
+
+    Classify the latest turn using the conversation history for context.
+
+    Concrete specialist work means a real delegatable task: lookups, searches, summaries scoped to a system,
+    ticket or issue work, analysis with a defined goal, or multi-step investigation with identifiable deliverables.
+    When that exists, `inferred_intent` must be one sentence describing the goal-level outcome only
+    (no agent names, tools, or \"tell X to …\").
+
+    When the user may want help but you still cannot name a routable task, ask one sharp question that would
+    unlock concrete work on the next turn. Prefer that over inventing a fake actionable intent.
+
+    Greetings, thanks, jokes, pure social chat, capabilities browsing, and other no-work turns should stay meta-only.
+
+    Rules:
+    - **Bare greetings** (\"hi\", \"hello\", \"hey\") with no other ask should trigger one clarification question, not a ready-to-route task.
+    - If torn between ready work and clarification, prefer clarification.
+    - Do not treat the turn as ready-to-route when the user gave no actionable anchor.
+
+    {{ _.role('user') }}
+    {{ user_message }}
+
+{{ ctx.output_format }}
 
 Return exactly one JSON object.
 Select the object shape with discriminator `kind`:
@@ -67,8 +72,6 @@ Select the object shape with discriminator `kind`:
 - `kind: "meta"` -> CoordinatorMetaOnly
 Set `kind` exactly. Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 
@@ -78,15 +81,19 @@ Do not add text before or after the JSON object.
 // The session history carries the Read result from the preceding GetDiscoverAgentsPlan call.
 function FormatCapabilities(user_message: string) -> StructuredReply {
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You are the coordinator agent: calm, precise, and brief. Use prior turns from the transcript below when present for continuity.
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+You are the coordinator agent: calm, precise, and brief. Use prior turns from the transcript below when present for continuity.
 
     If the session history includes a tool discovery **Read** result, summarize those agents in clear professional language (what each is for, major capabilities).
     If there is **no** discovery listing in history (meta-only turn without specialist search), answer briefly: greet if appropriate and explain you are ready when they name a task or ask what coordination does — **do not invent** agent package names.
@@ -95,10 +102,7 @@ Tool and session-step types (authoritative field shapes):
     {{ _.role('user') }}
     {{ user_message }}
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one `StructuredReply` JSON object.
 If `parts[]` is present, choose each item with discriminator `type`:
@@ -106,8 +110,6 @@ If `parts[]` is present, choose each item with discriminator `type`:
 - `type: "data"` -> DataPart
 Set `type` exactly for each `parts[]` item.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 
@@ -116,15 +118,19 @@ Do not add text before or after the JSON object.
 // Never plan a step for coordinator-agent. For capability/meta requests, return plan_steps as [].
 function MakeStructuredPlan(user_message: string) -> StandardStructuredPlan {
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You are PLANNING what to do; you do not perform the task yourself.
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+You are PLANNING what to do; you do not perform the task yourself.
     When discovery ran, the session history contains the list of available agents; when it did **not** run (greeting/meta-only path), there may be **no** agent listing — treat `plan_steps` as `[]` unless the user clearly stated routable work that implies delegation without that listing.
 
     **Coordinator rule:** Non-empty `plan_steps` means at least one specialist conversation is justified by the user's message **and** (when present) the discovery list. If the user only wants orientation (capabilities, greetings, small talk), or discovery did not run and they did not state concrete work, `plan_steps` MUST be `[]`. If the user gave a concrete task matching one or more agents **in history**, include at least one step. Never invent agent packages not grounded in history.
@@ -148,15 +154,10 @@ Tool and session-step types (authoritative field shapes):
     {{ _.role('user') }}
     {{ user_message }}
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one `StandardStructuredPlan` JSON object.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 
@@ -181,15 +182,19 @@ function CoordinatorSynthesizeReply(
   plan_objective: string,
 ) -> StructuredReply {
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You are the coordinator agent: professional, concise, and accurate. Use prior turns from the transcript below when present for continuity.
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+You are the coordinator agent: professional, concise, and accurate. Use prior turns from the transcript below when present for continuity.
 
     The user asked: {{ user_message }}
     Plan objective: {{ plan_objective }}
@@ -198,10 +203,7 @@ Tool and session-step types (authoritative field shapes):
     Match the output schema exactly (StructuredReply: parts + citations).
     Synthesize across steps when needed; prefer bullet structure in markdown only when it improves clarity.
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one `StructuredReply` JSON object.
 If `parts[]` is present, choose each item with discriminator `type`:
@@ -209,8 +211,6 @@ If `parts[]` is present, choose each item with discriminator `type`:
 - `type: "data"` -> DataPart
 Set `type` exactly for each `parts[]` item.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 

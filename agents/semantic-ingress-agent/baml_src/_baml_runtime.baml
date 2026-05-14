@@ -350,11 +350,11 @@ class DiscoverAgentsSendInput {
 }
 
 class ConversationPart {
-  text string | null?
-  raw string | null?
-  url string | null?
-  filename string | null?
-  media_type string | null?
+  text string | null? @description("Plain text content for this conversation part.")
+  raw string | null? @description("Raw provider-native content when plain text would be lossy or unavailable.")
+  url string | null? @description("Remote URL for this part when the content points to a web or attachment resource.")
+  filename string | null? @description("Attachment filename when this part refers to a file.")
+  media_type string | null? @description("MIME type for this part, for example text/plain or image/png.")
 }
 
 class ConversationMessage {

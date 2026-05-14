@@ -69,8 +69,8 @@ fn expand_struct(
     let mut field_tokens = Vec::new();
     // Each entry is `(field_name_str, ts_type_expr)` for non-skipped fields.
     let mut ts_field_pairs: Vec<(String, TokenStream)> = Vec::new();
-    // Each entry is `(field_name_str, schema_expr, is_required)` for non-skipped fields.
-    let mut schema_field_triples: Vec<(String, TokenStream, bool)> = Vec::new();
+    // Each entry is `(field_name_str, schema_expr, description, is_required)` for non-skipped fields.
+    let mut schema_field_triples: Vec<(String, TokenStream, Option<String>, bool)> = Vec::new();
     let mut dep_names = Vec::new();
     let mut ts_dep_names: Vec<String> = Vec::new();
 
@@ -164,7 +164,12 @@ fn expand_struct(
                 }
             };
             let is_required = !is_option_type(&field.ty);
-            schema_field_triples.push((field_name_str.clone(), schema_expr, is_required));
+            schema_field_triples.push((
+                field_name_str.clone(),
+                schema_expr,
+                field_attrs.description.clone(),
+                is_required,
+            ));
         }
 
         field_tokens.push(quote! {
@@ -198,16 +203,28 @@ fn expand_struct(
     // JSON Schema: build properties insertions and required list.
     let schema_prop_stmts: Vec<TokenStream> = schema_field_triples
         .iter()
-        .map(|(fname, schema_expr, _)| {
+        .map(|(fname, schema_expr, description, _)| {
+            let description_stmt = description.as_ref().map(|description| {
+                quote! {
+                    if let ::serde_json::Value::Object(ref mut __field_schema_obj) = __field_schema {
+                        __field_schema_obj.insert(
+                            "description".to_string(),
+                            ::serde_json::Value::String(#description.to_string()),
+                        );
+                    }
+                }
+            });
             quote! {
-                __props.insert(#fname.to_string(), #schema_expr);
+                let mut __field_schema = #schema_expr;
+                #description_stmt
+                __props.insert(#fname.to_string(), __field_schema);
             }
         })
         .collect();
     let schema_required_stmts: Vec<TokenStream> = schema_field_triples
         .iter()
-        .filter(|(_, _, req)| *req)
-        .map(|(fname, _, _)| {
+        .filter(|(_, _, _, req)| *req)
+        .map(|(fname, _, _, _)| {
             quote! {
                 __required.push(::serde_json::Value::String(#fname.to_string()));
             }

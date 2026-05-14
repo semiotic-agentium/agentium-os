@@ -72,6 +72,6 @@ pub fn purge_managed_generated_baml_files(dir: &std::path::Path) -> std::io::Res
 
 pub use session_from_ir::{
     CATALOG_FUNCTION_NAME, CATALOG_SIDECAR_FILE, CatalogPlan, GeneratedSessionBaml,
-    SessionPlanIrInspector, catalog::render_catalog_prompt, render_generated_session_baml_from_ir,
+    SessionPlanIrInspector, render_generated_session_baml_from_ir,
 };
 pub use tool_interfaces::{render_baml_tool_interfaces, render_baml_tool_interfaces_with_mcp_root};

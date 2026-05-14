@@ -26,15 +26,19 @@ class NotionIntent {
 /// Returns a clean intent statement so the planner works with validated input, not raw user text.
 function InferNotionIntent(user_message: string) -> NeedClarification | NotRelevant | NotionIntent {
   client OpenRouterGPT
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You are the intent classifier for a read-only Notion assistant.
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+You are the intent classifier for a read-only Notion assistant.
     Your only job is to understand what the user wants — do NOT retrieve any content, do NOT plan.
 
     Classify the LATEST user message, using the conversation history below for full context.
@@ -43,25 +47,22 @@ Tool and session-step types (authoritative field shapes):
     EARLIER messages in the history — do NOT ask again.
 
     Classify:
-    - NotRelevant: clearly nothing to do with Notion content (creative writing, maths, general chat).
-    - NeedClarification: ONLY when there is genuinely no topic or subject anywhere in the conversation.
-      If ANY noun, domain term, or topic appears in any message, prefer NotionIntent.
-    - NotionIntent: the request is clear enough. Return a clean, distilled goal statement.
+    - Mark not relevant only when the request clearly has nothing to do with Notion content (creative writing, maths, general chat).
+    - Ask one clarifying question ONLY when there is genuinely no topic or subject anywhere in the conversation.
+      If ANY noun, domain term, or topic appears in any message, prefer a distilled intent over another clarification.
+    - Otherwise treat the request as clear enough and return a clean, distilled goal statement.
 
     Examples:
-    - "tell me something useful about the agent platform" → NotionIntent: "Find useful information about the agent platform"
-    - "what are we shipping in Q3?" → NotionIntent: "Find Q3 shipping commitments or roadmap"
-    - "summarise the phoenix project page" → NotionIntent: "Summarise the Project Phoenix Notion page"
-    - "write me a poem" → NotRelevant: "This is a creative writing request, not a Notion query"
-    - "look it up" (no topic anywhere in history) → NeedClarification: "What topic or page should I search for?"
+    - "tell me something useful about the agent platform" → "Find useful information about the agent platform"
+    - "what are we shipping in Q3?" → "Find Q3 shipping commitments or roadmap"
+    - "summarise the phoenix project page" → "Summarise the Project Phoenix Notion page"
+    - "write me a poem" → not relevant to a Notion query
+    - "look it up" (no topic anywhere in history) → ask what topic or page to search for
 
     {{ _.role('user') }}
     {{ user_message }}
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one JSON object.
 Select the object shape with discriminator `kind`:
@@ -70,8 +71,6 @@ Select the object shape with discriminator `kind`:
 - `kind: "intent"` -> NotionIntent
 Set `kind` exactly. Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 
@@ -91,15 +90,19 @@ class NotionPlanStep {
 
 function PlanNotionWork(intent: string) -> NotionPlan {
   client OpenRouterGPT
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You are the planner for a read-only Notion assistant.
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+You are the planner for a read-only Notion assistant.
     Validated intent: {{ intent }}
     Produce a step plan only — the runtime performs Notion calls; you do not fetch data here.
 
@@ -127,15 +130,10 @@ Tool and session-step types (authoritative field shapes):
 
     Keep step ids short, lowercase, kebab-case, unique.
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one `NotionPlan` JSON object.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 
@@ -169,15 +167,19 @@ function ReactToNotionResults(
   user_message: string,
 ) -> StructuredReply {
   client OpenRouterGPT
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You retrieved content from Notion. Now respond to the user directly.
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+You retrieved content from Notion. Now respond to the user directly.
     Match the output schema exactly (StructuredReply: parts + citations).
 
     The user asked: {{ user_message }}
@@ -191,10 +193,7 @@ Tool and session-step types (authoritative field shapes):
     - If nothing relevant was found, say so plainly and suggest what to try next.
     - Match depth to the request: a "quick lookup" warrants a sentence or two; a "deep dive" warrants a full answer.
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one `StructuredReply` JSON object.
 If `parts[]` is present, choose each item with discriminator `type`:
@@ -202,8 +201,6 @@ If `parts[]` is present, choose each item with discriminator `type`:
 - `type: "data"` -> DataPart
 Set `type` exactly for each `parts[]` item.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 
@@ -221,15 +218,19 @@ function SummarizeNotionContent(
   blocks_text: string
 ) -> NotionSummary {
   client OpenRouterGPT
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You summarize Notion content for busy engineers and BizDev.
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+You summarize Notion content for busy engineers and BizDev.
 
     Requirements:
     - Use plain language.
@@ -249,15 +250,10 @@ Tool and session-step types (authoritative field shapes):
     Notion content:
     {{ blocks_text }}
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one `NotionSummary` JSON object.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 

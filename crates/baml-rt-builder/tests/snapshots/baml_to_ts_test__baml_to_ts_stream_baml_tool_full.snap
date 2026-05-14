@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-builder/tests/baml_to_ts_test.rs
+assertion_line: 65
 expression: ts
 ---
 /**

@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-builder/tests/codegen_test.rs
+assertion_line: 250
 expression: ts_output
 ---
 /**

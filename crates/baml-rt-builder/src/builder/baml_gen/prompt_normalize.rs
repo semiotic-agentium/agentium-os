@@ -17,6 +17,8 @@ use baml_rt_tools::SESSION_STEP_STABLE_PREFIX_BAML;
 use regex::Regex;
 
 const AUTHORED_SELECTION_HINT: &str = "Return exactly one output matching the schema below. Do not add extra text before or after it.";
+const LEGACY_ARCHIVE_HANDLE_GUIDANCE: &str = "Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.";
+const LEGACY_OPEN_FIELD_GUIDANCE: &str = "For `op: \"Open\"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.";
 
 static EXTRA_BLANK_RUNS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\n{3,}").expect("EXTRA_BLANK_RUNS: fixed \n{3,} pattern"));
@@ -63,6 +65,7 @@ impl AuthorBodySanitizer {
     pub fn for_authored(inner: &str) -> String {
         let s = strip_tool_schema_prelude_jinja_blocks(inner);
         let s = strip_canonical_archive_prefix_paragraph(&s);
+        let s = strip_legacy_archive_guidance_paragraphs(&s);
         let s = strip_authored_selection_hint(&s);
         let s = strip_conversation_transcript_jinja_blocks(&s);
         let s = strip_standalone_directive_lines(&s);
@@ -73,7 +76,11 @@ impl AuthorBodySanitizer {
     /// executors. Strips author transcript / output_format directives plus legacy bracket /
     /// `Phase: SELECT|ACT|CONTINUE` cues that codegen now owns.
     pub fn for_phase_ir(template: &str) -> String {
-        let s = strip_standalone_directive_lines(template);
+        let s = strip_tool_schema_prelude_jinja_blocks(template);
+        let s = strip_canonical_archive_prefix_paragraph(&s);
+        let s = strip_legacy_archive_guidance_paragraphs(&s);
+        let s = strip_authored_selection_hint(&s);
+        let s = strip_standalone_directive_lines(&s);
         let s = strip_conversation_transcript_jinja_blocks(&s);
         let s = strip_legacy_bracket_phase_tag_lines(&s);
         let s = strip_legacy_phase_cue_lines(&s);
@@ -86,14 +93,22 @@ fn strip_standalone_directive_lines(template: &str) -> String {
         .lines()
         .filter(|line| {
             let t = line.trim_end_matches('\r').trim();
-            !is_standalone_output_format_line(t) && !is_standalone_conversation_transcript_line(t)
+            !is_standalone_output_format_line(t)
+                && !is_standalone_conversation_transcript_line(t)
+                && !is_standalone_role_directive_line(t)
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
 fn is_standalone_output_format_line(s: &str) -> bool {
-    s == "{{ ctx.output_format }}" || s == "{{ctx.output_format}}"
+    matches!(
+        s,
+        "{{ ctx.output_format }}"
+            | "{{ctx.output_format}}"
+            | "{ ctx.output_format }"
+            | "{ctx.output_format}"
+    )
 }
 
 fn is_standalone_conversation_transcript_line(s: &str) -> bool {
@@ -104,6 +119,11 @@ fn is_standalone_conversation_transcript_line(s: &str) -> bool {
             | "{{ ctx.tags.conversation_transcript }}"
             | "{{ctx.tags.conversation_transcript}}"
     )
+}
+
+fn is_standalone_role_directive_line(s: &str) -> bool {
+    let compact = s.replace(' ', "");
+    compact.starts_with("{_.role(") && compact.ends_with(")}")
 }
 
 fn strip_conversation_transcript_jinja_blocks(template: &str) -> String {
@@ -147,6 +167,17 @@ fn strip_canonical_archive_prefix_paragraph(template: &str) -> String {
     } else {
         template.to_string()
     }
+}
+
+fn strip_legacy_archive_guidance_paragraphs(template: &str) -> String {
+    template
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            trimmed != LEGACY_ARCHIVE_HANDLE_GUIDANCE && trimmed != LEGACY_OPEN_FIELD_GUIDANCE
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn strip_authored_selection_hint(template: &str) -> String {
@@ -217,6 +248,16 @@ mod tests {
     }
 
     #[test]
+    fn for_authored_strips_legacy_archive_guidance() {
+        let s = AuthorBodySanitizer::for_authored(&format!(
+            "{LEGACY_ARCHIVE_HANDLE_GUIDANCE}\n\n{LEGACY_OPEN_FIELD_GUIDANCE}\n\nBody.\n"
+        ));
+        assert!(!s.contains(LEGACY_ARCHIVE_HANDLE_GUIDANCE));
+        assert!(!s.contains(LEGACY_OPEN_FIELD_GUIDANCE));
+        assert!(s.contains("Body."));
+    }
+
+    #[test]
     fn for_authored_is_idempotent() {
         let once = AuthorBodySanitizer::for_authored("Body.\n");
         let twice = AuthorBodySanitizer::for_authored(&once);
@@ -265,5 +306,26 @@ mod tests {
         assert!(!s.contains("{{ ctx.output_format }}"));
         assert!(s.contains("Task."));
         assert!(s.contains("More."));
+    }
+
+    #[test]
+    fn for_phase_ir_strips_single_brace_output_format_and_role_lines() {
+        let s = AuthorBodySanitizer::for_phase_ir(
+            "Task.\n{ ctx.output_format }\n{ _.role('user') }\n{ input }\n",
+        );
+        assert!(!s.contains("{ ctx.output_format }"));
+        assert!(!s.contains("{ _.role('user') }"));
+        assert!(s.contains("{ input }"));
+    }
+
+    #[test]
+    fn for_phase_ir_strips_legacy_archive_guidance_and_generated_selection_lines() {
+        let s = AuthorBodySanitizer::for_phase_ir(&format!(
+            "{LEGACY_ARCHIVE_HANDLE_GUIDANCE}\n\n{LEGACY_OPEN_FIELD_GUIDANCE}\n\nTask.\nReturn exactly one JSON object.\nSelect the object shape with discriminator `kind`:\n- `kind: \"ready\"` -> Ready\nSet `kind` exactly. Do not mix fields from different object shapes.\nDo not add text before or after the JSON object.\n"
+        ));
+        assert!(!s.contains(LEGACY_ARCHIVE_HANDLE_GUIDANCE));
+        assert!(!s.contains(LEGACY_OPEN_FIELD_GUIDANCE));
+        assert!(!s.contains("Select the object shape with discriminator"));
+        assert!(s.contains("Task."));
     }
 }

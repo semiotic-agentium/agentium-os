@@ -15,30 +15,36 @@ use baml_rt_tools::{
 
 use super::prompt_normalize::AuthorBodySanitizer;
 
+#[derive(Clone, Copy)]
+pub(crate) struct StablePrefixSpec;
+
+pub(crate) struct PostHistorySpec<'a> {
+    pub task_body: &'a str,
+    pub selection_hint: &'a str,
+    pub phase_policy: Option<&'a str>,
+}
+
+pub(crate) struct PromptLayout<'a> {
+    pub stable_prefix: StablePrefixSpec,
+    pub post_history: PostHistorySpec<'a>,
+}
+
 /// Spec for tool-session phase executor (`__entry` / `__active__*`) prompts.
 pub struct ToolSessionPhaseSpec<'a> {
-    /// Phase cue line (`Phase: ENTRY — ...`, `Phase: ACTIVE — for X: ...`).
-    pub phase_cue: &'a str,
-    /// Optional supplement appended right after the cue (e.g. tool-specific guidance).
-    pub supplement_after_cue: Option<&'a str>,
     /// IR `prompt_template` text **after** [`AuthorBodySanitizer::for_phase_ir`] has cleaned it.
     pub stripped_ir_body: &'a str,
-    /// Variant names admissible for this hop. Their JSON shapes live in the catalog at the top.
-    pub legal_type_names: &'a [String],
     /// Generated selection hint derived from the narrowed return shape.
     pub selection_hint: &'a str,
-    /// Phase FSM constraint suffix (entry / active prose).
-    pub constraint_suffix: &'static str,
+    /// Compact state-indexed phase policy rendered after the schema binding.
+    pub phase_policy: &'a str,
 }
 
 /// Spec for unified-primary phase executor prompts (`__entry` for unified roots).
 pub struct UnifiedPrimaryPhaseSpec<'a> {
-    pub phase_cue: &'a str,
     pub stripped_ir_body: &'a str,
-    pub legal_type_names: &'a [String],
     pub selection_hint: &'a str,
-    /// Phase-constraint suffix appended after the narrowed-union footer.
-    pub extra_suffix: &'static str,
+    /// Compact state-indexed phase policy rendered after the schema binding.
+    pub phase_policy: &'a str,
 }
 
 /// Single domain object — all prompt assembly flows through this. Stateless; methods just emit
@@ -46,97 +52,88 @@ pub struct UnifiedPrimaryPhaseSpec<'a> {
 pub struct PromptCompositor;
 
 impl PromptCompositor {
-    /// Return the byte-identical canonical opening (stable archive policy + catalog if-block)
-    /// shared by every prompt the compositor emits.
+    /// Return the byte-identical canonical opening (stable archive policy + IR-derived tool
+    /// vocabulary + canonical transcript block) shared by every prompt the compositor emits.
     pub fn canonical_opening() -> String {
-        let mut s = String::with_capacity(
+        let layout = PromptLayout {
+            stable_prefix: StablePrefixSpec,
+            post_history: PostHistorySpec {
+                task_body: "",
+                selection_hint: "",
+                phase_policy: None,
+            },
+        };
+        let mut out = String::with_capacity(
             SESSION_STEP_STABLE_PREFIX_BAML
                 .len()
                 .saturating_add(TOOL_SCHEMA_PRELUDE_TAG.len().saturating_mul(4))
-                .saturating_add(96),
+                .saturating_add(CONVERSATION_TRANSCRIPT_TAG.len().saturating_mul(4))
+                .saturating_add(128),
         );
-        push_stable_archive_prefix(&mut s);
-        push_tool_schema_prelude_if_block(&mut s);
-        s
+        push_stable_prefix(&mut out, layout.stable_prefix);
+        push_transcript_if_block(&mut out);
+        out
     }
 
     /// Render an authored non-FSM function's `prompt #"..."#` inner body in canonical order:
-    /// stable prefix → catalog if-block → sanitized author body → transcript if-block → output
-    /// binding line. Used by the BAML source rewriter on every authored function except the
-    /// synthetic catalog and the IR-inlined parents (session-plan + unified-primary).
+    /// stable prefix → transcript if-block → sanitized author body → output binding line →
+    /// generated selection hint. Used by the BAML source rewriter on every authored function
+    /// except the IR-inlined parents (session-plan + unified-primary).
     pub fn authored_non_fsm(author_inner: &str, selection_hint: &str) -> String {
         let sanitized = AuthorBodySanitizer::for_authored(author_inner);
         let trimmed = sanitized.trim();
-
-        let mut out = String::with_capacity(author_inner.len() + 512);
-        push_stable_archive_prefix(&mut out);
-        push_tool_schema_prelude_if_block(&mut out);
-        push_task_body(&mut out, trimmed);
-        push_transcript_if_block(&mut out);
-        push_selection_hint(&mut out, selection_hint);
-        push_canonical_output_format_line(&mut out);
-        out
+        Self::render_layout(PromptLayout {
+            stable_prefix: StablePrefixSpec,
+            post_history: PostHistorySpec {
+                task_body: trimmed,
+                selection_hint,
+                phase_policy: None,
+            },
+        })
     }
 
     /// Render a tool-session phase executor (`__entry` / `__active__*`) prompt body. Same
-    /// opening as authored non-FSM, then phase cue + supplement + IR body + transcript + the
-    /// narrowed-union footer (no per-hop `{{ ctx.output_format }}` — schemas come from the
-    /// catalog tag at the top).
+    /// opening as authored non-FSM, then the IR task body, post-history `{{ ctx.output_format }}`,
+    /// the generated selection hint, and a compact state-indexed phase policy.
     pub fn tool_session_phase(spec: ToolSessionPhaseSpec<'_>) -> String {
-        let mut out = String::with_capacity(spec.stripped_ir_body.len() + 1024);
-        push_stable_archive_prefix(&mut out);
-        push_tool_schema_prelude_if_block(&mut out);
-        push_phase_cue(&mut out, spec.phase_cue);
-        push_supplement(&mut out, spec.supplement_after_cue);
-        push_task_body(&mut out, spec.stripped_ir_body.trim());
-        push_transcript_if_block(&mut out);
-        push_narrowed_union_footer(&mut out, spec.legal_type_names, spec.selection_hint);
-        out.push_str(spec.constraint_suffix);
-        out
+        Self::render_layout(PromptLayout {
+            stable_prefix: StablePrefixSpec,
+            post_history: PostHistorySpec {
+                task_body: spec.stripped_ir_body.trim(),
+                selection_hint: spec.selection_hint,
+                phase_policy: Some(spec.phase_policy),
+            },
+        })
     }
 
-    /// Render a unified-primary phase executor prompt body. Like `tool_session_phase` but with
-    /// an output-format binding before the narrowed-union footer (unified-primary roots admit
-    /// arbitrary structured outputs whose schema must be enumerated by BAML at render time).
+    /// Render a unified-primary phase executor prompt body. Same stable prefix and post-history
+    /// schema binding order as tool phases.
     pub fn unified_primary_phase(spec: UnifiedPrimaryPhaseSpec<'_>) -> String {
-        let mut out = String::with_capacity(spec.stripped_ir_body.len() + 1024);
-        push_stable_archive_prefix(&mut out);
-        push_tool_schema_prelude_if_block(&mut out);
-        push_phase_cue(&mut out, spec.phase_cue);
-        push_task_body(&mut out, spec.stripped_ir_body.trim());
+        Self::render_layout(PromptLayout {
+            stable_prefix: StablePrefixSpec,
+            post_history: PostHistorySpec {
+                task_body: spec.stripped_ir_body.trim(),
+                selection_hint: spec.selection_hint,
+                phase_policy: Some(spec.phase_policy),
+            },
+        })
+    }
+
+    fn render_layout(layout: PromptLayout<'_>) -> String {
+        let mut out = String::with_capacity(layout.post_history.task_body.len() + 768);
+        push_stable_prefix(&mut out, layout.stable_prefix);
         push_transcript_if_block(&mut out);
+        push_task_body(&mut out, layout.post_history.task_body);
         push_canonical_output_format_line(&mut out);
-        push_narrowed_union_footer(&mut out, spec.legal_type_names, spec.selection_hint);
-        out.push_str(spec.extra_suffix);
+        push_selection_hint(&mut out, layout.post_history.selection_hint);
+        push_phase_policy(&mut out, layout.post_history.phase_policy);
         out
     }
 }
 
-fn push_stable_archive_prefix(out: &mut String) {
+fn push_stable_prefix(out: &mut String, _spec: StablePrefixSpec) {
     out.push_str(SESSION_STEP_STABLE_PREFIX_BAML);
-}
-
-fn push_tool_schema_prelude_if_block(out: &mut String) {
-    out.push_str("{% if ctx.tags['");
-    out.push_str(TOOL_SCHEMA_PRELUDE_TAG);
-    out.push_str("'] %}\nTool and session-step types (authoritative field shapes):\n{{ ctx.tags['");
-    out.push_str(TOOL_SCHEMA_PRELUDE_TAG);
-    out.push_str("'] }}\n\n{% endif %}");
-}
-
-fn push_phase_cue(out: &mut String, cue: &str) {
-    out.push_str(cue);
-}
-
-fn push_supplement(out: &mut String, supplement: Option<&str>) {
-    if let Some(s) = supplement
-        && !s.is_empty()
-    {
-        out.push_str(s);
-        if !s.ends_with('\n') {
-            out.push('\n');
-        }
-    }
+    push_tool_schema_prelude_if_block(out);
 }
 
 fn push_task_body(out: &mut String, trimmed_body: &str) {
@@ -150,6 +147,9 @@ fn push_task_body(out: &mut String, trimmed_body: &str) {
 }
 
 fn push_transcript_if_block(out: &mut String) {
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
     out.push_str("{% if ctx.tags['");
     out.push_str(CONVERSATION_TRANSCRIPT_TAG);
     out.push_str("'] %}\nSession history:\n{{ ctx.tags['");
@@ -158,7 +158,6 @@ fn push_transcript_if_block(out: &mut String) {
 }
 
 fn push_canonical_output_format_line(out: &mut String) {
-    out.push('\n');
     out.push_str("{{ ctx.output_format }}\n");
 }
 
@@ -171,17 +170,23 @@ fn push_selection_hint(out: &mut String, selection_hint: &str) {
     out.push('\n');
 }
 
-fn push_narrowed_union_footer(out: &mut String, legal_type_names: &[String], selection_hint: &str) {
-    out.push_str("\n---\n");
-    out.push_str("Narrowed return union for this hop only:\n");
-    for name in legal_type_names {
-        out.push_str("- ");
-        out.push_str(name);
-        out.push('\n');
+fn push_phase_policy(out: &mut String, phase_policy: Option<&str>) {
+    if let Some(policy) = phase_policy {
+        let trimmed = policy.trim();
+        if !trimmed.is_empty() {
+            out.push('\n');
+            out.push_str(trimmed);
+            out.push('\n');
+        }
     }
-    out.push('\n');
-    out.push_str(selection_hint.trim_end());
-    out.push('\n');
+}
+
+fn push_tool_schema_prelude_if_block(out: &mut String) {
+    out.push_str("{% if ctx.tags['");
+    out.push_str(TOOL_SCHEMA_PRELUDE_TAG);
+    out.push_str("'] %}\nStable tool and operation types (IR-derived):\n{{ ctx.tags['");
+    out.push_str(TOOL_SCHEMA_PRELUDE_TAG);
+    out.push_str("'] }}\n\n{% endif %}\n");
 }
 
 #[cfg(test)]
@@ -196,19 +201,14 @@ mod tests {
             "Return exactly one output matching the schema below.\n",
         );
         let tool_session = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
-            phase_cue: "Phase: ENTRY\n",
-            supplement_after_cue: None,
             stripped_ir_body: "IR body.",
-            legal_type_names: &["StepType".to_string()],
             selection_hint: "Return exactly one JSON object.\n",
-            constraint_suffix: "",
+            phase_policy: "Phase policy:\n- Entry excludes Send.\n",
         });
         let unified = PromptCompositor::unified_primary_phase(UnifiedPrimaryPhaseSpec {
-            phase_cue: "Phase: STRUCTURED\n",
             stripped_ir_body: "IR body.",
-            legal_type_names: &["UnifiedOut".to_string()],
             selection_hint: "Return exactly one JSON object.\n",
-            extra_suffix: "",
+            phase_policy: "Phase policy:\n- Structured only.\n",
         });
         assert!(authored.starts_with(&opening));
         assert!(tool_session.starts_with(&opening));
@@ -223,40 +223,44 @@ mod tests {
         );
         assert_eq!(s.matches("{{ ctx.output_format }}").count(), 1);
         assert!(s.contains("Plan things."));
+        let hist_pos = s.find("Session history:").expect("history");
+        let task_pos = s.find("Plan things.").expect("task");
+        assert!(hist_pos < task_pos, "history must precede task body");
     }
 
     #[test]
-    fn tool_session_phase_omits_per_hop_output_format() {
+    fn tool_session_phase_includes_per_hop_output_format_after_history() {
         let s = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
-            phase_cue: "Phase: ENTRY\n",
-            supplement_after_cue: None,
             stripped_ir_body: "IR body.",
-            legal_type_names: &["A".to_string(), "B".to_string()],
             selection_hint: "Return exactly one JSON object.\n",
-            constraint_suffix: "",
-        });
-        assert!(!s.contains("{{ ctx.output_format }}"));
-        assert!(s.contains("- A\n"));
-        assert!(s.contains("- B\n"));
-        assert!(s.contains("Return exactly one JSON object."));
-    }
-
-    #[test]
-    fn unified_primary_includes_output_format_and_footer() {
-        let s = PromptCompositor::unified_primary_phase(UnifiedPrimaryPhaseSpec {
-            phase_cue: "Phase: STRUCTURED\n",
-            stripped_ir_body: "IR body.",
-            legal_type_names: &["A".to_string()],
-            selection_hint: "Return exactly one JSON object.\n",
-            extra_suffix: "",
+            phase_policy: "Phase policy:\n- Entry excludes Send.\n",
         });
         assert_eq!(s.matches("{{ ctx.output_format }}").count(), 1);
-        assert!(s.contains("- A\n"));
-        let of_pos = s.find("{{ ctx.output_format }}").expect("of present");
-        let footer_pos = s.find("Narrowed return union").expect("footer present");
+        assert!(s.contains("Return exactly one JSON object."));
+        assert!(s.contains("Phase policy:"));
+        let hist_pos = s.find("Session history:").expect("history");
+        let task_pos = s.find("IR body.").expect("task");
+        let schema_pos = s.find("{{ ctx.output_format }}").expect("schema");
+        assert!(hist_pos < task_pos, "history must precede task body");
         assert!(
-            of_pos < footer_pos,
-            "output_format must precede narrowed union footer"
+            task_pos < schema_pos,
+            "task body must precede output format"
         );
+    }
+
+    #[test]
+    fn unified_primary_includes_output_format_after_history() {
+        let s = PromptCompositor::unified_primary_phase(UnifiedPrimaryPhaseSpec {
+            stripped_ir_body: "IR body.",
+            selection_hint: "Return exactly one JSON object.\n",
+            phase_policy: "Phase policy:\n- Structured only.\n",
+        });
+        assert_eq!(s.matches("{{ ctx.output_format }}").count(), 1);
+        assert!(s.contains("Phase policy:"));
+        let hist_pos = s.find("Session history:").expect("history");
+        let task_pos = s.find("IR body.").expect("task");
+        let of_pos = s.find("{{ ctx.output_format }}").expect("of present");
+        assert!(hist_pos < task_pos, "history must precede task body");
+        assert!(task_pos < of_pos, "task body must precede output_format");
     }
 }

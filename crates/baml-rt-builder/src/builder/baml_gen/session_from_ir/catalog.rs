@@ -1,245 +1,366 @@
-//! Agent-wide tool schema catalog generation.
+//! Stable agent-wide tool / operation vocabulary rendered directly from compiled IR.
 //!
-//! Emits a synthetic BAML function `__AgentToolSchemaCatalog__` whose return type is the union of
-//! every tool/session step type the agent can use across Open / Send / SearchRead / PageRead /
-//! Finish / Abort, plus shared archive-read / read-only-finish steps and any unified-primary
-//! union members. The function's prompt is a bare `{{ ctx.output_format }}` so BAML's existing
-//! prompt renderer produces the JSON-shape catalog text once at build time. The rendered text is
-//! written to [`CATALOG_SIDECAR_FILE`] inside `baml_src` and loaded by the runtime into
-//! `ctx.tags['tool_schema_prelude']` — replacing the legacy `_baml_runtime.baml` source dump.
-//!
-//! The catalog is **stable per agent package** (its inputs are the agent manifest and IR-derived
-//! tool/step types) so an LLM provider can prefix-cache it across every entry / active hop.
+//! The rendered text is written to [`CATALOG_SIDECAR_FILE`] inside `baml_src` and loaded by the
+//! runtime into `ctx.tags['tool_schema_prelude']`. Unlike the old synthetic-union renderer, this
+//! surface contains only stable per-agent tool and operation definitions, never phase-specific
+//! return unions.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use baml_rt_tools::{UnifiedStepExecutorFunctionsMap, tools::ToolFunctionMetadata};
-use baml_runtime::{BamlRuntime, InternalRuntimeInterface, RenderedPrompt};
-use baml_types::BamlMap;
-use internal_baml_core::ir::ir_hasher::IRSignature;
+use baml_rt_tools::{schema_allows_empty_or_optional_open_input, tools::ToolFunctionMetadata};
+use baml_types::{
+    EvaluationContext, LiteralValue,
+    ir_type::{TypeNonStreaming, UnionTypeViewGeneric},
+};
+use internal_baml_core::ir::{ir_hasher::IRSignature, repr::IntermediateRepr};
 
-use super::super::ir_type_print::collect_union_type_names;
-use crate::builder::error::{BamlBuilderError, Result, write_line};
+use crate::builder::baml_gen::escape::escape_baml_description;
 
-/// Synthetic BAML function name carrying the agent-wide catalog union as its return type.
-///
-/// Lives in the generated `_baml_runtime.baml` after the second compile pass so BAML's
-/// `ctx.output_format` renderer can be driven over its return type. The `__bamlrt`
-/// suffix marks it as a builder-managed surface — BAML's grammar disallows leading
-/// underscores on identifiers (`single_word = ASCII_ALPHA ~ ...` in the schema-ast pest
-/// rule), so the prefix is impractical for namespacing.
+/// Historical synthetic catalog function name retained for rewrite-policy compatibility.
 pub const CATALOG_FUNCTION_NAME: &str = "AgentToolSchemaCatalog__bamlrt";
 
 /// Sidecar text file holding the rendered catalog. Sits next to `_baml_runtime.baml` inside
 /// `baml_src/` so it ships with the agent package and is cluster-deterministic.
 pub const CATALOG_SIDECAR_FILE: &str = "_baml_tool_schema_catalog.txt";
 
-/// IR-derived view of the catalog: the union members that must be rendered to the model.
+/// IR-derived stable vocabulary loaded into `ctx.tags['tool_schema_prelude']`.
 #[derive(Debug, Default, Clone)]
 pub struct CatalogPlan {
-    /// Class / type-alias names forming the catalog union, sorted and deduplicated.
-    pub union_type_names: Vec<String>,
+    /// Named IR types included in the rendered sidecar, sorted and deduplicated.
+    pub type_names: Vec<String>,
+    /// Final rendered stable vocabulary text.
+    pub rendered_text: String,
+}
+
+#[derive(Debug, Default, Clone)]
+struct CatalogDescriptions {
+    field_descriptions: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl CatalogPlan {
     pub fn is_empty(&self) -> bool {
-        self.union_type_names.is_empty()
-    }
-
-    pub fn union_baml(&self) -> String {
-        self.union_type_names.join(" | ")
+        self.rendered_text.trim().is_empty()
     }
 }
 
-/// Compute the catalog union from compiled IR plus manifest tool metadata.
-///
-/// For each manifest tool we add the per-tool FSM step classes (`*OpenStep`, `*SendStep`,
-/// `*FinishStep`, `*AbortStep`). We always include the shared `ArchiveSearchReadStep`,
-/// `ArchivePageReadStep`, and `ReadOnlyFinishStep` when at least one tool is present. For
-/// unified-primary roots we additionally collect every non-archive class named in the IR
-/// return union (planner outputs, structured AskUser variants, etc.).
-///
-/// Names that do not resolve to a class or type alias in the compiled IR are filtered out so
-/// the synthetic function compiles cleanly.
+/// Compute the stable catalog from compiled IR plus manifest tool metadata.
 pub fn collect_catalog_types(
     ir_sig: &IRSignature,
+    ir: &IntermediateRepr,
     tool_metadata: &[ToolFunctionMetadata],
-    unified_roots: &UnifiedStepExecutorFunctionsMap,
+    _unified_roots: &baml_rt_tools::UnifiedStepExecutorFunctionsMap,
 ) -> CatalogPlan {
-    let mut set: BTreeSet<String> = BTreeSet::new();
-
-    for tool in tool_metadata {
-        let cls = &tool.class_name;
-        set.insert(format!("{cls}OpenStep"));
-        set.insert(format!("{cls}SendStep"));
-        set.insert(format!("{cls}FinishStep"));
-        set.insert(format!("{cls}AbortStep"));
+    if tool_metadata.is_empty() {
+        return CatalogPlan::default();
     }
 
-    if !tool_metadata.is_empty() {
-        set.insert("ArchiveSearchReadStep".to_string());
-        set.insert("ArchivePageReadStep".to_string());
-        set.insert("ReadOnlyFinishStep".to_string());
+    let mut type_names: BTreeSet<String> = BTreeSet::new();
+    for shared in [
+        "ArchiveSearchReadInput",
+        "ArchivePageReadInput",
+        "ArchiveSearchReadStep",
+        "ArchivePageReadStep",
+        "ReadOnlyFinishStep",
+        "StructuredReply",
+        "ReplyPart",
+        "TextPart",
+        "DataPart",
+        "ReplyMediaType",
+    ] {
+        collect_named_type(shared, ir_sig, &mut type_names);
     }
 
-    for fn_name in unified_roots.keys() {
-        if let Some(sig) = ir_sig.functions.get(fn_name) {
-            for name in collect_union_type_names(&sig.output) {
-                if !name.ends_with("SessionPlan") {
-                    set.insert(name);
-                }
-            }
+    let mut sorted_tools: Vec<&ToolFunctionMetadata> = tool_metadata.iter().collect();
+    sorted_tools.sort_by_key(|tool| tool.name.to_string());
+    for tool in &sorted_tools {
+        for step in [
+            format!("{}OpenStep", tool.class_name),
+            format!("{}SendStep", tool.class_name),
+            format!("{}SearchReadStep", tool.class_name),
+            format!("{}PageReadStep", tool.class_name),
+            format!("{}FinishStep", tool.class_name),
+            format!("{}AbortStep", tool.class_name),
+        ] {
+            collect_named_type(&step, ir_sig, &mut type_names);
         }
+        if has_open_input(tool) {
+            collect_named_type(&tool.open_input_type.name, ir_sig, &mut type_names);
+        }
+        collect_named_type(&tool.input_type.name, ir_sig, &mut type_names);
     }
 
-    let valid: Vec<String> = set
-        .into_iter()
-        .filter(|n| ir_sig.classes.contains_key(n) || ir_sig.type_aliases.contains_key(n))
-        .collect();
-
+    let type_names: Vec<String> = type_names.into_iter().collect();
+    let descriptions = collect_catalog_descriptions(ir);
+    let rendered_text = render_catalog_text(ir_sig, &sorted_tools, &type_names, &descriptions);
     CatalogPlan {
-        union_type_names: valid,
+        type_names,
+        rendered_text,
     }
 }
 
-/// Pick a client name to attach to the synthetic catalog function.
-///
-/// The catalog function is never invoked against an LLM — it exists only so BAML's prompt
-/// renderer can be driven over its return type. Any valid client suffices; we prefer the first
-/// client referenced by an existing function so we inherit its env-var contract, falling back
-/// to the first declared client in IR.
-pub fn pick_catalog_client_name(runtime: &baml_runtime::BamlRuntime) -> Option<String> {
-    use std::ops::Deref;
+fn render_catalog_text(
+    ir_sig: &IRSignature,
+    tool_metadata: &[&ToolFunctionMetadata],
+    type_names: &[String],
+    descriptions: &CatalogDescriptions,
+) -> String {
+    if tool_metadata.is_empty() {
+        return String::new();
+    }
 
-    let ir = runtime.ir.deref();
+    let mut out = String::new();
+    out.push_str("Generated from compiled BAML IR.\n");
+    out.push_str(
+        "Tool metadata selects availability only; field shapes and nested types come from IR.\n\n",
+    );
+    out.push_str("Available tool types for this agent:\n\n");
+    for tool in tool_metadata {
+        out.push_str("tool ");
+        out.push_str(&tool.name.to_string());
+        out.push('\n');
+        out.push_str("  purpose: ");
+        out.push_str(&single_line_description(&tool.description));
+        out.push('\n');
+        out.push_str("  open: ");
+        out.push_str(if has_open_input(tool) {
+            tool.open_input_type.name.as_str()
+        } else {
+            "None"
+        });
+        out.push('\n');
+        out.push_str("  send: ");
+        out.push_str(&tool.input_type.name);
+        out.push('\n');
+        out.push_str("  operations: ");
+        out.push_str(&format!(
+            "{}OpenStep | {}SendStep | {}SearchReadStep | {}PageReadStep | {}FinishStep | {}AbortStep",
+            tool.class_name,
+            tool.class_name,
+            tool.class_name,
+            tool.class_name,
+            tool.class_name,
+            tool.class_name
+        ));
+        out.push_str("\n\n");
+    }
 
-    for func in ir.walk_functions() {
-        if let Some(config) = func.elem().configs.first() {
-            let name = config.client.as_str().to_string();
-            if !name.is_empty() {
-                return Some(name);
+    out.push_str("Type definitions:\n\n");
+    for name in type_names {
+        if let Some(definition) = render_named_type(name, ir_sig, descriptions) {
+            out.push_str(&definition);
+            out.push_str("\n\n");
+        }
+    }
+    out.trim_end().to_string()
+}
+
+fn has_open_input(tool: &ToolFunctionMetadata) -> bool {
+    let name = tool.open_input_type.name.as_str();
+    if matches!(name, "()" | "null" | "void") {
+        return false;
+    }
+    !schema_allows_empty_or_optional_open_input(&tool.open_input_schema)
+        || tool
+            .open_input_schema
+            .get("properties")
+            .and_then(|value| value.as_object())
+            .map(|props| !props.is_empty())
+            .unwrap_or(false)
+}
+
+fn single_line_description(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn collect_catalog_descriptions(ir: &IntermediateRepr) -> CatalogDescriptions {
+    let empty_env: HashMap<String, String> = HashMap::new();
+    let eval_ctx = EvaluationContext::new(&empty_env, true);
+    let mut descriptions = CatalogDescriptions::default();
+
+    for class_walker in ir.walk_classes() {
+        let class_name = class_walker.name().to_string();
+        for field_walker in class_walker.walk_fields() {
+            let Ok(Some(description)) = field_walker.description(&eval_ctx) else {
+                continue;
+            };
+            let description = single_line_description(&description);
+            if description.is_empty() {
+                continue;
             }
+            descriptions
+                .field_descriptions
+                .entry(class_name.clone())
+                .or_default()
+                .insert(field_walker.elem().name.clone(), description);
         }
     }
 
-    ir.walk_clients().next().map(|c| c.item.elem.name.clone())
+    descriptions
 }
 
-/// Render the synthetic catalog function with BAML's existing prompt renderer.
-///
-/// Drives the same code path used for `{{ ctx.output_format }}` in real prompts. The catalog
-/// function's prompt body is **only** that directive, so the rendered output is exactly the
-/// JSON-shape catalog schema text without any task / objective prose. Returns the joined text
-/// across rendered chat messages (or the completion body for completion-style providers).
-///
-/// Required environment variables for the chosen client are stubbed when the caller does not
-/// supply them (the catalog render performs **no** HTTP — env vars are only consulted by
-/// `get_llm_provider_impl` to satisfy `walker.required_env_vars()` parsing).
-pub async fn render_catalog_prompt(
-    runtime: &BamlRuntime,
-    function_name: &str,
-    extra_env_vars: HashMap<String, String>,
-) -> Result<String> {
-    let env_vars = stub_required_env_vars(runtime, extra_env_vars);
-    let manager = runtime.create_ctx_manager(baml_types::BamlValue::Null, None);
-
-    let mut ctx = manager
-        .create_ctx(None, None, env_vars, vec![])
-        .map_err(|e| BamlBuilderError::CatalogRender {
-            message: format!("create_ctx: {e:#}"),
-        })?;
-    ctx.set_modular_api(true);
-
-    let params: BamlMap<String, baml_types::BamlValue> = BamlMap::new();
-    let (rendered, _scope, _allowed_metadata) = runtime
-        .render_prompt(function_name, &ctx, &params, None)
-        .await
-        .map_err(|e| BamlBuilderError::CatalogRender {
-            message: format!("render_prompt({function_name}): {e:#}"),
-        })?;
-
-    Ok(rendered_prompt_to_text(&rendered))
+fn collect_named_type(name: &str, ir_sig: &IRSignature, names: &mut BTreeSet<String>) {
+    if !names.insert(name.to_string()) {
+        return;
+    }
+    if let Some((_, class_details)) = ir_sig.classes.get(name) {
+        for (_, field_ty) in class_details.fields.iter() {
+            collect_type_dependencies(field_ty.as_ref(), ir_sig, names);
+        }
+    } else if let Some(alias) = ir_sig.type_aliases.get(name) {
+        collect_type_dependencies(alias.field_type.as_ref(), ir_sig, names);
+    }
 }
 
-/// Concatenate every chat message body into a single block (or return the bare completion body).
-///
-/// `RenderedPrompt::Chat` always wraps each message into roles, but for the catalog we want a
-/// flat schema text that can be injected verbatim into `ctx.tags['tool_schema_prelude']`.
-fn rendered_prompt_to_text(rendered: &RenderedPrompt) -> String {
-    use baml_runtime::ChatMessagePart;
-
-    match rendered {
-        RenderedPrompt::Completion(s) => s.clone(),
-        RenderedPrompt::Chat(messages) => {
-            let mut out = String::new();
-            for msg in messages {
-                for part in &msg.parts {
-                    if let ChatMessagePart::Text(text) = part {
-                        if !out.is_empty() && !out.ends_with('\n') {
-                            out.push('\n');
-                        }
-                        out.push_str(text);
-                    }
+fn collect_type_dependencies(
+    ty: &TypeNonStreaming,
+    ir_sig: &IRSignature,
+    names: &mut BTreeSet<String>,
+) {
+    match ty {
+        TypeNonStreaming::Class { name, .. }
+        | TypeNonStreaming::Enum { name, .. }
+        | TypeNonStreaming::RecursiveTypeAlias { name, .. } => {
+            collect_named_type(name, ir_sig, names)
+        }
+        TypeNonStreaming::List(inner, _) => collect_type_dependencies(inner, ir_sig, names),
+        TypeNonStreaming::Map(key, value, _) => {
+            collect_type_dependencies(key, ir_sig, names);
+            collect_type_dependencies(value, ir_sig, names);
+        }
+        TypeNonStreaming::Union(union, _) => match union.view() {
+            UnionTypeViewGeneric::Null => {}
+            UnionTypeViewGeneric::Optional(inner) => {
+                collect_type_dependencies(inner, ir_sig, names)
+            }
+            UnionTypeViewGeneric::OneOf(variants)
+            | UnionTypeViewGeneric::OneOfOptional(variants) => {
+                for variant in variants {
+                    collect_type_dependencies(variant, ir_sig, names);
                 }
             }
-            out
+        },
+        TypeNonStreaming::Tuple(items, _) => {
+            for item in items {
+                collect_type_dependencies(item, ir_sig, names);
+            }
         }
+        TypeNonStreaming::Primitive(..)
+        | TypeNonStreaming::Literal(..)
+        | TypeNonStreaming::Arrow(..)
+        | TypeNonStreaming::Top(..) => {}
     }
 }
 
-/// Provide best-effort empty placeholders for env vars referenced by the catalog client.
-///
-/// `BamlRuntime::get_llm_provider_impl` resolves the LLM provider before render — for some
-/// providers it bails when required env vars are unset. Render is purely template work; we
-/// stub missing keys with empty strings so the renderer can complete without HTTP credentials.
-fn stub_required_env_vars(
-    runtime: &BamlRuntime,
-    extra: HashMap<String, String>,
-) -> HashMap<String, String> {
-    use std::ops::Deref;
-
-    let mut env_vars = extra;
-    let ir = runtime.ir.deref();
-    for client in ir.walk_clients() {
-        for key in client.required_env_vars() {
-            env_vars.entry(key).or_default();
+fn render_named_type(
+    name: &str,
+    ir_sig: &IRSignature,
+    descriptions: &CatalogDescriptions,
+) -> Option<String> {
+    if let Some((_, class_details)) = ir_sig.classes.get(name) {
+        let mut out = format!("type {name} = {{\n");
+        let class_field_descriptions = descriptions.field_descriptions.get(name);
+        for (field_name, field_ty) in class_details.fields.iter() {
+            let (field_type, optional) = render_field_type(field_ty.as_ref());
+            out.push_str("  ");
+            out.push_str(field_name);
+            if optional {
+                out.push('?');
+            }
+            out.push_str(": ");
+            out.push_str(&field_type);
+            if let Some(description) =
+                class_field_descriptions.and_then(|fields| fields.get(field_name))
+            {
+                out.push(' ');
+                out.push_str(&render_description_annotation(description));
+            }
+            out.push('\n');
         }
+        out.push('}');
+        return Some(out);
     }
-    env_vars
+    if let Some((_, enum_details)) = ir_sig.enums.get(name) {
+        let values = enum_details
+            .values
+            .iter()
+            .map(|value| format!("{value:?}"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        return Some(format!("type {name} = {values}"));
+    }
+    ir_sig.type_aliases.get(name).map(|alias| {
+        format!(
+            "type {name} = {}",
+            render_type_expr(alias.field_type.as_ref())
+        )
+    })
 }
 
-/// Emit the synthetic catalog BAML function source. Trivial prompt body of just
-/// `{{ ctx.output_format }}` so the rendered prompt is exactly the catalog schema text.
-pub fn emit_catalog_function_baml(
-    plan: &CatalogPlan,
-    client_name: &str,
-    out: &mut String,
-) -> Result<()> {
-    if plan.is_empty() {
-        return Ok(());
+fn render_description_annotation(description: &str) -> String {
+    format!("@description(\"{}\")", escape_baml_description(description))
+}
+
+fn render_field_type(ty: &TypeNonStreaming) -> (String, bool) {
+    match ty {
+        TypeNonStreaming::Union(union, _) => match union.view() {
+            UnionTypeViewGeneric::Optional(inner) => (render_type_expr(inner), true),
+            UnionTypeViewGeneric::OneOfOptional(variants) => {
+                (render_union_variants(variants.iter().copied()), true)
+            }
+            _ => (render_type_expr(ty), false),
+        },
+        _ => (render_type_expr(ty), false),
     }
-    write_line(out, "/// Auto-generated agent-wide tool schema catalog.")?;
-    write_line(
-        out,
-        "/// Rendered once at build time into _baml_tool_schema_catalog.txt and loaded as ctx.tags['tool_schema_prelude'].",
-    )?;
-    write_line(
-        out,
-        "/// Never invoked against an LLM — exists only to drive BAML's ctx.output_format renderer.",
-    )?;
-    write_line(
-        out,
-        &format!(
-            "function {CATALOG_FUNCTION_NAME}() -> {} {{",
-            plan.union_baml()
-        ),
-    )?;
-    write_line(out, &format!("  client {client_name}"))?;
-    write_line(out, "  prompt #\"")?;
-    write_line(out, "{{ ctx.output_format }}")?;
-    write_line(out, "\"#")?;
-    write_line(out, "}")?;
-    Ok(())
+}
+
+fn render_union_variants<'a>(variants: impl IntoIterator<Item = &'a TypeNonStreaming>) -> String {
+    let rendered = variants
+        .into_iter()
+        .map(render_type_expr)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    format!("({rendered})")
+}
+
+fn render_type_expr(ty: &TypeNonStreaming) -> String {
+    match ty {
+        TypeNonStreaming::Primitive(value, _) => value.basename().to_string(),
+        TypeNonStreaming::Class { name, .. }
+        | TypeNonStreaming::Enum { name, .. }
+        | TypeNonStreaming::RecursiveTypeAlias { name, .. } => name.clone(),
+        TypeNonStreaming::Literal(value, _) => match value {
+            LiteralValue::String(value) => format!("{value:?}"),
+            LiteralValue::Int(value) => value.to_string(),
+            LiteralValue::Bool(value) => value.to_string(),
+        },
+        TypeNonStreaming::List(inner, _) => format!("{}[]", render_type_expr(inner)),
+        TypeNonStreaming::Map(key, value, _) => {
+            format!(
+                "map<{}, {}>",
+                render_type_expr(key),
+                render_type_expr(value)
+            )
+        }
+        TypeNonStreaming::Union(union, _) => match union.view() {
+            UnionTypeViewGeneric::Null => "null".to_string(),
+            UnionTypeViewGeneric::Optional(inner) => format!("{}?", render_type_expr(inner)),
+            UnionTypeViewGeneric::OneOf(variants) => {
+                render_union_variants(variants.iter().copied())
+            }
+            UnionTypeViewGeneric::OneOfOptional(variants) => {
+                format!("{}?", render_union_variants(variants.iter().copied()))
+            }
+        },
+        TypeNonStreaming::Tuple(items, _) => {
+            let rendered = items
+                .iter()
+                .map(render_type_expr)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("tuple<{rendered}>")
+        }
+        TypeNonStreaming::Arrow(..) | TypeNonStreaming::Top(..) => "string".to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -247,38 +368,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_plan_union_baml_is_pipe_separated() {
+    fn empty_plan_reports_empty() {
         let plan = CatalogPlan {
-            union_type_names: vec!["A".to_string(), "B".to_string(), "C".to_string()],
+            type_names: Vec::new(),
+            rendered_text: String::new(),
         };
-        assert_eq!(plan.union_baml(), "A | B | C");
-    }
-
-    #[test]
-    fn empty_plan_emits_nothing() {
-        let plan = CatalogPlan::default();
-        let mut out = String::new();
-        emit_catalog_function_baml(&plan, "Stub", &mut out).expect("ok");
-        assert!(out.is_empty());
-    }
-
-    #[test]
-    fn emit_catalog_function_includes_all_union_members_and_client() {
-        let plan = CatalogPlan {
-            union_type_names: vec![
-                "ArchivePageReadStep".to_string(),
-                "ArchiveSearchReadStep".to_string(),
-                "ReadOnlyFinishStep".to_string(),
-                "SupportCalculateOpenStep".to_string(),
-                "SupportCalculateSendStep".to_string(),
-            ],
-        };
-        let mut out = String::new();
-        emit_catalog_function_baml(&plan, "DefaultClient", &mut out).expect("ok");
-        assert!(out.contains(&format!("function {CATALOG_FUNCTION_NAME}()")));
-        assert!(out.contains("client DefaultClient"));
-        assert!(out.contains("ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep"));
-        assert!(out.contains("SupportCalculateOpenStep | SupportCalculateSendStep"));
-        assert!(out.contains("{{ ctx.output_format }}"));
+        assert!(plan.is_empty());
     }
 }

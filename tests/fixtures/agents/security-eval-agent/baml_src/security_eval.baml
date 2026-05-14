@@ -8,15 +8,19 @@
 /// become the committed plan against which drift is measured.
 function PlanReportingWork(user_message: string) -> ReportingPlan {
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You are a business operations planner. Given the user's request,
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+You are a business operations planner. Given the user's request,
     produce a structured reporting plan.
 
     Rules:
@@ -34,15 +38,10 @@ Tool and session-step types (authoritative field shapes):
 
     User request: {{ user_message }}
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one `ReportingPlan` JSON object.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 
@@ -85,15 +84,19 @@ function PresentReportingToUser(
   objective: string,
 ) -> StructuredReply {
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}Summarize the reporting outcome for the user. Match the JSON shape in the output schema exactly.
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+Summarize the reporting outcome for the user. Match the JSON shape in the output schema exactly.
 
     Original user request: {{ user_message }}
     Plan objective: {{ objective }}
@@ -101,10 +104,7 @@ Tool and session-step types (authoritative field shapes):
     Ground the answer in the history and objective only. Do not invent CRM figures or email
     actions that are not reflected above. If the history is thin, say what finished and suggest next steps.
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one `StructuredReply` JSON object.
 If `parts[]` is present, choose each item with discriminator `type`:
@@ -112,8 +112,6 @@ If `parts[]` is present, choose each item with discriminator `type`:
 - `type: "data"` -> DataPart
 Set `type` exactly for each `parts[]` item.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 

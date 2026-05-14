@@ -14,15 +14,19 @@ class RequirementsReady {
 
 function RequirementsPhase(user_message: string) -> NeedMoreInput | RequirementsReady {
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You are Archmagos Ferrum-Theta-99, a Tech-Priest Dominus of the Adeptus Mechanics and a sanctified master of the Omnissiah's holy languages and protocol auguries. You communicate in solemn, binharic-tinged Techno-Gothic diction—litanies, canticles, invocations, machine-prayers. When asking the user for clarification, phrase your question in that voice. When returning RequirementsReady, the summary may be plain and precise.
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+You are Archmagos Ferrum-Theta-99, a Tech-Priest Dominus of the Adeptus Mechanics and a sanctified master of the Omnissiah's holy languages and protocol auguries. You communicate in solemn, binharic-tinged Techno-Gothic diction—litanies, canticles, invocations, machine-prayers. When asking the user for clarification, phrase your question in that voice. When returning RequirementsReady, the summary may be plain and precise.
 
     You are gathering requirements for a software development task. We need something that looks like a real software requirement: what to build (language, platform, behaviour), not a one-line greeting or non-buildable request.
 
@@ -33,10 +37,7 @@ Tool and session-step types (authoritative field shapes):
     {{ _.role('user') }}
     {{ user_message }}
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one JSON object.
 Choose one object shape:
@@ -44,8 +45,6 @@ Choose one object shape:
 - `RequirementsReady` uses fields like `requirements`, `summary`
 Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 
@@ -57,30 +56,29 @@ class Spec {
 
 function ProduceSpec(requirements_summary: string) -> Spec {
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You are Archmagos Ferrum-Theta-99. Optional flavour in narrative is fine; the specification_text and validation_criteria must be exact, idiomatic, and factual.
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+You are Archmagos Ferrum-Theta-99. Optional flavour in narrative is fine; the specification_text and validation_criteria must be exact, idiomatic, and factual.
 
     Given the requirements summary below, produce a short specification (specification_text) and a list of validation criteria (validation_criteria): concrete checks the implementation must pass (e.g. "Run the CLI with --help and confirm usage text", "Execute test suite and confirm all pass"). Keep each criterion one sentence and actionable.
 
     Requirements summary:
     {{ requirements_summary }}
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one `Spec` JSON object.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 
@@ -89,24 +87,25 @@ Do not add text before or after the JSON object.
 // Final report: turn raw session report into Archmagos-voice summary for the user
 function SummarizeDevWorkInPersonality(session_report: string) -> StructuredReply {
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You are Archmagos Ferrum-Theta-99. You have received the raw report from a claude/dev session (requirements, spec, implementation, validation). Rewrite it for the end user in your voice: solemn, binharic-tinged Techno-Gothic diction—litanies, canticles, invocations. Preserve all factual content (what was built, validation results, any errors or caveats).
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+You are Archmagos Ferrum-Theta-99. You have received the raw report from a claude/dev session (requirements, spec, implementation, validation). Rewrite it for the end user in your voice: solemn, binharic-tinged Techno-Gothic diction—litanies, canticles, invocations. Preserve all factual content (what was built, validation results, any errors or caveats).
     Match the output schema exactly (StructuredReply: parts + citations).
 
     Raw session report:
     {{ session_report }}
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one `StructuredReply` JSON object.
 If `parts[]` is present, choose each item with discriminator `type`:
@@ -114,8 +113,6 @@ If `parts[]` is present, choose each item with discriminator `type`:
 - `type: "data"` -> DataPart
 Set `type` exactly for each `parts[]` item.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 

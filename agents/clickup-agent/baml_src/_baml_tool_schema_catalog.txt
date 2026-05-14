@@ -1,173 +1,280 @@
-Answer in JSON using any of these schemas:
-{
-  op: "PageRead",
-  // Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.
-  input: {
-    // Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.
-    archive_ref: string,
-    // 0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.
-    offset: int or null,
-    // Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).
-    limit: int or null,
-  },
-} or {
-  op: "SearchRead",
-  // Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.
-  input: {
-    // Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.
-    archive_ref: string,
-    // Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.
-    grep: string,
-    // 0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.
-    offset: int or null,
-    // Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).
-    limit: int or null,
-  },
-} or {
-  op: "ReadOnlyFinish",
-  // User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.
-  reply: {
-    // Ordered parts: start with TextPart (type "text") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type "data", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.
-    parts: [
-      {
-        type: "text",
-        text: string,
-      } or {
-        type: "data",
-        // Serialised content (e.g. JSON string, CSV string).
-        data: string,
-        // MIME type of the data field.
-        media_type: 'text/plain' or 'text/markdown' or 'application/json' or 'text/csv',
-      }
-    ],
-    // Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.
-    citations: string[],
-  },
-} or {
-  op: "Abort",
-} or {
-  op: "Finish",
-} or {
-  op: "Open",
-  // Tool to open
-  tool_name: "support/clickup",
-} or {
-  op: "Send",
-  // Payload for this step.
-  input: {
-  } or {
-    // ClickUp team (workspace) ID — obtain from ListTeams.
-    team_id: string,
-  } or {
-    // ClickUp space ID — obtain from ListSpaces.
-    space_id: string,
-  } or {
-    // ClickUp list ID — obtain from ListLists.
-    list_id: string,
-  } or {
-    // ClickUp task ID — obtain from ListTasks.
-    task_id: string,
-  } or {
-    // ClickUp list ID where the task will be created — obtain from ListLists.
-    list_id: string,
-    // Task title / name.
-    name: string,
-    // Optional long-form task description (Markdown supported).
-    description: string or null,
-    // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
-    priority: int or null,
-  } or {
-    // ClickUp task ID to update — obtain from ListTasks or GetTask.
-    task_id: string,
-    // New task status string (e.g. 'in progress', 'complete').
-    status: string or null,
-    // Updated task description (Markdown supported).
-    description: string or null,
-    // ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
-    priority: int or null,
-  } or {
-    // ClickUp task ID to delete — obtain from ListTasks.
-    task_id: string,
-    // Must be true to proceed. Always confirm deletion with the user first.
-    confirm_delete: bool,
-  },
-  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
-  citations: string[],
-} or {
-  op: "Abort",
-} or {
-  op: "Finish",
-} or {
-  op: "Open",
-  // Tool to open
-  tool_name: "system/discover_agents",
-  // Optional open payload.
-  initial_input: {
-    reason: string or null,
-  } or null,
-} or {
-  op: "Send",
-  // Payload for this step.
-  input: {
-    query: string or null,
-    required_capabilities: string[] or null,
-    required_schema_versions: string[] or null,
-    required_source_kinds: string[] or null,
-    limit: int or null,
-    offset: int or null,
-  },
-  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
-  citations: string[],
-} or {
-  op: "Abort",
-} or {
-  op: "Finish",
-} or {
-  op: "Open",
-  // Tool to open
-  tool_name: "system/discover_tools",
-  // Optional open payload.
-  initial_input: {
-    reason: string or null,
-  } or null,
-} or {
-  op: "Send",
-  // Payload for this step.
-  input: {
-    query: string or null,
-    limit: int or null,
-  },
-  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
-  citations: string[],
-} or {
-  op: "Abort",
-} or {
-  op: "Finish",
-} or {
-  op: "Open",
-  // Tool to open
-  tool_name: "system/internal_a2a",
-  // Required open payload.
-  initial_input: {
-    target: {
-      agent_package: string,
-      agent_instance_id: string,
-    },
-  },
-} or {
-  op: "Send",
-  // Conversational message payload. Set text to a non-empty string. Never null, never omit text.
-  input: {
-    parts: [
-      {
-        text: string or null,
-        raw: string or null,
-        url: string or null,
-        filename: string or null,
-        media_type: string or null,
-      }
-    ],
-  },
-  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
-  citations: string[],
+Generated from compiled BAML IR.
+Tool metadata selects availability only; field shapes and nested types come from IR.
+
+Available tool types for this agent:
+
+tool support/clickup
+  purpose: Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks.
+  open: None
+  send: ClickUpInput
+  operations: SupportClickupOpenStep | SupportClickupSendStep | SupportClickupSearchReadStep | SupportClickupPageReadStep | SupportClickupFinishStep | SupportClickupAbortStep
+
+tool system/discover_agents
+  purpose: Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents.
+  open: DiscoverAgentsOpenInput
+  send: DiscoverAgentsSendInput
+  operations: SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsAbortStep
+
+tool system/discover_tools
+  purpose: Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times.
+  open: DiscoverToolsOpenInput
+  send: DiscoverToolsSendInput
+  operations: SystemDiscoverToolsOpenStep | SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsFinishStep | SystemDiscoverToolsAbortStep
+
+tool system/internal_a2a
+  purpose: Opens a conversational session to another agent. Send a message (text or parts), Read the response, then Send follow-ups or Finish. Multiple Send/Read rounds are allowed within one session — use this for multi-turn conversations with the delegated agent.
+  open: InternalA2aOpenInput
+  send: InternalA2aSendInput
+  operations: SystemInternalA2aOpenStep | SystemInternalA2aSendStep | SystemInternalA2aSearchReadStep | SystemInternalA2aPageReadStep | SystemInternalA2aFinishStep | SystemInternalA2aAbortStep
+
+Type definitions:
+
+type ArchivePageReadInput = {
+  archive_ref: string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
+  offset?: int @description("0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.")
+  limit?: int @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
+}
+
+type ArchivePageReadStep = {
+  op: "PageRead"
+  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+}
+
+type ArchiveSearchReadInput = {
+  archive_ref: string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
+  grep: string @description("Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.")
+  offset?: int @description("0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.")
+  limit?: int @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
+}
+
+type ArchiveSearchReadStep = {
+  op: "SearchRead"
+  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+}
+
+type ClickUpInput = (ListTeamsInput | ListSpacesInput | ListListsInput | ListTasksInput | GetTaskInput | CreateTaskInput | UpdateTaskInput | DeleteTaskInput)
+
+type ConversationPart = {
+  text?: string @description("Plain text content for this conversation part.")
+  raw?: string @description("Raw provider-native content when plain text would be lossy or unavailable.")
+  url?: string @description("Remote URL for this part when the content points to a web or attachment resource.")
+  filename?: string @description("Attachment filename when this part refers to a file.")
+  media_type?: string @description("MIME type for this part, for example text/plain or image/png.")
+}
+
+type CreateTaskInput = {
+  list_id: string @description("ClickUp list ID where the task will be created — obtain from ListLists.")
+  name: string @description("Task title / name.")
+  description?: string @description("Optional long-form task description (Markdown supported).")
+  priority?: int @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
+}
+
+type DataPart = {
+  type: "data"
+  data: string @description("Serialised content (e.g. JSON string, CSV string).")
+  media_type: ReplyMediaType @description("MIME type of the data field.")
+}
+
+type DeleteTaskInput = {
+  task_id: string @description("ClickUp task ID to delete — obtain from ListTasks.")
+  confirm_delete: bool @description("Must be true to proceed. Always confirm deletion with the user first.")
+}
+
+type DiscoverAgentsOpenInput = {
+  reason?: string
+}
+
+type DiscoverAgentsSendInput = {
+  query?: string
+  required_capabilities?: string[]
+  required_schema_versions?: string[]
+  required_source_kinds?: string[]
+  limit?: int
+  offset?: int
+}
+
+type DiscoverToolsOpenInput = {
+  reason?: string
+}
+
+type DiscoverToolsSendInput = {
+  query?: string
+  limit?: int
+}
+
+type GetTaskInput = {
+  task_id: string @description("ClickUp task ID — obtain from ListTasks.")
+}
+
+type InternalA2aOpenInput = {
+  target: InternalA2aTarget
+}
+
+type InternalA2aSendInput = {
+  parts: ConversationPart[]
+}
+
+type InternalA2aTarget = {
+  agent_package: string
+  agent_instance_id: string
+}
+
+type ListListsInput = {
+  space_id: string @description("ClickUp space ID — obtain from ListSpaces.")
+}
+
+type ListSpacesInput = {
+  team_id: string @description("ClickUp team (workspace) ID — obtain from ListTeams.")
+}
+
+type ListTasksInput = {
+  list_id: string @description("ClickUp list ID — obtain from ListLists.")
+}
+
+type ListTeamsInput = {
+}
+
+type ReadOnlyFinishStep = {
+  op: "ReadOnlyFinish"
+  reply: StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
+}
+
+type ReplyMediaType = "TextPlain" | "TextMarkdown" | "ApplicationJson" | "TextCsv"
+
+type ReplyPart = (TextPart | DataPart)
+
+type StructuredReply = {
+  parts: (TextPart | DataPart)[] @description("Ordered parts: start with TextPart (type \"text\") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type \"data\", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.")
+  citations: string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
+}
+
+type SupportClickupAbortStep = {
+  op: "Abort"
+}
+
+type SupportClickupFinishStep = {
+  op: "Finish"
+}
+
+type SupportClickupOpenStep = {
+  op: "Open"
+  tool_name: "support/clickup" @description("Tool to open")
+}
+
+type SupportClickupPageReadStep = {
+  op: "PageRead"
+  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+}
+
+type SupportClickupSearchReadStep = {
+  op: "SearchRead"
+  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+}
+
+type SupportClickupSendStep = {
+  op: "Send"
+  input: (ListTeamsInput | ListSpacesInput | ListListsInput | ListTasksInput | GetTaskInput | CreateTaskInput | UpdateTaskInput | DeleteTaskInput) @description("Payload for this step.")
+  citations: string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+}
+
+type SystemDiscoverAgentsAbortStep = {
+  op: "Abort"
+}
+
+type SystemDiscoverAgentsFinishStep = {
+  op: "Finish"
+}
+
+type SystemDiscoverAgentsOpenStep = {
+  op: "Open"
+  tool_name: "system/discover_agents" @description("Tool to open")
+  initial_input?: DiscoverAgentsOpenInput @description("Optional open payload.")
+}
+
+type SystemDiscoverAgentsPageReadStep = {
+  op: "PageRead"
+  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+}
+
+type SystemDiscoverAgentsSearchReadStep = {
+  op: "SearchRead"
+  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+}
+
+type SystemDiscoverAgentsSendStep = {
+  op: "Send"
+  input: DiscoverAgentsSendInput @description("Payload for this step.")
+  citations: string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+}
+
+type SystemDiscoverToolsAbortStep = {
+  op: "Abort"
+}
+
+type SystemDiscoverToolsFinishStep = {
+  op: "Finish"
+}
+
+type SystemDiscoverToolsOpenStep = {
+  op: "Open"
+  tool_name: "system/discover_tools" @description("Tool to open")
+  initial_input?: DiscoverToolsOpenInput @description("Optional open payload.")
+}
+
+type SystemDiscoverToolsPageReadStep = {
+  op: "PageRead"
+  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+}
+
+type SystemDiscoverToolsSearchReadStep = {
+  op: "SearchRead"
+  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+}
+
+type SystemDiscoverToolsSendStep = {
+  op: "Send"
+  input: DiscoverToolsSendInput @description("Payload for this step.")
+  citations: string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+}
+
+type SystemInternalA2aAbortStep = {
+  op: "Abort"
+}
+
+type SystemInternalA2aFinishStep = {
+  op: "Finish"
+}
+
+type SystemInternalA2aOpenStep = {
+  op: "Open"
+  tool_name: "system/internal_a2a" @description("Tool to open")
+  initial_input: InternalA2aOpenInput @description("Required open payload.")
+}
+
+type SystemInternalA2aPageReadStep = {
+  op: "PageRead"
+  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+}
+
+type SystemInternalA2aSearchReadStep = {
+  op: "SearchRead"
+  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+}
+
+type SystemInternalA2aSendStep = {
+  op: "Send"
+  input: InternalA2aSendInput @description("Conversational message payload. Set text to a non-empty string. Never null, never omit text.")
+  citations: string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+}
+
+type TextPart = {
+  type: "text"
+  text: string
+}
+
+type UpdateTaskInput = {
+  task_id: string @description("ClickUp task ID to update — obtain from ListTasks or GetTask.")
+  status?: string @description("New task status string (e.g. 'in progress', 'complete').")
+  description?: string @description("Updated task description (Markdown supported).")
+  priority?: int @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
 }

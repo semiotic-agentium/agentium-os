@@ -15,9 +15,9 @@
 //! 4. [`PromptsNormalized`] — universal authored-prompt rewrite (skip parents/roots/catalog).
 //! 5. [`SessionArtifactsEmitted`] — IR-driven polymorphic types + phase executor functions
 //!    appended to the prelude; second compile if anything was added.
-//! 6. [`CatalogAppended`] — synthetic catalog function appended; third compile when catalog exists.
+//! 6. [`RuntimeFinalized`] — stable IR-derived catalog sidecar payload captured for writing.
 //! 7. Manifests + TypeScript declarations are written off the same final state.
-//! 8. Async tail [`render_catalog_sidecar`] renders the catalog text and writes it to the sidecar.
+//! 8. Async tail writes the rendered stable catalog sidecar when present.
 
 use std::{collections::HashMap, fs, path::PathBuf};
 
@@ -36,9 +36,8 @@ use super::{
 };
 use crate::builder::{
     baml_gen::{
-        CATALOG_FUNCTION_NAME, CATALOG_SIDECAR_FILE, GENERATED_BAML_PRELUDE_FILE,
-        GeneratedSessionBaml, purge_managed_generated_baml_files, render_baml_tool_interfaces,
-        render_baml_tool_interfaces_with_mcp_root, render_catalog_prompt,
+        CATALOG_SIDECAR_FILE, GENERATED_BAML_PRELUDE_FILE, GeneratedSessionBaml,
+        purge_managed_generated_baml_files, render_baml_tool_interfaces_with_mcp_root,
         render_generated_session_baml_from_ir,
     },
     baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
@@ -299,7 +298,6 @@ impl PromptsNormalized {
             tool_names: self.tool_names,
             tool_metadata: self.tool_metadata,
             unified_roots: self.unified_roots,
-            generated_baml: self.generated_baml,
             ir_signature: self.ir_signature,
             session_plan_map: self.session_plan_map,
             session_baml,
@@ -314,34 +312,14 @@ pub(super) struct SessionArtifactsEmitted {
     pub tool_names: Vec<String>,
     pub tool_metadata: Vec<ToolFunctionMetadata>,
     pub unified_roots: UnifiedStepExecutorFunctionsMap,
-    pub generated_baml: String,
     pub ir_signature: IRSignature,
     pub session_plan_map: SessionPlanFunctionsMap,
     pub session_baml: GeneratedSessionBaml,
 }
 
 impl SessionArtifactsEmitted {
-    /// Append the synthetic agent-wide tool schema catalog function (when the IR has any tool /
-    /// unified-primary types to enumerate), recompile so its signature is in the IR, and stash
-    /// the resulting runtime for the async sidecar render.
-    pub(super) fn append_catalog_function_and_finalize(mut self) -> Result<RuntimeFinalized> {
-        let catalog_function_name = if !self.session_baml.catalog_function.is_empty() {
-            self.generated_baml
-                .push_str("\n\n// ── builder: agent-wide tool schema catalog (from IR) ──\n\n");
-            self.generated_baml
-                .push_str(&self.session_baml.catalog_function);
-            Some(CATALOG_FUNCTION_NAME.to_string())
-        } else {
-            None
-        };
-
-        let final_runtime = if catalog_function_name.is_some() {
-            atomic_write(&self.paths.prelude_path, self.generated_baml.as_bytes())?;
-            Some(compile_runtime(&self.paths.baml_src_build)?)
-        } else {
-            None
-        };
-
+    /// Finalize artifacts and capture the rendered stable tool-schema sidecar text.
+    pub(super) fn append_catalog_function_and_finalize(self) -> Result<RuntimeFinalized> {
         Ok(RuntimeFinalized {
             paths: self.paths,
             tool_names: self.tool_names,
@@ -349,8 +327,11 @@ impl SessionArtifactsEmitted {
             unified_roots: self.unified_roots,
             ir_signature: self.ir_signature,
             session_plan_map: self.session_plan_map,
-            final_runtime,
-            catalog_function_name,
+            catalog_text: if self.session_baml.catalog_plan.is_empty() {
+                None
+            } else {
+                Some(self.session_baml.catalog_plan.rendered_text)
+            },
         })
     }
 }
@@ -364,8 +345,7 @@ pub(super) struct RuntimeFinalized {
     pub unified_roots: UnifiedStepExecutorFunctionsMap,
     pub ir_signature: IRSignature,
     pub session_plan_map: SessionPlanFunctionsMap,
-    pub final_runtime: Option<BamlRuntime>,
-    pub catalog_function_name: Option<String>,
+    pub catalog_text: Option<String>,
 }
 
 impl RuntimeFinalized {
@@ -427,41 +407,31 @@ impl RuntimeFinalized {
     }
 
     /// Inputs the async tail needs to render the catalog sidecar. `None` when the agent has no
-    /// tools / unified-primary roots — the sidecar is then absent and the runtime falls back
-    /// gracefully (the catalog `{% if %}` guard simply skips).
+    /// tools — the sidecar is then absent and the runtime falls back gracefully.
     pub(super) fn into_catalog_render_inputs(self) -> Option<CatalogRenderInputs> {
-        match (self.final_runtime, self.catalog_function_name) {
-            (Some(runtime), Some(catalog_fn)) => Some(CatalogRenderInputs {
-                runtime,
-                catalog_function_name: catalog_fn,
-                baml_src_build: self.paths.baml_src_build,
-            }),
-            _ => None,
-        }
+        self.catalog_text.map(|rendered_text| CatalogRenderInputs {
+            rendered_text,
+            baml_src_build: self.paths.baml_src_build,
+        })
     }
 }
 
 // ── Async tail: render catalog sidecar ──────────────────────────────────────
 
 pub(super) struct CatalogRenderInputs {
-    pub runtime: BamlRuntime,
-    pub catalog_function_name: String,
+    pub rendered_text: String,
     pub baml_src_build: PathBuf,
 }
 
 impl CatalogRenderInputs {
     pub(super) async fn render_sidecar(&self) -> Result<()> {
-        let extra_env_vars: HashMap<String, String> = HashMap::new();
-        let rendered =
-            render_catalog_prompt(&self.runtime, &self.catalog_function_name, extra_env_vars)
-                .await?;
         let sidecar_path = self.baml_src_build.join(CATALOG_SIDECAR_FILE);
         if let Some(parent) = sidecar_path.parent() {
             fs::create_dir_all(parent).map_err(BamlBuilderError::Io)?;
         }
-        atomic_write(&sidecar_path, rendered.as_bytes())?;
+        atomic_write(&sidecar_path, self.rendered_text.as_bytes())?;
         tracing::debug!(
-            bytes = rendered.len(),
+            bytes = self.rendered_text.len(),
             path = %sidecar_path.display(),
             "tool schema catalog: rendered sidecar"
         );

@@ -35,31 +35,34 @@ class SlackStructuredPlan {
 
 function InferSlackIntent(user_message: string) -> NeedClarification | NotRelevant | SlackIntent {
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You classify messages for a read-only Slack assistant (history, threads, search, summaries, action items).
-    Do NOT call tools or invent channel IDs — only classify.
-
-    SlackIntent: the user wants something achievable with read-only Slack APIs (conversations, messages, search, user resolution).
-    NeedClarification: Slack-related but missing essentials (which channel, thread link, search query, time range, etc.).
-    NotRelevant: nothing to do with Slack or workspace messages (creative writing, unrelated domains).
-
-    If history shows you already asked a clarifying question and the user replied vaguely, reuse earlier context
-    and prefer SlackIntent when a reasonable read-only goal exists.
-
-    {{ _.role('user') }}
-    {{ user_message }}
-
+{% endif %}
 {% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+You classify messages for a read-only Slack assistant (history, threads, search, summaries, action items).
+    Do NOT call tools or invent channel IDs — only classify.
+
+    Treat the request as a real Slack intent when it is achievable with read-only Slack APIs
+    (conversations, messages, search, user resolution).
+    Ask one clarifying question when it is Slack-related but missing essentials
+    (which channel, thread link, search query, time range, etc.).
+    Mark it not relevant only when it has nothing to do with Slack or workspace messages.
+
+    If history shows you already asked a clarifying question and the user replied vaguely, reuse earlier context
+    and prefer a concrete Slack goal when a reasonable read-only interpretation exists.
+
+    {{ _.role('user') }}
+    {{ user_message }}
+
+{{ ctx.output_format }}
 
 Return exactly one JSON object.
 Select the object shape with discriminator `kind`:
@@ -68,34 +71,31 @@ Select the object shape with discriminator `kind`:
 - `kind: "intent"` -> SlackIntent
 Set `kind` exactly. Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 
 /// Phase 2 — Plan read-only Slack work. Contract is entirely in `SlackStructuredPlan` / `SlackPlanStep` field descriptions and `{{ ctx.output_format }}` — do not duplicate schema rules in prose here.
 function PlanSlackWork(intent: string) -> SlackStructuredPlan {
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}Plan read-only Slack work for this validated intent. Follow the output schema field descriptions exactly.
-    {{ intent }}
-
+{% endif %}
 {% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Plan read-only Slack work for this validated intent. Follow the output schema field descriptions exactly.
+    {{ intent }}
+
+{{ ctx.output_format }}
 
 Return exactly one `SlackStructuredPlan` JSON object.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 
@@ -127,15 +127,19 @@ function ReactToSlackResults(
   user_message: string,
 ) -> StructuredReply {
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}You answer using read-only Slack data already in the session history (tool results, archives).
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+You answer using read-only Slack data already in the session history (tool results, archives).
     Match the output schema exactly (StructuredReply: parts + citations).
 
     User message: {{ user_message }}
@@ -143,10 +147,7 @@ Tool and session-step types (authoritative field shapes):
 
     Be faithful to retrieved content; if data is missing, say what was not found and what the user should provide.
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{{ ctx.output_format }}
 
 Return exactly one `StructuredReply` JSON object.
 If `parts[]` is present, choose each item with discriminator `type`:
@@ -154,8 +155,6 @@ If `parts[]` is present, choose each item with discriminator `type`:
 - `type: "data"` -> DataPart
 Set `type` exactly for each `parts[]` item.
 Do not add text before or after the JSON object.
-
-{{ ctx.output_format }}
 "#
 }
 

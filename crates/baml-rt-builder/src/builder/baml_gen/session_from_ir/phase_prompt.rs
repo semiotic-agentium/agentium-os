@@ -2,10 +2,9 @@
 //! assembly. Delegates the canonical-order knowledge to
 //! [`crate::builder::baml_gen::PromptCompositor`] — this module only owns:
 //!
-//! - The [`PhaseHop`] cue selector and the cue text (`Phase: ENTRY` / `ACTIVE` / `STRUCTURED`).
 //! - The IR-template stripper alias to [`AuthorBodySanitizer::for_phase_ir`].
 //! - The `client … prompt #""#` BAML wrapper that frames the composed prompt body.
-//! - The phase-FSM constraint suffix constants (entry / active / unified-primary).
+//! - The compact, state-indexed phase-policy strings rendered after `{{ ctx.output_format }}`.
 
 use internal_baml_core::ir::ir_hasher::IRSignature;
 
@@ -17,16 +16,11 @@ use crate::builder::{
 };
 
 /// Which FSM hop this executor represents — entry, active session, or unified structured hop.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum PhaseHop<'a> {
+pub(crate) enum PhaseHop {
     Entry,
-    Active {
-        tool_display_name: &'a str,
-    },
-    /// Unified primary hop: same prefix/footer algebra as tool phases. The emitted prompt cue is
-    /// **`Phase: STRUCTURED`** ([`phase_cue_line`]); this variant name is historical — treat it as
-    /// "structured union hop" in codegen and docs.
-    UnifiedPrimary,
+    Active,
 }
 
 /// Test-only alias to [`AuthorBodySanitizer::for_phase_ir`] preserved so the existing fixture
@@ -37,34 +31,13 @@ fn strip_phase_executor_ir_template(template: &str) -> String {
     AuthorBodySanitizer::for_phase_ir(template)
 }
 
-fn phase_cue_line(phase: PhaseHop<'_>) -> String {
-    match phase {
-        PhaseHop::Entry => {
-            "Phase: ENTRY — reuse a visible archive (@N), ReadOnlyFinish without Open, or Open a tool session; legal ops only as in the narrowed union below.\n\n"
-                .to_string()
-        }
-        PhaseHop::Active {
-            tool_display_name: t,
-        } => format!(
-            "Phase: ACTIVE — for {t}: Send, SearchRead, PageRead, Finish (after Done Send only), or Abort; legal ops only as below.\n\n"
-        ),
-        PhaseHop::UnifiedPrimary => {
-            "Phase: STRUCTURED — emit exactly one JSON root from the narrowed union below; no ad-hoc prose outside the schema. \
-Prefer archive reads (SearchRead / PageRead) only when you must ground on @N from conversation history. \
-If you must ask the operator one clarifying question before emitting your plan or final structured reply, \
-emit the AskUser-shaped variant from the union (field action='AskUser'), not free text—the executor will run another hop with updated history. \
-Otherwise emit your WorkflowPlan, CoordinatorAnswer, or other structured output type named in the footer.\n\n"
-                .to_string()
-        }
-    }
-}
-
 /// Appended after `{{ ctx.output_format }}` on unified-primary generated functions.
 ///
 /// No ASCII double quotes inside: concatenated into BAML `prompt #""#` literals.
 const PHASE_STEP_EXECUTOR_SUFFIX_UNIFIED_PRIMARY: &str = r#"
 
-PHASE CONSTRAINT (structured unified hop): The JSON root must match ONLY one variant in the narrowed union above—archive SearchRead/PageRead steps (op exactly SearchRead or PageRead; use ArchiveSearchReadInput / ArchivePageReadInput; archive_ref uses @N never #N), your structured plan or answer type, or the AskUser object with action exactly AskUser and a concise question. Do not emit Open/Send/Finish tool-session steps here unless that variant is explicitly listed in the union. Never use op Read.
+Phase policy:
+- Derived state rule: tool-session ops are illegal unless they appear in the schema above.
 "#;
 
 /// Wrap IR/template fragments in `client … prompt #""#` without applying `format!` to `prompt_inner`.
@@ -80,33 +53,24 @@ fn wrap_client_baml_prompt_body(client_name: &str, prompt_inner: &str) -> String
 
 /// Typed inputs for one emitted tool-session phase executor (`__entry` / `__active__*`).
 pub(crate) struct ToolSessionPhasePromptSpec<'a> {
-    /// Which hop is being rendered; drives the emitted `Phase: …` cue and supplement tone.
-    pub phase: PhaseHop<'a>,
-    /// Variant names for the narrowed-union footer (must match the generated `function` return type).
-    pub legal_type_names: &'a [String],
-    /// Phase-specific FSM constraints (entry vs active suffixes from `mod.rs`) appended after
-    /// the narrowed-union footer.
-    pub constraint_suffix: &'static str,
-    /// Optional prose immediately after the phase cue; empty or `None` is skipped.
-    pub supplement_after_cue: Option<&'a str>,
     /// Compiled IR used to derive a centralized selection hint from `legal_type_names`.
     pub ir_signature: &'a IRSignature,
+    /// Variant names admissible for this hop. Must match the generated function return union.
+    pub legal_type_names: &'a [String],
+    /// Compact state-indexed phase policy appended after the schema binding.
+    pub phase_policy: &'static str,
 }
 
 impl ToolSessionPhasePromptSpec<'_> {
     /// Render the full BAML `client … prompt #"..."#` block via [`PromptCompositor::tool_session_phase`].
     pub(crate) fn emit_baml_prompt_body(self, client_name: &str, prompt_template: &str) -> String {
         let stripped = AuthorBodySanitizer::for_phase_ir(prompt_template);
-        let cue = phase_cue_line(self.phase);
         let selection_hint =
             render_selection_hint_for_named_union(self.legal_type_names, self.ir_signature);
         let inner = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
-            phase_cue: &cue,
-            supplement_after_cue: self.supplement_after_cue,
             stripped_ir_body: &stripped,
-            legal_type_names: self.legal_type_names,
             selection_hint: &selection_hint,
-            constraint_suffix: self.constraint_suffix,
+            phase_policy: self.phase_policy,
         });
         wrap_client_baml_prompt_body(client_name, &inner)
     }
@@ -118,21 +82,25 @@ impl ToolSessionPhasePromptSpec<'_> {
 fn phase_executor_prompt_body(
     client_name: &str,
     prompt_template: &str,
-    phase: PhaseHop<'_>,
+    phase: PhaseHop,
     legal_type_names: &[String],
-    supplement_after_cue: Option<&str>,
+    _supplement_after_cue: Option<&str>,
     ir_signature: &IRSignature,
 ) -> String {
     let stripped = AuthorBodySanitizer::for_phase_ir(prompt_template);
-    let cue = phase_cue_line(phase);
     let selection_hint = render_selection_hint_for_named_union(legal_type_names, ir_signature);
+    let phase_policy = match phase {
+        PhaseHop::Entry => {
+            crate::builder::baml_gen::session_from_ir::entry_phase_executor_suffix(legal_type_names)
+        }
+        PhaseHop::Active => {
+            "\nPhase policy:\n- Derived state rule: this active return union has no `Open` variant.\n"
+        }
+    };
     let inner = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
-        phase_cue: &cue,
-        supplement_after_cue,
         stripped_ir_body: &stripped,
-        legal_type_names,
         selection_hint: &selection_hint,
-        constraint_suffix: "",
+        phase_policy,
     });
     wrap_client_baml_prompt_body(client_name, &inner)
 }
@@ -145,14 +113,11 @@ pub(crate) fn phase_executor_prompt_body_unified_primary(
     ir_signature: &IRSignature,
 ) -> String {
     let stripped = AuthorBodySanitizer::for_phase_ir(prompt_template);
-    let cue = phase_cue_line(PhaseHop::UnifiedPrimary);
     let selection_hint = render_selection_hint_for_named_union(legal_type_names, ir_signature);
     let inner = PromptCompositor::unified_primary_phase(UnifiedPrimaryPhaseSpec {
-        phase_cue: &cue,
         stripped_ir_body: &stripped,
-        legal_type_names,
         selection_hint: &selection_hint,
-        extra_suffix: PHASE_STEP_EXECUTOR_SUFFIX_UNIFIED_PRIMARY,
+        phase_policy: PHASE_STEP_EXECUTOR_SUFFIX_UNIFIED_PRIMARY,
     });
     wrap_client_baml_prompt_body(client_name, &inner)
 }
@@ -277,11 +242,11 @@ client DefaultClient {
         );
         assert!(
             out.contains("Only the IR template."),
-            "expected IR body after phase cue: {out}"
+            "expected IR body in prompt: {out}"
         );
         assert!(
-            out.matches("{{ ctx.output_format }}").count() == 0,
-            "tool-session phases must not render per-hop BAML output_format — schemas live in the catalog: {out}"
+            out.matches("{{ ctx.output_format }}").count() == 1,
+            "tool-session phases must render the narrowed per-hop schema after history: {out}"
         );
         assert!(
             out.contains("tool_schema_prelude"),
@@ -296,28 +261,21 @@ client DefaultClient {
             .find("Only the IR template.")
             .expect("IR template fragment");
         let hist_pos = out.find("Session history:").expect("session history");
-        let footer_pos = out
-            .find("Narrowed return union for this hop only:")
-            .expect("narrowed union footer");
+        let schema_pos = out.find("{{ ctx.output_format }}").expect("schema binding");
         assert!(
-            ir_pos < hist_pos,
-            "IR task body must precede generated session history: {out}"
+            hist_pos < ir_pos,
+            "session history must precede IR task body: {out}"
         );
         assert!(
-            hist_pos < footer_pos,
-            "narrowed union footer must follow session history (bottom of prompt): {out}"
-        );
-        assert!(out.contains("Phase: ENTRY"), "expected phase cue: {out}");
-        assert!(
-            out.contains("- ArchiveSearchReadStep"),
-            "expected footer bullet: {out}"
+            ir_pos < schema_pos,
+            "IR task body must precede the per-hop schema binding: {out}"
         );
         assert!(
             out.contains("Return exactly one JSON object."),
-            "expected generated selection hint at bottom: {out}"
+            "expected generated selection hint after schema binding: {out}"
         );
         assert!(
-            out.contains("Archive: a `tool: @N`"),
+            out.contains("Archive refs: `@N`"),
             "expected embedded archive policy prefix in phase prompt: {out}"
         );
         assert!(
@@ -414,7 +372,7 @@ Old label:
     }
 
     #[test]
-    fn tool_session_active_emit_includes_supplement_constraint_and_no_legacy_phase_tag() {
+    fn tool_session_active_emit_includes_phase_policy_and_schema() {
         let legal = vec![
             "FooSendStep".to_string(),
             "FooSearchReadStep".to_string(),
@@ -423,38 +381,28 @@ Old label:
             "FooAbortStep".to_string(),
         ];
         let ir = test_ir_signature();
-        const ACTIVE_SUFFIX: &str = "\n\nPHASE CONSTRAINT (active — test stub)";
-        let supplement = "A foo/tool session is open. Emit Send.\n\n";
+        const ACTIVE_POLICY: &str = "\nPhase policy:\n- Derived state rule: this active return union has no `Open` variant.\n";
         let spec = ToolSessionPhasePromptSpec {
-            phase: PhaseHop::Active {
-                tool_display_name: "foo/tool",
-            },
             legal_type_names: &legal,
-            constraint_suffix: ACTIVE_SUFFIX,
-            supplement_after_cue: Some(supplement),
             ir_signature: &ir,
+            phase_policy: ACTIVE_POLICY,
         };
         let out = spec.emit_baml_prompt_body("TestClient", "Body.\n{{ ctx.output_format }}");
-        assert!(out.contains("Phase: ACTIVE"), "cue: {out}");
-        assert!(out.contains(supplement.trim_end()), "supplement: {out}");
         assert!(out.contains("Body."), "template: {out}");
-        assert!(
-            out.contains("PHASE CONSTRAINT (active — test stub)"),
-            "suffix: {out}"
-        );
+        assert!(out.contains("Phase policy:"), "phase policy: {out}");
         assert!(!out.contains("[ACT]") && !out.contains("[CONTINUE]"));
         assert!(
-            out.matches("{{ ctx.output_format }}").count() == 0,
-            "tool-session active must not duplicate output_format: {out}"
+            out.matches("{{ ctx.output_format }}").count() == 1,
+            "tool-session active must render exactly one per-hop output_format: {out}"
         );
         assert!(
-            out.contains("- FooSendStep"),
-            "expected footer bullet: {out}"
+            out.contains("Legal operation discriminator values derived from this return union"),
+            "expected compact op-selection hint: {out}"
         );
     }
 
     #[test]
-    fn unified_primary_prompt_includes_structured_cue_and_archive_types_in_footer() {
+    fn unified_primary_prompt_includes_schema_and_phase_policy() {
         let legal = vec![
             "ArchiveSearchReadStep".to_string(),
             "ArchivePageReadStep".to_string(),
@@ -468,29 +416,22 @@ Old label:
             &legal,
             &ir,
         );
-        assert!(out.contains("Phase: STRUCTURED"), "cue: {out}");
         assert!(out.contains("Planner body."), "template: {out}");
-        assert!(out.contains("- WorkflowPlan"), "footer: {out}");
-        assert!(
-            out.contains("PHASE CONSTRAINT (structured unified hop)"),
-            "{out}"
-        );
+        assert!(out.contains("Phase policy:"), "{out}");
         assert!(
             out.matches("{{ ctx.output_format }}").count() == 1,
             "expected single output_format: {out}"
         );
         let hist_pos = out.find("Session history:").expect("session history");
+        let task_pos = out.find("Planner body.").expect("task body");
         let of_pos = out.find("{{ ctx.output_format }}").expect("output_format");
-        let footer_pos = out
-            .find("Narrowed return union for this hop only:")
-            .expect("narrowed union footer");
         assert!(
-            hist_pos < of_pos,
-            "session history must precede output_format on unified-primary hops: {out}"
+            hist_pos < task_pos,
+            "session history must precede the task body on unified-primary hops: {out}"
         );
         assert!(
-            of_pos < footer_pos,
-            "narrowed union footer must follow output_format on unified-primary hops: {out}"
+            task_pos < of_pos,
+            "task body must precede output_format on unified-primary hops: {out}"
         );
     }
 }

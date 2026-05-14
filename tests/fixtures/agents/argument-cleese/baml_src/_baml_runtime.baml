@@ -114,11 +114,11 @@ class ReadOnlyFinishStep {
 }
 // Domain types generated from JSON schemas
 class ConversationPart {
-  text string | null?
-  raw string | null?
-  url string | null?
-  filename string | null?
-  media_type string | null?
+  text string | null? @description("Plain text content for this conversation part.")
+  raw string | null? @description("Raw provider-native content when plain text would be lossy or unavailable.")
+  url string | null? @description("Remote URL for this part when the content points to a web or attachment resource.")
+  filename string | null? @description("Attachment filename when this part refers to a file.")
+  media_type string | null? @description("MIME type for this part, for example text/plain or image/png.")
 }
 
 class ConversationMessage {
@@ -237,25 +237,25 @@ class SystemInternalA2aSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Phase: entry — archive reuse, read-only finish, or Open a tool session.
+/// Entry step executor: stable prefix, transcript, task body, schema, and compact phase policy.
 function CleeseSendToChapman__entry(
   first_line: string,
   session_context: SessionContext
 ) -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemInternalA2aOpenStep {
 
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}Phase: ENTRY — reuse a visible archive (@N), ReadOnlyFinish without Open, or Open a tool session; legal ops only as in the narrowed union below.
-
-ENTRY: reuse a visible tool archive (@N) via SearchRead/PageRead, answer with ReadOnlyFinish when no new Open is needed, or Open a session with: system/internal_a2a.
-
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 Argue in the style of a Monty Python sketch.
 
 For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
@@ -267,58 +267,38 @@ On Send, the message body must be exactly the Cleese line above, character for c
 
 One round trip only: send Cleese’s line once; when Chapman’s reply appears in session history (or after paging the delegated archive if needed), Finish — do not Send again to Chapman in the same planner turn.
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
-
----
-Narrowed return union for this hop only:
-- ArchivePageReadStep
-- ArchiveSearchReadStep
-- ReadOnlyFinishStep
-- SystemInternalA2aOpenStep
+{{ ctx.output_format }}
 
 Return exactly one JSON object.
-Select the object shape with discriminator `op`:
-- `op: "PageRead"` -> ArchivePageReadStep
-- `op: "SearchRead"` -> ArchiveSearchReadStep
-- `op: "ReadOnlyFinish"` -> ReadOnlyFinishStep
-- `op: "Open"` -> SystemInternalA2aOpenStep
-Set `op` exactly. Do not mix fields from different object shapes.
+Use only the schema above.
+Legal operation discriminator values derived from this return union: `op` in "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
 Do not add text before or after the JSON object.
 
-
-PHASE CONSTRAINT (entry): The JSON root must match ONLY this hop: Report, AskUser, ReadOnlyFinish (StructuredReply), ArchiveSearchReadStep, ArchivePageReadStep, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for session plans on the full Choose* function, not this narrowed hop. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). ReadOnlyFinish is terminal — no host tool session; cite every @N used.
+Phase policy:
+- Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
 "#
 
 }
 
-/// Phase: active — Send, archive reads, Finish, or Abort (system/internal_a2a).
+/// Active step executor: stable prefix, transcript, task body, schema, and compact phase policy.
 function CleeseSendToChapman__active__system_internal_a2a(
   first_line: string,
   session_context: SessionContext
 ) -> SystemInternalA2aSendStep | SystemInternalA2aSearchReadStep | SystemInternalA2aPageReadStep | SystemInternalA2aFinishStep | SystemInternalA2aAbortStep {
 
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}Phase: ACTIVE — for system/internal_a2a: Send, SearchRead, PageRead, Finish (after Done Send only), or Abort; legal ops only as below.
-
-A system/internal_a2a session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
-system/internal_a2a result is archived.
-Check session history:
-- See "@N system/internal_a2a" followed by numbered lines → content is inline; emit Finish
-- See "@N system/internal_a2a" with "more lines" indicator → emit SearchRead or PageRead to paginate
-- See "@N system/internal_a2a" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
-- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
-
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 Argue in the style of a Monty Python sketch.
 
 For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
@@ -330,45 +310,15 @@ On Send, the message body must be exactly the Cleese line above, character for c
 
 One round trip only: send Cleese’s line once; when Chapman’s reply appears in session history (or after paging the delegated archive if needed), Finish — do not Send again to Chapman in the same planner turn.
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
-
----
-Narrowed return union for this hop only:
-- SystemInternalA2aSendStep
-- SystemInternalA2aSearchReadStep
-- SystemInternalA2aPageReadStep
-- SystemInternalA2aFinishStep
-- SystemInternalA2aAbortStep
+{{ ctx.output_format }}
 
 Return exactly one JSON object.
-Select the object shape with discriminator `op`:
-- `op: "Send"` -> SystemInternalA2aSendStep
-- `op: "SearchRead"` -> SystemInternalA2aSearchReadStep
-- `op: "PageRead"` -> SystemInternalA2aPageReadStep
-- `op: "Finish"` -> SystemInternalA2aFinishStep
-- `op: "Abort"` -> SystemInternalA2aAbortStep
-Set `op` exactly. Do not mix fields from different object shapes.
+Use only the schema above.
+Legal operation discriminator values derived from this return union: `op` in "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
 Do not add text before or after the JSON object.
 
-
-PHASE CONSTRAINT (active): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Include input and citations per schema. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). Finish is legal only after the host has a Done result from Send for this session (the runtime enforces this).
+Phase policy:
+- Derived state rule: this active return union has no `Open` variant.
 "#
 
-}
-
-
-
-// ── builder: agent-wide tool schema catalog (from IR) ──
-
-/// Auto-generated agent-wide tool schema catalog.
-/// Rendered once at build time into _baml_tool_schema_catalog.txt and loaded as ctx.tags['tool_schema_prelude'].
-/// Never invoked against an LLM — exists only to drive BAML's ctx.output_format renderer.
-function AgentToolSchemaCatalog__bamlrt() -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemInternalA2aAbortStep | SystemInternalA2aFinishStep | SystemInternalA2aOpenStep | SystemInternalA2aSendStep {
-  client DefaultClient
-  prompt #"
-{{ ctx.output_format }}
-"#
 }

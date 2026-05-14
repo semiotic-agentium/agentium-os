@@ -294,7 +294,7 @@ function ChooseClaudeDevAction(
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Phase: entry — archive reuse, read-only finish, or Open a tool session.
+/// Entry step executor: stable prefix, transcript, task body, schema, and compact phase policy.
 function ChooseClaudeDevAction__entry(
   spec_text: string,
   validation_criteria_json: string,
@@ -304,18 +304,18 @@ function ChooseClaudeDevAction__entry(
 ) -> ArchivePageReadStep | ArchiveSearchReadStep | ClaudeDevAskUser | ClaudeDevOpenStep | ClaudeDevReport | ReadOnlyFinishStep {
 
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}Phase: ENTRY — reuse a visible archive (@N), ReadOnlyFinish without Open, or Open a tool session; legal ops only as in the narrowed union below.
-
-ENTRY: reuse a visible tool archive (@N) via SearchRead/PageRead, answer with ReadOnlyFinish when no new Open is needed, or Open a session with: claude/dev.
-
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 You control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
@@ -355,19 +355,7 @@ Session open (host FSM): {{ session_context.session_open }}
 
 OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
-
----
-Narrowed return union for this hop only:
-- ArchivePageReadStep
-- ArchiveSearchReadStep
-- ClaudeDevAskUser
-- ClaudeDevOpenStep
-- ClaudeDevReport
-- ReadOnlyFinishStep
+{{ ctx.output_format }}
 
 Return exactly one JSON object.
 Choose one object shape:
@@ -380,13 +368,13 @@ Choose one object shape:
 Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
 
-
-PHASE CONSTRAINT (entry): The JSON root must match ONLY this hop: Report, AskUser, ReadOnlyFinish (StructuredReply), ArchiveSearchReadStep, ArchivePageReadStep, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for session plans on the full Choose* function, not this narrowed hop. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). ReadOnlyFinish is terminal — no host tool session; cite every @N used.
+Phase policy:
+- Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
 "#
 
 }
 
-/// Phase: active — Send, archive reads, Finish, or Abort (claude/dev).
+/// Active step executor: stable prefix, transcript, task body, schema, and compact phase policy.
 function ChooseClaudeDevAction__active__claude_dev(
   spec_text: string,
   validation_criteria_json: string,
@@ -396,24 +384,18 @@ function ChooseClaudeDevAction__active__claude_dev(
 ) -> ClaudeDevSendStep | ClaudeDevSearchReadStep | ClaudeDevPageReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep {
 
   client DefaultClient
-  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
-
-For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and session-step types (authoritative field shapes):
+Stable tool and operation types (IR-derived):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}Phase: ACTIVE — for claude/dev: Send, SearchRead, PageRead, Finish (after Done Send only), or Abort; legal ops only as below.
-
-A claude/dev session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
-claude/dev result is archived.
-Check session history:
-- See "@N claude/dev" followed by numbered lines → content is inline; emit Finish
-- See "@N claude/dev" with "more lines" indicator → emit SearchRead or PageRead to paginate
-- See "@N claude/dev" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
-- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
-
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 You control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
@@ -453,45 +435,15 @@ Session open (host FSM): {{ session_context.session_open }}
 
 OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown, no text before or after the JSON. Use exactly one of: Report/AskUser-shaped objects, or ClaudeDevSessionPlan with step plus citations as required by ctx.output_format.
 
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
-
----
-Narrowed return union for this hop only:
-- ClaudeDevSendStep
-- ClaudeDevSearchReadStep
-- ClaudeDevPageReadStep
-- ClaudeDevFinishStep
-- ClaudeDevAbortStep
+{{ ctx.output_format }}
 
 Return exactly one JSON object.
-Select the object shape with discriminator `op`:
-- `op: "Send"` -> ClaudeDevSendStep
-- `op: "SearchRead"` -> ClaudeDevSearchReadStep
-- `op: "PageRead"` -> ClaudeDevPageReadStep
-- `op: "Finish"` -> ClaudeDevFinishStep
-- `op: "Abort"` -> ClaudeDevAbortStep
-Set `op` exactly. Do not mix fields from different object shapes.
+Use only the schema above.
+Legal operation discriminator values derived from this return union: `op` in "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
 Do not add text before or after the JSON object.
 
-
-PHASE CONSTRAINT (active): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Include input and citations per schema. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). Finish is legal only after the host has a Done result from Send for this session (the runtime enforces this).
+Phase policy:
+- Derived state rule: this active return union has no `Open` variant.
 "#
 
-}
-
-
-
-// ── builder: agent-wide tool schema catalog (from IR) ──
-
-/// Auto-generated agent-wide tool schema catalog.
-/// Rendered once at build time into _baml_tool_schema_catalog.txt and loaded as ctx.tags['tool_schema_prelude'].
-/// Never invoked against an LLM — exists only to drive BAML's ctx.output_format renderer.
-function AgentToolSchemaCatalog__bamlrt() -> ArchivePageReadStep | ArchiveSearchReadStep | ClaudeDevAbortStep | ClaudeDevFinishStep | ClaudeDevOpenStep | ClaudeDevSendStep | ReadOnlyFinishStep {
-  client DefaultClient
-  prompt #"
-{{ ctx.output_format }}
-"#
 }
