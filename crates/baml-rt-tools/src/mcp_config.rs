@@ -55,6 +55,9 @@ pub struct SandboxConfig {
     /// Hard deadline (seconds) for import-time discovery. Defaults to 30.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub import_timeout_secs: Option<u64>,
+    /// Per-call deadline (seconds) for `tools/call` at runtime. Defaults to 120.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_call_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Error)]

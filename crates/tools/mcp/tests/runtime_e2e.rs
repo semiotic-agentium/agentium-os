@@ -248,6 +248,93 @@ async fn composite_combines_mcp_and_inert_resolvers() {
 }
 
 #[tokio::test]
+async fn push_drift_fails_subsequent_calls_with_stale_error() {
+    let cache = tempfile::tempdir().unwrap();
+    write_snapshot(
+        cache.path(),
+        &approved_snapshot(vec![approved_tool(
+            "search_dashboards",
+            json!({"type": "object"}),
+        )]),
+    )
+    .unwrap();
+    let fixture_path = cache.path().join("fixture.json");
+    let mut fixture = sample_fixture();
+    fixture.drift_mode = true;
+    write_fixture(&fixture_path, &fixture);
+
+    let resolver = build_resolver(&fixture_path, cache.path());
+    let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
+    let (_metadata, handler) = resolver.resolve(&name).unwrap().expect("resolved");
+
+    // First call succeeds; fake server emits notifications/tools/list_changed
+    // immediately after.
+    {
+        let mut session = handler
+            .open_session(session_context(&name), json!({}))
+            .await
+            .unwrap();
+        session.send(json!({})).await.unwrap();
+        let _ = session.read(json!({})).await.unwrap();
+        session.finish().await.unwrap();
+    }
+
+    // Poll a few times: rmcp's notification processing is async. As soon as
+    // our RuntimeClientHandler sees the notif, the next send must surface
+    // ConnectionError::Stale.
+    let mut stale_seen = false;
+    for _ in 0..50 {
+        let mut session = handler
+            .open_session(session_context(&name), json!({}))
+            .await
+            .unwrap();
+        match session.send(json!({})).await {
+            Err(err) => {
+                let display = format!("{err:?}");
+                if display.contains("stale") {
+                    stale_seen = true;
+                    break;
+                }
+            }
+            Ok(()) => {
+                let _ = session.read(json!({})).await;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        stale_seen,
+        "connection should flip to stale after tools/list_changed"
+    );
+}
+
+#[tokio::test]
+async fn http_transport_is_rejected_at_resolve() {
+    let cache = tempfile::tempdir().unwrap();
+    let mut snap = approved_snapshot(vec![approved_tool(
+        "search_dashboards",
+        json!({"type": "object"}),
+    )]);
+    snap.transport = McpTransportRef::Http {
+        url: "https://example.invalid/mcp".into(),
+        allowlist_digest: None,
+    };
+    write_snapshot(cache.path(), &snap).unwrap();
+    let fixture_path = cache.path().join("fixture.json");
+    write_fixture(&fixture_path, &sample_fixture());
+
+    let resolver = build_resolver(&fixture_path, cache.path());
+    let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
+    match resolver.resolve(&name) {
+        Err(err) => assert!(
+            err.to_string().contains("HTTP transport"),
+            "unexpected error: {err}"
+        ),
+        Ok(_) => panic!("expected HTTP transport to be rejected"),
+    }
+}
+
+#[tokio::test]
 async fn aborted_session_refuses_further_reads() {
     let cache = tempfile::tempdir().unwrap();
     write_snapshot(

@@ -194,6 +194,60 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     fs::write(path, bytes)
 }
 
+/// Write JSON atomically: serialize to a sibling `.tmp` file then rename in
+/// place. PR5 drift transitions use this so a crash mid-rewrite never leaves
+/// the snapshot in a half-stale state.
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(value)
+        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "path has no parent"))?;
+    fs::create_dir_all(dir)?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "path has no file name"))?;
+    let mut tmp_name = file_name.to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = dir.join(tmp_name);
+    fs::write(&tmp, bytes)?;
+    fs::rename(&tmp, path)
+}
+
+/// Flip the on-disk approval state of a server record to `Stale`, atomically.
+/// Returns the previous state. Idempotent: a record already in `Stale` is left
+/// in place and `Ok(Stale)` is returned.
+pub fn mark_server_stale(
+    root: &Path,
+    server_id: &str,
+) -> io::Result<crate::mcp_snapshot::McpApprovalState> {
+    use crate::mcp_snapshot::McpApprovalState;
+    let path = server_dir(root, server_id).join(SERVER_FILE);
+    let mut record: ServerRecord = read_json(&path)?;
+    let prev = record.approval.state;
+    if prev != McpApprovalState::Stale {
+        record.approval.state = McpApprovalState::Stale;
+        write_json_atomic(&path, &record)?;
+    }
+    Ok(prev)
+}
+
+/// Flip the on-disk approval state of a tool record to `Stale`, atomically.
+pub fn mark_tool_stale(
+    root: &Path,
+    platform_tool_name: &str,
+) -> io::Result<crate::mcp_snapshot::McpApprovalState> {
+    use crate::mcp_snapshot::McpApprovalState;
+    let path = tool_dir(root, platform_tool_name).join(TOOL_METADATA_FILE);
+    let mut record: ToolRecord = read_json(&path)?;
+    let prev = record.tool.approval.state;
+    if prev != McpApprovalState::Stale {
+        record.tool.approval.state = McpApprovalState::Stale;
+        write_json_atomic(&path, &record)?;
+    }
+    Ok(prev)
+}
+
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<T> {
     let bytes = fs::read(path)?;
     serde_json::from_slice(&bytes).map_err(|err| io::Error::new(ErrorKind::InvalidData, err))
@@ -313,6 +367,29 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn mark_server_stale_flips_state_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        write_snapshot(dir.path(), &snapshot()).unwrap();
+        let prev = mark_server_stale(dir.path(), "fake").unwrap();
+        assert_eq!(prev, McpApprovalState::Approved);
+        let stored = read_server(dir.path(), "fake").unwrap();
+        assert_eq!(stored.approval.state, McpApprovalState::Stale);
+        let prev2 = mark_server_stale(dir.path(), "fake").unwrap();
+        assert_eq!(prev2, McpApprovalState::Stale);
+    }
+
+    #[test]
+    fn mark_tool_stale_flips_only_that_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        write_snapshot(dir.path(), &snapshot()).unwrap();
+        mark_tool_stale(dir.path(), "mcp/fake/search").unwrap();
+        let search = read_tool(dir.path(), "mcp/fake/search").unwrap();
+        let query = read_tool(dir.path(), "mcp/fake/query").unwrap();
+        assert_eq!(search.tool.approval.state, McpApprovalState::Stale);
+        assert_eq!(query.tool.approval.state, McpApprovalState::Approved);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! `ExternalToolResolver` implementations for MCP-imported tools.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -13,8 +13,10 @@ use baml_rt_tools::{
     mcp_builder_catalog::project_tool,
     mcp_cache::{ToolRecord, read_server, read_tool},
     mcp_config::McpServersFile,
+    mcp_snapshot::McpTransportRef,
     tools::{ToolFunctionMetadata, ToolHandler, ToolName},
 };
+use sha2::{Digest as _, Sha256};
 
 use crate::{
     handler::McpToolHandler,
@@ -24,18 +26,32 @@ use crate::{
 
 /// Default per-server startup deadline when not specified in `mcp-servers.json`.
 const DEFAULT_STARTUP_TIMEOUT_SECS: u64 = 30;
+/// Default per-call deadline when not specified.
+const DEFAULT_CALL_TIMEOUT_SECS: u64 = 120;
+
+/// Pool isolation key. Two agents that resolve the same `server_id` against
+/// different operator configs or different secret identities get separate
+/// child processes, preserving secret isolation across tenants.
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct PoolKey {
+    server_id: String,
+    server_config_digest: String,
+    secret_identity_hash: String,
+}
 
 /// Resolver that loads MCP-imported tools from a snapshot cache and binds
 /// each one to an `McpConnection` whose launch parameters come from an
 /// operator-supplied `mcp-servers.json`.
 ///
-/// Connections are pooled per `server_id`, so multiple tools from the same
-/// server share one MCP child process.
+/// Connections are pooled per (server_id, server_config_digest,
+/// secret_identity_hash) — multiple tools from the same server share one MCP
+/// child process iff they were registered with the same operator config and
+/// same resolved secret values.
 pub struct McpResolver<R: SecretResolver + Send + Sync> {
     cache_root: PathBuf,
     servers: McpServersFile,
     secret_resolver: R,
-    connections: Mutex<HashMap<String, Arc<McpConnection>>>,
+    connections: Mutex<HashMap<PoolKey, Arc<McpConnection>>>,
 }
 
 impl<R: SecretResolver + Send + Sync> McpResolver<R> {
@@ -48,9 +64,17 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
         }
     }
 
-    /// Look up or initialise the connection for a given server id. Returns
-    /// `None` when the server is unknown to the operator's `mcp-servers.json`.
-    fn connection_for(&self, server_id: &str) -> Result<Option<Arc<McpConnection>>> {
+    /// Look up or initialise the connection for a given server id.
+    ///
+    /// `server_config_digest` is the digest cached at import time; the
+    /// resolver folds it into the pool key so a config rewrite at runtime
+    /// can never silently share a stale connection.
+    fn connection_for(
+        &self,
+        server_id: &str,
+        server_config_digest: &str,
+        protocol_version: &str,
+    ) -> Result<Option<Arc<McpConnection>>> {
         let Some(server_config) = self.servers.servers.get(server_id) else {
             return Ok(None);
         };
@@ -58,6 +82,9 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
         if let Ok(path) = std::env::var("PATH") {
             env.entry("PATH".into()).or_insert(path);
         }
+        // Resolved secrets — kept in sorted order so the identity hash is
+        // stable.
+        let mut resolved_secrets: BTreeMap<String, String> = BTreeMap::new();
         for secret in &server_config.secrets {
             let value = self.secret_resolver.resolve(&secret.name).ok_or_else(|| {
                 BamlRtError::InvalidArgument(format!(
@@ -65,13 +92,22 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
                     secret.name
                 ))
             })?;
-            env.insert(secret.name.clone(), value);
+            resolved_secrets.insert(secret.name.clone(), value);
+        }
+        for (name, value) in &resolved_secrets {
+            env.insert(name.clone(), value.clone());
         }
         let startup_timeout_secs = server_config
             .sandbox
             .as_ref()
             .and_then(|s| s.import_timeout_secs)
             .unwrap_or(DEFAULT_STARTUP_TIMEOUT_SECS);
+        let call_timeout_secs = server_config
+            .sandbox
+            .as_ref()
+            .and_then(|s| s.runtime_call_timeout_secs)
+            .unwrap_or(DEFAULT_CALL_TIMEOUT_SECS);
+        let secret_identity_hash = hash_secret_identity(&resolved_secrets);
 
         let launch = ServerLaunch {
             server_id: server_id.to_string(),
@@ -79,11 +115,19 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
             args: server_config.args.clone(),
             env,
             startup_timeout: Duration::from_secs(startup_timeout_secs),
+            call_timeout: Duration::from_secs(call_timeout_secs),
+            server_config_digest: server_config_digest.to_string(),
+            protocol_version: protocol_version.to_string(),
         };
 
+        let key = PoolKey {
+            server_id: server_id.to_string(),
+            server_config_digest: server_config_digest.to_string(),
+            secret_identity_hash,
+        };
         let mut guard = self.connections.lock().unwrap();
         let conn = guard
-            .entry(server_id.to_string())
+            .entry(key)
             .or_insert_with(|| Arc::new(McpConnection::new(launch)))
             .clone();
         Ok(Some(conn))
@@ -130,24 +174,60 @@ impl<R: SecretResolver + Send + Sync> ExternalToolResolver for McpResolver<R> {
                 record.server_id, server.approval.state
             )));
         }
+        // PR5 hardening: HTTP transport is reserved but not yet bound in the
+        // runtime. Reject explicitly so a snapshot we can parse but not run
+        // does not silently fall through to "missing server config".
+        if matches!(server.transport, McpTransportRef::Http { .. }) {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "MCP tool {display} uses HTTP transport which is not enabled in this build"
+            )));
+        }
         let mcp_tool_name = record.tool.mcp_tool_name.clone();
         let metadata = project_record(&record)?;
-        let Some(connection) = self.connection_for(&record.server_id)? else {
+        let Some(connection) = self.connection_for(
+            &record.server_id,
+            server.server_config_digest.as_str(),
+            &server.protocol_version,
+        )?
+        else {
             return Err(BamlRtError::InvalidArgument(format!(
                 "MCP server `{}` is approved in cache but not declared in mcp-servers.json",
                 record.server_id
             )));
         };
+        let schema_digest = record.tool.input_schema_digest.to_string();
         Ok(Some((
             metadata.clone(),
-            Arc::new(McpToolHandler::new(metadata, connection, mcp_tool_name))
-                as Arc<dyn ToolHandler>,
+            Arc::new(McpToolHandler::new(
+                metadata,
+                connection,
+                mcp_tool_name,
+                schema_digest,
+            )) as Arc<dyn ToolHandler>,
         )))
     }
 }
 
 fn project_record(record: &ToolRecord) -> Result<ToolFunctionMetadata> {
     project_tool(&record.server_id, record.clone())
+}
+
+/// Hash the resolved secret identity (`{name: value}` pairs in sorted order).
+/// Used as part of the connection pool key so two agents with different
+/// secret values never share an MCP child process. The hash itself never
+/// leaks any secret content.
+fn hash_secret_identity(secrets: &BTreeMap<String, String>) -> String {
+    if secrets.is_empty() {
+        return "sha256:empty".to_string();
+    }
+    let mut hasher = Sha256::new();
+    for (name, value) in secrets {
+        hasher.update(name.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(value.as_bytes());
+        hasher.update([0u8]);
+    }
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 /// Convenience: build an `McpResolver` from the default cache + config paths.

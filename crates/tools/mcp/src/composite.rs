@@ -114,7 +114,7 @@ mod tests {
                         config: None,
                         config_bundle: None,
                         origin: ToolOrigin::Host,
-                        backend: ToolBackend::External,
+                        backend: ToolBackend::Mcp,
                         digest: None,
                         projection_semantics: None,
                         session_policy: SessionPolicy::Strict,

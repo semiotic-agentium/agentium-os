@@ -936,7 +936,7 @@ pub struct ToolFunctionMetadata {
     pub config_bundle: Option<BundleName>,
     /// Origin of this tool (host vs guest)
     pub origin: ToolOrigin,
-    /// Execution backend (Static, External, or Wasm). Defaults to `Static`.
+    /// Execution backend (Static, External, MCP, Sandbox, or Wasm). Defaults to `Static`.
     pub backend: ToolBackend,
     /// Content-addressed digest for external tool artifact / package bytes.
     /// `None` for static tools and for external tools when verification is disabled.
@@ -1342,7 +1342,8 @@ pub enum ToolOrigin {
 /// Execution backend for a tool. Orthogonal to [`ToolOrigin`] (ownership).
 ///
 /// - `Static`: compiled into the runner at build time and linked via inventory.
-/// - `External`: resolved at deploy time and spawned as a subprocess per invocation.
+/// - `External`: resolved at deploy time from a local external-tool artifact/package.
+/// - `Mcp`: resolved from an approved MCP snapshot and invoked via MCP transport.
 /// - `Sandbox`: runs inside a microsandbox-backed microVM; dispatch lands in Workstream B.
 /// - `Wasm`: loaded per invocation into a Wasm sandbox (future).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1350,8 +1351,10 @@ pub enum ToolBackend {
     /// Compiled into the runner via inventory (current default).
     #[default]
     Static,
-    /// Runs as a standalone process speaking the tool protocol over stdio/UDS.
+    /// Runs as a standalone process speaking the platform external-tool protocol over stdio/UDS.
     External,
+    /// Runs through the Model Context Protocol using an approved snapshot/cache entry.
+    Mcp,
     /// Runs inside a microsandbox-backed microVM (Workstream B).
     Sandbox,
     /// Runs inside a Wasm sandbox (future).

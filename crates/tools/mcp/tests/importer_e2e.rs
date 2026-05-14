@@ -31,6 +31,7 @@ fn server_config_for(fixture_path: &std::path::Path) -> McpServerConfig {
         sandbox: Some(SandboxConfig {
             profile: Some("mcp-import-restricted-tier1".into()),
             import_timeout_secs: Some(10),
+            runtime_call_timeout_secs: None,
         }),
         description: None,
     }

@@ -173,7 +173,7 @@ pub fn project_tool(server_id: &str, record: ToolRecord) -> Result<ToolFunctionM
         config: None,
         config_bundle: Some(server_bundle),
         origin: ToolOrigin::Host,
-        backend: ToolBackend::External,
+        backend: ToolBackend::Mcp,
         digest: Some(record.tool.input_schema_digest.to_string()),
         projection_semantics: None,
         session_policy: SessionPolicy::Strict,
@@ -288,7 +288,7 @@ mod tests {
         let parsed = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
         let meta = catalog.by_name(&parsed).unwrap();
         assert_eq!(meta.class_name, "McpGrafanaSearchDashboards");
-        assert_eq!(meta.backend, ToolBackend::External);
+        assert_eq!(meta.backend, ToolBackend::Mcp);
         assert!(meta.tags.iter().any(|t| t == "mcp"));
         assert!(meta.tags.iter().any(|t| t == "mcp:grafana"));
         // Default content envelope output projects as OpaqueJson schema.

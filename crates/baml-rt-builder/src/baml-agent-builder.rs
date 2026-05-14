@@ -118,6 +118,25 @@ enum Commands {
         #[arg(long)]
         runner_token: Option<String>,
     },
+    /// Re-discover an already-approved MCP server and flip its snapshot to
+    /// `stale` if the server-config or per-tool input schemas have drifted.
+    ///
+    /// Pull-side companion to runtime push-drift: this is the operator's
+    /// confirmation step. After review the operator re-runs `mcp-enable`
+    /// to re-import and re-approve.
+    McpReview {
+        /// Server id to review (must match an entry in the cache).
+        server_id: String,
+        /// Path to mcp-servers.json (default: $HOME/.agent-platform/mcp-servers.json).
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Snapshot cache root (default: $HOME/.agent-platform/mcp).
+        #[arg(long)]
+        cache_root: Option<PathBuf>,
+        /// Show the diff without rewriting any cache entries.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Import and approve an MCP server's tool schemas into the local snapshot cache.
     McpEnable {
         /// Server id to enable (must match an entry under `mcpServers` in the config file).
@@ -203,6 +222,20 @@ async fn main() -> Result<()> {
             yes,
         } => {
             mcp_enable(&server_id, config.as_deref(), cache_root.as_deref(), yes).await?;
+        }
+        Commands::McpReview {
+            server_id,
+            config,
+            cache_root,
+            dry_run,
+        } => {
+            mcp_review(
+                &server_id,
+                config.as_deref(),
+                cache_root.as_deref(),
+                dry_run,
+            )
+            .await?;
         }
         Commands::Bootstrap {
             path,
@@ -823,11 +856,10 @@ async fn mcp_enable(
     let approve = if skip_prompt {
         true
     } else {
-        let answer = inquire::Confirm::new("Approve this server and all tools?")
+        inquire::Confirm::new("Approve this server and all tools?")
             .with_default(false)
             .prompt()
-            .unwrap_or(false);
-        answer
+            .unwrap_or(false)
     };
 
     if !approve {
@@ -842,7 +874,17 @@ async fn mcp_enable(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| format!("epoch:{}", d.as_secs()))
         .ok();
+    let prior_state = snapshot.approval.state;
     snapshot.approval.state = McpApprovalState::Approved;
+    tracing::info!(
+        target: "mcp.approval",
+        mcp_server_id = %server_id,
+        event = "mcp.approval_transition",
+        from = ?prior_state,
+        to = ?McpApprovalState::Approved,
+        owner = ?owner,
+        "MCP server approved via mcp-enable",
+    );
     snapshot.approval.owner = owner.clone();
     snapshot.approval.reviewed_at = reviewed_at.clone();
     for tool in &mut snapshot.tools {
@@ -859,6 +901,171 @@ async fn mcp_enable(
         "Approved and wrote {} tool(s) under {}",
         snapshot.tools.len(),
         cache_root.display()
+    );
+    Ok(())
+}
+
+/// Pull-drift detection. Re-runs the importer in the same Tier 1 sandbox,
+/// compares `server_config_digest` and per-tool `input_schema_digest` against
+/// the cached snapshot, and flips records to `Stale` when anything drifted.
+async fn mcp_review(
+    server_id: &str,
+    config_path: Option<&std::path::Path>,
+    cache_root: Option<&std::path::Path>,
+    dry_run: bool,
+) -> Result<()> {
+    use anyhow::bail;
+    use baml_rt_tools::{
+        mcp_cache::{default_cache_root, mark_server_stale, mark_tool_stale, read_snapshot},
+        mcp_config::McpServersFile,
+        mcp_snapshot::McpApprovalState,
+    };
+    use baml_tools_mcp::importer::{EnvSecretResolver, ImportOptions, Importer};
+
+    let config_path: PathBuf = match config_path {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --config explicitly"))?;
+            home.join(".agent-platform").join("mcp-servers.json")
+        }
+    };
+    let cache_root: PathBuf = match cache_root {
+        Some(p) => p.to_path_buf(),
+        None => default_cache_root()
+            .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --cache-root explicitly"))?,
+    };
+
+    let cached = read_snapshot(&cache_root, server_id)
+        .with_context(|| format!("reading cached snapshot for `{server_id}`"))?;
+
+    let raw = fs::read_to_string(&config_path)
+        .with_context(|| format!("reading mcp-servers config at {}", config_path.display()))?;
+    let parsed = McpServersFile::parse(&raw)
+        .with_context(|| format!("parsing {}", config_path.display()))?;
+    let Some(server_config) = parsed.servers.get(server_id) else {
+        bail!(
+            "server `{server_id}` not in {}; available: {:?}",
+            config_path.display(),
+            parsed.servers.keys().collect::<Vec<_>>()
+        );
+    };
+
+    println!("Re-discovering MCP server `{server_id}` for drift review...");
+    let importer = Importer::new(&EnvSecretResolver);
+    let fresh = importer
+        .import(
+            server_config,
+            ImportOptions {
+                server_id: server_id.to_string(),
+                sandbox_profile: None,
+            },
+        )
+        .await
+        .with_context(|| format!("re-importing MCP server `{server_id}`"))?;
+
+    let mut drifted_tools: Vec<(String, String, String)> = Vec::new();
+    let server_drifted = cached.server_config_digest != fresh.server_config_digest;
+
+    let cached_by_name: std::collections::BTreeMap<&str, &_> = cached
+        .tools
+        .iter()
+        .map(|t| (t.platform_tool_name.as_str(), t))
+        .collect();
+    let fresh_by_name: std::collections::BTreeMap<&str, &_> = fresh
+        .tools
+        .iter()
+        .map(|t| (t.platform_tool_name.as_str(), t))
+        .collect();
+
+    for (name, fresh_tool) in &fresh_by_name {
+        match cached_by_name.get(name) {
+            Some(cached_tool) => {
+                if cached_tool.input_schema_digest != fresh_tool.input_schema_digest {
+                    drifted_tools.push((
+                        (*name).to_string(),
+                        cached_tool.input_schema_digest.to_string(),
+                        fresh_tool.input_schema_digest.to_string(),
+                    ));
+                }
+            }
+            None => {
+                drifted_tools.push((
+                    (*name).to_string(),
+                    "<absent>".into(),
+                    fresh_tool.input_schema_digest.to_string(),
+                ));
+            }
+        }
+    }
+    for (name, cached_tool) in &cached_by_name {
+        if !fresh_by_name.contains_key(name) {
+            drifted_tools.push((
+                (*name).to_string(),
+                cached_tool.input_schema_digest.to_string(),
+                "<absent>".into(),
+            ));
+        }
+    }
+
+    if !server_drifted && drifted_tools.is_empty() {
+        println!("No drift detected for `{server_id}`. Snapshot is up to date.");
+        return Ok(());
+    }
+
+    println!("\nDrift detected for `{server_id}`:");
+    if server_drifted {
+        println!(
+            "  server_config_digest: {} -> {}",
+            cached.server_config_digest, fresh.server_config_digest
+        );
+    }
+    for (name, before, after) in &drifted_tools {
+        println!("  tool {name}: {before} -> {after}");
+    }
+
+    if dry_run {
+        println!("\nDry run — no cache entries modified.");
+        return Ok(());
+    }
+
+    if server_drifted || !drifted_tools.is_empty() {
+        let prev = mark_server_stale(&cache_root, server_id)
+            .with_context(|| format!("marking server `{server_id}` stale"))?;
+        if prev != McpApprovalState::Stale {
+            tracing::warn!(
+                target: "mcp.drift",
+                mcp_server_id = %server_id,
+                event = "mcp.approval_transition",
+                from = ?prev,
+                to = ?McpApprovalState::Stale,
+                "MCP server transitioned to stale via mcp-review",
+            );
+        }
+    }
+    for (name, _, _) in &drifted_tools {
+        // Only mark tools that still exist in the cache (the "<absent>" case
+        // for newly-added tools has no corresponding tool record yet).
+        if cached_by_name.contains_key(name.as_str()) {
+            let prev = mark_tool_stale(&cache_root, name)
+                .with_context(|| format!("marking tool `{name}` stale"))?;
+            if prev != McpApprovalState::Stale {
+                tracing::warn!(
+                    target: "mcp.drift",
+                    mcp_server_id = %server_id,
+                    mcp_tool = %name,
+                    event = "mcp.approval_transition",
+                    from = ?prev,
+                    to = ?McpApprovalState::Stale,
+                    "MCP tool transitioned to stale via mcp-review",
+                );
+            }
+        }
+    }
+
+    println!(
+        "\nMarked `{server_id}` as stale. Run `mcp-enable {server_id}` after vetting the new schemas to re-approve."
     );
     Ok(())
 }

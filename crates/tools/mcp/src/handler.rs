@@ -13,16 +13,24 @@ use baml_rt_tools::{
     ToolFailure, ToolSession, ToolSessionError, ToolStep,
     tools::{ToolFunctionMetadata, ToolHandler, ToolSessionContext},
 };
-use rmcp::model::CallToolResult;
+use rmcp::{model::CallToolResult, service::ServiceError};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::runtime::{ConnectionError, McpConnection};
 
+/// JSON-RPC reserved range used by MCP. Codes in this band indicate
+/// LLM-correctable problems (bad params, unknown method, etc.); the wider
+/// world of server-specific codes is treated as a hard execution failure.
+const JSONRPC_INVALID_PARAMS: i32 = -32602;
+const JSONRPC_METHOD_NOT_FOUND: i32 = -32601;
+const JSONRPC_INVALID_REQUEST: i32 = -32600;
+
 pub struct McpToolHandler {
     metadata: ToolFunctionMetadata,
     connection: Arc<McpConnection>,
     mcp_tool_name: String,
+    schema_digest: String,
 }
 
 impl McpToolHandler {
@@ -30,11 +38,13 @@ impl McpToolHandler {
         metadata: ToolFunctionMetadata,
         connection: Arc<McpConnection>,
         mcp_tool_name: String,
+        schema_digest: String,
     ) -> Self {
         Self {
             metadata,
             connection,
             mcp_tool_name,
+            schema_digest,
         }
     }
 }
@@ -53,6 +63,7 @@ impl ToolHandler for McpToolHandler {
         Ok(Box::new(McpToolSession {
             connection: self.connection.clone(),
             mcp_tool_name: self.mcp_tool_name.clone(),
+            schema_digest: self.schema_digest.clone(),
             state: Mutex::new(SessionState::Idle),
         }))
     }
@@ -71,6 +82,7 @@ enum SessionState {
 struct McpToolSession {
     connection: Arc<McpConnection>,
     mcp_tool_name: String,
+    schema_digest: String,
     state: Mutex<SessionState>,
 }
 
@@ -100,11 +112,21 @@ impl ToolSession for McpToolSession {
             // Hold the lock only while validating state, drop before awaiting MCP.
             drop(state);
         }
-        let result = self
-            .connection
-            .call_tool(&self.mcp_tool_name, input)
-            .await
-            .map_err(connection_error_to_session)?;
+        let call_span = tracing::info_span!(
+            "mcp.call_tool",
+            mcp_server_id = %self.connection.server_id(),
+            mcp_tool_name = %self.mcp_tool_name,
+            mcp_schema_digest = %self.schema_digest,
+            mcp_protocol_version = %self.connection.protocol_version(),
+            mcp_server_config_digest = %self.connection.server_config_digest(),
+        );
+        let result = {
+            let _guard = call_span.enter();
+            self.connection
+                .call_tool(&self.mcp_tool_name, input)
+                .await
+                .map_err(connection_error_to_session)?
+        };
         let envelope = result_to_envelope(result);
         let mut state = self.state.lock().await;
         *state = SessionState::Ready(envelope);
@@ -155,15 +177,44 @@ fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
         ConnectionError::InvalidArguments(_) => {
             ToolSessionError::Tool(ToolFailure::invalid_input(err.to_string()))
         }
-        ConnectionError::CallTool(_) | ConnectionError::InitializeFailed(_) => {
+        ConnectionError::CallTool(ref service_err) => classify_service_error(&err, service_err),
+        ConnectionError::InitializeFailed(_) | ConnectionError::CallTimeout(_) => {
             ToolSessionError::Tool(ToolFailure::execution_failed(err.to_string()))
         }
         ConnectionError::InitializeTimeout(_) => {
             ToolSessionError::Tool(ToolFailure::execution_failed(err.to_string()))
         }
+        ConnectionError::Stale { .. } => {
+            // Fail-closed transport error: the tool registry is no longer
+            // trusted for this connection; surface to the runtime so the
+            // session is treated as an infra problem, not LLM-correctable.
+            ToolSessionError::Transport(BamlRtError::InvalidArgument(err.to_string()))
+        }
         ConnectionError::Spawn { .. } | ConnectionError::Transport(_) => {
             ToolSessionError::Transport(BamlRtError::InvalidArgument(err.to_string()))
         }
+    }
+}
+
+/// Map rmcp's `ServiceError` to our `ToolSessionError` with disposition
+/// based on JSON-RPC error code: codes that indicate the caller can adjust
+/// inputs become `invalid_input` (LLM-correctable); everything else is a
+/// hard execution failure.
+fn classify_service_error(top: &ConnectionError, err: &ServiceError) -> ToolSessionError {
+    match err {
+        ServiceError::McpError(data) => {
+            let code = data.code.0;
+            if code == JSONRPC_INVALID_PARAMS
+                || code == JSONRPC_METHOD_NOT_FOUND
+                || code == JSONRPC_INVALID_REQUEST
+            {
+                ToolSessionError::Tool(ToolFailure::invalid_input(top.to_string()))
+            } else {
+                ToolSessionError::Tool(ToolFailure::execution_failed(top.to_string()))
+            }
+        }
+        // Transport / cancellation / shutdown — treat as infra failure.
+        _ => ToolSessionError::Transport(BamlRtError::InvalidArgument(top.to_string())),
     }
 }
 

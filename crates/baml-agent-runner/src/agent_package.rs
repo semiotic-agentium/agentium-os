@@ -33,6 +33,33 @@ use baml_rt_tools::{
     },
     register_manifest_tools_with_fallback,
 };
+use baml_tools_mcp::{
+    CompositeResolver, default_mcp_resolver, importer::SecretResolver as McpSecretResolver,
+};
+
+/// Bridges the LLM-side `SecretResolver` (returns `SecretValue`) into the
+/// simple `String`-valued resolver the MCP importer/runtime expects.
+struct LlmSecretResolverToMcpAdapter {
+    inner: Arc<dyn baml_rt_llm_config::SecretResolver>,
+}
+
+impl LlmSecretResolverToMcpAdapter {
+    fn new(inner: Arc<dyn baml_rt_llm_config::SecretResolver>) -> Self {
+        Self { inner }
+    }
+}
+
+impl McpSecretResolver for LlmSecretResolverToMcpAdapter {
+    fn resolve(&self, name: &str) -> Option<String> {
+        // Try the secret as-is first, then fall back to process env so an
+        // operator with raw env vars sees them resolved without needing a
+        // fnox entry per MCP secret.
+        if let Some(value) = self.inner.resolve(name) {
+            return Some(value.into_string());
+        }
+        std::env::var(name).ok()
+    }
+}
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_system::SystemBundle;
 use serde_json::Value;
@@ -115,6 +142,7 @@ impl AgentPackage {
         claude_workspaces_base: Option<&std::path::Path>,
         external_tools_dirs: &[std::path::PathBuf],
         sandbox_bind_roots: &[std::path::PathBuf],
+        llm_secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver>,
     ) -> Result<ToolsRegistered> {
         let mut runtime_manager = loaded.runtime_manager;
         let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
@@ -184,11 +212,34 @@ impl AgentPackage {
         )
         .await?;
 
+        // PR5 wiring: chain the dev-mode external resolver with the MCP
+        // resolver via CompositeResolver so manifest entries like
+        // `mcp/grafana/search_dashboards` bind to live MCP child processes.
+        // Fail-closed: when the manifest references `mcp/...` tools but the
+        // operator never approved them (no snapshot, no mcp-servers.json),
+        // register_manifest_tools_with_fallback returns an error.
+        let mcp_resolver = default_mcp_resolver(
+            None,
+            None,
+            LlmSecretResolverToMcpAdapter::new(llm_secret_resolver),
+        )?;
+        let mut composite = CompositeResolver::new();
+        if let Some(boxed) = external_resolver {
+            composite.push(boxed as Box<dyn ExternalToolResolver>);
+        }
+        if let Some(mcp) = mcp_resolver {
+            composite.push(Box::new(mcp) as Box<dyn ExternalToolResolver>);
+        }
+        let composite_ref: Option<&dyn ExternalToolResolver> = if composite.is_empty() {
+            None
+        } else {
+            Some(&composite)
+        };
         register_manifest_tools_with_fallback(
             runtime_manager.tool_registry().as_ref(),
             &manifest_tool_names,
             policy,
-            external_resolver.as_deref(),
+            composite_ref,
         )?;
         runtime_manager.rebuild_function_tool_manifest();
         runtime_manager
@@ -332,6 +383,7 @@ impl AgentPackage {
                     args.claude_workspaces_base,
                     args.external_tools_dirs,
                     args.sandbox_bind_roots,
+                    args.provenance_config.llm_secret_resolver(),
                 )
                 .await?;
             let built = self
