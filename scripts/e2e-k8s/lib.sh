@@ -44,6 +44,13 @@ RUNNER_POD_1=""
 SURREAL_POD_0=""
 RUNNER_HEADLESS_DNS=""  # ${RUNNER_FULLNAME}.${NAMESPACE}.svc
 
+# Populated by ensure_runner_image_available (registry branch) from the
+# canonical `<tag>: digest: sha256:<hex> size: <n>` line in `docker push`
+# output. Consumed by verify_pod_image_digests to compare against each
+# runner pod's containerStatuses[].imageID. Empty for non-registry
+# strategies, which the assertion already skips.
+PUSHED_IMAGE_DIGEST=""
+
 # Populated at runtime
 REPO_ROOT=""
 BUILDER_BIN=""
@@ -719,7 +726,19 @@ ensure_runner_image_available() {
       if docker push --help 2>&1 | grep -q -- "--tls-verify"; then
         push_args+=("--tls-verify=false")
       fi
-      docker push "${push_args[@]}" "$host_ref"
+      # Tee push output so the final "<tag>: digest: sha256:<hex> size: <n>"
+      # line can be parsed for PUSHED_IMAGE_DIGEST while the progress
+      # stream still reaches the operator's terminal.
+      local push_log
+      push_log="$(mktemp -t agentium-push.XXXXXX.log)"
+      docker push "${push_args[@]}" "$host_ref" | tee "$push_log"
+      PUSHED_IMAGE_DIGEST="$(awk '$2 == "digest:" {d=$3} END{print d}' "$push_log")"
+      rm -f "$push_log"
+      if [[ -z "$PUSHED_IMAGE_DIGEST" ]]; then
+        log_fail "Could not parse pushed-image digest from docker push output"
+        return 1
+      fi
+      log_info "Pushed image digest: ${PUSHED_IMAGE_DIGEST}"
 
       # `Always` matches the install contract in k3d-registry-values.yaml:
       # a same-tag rebuild + rollout-restart must pick up the new digest
@@ -854,6 +873,92 @@ wait_for_runner_readyz() {
   kubectl -n "$NAMESPACE" rollout status \
     "statefulset/${RUNNER_FULLNAME}" --timeout=180s
   kubectl -n "$NAMESPACE" get pods -o wide
+}
+
+# verify_pod_image_digests — assert each runner pod's resolved image digest
+# matches the digest just pushed under ${IMAGE_NAME}:${IMAGE_TAG}. Closes
+# the gap between "rollout status: ready" and "the new code is actually
+# running": with pullPolicy=Always a same-tag rebuild must produce a new
+# digest in every pod's containerStatuses[].imageID, and this catches the
+# regression where pullPolicy silently slips back to IfNotPresent and
+# kubelet reuses a stale cached layer.
+#
+# Source of truth is PUSHED_IMAGE_DIGEST, captured at push time by
+# ensure_runner_image_available from `docker push`'s own canonical
+# "<tag>: digest: sha256:<hex>" line. The earlier registry-HTTP variant
+# was abandoned because the local registry transiently 404s the
+# manifest-by-tag endpoint right after a push in CI.
+#
+# Only meaningful for the registry strategy. local-k3d-import goes through
+# `k3d image import` + pullPolicy=Never, so the pod imageID does not carry
+# a registry-resolved digest and the comparison is not applicable.
+#
+# Manual repro of the failure path (run after a successful verify-k8s-pilot-package
+# with --keep-cluster, where verify has logged "Pushed image digest: <ORIG>"):
+#   docker tag docker.io/library/busybox:latest \
+#     localhost:5400/agentium-runner:demo
+#   docker push localhost:5400/agentium-runner:demo
+#   kubectl -n agentium rollout restart statefulset/agentium-agentium-os-runner
+#   kubectl -n agentium rollout status  statefulset/agentium-agentium-os-runner
+#   source scripts/e2e-k8s/lib.sh
+#   PUSHED_IMAGE_DIGEST=<ORIG> RUNNER_IMAGE_STRATEGY=registry \
+#     verify_pod_image_digests
+#   # → "pod imageID does not match pushed registry digest", rc=1
+verify_pod_image_digests() {
+  if [[ "${RUNNER_IMAGE_STRATEGY:-}" != "registry" ]]; then
+    log_info "Image-digest assertion skipped (strategy='${RUNNER_IMAGE_STRATEGY:-}'; only meaningful for 'registry')"
+    return 0
+  fi
+  if [[ -z "${PUSHED_IMAGE_DIGEST:-}" ]]; then
+    log_fail "verify_pod_image_digests: PUSHED_IMAGE_DIGEST unset — ensure_runner_image_available must run first"
+    return 1
+  fi
+
+  log_step "Verifying runner pod images match pushed registry digest"
+
+  local registry_digest="$PUSHED_IMAGE_DIGEST"
+  log_info "Pushed image digest: ${registry_digest}"
+
+  local pods
+  if ! pods="$(kubectl -n "$NAMESPACE" get pods \
+      -l "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/component=runner" \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[?(@.name=="runner")].imageID}{"\n"}{end}')"; then
+    log_fail "verify_pod_image_digests: kubectl get pods failed"
+    return 1
+  fi
+  if [[ -z "$pods" ]]; then
+    log_fail "verify_pod_image_digests: no runner pods found (release=${RELEASE_NAME}, namespace=${NAMESPACE})"
+    return 1
+  fi
+
+  local mismatch=0
+  local pod image_id pod_digest
+  while IFS=$'\t' read -r pod image_id; do
+    [[ -z "$pod" ]] && continue
+    # imageID for a registry pull looks like
+    #   k3d-agentium-registry:5000/agentium-runner@sha256:<hex>
+    # (occasionally prefixed with `docker-pullable://`). Take everything
+    # after the last `@`, which is the resolved digest in every form.
+    pod_digest="${image_id##*@}"
+    if [[ "$pod_digest" != "$registry_digest" ]]; then
+      log_fail "Pod ${pod} imageID does not match pushed registry digest"
+      echo "  expected: ${registry_digest}" >&2
+      echo "  got:      ${pod_digest}" >&2
+      echo "  full imageID: ${image_id}" >&2
+      mismatch=1
+    else
+      log_info "Pod ${pod} imageID matches pushed digest"
+    fi
+  done <<< "$pods"
+
+  if (( mismatch )); then
+    log_step "Dumping kubelet events for runner pods (digest mismatch)"
+    kubectl -n "$NAMESPACE" describe pods \
+      -l "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/component=runner" \
+      2>&1 | sed -n '/^Events:/,$p' >&2 || true
+    return 1
+  fi
+  log_info "All runner pods are running the pushed registry digest."
 }
 
 # ---------------------------------------------------------------------------

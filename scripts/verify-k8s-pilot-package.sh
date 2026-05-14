@@ -73,15 +73,19 @@ Environment:
 Verifies (in order):
   1. Helm chart installs cleanly with the three required pre-created objects.
   2. Both runner pods reach Ready (implies /readyz 200).
-  3. scripts/k8s-pilot-smoke.sh --port-forward succeeds end-to-end
+  3. For --image-strategy=registry: each runner pod's imageID resolves to
+     the digest just pushed to the local registry (catches same-tag
+     rebuilds silently reusing a cached layer; see issue #420).
+  4. scripts/k8s-pilot-smoke.sh --port-forward succeeds end-to-end
      (publish + deploy + dispatch verification via cargo agent-platform push).
-  4. Both runners registered in SurrealDB cluster_runners (count = 2).
+  5. Both runners registered in SurrealDB cluster_runners (count = 2).
 
 Exit codes:
   0  package validation passed
   1  precondition or transport failure
   2  smoke failure (publish/deploy/dispatch)
   3  package-wiring verify failure (cluster_runners count)
+  4  pod imageID does not match pushed registry digest
 EOF
 }
 
@@ -248,6 +252,9 @@ main() {
   install_pilot_chart "${helm_values_args[@]}"
   resolve_chart_names
   wait_for_runner_readyz
+  if ! verify_pod_image_digests; then
+    exit 4
+  fi
   if ! run_smoke; then
     log_fail "k8s-pilot-smoke.sh failed"
     exit 2
