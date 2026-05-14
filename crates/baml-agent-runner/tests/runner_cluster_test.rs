@@ -597,8 +597,7 @@ async fn healthz_returns_200_before_ready() {
         );
         if let Ok(readyz_resp) = readyz_result {
             if readyz_resp.status() == StatusCode::SERVICE_UNAVAILABLE {
-                let healthz_resp =
-                    healthz_result.expect("GET /healthz during pre-ready window");
+                let healthz_resp = healthz_result.expect("GET /healthz during pre-ready window");
                 assert_eq!(
                     healthz_resp.status(),
                     StatusCode::OK,
@@ -617,9 +616,7 @@ async fn healthz_returns_200_before_ready() {
             "healthz_returns_200_before_ready: verified /healthz is 200 while /readyz is 503"
         );
     } else {
-        eprintln!(
-            "healthz_returns_200_before_ready: 503 window missed (runner booted too fast)"
-        );
+        eprintln!("healthz_returns_200_before_ready: 503 window missed (runner booted too fast)");
     }
 }
 
