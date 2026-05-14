@@ -30,3 +30,4 @@ axum = { workspace = true }
 http-api-problem = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 tracing-subscriber = { workspace = true }
+test-support = { path = "../test-support" }

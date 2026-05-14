@@ -301,10 +301,8 @@ mod tests {
         propagation::{BaggagePropagator, TraceContextPropagator},
         trace::TracerProvider as SdkTracerProvider,
     };
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-    };
+    use test_support::common::bind_ephemeral_tokio;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tracing_subscriber::{Registry, layer::SubscriberExt};
 
     use super::*;
@@ -458,8 +456,8 @@ mod tests {
     /// `Content-Length` and won't produce this malformed shape.
     #[tokio::test]
     async fn forward_request_surfaces_truncated_response_as_error() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let (listener, addr) = bind_ephemeral_tokio("127.0.0.1").await.unwrap();
+        let port = addr.port();
 
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -525,8 +523,8 @@ mod tests {
     /// happy path.
     #[tokio::test]
     async fn forward_request_parses_complete_response() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let (listener, addr) = bind_ephemeral_tokio("127.0.0.1").await.unwrap();
+        let port = addr.port();
 
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -583,8 +581,8 @@ mod tests {
     async fn forward_request_injects_traceparent_and_ingress_baggage() {
         install_propagator_once();
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let (listener, addr) = bind_ephemeral_tokio("127.0.0.1").await.unwrap();
+        let port = addr.port();
 
         let (header_tx, header_rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
         let server = tokio::spawn(async move {

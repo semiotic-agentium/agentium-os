@@ -259,8 +259,9 @@ mod tests {
                 let app = Router::new()
                     .route("/test", post(capture_handler))
                     .with_state(captured_clone);
-                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-                let addr = listener.local_addr().unwrap();
+                let (listener, addr) = test_support::common::bind_ephemeral_tokio("127.0.0.1")
+                    .await
+                    .unwrap();
                 tx.send(addr.port()).unwrap();
                 axum::serve(listener, app).await.unwrap();
             });
@@ -307,9 +308,7 @@ mod tests {
     /// so HTTP transport failures surface the underlying reqwest cause.
     #[test]
     fn test_post_json_preserves_source_chain_on_connect_failure() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        let port = test_support::common::reserve_ephemeral_addr("127.0.0.1").port();
         let url = format!("http://127.0.0.1:{port}/test");
 
         let platform = AgentPlatform::new(None).unwrap();
