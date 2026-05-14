@@ -1,5 +1,6 @@
 // Simple test prompt for BAML compilation.
-// OpenRouter client using x-ai/grok-4.1-fast for e2e tests.
+// OpenRouter client whose model is the env-controlled BAML_TEST_MODEL — see
+// `baml_rt_llm_config::test_model` and issue #429.
 function SimpleGreeting(name: string) -> string {
   client OpenRouterGPT
   prompt #"
@@ -11,7 +12,7 @@ function SimpleGreeting(name: string) -> string {
 client OpenRouterGPT {
   provider openai-generic
   options {
-    model "x-ai/grok-4.1-fast"
+    model env.BAML_TEST_MODEL
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

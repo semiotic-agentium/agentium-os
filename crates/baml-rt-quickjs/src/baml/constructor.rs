@@ -18,16 +18,31 @@ impl BamlRuntimeManager {
     /// BAML schemas reference secrets as `api_key env.X`; BAML resolves these from env_vars
     /// passed to `BamlRuntime::from_directory`. By resolving via fnox here, we avoid
     /// depending on std::env::var — the fnox resolver is the single source of truth.
+    ///
+    /// Additionally injects the test-model knob (`BAML_TEST_MODEL`) so BAML
+    /// `client` blocks can reference it as `model env.BAML_TEST_MODEL`. The
+    /// value comes from `baml_rt_llm_config::test_model_default()`, which
+    /// reads the OS env with the historical-fallback literal as a default.
+    /// Unlike the LLM API keys, this is a config knob rather than a secret —
+    /// the fnox resolver is consulted only to keep behaviour symmetric with
+    /// the rest of the env_vars map; OS env takes precedence either way via
+    /// `test_model_default`. See issue #429.
     pub(in crate::baml) fn resolve_secrets_as_env_vars(
         &self,
     ) -> std::collections::HashMap<String, String> {
-        let Some(resolver) = &self.state.llm_secret_resolver else {
-            return std::collections::HashMap::new();
-        };
         let mut env_vars = std::collections::HashMap::new();
-        for key in crate::llm_client_registry::LLM_SECRET_KEYS {
-            if let Some((value, _)) = resolver.resolve_llm_api_key("default", key) {
-                env_vars.insert((*key).to_string(), value);
+        // Test-model knob: always present so BAML's `env.BAML_TEST_MODEL`
+        // references resolve even when no LLM secret resolver is wired (e.g.
+        // unit-test paths that mock the LLM call but still parse BAML).
+        env_vars.insert(
+            "BAML_TEST_MODEL".to_string(),
+            baml_rt_llm_config::test_model_default(),
+        );
+        if let Some(resolver) = &self.state.llm_secret_resolver {
+            for key in crate::llm_client_registry::LLM_SECRET_KEYS {
+                if let Some((value, _)) = resolver.resolve_llm_api_key("default", key) {
+                    env_vars.insert((*key).to_string(), value);
+                }
             }
         }
         env_vars

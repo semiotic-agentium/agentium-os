@@ -88,9 +88,11 @@ fn default_model_for_provider(provider: &ClientProvider) -> String {
     use internal_llm_client::OpenAIClientProviderVariant;
     match provider {
         ClientProvider::OpenAI(variant) => match variant {
-            // OpenRouter and openai-generic both route via OpenRouter — use grok.
+            // OpenRouter and openai-generic both route through OpenRouter — pick
+            // the env-controlled test model so CI can swap it under provider /
+            // account policy changes (see crate::test_model and issue #429).
             OpenAIClientProviderVariant::OpenRouter | OpenAIClientProviderVariant::Generic => {
-                "x-ai/grok-4.1-fast".to_string()
+                crate::test_model_default()
             }
             // Native OpenAI base, Azure, Responses, Ollama stay on the OpenAI model family.
             OpenAIClientProviderVariant::Base

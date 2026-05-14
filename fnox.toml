@@ -14,6 +14,19 @@ description = "OpenRouter API key — LLM backend for all agents"
 if_missing = "warn"
 # default = "sk-or-v1-..."
 
+# Test-model knob: BAML files reference this as `env.BAML_TEST_MODEL` and the
+# Rust `test_model_default()` helper reads it from OS env.
+# CI overwrites this file with the value of the `BAML_TEST_MODEL` repo variable
+# (workflow env). Locally, edit `default` to pin a different model — model ids
+# are not secrets, so committing the fallback here is intentional. The current
+# fallback is the model the agent prompts and E2E tests are tuned against;
+# operators running under an OpenRouter account whose policy excludes grok
+# should set the `BAML_TEST_MODEL` repo variable. See issue #429.
+[secrets.BAML_TEST_MODEL]
+description = "Model id used by the workspace's llm-tests lane (BAML env.BAML_TEST_MODEL)"
+if_missing = "warn"
+default = "x-ai/grok-4.1-fast"
+
 # Optional integration secrets: `ignore` avoids stderr noise when running workspace tests or
 # agents that do not register those tools. Use `default = "..."` locally when you need the tool.
 [secrets.CLICKUP_API_KEY]

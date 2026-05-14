@@ -11,6 +11,7 @@ mod provider_requirements;
 mod registry_builder;
 mod resolver;
 mod secret_resolver;
+mod test_model;
 
 pub use client_snippet::{CLIENT_DEFAULT_FALLBACK_BAML, client_default_baml_snippet};
 pub use config::{
@@ -28,3 +29,4 @@ pub use secret_resolver::{
     SecretSourcePolicy, SecretValue, StoreKey, apply_secret_links_state, placeholder_to_key,
     strip_placeholder_prefix,
 };
+pub use test_model::{FALLBACK_TEST_MODEL, test_model_default};
