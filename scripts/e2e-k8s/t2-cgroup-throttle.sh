@@ -4,7 +4,10 @@
 # Constrains the runner pod to runner.resources.limits.cpu=500m and probes
 # /readyz + /diagnose at ~100ms cadence during a cpu-peg-agent deploy.
 # Asserts four runner-readiness invariants:
-#   I1. every /readyz returns 200 within 1s,
+#   I1. every /readyz returns an HTTP response (status in {200, 503}) within 1s.
+#       Under the runtime-progress-gated contract (#339), 503 during the peg
+#       is the correct stall signal; I1 defends transport-level liveness, not
+#       the gate's verdict.
 #   I2. no probe response is dropped at the TCP level,
 #   I3. runtime_progress_lag_ms > 200 for at least one sample,
 #   I4. runner-0 has Restart Count == 0 at the point T2 finishes
@@ -270,7 +273,7 @@ assert_invariants() {
   diagnose_count=$(wc -l < "$diagnose")
   log_info "Collected ${readyz_count} /readyz samples, ${diagnose_count} /diagnose samples"
 
-  # ── Invariant 1: every /readyz probe returns 200 within 1s ─────────────
+  # ── Invariant 1: every /readyz probe returns an HTTP response within 1s ─
   local i1_failed=0
   while read -r offset status elapsed _lag; do
     if [[ "$status" == ERR* ]]; then
@@ -278,8 +281,8 @@ assert_invariants() {
       i1_failed=1
       continue
     fi
-    if [[ "$status" != "200" ]]; then
-      log_fail "I1: /readyz probe at offset ${offset}ms returned status ${status}; expected 200"
+    if [[ "$status" != "200" && "$status" != "503" ]]; then
+      log_fail "I1: /readyz probe at offset ${offset}ms returned status ${status}; expected 200 or 503 (gate verdict)"
       i1_failed=1
       continue
     fi
@@ -321,7 +324,7 @@ assert_invariants() {
   fi
 
   if (( i1_failed == 0 )); then
-    log_pass "I1: every /readyz probe returned 200 within 1s (${readyz_count} samples)"
+    log_pass "I1: every /readyz probe returned 200 or 503 within 1s (${readyz_count} samples)"
   fi
   if (( i2_failed == 0 )); then
     log_pass "I2: no /diagnose transport-level drops (${diagnose_count} samples)"

@@ -86,7 +86,7 @@ Routes are divided into three tiers:
 | `POST /agents/{pkg}/{inst}/a2a/sse` | A2A SSE stream |
 | `POST /agents/{pkg}/{inst}/dispatch` | Event delivery |
 | `GET /healthz` | Health check |
-| `GET /readyz` | Readiness check |
+| `GET /readyz` | Readiness check (boot latch **AND** runtime-progress lag) |
 | `GET /openapi.json` | OpenAPI spec |
 | `GET /repository/agents` | Repository agent listing |
 | `GET /repository/entries` | Repository entry listing |

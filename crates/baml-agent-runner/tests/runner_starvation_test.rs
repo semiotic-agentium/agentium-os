@@ -6,7 +6,12 @@
 //! - **T1 — synthetic CPU-peg agent.** Deploy a fixture whose top-level
 //!   evaluation pegs the JS thread for ~5s, while polling `/readyz` and
 //!   `/diagnose` at 100ms cadence. Asserts:
-//!     1. every `/readyz` probe returns `200` within 1s wall-clock,
+//!     1. every `/readyz` probe receives an HTTP response within 1s
+//!        wall-clock with status in `{200, 503}`. Under the
+//!        runtime-progress-gated contract (#339), 503 during the peg is
+//!        the correct operator-visible signal of stall; the assertion
+//!        targets the listener's transport-level liveness and timing,
+//!        not the gate's verdict,
 //!     2. no probe response is dropped at the TCP level
 //!        (no `connection refused`, transport error, or timeout),
 //!     3. `runtime_progress_lag_ms` from `/diagnose` exceeds 200ms for at
@@ -373,7 +378,7 @@ async fn t1_cpu_peg_deploy_keeps_probes_responsive() {
     assert!(!readyz_samples.is_empty(), "no /readyz samples");
     assert!(!diagnose_samples.is_empty(), "no /diagnose samples");
 
-    // ── Invariant 1: every /readyz probe returns 200 within 1s ──────────────
+    // ── Invariant 1: every /readyz probe gets an HTTP response within 1s ────
     for sample in &readyz_samples {
         assert!(
             sample.transport_error.is_none(),
@@ -381,12 +386,15 @@ async fn t1_cpu_peg_deploy_keeps_probes_responsive() {
             sample.poll_offset_ms,
             sample.transport_error.as_deref().unwrap_or("?")
         );
-        assert_eq!(
-            sample.status,
-            Some(StatusCode::OK),
-            "/readyz probe at offset {}ms returned {:?}; expected 200",
+        let status = sample.status;
+        assert!(
+            matches!(
+                status,
+                Some(StatusCode::OK) | Some(StatusCode::SERVICE_UNAVAILABLE)
+            ),
+            "/readyz probe at offset {}ms returned {:?}; expected 200 or 503 (gate verdict)",
             sample.poll_offset_ms,
-            sample.status,
+            status,
         );
         assert!(
             sample.elapsed < Duration::from_secs(1),

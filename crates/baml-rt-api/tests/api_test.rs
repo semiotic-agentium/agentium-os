@@ -170,7 +170,9 @@ async fn test_api_server_config() -> ApiServerConfig {
         tool_catalog,
         config_service,
         secret_resolver,
-        baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
+        // A spawned ticker keeps the meter's lag near zero so `/readyz`'s
+        // runtime-progress gate stays open across tests that run for >1s.
+        baml_rt_api::RuntimeProgressMeter::spawn_in_current_runtime(),
     )
 }
 
