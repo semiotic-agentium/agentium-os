@@ -27,6 +27,15 @@ use baml_rt_core::{ProgressProbe, ProgressProbeRegistry};
 
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Threshold above which `GET /readyz` flips to `503 Service Unavailable`.
+///
+/// Picked at ten ticker periods so normal scheduler jitter (50–250ms under
+/// CI load, per the no-load integration test) never trips the gate, while a
+/// multi-second runtime stall — the failure mode that motivated issue #339
+/// — is caught well before kubelet's `failureThreshold × periodSeconds`
+/// window (default 6 × 10s) removes the pod from Service endpoints.
+pub const READYZ_LAG_THRESHOLD_MS: u64 = 1_000;
+
 /// Continuously-bumped tokio-runtime progress counter.
 ///
 /// In production, use [`RuntimeProgressMeter::spawn_in_current_runtime`]:
@@ -114,6 +123,12 @@ impl RuntimeProgressMeter {
             }
         }
         worst
+    }
+
+    /// Predicate consumed by `GET /readyz`: the meter is healthy iff its
+    /// aggregated lag is below [`READYZ_LAG_THRESHOLD_MS`].
+    pub fn is_within_readyz_threshold(&self) -> bool {
+        self.lag_millis() < READYZ_LAG_THRESHOLD_MS
     }
 }
 

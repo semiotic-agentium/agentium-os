@@ -62,8 +62,9 @@ pub struct ApiState {
     pub config_service: Arc<dyn ConfigService>,
     pub secret_resolver: Arc<dyn SecretResolver>,
     pub runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
-    /// Readiness flag: `true` once event producers are registered (and poll loop spawned if configured).
-    /// HTTP may already be listening; use `/healthz` vs `/readyz` for liveness vs this gate.
+    /// Boot latch: `true` once event producers are registered (and poll loop spawned if configured).
+    /// One input to the [`readyz`] gate; on its own does not guarantee the runtime is currently
+    /// servable (see [`ApiState::runtime_progress`]). Use `/healthz` for liveness.
     pub ready: Arc<AtomicBool>,
     /// Shared secret for authenticating control-plane requests (e.g. `/control/migrate`).
     pub runner_token: Option<String>,
@@ -92,9 +93,23 @@ async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
+/// Pod-readiness gate consumed by kubelet's readiness probe.
+///
+/// Returns `200 OK` iff every operator-visible servability signal is healthy:
+/// * [`ApiState::ready`] — boot latch is set (event producers registered),
+/// * [`ApiState::runtime_progress`] is within
+///   [`READYZ_LAG_THRESHOLD_MS`](crate::READYZ_LAG_THRESHOLD_MS) — the
+///   tokio runtime and (when wired) the QuickJS event loop are making
+///   forward progress.
+///
+/// Returns `503 Service Unavailable` otherwise. A runtime stall (cgroup
+/// throttling, wedged QuickJS thread, deadlocked task) flips readiness to
+/// false even while the listener is bound and accepting at the TCP level.
 async fn readyz(axum::extract::State(state): axum::extract::State<Arc<ApiState>>) -> StatusCode {
     let start = Instant::now();
-    let code = if state.ready.load(Ordering::Acquire) {
+    let code = if state.ready.load(Ordering::Acquire)
+        && state.runtime_progress.is_within_readyz_threshold()
+    {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE

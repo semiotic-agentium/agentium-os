@@ -9,8 +9,8 @@ use axum::{
 };
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_api::{
-    ApiServerConfig, ClusterHeartbeatHealth, ClusterMode, HeartbeatErrorKind, RuntimeProgressMeter,
-    api_router, api_router_with_services_and_deploy,
+    ApiServerConfig, ClusterHeartbeatHealth, ClusterMode, HeartbeatErrorKind,
+    READYZ_LAG_THRESHOLD_MS, RuntimeProgressMeter, api_router, api_router_with_services_and_deploy,
 };
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentDiscoveryEntry, AgentDispatchAck, AgentDispatchRequest,
@@ -105,8 +105,11 @@ async fn diagnose_returns_expected_shape() {
     let _ = body.event_producers_loaded;
 }
 
-async fn cluster_router_with_heartbeat(health: Arc<ClusterHeartbeatHealth>) -> axum::Router {
-    let registry: Arc<dyn AgentRegistry> = Arc::new(StubRegistry);
+/// Build the baseline `ApiServerConfig` shared by every router-level test
+/// in this file (in-memory config store, empty tool catalog, no-op secret
+/// resolver). Callers override the meter and any cluster-mode fields via
+/// struct-update syntax.
+async fn base_router_config(meter: Arc<RuntimeProgressMeter>) -> ApiServerConfig {
     let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> =
         Arc::new(baml_rt_tools::InventoryCatalog::new());
     let config_service: Arc<dyn baml_rt_config::ConfigService> = Arc::new(
@@ -116,17 +119,15 @@ async fn cluster_router_with_heartbeat(health: Arc<ClusterHeartbeatHealth>) -> a
     );
     let secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver> =
         Arc::new(baml_rt_llm_config::EmptySecretResolver);
-    let runtime_progress = RuntimeProgressMeter::spawn_in_current_runtime();
+    ApiServerConfig::empty(tool_catalog, config_service, secret_resolver, meter)
+}
 
+async fn cluster_router_with_heartbeat(health: Arc<ClusterHeartbeatHealth>) -> axum::Router {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(StubRegistry);
     let config = ApiServerConfig {
         cluster_mode: ClusterMode::Cluster,
         cluster_heartbeat: Some(health),
-        ..ApiServerConfig::empty(
-            tool_catalog,
-            config_service,
-            secret_resolver,
-            runtime_progress,
-        )
+        ..base_router_config(RuntimeProgressMeter::spawn_in_current_runtime()).await
     };
     api_router_with_services_and_deploy(registry, config)
 }
@@ -191,6 +192,79 @@ async fn diagnose_surfaces_cluster_heartbeat_fields_when_health_is_wired() {
         Some("connection"),
         "last_error_kind must surface the typed kind code: {body:?}"
     );
+}
+
+/// Pull the bare HTTP status code from `/readyz` without parsing the body.
+async fn readyz_status(app: axum::Router) -> StatusCode {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    response.status()
+}
+
+/// Build a router whose `RuntimeProgressMeter` is the caller-supplied
+/// instance, so a test can drive lag deterministically via `tick()` and
+/// `register_probe()` rather than relying on wall-clock timing.
+async fn router_with_meter(meter: Arc<RuntimeProgressMeter>) -> axum::Router {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(StubRegistry);
+    api_router_with_services_and_deploy(registry, base_router_config(meter).await)
+}
+
+/// `/readyz=200` requires both the boot latch and a healthy runtime-progress
+/// meter. With a freshly-ticked meter (lag ≈ 0) and the latch defaulted to
+/// `true` by `ApiServerConfig::empty`, the gate opens.
+#[tokio::test]
+async fn readyz_returns_200_when_meter_lag_is_below_threshold() {
+    let meter = RuntimeProgressMeter::new_without_ticker();
+    meter.tick();
+    let app = router_with_meter(meter).await;
+
+    assert_eq!(readyz_status(app).await, StatusCode::OK);
+}
+
+/// Regression target for issue #339: a stalled runtime must flip `/readyz`
+/// to `503` even though the boot latch is set, so kubelet (eventually)
+/// stops routing new work to a wedged pod.
+#[tokio::test]
+async fn readyz_returns_503_when_runtime_progress_lag_exceeds_threshold() {
+    use std::sync::Weak;
+
+    use baml_rt_core::ProgressProbe;
+
+    #[derive(Debug)]
+    struct FixedLagProbe(u64);
+    impl ProgressProbe for FixedLagProbe {
+        fn lag_millis(&self) -> u64 {
+            self.0
+        }
+    }
+
+    let meter = RuntimeProgressMeter::new_without_ticker();
+    meter.tick();
+    // Pin the meter's reported lag above the gate threshold via a probe so
+    // the test does not rely on a sleep.
+    let probe: Arc<dyn ProgressProbe> =
+        Arc::new(FixedLagProbe(READYZ_LAG_THRESHOLD_MS.saturating_add(500)));
+    let probe_weak: Weak<dyn ProgressProbe> = Arc::downgrade(&probe);
+    meter.register_probe(probe_weak);
+
+    let app = router_with_meter(meter).await;
+
+    assert_eq!(
+        readyz_status(app).await,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "/readyz must reflect runtime-progress lag, not just the boot latch"
+    );
+    // Keep the probe alive past the assertion so the weak reference inside
+    // the meter resolves; dropping it before the read would clear the lag
+    // and undermine the test.
+    drop(probe);
 }
 
 #[tokio::test]

@@ -21,10 +21,13 @@ The repo has three in-repo validation paths for the Kubernetes pilot:
    Installs the chart with `examples/cpu-throttle-test-values.yaml` (caps
    the runner at `runner.resources.limits.cpu: 500m`), deploys
    `cpu-peg-agent`, and probes `/readyz` and `/diagnose` at ~100ms cadence
-   during the deploy. Asserts (1) every `/readyz` returns 200 within 1s,
-   (2) no transport drops, and (3) `runtime_progress_lag_ms > 200` for at
-   least one sample. The runner-internal counterpart is the T1
-   `#[tokio::test]` in `crates/baml-agent-runner/tests/runner_starvation_test.rs`.
+   during the deploy. Asserts (1) every `/readyz` returns an HTTP response
+   (status in `{200, 503}`) within 1s — `503` is the correct gate verdict
+   while runtime-progress lag exceeds `READYZ_LAG_THRESHOLD_MS` (#339), so
+   I1 defends transport-level liveness only — (2) no transport drops, and
+   (3) `runtime_progress_lag_ms > 200` for at least one sample. The
+   runner-internal counterpart is the T1 `#[tokio::test]` in
+   `crates/baml-agent-runner/tests/runner_starvation_test.rs`.
 
 All three paths now install via `helm upgrade --install` using the shared
 bringup helpers in `scripts/e2e-k8s/lib.sh`

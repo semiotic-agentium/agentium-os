@@ -6,14 +6,23 @@
 //! - **T1 — synthetic CPU-peg agent.** Deploy a fixture whose top-level
 //!   evaluation pegs the JS thread for ~5s, while polling `/readyz` and
 //!   `/diagnose` at 100ms cadence. Asserts:
-//!     1. every `/readyz` probe returns `200` within 1s wall-clock,
+//!     1. every `/readyz` probe receives an HTTP response within 1s
+//!        wall-clock with status in `{200, 503}`. Under the
+//!        runtime-progress-gated contract (#339), 503 during the peg is
+//!        the correct operator-visible signal of stall; the assertion
+//!        targets the listener's transport-level liveness and timing,
+//!        not the gate's verdict,
 //!     2. no probe response is dropped at the TCP level
 //!        (no `connection refused`, transport error, or timeout),
 //!     3. `runtime_progress_lag_ms` from `/diagnose` exceeds 200ms for at
 //!        least one sample (proves the meter is sensitive to a CPU-pegged
 //!        deploy boot — and detects the regression where `spawn_blocking`
 //!        only isolates the future-driver thread, not the QuickJS
-//!        evaluation thread).
+//!        evaluation thread). Since I1 was relaxed from `== 200` to
+//!        `{200, 503}` for the #339 contract, I3 is now the sole
+//!        regression guard for meter sensitivity — a probe-unwiring bug
+//!        would leave the gate open at `200`, pass I1, but fail I3. Do
+//!        not weaken I3 without replacing that coverage.
 //!
 //! - **T4 — listener-task-death.** Start the runner in K8s-pilot mode
 //!   (`a2a_stdio=false, http_handle=Some`) and force the spawned
@@ -373,7 +382,7 @@ async fn t1_cpu_peg_deploy_keeps_probes_responsive() {
     assert!(!readyz_samples.is_empty(), "no /readyz samples");
     assert!(!diagnose_samples.is_empty(), "no /diagnose samples");
 
-    // ── Invariant 1: every /readyz probe returns 200 within 1s ──────────────
+    // ── Invariant 1: every /readyz probe gets an HTTP response within 1s ────
     for sample in &readyz_samples {
         assert!(
             sample.transport_error.is_none(),
@@ -381,12 +390,15 @@ async fn t1_cpu_peg_deploy_keeps_probes_responsive() {
             sample.poll_offset_ms,
             sample.transport_error.as_deref().unwrap_or("?")
         );
-        assert_eq!(
-            sample.status,
-            Some(StatusCode::OK),
-            "/readyz probe at offset {}ms returned {:?}; expected 200",
+        let status = sample.status;
+        assert!(
+            matches!(
+                status,
+                Some(StatusCode::OK) | Some(StatusCode::SERVICE_UNAVAILABLE)
+            ),
+            "/readyz probe at offset {}ms returned {:?}; expected 200 or 503 (gate verdict)",
             sample.poll_offset_ms,
-            sample.status,
+            status,
         );
         assert!(
             sample.elapsed < Duration::from_secs(1),
