@@ -45,8 +45,7 @@ pub struct ServerRecord {
     pub server_info: Option<serde_json::Value>,
     pub server_config_digest: crate::mcp_snapshot::Digest,
     pub server_identity_digest: crate::mcp_snapshot::Digest,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_artifact_digest: Option<crate::mcp_snapshot::Digest>,
+    pub tools_digest: crate::mcp_snapshot::Digest,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_refs: Vec<crate::mcp_snapshot::SecretRef>,
     pub approval: crate::mcp_snapshot::ApprovalRecord,
@@ -93,7 +92,7 @@ pub fn write_snapshot(root: &Path, snapshot: &McpServerSnapshot) -> io::Result<(
         server_info: snapshot.server_info.clone(),
         server_config_digest: snapshot.server_config_digest.clone(),
         server_identity_digest: snapshot.server_identity_digest.clone(),
-        runtime_artifact_digest: snapshot.runtime_artifact_digest.clone(),
+        tools_digest: snapshot.tools_digest.clone(),
         secret_refs: snapshot.secret_refs.clone(),
         approval: snapshot.approval.clone(),
         sandbox_profile: snapshot.sandbox_profile.clone(),
@@ -126,7 +125,7 @@ pub fn read_snapshot(root: &Path, server_id: &str) -> io::Result<McpServerSnapsh
         server_info: record.server_info,
         server_config_digest: record.server_config_digest,
         server_identity_digest: record.server_identity_digest,
-        runtime_artifact_digest: record.runtime_artifact_digest,
+        tools_digest: record.tools_digest,
         secret_refs: record.secret_refs,
         approval: record.approval,
         sandbox_profile: record.sandbox_profile,
@@ -276,7 +275,6 @@ mod tests {
             description: None,
             input_schema: json!({ "type": "object" }),
             input_schema_digest: Digest::new("sha256:input"),
-            prompt_digest: None,
             output_mode: McpOutputMode::ContentEnvelope,
             access_level: ToolAccess::Read,
             approval: ApprovalRecord {
@@ -302,7 +300,7 @@ mod tests {
             server_info: None,
             server_config_digest: Digest::new("sha256:server"),
             server_identity_digest: Digest::new("sha256:identity"),
-            runtime_artifact_digest: None,
+            tools_digest: Digest::new("sha256:tools"),
             secret_refs: vec![SecretRef {
                 name: "fake/token".into(),
                 version: None,

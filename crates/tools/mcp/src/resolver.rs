@@ -75,6 +75,7 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
         server_config_digest: &str,
         protocol_version: &str,
         expected_identity_digest: &str,
+        expected_tools_digest: &str,
     ) -> Result<Option<Arc<McpConnection>>> {
         let Some(server_config) = self.servers.servers.get(server_id) else {
             return Ok(None);
@@ -120,6 +121,8 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
             server_config_digest: server_config_digest.to_string(),
             protocol_version: protocol_version.to_string(),
             expected_identity_digest: expected_identity_digest.to_string(),
+            expected_tools_digest: expected_tools_digest.to_string(),
+            cache_root: self.cache_root.clone(),
         };
 
         let key = PoolKey {
@@ -191,6 +194,7 @@ impl<R: SecretResolver + Send + Sync> ExternalToolResolver for McpResolver<R> {
             server.server_config_digest.as_str(),
             &server.protocol_version,
             server.server_identity_digest.as_str(),
+            server.tools_digest.as_str(),
         )?
         else {
             return Err(BamlRtError::InvalidArgument(format!(

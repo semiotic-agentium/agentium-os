@@ -221,7 +221,6 @@ mod tests {
                 "required": ["q"]
             }),
             input_schema_digest: Digest::new("sha256:input"),
-            prompt_digest: None,
             output_mode: McpOutputMode::ContentEnvelope,
             access_level: ToolAccess::Read,
             approval: ApprovalRecord {
@@ -247,7 +246,7 @@ mod tests {
             server_info: None,
             server_config_digest: Digest::new("sha256:server"),
             server_identity_digest: Digest::new("sha256:identity"),
-            runtime_artifact_digest: None,
+            tools_digest: Digest::new("sha256:tools"),
             secret_refs: vec![SecretRef {
                 name: "GRAFANA_TOKEN".into(),
                 version: None,

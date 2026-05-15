@@ -12,6 +12,7 @@ use baml_rt_tools::{
     mcp_snapshot::{
         ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpImportedTool, McpOutputMode,
         McpServerSnapshot, McpTransportRef, SecretRef, compute_server_identity_digest,
+        compute_tools_digest,
     },
     tools::ToolAccess,
 };
@@ -124,6 +125,7 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
             &initialize_result.capabilities,
             &initialize_result.server_info,
         );
+        let tools_digest = compute_tools_digest(&tools);
         let secret_refs = config
             .secrets
             .iter()
@@ -144,7 +146,7 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
             server_info: Some(initialize_result.server_info),
             server_config_digest,
             server_identity_digest,
-            runtime_artifact_digest: None,
+            tools_digest,
             secret_refs,
             approval: ApprovalRecord::pending(),
             sandbox_profile: options
@@ -230,7 +232,6 @@ fn project_tools(
             description: descriptor.description,
             input_schema: normalized.schema,
             input_schema_digest: normalized.digest,
-            prompt_digest: None,
             output_mode: McpOutputMode::ContentEnvelope,
             access_level: ToolAccess::Read,
             approval: ApprovalRecord::pending(),

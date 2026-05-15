@@ -6,11 +6,12 @@ use std::path::Path;
 use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 use baml_rt_tools::{
     ExternalToolResolver,
-    mcp_cache::write_snapshot,
+    mcp_cache::{read_server, write_snapshot},
+    mcp_schema_normalize::normalize,
     mcp_snapshot::{
         ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState, McpImportedTool,
         McpOutputMode, McpServerSnapshot, McpTransportRef, SecretRef,
-        compute_server_identity_digest,
+        compute_server_identity_digest, compute_tools_digest,
     },
     tool_fsm::{ToolSessionId, ToolStep},
     tools::{ToolAccess, ToolName, ToolSessionContext},
@@ -30,13 +31,13 @@ fn write_fixture(path: &Path, config: &FakeMcpConfig) {
 }
 
 fn approved_tool(name: &str, schema: serde_json::Value) -> McpImportedTool {
+    let input_schema_digest = normalize(&schema).digest;
     McpImportedTool {
         platform_tool_name: format!("mcp/grafana/{name}"),
         mcp_tool_name: name.into(),
         description: Some(format!("{name} description")),
         input_schema: schema,
-        input_schema_digest: Digest::new("sha256:input"),
-        prompt_digest: None,
+        input_schema_digest,
         output_mode: McpOutputMode::ContentEnvelope,
         access_level: ToolAccess::Read,
         approval: ApprovalRecord {
@@ -71,7 +72,7 @@ fn approved_snapshot(tools: Vec<McpImportedTool>) -> McpServerSnapshot {
         server_info: None,
         server_config_digest: Digest::new("sha256:server"),
         server_identity_digest: fixture_identity_digest(),
-        runtime_artifact_digest: None,
+        tools_digest: compute_tools_digest(&tools),
         secret_refs: vec![SecretRef {
             name: "GRAFANA_TOKEN".into(),
             version: None,
@@ -142,6 +143,7 @@ fn sample_fixture() -> FakeMcpConfig {
         ],
         progress_mode: false,
         drift_mode: false,
+        drift_changes_schema: false,
         malformed_response: false,
     }
 }
@@ -259,40 +261,42 @@ async fn composite_combines_mcp_and_inert_resolvers() {
 }
 
 #[tokio::test]
-async fn push_drift_fails_subsequent_calls_with_stale_error() {
+async fn list_changed_with_schema_drift_marks_stale_and_persists() {
     let cache = tempfile::tempdir().unwrap();
     write_snapshot(
         cache.path(),
-        &approved_snapshot(vec![approved_tool(
-            "search_dashboards",
-            json!({"type": "object"}),
-        )]),
+        &approved_snapshot(vec![
+            approved_tool(
+                "search_dashboards",
+                json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            ),
+            approved_tool("list_alerts", json!({"type": "object", "properties": {}})),
+        ]),
     )
     .unwrap();
     let fixture_path = cache.path().join("fixture.json");
     let mut fixture = sample_fixture();
     fixture.drift_mode = true;
+    fixture.drift_changes_schema = true;
     write_fixture(&fixture_path, &fixture);
 
     let resolver = build_resolver(&fixture_path, cache.path());
     let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
     let (_metadata, handler) = resolver.resolve(&name).unwrap().expect("resolved");
 
-    // First call succeeds; fake server emits notifications/tools/list_changed
-    // immediately after.
+    // First call succeeds; fake server then emits tools/list_changed.
     {
         let mut session = handler
             .open_session(session_context(&name), json!({}))
             .await
             .unwrap();
-        session.send(json!({})).await.unwrap();
+        session.send(json!({"q": "cpu"})).await.unwrap();
         let _ = session.read(json!({})).await.unwrap();
         session.finish().await.unwrap();
     }
 
-    // Poll a few times: rmcp's notification processing is async. As soon as
-    // our RuntimeClientHandler sees the notif, the next send must surface
-    // ConnectionError::Stale.
+    // Drift handler runs async; poll until either the connection flips
+    // stale or the per-call timeout budget elapses.
     let mut stale_seen = false;
     for _ in 0..50 {
         let mut session = handler
@@ -315,8 +319,71 @@ async fn push_drift_fails_subsequent_calls_with_stale_error() {
     }
     assert!(
         stale_seen,
-        "connection should flip to stale after tools/list_changed"
+        "schema-changing list_changed must flip connection to stale"
     );
+
+    // Disk persistence: server record's approval state should be Stale so
+    // the runner refuses to bind on next startup.
+    let record = read_server(cache.path(), "grafana").expect("server record");
+    assert_eq!(record.approval.state, McpApprovalState::Stale);
+}
+
+#[tokio::test]
+async fn list_changed_without_schema_drift_is_treated_as_spurious() {
+    // Fake server emits list_changed but only the description changed.
+    // The tools_digest covers (name, input_schema_digest) only, so the
+    // observed digest matches the snapshot and the connection stays healthy.
+    let cache = tempfile::tempdir().unwrap();
+    write_snapshot(
+        cache.path(),
+        &approved_snapshot(vec![
+            approved_tool(
+                "search_dashboards",
+                json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            ),
+            approved_tool("list_alerts", json!({"type": "object", "properties": {}})),
+        ]),
+    )
+    .unwrap();
+    let fixture_path = cache.path().join("fixture.json");
+    let mut fixture = sample_fixture();
+    fixture.drift_mode = true;
+    fixture.drift_changes_schema = false;
+    write_fixture(&fixture_path, &fixture);
+
+    let resolver = build_resolver(&fixture_path, cache.path());
+    let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
+    let (_metadata, handler) = resolver.resolve(&name).unwrap().expect("resolved");
+
+    // Trigger the notification.
+    {
+        let mut session = handler
+            .open_session(session_context(&name), json!({}))
+            .await
+            .unwrap();
+        session.send(json!({"q": "cpu"})).await.unwrap();
+        let _ = session.read(json!({})).await.unwrap();
+        session.finish().await.unwrap();
+    }
+
+    // Give the async drift handler ample wall-clock time to run + complete
+    // its out-of-band tools/list before we sample for stale.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Subsequent calls must still succeed; on-disk approval untouched.
+    let mut session = handler
+        .open_session(session_context(&name), json!({}))
+        .await
+        .unwrap();
+    session
+        .send(json!({"q": "memory"}))
+        .await
+        .expect("spurious list_changed must not break the connection");
+    let _ = session.read(json!({})).await.unwrap();
+    session.finish().await.unwrap();
+
+    let record = read_server(cache.path(), "grafana").expect("server record");
+    assert_eq!(record.approval.state, McpApprovalState::Approved);
 }
 
 #[tokio::test]

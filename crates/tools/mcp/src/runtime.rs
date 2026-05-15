@@ -8,6 +8,7 @@
 
 use std::{
     collections::BTreeMap,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -15,7 +16,11 @@ use std::{
     time::Duration,
 };
 
-use baml_rt_tools::mcp_snapshot::compute_server_identity_digest;
+use baml_rt_tools::{
+    mcp_cache::mark_server_stale,
+    mcp_schema_normalize::normalize,
+    mcp_snapshot::{compute_server_identity_digest, compute_tools_digest_from_entries},
+};
 use rmcp::{
     ErrorData as McpError, ServiceExt,
     handler::client::ClientHandler,
@@ -99,6 +104,15 @@ pub struct ServerLaunch {
     /// digest from the live `initialize` response and refuses to bind a
     /// connection on mismatch.
     pub expected_identity_digest: String,
+    /// Server-wide tool-set digest recorded at import time. Drift handler
+    /// recomputes it from a live `tools/list` on
+    /// `notifications/tools/list_changed` and marks the snapshot stale on
+    /// mismatch.
+    pub expected_tools_digest: String,
+    /// Cache root the resolver loaded this snapshot from. Drift handler uses
+    /// it to flip the on-disk server record to `Stale` so the runner refuses
+    /// to bind this server on next startup.
+    pub cache_root: PathBuf,
 }
 
 impl ServerLaunch {
@@ -119,6 +133,8 @@ impl ServerLaunch {
 struct RuntimeClientHandler {
     server_id: Arc<str>,
     drifted: Arc<AtomicBool>,
+    expected_tools_digest: Arc<str>,
+    cache_root: Arc<PathBuf>,
 }
 
 impl ClientHandler for RuntimeClientHandler {
@@ -155,20 +171,93 @@ impl ClientHandler for RuntimeClientHandler {
 
     fn on_tool_list_changed(
         &self,
-        _context: NotificationContext<RoleClient>,
+        context: NotificationContext<RoleClient>,
     ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
         let server_id = self.server_id.clone();
         let drifted = self.drifted.clone();
+        let expected = self.expected_tools_digest.clone();
+        let cache_root = self.cache_root.clone();
         async move {
-            let already = drifted.swap(true, Ordering::SeqCst);
-            if !already {
-                tracing::warn!(
+            // Out-of-band tools/list using the peer attached to this
+            // notification. Failure here is itself a fail-closed signal:
+            // we cannot prove the tool set is unchanged, so treat as drift.
+            let observed = match context.peer.list_all_tools().await {
+                Ok(tools) => tools,
+                Err(err) => {
+                    tracing::warn!(
+                        target: "mcp.drift",
+                        mcp_server_id = %server_id,
+                        error = %err,
+                        event = "mcp.tools_list_failed",
+                        "out-of-band tools/list failed after list_changed; marking connection stale",
+                    );
+                    mark_drifted_and_persist(&server_id, &drifted, &cache_root);
+                    return;
+                }
+            };
+
+            let observed_digest = digest_from_live_tools(&observed);
+            if observed_digest.as_str() == expected.as_ref() {
+                tracing::debug!(
                     target: "mcp.drift",
                     mcp_server_id = %server_id,
-                    event = "mcp.tools_list_changed",
-                    "MCP server signalled tools/list_changed; marking connection stale until operator re-runs mcp-review",
+                    event = "mcp.tools_list_changed_spurious",
+                    "tools/list_changed received but tool set digest unchanged; ignoring",
                 );
+                return;
             }
+
+            tracing::warn!(
+                target: "mcp.drift",
+                mcp_server_id = %server_id,
+                expected = %expected.as_ref(),
+                observed = %observed_digest,
+                event = "mcp.tools_list_changed",
+                "MCP server tool set digest changed; marking snapshot stale, operator must re-run mcp-review",
+            );
+            mark_drifted_and_persist(&server_id, &drifted, &cache_root);
+        }
+    }
+}
+
+/// Compute the same `(mcp_tool_name, input_schema_digest)` digest the
+/// importer wrote into the snapshot. Each schema is canonicalized through
+/// the shared normalizer so on-wire formatting differences (key order,
+/// whitespace) do not produce false drift signals.
+fn digest_from_live_tools(tools: &[rmcp::model::Tool]) -> baml_rt_tools::mcp_snapshot::Digest {
+    let normalized: Vec<(String, baml_rt_tools::mcp_snapshot::Digest)> = tools
+        .iter()
+        .map(|tool| {
+            let schema =
+                serde_json::to_value(tool.input_schema.as_ref()).unwrap_or(serde_json::Value::Null);
+            (tool.name.to_string(), normalize(&schema).digest)
+        })
+        .collect();
+    compute_tools_digest_from_entries(
+        normalized
+            .iter()
+            .map(|(name, digest)| (name.as_str(), digest.as_str())),
+    )
+}
+
+/// Flip the in-memory drift flag and best-effort persist `Stale` to disk so
+/// the runner refuses to bind this server on next startup. Disk failures
+/// are logged but do not block the runtime signal.
+fn mark_drifted_and_persist(server_id: &str, drifted: &AtomicBool, cache_root: &Path) {
+    let already = drifted.swap(true, Ordering::SeqCst);
+    if already {
+        return;
+    }
+    match mark_server_stale(cache_root, server_id) {
+        Ok(_prev) => {}
+        Err(err) => {
+            tracing::warn!(
+                target: "mcp.drift",
+                mcp_server_id = %server_id,
+                error = %err,
+                event = "mcp.stale_persist_failed",
+                "failed to mark MCP server stale on disk; in-memory drift flag is set",
+            );
         }
     }
 }
@@ -259,6 +348,8 @@ impl McpConnection {
         let handler = RuntimeClientHandler {
             server_id: Arc::<str>::from(launch.server_id.clone()),
             drifted,
+            expected_tools_digest: Arc::<str>::from(launch.expected_tools_digest.clone()),
+            cache_root: Arc::new(launch.cache_root.clone()),
         };
         let serve = async move {
             let command = tokio::process::Command::new(&launch.command);

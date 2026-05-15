@@ -26,8 +26,12 @@ pub struct McpServerSnapshot {
     /// bumps don't trip reconnect checks while binary swap / capability
     /// changes still fail closed.
     pub server_identity_digest: Digest,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_artifact_digest: Option<Digest>,
+    /// Digest over the full approved tool set: sorted
+    /// `[(mcp_tool_name, input_schema_digest)]`. The drift handler recomputes
+    /// the same digest from a live `tools/list` after a
+    /// `notifications/tools/list_changed` and marks the snapshot stale on
+    /// mismatch.
+    pub tools_digest: Digest,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secret_refs: Vec<SecretRef>,
     pub approval: ApprovalRecord,
@@ -45,8 +49,6 @@ pub struct McpImportedTool {
     pub description: Option<String>,
     pub input_schema: Value,
     pub input_schema_digest: Digest,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_digest: Option<Digest>,
     pub output_mode: McpOutputMode,
     pub access_level: ToolAccess,
     pub approval: ApprovalRecord,
@@ -180,6 +182,45 @@ pub fn compute_server_identity_digest(capabilities: &Value, server_info: &Value)
     Digest::new(format!("sha256:{:x}", hasher.finalize()))
 }
 
+/// Computes the server-wide tool-set digest from the imported tool list.
+///
+/// Covers the fields whose change must invalidate the approved contract:
+/// the sorted set of MCP tool names and each tool's
+/// `input_schema_digest`. Description and annotations are intentionally
+/// excluded — they affect prompts, not the generated agent schema, and
+/// would otherwise produce noisy drift signals on cosmetic upstream edits.
+///
+/// Importer and runtime drift handler must call this with the same
+/// `McpImportedTool` projection so digests are comparable across the
+/// two code paths.
+pub fn compute_tools_digest(tools: &[McpImportedTool]) -> Digest {
+    compute_tools_digest_from_entries(tools.iter().map(|tool| {
+        (
+            tool.mcp_tool_name.as_str(),
+            tool.input_schema_digest.as_str(),
+        )
+    }))
+}
+
+/// Lower-level variant of [`compute_tools_digest`] for callers (e.g. the
+/// drift handler) that have `(mcp_tool_name, input_schema_digest)` pairs
+/// without a full `McpImportedTool` projection.
+pub fn compute_tools_digest_from_entries<'a, I>(entries: I) -> Digest
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let mut pairs: Vec<(&str, &str)> = entries.into_iter().collect();
+    pairs.sort_by(|a, b| a.0.cmp(b.0));
+    let canonical: Vec<Value> = pairs
+        .into_iter()
+        .map(|(name, digest)| json!({ "name": name, "input_schema_digest": digest }))
+        .collect();
+    let bytes = serde_jcs::to_vec(&canonical).unwrap_or_else(|_| b"[]".to_vec());
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Digest::new(format!("sha256:{:x}", hasher.finalize()))
+}
+
 /// Returns true when the server and the named tool are both `Approved`.
 /// Builder/runtime callers use this to decide whether a tool can be projected
 /// into platform metadata.
@@ -217,7 +258,6 @@ mod tests {
             description: Some(format!("{name} description")),
             input_schema: json!({ "type": "object", "properties": {} }),
             input_schema_digest: Digest::new("sha256:input"),
-            prompt_digest: None,
             output_mode: McpOutputMode::ContentEnvelope,
             access_level: ToolAccess::Read,
             approval: ApprovalRecord {
@@ -243,7 +283,7 @@ mod tests {
             server_info: Some(json!({ "name": "fake", "version": "0.1.0" })),
             server_config_digest: Digest::new("sha256:server-config"),
             server_identity_digest: Digest::new("sha256:server-identity"),
-            runtime_artifact_digest: None,
+            tools_digest: Digest::new("sha256:tools"),
             secret_refs: vec![SecretRef {
                 name: "fake/api_token".into(),
                 version: None,

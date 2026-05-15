@@ -58,7 +58,6 @@ fn approved_tool(name: &str, schema: Value, fallback: Option<&str>) -> McpImport
         description: Some(format!("{name} description")),
         input_schema: schema,
         input_schema_digest: Digest::new("sha256:input"),
-        prompt_digest: None,
         output_mode: McpOutputMode::ContentEnvelope,
         access_level: ToolAccess::Read,
         approval: ApprovalRecord {
@@ -84,7 +83,7 @@ fn approved_snapshot(tools: Vec<McpImportedTool>) -> McpServerSnapshot {
         server_info: None,
         server_config_digest: Digest::new("sha256:server"),
         server_identity_digest: Digest::new("sha256:identity"),
-        runtime_artifact_digest: None,
+        tools_digest: Digest::new("sha256:tools"),
         secret_refs: vec![SecretRef {
             name: "GRAFANA_TOKEN".into(),
             version: None,
