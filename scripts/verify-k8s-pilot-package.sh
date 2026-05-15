@@ -33,6 +33,7 @@ BUILDER_BIN="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/release/baml-agent-builder
 # Defaults. Flags override these.
 SKIP_BUILD=false
 KEEP_CLUSTER=false
+SMOKE_KEEP_DEPLOYED=false
 LOCAL_PORT=18080
 EXTRA_VALUES=()
 
@@ -46,6 +47,11 @@ Usage:
 Options:
   --no-build            Skip the `docker build` step (reuse cached image)
   --keep-cluster        Do not delete the k3d cluster on exit
+  --smoke-keep-deployed Keep dispatch-echo deployed after verify completes.
+                        By default the inner smoke run undeploys the fixture
+                        on exit. Pass this when a follow-on demo step (e.g.
+                        k8s-pilot-cleese-chapman) needs the fixture reachable
+                        without a fresh publish + deploy cycle.
   --image-strategy <s>  How the cluster gets the runner image. Choices:
                           local-k3d-import (default)
                               docker save + k3d image import; pullPolicy=Never.
@@ -93,6 +99,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-build)           SKIP_BUILD=true; shift ;;
     --keep-cluster)       KEEP_CLUSTER=true; shift ;;
+    --smoke-keep-deployed) SMOKE_KEEP_DEPLOYED=true; shift ;;
     --image-strategy)     RUNNER_IMAGE_STRATEGY="$2"; shift 2 ;;
     --image-repository)   IMAGE_NAME="$2"; shift 2 ;;
     --image-tag)          IMAGE_TAG="$2"; shift 2 ;;
@@ -184,6 +191,15 @@ create_or_reuse_cluster() {
 
 run_smoke() {
   log_step "Running scripts/k8s-pilot-smoke.sh (port-forward mode)"
+  local smoke_args=(
+    --namespace "$NAMESPACE"
+    --service "$RUNNER_API_SERVICE"
+    --local-port "$LOCAL_PORT"
+    --port-forward
+  )
+  if [[ "$SMOKE_KEEP_DEPLOYED" == "true" ]]; then
+    smoke_args+=(--keep-deployed)
+  fi
   # Run from repo root: the smoke script checks a relative fixture path
   # and invokes `cargo run -p cargo-agent-platform`. Export RUNNER_TOKEN
   # so it skips its own secret lookup and uses the value we just wrote.
@@ -191,11 +207,7 @@ run_smoke() {
     cd "$REPO_ROOT"
     RUNNER_TOKEN="$E2E_TOKEN" \
     K8S_PILOT_PF_LOG_DIR="$LOG_DIR" \
-      bash "${REPO_ROOT}/scripts/k8s-pilot-smoke.sh" \
-        --namespace "$NAMESPACE" \
-        --service "$RUNNER_API_SERVICE" \
-        --local-port "$LOCAL_PORT" \
-        --port-forward
+      bash "${REPO_ROOT}/scripts/k8s-pilot-smoke.sh" "${smoke_args[@]}"
   )
 }
 
