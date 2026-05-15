@@ -59,6 +59,18 @@ function probeForbidden(): Record<string, AttemptResult> {
       }
       return new (g.XMLHttpRequest as new () => unknown)();
     }),
+    process: attempt("process", () => {
+      if (typeof g.process !== "object" || g.process === null) {
+        throw new Error("process is not an object on globalThis");
+      }
+      return (g.process as { env?: unknown }).env;
+    }),
+    Deno: attempt("Deno", () => {
+      if (typeof g.Deno !== "object" || g.Deno === null) {
+        throw new Error("Deno is not an object on globalThis");
+      }
+      return (g.Deno as { env?: unknown }).env;
+    }),
   };
 }
 
