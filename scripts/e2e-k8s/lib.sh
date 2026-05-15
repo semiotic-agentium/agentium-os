@@ -723,19 +723,40 @@ ensure_runner_image_available() {
       # identifies the `podman-docker` shim (which self-reports as
       # "docker version" in --version but accepts --tls-verify).
       local -a push_args=()
+      local digest_file=""
+      local is_podman=false
       if docker push --help 2>&1 | grep -q -- "--tls-verify"; then
+        is_podman=true
         push_args+=("--tls-verify=false")
+        # Podman's push output ends at "Writing manifest to image destination"
+        # and does not echo Docker's "<tag>: digest: sha256:<hex>" summary
+        # line; --digestfile is the canonical way to capture the manifest
+        # digest from podman and is a no-op the awk parser couldn't replace.
+        digest_file="$(mktemp -t agentium-digest.XXXXXX)"
+        push_args+=("--digestfile=$digest_file")
       fi
-      # Tee push output so the final "<tag>: digest: sha256:<hex> size: <n>"
-      # line can be parsed for PUSHED_IMAGE_DIGEST while the progress
-      # stream still reaches the operator's terminal.
+      # Tee push output so the Docker "<tag>: digest: sha256:<hex> size: <n>"
+      # summary line can be parsed for PUSHED_IMAGE_DIGEST while the progress
+      # stream still reaches the operator's terminal. Podman path uses the
+      # digestfile instead and ignores the log.
       local push_log
       push_log="$(mktemp -t agentium-push.XXXXXX.log)"
       docker push "${push_args[@]}" "$host_ref" | tee "$push_log"
-      PUSHED_IMAGE_DIGEST="$(awk '$2 == "digest:" {d=$3} END{print d}' "$push_log")"
+      if [[ "$is_podman" == "true" ]]; then
+        if [[ -s "$digest_file" ]]; then
+          read -r PUSHED_IMAGE_DIGEST < "$digest_file"
+        else
+          PUSHED_IMAGE_DIGEST=""
+        fi
+      else
+        PUSHED_IMAGE_DIGEST="$(awk '$2 == "digest:" {d=$3} END{print d}' "$push_log")"
+      fi
       rm -f "$push_log"
+      [[ -n "$digest_file" ]] && rm -f "$digest_file"
       if [[ -z "$PUSHED_IMAGE_DIGEST" ]]; then
-        log_fail "Could not parse pushed-image digest from docker push output"
+        local client="docker"
+        [[ "$is_podman" == "true" ]] && client="podman"
+        log_fail "Could not parse pushed-image digest from ${client} push output"
         return 1
       fi
       log_info "Pushed image digest: ${PUSHED_IMAGE_DIGEST}"
