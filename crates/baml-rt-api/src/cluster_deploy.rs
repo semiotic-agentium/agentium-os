@@ -179,11 +179,9 @@ async fn fan_out_deploy(
     hash: &str,
     content_hash: &DeploymentContentHash,
 ) -> ClusterDeployResponseDto {
-    // Push every runner's deploy — local and remote — into the same
-    // FuturesUnordered so the self-deploy runs concurrently with the
-    // remote fan-out. Earlier shape awaited the local deploy serially
-    // before draining the remote queue, which doubled wall time for
-    // operators on a real cluster.
+    // Local and remote deploys share one FuturesUnordered queue so every
+    // runner's deploy runs concurrently, keeping wall time proportional
+    // to the slowest single runner rather than the runner count.
     let mut in_flight: FuturesUnordered<DeployFuture> = FuturesUnordered::new();
     for runner in runners.iter().cloned() {
         if runner.runner_id == local_runner_id {
