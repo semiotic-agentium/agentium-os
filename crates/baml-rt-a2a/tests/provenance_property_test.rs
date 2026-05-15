@@ -6,7 +6,7 @@ mod common;
 
 use baml_rt_a2a::A2aRequestHandler;
 use baml_rt_core::ids::{ContextId, CorrelationId};
-use test_support::common::{await_signal_from_stream, send_stream_request};
+use test_support::common::{await_first_match, send_stream_request};
 use tokio::time::Duration;
 
 #[tokio::test(flavor = "current_thread")]
@@ -40,7 +40,7 @@ async fn test_scope_attribution_without_cross_contamination() {
             .expect("handle");
         let first_chunk = tokio::time::timeout(
             Duration::from_secs(15),
-            await_signal_from_stream(stream, |_chunk| Some(())),
+            await_first_match(stream, |_chunk| Some(())),
         )
         .await
         .expect("request timeout");
