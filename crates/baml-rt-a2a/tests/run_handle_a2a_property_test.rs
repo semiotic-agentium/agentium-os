@@ -190,20 +190,32 @@ async fn setup_interleaving_agent() -> A2aAgent {
         .expect("build interleaving agent")
 }
 
-/// Single-context run of the INPUT_REQUIRED resume flow (no proptest).
-/// Verifies fixture and expectations; use to debug prop_input_required_resume_positive_and_no_auto_final.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_input_required_resume_single_context() {
-    let agent = setup_interleaving_agent().await;
-    let context_id = ContextId::new(901, 1);
-    let jitter_ms = 0u64;
-
-    // Turn 1: drive the stream chunk-by-chunk until INPUT_REQUIRED arrives; tally any
-    // pre-sentinel final markers (must be zero — INPUT_REQUIRED is a turn boundary).
+/// Drives a two-turn INPUT_REQUIRED resume flow on the supplied context and
+/// asserts the full contract:
+///
+/// - turn 1 surfaces `TASK_STATE_INPUT_REQUIRED` and does **not** auto-finalize
+///   (INPUT_REQUIRED is a turn boundary, not a terminal state);
+/// - turn 2 emits exactly one `final` chunk and a message that starts with
+///   `INPUT:` and carries the context id.
+///
+/// Shared between [`test_input_required_resume_single_context`] (one-shot
+/// debugging variant) and [`prop_input_required_resume_positive_and_no_auto_final`]
+/// (proptest loop over jitter vectors). Panics on assertion failure.
+async fn drive_input_required_two_turn_flow(
+    agent: &A2aAgent,
+    context_id: &ContextId,
+    idx: usize,
+    jitter_ms: u64,
+    per_turn_timeout: Duration,
+) {
+    // `corr-1700000000{300,400}-` are synthetic correlation-id bases — they
+    // look like ms-epoch timestamps but are not parsed against any clock; the
+    // suffix discriminates per-iteration ids within the same proptest run.
+    let corr_seq = idx + 1;
     let ask_req = send_stream_request(
-        "msg-ir-ask-0",
+        &format!("msg-ir-ask-{idx}"),
         &format!("input-ask:{jitter_ms}:{}", context_id.as_str()),
-        "corr-1700000000300-1",
+        &format!("corr-1700000000300-{corr_seq}"),
         Some(context_id.clone()),
     );
     let ask_stream = agent
@@ -212,7 +224,7 @@ async fn test_input_required_resume_single_context() {
         .expect("open input-required stream");
     let mut ask_final_count = 0usize;
     let saw_input_required = timeout(
-        scaled_timeout_secs(15),
+        per_turn_timeout,
         await_first_match(ask_stream, |env| {
             if response_has_final_chunk(env).is_some() {
                 ask_final_count += 1;
@@ -231,22 +243,18 @@ async fn test_input_required_resume_single_context() {
         "input-required turn must not auto-finalize"
     );
 
-    tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
+    sleep(Duration::from_millis(jitter_ms)).await;
 
-    // Turn 2: resume same context and expect terminal completion.
     let answer_req = send_stream_request(
-        "msg-ir-answer-0",
+        &format!("msg-ir-answer-{idx}"),
         &format!("input-answer:{jitter_ms}:{}", context_id.as_str()),
-        "corr-1700000000400-1",
+        &format!("corr-1700000000400-{corr_seq}"),
         Some(context_id.clone()),
     );
-    let answer_responses = timeout(
-        scaled_timeout_secs(15),
-        collect_responses(&agent, answer_req),
-    )
-    .await
-    .expect("resumed stream timed out")
-    .expect("resumed stream failed");
+    let answer_responses = timeout(per_turn_timeout, collect_responses(agent, answer_req))
+        .await
+        .expect("resumed stream timed out")
+        .expect("resumed stream failed");
     let answer_final_count = answer_responses
         .iter()
         .filter(|value| response_has_final_chunk(value).is_some())
@@ -262,9 +270,18 @@ async fn test_input_required_resume_single_context() {
     );
     assert!(
         text.contains(context_id.as_str()),
-        "resumed turn must keep context attribution: expected {}, got {text}",
-        context_id.as_str()
+        "resumed turn must keep context attribution: expected {ctx}, got {text}",
+        ctx = context_id.as_str()
     );
+}
+
+/// Single-context run of the INPUT_REQUIRED resume flow (no proptest).
+/// Verifies fixture and expectations; use to debug prop_input_required_resume_positive_and_no_auto_final.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_input_required_resume_single_context() {
+    let agent = setup_interleaving_agent().await;
+    let context_id = ContextId::new(901, 1);
+    drive_input_required_two_turn_flow(&agent, &context_id, 0, 0, scaled_timeout_secs(15)).await;
 }
 
 proptest! {
@@ -416,73 +433,14 @@ proptest! {
             for (idx, jitter_raw) in jitters.iter().copied().enumerate() {
                 let context_id = ContextId::new(901, (idx as u64) + 1);
                 let jitter_ms = (jitter_raw as u64) + ((idx as u64) % 3);
-                // Turn 1: drive chunk-by-chunk to INPUT_REQUIRED; pre-sentinel final markers
-                // must be zero (INPUT_REQUIRED is a turn boundary, not a terminal state).
-                let ask_req = send_stream_request(
-                    &format!("msg-ir-ask-{idx}"),
-                    &format!("input-ask:{jitter_ms}:{}", context_id.as_str()),
-                    &format!("corr-1700000000300-{}", idx + 1),
-                    Some(context_id.clone()),
-                );
-                let ask_stream = agent
-                    .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(ask_req))
-                    .await
-                    .expect("open input-required stream");
-                let mut ask_final_count = 0usize;
-                let saw_input_required = timeout(
+                drive_input_required_two_turn_flow(
+                    &agent,
+                    &context_id,
+                    idx,
+                    jitter_ms,
                     per_turn_timeout,
-                    await_first_match(ask_stream, |env| {
-                        if response_has_final_chunk(env).is_some() {
-                            ask_final_count += 1;
-                        }
-                        response_has_input_required(env)
-                    }),
                 )
-                .await
-                .expect("input-required stream timed out");
-                assert!(
-                    saw_input_required.is_some(),
-                    "first turn must emit TASK_STATE_INPUT_REQUIRED"
-                );
-                assert_eq!(
-                    ask_final_count, 0,
-                    "input-required turn must not auto-finalize"
-                );
-
-                sleep(Duration::from_millis(jitter_ms)).await;
-
-                // Turn 2: resume same context and expect terminal completion.
-                let answer_req = send_stream_request(
-                    &format!("msg-ir-answer-{idx}"),
-                    &format!("input-answer:{jitter_ms}:{}", context_id.as_str()),
-                    &format!("corr-1700000000400-{}", idx + 1),
-                    Some(context_id.clone()),
-                );
-                let answer_responses = timeout(
-                    per_turn_timeout,
-                    collect_responses(&agent, answer_req),
-                )
-                .await
-                .expect("resumed stream timed out")
-                .expect("resumed stream failed");
-                let answer_final_count = answer_responses
-                    .iter()
-                    .filter(|value| response_has_final_chunk(value).is_some())
-                    .count();
-                assert_eq!(
-                    answer_final_count, 1,
-                    "resumed turn must include exactly one final chunk"
-                );
-                let text = first_message_text_from_stream(&answer_responses);
-                assert!(
-                    text.starts_with("INPUT:"),
-                    "resumed turn should emit INPUT:* message, got: {text}"
-                );
-                assert!(
-                    text.contains(context_id.as_str()),
-                    "resumed turn must keep context attribution: expected {ctx}, got {text}",
-                    ctx = context_id.as_str()
-                );
+                .await;
             }
         });
     }
