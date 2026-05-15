@@ -40,7 +40,8 @@ use utoipa_axum::router::OpenApiRouter;
 use crate::{
     ClusterHeartbeatHealth, ContextIndexService, ContextMetricsService, ConversationHistoryService,
     EpisodeService, HeartbeatStatus, MermaidService, PlanningService, ProvenanceOpsService,
-    RuntimeProgressMeter, config_handlers, handlers, metrics, otel_middleware, repository_publish,
+    RuntimeProgressMeter, cluster_agents, cluster_agents::ClusterDirectoryService, config_handlers,
+    handlers, metrics, otel_middleware, repository_publish,
 };
 
 /// Shared state for API handlers: registry, OpenAPI spec, and **injected** config/catalog/resolver.
@@ -76,6 +77,9 @@ pub struct ApiState {
     pub runtime_progress: Arc<RuntimeProgressMeter>,
     /// `None` in standalone mode (no heartbeat task).
     pub cluster_heartbeat: Option<Arc<ClusterHeartbeatHealth>>,
+    /// Cluster directory used by `GET /cluster/agents`. `None` in standalone
+    /// mode; the endpoint returns `404` until set.
+    pub cluster_directory: Option<Arc<dyn ClusterDirectoryService>>,
 }
 
 async fn serve_openapi_json(
@@ -233,6 +237,7 @@ pub struct ApiServerConfig {
     pub cluster_mode: ClusterMode,
     pub runtime_progress: Arc<RuntimeProgressMeter>,
     pub cluster_heartbeat: Option<Arc<ClusterHeartbeatHealth>>,
+    pub cluster_directory: Option<Arc<dyn ClusterDirectoryService>>,
     pub web_dir: Option<std::path::PathBuf>,
 }
 
@@ -267,6 +272,7 @@ impl ApiServerConfig {
             cluster_mode: ClusterMode::Standalone,
             runtime_progress,
             cluster_heartbeat: None,
+            cluster_directory: None,
             web_dir: None,
         }
     }
@@ -331,6 +337,7 @@ pub fn api_router_with_services_and_deploy(
         cluster_mode,
         runtime_progress,
         cluster_heartbeat,
+        cluster_directory,
         web_dir,
     } = config;
     let http_trace_layer =
@@ -370,6 +377,7 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(
             handlers::get_conversation_history_stream
         ))
+        .routes(utoipa_axum::routes!(cluster_agents::get_cluster_agents))
         .split_for_parts();
 
     let public_router = agent_router.merge(other_public_router);
@@ -458,6 +466,11 @@ pub fn api_router_with_services_and_deploy(
     let mut tag_control = utoipa::openapi::Tag::new("control");
     tag_control.description =
         Some("Operational control plane: agent migration between runners.".to_string());
+    let mut tag_cluster = utoipa::openapi::Tag::new("cluster");
+    tag_cluster.description = Some(
+        "Cluster-wide read views (e.g. /cluster/agents) that fan out across runner replicas."
+            .to_string(),
+    );
     let mut tags = vec![
         tag_agents,
         tag_mermaid,
@@ -465,6 +478,7 @@ pub fn api_router_with_services_and_deploy(
         tag_deployments,
         tag_config,
         tag_control,
+        tag_cluster,
     ];
     if has_repository {
         let mut tag_repository = utoipa::openapi::Tag::new("repository");
@@ -498,6 +512,7 @@ pub fn api_router_with_services_and_deploy(
         cluster_mode,
         runtime_progress,
         cluster_heartbeat,
+        cluster_directory,
     });
 
     let mut router = api_router

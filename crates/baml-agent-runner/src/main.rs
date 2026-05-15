@@ -532,6 +532,9 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         } else {
             baml_rt_api::ClusterMode::Standalone
         };
+        let cluster_directory = cluster_mgr
+            .as_ref()
+            .map(|mgr| Arc::new(mgr.directory()) as Arc<dyn baml_rt_api::ClusterDirectoryService>);
         let api_config = baml_rt_api::ApiServerConfig {
             mermaid,
             context_metrics,
@@ -549,6 +552,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             runner_token,
             cluster_mode,
             cluster_heartbeat: cluster_heartbeat_health,
+            cluster_directory,
             web_dir,
             ..baml_rt_api::ApiServerConfig::empty(
                 tool_catalog,
