@@ -45,10 +45,10 @@ SURREAL_POD_0=""
 RUNNER_HEADLESS_DNS=""  # ${RUNNER_FULLNAME}.${NAMESPACE}.svc
 
 # Populated by ensure_runner_image_available (registry branch) from the
-# canonical `<tag>: digest: sha256:<hex> size: <n>` line in `docker push`
-# output. Consumed by verify_pod_image_digests to compare against each
-# runner pod's containerStatuses[].imageID. Empty for non-registry
-# strategies, which the assertion already skips.
+# registry's Docker-Content-Digest header for the pushed manifest.
+# Consumed by verify_pod_image_digests to compare against each runner
+# pod's containerStatuses[].imageID. Empty for non-registry strategies,
+# which the assertion already skips.
 PUSHED_IMAGE_DIGEST=""
 
 # Populated at runtime
@@ -726,16 +726,30 @@ ensure_runner_image_available() {
       if docker push --help 2>&1 | grep -q -- "--tls-verify"; then
         push_args+=("--tls-verify=false")
       fi
-      # Tee push output so the final "<tag>: digest: sha256:<hex> size: <n>"
-      # line can be parsed for PUSHED_IMAGE_DIGEST while the progress
-      # stream still reaches the operator's terminal.
-      local push_log
-      push_log="$(mktemp -t agentium-push.XXXXXX.log)"
-      docker push "${push_args[@]}" "$host_ref" | tee "$push_log"
-      PUSHED_IMAGE_DIGEST="$(awk '$2 == "digest:" {d=$3} END{print d}' "$push_log")"
-      rm -f "$push_log"
+      docker push "${push_args[@]}" "$host_ref"
+
+      # Query the registry for the manifest digest rather than parsing
+      # client output: docker prints `<tag>: digest: sha256:<hex> size: <n>`
+      # at the end of a push, but podman does not, so any client-side
+      # parser breaks for podman users (issue #469). The registry's
+      # Docker-Content-Digest header is authoritative and client-agnostic,
+      # and is the same digest the kubelet records in containerStatuses[].imageID.
+      #
+      # The Accept headers mirror what the kubelet sends so the registry
+      # returns the manifest variant the cluster will actually pull.
+      local manifest_url="http://localhost:${REGISTRY_HOST_PORT}/v2/${IMAGE_NAME}/manifests/${IMAGE_TAG}"
+      PUSHED_IMAGE_DIGEST="$(
+        curl -sI \
+          -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+          -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+          -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+          -H 'Accept: application/vnd.oci.image.index.v1+json' \
+          "$manifest_url" \
+        | awk 'tolower($1) == "docker-content-digest:" {print $2}' \
+        | tr -d '\r'
+      )"
       if [[ -z "$PUSHED_IMAGE_DIGEST" ]]; then
-        log_fail "Could not parse pushed-image digest from docker push output"
+        log_fail "Could not resolve pushed-image digest from registry at ${manifest_url}"
         return 1
       fi
       log_info "Pushed image digest: ${PUSHED_IMAGE_DIGEST}"
