@@ -474,41 +474,15 @@ async fn fetch_runner_agents(runner: ClusterRunnerInfo) -> FanOutOutcome {
 }
 
 async fn fetch_runner_agents_inner(runner: &ClusterRunnerInfo) -> FanOutOutcome {
-    let target =
-        match baml_rt_router::ssrf::resolve_and_validate_cluster_endpoint(&runner.endpoint).await {
-            Ok((url, addrs)) => (url, addrs),
-            Err(e) => return FanOutOutcome::Unreachable(format!("endpoint validation: {e}")),
-        };
-    let (validated_url, resolved_addrs) = target;
-    let host = match validated_url.host() {
-        Some(url::Host::Domain(d)) => d.to_string(),
-        Some(url::Host::Ipv4(ip)) => ip.to_string(),
-        Some(url::Host::Ipv6(ip)) => ip.to_string(),
-        None => return FanOutOutcome::Unreachable("endpoint has no host".to_string()),
-    };
-    // Build `<origin>/agents` from the validated URL — strips any
-    // attacker-controlled path/query/fragment and percent-encodes the segment.
-    let mut agents_url = validated_url.clone();
-    agents_url.set_query(None);
-    agents_url.set_fragment(None);
-    if agents_url.path_segments_mut().is_err() {
-        return FanOutOutcome::Unreachable("endpoint URL is not a base".to_string());
-    }
-    agents_url
-        .path_segments_mut()
-        .expect("path_segments_mut succeeded above")
-        .clear()
-        .push("agents");
-
-    let client = match reqwest::Client::builder()
-        .connect_timeout(FETCH_TIMEOUT)
-        .timeout(FETCH_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .resolve_to_addrs(&host, &resolved_addrs)
-        .build()
+    let (client, agents_url) = match baml_rt_router::ssrf::build_validated_peer_client(
+        &runner.endpoint,
+        "agents",
+        FETCH_TIMEOUT,
+    )
+    .await
     {
-        Ok(c) => c,
-        Err(e) => return FanOutOutcome::Unreachable(format!("client build: {e}")),
+        Ok(pair) => pair,
+        Err(e) => return FanOutOutcome::Unreachable(format!("peer client setup: {e}")),
     };
 
     let resp = match client.get(agents_url.as_str()).send().await {

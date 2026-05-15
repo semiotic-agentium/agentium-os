@@ -423,6 +423,36 @@ async fn cluster_agents_returns_404_in_standalone_mode() {
     );
 }
 
+/// Same standalone-mode contract for `POST /cluster/deploy`: 404 with an
+/// RFC 7807 body, never accept a deploy via a no-op fan-out that would
+/// just hit the local runner anyway. Operators have `POST /deploy` for
+/// that.
+#[tokio::test]
+async fn cluster_deploy_returns_404_in_standalone_mode() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    let runner = RunnerProcess::start(RunnerProcessConfig::standalone()).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/cluster/deploy", runner.base_url))
+        .header("X-Runner-Token", DEFAULT_TOKEN)
+        .json(&serde_json::json!({ "hash": "dummy-hash" }))
+        .send()
+        .await
+        .expect("POST /cluster/deploy in standalone mode");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "/cluster/deploy must be 404 outside cluster mode"
+    );
+    let body: Value = resp.json().await.expect("RFC 7807 JSON problem");
+    let detail = body.get("detail").and_then(Value::as_str).unwrap_or("");
+    assert!(
+        detail.contains("cluster"),
+        "problem body should explain cluster mode is required; got: {body}"
+    );
+}
+
 #[tokio::test]
 async fn deploy_idempotent_returns_already_deployed() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
@@ -1775,6 +1805,164 @@ mod cluster {
                 .all(|p| p.get("source").and_then(Value::as_str) == Some("runner")),
             "both runners answered live → every placement must be source=runner; row={row}"
         );
+    }
+
+    /// `POST /cluster/deploy` operator-auth check: unauthenticated requests
+    /// in cluster mode must fail-closed with 401, matching `/deploy` and
+    /// `/cluster/agents`.
+    #[tokio::test]
+    async fn cluster_deploy_requires_auth_in_cluster_mode() {
+        let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+        let surreal = SurrealContainer::start().await;
+
+        let runner = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(common::FAKE_CLUSTER_RUNNER_ENDPOINT),
+        )
+        .await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .post(format!("{}/cluster/deploy", runner.base_url))
+            .json(&serde_json::json!({ "hash": "dummy" }))
+            .send()
+            .await
+            .expect("POST /cluster/deploy without token in cluster mode");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "/cluster/deploy must reject unauthenticated requests in cluster mode"
+        );
+    }
+
+    /// Happy path: publish the same fixture to both runners, fire one
+    /// `POST /cluster/deploy`, and confirm both runners report the agent
+    /// in their local `/agents` view. This is the operator-facing
+    /// promise of #387 — single-curl deploy across the cluster.
+    #[tokio::test]
+    async fn cluster_deploy_fans_out_to_every_runner() {
+        let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+        ensure_fixture_runtime_types();
+
+        let ip = match detect_non_loopback_ip() {
+            Some(ip) => ip,
+            None => {
+                eprintln!(
+                    "SKIPPED cluster_deploy_fans_out_to_every_runner: \
+                     no non-loopback private IP detected"
+                );
+                return;
+            }
+        };
+        let bind_addr = ip.to_string();
+
+        let package_path =
+            build_agent_package_archive_to_temp(agent_fixture("dispatch-echo"), "dispatch-echo")
+                .await;
+        let _cleanup = TempFileCleanup::new(package_path.clone());
+
+        let surreal = SurrealContainer::start().await;
+
+        let port_a = reserve_ephemeral_addr(&bind_addr).port();
+        let port_b = reserve_ephemeral_addr(&bind_addr).port();
+        let endpoint_a = format!("http://{bind_addr}:{port_a}");
+        let endpoint_b = format!("http://{bind_addr}:{port_b}");
+
+        let runner_a = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(&endpoint_a)
+                .with_bind_addr(&bind_addr),
+        )
+        .await;
+        let runner_b = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(&endpoint_b)
+                .with_bind_addr(&bind_addr),
+        )
+        .await;
+        let client = reqwest::Client::new();
+
+        // Both runners need the package in their local repository before a
+        // deploy can succeed (the fan-out forwards the hash, not the
+        // archive). Mirror the publish strategy from /cluster/agents
+        // tests.
+        let hash = publish_fixture(
+            &client,
+            &runner_a.base_url,
+            &package_path,
+            DEFAULT_TOKEN,
+            "runner_cluster_test_deploy",
+        )
+        .await;
+        publish_fixture(
+            &client,
+            &runner_b.base_url,
+            &package_path,
+            DEFAULT_TOKEN,
+            "runner_cluster_test_deploy",
+        )
+        .await;
+
+        // One curl deploys to both.
+        let resp = client
+            .post(format!("{}/cluster/deploy", runner_a.base_url))
+            .header("X-Runner-Token", DEFAULT_TOKEN)
+            .json(&serde_json::json!({ "hash": hash }))
+            .send()
+            .await
+            .expect("POST /cluster/deploy on runner-A");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "/cluster/deploy must succeed when every runner accepts: {}",
+            resp.text().await.unwrap_or_default(),
+        );
+        let body: Value = resp.json().await.expect("/cluster/deploy JSON");
+        assert_eq!(
+            body.get("hash").and_then(Value::as_str),
+            Some(hash.as_str())
+        );
+        assert_eq!(
+            body.get("all_succeeded").and_then(Value::as_bool),
+            Some(true),
+            "all_succeeded must be true when every runner accepted; body={body}",
+        );
+        let runners = body
+            .get("runners")
+            .and_then(Value::as_array)
+            .expect("runners array");
+        assert_eq!(runners.len(), 2, "both runners must appear; body={body}");
+        assert!(
+            runners
+                .iter()
+                .all(|r| r.get("ok").and_then(Value::as_bool) == Some(true)),
+            "every runner must be ok; body={body}",
+        );
+
+        // Confirm via the per-runner /agents views that the agent is now
+        // hosted on both runners — the wire-level proof that the fan-out
+        // actually deployed rather than just claiming success.
+        for runner in [&runner_a, &runner_b] {
+            let agents: Vec<Value> = client
+                .get(format!("{}/agents", runner.base_url))
+                .send()
+                .await
+                .expect("GET /agents")
+                .json()
+                .await
+                .expect("/agents JSON");
+            assert!(
+                agents
+                    .iter()
+                    .any(|a| a["agent_package"].as_str() == Some("dispatch-echo")),
+                "dispatch-echo must appear on runner {}; agents={agents:?}",
+                runner.base_url,
+            );
+        }
     }
 }
 

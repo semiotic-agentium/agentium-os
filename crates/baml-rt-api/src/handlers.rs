@@ -71,7 +71,7 @@ type HttpResult<T> = Result<T, HttpApiProblem>;
 /// is dropped. If the request handler future is cancelled (client disconnect),
 /// the deploy continues to completion — the durable preference for partial-
 /// state-bad operations like deploy.
-async fn run_off_worker<C, F, T>(builder: C) -> HttpResult<T>
+pub(crate) async fn run_off_worker<C, F, T>(builder: C) -> HttpResult<T>
 where
     C: FnOnce() -> F + Send + 'static,
     F: std::future::Future<Output = T>,
@@ -98,7 +98,7 @@ struct RepositoryEntryHeaderItem {
 
 /// Build HttpApiProblem for standard HTTP status codes (4xx/5xx per RFC 7231).
 /// All standard status codes are valid; the expect here cannot fail.
-fn problem(status: u16, title: &str, detail: impl Into<String>) -> HttpApiProblem {
+pub(crate) fn problem(status: u16, title: &str, detail: impl Into<String>) -> HttpApiProblem {
     HttpApiProblem::try_new(status)
         .expect("standard HTTP status codes are always valid")
         .title(title)
@@ -116,7 +116,10 @@ fn deployment_status_to_str(status: DeploymentStatus) -> &'static str {
     }
 }
 
-async fn resolve_deploy_hash(state: &Arc<ApiState>, body: DeployRequestDto) -> HttpResult<String> {
+pub(crate) async fn resolve_deploy_hash(
+    state: &Arc<ApiState>,
+    body: DeployRequestDto,
+) -> HttpResult<String> {
     if let Some(hash) = body.hash {
         if hash.trim().is_empty() {
             return Err(problem(400, "Bad Request", "hash must not be empty"));
