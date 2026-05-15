@@ -33,7 +33,7 @@ pub struct McpServerConfig {
     pub secrets: Vec<SecretDecl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SandboxConfig>,
-    /// Optional human-readable description shown by `mcp-enable`.
+    /// Optional human-readable description shown by MCP registry import commands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }

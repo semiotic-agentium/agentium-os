@@ -94,52 +94,6 @@ pub fn enable(
     run_builder(&args)
 }
 
-pub fn pull(
-    server_id: &str,
-    version: Option<u32>,
-    repository_url: &str,
-    cache_root: Option<&str>,
-) -> Result<()> {
-    let mut args = vec![
-        "mcp-registry-pull".to_string(),
-        server_id.to_string(),
-        "--repository-url".to_string(),
-        repository_url.to_string(),
-    ];
-    if let Some(version) = version {
-        args.push("--version".to_string());
-        args.push(version.to_string());
-    }
-    if let Some(cache_root) = cache_root {
-        args.push("--cache-root".to_string());
-        args.push(cache_root.to_string());
-    }
-    run_builder(&args)
-}
-
-pub fn push(
-    server_id: &str,
-    repository_url: &str,
-    cache_root: Option<&str>,
-    runner_token: Option<RunnerToken>,
-) -> Result<()> {
-    let mut args = vec![
-        "mcp-registry-push".to_string(),
-        server_id.to_string(),
-        "--repository-url".to_string(),
-        repository_url.to_string(),
-    ];
-    if let Some(cache_root) = cache_root {
-        args.push("--cache-root".to_string());
-        args.push(cache_root.to_string());
-    }
-    if let Some(token) = runner_token {
-        args.push("--runner-token".to_string());
-        args.push(token.as_str().to_string());
-    }
-    run_builder(&args)
-}
-
 pub fn server(
     server_id: &str,
     version: Option<u32>,

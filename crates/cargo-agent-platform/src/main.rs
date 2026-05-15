@@ -456,34 +456,6 @@ enum McpCommands {
         #[arg(long)]
         runner_token: Option<String>,
     },
-    /// Pull a registry snapshot into the local compatibility cache.
-    Pull {
-        /// Server id to pull.
-        server_id: String,
-        /// Registry version to pull. Defaults to latest.
-        #[arg(long)]
-        version: Option<u32>,
-        /// Repository base URL where repository routes are mounted.
-        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
-        repository_url: String,
-        /// Local cache root to write.
-        #[arg(long)]
-        cache_root: Option<String>,
-    },
-    /// Push a local compatibility-cache snapshot into the repository registry.
-    Push {
-        /// Server id to push.
-        server_id: String,
-        /// Repository base URL where repository routes are mounted.
-        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
-        repository_url: String,
-        /// Local cache root to read.
-        #[arg(long)]
-        cache_root: Option<String>,
-        /// Runner token for authenticated operator access (falls back to RUNNER_TOKEN env).
-        #[arg(long)]
-        runner_token: Option<String>,
-    },
     /// Show latest or pinned MCP server snapshot summary.
     Server {
         /// Server id to inspect.
@@ -918,21 +890,6 @@ fn main() -> anyhow::Result<()> {
             } => {
                 let token = resolve_runner_token(runner_token.as_deref())?;
                 commands::mcp::enable(&server_id, config.as_deref(), &repository_url, yes, token)
-            }
-            McpCommands::Pull {
-                server_id,
-                version,
-                repository_url,
-                cache_root,
-            } => commands::mcp::pull(&server_id, version, &repository_url, cache_root.as_deref()),
-            McpCommands::Push {
-                server_id,
-                repository_url,
-                cache_root,
-                runner_token,
-            } => {
-                let token = resolve_runner_token(runner_token.as_deref())?;
-                commands::mcp::push(&server_id, &repository_url, cache_root.as_deref(), token)
             }
             McpCommands::Server {
                 server_id,
