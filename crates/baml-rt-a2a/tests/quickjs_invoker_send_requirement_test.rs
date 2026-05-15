@@ -1,10 +1,11 @@
 //! **Purpose:** Enforce that the real QuickJS stream handover remains live under
 //! concurrent collection, including INPUT_REQUIRED turn boundaries.
 
-use baml_rt_core::{A2aRequestHandler, collect_a2a_stream};
+use baml_rt_core::A2aRequestHandler;
 use test_support::common::{
-    build_minimal_a2a_agent_with_stream_idle_secs, chunks_from_responses,
-    message_texts_from_chunks, send_stream_request,
+    await_first_match, build_minimal_a2a_agent_with_stream_idle_secs, chunk_content,
+    message_texts_from_chunks, response_has_final_chunk, response_has_input_required,
+    send_stream_request,
 };
 use tokio::time::{Duration, timeout};
 
@@ -17,30 +18,8 @@ fn init_tracing() {
         .try_init();
 }
 
-fn response_has_final_chunk(response: &serde_json::Value) -> bool {
-    response
-        .get("result")
-        .and_then(|res| res.get("final"))
-        .and_then(|f| f.as_bool())
-        == Some(true)
-}
-
-fn chunk_state(chunk: &serde_json::Value) -> Option<&str> {
-    chunk
-        .get("task")
-        .and_then(|task| task.get("status"))
-        .and_then(|status| status.get("state"))
-        .and_then(|state| state.as_str())
-        .or_else(|| {
-            chunk
-                .get("statusUpdate")
-                .and_then(|status_update| status_update.get("status"))
-                .and_then(|status| status.get("state"))
-                .and_then(|state| state.as_str())
-        })
-}
-
-enum CompletionKind {
+#[derive(Debug, PartialEq, Eq)]
+enum Terminator {
     Final,
     InputRequired,
 }
@@ -48,23 +27,51 @@ enum CompletionKind {
 struct StreamCase {
     tag: &'static str,
     request_text: &'static str,
-    expect: CompletionKind,
-    min_chunks: usize,
+    expect: Terminator,
 }
 
-async fn collect_with_agent(
+#[derive(Debug, Default)]
+struct StreamOutcome {
+    chunk_count: usize,
+    has_tag: bool,
+    term: Option<Terminator>,
+}
+
+/// Stops at the first terminator (final marker or INPUT_REQUIRED) so the underlying stream
+/// is dropped without buffering the rest. `outcome.term == None` means the stream completed
+/// without either terminator — caller asserts that as a liveness failure.
+async fn drive_stream(
     agent: baml_rt_a2a::A2aAgent,
     request: serde_json::Value,
-) -> Vec<serde_json::Value> {
+    tag: &'static str,
+) -> StreamOutcome {
     let stream = agent
         .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request))
         .await
         .expect("handle_a2a_stream");
-    collect_a2a_stream(stream)
-        .await
-        .into_iter()
-        .map(baml_rt_core::A2aStreamChunk::into_inner)
-        .collect()
+    let mut outcome = StreamOutcome::default();
+    let term = await_first_match(stream, |env| {
+        outcome.chunk_count += 1;
+        if !outcome.has_tag {
+            let chunk = chunk_content(env).unwrap_or(env);
+            if message_texts_from_chunks(&[chunk])
+                .iter()
+                .any(|text| text.contains(tag))
+            {
+                outcome.has_tag = true;
+            }
+        }
+        if response_has_final_chunk(env).is_some() {
+            return Some(Terminator::Final);
+        }
+        if response_has_input_required(env).is_some() {
+            return Some(Terminator::InputRequired);
+        }
+        None
+    })
+    .await;
+    outcome.term = term;
+    outcome
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -103,26 +110,22 @@ async fn concurrent_stream_phase_matrix_regression_under_load() {
         StreamCase {
             tag: "alpha",
             request_text: "alpha:12:final",
-            expect: CompletionKind::Final,
-            min_chunks: 1,
+            expect: Terminator::Final,
         },
         StreamCase {
             tag: "beta",
             request_text: "beta:10:input",
-            expect: CompletionKind::InputRequired,
-            min_chunks: 1,
+            expect: Terminator::InputRequired,
         },
         StreamCase {
             tag: "gamma",
             request_text: "gamma:8:final",
-            expect: CompletionKind::Final,
-            min_chunks: 1,
+            expect: Terminator::Final,
         },
         StreamCase {
             tag: "delta",
             request_text: "delta:6:final",
-            expect: CompletionKind::Final,
-            min_chunks: 1,
+            expect: Terminator::Final,
         },
     ];
 
@@ -139,64 +142,45 @@ async fn concurrent_stream_phase_matrix_regression_under_load() {
             );
             joins.push((
                 case,
-                tokio::spawn(collect_with_agent(agent.clone(), request)),
+                tokio::spawn(drive_stream(agent.clone(), request, case.tag)),
             ));
         }
 
         let mut outputs = Vec::new();
         for (case, join) in joins {
-            let responses = timeout(Duration::from_secs(20), join)
+            let outcome = timeout(Duration::from_secs(20), join)
                 .await
                 .expect("each stream in wave must finish")
                 .expect("collect task must not panic");
-            outputs.push((case, responses));
+            outputs.push((case, outcome));
         }
 
-        for (case, responses) in outputs {
+        for (case, outcome) in outputs {
             assert!(
-                !responses.is_empty(),
+                outcome.chunk_count > 0,
                 "stream {} should emit some response",
                 case.tag
             );
 
-            let chunks = chunks_from_responses(&responses);
-            assert!(
-                chunks.len() >= case.min_chunks,
-                "stream {} should emit at least {} chunks (got {})",
-                case.tag,
-                case.min_chunks,
-                chunks.len()
-            );
-
-            let has_final = responses.iter().any(response_has_final_chunk);
-            let has_input_required = chunks
-                .iter()
-                .any(|chunk| chunk_state(chunk) == Some("TASK_STATE_INPUT_REQUIRED"));
-
-            match case.expect {
-                CompletionKind::Final => {
-                    assert!(
-                        has_final,
-                        "stream {} should complete with final marker",
-                        case.tag
-                    );
+            match (&case.expect, outcome.term.as_ref()) {
+                (Terminator::Final, Some(Terminator::Final)) => {}
+                (Terminator::InputRequired, Some(Terminator::InputRequired)) => {}
+                (Terminator::Final, Some(Terminator::InputRequired)) => {
+                    panic!("stream {} unexpected INPUT_REQUIRED before final", case.tag)
                 }
-                CompletionKind::InputRequired => {
-                    // INPUT_REQUIRED is a turn boundary, not a terminal final chunk.
-                    assert!(!has_final, "stream {} should not emit final", case.tag);
-                    assert!(
-                        has_input_required,
-                        "stream {} should emit INPUT_REQUIRED",
-                        case.tag
-                    );
+                (Terminator::InputRequired, Some(Terminator::Final)) => {
+                    panic!("stream {} emitted final before INPUT_REQUIRED", case.tag)
+                }
+                (Terminator::Final, None) => {
+                    panic!("stream {} should complete with final marker", case.tag)
+                }
+                (Terminator::InputRequired, None) => {
+                    panic!("stream {} should emit INPUT_REQUIRED", case.tag)
                 }
             }
 
-            let has_tag = message_texts_from_chunks(&chunks)
-                .iter()
-                .any(|text| text.contains(case.tag));
             assert!(
-                has_tag,
+                outcome.has_tag,
                 "stream {} should include its tag in yielded payload",
                 case.tag
             );

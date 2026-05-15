@@ -101,6 +101,28 @@ pub fn is_error_response(response: &Value) -> bool {
     response.get("error").is_some()
 }
 
+/// Matches a JSON-RPC response envelope carrying `result.chunk.task.status.state == TASK_STATE_INPUT_REQUIRED`.
+pub fn response_has_input_required(response: &Value) -> Option<()> {
+    let state = response
+        .get("result")
+        .and_then(|r| r.get("chunk"))
+        .and_then(|c| c.get("task"))
+        .and_then(|t| t.get("status"))
+        .and_then(|s| s.get("state"))
+        .and_then(Value::as_str)?;
+    (state == "TASK_STATE_INPUT_REQUIRED").then_some(())
+}
+
+/// Matches a JSON-RPC response envelope carrying the terminal `result.final == true` marker.
+pub fn response_has_final_chunk(response: &Value) -> Option<()> {
+    response
+        .get("result")
+        .and_then(|r| r.get("final"))
+        .and_then(Value::as_bool)
+        .filter(|is_final| *is_final)
+        .map(|_| ())
+}
+
 pub fn chunk_content(response: &Value) -> Option<&Value> {
     response
         .get("result")
