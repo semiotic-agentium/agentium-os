@@ -23,24 +23,16 @@ async fn test_sandbox_environment() {
 
     // 1. require must not be available
     let require_code = r#"
-        (() => {
-            try {
-                if (typeof require !== 'undefined') {
-                    require('fs');
-                    return JSON.stringify({error: "require should not be available"});
-                }
-                return JSON.stringify({success: true, message: "require not available"});
-            } catch (e) {
-                return JSON.stringify({success: true, error: e.toString()});
-            }
-        })()
+        (() => JSON.stringify({ available: typeof require !== 'undefined' }))()
     "#;
-    let result = bridge.eval_sync(require_code).await;
-    assert!(result.is_ok(), "require check should execute");
-    let value = result.unwrap();
-    assert!(
-        value.get("message").or(value.get("error")).is_some(),
-        "require: should return message about availability"
+    let value = bridge
+        .eval_sync(require_code)
+        .await
+        .expect("require check should execute");
+    assert_eq!(
+        value.get("available").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "require must not be defined in the QuickJS sandbox"
     );
 
     // 2. console.log must work
@@ -49,41 +41,34 @@ async fn test_sandbox_environment() {
             try {
                 console.log("Test message");
                 console.log({test: "object"});
-                return JSON.stringify({success: true, message: "console.log works"});
+                return JSON.stringify({success: true});
             } catch (e) {
-                return JSON.stringify({error: e.toString()});
+                return JSON.stringify({success: false, error: e.toString()});
             }
         })()
     "#;
-    let result = bridge.eval_sync(console_code).await;
-    assert!(result.is_ok(), "console.log check should execute");
-    let value = result.unwrap();
-    assert!(
-        value
-            .get("success")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        "console.log should work"
+    let value = bridge
+        .eval_sync(console_code)
+        .await
+        .expect("console.log check should execute");
+    assert_eq!(
+        value.get("success").and_then(serde_json::Value::as_bool),
+        Some(true),
+        "console.log must work (error: {:?})",
+        value.get("error")
     );
 
     // 3. fetch must not be available
     let fetch_code = r#"
-        (() => {
-            try {
-                if (typeof fetch !== 'undefined') {
-                    return JSON.stringify({error: "fetch should not be available"});
-                }
-                return JSON.stringify({success: true, message: "fetch not available"});
-            } catch (e) {
-                return JSON.stringify({success: true, error: e.toString()});
-            }
-        })()
+        (() => JSON.stringify({ available: typeof fetch !== 'undefined' }))()
     "#;
-    let result = bridge.eval_sync(fetch_code).await;
-    assert!(result.is_ok(), "fetch check should execute");
-    let value = result.unwrap();
-    assert!(
-        value.get("message").or(value.get("error")).is_some(),
-        "fetch: should return message about availability"
+    let value = bridge
+        .eval_sync(fetch_code)
+        .await
+        .expect("fetch check should execute");
+    assert_eq!(
+        value.get("available").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "fetch must not be defined in the QuickJS sandbox"
     );
 }
