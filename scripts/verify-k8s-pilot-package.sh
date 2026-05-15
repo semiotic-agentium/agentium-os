@@ -83,7 +83,8 @@ Verifies (in order):
      the digest just pushed to the local registry (catches same-tag
      rebuilds silently reusing a cached layer; see issue #420).
   4. scripts/k8s-pilot-smoke.sh --port-forward succeeds end-to-end
-     (publish + deploy + dispatch verification via cargo agent-platform push).
+     (per-pod publish + cluster-wide deploy via POST /cluster/deploy +
+     /cluster/agents consistency check + dispatch verification).
   5. Both runners registered in SurrealDB cluster_runners (count = 2).
 
 Exit codes:
