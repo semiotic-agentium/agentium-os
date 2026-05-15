@@ -3,7 +3,7 @@
 
 use baml_rt_core::A2aRequestHandler;
 use test_support::common::{
-    build_minimal_a2a_agent_with_stream_idle_secs, await_first_match, chunk_content,
+    await_first_match, build_minimal_a2a_agent_with_stream_idle_secs, chunk_content,
     message_texts_from_chunks, response_has_final_chunk, response_has_input_required,
     send_stream_request,
 };
@@ -140,7 +140,10 @@ async fn concurrent_stream_phase_matrix_regression_under_load() {
                 &format!("corr-1700000000010-{}", request_id),
                 None,
             );
-            joins.push((case, tokio::spawn(drive_stream(agent.clone(), request, case.tag))));
+            joins.push((
+                case,
+                tokio::spawn(drive_stream(agent.clone(), request, case.tag)),
+            ));
         }
 
         let mut outputs = Vec::new();
@@ -162,10 +165,9 @@ async fn concurrent_stream_phase_matrix_regression_under_load() {
             match (&case.expect, outcome.term.as_ref()) {
                 (Terminator::Final, Some(Terminator::Final)) => {}
                 (Terminator::InputRequired, Some(Terminator::InputRequired)) => {}
-                (Terminator::Final, Some(Terminator::InputRequired)) => panic!(
-                    "stream {} unexpected INPUT_REQUIRED before final",
-                    case.tag
-                ),
+                (Terminator::Final, Some(Terminator::InputRequired)) => {
+                    panic!("stream {} unexpected INPUT_REQUIRED before final", case.tag)
+                }
                 (Terminator::InputRequired, Some(Terminator::Final)) => {
                     panic!("stream {} emitted final before INPUT_REQUIRED", case.tag)
                 }
