@@ -45,12 +45,11 @@
 //!
 //! The `vocabulary` re-export in [`crate::lib`] remains `pub` for
 //! cross-crate consumers (graph_export adapters, sequence diagram
-//! renderers, etc.). The intra-crate fence is enforced by the
-//! `scripts/check-no-raw-graph-strings.sh` lint wired into pre-commit
-//! and CI.
+//! renderers, etc.). The intra-crate fence is a project convention.
 //!
 //! The write-side helpers `surreal_write_batch.rs` and
-//! `prov_write_semantics.rs` are currently exempt from the lint; their
+//! `prov_write_semantics.rs` are currently exempt from the strictest
+//! reading of this convention; their
 //! migration to the typed [`writer::MetamodelWriter`] facade is tracked
 //! separately.
 

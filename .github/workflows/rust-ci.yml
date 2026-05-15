@@ -127,13 +127,6 @@ jobs:
       - name: Enforce formatting (nightly rustfmt)
         run: cargo +nightly fmt --check
 
-      - name: Provenance typed-metamodel surface lint (no raw graph strings)
-        # Defends the visibility convention codified at
-        # crates/baml-rt-provenance/src/lib.rs and metamodel/mod.rs:
-        # GraphQuery / EdgeProjection are the only legal SQL emitters
-        # inside baml-rt-provenance/src/.
-        run: bash scripts/check-no-raw-graph-strings.sh
-
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:

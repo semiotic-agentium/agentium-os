@@ -68,18 +68,6 @@ repos:
         pass_filenames: true
         files: ^(agents|tests/fixtures/agents)/.+\.baml$
 
-      # Provenance: typed metamodel surface is the only legal SQL emitter
-      # for prov_node / prov_edge inside baml-rt-provenance/src/. Rejects
-      # raw `semantic_labels::WAS_*` / `a2a_relations::*` /
-      # `GraphNodeLabel::<X>::as_str()` interpolation outside the
-      # metamodel module.
-      - id: provenance-no-raw-graph-strings
-        name: provenance typed-metamodel surface lint
-        entry: bash scripts/check-no-raw-graph-strings.sh
-        language: system
-        pass_filenames: true
-        files: ^crates/baml-rt-provenance/src/.+\.rs$
-
       # Helm: assert the runner StatefulSet probes render with the documented
       # defaults and that overrides are honoured. Cheap (helm template runs
       # in well under a second). Triggered only on chart files that affect

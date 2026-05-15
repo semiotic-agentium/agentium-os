@@ -21,14 +21,13 @@
 //! [`metamodel::EdgeProjection::into_surreal`]**. Hand-rolled multi-hop
 //! traversals via `format!`-of-`vocabulary::semantic_labels::WAS_*` (or
 //! `a2a_relations::*` / `GraphNodeLabel::<X>::as_str()`) bypass the
-//! metamodel entirely and are prohibited by the
-//! `scripts/check-no-raw-graph-strings.sh` lint (pre-commit + CI).
+//! metamodel entirely and are prohibited.
 //!
 //! The `vocabulary` module remains `pub` for cross-crate consumers
 //! (graph_export adapters, sequence diagram renderers, simplifiers) that
 //! need the human-readable label strings for non-SQL purposes.
 //! Write-side helpers (`surreal_write_batch.rs`, `prov_write_semantics.rs`)
-//! are temporarily exempted from the lint pending the
+//! are temporarily exempted from this convention pending the
 //! [`metamodel::MetamodelWriter`] facade migration in a follow-on phase.
 
 pub mod builders;
