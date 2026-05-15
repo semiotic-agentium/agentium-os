@@ -148,15 +148,25 @@ async fn healthz() -> StatusCode {
 /// * [`ApiState::runtime_progress`] is within
 ///   [`READYZ_LAG_THRESHOLD_MS`](crate::READYZ_LAG_THRESHOLD_MS) — the
 ///   tokio runtime and (when wired) the QuickJS event loop are making
-///   forward progress.
+///   forward progress,
+/// * the cluster heartbeat (when wired) has not gone from a previously
+///   successful state to [`HeartbeatStatus::Degraded`] — see
+///   [`ClusterHeartbeatHealth::is_within_readyz_threshold`]. Standalone
+///   mode has no heartbeat; never-succeeded pods stay readyable so a
+///   SurrealDB-slow-during-boot blip doesn't pin fresh pods at `503`.
 ///
 /// Returns `503 Service Unavailable` otherwise. A runtime stall (cgroup
 /// throttling, wedged QuickJS thread, deadlocked task) flips readiness to
 /// false even while the listener is bound and accepting at the TCP level.
 async fn readyz(axum::extract::State(state): axum::extract::State<Arc<ApiState>>) -> StatusCode {
     let start = Instant::now();
+    let cluster_heartbeat_ok = state
+        .cluster
+        .cluster_handles()
+        .is_none_or(|(_, hb)| hb.is_within_readyz_threshold());
     let code = if state.ready.load(Ordering::Acquire)
         && state.runtime_progress.is_within_readyz_threshold()
+        && cluster_heartbeat_ok
     {
         StatusCode::OK
     } else {
