@@ -152,7 +152,7 @@ impl BamlRuntimeManager {
         ToolExecutionContext {
             tool_registry: self.state.tool_registry.clone(),
             interceptor_registry: self.state.interceptor_registry.clone(),
-            effect_emitter: self.state.effect_emitter.clone(),
+            effect_emitter: self.effect_emitter_for_tool_effects().cloned(),
             execution_sessions: self.state.execution_sessions.clone(),
             archive_ref_tables: self.state.archive_ref_tables.clone(),
             archive_ref_store: self.state.archive_ref_store.clone(),

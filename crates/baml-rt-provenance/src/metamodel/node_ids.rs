@@ -167,6 +167,13 @@ impl TaskExecutionNodeId {
     pub fn into_string(self) -> String {
         self.0
     }
+
+    /// Recover the wire `TaskId` from the canonical `task_execution_<task_id>` node id.
+    pub fn to_task_id(&self) -> TaskId {
+        let raw = self.as_str();
+        let stripped = raw.strip_prefix("task_execution_").unwrap_or(raw);
+        TaskId::from_external(baml_rt_core::ids::ExternalId::new(stripped.to_string()))
+    }
 }
 
 /// Newtype for an agent package identifier (e.g. `"task-lifecycle-demo"`),

@@ -57,7 +57,7 @@ async fn assert_effect_bus_tool_rows(store: Arc<baml_rt_provenance::SurrealProve
             resource: ProvenanceOpsResource::ToolCalls,
             filters: ProvenanceOpsFilters {
                 context_id: Some(context_id),
-                task_id: Some(task_id),
+                task_id: Some(task_id.clone()),
                 tool_name: Some("system/discover_tools".to_string()),
                 ..Default::default()
             },
@@ -117,7 +117,7 @@ async fn assert_effect_bus_tool_rows_for_task_id(
             resource: ProvenanceOpsResource::ToolCalls,
             filters: ProvenanceOpsFilters {
                 context_id: Some(context_id),
-                task_id: Some(task_id),
+                task_id: Some(task_id.clone()),
                 tool_name: Some("system/discover_tools".to_string()),
                 ..Default::default()
             },
@@ -130,6 +130,21 @@ async fn assert_effect_bus_tool_rows_for_task_id(
     assert!(
         !rows.is_empty(),
         "effect-bus tool events should remain queryable for live-task style task ids"
+    );
+
+    let task_exec =
+        baml_rt_provenance::id_semantics::task_execution_activity_id_string(task_id.as_str());
+    let edges: Vec<serde_json::Value> = store
+        .db()
+        .query("SELECT from_id, to_id FROM prov_edge WHERE rel_type = 'A2A_TASK_CALL' AND from_id = $from")
+        .bind(("from", task_exec))
+        .await
+        .expect("task_call edge query")
+        .take(0)
+        .expect("task_call edge rows");
+    assert!(
+        !edges.is_empty(),
+        "effect-bus tool writes must emit A2A_TASK_CALL from TaskExecution; edges={edges:?}"
     );
 }
 

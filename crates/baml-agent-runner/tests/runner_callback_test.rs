@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
+use baml_rt_core::ids::{ContextId, ExternalId, MessageId, TaskId};
 use baml_rt_repository::{
     commands::{PublishCommand, PublishOrigin, PublishResult},
     entry::ChangeRationale,
@@ -104,7 +104,12 @@ impl RunningRunnerProcess {
             .arg(TEST_RUNNER_TOKEN)
             .arg("--event-poll-interval-secs")
             .arg(event_poll_interval_secs.to_string())
-            .env("RUST_LOG", "info")
+            // Child overrides parent RUST_LOG; include provenance + effect-bus warn so
+            // `add_event_with_logging` / subscriber failures surface when debugging flakes.
+            .env(
+                "RUST_LOG",
+                "info,baml_rt_provenance=warn,baml_rt_core::bus=warn",
+            )
             .env_remove("BAML_FNOX_CONFIG")
             .env_remove("OPENROUTER_API_KEY")
             .env_remove("CLICKUP_API_KEY")
@@ -344,8 +349,7 @@ async fn wait_for_provenance_tool_call_status(
 
         if start.elapsed() >= timeout {
             panic!(
-                "timed out waiting for provenance tool-call rows has_rows={expected_has_rows}; last status={} body={body}",
-                status,
+                "timed out waiting for provenance tool-call rows has_rows={expected_has_rows}; last status={status} body={body}"
             );
         }
 
@@ -360,6 +364,15 @@ fn parse_labelled_field<'a>(message: &'a str, key: &str) -> Option<&'a str> {
     let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
     let value = rest[..end].trim();
     (!value.is_empty()).then_some(value)
+}
+
+/// Wire task id the runner mints for `message.sendStream` when the message carries
+/// `context_id` + `message_id` (see `TaskId::for_live_stream`).
+fn live_stream_task_id(context_id: &ContextId, message_id: &str) -> TaskId {
+    TaskId::for_live_stream(
+        context_id,
+        &MessageId::from_external(ExternalId::new(message_id.to_string())),
+    )
 }
 
 fn parse_minted_dispatch_scope(text: &str) -> Option<(ContextId, TaskId)> {
@@ -381,20 +394,22 @@ async fn runner_callback_delivery_honors_continuation_policy() {
     let _package_cleanup = TempFileCleanup::new(package_path.clone());
 
     let runner = RunningRunnerProcess::start(1).await;
+    let base_url = runner.base_url.clone();
     let client = reqwest::Client::new();
-    publish_and_deploy_fixture(&client, &runner.base_url, &package_path).await;
-    assert_dispatch_echo_callback_subscription_visible(&client, &runner.base_url).await;
+    publish_and_deploy_fixture(&client, &base_url, &package_path).await;
+    assert_dispatch_echo_callback_subscription_visible(&client, &base_url).await;
 
-    let detached_task_id = TaskId::from_external(ExternalId::new("dispatch-echo-detached-task"));
     let detached_context_id = ContextId::new(730, 1);
+    let detached_message_id = "dispatch-echo-detached-msg";
+    let detached_scheduling_task = live_stream_task_id(&detached_context_id, detached_message_id);
     let detached_token = format!("detached{}", uuid::Uuid::new_v4().simple());
     let detached_responses = invoke_callback_schedule(
         &client,
-        &runner.base_url,
+        &base_url,
         CallbackScheduleRequest {
-            task_id: &detached_task_id,
+            task_id: &detached_scheduling_task,
             context_id: &detached_context_id,
-            message_id: "dispatch-echo-detached-msg",
+            message_id: detached_message_id,
             request_id: "corr-1735720000000-41",
             mode: "detached",
             token: &detached_token,
@@ -417,12 +432,10 @@ async fn runner_callback_delivery_honors_continuation_policy() {
         .expect("parse minted dispatch context_id and task_id");
 
     sleep(Duration::from_secs(3)).await;
-    let log_tail = std::fs::read_to_string(&runner.log_path).unwrap_or_default();
-    eprintln!("--- runner log (tail) ---\n{log_tail}\n---");
 
     wait_for_provenance_tool_call_status(
         &client,
-        &runner.base_url,
+        &base_url,
         Some(&child_ctx),
         Some(&child_task),
         true,
@@ -430,7 +443,7 @@ async fn runner_callback_delivery_honors_continuation_policy() {
     .await;
     wait_for_provenance_tool_call_status(
         &client,
-        &runner.base_url,
+        &base_url,
         Some(&detached_context_id),
         None,
         false,
@@ -438,23 +451,24 @@ async fn runner_callback_delivery_honors_continuation_policy() {
     .await;
     wait_for_provenance_tool_call_status(
         &client,
-        &runner.base_url,
+        &base_url,
         Some(&detached_context_id),
-        Some(&detached_task_id),
+        Some(&detached_scheduling_task),
         false,
     )
     .await;
 
-    let resumed_task_id = TaskId::from_external(ExternalId::new("dispatch-echo-resume-task"));
     let resumed_context_id = ContextId::new(730, 2);
+    let resumed_message_id = "dispatch-echo-resume-msg";
+    let resumed_scheduling_task = live_stream_task_id(&resumed_context_id, resumed_message_id);
     let resumed_token = format!("resume{}", uuid::Uuid::new_v4().simple());
     let resumed_responses = invoke_callback_schedule(
         &client,
-        &runner.base_url,
+        &base_url,
         CallbackScheduleRequest {
-            task_id: &resumed_task_id,
+            task_id: &resumed_scheduling_task,
             context_id: &resumed_context_id,
-            message_id: "dispatch-echo-resume-msg",
+            message_id: resumed_message_id,
             request_id: "corr-1735720000000-42",
             mode: "resume_current_task",
             token: &resumed_token,
@@ -469,19 +483,13 @@ async fn runner_callback_delivery_honors_continuation_policy() {
         "expected resume callback scheduling confirmation, got texts={resumed_texts:?} responses={resumed_responses:?}"
     );
 
+    wait_for_provenance_tool_call_status(&client, &base_url, Some(&resumed_context_id), None, true)
+        .await;
     wait_for_provenance_tool_call_status(
         &client,
-        &runner.base_url,
+        &base_url,
         Some(&resumed_context_id),
-        None,
-        true,
-    )
-    .await;
-    wait_for_provenance_tool_call_status(
-        &client,
-        &runner.base_url,
-        Some(&resumed_context_id),
-        Some(&resumed_task_id),
+        Some(&resumed_scheduling_task),
         true,
     )
     .await;
@@ -497,12 +505,14 @@ async fn runner_callback_resume_current_task_defers_immediate_delivery_until_tur
     let _package_cleanup = TempFileCleanup::new(package_path.clone());
 
     let runner = RunningRunnerProcess::start(1).await;
+    let base_url = runner.base_url.clone();
     let client = reqwest::Client::new();
-    publish_and_deploy_fixture(&client, &runner.base_url, &package_path).await;
-    assert_dispatch_echo_callback_subscription_visible(&client, &runner.base_url).await;
+    publish_and_deploy_fixture(&client, &base_url, &package_path).await;
+    assert_dispatch_echo_callback_subscription_visible(&client, &base_url).await;
 
-    let task_id = TaskId::from_external(ExternalId::new("dispatch-echo-immediate-resume-task"));
     let context_id = ContextId::new(731, 1);
+    let message_id = "dispatch-echo-immediate-resume-msg";
+    let task_id = live_stream_task_id(&context_id, message_id);
     let token = format!("immediateresume{}", uuid::Uuid::new_v4().simple());
 
     // The fixture schedules this callback with afterMs=0. The host must defer
@@ -510,11 +520,11 @@ async fn runner_callback_resume_current_task_defers_immediate_delivery_until_tur
     // request can stall before returning its final assistant message.
     let responses = invoke_callback_schedule(
         &client,
-        &runner.base_url,
+        &base_url,
         CallbackScheduleRequest {
             task_id: &task_id,
             context_id: &context_id,
-            message_id: "dispatch-echo-immediate-resume-msg",
+            message_id,
             request_id: "corr-1735720000000-43",
             mode: "resume_current_task",
             token: &token,
@@ -531,7 +541,7 @@ async fn runner_callback_resume_current_task_defers_immediate_delivery_until_tur
 
     wait_for_provenance_tool_call_status(
         &client,
-        &runner.base_url,
+        &base_url,
         Some(&context_id),
         Some(&task_id),
         true,
