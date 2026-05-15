@@ -14,7 +14,7 @@ use super::atomic_io::atomic_write;
 use crate::builder::{
     baml_gen::{
         GENERATED_BAML_PRELUDE_FILE, purge_managed_generated_baml_files,
-        render_baml_tool_interfaces, render_generated_session_baml_from_ir,
+        render_baml_tool_interfaces_with_mcp_root, render_generated_session_baml_from_ir,
     },
     baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
     error::{BamlBuilderError, Result},
@@ -81,6 +81,16 @@ impl TypeGenerator for RuntimeTypeGenerator {
             purge_managed_generated_baml_files(&baml_src_build).map_err(BamlBuilderError::Io)?;
 
             let tool_names = load_manifest_tools(&baml_src)?;
+            let mcp_root = build_dir.join("mcp");
+            let mcp_root = if mcp_root.exists() {
+                tracing::info!(
+                    mcp_root = %mcp_root.display(),
+                    "using packaged MCP registry snapshots during type generation"
+                );
+                Some(mcp_root)
+            } else {
+                None
+            };
 
             // Resolve tool metadata once — used for the coordination prelude,
             // polymorphic type generation, and per-phase function generation.
@@ -88,13 +98,8 @@ impl TypeGenerator for RuntimeTypeGenerator {
             // which is populated by the catalog from inventory providers
             // (internal tools) or `coordination.baml_file` (external bundles).
             let tool_metadata = if !tool_names.is_empty() {
-                let mcp_root = build_dir.join("mcp");
                 let catalog = baml_rt_tools::external_tools::build_builder_catalog_with_mcp_root(
-                    if mcp_root.exists() {
-                        Some(mcp_root.as_path())
-                    } else {
-                        None
-                    },
+                    mcp_root.as_deref(),
                 )?;
                 baml_rt_tools::tool_catalog::resolve_manifest_tools_with_catalog(
                     &catalog,
@@ -105,7 +110,8 @@ impl TypeGenerator for RuntimeTypeGenerator {
             };
 
             // Single `_baml_runtime.baml` prelude (mirrors `baml-runtime.d.ts`): tools + coordination + IR sections.
-            let mut generated_baml = render_baml_tool_interfaces(&tool_names)?;
+            let mut generated_baml =
+                render_baml_tool_interfaces_with_mcp_root(&tool_names, mcp_root.as_deref())?;
             if !tool_metadata.is_empty()
                 && let Some(coord_baml) = gather_coordination_fragments(&tool_metadata)?
             {
@@ -307,6 +313,13 @@ async fn prepare_mcp_registry_cache(
                         "manifest uses MCP server `{server_id}`, but no registry snapshot was found"
                     ))
                 })?;
+            tracing::info!(
+                mcp_server_id = %server_id,
+                mcp_tools = snapshot.tools.len(),
+                mcp_tools_digest = %snapshot.tools_digest,
+                mcp_registry_source = "embedded",
+                "resolved MCP snapshot for agent build"
+            );
             baml_rt_tools::mcp_cache::write_snapshot(&root, &snapshot)
                 .map_err(BamlBuilderError::Io)?;
         }
@@ -340,6 +353,13 @@ async fn prepare_mcp_registry_cache(
                 message: format!("failed to parse MCP snapshot `{server_id}` from registry"),
                 source: Box::new(err),
             })?;
+        tracing::info!(
+            mcp_server_id = %server_id,
+            mcp_tools = snapshot.tools.len(),
+            mcp_tools_digest = %snapshot.tools_digest,
+            mcp_registry_source = %registry_url,
+            "resolved MCP snapshot for agent build"
+        );
         baml_rt_tools::mcp_cache::write_snapshot(&root, &snapshot).map_err(BamlBuilderError::Io)?;
     }
     Ok(())

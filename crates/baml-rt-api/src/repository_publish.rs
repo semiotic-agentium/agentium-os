@@ -24,6 +24,11 @@ pub async fn publish_with_build(
         .map_err(HttpApiProblem::from)?;
 
     let source_versioned = cmd.source.with_manifest_version(next_version);
+    tracing::info!(
+        agent = %cmd.name,
+        repository_version = next_version,
+        "building repository artifact"
+    );
     let built = build_artifact(&source_versioned, svc.clone())
         .await
         .map_err(|e| {
@@ -75,6 +80,18 @@ async fn build_artifact(
 
     let result = async {
         materialize_source_bundle(source, &workspace)?;
+        let manifest_tools = source.manifest.tools();
+        let mcp_tools: Vec<&str> = manifest_tools
+            .iter()
+            .copied()
+            .filter(|tool| tool.starts_with("mcp/"))
+            .collect();
+        if !mcp_tools.is_empty() {
+            tracing::info!(
+                mcp_tools = ?mcp_tools,
+                "repository build will resolve MCP tools from registry"
+            );
+        }
 
         let agent_dir = AgentDir::new(workspace.clone())?;
         let build_dir = BuildDir::new()?;

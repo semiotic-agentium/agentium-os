@@ -1,10 +1,15 @@
 //! Template fragments merged into [`super::GENERATED_BAML_PRELUDE_FILE`] (prelude + per-tool cards).
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 use baml_rt_tools::{
-    OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY, external_tools::build_builder_catalog,
-    schema_allows_empty_or_optional_open_input, tool_catalog::resolve_manifest_tools_with_catalog,
+    OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY,
+    external_tools::{build_builder_catalog, build_builder_catalog_with_mcp_root},
+    schema_allows_empty_or_optional_open_input,
+    tool_catalog::resolve_manifest_tools_with_catalog,
     tools::ToolFunctionMetadata,
 };
 use baml_tools_calculator as _;
@@ -18,6 +23,13 @@ use crate::builder::{error::Result, schema_to_baml};
 
 /// Generate BAML tool interface file with FSM-aware prompting hints.
 pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
+    render_baml_tool_interfaces_with_mcp_root(tool_names, None)
+}
+
+pub fn render_baml_tool_interfaces_with_mcp_root(
+    tool_names: &[String],
+    mcp_root: Option<&Path>,
+) -> Result<String> {
     // Force link so inventory sees these metadata registrations (regen_fixtures + builder).
     let _ = baml_tools_calculator::support_calculate_metadata;
     let _ = baml_rt_tools_claude::metadata::claude_dev_metadata;
@@ -29,7 +41,10 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     #[cfg(feature = "slack")]
     let _ = baml_tools_slack::SlackTool::new;
 
-    let builder_catalog = build_builder_catalog()?;
+    let builder_catalog = match mcp_root {
+        Some(root) => build_builder_catalog_with_mcp_root(Some(root))?,
+        None => build_builder_catalog()?,
+    };
     let tool_metadata = resolve_manifest_tools_with_catalog(&builder_catalog, tool_names)?;
     let mut w = BamlWriter::new();
     w.push_block(&generated_tools_prelude());
