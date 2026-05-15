@@ -173,15 +173,11 @@ jobs:
               bash scripts/ci/apt-update-retry.sh || true
             done
           fi
-          # Pin TS 6.x: the canonical agent tsconfig uses `moduleResolution: "node"` with
-          # `ignoreDeprecations: "6.0"` (see #370). The runner Dockerfile installs
-          # `typescript@6` globally, so CI must match to keep fixture builds consistent
-          # with the runner image. `"5.0"` is rejected by TS 6.x (TS5103), `"6.0"` is
-          # rejected by TS 5.x (also TS5103), so the version must be coordinated with
-          # the template constant in `crates/baml-rt-builder/src/builder/compiler/tsc.rs`.
-          # Migrating off the legacy `node` resolver entirely is tracked in #361; until
-          # then, both CI and the runner image target TS 6.x. Unpinned `typescript`
-          # tracks latest major and can break CI without a coordinated bump.
+          # Pin TS 6.x: the canonical agent tsconfig uses `moduleResolution: "bundler"` with
+          # `module: "ESNext"` (see `crates/baml-rt-builder/src/builder/compiler/tsc.rs`). The
+          # runner Dockerfile installs `typescript@6` globally, so CI must match to keep
+          # fixture builds consistent with the runner image. Unpinned `typescript` tracks
+          # latest major and can break CI without a coordinated bump.
           sudo npm install -g typescript@6
           tsc --version
           tsc --version | grep -qE '^Version 6\.' || {

@@ -21,17 +21,18 @@ use crate::builder::{
 /// `rootDir` is explicitly `"./src"` (must match the inferred common source path; see
 /// <https://aka.ms/ts6> migration notes).
 ///
-/// **`moduleResolution`** is `node` so `module: "ESNext"` emits script-friendly ESM
-/// instead of CommonJS `exports` assignments, which QuickJS script evaluation does not provide.
+/// **`module`** is `ESNext` so emitted JS stays script-friendly ESM (no CommonJS `exports`
+/// assignments), which QuickJS script evaluation does not provide.
 ///
-/// We omit `ignoreDeprecations`: valid string values differ across `tsc` versions (TS5103 when
-/// mismatched), so local PATH `tsc` and CI must stay compatible without that knob.
+/// **`moduleResolution`** is `bundler` (not deprecated `node` / Node10): TypeScript resolves
+/// imports from the local project graph and `node_modules` only — the same on-disk model as
+/// `tsc` always used; this mode does not enable URL or registry fetches during compilation.
 pub const TSCONFIG_JSON: &str = r#"{
   "compilerOptions": {
     "target": "ES2020",
     "lib": ["ES2020"],
     "module": "ESNext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

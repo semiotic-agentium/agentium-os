@@ -49,7 +49,7 @@ pub fn generate(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
   "compilerOptions": {
     "target": "ES2022",
     "module": "CommonJS",
-    "moduleResolution": "Node",
+    "moduleResolution": "node16",
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,

@@ -54,8 +54,8 @@ download-models:
 
 # Verify the local host has the system deps required to build agents.
 # On non-Linux hosts, skips Linux-only checks (libdbus / libcap-ng);
-# tsc 6.x is required everywhere (5.x rejects `"ignoreDeprecations": "6.0"`
-# in the canonical tsconfig). Exits non-zero with a clear message if any
+# tsc 6.x is required everywhere; the canonical agent tsconfig uses modern
+# `moduleResolution: "bundler"` (see `crates/baml-rt-builder/.../tsc.rs`). Exits non-zero with a clear message if any
 # dep is missing or out of range. Run this before build-release on a fresh
 # dev host.
 check-host:

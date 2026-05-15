@@ -71,7 +71,7 @@ npm install -g typescript@6
 
 - `libdbus-1-dev` — pulled in via `fnox` → `keyring` → `dbus-secret-service` (the secret-resolver chain).
 - `libcap-ng-dev` — pulled in via `microsandbox` for syscall capability filtering at the runner sandbox boundary.
-- `typescript@6` — required on `PATH` for the agent build pipeline; the canonical `tsconfig.json` pins `"ignoreDeprecations": "6.0"`, which TypeScript 5.x rejects.
+- `typescript@6` — required on `PATH` for the agent build pipeline; the canonical `tsconfig.json` uses `moduleResolution: "bundler"` with TypeScript 6.x.
 
 Run `just check-host` to verify all three are present before kicking off a release build. The recipe exits non-zero with a clear "missing X (install with Y)" message; on non-Linux hosts the Linux-only checks are skipped.
 
@@ -225,7 +225,7 @@ Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 - **nextest (workspace)** — `cargo nextest run --workspace --locked --profile ci` with all feature flags enabled (`http-tools`, `llm-tests`, `memory`). Uses rust-cache with shared key `ci-nextest`. JUnit report published via `mikepenz/action-junit-report`. Secrets written to `fnox.toml` from GitHub secrets. **`regen_fixtures` is not run in CI**; generated `agents/**` and `tests/fixtures/agents/**` outputs stay committed, refreshed locally via `just regen-fixtures` / the pre-commit `regen-fixtures` hook.
 - Toolchain: stable for build/test, nightly for `cargo fmt --check` only.
 - **APT reliability:** CI uses `scripts/ci/apt-update-retry.sh` to mitigate transient Ubuntu mirror sync failures during package installation.
-- **TypeScript 6.x:** CI installs `typescript@6` globally to match the runner image and ensure consistent fixture builds. The canonical `tsconfig.json` uses `"ignoreDeprecations": "6.0"`, which TypeScript 5.x rejects.
+- **TypeScript 6.x:** CI installs `typescript@6` globally to match the runner image and ensure consistent fixture builds. The canonical `tsconfig.json` uses `moduleResolution: "bundler"` with TypeScript 6.x.
 - **Test model configuration:** CI sets `BAML_TEST_MODEL` from the `vars.BAML_TEST_MODEL` repository variable with fallback to `x-ai/grok-4.1-fast` for backward compatibility.
 
 ## Testing Conventions
@@ -296,4 +296,4 @@ The raw manifests under `deploy/k8s/` and the `deploy/demo/run-demo.sh` script a
 - **QuickJS**: `quickjs_runtime` crate for JS execution
 - **SurrealDB**: Embedded multi-model database for provenance graph persistence
 - **MCP SDK**: `rmcp` crate for Model Context Protocol client implementation with stdio transport
-- **TypeScript 6.x**: required on `PATH` (or via `npx`) for any code path that exercises the agent build pipeline — `cargo test` on builder fixtures, local `baml-agent-builder package`, and the runner image (Dockerfile installs `typescript@6` globally). The canonical `tsconfig.json` written by bootstrap pins `"ignoreDeprecations": "6.0"`, which TypeScript 5.x rejects. Install with `npm install -g typescript@6`.
+- **TypeScript 6.x**: required on `PATH` (or via `npx`) for any code path that exercises the agent build pipeline — `cargo test` on builder fixtures, local `baml-agent-builder package`, and the runner image (Dockerfile installs `typescript@6` globally). The canonical `tsconfig.json` written by bootstrap uses `moduleResolution: "bundler"`. Install with `npm install -g typescript@6`.
